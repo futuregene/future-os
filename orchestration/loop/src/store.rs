@@ -382,6 +382,36 @@ pub enum Event {
         turns_overdue: u32,
         ts: u64,
     },
+    /// P1-5: reward_memory ingestion (phase 1) — one scoped reward signal
+    /// in the ledger (LoopX `capabilities/reward_memory/ingestion.py`,
+    /// compact set). Sources: `validator` (auto-recorded by the run path
+    /// when a turn carries an independent task-validation receipt),
+    /// `delivery_outcome` (auto-recorded when a P0-2 delivery is resolved
+    /// verified/failed/rework), `evidence` (manual score via
+    /// `reward-memory record`). Projection-only: goal state is unchanged;
+    /// the scoped-feedback query (`reward-memory query`) reads the ledger.
+    RewardSignalRecorded {
+        goal_id: String,
+        todo_id: String,
+        #[serde(default)]
+        agent_id: Option<String>,
+        #[serde(default)]
+        run_id: Option<String>,
+        source: String,
+        signal: String,
+        #[serde(default)]
+        score: Option<f64>,
+        #[serde(default)]
+        note: Option<String>,
+        /// Per-todo ingestion sequence (1-based, from the ledger at append
+        /// time). Distinguishes otherwise-identical signals appended within
+        /// the same second (G-3 content-id dedupe anchor, mirroring
+        /// DeliveryOutcomeRecorded.seq). Old events without the field
+        /// deserialize as 0.
+        #[serde(default)]
+        seq: u32,
+        ts: u64,
+    },
     /// G-16: a supervisor proposed a decision for a target agent (LoopX
     /// SUPERVISOR_PROPOSED). Projection-only — supervisor state is read from
     /// the event log, not folded into goal state.
@@ -439,6 +469,7 @@ impl Event {
             | Event::TodoExpired { goal_id, .. }
             | Event::DeliveryOutcomeRecorded { goal_id, .. }
             | Event::FollowthroughCreated { goal_id, .. }
+            | Event::RewardSignalRecorded { goal_id, .. }
             | Event::SupervisorProposed { goal_id, .. }
             | Event::SupervisorReceiptRecorded { goal_id, .. } => goal_id,
         }
@@ -1389,9 +1420,12 @@ fn apply(goal: &mut Goal, event: Event) {
             ts,
             ..
         } => goal.apply_followthrough(&source_todo_id, &followup_todo_id, ts),
-        // G-16: supervisor events are projection-only (read from the event
-        // log by the supervisor domain; goal state is unchanged).
-        Event::SupervisorProposed { .. } | Event::SupervisorReceiptRecorded { .. } => {}
+        // P1-5: reward signals are projection-only (read from the event log
+        // by the scoped-feedback query; goal state is unchanged) — same
+        // treatment as the G-16 supervisor events.
+        Event::RewardSignalRecorded { .. }
+        | Event::SupervisorProposed { .. }
+        | Event::SupervisorReceiptRecorded { .. } => {}
     }
 }
 

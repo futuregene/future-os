@@ -153,6 +153,7 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         "attention" => cmd_attention(&store, &args[1..]),
         "inbox" => cmd_inbox(&store, &args[1..]),
         "delivery" => cmd_delivery(&mut store, &args[1..]),
+        "reward-memory" => cmd_reward_memory(&mut store, &args[1..]),
         "registry" => cmd_registry(&registry, &args[1..]),
         "commands" => cmd_commands(&registry, &args[1..]),
         // ── P4 commands (G-18 / G-19 / G-20 / G-27) ───────────────────────
@@ -200,6 +201,7 @@ const JOURNEY_ASSIGNMENTS: &[(&str, Journey)] = &[
     ("attention", Journey::Daily),
     ("inbox", Journey::Daily),
     ("delivery", Journey::Daily),
+    ("reward-memory", Journey::Daily),
     ("diagnose", Journey::Daily),
     ("evidence-log", Journey::Daily),
     ("todo-event", Journey::Daily),
@@ -475,7 +477,7 @@ fn build_cli_registry() -> CommandRegistry {
 
     let work_items = r.group(
         "work-items",
-        "attention / operator inbox (G-15) / delivery outcome closure (P0-2)",
+        "attention / operator inbox (G-15) / delivery outcome closure (P0-2) / reward memory (P1-5)",
     );
     r.command(
         work_items,
@@ -494,6 +496,12 @@ fn build_cli_registry() -> CommandRegistry {
         "delivery",
         "post-delivery outcome closure (P0-2): delivered → verified/failed/rework + follow-through",
         "delivery status --goal G [--format json] | record --goal G --todo-id T --outcome verified|failed|rework [--note N] | followthrough --goal G [--turns N]",
+    );
+    r.command(
+        work_items,
+        "reward-memory",
+        "reward memory (P1-5): validator/delivery/evidence signal ingestion + scoped feedback",
+        "reward-memory query --goal G [--agent-id A] [--todo-id T] [--source S] [--format json] | record --goal G --todo-id T --score 0.0..1.0 [--source evidence] [--note N] [--agent-id A]",
     );
 
     let handoff = r.group("handoff", "project handoff (G-17)");
@@ -2896,6 +2904,11 @@ async fn run_turns(
             record: record.clone(),
             ts: now_epoch(),
         })?;
+        // P1-5 reward_memory ingestion: the turn's independent validation
+        // receipt (if any) lands in the reward ledger (source `validator`).
+        if ingest_validator_reward(store, goal_id, &todo_id, agent_id, &record)? {
+            println!("   ↳ reward signal ingested (validator)");
+        }
         // G-3: quota spend lands as a durable event alongside the run ledger
         // (source mirrors slot accounting; monitor no-change never spends).
         if monitor_changed != Some(false) {
@@ -4585,11 +4598,17 @@ fn delivery_record(store: &mut Store, args: &[String]) -> Result<()> {
         goal_id: goal_id.clone(),
         todo_id: todo_id.clone(),
         outcome: outcome.to_string(),
-        note,
+        note: note.clone(),
         delivered_turn: current_turn,
         seq,
         ts: now_epoch(),
     })?;
+    // P1-5 reward_memory ingestion: a delivery RESOLUTION is a reward
+    // signal (the P0-2 outcome chain is reward_memory's phase-1 signal
+    // source); the pending `delivered` state ingests nothing.
+    if ingest_delivery_reward(store, &goal_id, &todo_id, outcome, note)? {
+        println!("   ↳ reward signal ingested (delivery_outcome/{outcome})");
+    }
     println!("delivery {todo_id} → {outcome} ✔");
     Ok(())
 }
@@ -4657,6 +4676,264 @@ fn run_followthrough_check(
         created.push(followup_id);
     }
     Ok(created)
+}
+
+// ── reward-memory (P1-5: reward memory phase 1 — ingestion + scoped feedback) ──
+
+/// P1-5 ingestion helper: a turn that carried an independent validation
+/// receipt feeds the reward ledger (source `validator`). Returns true when
+/// a signal was appended (`not_required` / no receipt ingests nothing).
+fn ingest_validator_reward(
+    store: &mut Store,
+    goal_id: &str,
+    todo_id: &str,
+    agent_id: Option<&str>,
+    record: &RunRecord,
+) -> Result<bool> {
+    use crate::capabilities::reward_memory as rm;
+    let Some(v) = &record.validation else {
+        return Ok(false);
+    };
+    let Some((signal, score)) = rm::validator_signal(v) else {
+        return Ok(false);
+    };
+    let seq = rm::next_seq(&store.events(goal_id)?, todo_id);
+    store.append(Event::RewardSignalRecorded {
+        goal_id: goal_id.to_string(),
+        todo_id: todo_id.to_string(),
+        agent_id: agent_id.map(str::to_string),
+        run_id: Some(record.run_id.clone()),
+        source: rm::SOURCE_VALIDATOR.to_string(),
+        signal: signal.to_string(),
+        score,
+        note: Some(v.summary.clone()),
+        seq,
+        ts: now_epoch(),
+    })?;
+    Ok(true)
+}
+
+/// P1-5 ingestion helper: a delivery RESOLUTION (verified/failed/rework) is
+/// a reward signal (source `delivery_outcome`) — the P0-2 outcome chain is
+/// reward_memory's phase-1 signal source. Returns true when appended (the
+/// pending `delivered` state ingests nothing).
+fn ingest_delivery_reward(
+    store: &mut Store,
+    goal_id: &str,
+    todo_id: &str,
+    outcome: &str,
+    note: Option<String>,
+) -> Result<bool> {
+    use crate::capabilities::reward_memory as rm;
+    let Some((signal, score)) = rm::delivery_outcome_signal(outcome) else {
+        return Ok(false);
+    };
+    let seq = rm::next_seq(&store.events(goal_id)?, todo_id);
+    store.append(Event::RewardSignalRecorded {
+        goal_id: goal_id.to_string(),
+        todo_id: todo_id.to_string(),
+        agent_id: None,
+        run_id: None,
+        source: rm::SOURCE_DELIVERY_OUTCOME.to_string(),
+        signal: signal.to_string(),
+        score,
+        note,
+        seq,
+        ts: now_epoch(),
+    })?;
+    Ok(true)
+}
+
+/// `reward-memory <query|record>` — the P1-5 surface: scoped_feedback read
+/// model (query) + manual evidence scoring (record). Validator and
+/// delivery-outcome signals ingest automatically (run path / `delivery
+/// record`); experiment/dogfood are out of scope for phase 1.
+fn cmd_reward_memory(store: &mut Store, args: &[String]) -> Result<()> {
+    match args.first().map(|s| s.as_str()) {
+        Some("query") => reward_memory_query(store, &args[1..]),
+        Some("record") => reward_memory_record(store, &args[1..]),
+        _ => bail!("reward-memory subcommand must be `query` or `record`"),
+    }
+}
+
+/// `reward-memory query --goal G [--agent-id A] [--todo-id T] [--source S]
+/// [--format json]` — the scoped_feedback read model: reward signals from
+/// the goal ledger, filtered by agent / todo / source scope, plus a
+/// deterministic aggregate summary.
+fn reward_memory_query(store: &Store, args: &[String]) -> Result<()> {
+    use crate::capabilities::reward_memory as rm;
+    reject_unknown_flags(
+        args,
+        &[
+            "--agent-id",
+            "--format",
+            "--goal",
+            "--json",
+            "--source",
+            "--todo-id",
+        ],
+    )?;
+    let mut goal_id = None;
+    let mut agent_id = None;
+    let mut todo_id = None;
+    let mut source_raw = None;
+    parse_pairs(args, |k, v| match k {
+        "--goal" => goal_id = Some(v),
+        "--agent-id" => agent_id = Some(v),
+        "--todo-id" => todo_id = Some(v),
+        "--source" => source_raw = Some(v),
+        _ => {}
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let source = match source_raw.as_deref() {
+        None => None,
+        Some(raw) => Some(rm::normalize_source(raw).ok_or_else(|| {
+            anyhow::anyhow!(
+                "--source must be one of: {}",
+                rm::REWARD_SOURCE_CHOICES.join(", ")
+            )
+        })?),
+    };
+    if !store.registered(&goal_id) {
+        bail!("goal {goal_id} not found");
+    }
+    let events = store.events(&goal_id)?;
+    let scope = rm::RewardScope {
+        agent_id: agent_id.as_deref(),
+        todo_id: todo_id.as_deref(),
+        source,
+    };
+    let signals = rm::collect_signals(&events, &scope);
+    let summary = rm::summarize(&signals);
+    if wants_json(args) {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "goal_id": goal_id,
+                "scope": {
+                    "agent_id": agent_id,
+                    "todo_id": todo_id,
+                    "source": source,
+                },
+                "signals": signals,
+                "summary": summary,
+            }))?
+        );
+        return Ok(());
+    }
+    if signals.is_empty() {
+        println!(
+            "no reward signals for goal {goal_id} (signals ingest from validator receipts, delivery resolutions, and `reward-memory record`)"
+        );
+        return Ok(());
+    }
+    let avg = summary
+        .avg_score
+        .map(|a| format!("{a:.2}"))
+        .unwrap_or_else(|| "-".to_string());
+    println!(
+        "reward signals for {goal_id}: {} total (validator passed={} failed={}, scored={}, avg_score={})",
+        summary.total, summary.validator_passed, summary.validator_failed, summary.scored, avg
+    );
+    for s in &signals {
+        let score = s
+            .score
+            .map(|v| format!(" score={v:.2}"))
+            .unwrap_or_default();
+        let agent = s
+            .agent_id
+            .as_deref()
+            .map(|a| format!(" agent={a}"))
+            .unwrap_or_default();
+        let run = s
+            .run_id
+            .as_deref()
+            .map(|r| format!(" run={r}"))
+            .unwrap_or_default();
+        let note = s
+            .note
+            .as_deref()
+            .map(|n| format!(" note={n}"))
+            .unwrap_or_default();
+        println!(
+            "  {} [{}/{}]{}{}{}{}",
+            s.todo_id, s.source, s.signal, score, agent, run, note
+        );
+    }
+    Ok(())
+}
+
+/// `reward-memory record --goal G --todo-id T --score 0.0..1.0 [--source
+/// evidence] [--note N] [--agent-id A]` — manual evidence scoring into the
+/// reward ledger (phase-1 ingestion path for evidence that does not come
+/// from a validator receipt or a delivery resolution).
+fn reward_memory_record(store: &mut Store, args: &[String]) -> Result<()> {
+    use crate::capabilities::reward_memory as rm;
+    reject_unknown_flags(
+        args,
+        &[
+            "--agent-id",
+            "--goal",
+            "--note",
+            "--score",
+            "--source",
+            "--todo-id",
+        ],
+    )?;
+    let mut goal_id = None;
+    let mut todo_id = None;
+    let mut score_raw = None;
+    let mut source_raw = None;
+    let mut note = None;
+    let mut agent_id = None;
+    parse_pairs(args, |k, v| match k {
+        "--goal" => goal_id = Some(v),
+        "--todo-id" => todo_id = Some(v),
+        "--score" => score_raw = Some(v),
+        "--source" => source_raw = Some(v),
+        "--note" => note = Some(v),
+        "--agent-id" => agent_id = Some(v),
+        _ => {}
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
+    let score_raw = score_raw.ok_or_else(|| anyhow::anyhow!("--score required"))?;
+    let score: f64 = score_raw
+        .parse()
+        .map_err(|_| anyhow::anyhow!("--score must be a number in 0.0..=1.0"))?;
+    if !score.is_finite() || !(0.0..=1.0).contains(&score) {
+        bail!("--score must be a number in 0.0..=1.0");
+    }
+    let source = match source_raw.as_deref() {
+        None => rm::SOURCE_EVIDENCE,
+        Some(raw) => rm::normalize_source(raw).ok_or_else(|| {
+            anyhow::anyhow!(
+                "--source must be one of: {}",
+                rm::REWARD_SOURCE_CHOICES.join(", ")
+            )
+        })?,
+    };
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    if goal.todo(&todo_id).is_none() {
+        bail!("todo {todo_id} not found in goal {goal_id}");
+    }
+    let seq = rm::next_seq(&store.events(&goal_id)?, &todo_id);
+    store.append(Event::RewardSignalRecorded {
+        goal_id: goal_id.clone(),
+        todo_id: todo_id.clone(),
+        agent_id,
+        run_id: None,
+        source: source.to_string(),
+        signal: "scored".to_string(),
+        score: Some(score),
+        note,
+        seq,
+        ts: now_epoch(),
+    })?;
+    println!("reward signal recorded: {todo_id} [{source}/scored] score={score:.2} ✔");
+    Ok(())
 }
 
 // ── registry (G-26) ────────────────────────────────────────────────────────
@@ -5582,7 +5859,14 @@ fn event_touches_todo(event: &crate::store::Event, todo_id: &str) -> bool {
         | Event::TodoReleased { todo_id: id, .. }
         | Event::TodoExpired { todo_id: id, .. }
         | Event::WorkspaceLockAcquired { todo_id: id, .. }
+        | Event::RewardSignalRecorded { todo_id: id, .. }
+        | Event::DeliveryOutcomeRecorded { todo_id: id, .. }
         | Event::GateResolved { todo_id: id, .. } => id == todo_id,
+        Event::FollowthroughCreated {
+            source_todo_id,
+            followup_todo_id,
+            ..
+        } => source_todo_id == todo_id || followup_todo_id == todo_id,
         Event::RunRecorded { record, .. } => record.todo_id == todo_id,
         _ => false,
     }
@@ -5745,6 +6029,16 @@ fn describe_event(event: &crate::store::Event) -> String {
             return format!(
                 "followthrough_created source={source_todo_id} followup={followup_todo_id}"
             );
+        }
+        Event::RewardSignalRecorded {
+            todo_id,
+            source,
+            signal,
+            score,
+            ..
+        } => {
+            let score = score.map(|v| format!(" score={v:.2}")).unwrap_or_default();
+            return format!("reward_signal todo={todo_id} source={source} signal={signal}{score}");
         }
         Event::SupervisorProposed {
             decision_id,
@@ -7361,5 +7655,310 @@ mod workspace_guard_cli_tests {
         // todo-event filtering picks the lock event up for its todo.
         assert!(event_touches_todo(&event, "t1"));
         assert!(!event_touches_todo(&event, "t2"));
+    }
+}
+
+#[cfg(test)]
+mod reward_memory_cli_tests {
+    use super::*;
+    use crate::state::{task_validation_receipt, RecoveryKind, ValidationStatus};
+
+    fn tmp_store(tag: &str) -> Store {
+        let dir = std::env::temp_dir().join(format!(
+            "future-loop-p15-{tag}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        Store::open(dir.to_string_lossy().as_ref()).unwrap()
+    }
+
+    fn open_goal(store: &mut Store, goal_id: &str) {
+        let goal = Goal::new(goal_id, "objective", "/tmp");
+        store.register(&goal).unwrap();
+        let ts = goal.created_at;
+        store
+            .append(Event::GoalStarted {
+                goal_id: goal_id.into(),
+                ts,
+            })
+            .unwrap();
+        store
+            .append(Event::TodoAdded {
+                goal_id: goal_id.into(),
+                todo: Todo::advancement("t1", "shared work"),
+                ts,
+            })
+            .unwrap();
+    }
+
+    fn record_with_validation(validation: Option<crate::state::TaskValidation>) -> RunRecord {
+        RunRecord {
+            turn: 1,
+            todo_id: "t1".into(),
+            run_id: "r1".into(),
+            terminal_state: "completed".into(),
+            error: None,
+            tokens_in_delta: 0,
+            tokens_out_delta: 0,
+            cost_delta: 0.0,
+            tools: vec![],
+            evidence: "ev".into(),
+            recorded_at: 0,
+            spend_source: None,
+            validation,
+        }
+    }
+
+    fn signals(
+        store: &Store,
+        goal_id: &str,
+    ) -> Vec<crate::capabilities::reward_memory::RewardSignal> {
+        crate::capabilities::reward_memory::collect_signals(
+            &store.events(goal_id).unwrap(),
+            &crate::capabilities::reward_memory::RewardScope::default(),
+        )
+    }
+
+    #[test]
+    fn validator_ingestion_appends_signal_with_run_and_agent() {
+        let mut store = tmp_store("validator");
+        open_goal(&mut store, "g1");
+        // No receipt → nothing ingested.
+        let rec = record_with_validation(None);
+        assert!(!ingest_validator_reward(&mut store, "g1", "t1", Some("a1"), &rec).unwrap());
+        // not_required = no independent validation happened → nothing ingested.
+        let rec = record_with_validation(Some(task_validation_receipt(
+            ValidationStatus::NotRequired,
+            "shell",
+            "no validator",
+            None,
+            None,
+        )));
+        assert!(!ingest_validator_reward(&mut store, "g1", "t1", Some("a1"), &rec).unwrap());
+        assert!(signals(&store, "g1").is_empty());
+        // A passed receipt ingests score 1.0 with run/agent provenance.
+        let rec = record_with_validation(Some(task_validation_receipt(
+            ValidationStatus::Passed,
+            "shell",
+            "tests green",
+            None,
+            Some(0),
+        )));
+        assert!(ingest_validator_reward(&mut store, "g1", "t1", Some("a1"), &rec).unwrap());
+        let got = signals(&store, "g1");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].source, "validator");
+        assert_eq!(got[0].signal, "passed");
+        assert_eq!(got[0].score, Some(1.0));
+        assert_eq!(got[0].agent_id.as_deref(), Some("a1"));
+        assert_eq!(got[0].run_id.as_deref(), Some("r1"));
+        assert_eq!(got[0].note.as_deref(), Some("tests green"));
+        assert_eq!(got[0].seq, 1);
+        // A failed receipt ingests score 0.0 with the next sequence number.
+        let rec = record_with_validation(Some(task_validation_receipt(
+            ValidationStatus::Failed,
+            "shell",
+            "tests red",
+            Some(RecoveryKind::RepairRequired),
+            Some(1),
+        )));
+        assert!(ingest_validator_reward(&mut store, "g1", "t1", None, &rec).unwrap());
+        let got = signals(&store, "g1");
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[1].signal, "failed");
+        assert_eq!(got[1].score, Some(0.0));
+        assert_eq!(got[1].agent_id, None);
+        assert_eq!(got[1].seq, 2);
+    }
+
+    #[test]
+    fn delivery_ingestion_appends_only_for_resolutions() {
+        let mut store = tmp_store("delivery");
+        open_goal(&mut store, "g1");
+        // Pending state and garbage ingest nothing.
+        assert!(!ingest_delivery_reward(&mut store, "g1", "t1", "delivered", None).unwrap());
+        assert!(!ingest_delivery_reward(&mut store, "g1", "t1", "bogus", None).unwrap());
+        assert!(signals(&store, "g1").is_empty());
+        // Resolutions ingest their phase-1 scores.
+        assert!(ingest_delivery_reward(
+            &mut store,
+            "g1",
+            "t1",
+            "verified",
+            Some("confirmed".into())
+        )
+        .unwrap());
+        assert!(ingest_delivery_reward(&mut store, "g1", "t1", "rework", None).unwrap());
+        let got = signals(&store, "g1");
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].source, "delivery_outcome");
+        assert_eq!(got[0].signal, "verified");
+        assert_eq!(got[0].score, Some(1.0));
+        assert_eq!(got[0].note.as_deref(), Some("confirmed"));
+        assert_eq!(got[1].signal, "rework");
+        assert_eq!(got[1].score, Some(0.5));
+        assert_eq!(got[1].seq, 2);
+    }
+
+    #[test]
+    fn record_command_validates_inputs() {
+        let mut store = tmp_store("record-validate");
+        open_goal(&mut store, "g1");
+        let args = |extra: &[&str]| extra.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // Missing --goal / --todo-id / --score each fail fast.
+        assert!(
+            reward_memory_record(&mut store, &args(&["--todo-id", "t1", "--score", "0.5"]))
+                .is_err()
+        );
+        assert!(
+            reward_memory_record(&mut store, &args(&["--goal", "g1", "--score", "0.5"])).is_err()
+        );
+        assert!(
+            reward_memory_record(&mut store, &args(&["--goal", "g1", "--todo-id", "t1"])).is_err()
+        );
+        // Score must be a finite number in 0.0..=1.0.
+        for bad in ["abc", "1.5", "-0.1", "NaN"] {
+            assert!(
+                reward_memory_record(
+                    &mut store,
+                    &args(&["--goal", "g1", "--todo-id", "t1", "--score", bad])
+                )
+                .is_err(),
+                "score {bad} must be rejected"
+            );
+        }
+        // Unknown todo / goal fail closed.
+        assert!(reward_memory_record(
+            &mut store,
+            &args(&["--goal", "g1", "--todo-id", "nope", "--score", "0.5"])
+        )
+        .is_err());
+        assert!(reward_memory_record(
+            &mut store,
+            &args(&["--goal", "nope", "--todo-id", "t1", "--score", "0.5"])
+        )
+        .is_err());
+        // Unknown source is rejected; unknown flags are rejected.
+        assert!(reward_memory_record(
+            &mut store,
+            &args(&[
+                "--goal",
+                "g1",
+                "--todo-id",
+                "t1",
+                "--score",
+                "0.5",
+                "--source",
+                "nope"
+            ])
+        )
+        .is_err());
+        assert!(reward_memory_record(
+            &mut store,
+            &args(&[
+                "--goal",
+                "g1",
+                "--todo-id",
+                "t1",
+                "--score",
+                "0.5",
+                "--bogus"
+            ])
+        )
+        .is_err());
+        assert!(signals(&store, "g1").is_empty());
+    }
+
+    #[test]
+    fn record_command_appends_evidence_signal() {
+        let mut store = tmp_store("record-ok");
+        open_goal(&mut store, "g1");
+        let args = |extra: &[&str]| extra.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        reward_memory_record(
+            &mut store,
+            &args(&[
+                "--goal",
+                "g1",
+                "--todo-id",
+                "t1",
+                "--score",
+                "0.8",
+                "--note",
+                "solid evidence",
+                "--agent-id",
+                "a9",
+            ]),
+        )
+        .unwrap();
+        let got = signals(&store, "g1");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].source, "evidence");
+        assert_eq!(got[0].signal, "scored");
+        assert_eq!(got[0].score, Some(0.8));
+        assert_eq!(got[0].note.as_deref(), Some("solid evidence"));
+        assert_eq!(got[0].agent_id.as_deref(), Some("a9"));
+        // Boundary scores are legal.
+        reward_memory_record(
+            &mut store,
+            &args(&["--goal", "g1", "--todo-id", "t1", "--score", "0"]),
+        )
+        .unwrap();
+        reward_memory_record(
+            &mut store,
+            &args(&["--goal", "g1", "--todo-id", "t1", "--score", "1"]),
+        )
+        .unwrap();
+        assert_eq!(signals(&store, "g1").len(), 3);
+    }
+
+    #[test]
+    fn describe_event_and_todo_filter_cover_reward_signals() {
+        let event = Event::RewardSignalRecorded {
+            goal_id: "g1".into(),
+            todo_id: "t1".into(),
+            agent_id: Some("a1".into()),
+            run_id: None,
+            source: "validator".into(),
+            signal: "passed".into(),
+            score: Some(1.0),
+            note: None,
+            seq: 1,
+            ts: 1,
+        };
+        let text = describe_event(&event);
+        assert!(text.contains("reward_signal"), "got: {text}");
+        assert!(text.contains("validator"), "got: {text}");
+        assert!(text.contains("score=1.00"), "got: {text}");
+        assert!(event_touches_todo(&event, "t1"));
+        assert!(!event_touches_todo(&event, "t2"));
+    }
+
+    #[test]
+    fn todo_filter_covers_delivery_and_followthrough_events() {
+        let delivery = Event::DeliveryOutcomeRecorded {
+            goal_id: "g1".into(),
+            todo_id: "t1".into(),
+            outcome: "verified".into(),
+            note: None,
+            delivered_turn: 3,
+            seq: 1,
+            ts: 1,
+        };
+        assert!(event_touches_todo(&delivery, "t1"));
+        assert!(!event_touches_todo(&delivery, "t2"));
+        let follow = Event::FollowthroughCreated {
+            goal_id: "g1".into(),
+            source_todo_id: "t1".into(),
+            followup_todo_id: "t9".into(),
+            turns_overdue: 4,
+            ts: 1,
+        };
+        // Visible from BOTH the source delivery and the derived follow-up.
+        assert!(event_touches_todo(&follow, "t1"));
+        assert!(event_touches_todo(&follow, "t9"));
+        assert!(!event_touches_todo(&follow, "t2"));
     }
 }
