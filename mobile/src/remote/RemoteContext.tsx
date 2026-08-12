@@ -25,7 +25,7 @@ import {
   ensureFreshCredentials,
   serverRevoke,
 } from "./pairing";
-import { isDesktopOnline } from "./presence";
+import { INITIAL_PRESENCE_STATE, isDesktopOnline, type PresenceState } from "./presence";
 import { detectFinished } from "./sessionStatus";
 import { type RunCursor } from "./runCursor";
 import { SyncEngine, type ReconcileReason } from "./syncEngine";
@@ -243,8 +243,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const [fileTransferSupported, setFileTransferSupported] = useState(false);
   const [clock, setClock] = useState(Date.now());
   // Relative-heartbeat state (L7): the desktop-presence check judges staleness
-  // by clock-offset drift, so the running baseline survives recomputes.
-  const presenceStateRef = useRef({ deltaMs: 0, count: 0, online: false });
+  // by clock-offset drift, so the running baseline survives recomputes. Reset
+  // on every reconnect so a clock that jumped while offline re-baselines.
+  const presenceStateRef = useRef<PresenceState>(INITIAL_PRESENCE_STATE);
   // Per-session timelines: events for EVERY session are consumed (the desktop
   // observer mirrors all of them), so a background run keeps advancing and
   // switching to it renders its live state without a fresh history load. The
@@ -299,11 +300,11 @@ export function RemoteProvider({ children }: PropsWithChildren) {
    * when `sessionId` is omitted) on the sync engine's serial lane.
    */
   const reconcileSession = useCallback(
-    (sessionId: string | undefined, reason: ReconcileReason) => {
+    (sessionId: string | undefined, reason: ReconcileReason, runId?: string) => {
       const engine = syncEngineRef.current;
       if (!engine) return;
       if (sessionId) {
-        engine.reconcile(sessionId, reason);
+        engine.reconcile(sessionId, reason, runId);
       } else {
         engine.reconcileAll(reason);
       }
@@ -370,7 +371,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         // The host replaced this run's replica with a folded projection. Folded
         // events cannot be applied incrementally — a coalesced chunk's text
         // spans idx values already applied — so reconcile the run from -1.
-        reconcileSession(sid, "resend");
+        // Pass the runId explicitly: reconcile reads the live active run when
+        // none is given, and if that run has already rotated off, the folded
+        // run would be replayed against the wrong target and stay garbled.
+        reconcileSession(sid, "resend", event.runId ?? undefined);
         return;
       }
       if (event.type === "session_name_changed") {
@@ -627,6 +631,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
           reconcileSession(undefined, "reconnect");
           void refreshSessions();
           void refreshWorkspaces();
+          // Re-baseline presence drift — a clock that jumped while the link was
+          // down would otherwise read as a permanent offset.
+          presenceStateRef.current = INITIAL_PRESENCE_STATE;
         },
         onError: nextError => {
           setError(nextError.message);

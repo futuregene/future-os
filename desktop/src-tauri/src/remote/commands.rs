@@ -1108,6 +1108,23 @@ fn truncate_message_content(message: &mut Value, cap: usize) {
     if !oversized {
         return;
     }
+    // Replay events carry their payload in `data` (a JSON string), not
+    // `content` — a single oversized event (e.g. a multi-MB tool result kept
+    // verbatim in the journal) would otherwise page out whole and be silently
+    // dropped by the relay, failing every reconcile on that session (H2
+    // residual). Mirror the live path (`cap_event_data`): swap the oversized
+    // `data` for a `_truncated` placeholder the client reducer consumes.
+    if message.get("content").is_none() {
+        if let Some(Value::String(data)) = message.get_mut("data") {
+            if data.len() > cap {
+                *data = format!(
+                    r#"{{"_truncated":true,"bytes":{},"note":"event exceeded the relay payload limit and was truncated; full content is available via get_messages"}}"#,
+                    data.len()
+                );
+            }
+        }
+        return;
+    }
     let Some(content) = message.get_mut("content") else {
         return;
     };
@@ -1394,5 +1411,44 @@ mod tests {
         assert_eq!(page["projection"]["cursor"], 42);
         assert_eq!(page["events"].as_array().unwrap().len(), 1);
         assert_eq!(page["hasMore"], false);
+    }
+
+    #[test]
+    fn paginate_events_truncates_a_single_oversized_event_data() {
+        // A single journal event larger than the relay payload cap (a multi-MB
+        // tool result) must not page out whole — the "at least one item per
+        // page" rule would otherwise ship it intact and the relay silently
+        // drops it, failing every reconcile on that session (H2 residual).
+        let huge = "z".repeat(3 * 1024 * 1024);
+        let events =
+            vec![json!({ "type": "tool_result", "run_id": "run-1", "idx": 0, "data": huge })];
+        let data = json!({ "runId": "run-1", "events": events });
+        let page = paginate_events(data, 0, 100);
+        let arr = page["events"].as_array().unwrap();
+        assert_eq!(arr.len(), 1, "the single event still pages through");
+        let data_str = arr[0]["data"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(data_str).unwrap();
+        assert_eq!(
+            parsed["_truncated"], true,
+            "oversized event data must be swapped for the _truncated marker"
+        );
+        // The page must now fit well under the relay cap.
+        let size = serde_json::to_vec(&page).map(|b| b.len()).unwrap();
+        assert!(
+            size < 1024 * 1024,
+            "page too large after truncation: {size}"
+        );
+    }
+
+    #[test]
+    fn truncate_swaps_oversized_event_data_but_keeps_small() {
+        let mut big = json!({ "type": "tool_result", "run_id": "r", "idx": 0, "data": "x".repeat(MESSAGE_CONTENT_CAP_BYTES + 10) });
+        truncate_message_content(&mut big, MESSAGE_CONTENT_CAP_BYTES);
+        let parsed: Value = serde_json::from_str(big["data"].as_str().unwrap()).unwrap();
+        assert_eq!(parsed["_truncated"], true);
+
+        let mut small = json!({ "type": "text_chunk", "run_id": "r", "idx": 1, "data": "ok" });
+        truncate_message_content(&mut small, MESSAGE_CONTENT_CAP_BYTES);
+        assert_eq!(small["data"], "ok");
     }
 }

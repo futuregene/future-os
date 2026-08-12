@@ -62,6 +62,15 @@ export class RemoteClient {
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private retryAttempt = 0;
+  /**
+   * Consecutive refreshable-auth failures. A single auth failure rotates the
+   * JWT once; if the NEXT attempt also fails with auth (the token service is
+   * healthy but the handshake keeps failing), we must not loop refresh→open→
+   * handshake at one full RTT per cycle with no backoff. After the first
+   * refresh, subsequent auth failures fall through to the shared backoff
+   * timer; a successful open resets the counter.
+   */
+  private authRetryCount = 0;
   private generation = 0;
   private stopped = false;
   private state: ConnectionState = "unpaired";
@@ -192,6 +201,7 @@ export class RemoteClient {
       this.connection = connection;
       this.confirmedBridgeInstanceId = confirmation.bridgeInstanceId;
       this.retryAttempt = 0;
+      this.authRetryCount = 0;
       this.callbacks.onPresence(confirmation.presence);
       this.callbacks.onFeatures(confirmation.features ?? []);
       this.subscribeEvents(connection, generation);
@@ -218,8 +228,17 @@ export class RemoteClient {
       return;
     }
     if (kind === "auth") {
-      // Refreshable — rotate once, then backoff on repeat failure.
-      void this.refreshToken();
+      // Refreshable — rotate the JWT ONCE, then back off. A handshake that
+      // keeps failing after a successful refresh must not spin at one full
+      // RTT per cycle (no backoff): the second consecutive auth failure takes
+      // the shared retry path instead.
+      this.authRetryCount += 1;
+      if (this.authRetryCount === 1) {
+        void this.refreshToken();
+        return;
+      }
+      this.callbacks.onError(error instanceof Error ? error : new Error(String(error)));
+      this.scheduleRetry();
       return;
     }
     this.callbacks.onError(error instanceof Error ? error : new Error(String(error)));
@@ -397,21 +416,31 @@ export class RemoteClient {
    * The NATS status loop is the transport-truth feeder. A disconnect while
    * ready enters reconnecting WITHOUT arming our own timer — NATS reconnects
    * this same connection and emits a `reconnect` status, which we treat as the
-   * re-bound handshake. Only a genuinely-dead connect attempt (open_failed)
-   * arms the backoff timer.
+   * re-bound handshake. The internal budget is finite (maxReconnectAttempts ≈
+   * 10 → ~30s): once it is spent, this for-await loop simply ENDS — no status,
+   * no timer, and the app would sit in "reconnecting" forever on a dead
+   * connection. A normal loop exit therefore falls back to `open_failed`, which
+   * arms the single-owner backoff timer so the FSM keeps retrying.
    */
   private watchStatus(connection: NatsConnection, generation: number): void {
     void (async () => {
+      let exitedNaturally = true;
       try {
         for await (const status of connection.status()) {
-          if (this.stopped || generation !== this.generation) break;
+          if (this.stopped || generation !== this.generation) {
+            exitedNaturally = false;
+            break;
+          }
           if (status.type === "disconnect") {
             this.signal({ type: "transport_disconnect" });
           } else if (status.type === "reconnect") {
             if (this.connection !== connection) continue;
             try {
               const confirmation = await this.ensureHandshake(connection);
-              if (this.stopped || generation !== this.generation) break;
+              if (this.stopped || generation !== this.generation) {
+                exitedNaturally = false;
+                break;
+              }
               this.confirmedBridgeInstanceId = confirmation.bridgeInstanceId;
               this.callbacks.onPresence(confirmation.presence);
               this.callbacks.onFeatures(confirmation.features ?? []);
@@ -424,6 +453,16 @@ export class RemoteClient {
         }
       } catch (error) {
         if (!this.stopped) this.callbacks.onError(asError(error));
+        exitedNaturally = false;
+      }
+      // The status iterator ended (or threw) while this is still the live
+      // generation: NATS's internal reconnect budget was spent and the
+      // connection is permanently closed. Treat it as a dead attempt so the
+      // backoff timer (single owner) keeps the app recovering — without this,
+      // a >30s outage wedges the UI in "reconnecting" until a JWT refresh
+      // happens to fire.
+      if (exitedNaturally && !this.stopped && generation === this.generation) {
+        this.handleFailure(new Error("nats_connection_exhausted"));
       }
     })();
   }
