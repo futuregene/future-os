@@ -266,6 +266,7 @@ mod tests {
             source_section: None,
             source_line: None,
             privacy: None,
+            fencing_token: None,
             event: Event::RewardSignalRecorded {
                 goal_id: "g".into(),
                 todo_id: todo_id.into(),
@@ -405,6 +406,7 @@ mod tests {
             source_section: None,
             source_line: None,
             privacy: None,
+            fencing_token: None,
             event: Event::GoalStarted {
                 goal_id: "g".into(),
                 ts: 1,
