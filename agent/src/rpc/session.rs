@@ -5,6 +5,22 @@ use std::{collections::HashMap, sync::Arc};
 
 use super::{ApprovalGate, SseBroadcaster};
 
+/// Consume scheduler wake notifications, applying each finished run to the
+/// session, until the session is dropped (Weak upgrade fails) or the
+/// completion sender hangs up. A free function (not an inline spawn closure)
+/// so the dropped-session exit is directly testable.
+async fn scheduler_wake_worker(
+    session: std::sync::Weak<parking_lot::RwLock<ServerSession>>,
+    mut receiver: tokio::sync::mpsc::UnboundedReceiver<crate::runtime::RunLease>,
+) {
+    while let Some(finished) = receiver.recv().await {
+        let Some(session) = session.upgrade() else {
+            return;
+        };
+        session.write().on_scheduled_run_finished(&finished);
+    }
+}
+
 // Default permission level for fresh sessions: "all" (unrestricted) is the
 // deliberate product default — this is a local agent where the user expects
 // full filesystem access out of the box; stricter levels ("workspace") are
@@ -253,19 +269,10 @@ impl ServerSession {
             return;
         };
         let receiver_cell = session.read().scheduler_wake_rx.clone();
-        let Some(mut receiver) = receiver_cell.lock().take() else {
+        let Some(receiver) = receiver_cell.lock().take() else {
             return;
         };
-        let session = Arc::downgrade(session);
-        handle.spawn(async move {
-            while let Some(finished) = receiver.recv().await {
-                let Some(session) = session.upgrade() else {
-                    return;
-                };
-                let mut session = session.write();
-                session.on_scheduled_run_finished(&finished);
-            }
-        });
+        handle.spawn(scheduler_wake_worker(Arc::downgrade(session), receiver));
     }
 
     fn on_scheduled_run_finished(&mut self, finished: &crate::runtime::RunLease) {
@@ -789,14 +796,14 @@ impl ServerSession {
 
                 // Sync the agent loop's model + provider endpoint so the next
                 // prompt uses the saved model, not a stale leftover from the
-                // previous session.  set_model is best-effort here (loop may be
-                // busy); a failure just logs and defers — the user can call
-                // /model explicitly if needed.
-                if let Err(e) = self.set_model(&self.model.clone()) {
+                // previous session. set_model persists via update_session_info,
+                // which fails for legacy session files lacking a session_info
+                // entry — log and defer to an explicit /model.
+                let _ = self.set_model(&self.model.clone()).inspect_err(|e| {
                     tracing::warn!(
                         "[session] could not sync agent loop model during switch_session: {e}"
                     );
-                }
+                });
             }
 
             // Restore session name from label entries (via load_path) or session_info
@@ -1288,10 +1295,147 @@ mod tests {
         session.strip_image_content_from_messages();
         let msgs = session.messages.read();
         assert_eq!(msgs[0].content.len(), 1);
-        match &msgs[0].content[0] {
-            crate::types::ContentBlock::Text { text } => assert_eq!(text, "look"),
-            _ => panic!("expected Text"),
-        }
+        let is_expected_text = matches!(
+            &msgs[0].content[0],
+            crate::types::ContentBlock::Text { text } if text == "look"
+        );
+        assert!(is_expected_text, "expected a Text block holding 'look'");
+    }
+
+    // ─── coverage batch 16: scheduler/set_model/switch residuals ──────────
+
+    fn tracing_sink() -> tracing::subscriber::DefaultGuard {
+        tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .with_ansi(false)
+                .finish(),
+        )
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn scheduler_wake_worker_exits_when_session_is_dropped() {
+        let session = Arc::new(parking_lot::RwLock::new(make_test_session("wake-drop")));
+        let weak = Arc::downgrade(&session);
+        let (tx, rx) = mpsc::unbounded_channel();
+        tx.send(crate::runtime::RunLease {
+            run_id: "r1".to_string(),
+            epoch: 1,
+            run_sequence: None,
+        })
+        .unwrap();
+        drop(session);
+        // The queued wake is still received, but the Weak upgrade fails — the
+        // worker returns instead of touching a dead session.
+        scheduler_wake_worker(weak, rx).await;
+    }
+
+    #[test]
+    fn on_scheduled_run_finished_logs_release_failure_for_stale_run() {
+        let _sink = tracing_sink();
+        let mut session = make_test_session("stale-finish");
+        // Drive a replacement scheduler to active(run-a), then report a
+        // DIFFERENT run as finished: the release fails and is logged.
+        let queue = crate::runtime::InMemoryRunQueue::new("stale-finish", 0);
+        queue
+            .accept(
+                "req-a",
+                Some("run-a"),
+                crate::runtime::BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({"text": "x"}),
+            )
+            .unwrap();
+        queue.start_next(1).unwrap();
+        session.scheduler = Arc::new(queue);
+        session.on_scheduled_run_finished(&crate::runtime::RunLease {
+            run_id: "run-b".to_string(),
+            epoch: 1,
+            run_sequence: None,
+        });
+        // The foreign active run is left untouched.
+        assert!(session.scheduler.active().is_some());
+    }
+
+    #[test]
+    fn set_model_applies_thinking_budget_on_rebuild() {
+        let mut session = make_test_session("think-budget");
+        // A non-default thinking level pins a positive budget on the loop
+        // config; the provider rebuild then applies it.
+        session.set_thinking_level("low");
+        session.set_model("gpt-4o").unwrap();
+        assert_eq!(session.thinking_level, "low");
+    }
+
+    #[test]
+    fn set_thinking_level_logs_persist_failure() {
+        let _sink = tracing_sink();
+        let mut session = make_persistent_test_session("think-persist-fail");
+        // The session path exists (find succeeds) but is a DIRECTORY, so the
+        // metadata update fails and the error is logged, not propagated.
+        let dir_file = std::path::Path::new(&session.cwd)
+            .join("sessions")
+            .join("think-persist-fail.jsonl");
+        std::fs::create_dir_all(&dir_file).unwrap();
+        session.set_thinking_level("high");
+        assert_eq!(session.thinking_level, "high");
+        let _ = std::fs::remove_dir_all(&dir_file);
+    }
+
+    #[test]
+    fn switch_session_restores_name_from_session_info() {
+        let mut session = make_persistent_test_session("name-restore");
+        // Save a session whose name lives only in the session_info content.
+        let saved = crate::session::Session::snapshot(
+            "name-restore".to_string(),
+            session.cwd.clone(),
+            "mock".to_string(),
+            String::new(),
+            String::new(),
+            vec![
+                crate::session::SessionEntry::session_info(
+                    serde_json::json!({"session_name": "Restored Name"}),
+                    "mock".to_string(),
+                    String::new(),
+                ),
+                crate::session::SessionEntry::new_user("user", serde_json::json!("hi")),
+            ],
+        );
+        session.session_manager.save(&saved).unwrap();
+        session.switch_session("name-restore").unwrap();
+        assert_eq!(session.session_name, "Restored Name");
+    }
+
+    #[test]
+    fn switch_session_tolerates_legacy_file_without_session_info() {
+        let _sink = tracing_sink();
+        let mut session = make_persistent_test_session("legacy-no-info");
+        // Legacy file: carries a model (via a model_change entry) but NO
+        // session_info entry, so set_model's update_session_info persist
+        // fails — the switch logs the warning and still applies the model.
+        let mut model_change = crate::session::SessionEntry::new_user(
+            "system",
+            serde_json::json!({"model": "mock"}),
+        );
+        model_change.entry_type = crate::session::ENTRY_TYPE_MODEL_CHANGE.to_string();
+        let saved = crate::session::Session::snapshot(
+            "legacy-no-info".to_string(),
+            session.cwd.clone(),
+            "mock".to_string(),
+            String::new(),
+            String::new(),
+            vec![model_change],
+        );
+        session.session_manager.save(&saved).unwrap();
+        session.switch_session("legacy-no-info").unwrap();
+        assert_eq!(session.model, "mock");
+    }
+
+    #[test]
+    fn switch_session_unknown_id_is_a_noop_ok() {
+        let mut session = make_test_session("no-such-target");
+        // find() returns None: the hydrate block is skipped entirely.
+        session.switch_session("definitely-missing").unwrap();
+        assert_eq!(session.session_id, "no-such-target");
     }
 
     // ─── execute_shell ──────────────────────────────────────────────────────

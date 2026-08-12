@@ -2721,6 +2721,30 @@ mod tests {
                     ..Default::default()
                 },
                 ev_toolcall_start(0, "t1", "echo", "{\"a\":1}"),
+                // Repeat whose payload args are NOT a string: skipped over.
+                StreamEvent {
+                    event_type: "toolcall_start".to_string(),
+                    tool_id: "t1".to_string(),
+                    tool_name: "echo".to_string(),
+                    tc_index: 0,
+                    tool_call: Some(ToolCall {
+                        id: "t1".to_string(),
+                        call_type: "function".to_string(),
+                        function: crate::types::ToolCallFn {
+                            name: "echo".to_string(),
+                            arguments: serde_json::json!({"a": 1}),
+                        },
+                    }),
+                    ..Default::default()
+                },
+                // Repeat with no payload at all: also skipped over.
+                StreamEvent {
+                    event_type: "toolcall_start".to_string(),
+                    tool_id: "t1".to_string(),
+                    tool_name: "echo".to_string(),
+                    tc_index: 0,
+                    ..Default::default()
+                },
                 ev_toolcall_end(),
                 ev_stop(),
             ]),
