@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatMessageTimestamp } from "./date";
+import { formatDateTime, formatDuration, formatMessageTimestamp, formatTime } from "./date";
 
 // Fixed reference "now": 2026-07-09 12:00:00 local time.
 const NOW = new Date(2026, 6, 9, 12, 0, 0).getTime();
@@ -45,5 +45,38 @@ describe("formatMessageTimestamp", () => {
 
   it("returns empty string for an invalid date", () => {
     expect(formatMessageTimestamp("not-a-date", "en", { now: NOW })).toBe("");
+  });
+
+  it("falls back to a relative 'now' label when no justNowLabel is given", () => {
+    expect(formatMessageTimestamp(at(30_000), "en", { now: NOW })).toBe("now");
+  });
+});
+
+describe("formatTime", () => {
+  it("formats hour:minute per locale", () => {
+    expect(formatTime("2026-07-09T22:51:00", "en-US")).toMatch(/10:51/);
+  });
+});
+
+describe("formatDateTime", () => {
+  it("formats full date + time per locale", () => {
+    const label = formatDateTime("2026-07-09T22:51:00", "en-US");
+    expect(label).toMatch(/07\/09\/2026|2026/);
+    expect(label).toMatch(/10:51/);
+  });
+});
+
+describe("formatDuration", () => {
+  it("renders sub-second and sub-minute durations with subSecond resolution", () => {
+    expect(formatDuration(640, { subSecond: true })).toBe("640ms");
+    expect(formatDuration(1500, { subSecond: true })).toBe("1.5s");
+  });
+
+  it("renders integer seconds below a minute", () => {
+    expect(formatDuration(12_000)).toBe("12s");
+  });
+
+  it("renders minutes and seconds at and above a minute", () => {
+    expect(formatDuration(64_000)).toBe("1m 4s");
   });
 });
