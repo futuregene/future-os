@@ -45,6 +45,15 @@ function AppContent() {
       </View>
     );
   }
+  // A revoked device (M1) has no usable credentials even though they're still
+  // stored — route to the pairing screen so the user can re-pair.
+  if (remote.phase === "revoked") {
+    return (
+      <EnterTransition fromRight={false}>
+        <PairingScreen revoked />
+      </EnterTransition>
+    );
+  }
   if (!remote.credentials) return <PairingScreen />;
   const inChat = Boolean(remote.selectedSessionId || remote.draft);
   return (

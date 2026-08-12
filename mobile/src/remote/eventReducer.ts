@@ -214,14 +214,18 @@ export function stripRunItems(timeline: TimelineState, runId: string): TimelineS
 export interface ReplayEventWire {
   type?: string;
   data?: string;
+  /** snake_case (proto/RPC JSON) — the desktop RPC serializes camelCase, so
+   *  accept both spellings. */
   run_id?: string;
+  runId?: string;
   idx?: number;
   [key: string]: unknown;
 }
 
 /**
  * Normalize `get_events_since` replay events (which the RPC serializes with
- * snake_case `run_id`) into the mobile `StreamEvent` shape (`runId`). The NATS
+ * camelCase `runId`; older paths used snake_case `run_id`) into the mobile
+ * `StreamEvent` shape (`runId`). The NATS
  * live mirror uses camelCase, so events arriving over the socket need no
  * normalization — only this backfill path does.
  */
@@ -231,7 +235,7 @@ export function normalizeReplayEvents(events: ReplayEventWire[] | undefined | nu
     .map(event => ({
       type: typeof event.type === "string" ? event.type : "",
       data: typeof event.data === "string" ? event.data : "",
-      runId: typeof event.run_id === "string" ? event.run_id : "",
+      runId: typeof event.runId === "string" ? event.runId : typeof event.run_id === "string" ? event.run_id : "",
       idx: typeof event.idx === "number" ? event.idx : undefined,
     }));
 }
@@ -246,6 +250,41 @@ function eventData(event: StreamEvent): Record<string, unknown> {
 
 function textValue(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+/**
+ * The desktop replaces an over-limit event's data with
+ * `{"_truncated":true,"bytes":N,"note":"..."}` before relaying it. That marker
+ * carries no `type`-specific fields, so the reducer must consume it explicitly —
+ * otherwise text_chunk silently drops it and error renders the raw JSON.
+ */
+function isTruncationMarker(data: Record<string, unknown>): boolean {
+  return data._truncated === true;
+}
+
+/**
+ * Surface a truncated-run notice instead of dropping the marker. The i18n'd
+ * friendly copy is keyed off the sentinel `text: "truncated"` (see
+ * TimelineCard). The run keeps streaming — later chunks merge into it.
+ */
+export function upsertTruncationNotice(
+  items: TimelineItem[],
+  runId: string | undefined,
+): TimelineItem[] {
+  const id = `notice:truncated:${runId ?? "none"}`;
+  const marker = (item: TimelineItem): item is Extract<TimelineItem, { kind: "notice" }> =>
+    item.kind === "notice" && item.text === "truncated";
+  if (items.some(marker)) return items;
+  return [
+    ...items,
+    {
+      id,
+      kind: "notice",
+      tone: "warning",
+      text: "truncated",
+      runId,
+    },
+  ];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -413,6 +452,10 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
     case "text_chunk": {
       const id = `assistant:${runId ?? event.idx ?? items.length}`;
       const chunk = textValue(data.text);
+      if (!chunk && isTruncationMarker(data)) {
+        items = upsertTruncationNotice(items, runId);
+        break;
+      }
       items = upsertItem(
         items,
         id,
@@ -536,7 +579,7 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
           id: `error:${runId ?? "none"}:${event.idx ?? items.length}`,
           kind: "notice",
           tone: "danger",
-          text: textValue(data.error) || event.data,
+          text: isTruncationMarker(data) ? "truncated" : textValue(data.error) || event.data,
           runId,
         },
       ];

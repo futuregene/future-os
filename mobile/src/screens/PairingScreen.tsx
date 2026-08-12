@@ -32,7 +32,7 @@ function pairingErrorMessage(error: unknown, t: TFunction): string {
   return t("pairing.failedWithReason", { reason: message });
 }
 
-export function PairingScreen() {
+export function PairingScreen({ revoked = false }: { revoked?: boolean }) {
   const { t } = useTranslation();
   const remote = useRemote();
   const [permission, requestPermission] = useCameraPermissions();
@@ -131,6 +131,12 @@ export function PairingScreen() {
             <Text style={styles.title}>{t("pairing.title")}</Text>
             <Text style={styles.description}>{t("pairing.description")}</Text>
           </View>
+
+          {revoked && (
+            <View accessibilityRole="alert" style={styles.revokedBanner}>
+              <Text style={styles.revokedText}>{t("pairing.revoked")}</Text>
+            </View>
+          )}
 
           <View style={styles.scanner}>
             {!permission ? (
@@ -313,6 +319,16 @@ const styles = StyleSheet.create({
     elevation: 5,
   },
   toastText: { color: colors.surface, fontSize: 14, fontWeight: "600", textAlign: "center" },
+  revokedBanner: {
+    width: "100%",
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    borderRadius: radius.md,
+    backgroundColor: colors.dangerSoft,
+    borderWidth: 1,
+    borderColor: colors.dangerLine,
+  },
+  revokedText: { color: colors.danger, fontSize: 14, fontWeight: "600", textAlign: "center" },
   overlay: {
     flex: 1,
     alignItems: "center",

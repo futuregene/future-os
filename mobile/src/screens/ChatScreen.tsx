@@ -264,9 +264,12 @@ export function ChatScreen() {
         setTransferProgress(total > 0 ? done / total : null),
       );
       setAttachments([]);
-    } catch {
+    } catch (error) {
+      // M9: sendMessage now throws for busy/streaming/disconnected instead of
+      // swallowing the input — always restore the draft so nothing vanishes.
       setMessage(value);
-      setAttachmentError(t("chat.sendFailed"));
+      const key = error instanceof Error ? error.message : "";
+      setAttachmentError(key === "prompt_too_large" ? t("chat.promptTooLarge") : t("chat.sendFailed"));
     } finally {
       setTransferProgress(null);
     }
