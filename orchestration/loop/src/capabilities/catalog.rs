@@ -353,7 +353,10 @@ fn builtin_records() -> Vec<(
             CAPABILITY_STATUS_ACTIVE_PREVIEW,
             "Reward/penalty memory with hashed preference references.",
             "Build a compact receipt with hashed preference references for evidence/state writeback.",
-            vec![cmd("reward-memory", "Build a compact reward-memory receipt with hashed preference references.")],
+            // P1-5: the capability graduated from the G-24 propose hook to a
+            // real command surface (`reward-memory query|record`); the
+            // propose pipeline stays reachable via `capability propose`.
+            vec![],
             vec![packet("reward_memory_v0", "reward_memory")],
         ),
         (
