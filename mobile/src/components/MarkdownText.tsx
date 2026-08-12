@@ -190,7 +190,7 @@ function InlineMarkdown({ text }: { text: string }) {
         if (/^`[^`]+`$/.test(part)) {
           return (
             <Text key={index} style={styles.inlineCode}>
-              {part.slice(1, -1)}
+              {"\u00A0" + part.slice(1, -1) + "\u00A0"}
             </Text>
           );
         }
@@ -219,11 +219,12 @@ function InlineMarkdown({ text }: { text: string }) {
   );
 }
 
-function renderBlock(block: Block, index: number) {
-  if (block.kind === "rule") return <View key={index} style={styles.rule} />;
+function renderBlock(block: Block, index: number, isLast = false) {
+  if (block.kind === "rule")
+    return <View key={index} style={[styles.rule, isLast && styles.noBottom]} />;
   if (block.kind === "code") {
     return (
-      <Text key={index} selectable style={styles.code}>
+      <Text key={index} selectable style={[styles.code, isLast && styles.noBottom]}>
         {block.text}
       </Text>
     );
@@ -233,7 +234,11 @@ function renderBlock(block: Block, index: number) {
       <Text
         key={index}
         selectable
-        style={[styles.heading, block.level <= 2 ? styles.headingLarge : null]}
+        style={[
+          styles.heading,
+          block.level <= 2 ? styles.headingLarge : null,
+          isLast && styles.noBottom,
+        ]}
       >
         <InlineMarkdown text={block.text} />
       </Text>
@@ -241,14 +246,16 @@ function renderBlock(block: Block, index: number) {
   }
   if (block.kind === "quote") {
     return (
-      <View key={index} style={styles.quote}>
-        {blocksFromMarkdown(block.text).map((child, childIndex) => renderBlock(child, childIndex))}
+      <View key={index} style={[styles.quote, isLast && styles.noBottom]}>
+        {blocksFromMarkdown(block.text).map((child, childIndex, all) =>
+          renderBlock(child, childIndex, childIndex === all.length - 1),
+        )}
       </View>
     );
   }
   if (block.kind === "table") {
     return (
-      <View key={index} style={styles.table}>
+      <View key={index} style={[styles.table, isLast && styles.noBottom]}>
         <View style={[styles.tableRow, styles.tableHead]}>
           {block.headers.map((header, columnIndex) => (
             <Text
@@ -293,7 +300,7 @@ function renderBlock(block: Block, index: number) {
   }
   if (block.kind === "list") {
     return (
-      <View key={index} style={styles.list}>
+      <View key={index} style={[styles.list, isLast && styles.noBottom]}>
         {block.items.map((item, itemIndex) => (
           <View key={itemIndex} style={styles.listRow}>
             {item.checked === null ? (
@@ -312,17 +319,27 @@ function renderBlock(block: Block, index: number) {
     );
   }
   return (
-    <Text key={index} selectable style={styles.paragraph}>
+    <Text key={index} selectable style={[styles.paragraph, isLast && styles.noBottom]}>
       <InlineMarkdown text={block.text} />
     </Text>
   );
 }
 
 export function MarkdownText({ text }: MarkdownTextProps) {
-  return <View>{blocksFromMarkdown(text).map((block, index) => renderBlock(block, index))}</View>;
+  return (
+    <View>
+      {blocksFromMarkdown(text).map((block, index, all) =>
+        renderBlock(block, index, index === all.length - 1),
+      )}
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({
+  // The last block of a message drops its bottom margin — the surrounding
+  // bubble/segment layout owns outer spacing (otherwise every bubble ends
+  // with a stray gap after its final row).
+  noBottom: { marginBottom: 0 },
   paragraph: { color: colors.ink, fontSize: 17, lineHeight: 26, marginBottom: spacing.md },
   heading: {
     color: colors.inkStrong,
@@ -336,15 +353,17 @@ const styles = StyleSheet.create({
   italic: { fontStyle: "italic" },
   strike: { textDecorationLine: "line-through" },
   inlineCode: {
-    // Parity with the desktop inline <code>: rounded, subtle bg, ~0.92em, text-ink.
+    // Parity with the desktop inline <code>: rounded, subtle bg, ~0.92em.
+    // iOS renders nested <Text> as an attributed string and ignores its
+    // padding/borderRadius, so horizontal padding is an nbsp inside the run
+    // (InlineMarkdown) and a lineHeight shorter than the paragraph's leaves
+    // breathing room between wrapped chip lines.
     color: colors.ink,
     backgroundColor: colors.surfaceSubtle,
     fontFamily: "monospace",
     fontSize: 13,
-    paddingHorizontal: 4,
-    paddingVertical: 1,
+    lineHeight: 20,
     borderRadius: radius.sm,
-    overflow: "hidden",
   },
   link: { color: colors.accent, textDecorationLine: "underline" },
   rule: { height: 1, marginVertical: spacing.md, backgroundColor: colors.line },

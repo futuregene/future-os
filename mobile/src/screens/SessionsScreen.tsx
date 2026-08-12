@@ -785,7 +785,7 @@ const styles = StyleSheet.create({
   },
   menuTitle: {
     color: colors.inkMuted,
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: "600",
     paddingHorizontal: spacing.md,
     paddingBottom: spacing.xs,
