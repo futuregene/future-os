@@ -343,6 +343,96 @@ mod tests {
     }
 
     #[test]
+    fn is_cjk_covers_every_listed_range() {
+        for c in [
+            '\u{4E00}',  // CJK Unified Ideographs
+            '\u{3400}',  // Extension A
+            '\u{3040}',  // Hiragana
+            '\u{30FF}',  // Katakana
+            '\u{AC00}',  // Hangul Syllables
+            '\u{F900}',  // CJK Compatibility Ideographs
+            '\u{20000}', // Extension B
+        ] {
+            assert!(is_cjk(c), "{c:?} must classify as CJK");
+        }
+        assert!(!is_cjk('a'));
+        assert!(!is_cjk('\u{0400}')); // Cyrillic is not CJK
+    }
+
+    #[test]
+    fn adjust_cut_returns_cut_when_no_tool_call_owner_exists() {
+        // cut points at a tool message, but no earlier assistant message
+        // carries tool_calls → return the original cut unchanged.
+        let messages = vec![
+            text_msg("user", "hi"),
+            text_msg("assistant", "thinking"),
+            text_msg("tool", "result"),
+        ];
+        assert_eq!(adjust_cut_for_tool_context(&messages, 2), 2);
+        // And the no-op arms: cut past the end / cut not on a tool message.
+        assert_eq!(adjust_cut_for_tool_context(&messages, 3), 3);
+        assert_eq!(adjust_cut_for_tool_context(&messages, 0), 0);
+    }
+
+    #[test]
+    fn extract_file_operations_skips_unusable_tool_calls() {
+        let tool_call = |name: &str, args: serde_json::Value| crate::types::ToolCall {
+            id: "c".to_string(),
+            call_type: "function".to_string(),
+            function: crate::types::ToolCallFn {
+                name: name.to_string(),
+                arguments: args,
+            },
+        };
+        let msg = |calls: Vec<crate::types::ToolCall>| Message {
+            role: "assistant".to_string(),
+            tool_calls: Some(calls),
+            ..Default::default()
+        };
+        let messages = vec![
+            // Unparseable JSON string args → no path.
+            msg(vec![tool_call("read", serde_json::Value::String("not json".into()))]),
+            // Non-string args → no path.
+            msg(vec![tool_call("read", serde_json::json!({"path": "x.rs"}))]),
+            // Parseable args without a path key → skipped via continue.
+            msg(vec![tool_call(
+                "read",
+                serde_json::Value::String("{\"cmd\": \"ls\"}".into())
+            )]),
+            // A tool that is neither a read nor a write → ignored.
+            msg(vec![tool_call(
+                "shell",
+                serde_json::Value::String("{\"path\": \"ignored.rs\"}".into())
+            )]),
+            // One real read + one real write so the sets are non-empty.
+            msg(vec![
+                tool_call("read", serde_json::Value::String("{\"path\": \"a.rs\"}".into())),
+                tool_call("edit", serde_json::Value::String("{\"file_path\": \"b.rs\"}".into())),
+            ]),
+        ];
+        let (reads, writes) = extract_file_operations(&messages);
+        assert_eq!(reads, vec!["a.rs".to_string()]);
+        assert_eq!(writes, vec!["b.rs".to_string()]);
+    }
+
+    #[test]
+    fn compact_defaults_context_window_when_unset() {
+        // context_window = 0 → the 200k default kicks in; with these tiny
+        // numbers should_compact stays false, so this only exercises the
+        // window-defaulting arm.
+        let messages = vec![text_msg("user", "hello")];
+        let opts = CompactOptions {
+            reserve_tokens: 50,
+            keep_recent_tokens: 50,
+            context_window: 0,
+            tokens_before: 100,
+        };
+        let (out, result) = compact(messages.clone(), &opts);
+        assert!(result.is_none());
+        assert_eq!(out.len(), messages.len());
+    }
+
+    #[test]
     fn mixed_content_and_tool_args_are_classified_per_char() {
         // Content-parts array form.
         let msg = Message {

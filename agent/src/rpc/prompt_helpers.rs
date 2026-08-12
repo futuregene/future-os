@@ -293,6 +293,52 @@ mod tests {
     }
 
     #[test]
+    fn canonical_tool_start_keeps_preset_id_and_name() {
+        // tool_id/tool_name already populated → the tool_call fallback is
+        // skipped for both fields.
+        let tool = crate::types::ToolCall {
+            id: "call-9".to_string(),
+            call_type: "function".to_string(),
+            function: crate::types::ToolCallFn {
+                name: "write".to_string(),
+                arguments: serde_json::json!({}),
+            },
+        };
+        let start = canonical_stream_event(StreamEvent {
+            event_type: "toolcall_start".to_string(),
+            tool_id: "preset-id".to_string(),
+            tool_name: "preset-name".to_string(),
+            tool_call: Some(tool),
+            ..Default::default()
+        })
+        .expect("canonical tool start");
+        assert_eq!(start.tool_id, "preset-id");
+        assert_eq!(start.tool_name, "preset-name");
+    }
+
+    #[test]
+    fn canonical_stop_with_usage_becomes_usage_event() {
+        let event = canonical_stream_event(StreamEvent {
+            event_type: "stop".to_string(),
+            usage: Some(crate::types::Usage {
+                prompt_tokens: 1,
+                completion_tokens: 2,
+                total_tokens: 3,
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .expect("stop with usage is surfaced as usage");
+        assert_eq!(event.event_type, "usage");
+        // A stop WITHOUT usage stays internal.
+        assert!(canonical_stream_event(StreamEvent {
+            event_type: "stop".to_string(),
+            ..Default::default()
+        })
+        .is_none());
+    }
+
+    #[test]
     fn semantic_payload_is_merged_into_sse_data() {
         let event = StreamEvent {
             event_type: "compaction_end".to_string(),
