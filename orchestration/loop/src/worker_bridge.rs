@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::contract::TurnMode;
 use crate::decision::decide_for;
 use crate::executor::writeback;
-use crate::state::{now_epoch, RunRecord, TodoStatus};
+use crate::state::{now_epoch, RunRecord};
 use crate::store::{Event, Store};
 
 /// One line the worker writes back after executing a bounded turn.
@@ -63,6 +63,14 @@ pub async fn run_bridge(store: &mut Store, opts: &BridgeOptions) -> Result<()> {
             std::time::SystemTime::now(),
             opts.agent_id.as_deref(),
         );
+        // P1-1②③: persist the compact decision projection + the heartbeat
+        // receipt for this turn (projection-only; replay ignores both).
+        crate::quota::decision_summary::record_turn_decision(
+            store,
+            &packet,
+            opts.agent_id.as_deref(),
+            turn,
+        )?;
         let mode = packet.interaction_contract.mode;
         if mode == TurnMode::Terminal {
             println!("BRIDGE terminal: validated closure — stopping");
@@ -171,13 +179,4 @@ pub async fn run_bridge(store: &mut Store, opts: &BridgeOptions) -> Result<()> {
         let _ = turn;
     }
     bail!("max-turns reached");
-}
-
-#[allow(dead_code)]
-fn _status_label(t: &crate::state::Todo) -> &'static str {
-    if t.status == TodoStatus::Done {
-        "done"
-    } else {
-        "open"
-    }
 }

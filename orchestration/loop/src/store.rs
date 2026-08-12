@@ -60,6 +60,15 @@ pub struct StoredEvent {
     /// `local_private` / `private_pointer`).
     #[serde(default)]
     pub privacy: Option<String>,
+    /// Reserved fencing token (schema reservation only — NOT enforced): a
+    /// monotonically increasing per-ledger token a future fencing authority
+    /// will issue to writers so a stale/zombie writer can be fenced off in a
+    /// multi-replica deployment. Kernel appends never populate it and no
+    /// validation rejects missing/regressing tokens yet; old ledger lines
+    /// read as `None`, and `None` is omitted from serialization so the
+    /// on-disk line shape is byte-identical to pre-reservation ledgers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fencing_token: Option<u64>,
     #[serde(flatten)]
     pub event: Event,
 }
@@ -116,6 +125,10 @@ fn event_part(value: &serde_json::Value) -> serde_json::Value {
                     | "source_section"
                     | "source_line"
                     | "privacy"
+                    // Fencing tokens are writer metadata, not event content:
+                    // a re-append that differs only in the token stays an
+                    // idempotent no-op (same envelope rule as `producer`).
+                    | "fencing_token"
             ) {
                 map.insert(key.clone(), value.clone());
             }
@@ -208,9 +221,14 @@ pub enum Event {
         ts: u64,
     },
     /// Register an agent peer for the goal (LoopX: coordination.registered_agents).
+    /// `workspaces` is the P0-1 workspace-guard declaration (normalized
+    /// absolute paths the agent writes into; empty = undeclared/fail-open).
+    /// Old events without the field deserialize as empty.
     AgentRegistered {
         goal_id: String,
         agent_id: String,
+        #[serde(default)]
+        workspaces: Vec<String>,
         ts: u64,
     },
     /// Onboard an agent with declared capabilities (LoopX: agent_profiles).
@@ -218,6 +236,21 @@ pub enum Event {
         goal_id: String,
         agent_id: String,
         capabilities: Vec<String>,
+        #[serde(default)]
+        workspaces: Vec<String>,
+        ts: u64,
+    },
+    /// P0-1: advisory write-lock record — an agent with declared workspaces
+    /// claimed a todo and now occupies its workspace set. `forced` marks a
+    /// claim that overrode a live workspace conflict via `--force`.
+    /// Projection-only: occupancy is derived from profiles + live leases;
+    /// this event is the audit trail (agent list / history / todo-event).
+    WorkspaceLockAcquired {
+        goal_id: String,
+        agent_id: String,
+        todo_id: String,
+        paths: Vec<String>,
+        forced: bool,
         ts: u64,
     },
     /// Replan acknowledgment with frontier-delta kinds (vision patch /
@@ -318,6 +351,134 @@ pub enum Event {
         todo_id: String,
         ts: u64,
     },
+    /// P0-2①: post-delivery outcome signal — `delivered` (pending
+    /// verification) → `verified` / `failed` / `rework` (the three terminal
+    /// resolutions). Recorded automatically when an advancement todo
+    /// completes, and manually via `delivery record`. `delivered_turn` is the
+    /// run-turn counter at delivery time (0 = recorded without run context).
+    DeliveryOutcomeRecorded {
+        goal_id: String,
+        todo_id: String,
+        outcome: String,
+        note: Option<String>,
+        delivered_turn: u32,
+        /// Per-todo outcome sequence number (1-based, from the read model at
+        /// append time). Distinguishes cycles: a re-delivery after
+        /// failed/rework would otherwise content-collide with the earlier
+        /// `delivered` event (same todo/turn/note within one second) and be
+        /// swallowed by the G-3 idempotent-append dedupe.
+        #[serde(default)]
+        seq: u32,
+        ts: u64,
+    },
+    /// P0-2②: outcome_followthrough fired — a delivered-but-unverified work
+    /// item aged past the turn threshold, so a follow-up todo was
+    /// auto-created (the followup itself is the TodoAdded event; this event
+    /// stamps the source delivery so the follow-through fires exactly once).
+    FollowthroughCreated {
+        goal_id: String,
+        source_todo_id: String,
+        followup_todo_id: String,
+        turns_overdue: u32,
+        ts: u64,
+    },
+    /// P1-5: reward_memory ingestion (phase 1) — one scoped reward signal
+    /// in the ledger (LoopX `capabilities/reward_memory/ingestion.py`,
+    /// compact set). Sources: `validator` (auto-recorded by the run path
+    /// when a turn carries an independent task-validation receipt),
+    /// `delivery_outcome` (auto-recorded when a P0-2 delivery is resolved
+    /// verified/failed/rework), `evidence` (manual score via
+    /// `reward-memory record`). Projection-only: goal state is unchanged;
+    /// the scoped-feedback query (`reward-memory query`) reads the ledger.
+    RewardSignalRecorded {
+        goal_id: String,
+        todo_id: String,
+        #[serde(default)]
+        agent_id: Option<String>,
+        #[serde(default)]
+        run_id: Option<String>,
+        source: String,
+        signal: String,
+        #[serde(default)]
+        score: Option<f64>,
+        #[serde(default)]
+        note: Option<String>,
+        /// Per-todo ingestion sequence (1-based, from the ledger at append
+        /// time). Distinguishes otherwise-identical signals appended within
+        /// the same second (G-3 content-id dedupe anchor, mirroring
+        /// DeliveryOutcomeRecorded.seq). Old events without the field
+        /// deserialize as 0.
+        #[serde(default)]
+        seq: u32,
+        ts: u64,
+    },
+    /// P1-1②: decision_summary projection — one compact quota decision
+    /// persisted per executed turn (LoopX `decision_summary.py` /
+    /// `compact_quota_decision`). Projection-only: replay ignores it; the
+    /// read model (`quota::decision_summary`) serves status/TUI/desktop and
+    /// `quota decisions` without re-running the kernel.
+    DecisionSummaryRecorded {
+        goal_id: String,
+        summary: crate::quota::decision_summary::DecisionSummary,
+        ts: u64,
+    },
+    /// P1-1③: heartbeat receipt — the per-turn heartbeat packet was issued
+    /// to a host executor with this decision (LoopX `heartbeat_receipt.py`).
+    /// `turn_instance_id` anchors the receipt the way LoopX keys on
+    /// (goal, agent, run/turn instance); `todo_id` is the selected todo when
+    /// the turn had one. Projection-only (audit trail).
+    HeartbeatReceiptRecorded {
+        goal_id: String,
+        #[serde(default)]
+        agent_id: Option<String>,
+        turn_instance_id: String,
+        #[serde(default)]
+        todo_id: Option<String>,
+        decision: String,
+        #[serde(default)]
+        reason_code: String,
+        ts: u64,
+    },
+    /// P1-1③: scheduler ack — the host scheduler acknowledged the cadence
+    /// hint it applied (LoopX `scheduler_ack.py`). Recorded via
+    /// `scheduler ack`; `source` identifies the acking surface
+    /// (`scheduler_cli`, `codex_app`, …). Projection-only (audit trail).
+    SchedulerAcked {
+        goal_id: String,
+        agent_id: String,
+        action: String,
+        #[serde(default)]
+        cadence_class: String,
+        #[serde(default)]
+        rrule: Option<String>,
+        source: String,
+        ts: u64,
+    },
+    /// P1-3①: scheduler heartbeat — every `scheduler tick` lands one (LoopX
+    /// automation_liveness heartbeat). `rrule` is the cadence in effect
+    /// after the tick. Folded into `goal.scheduler_heartbeats`; the
+    /// liveness check compares now against the latest heartbeat per
+    /// (goal, agent).
+    SchedulerTicked {
+        goal_id: String,
+        agent_id: String,
+        action: String,
+        #[serde(default)]
+        rrule: Option<String>,
+        ts: u64,
+    },
+    /// P1-3①: automation liveness breach alert — the tick heartbeat went
+    /// silent past the threshold. Folded into `goal.liveness_alerts`; the
+    /// attention projection escalates the goal to the operator until a
+    /// fresh heartbeat recovers the automation.
+    AutomationLivenessAlert {
+        goal_id: String,
+        agent_id: String,
+        elapsed_secs: u64,
+        threshold_secs: u64,
+        consecutive: u32,
+        ts: u64,
+    },
     /// G-16: a supervisor proposed a decision for a target agent (LoopX
     /// SUPERVISOR_PROPOSED). Projection-only — supervisor state is read from
     /// the event log, not folded into goal state.
@@ -344,6 +505,36 @@ pub enum Event {
         rollback_ref: Option<String>,
         ts: u64,
     },
+    /// P1-2③: projection self-healing audit — a read model drifted past
+    /// the repair threshold and was rebuilt from its source of truth
+    /// (`projection` = `run_index`: rescan of the run files on disk,
+    /// non-destructive with a backup). Recorded by both the automatic
+    /// run-path hook and `store verify --repair`. Projection-only: replay
+    /// ignores it; the drift/rebuild counters make the repair auditable
+    /// from the ledger (history / todo-event / status).
+    ProjectionRepaired {
+        goal_id: String,
+        projection: String,
+        drift_count: usize,
+        missing_rows: usize,
+        stale_rows: usize,
+        duplicate_rows: usize,
+        rows_written: usize,
+        backup_path: String,
+        ts: u64,
+    },
+    /// P1-4: decision_context outcome feedback — one settled outcome
+    /// receipt against an anchored decision (LoopX
+    /// `capabilities/decision_context/outcome_feedback.py`). Recorded via
+    /// `decision-context feedback`; the receipt's `seq` is the G-3 dedupe
+    /// anchor for same-second repeat settles. Projection-only: replay
+    /// ignores it; the read model (`decision-context outcomes`) and the
+    /// reward-memory `decision_outcome` source read the ledger.
+    DecisionOutcomeRecorded {
+        goal_id: String,
+        receipt: crate::capabilities::decision_context::packets::DecisionOutcomeReceipt,
+        ts: u64,
+    },
 }
 
 impl Event {
@@ -361,6 +552,7 @@ impl Event {
             | Event::TodoClaimed { goal_id, .. }
             | Event::AgentRegistered { goal_id, .. }
             | Event::AgentOnboarded { goal_id, .. }
+            | Event::WorkspaceLockAcquired { goal_id, .. }
             | Event::ReplanAcked { goal_id, .. }
             | Event::ProfileSet { goal_id, .. }
             | Event::AuthoritySet { goal_id, .. }
@@ -372,10 +564,31 @@ impl Event {
             | Event::TodoRenewed { goal_id, .. }
             | Event::TodoReleased { goal_id, .. }
             | Event::TodoExpired { goal_id, .. }
+            | Event::DeliveryOutcomeRecorded { goal_id, .. }
+            | Event::FollowthroughCreated { goal_id, .. }
+            | Event::RewardSignalRecorded { goal_id, .. }
+            | Event::DecisionSummaryRecorded { goal_id, .. }
+            | Event::HeartbeatReceiptRecorded { goal_id, .. }
+            | Event::SchedulerAcked { goal_id, .. }
+            | Event::SchedulerTicked { goal_id, .. }
+            | Event::AutomationLivenessAlert { goal_id, .. }
             | Event::SupervisorProposed { goal_id, .. }
-            | Event::SupervisorReceiptRecorded { goal_id, .. } => goal_id,
+            | Event::SupervisorReceiptRecorded { goal_id, .. }
+            | Event::ProjectionRepaired { goal_id, .. }
+            | Event::DecisionOutcomeRecorded { goal_id, .. } => goal_id,
         }
     }
+}
+
+/// Event timestamp (every variant carries `ts`). Used by the P1-2②
+/// decision-freshness stamp; 0 when the field is absent (defensive — the
+/// schema guarantees it). Derived via serde so new variants never strand
+/// this accessor.
+pub fn event_ts(event: &Event) -> u64 {
+    serde_json::to_value(event)
+        .ok()
+        .and_then(|v| v.get("ts").and_then(|t| t.as_u64()))
+        .unwrap_or(0)
 }
 
 // ── Store ──────────────────────────────────────────────────────────────────
@@ -484,6 +697,7 @@ impl Store {
             source_section,
             source_line,
             privacy,
+            fencing_token: None,
             event,
         };
         let line = format!("{}\n", serde_json::to_string(&stored)?);
@@ -582,6 +796,7 @@ impl Store {
                 source_section: None,
                 source_line: None,
                 privacy: None,
+                fencing_token: None,
                 event,
             };
             let line = format!("{}\n", serde_json::to_string(&stored)?);
@@ -661,6 +876,18 @@ impl Store {
             .goal_schema_version(goal_id)
             .unwrap_or_else(|| LEGACY_EVENT_STORE_SCHEMA_VERSION.to_string());
         let ledger = read_ledger(&self.goal_dir(goal_id), &from).context("read ledger")?;
+        // P1-2②: stamp the decision-freshness read model — arbitration
+        // decisions compiled from this state carry the max ledger seq /
+        // newest event ts they were rebuilt against.
+        goal.decision_freshness = Some(crate::state::DecisionFreshness {
+            events_max_seq: ledger.len() as u64,
+            events_max_ts: ledger
+                .iter()
+                .map(|stored| event_ts(&stored.event))
+                .filter(|ts| *ts > 0)
+                .max(),
+            read_at: crate::state::now_epoch(),
+        });
         for stored in ledger {
             apply(&mut goal, stored.event);
         }
@@ -727,10 +954,15 @@ impl Store {
         }
         copy_dir_if_present(&dir.join("scheduler-state"), &dest.join("scheduler-state"))?;
         // Registry snapshot (goal entry).
-        if let Some(entry) = self.registry.iter().find(|g| g.goal_id == goal_id) {
-            let json = serde_json::to_string_pretty(entry)?;
-            fs::write(dest.join("registry-entry.json"), json)?;
-        }
+        self.registry
+            .iter()
+            .find(|g| g.goal_id == goal_id)
+            .map(|entry| -> Result<()> {
+                let json = serde_json::to_string_pretty(entry)?;
+                fs::write(dest.join("registry-entry.json"), json)?;
+                Ok(())
+            })
+            .transpose()?;
         Ok(dest.to_string_lossy().into_owned())
     }
 
@@ -1146,7 +1378,11 @@ fn apply(goal: &mut Goal, event: Event) {
                 t.lease_expires_at = Some(lease_expires_at);
             }
         }
-        Event::AgentRegistered { agent_id, .. } => {
+        Event::AgentRegistered {
+            agent_id,
+            workspaces,
+            ..
+        } => {
             if !goal.registered_agents.iter().any(|a| a == &agent_id) {
                 goal.registered_agents.push(agent_id.clone());
             }
@@ -1154,11 +1390,13 @@ fn apply(goal: &mut Goal, event: Event) {
             goal.agent_profiles.push(crate::state::AgentProfile {
                 id: agent_id,
                 capabilities: vec![],
+                workspaces,
             });
         }
         Event::AgentOnboarded {
             agent_id,
             capabilities,
+            workspaces,
             ..
         } => {
             if !goal.registered_agents.iter().any(|a| a == &agent_id) {
@@ -1168,8 +1406,13 @@ fn apply(goal: &mut Goal, event: Event) {
             goal.agent_profiles.push(crate::state::AgentProfile {
                 id: agent_id,
                 capabilities,
+                workspaces,
             });
         }
+        // P0-1: advisory write-lock records are projection-only — occupancy
+        // is derived from profiles + live leases; the event is the audit
+        // trail (like the supervisor events below).
+        Event::WorkspaceLockAcquired { .. } => {}
         Event::ReplanAcked {
             delta_kinds, ts, ..
         } => {
@@ -1209,10 +1452,16 @@ fn apply(goal: &mut Goal, event: Event) {
                     m.status = crate::state::TodoStatus::Done;
                 } else {
                     m.consecutive_no_change = no_change_count;
-                    let backoff = crate::decision::monitor::MONITOR_NO_CHANGE_BACKOFF_SECS;
+                    // P1-3②: cadence-aware reschedule (the same derivation
+                    // the run path uses) with the fixed G-8 backoff as the
+                    // no-cadence fallback — replay stays exact.
+                    let next_due = crate::scheduler::monitor_poll::next_poll_due_epoch(
+                        ts,
+                        m.monitor_cadence.as_deref(),
+                    );
                     m.resume_when = Some(
                         std::time::SystemTime::UNIX_EPOCH
-                            + std::time::Duration::from_secs(ts + backoff),
+                            + std::time::Duration::from_secs(next_due),
                     );
                 }
                 m.updated_at = ts;
@@ -1286,9 +1535,54 @@ fn apply(goal: &mut Goal, event: Event) {
                 }
             }
         }
-        // G-16: supervisor events are projection-only (read from the event
-        // log by the supervisor domain; goal state is unchanged).
-        Event::SupervisorProposed { .. } | Event::SupervisorReceiptRecorded { .. } => {}
+        // P0-2: delivery outcomes fold into the per-work-item delivery read
+        // model (latest wins; transitions are validated at the command layer
+        // before the event is appended).
+        Event::DeliveryOutcomeRecorded {
+            todo_id,
+            outcome,
+            note,
+            delivered_turn,
+            seq,
+            ts,
+            ..
+        } => goal.apply_delivery_outcome(&todo_id, &outcome, note, delivered_turn, seq, ts),
+        Event::FollowthroughCreated {
+            source_todo_id,
+            followup_todo_id,
+            ts,
+            ..
+        } => goal.apply_followthrough(&source_todo_id, &followup_todo_id, ts),
+        // P1-3①: liveness heartbeat / alert fold into goal state (they ARE
+        // the state the liveness check + attention escalation read).
+        Event::SchedulerTicked { agent_id, ts, .. } => {
+            let entry = goal.scheduler_heartbeats.entry(agent_id).or_insert(ts);
+            *entry = (*entry).max(ts);
+        }
+        Event::AutomationLivenessAlert {
+            agent_id,
+            elapsed_secs,
+            threshold_secs,
+            consecutive,
+            ts,
+            ..
+        } => goal.liveness_alerts.push(crate::state::LivenessAlert {
+            agent_id,
+            elapsed_secs,
+            threshold_secs,
+            consecutive,
+            ts,
+        }),
+        // P1-5 + P1-1 + P1-4 + G-16 projection-only events: read from the
+        // event log by their read models; goal state is unchanged on replay.
+        Event::RewardSignalRecorded { .. }
+        | Event::DecisionSummaryRecorded { .. }
+        | Event::HeartbeatReceiptRecorded { .. }
+        | Event::SchedulerAcked { .. }
+        | Event::SupervisorProposed { .. }
+        | Event::SupervisorReceiptRecorded { .. }
+        | Event::ProjectionRepaired { .. }
+        | Event::DecisionOutcomeRecorded { .. } => {}
     }
 }
 

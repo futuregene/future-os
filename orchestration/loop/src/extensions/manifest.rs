@@ -153,27 +153,22 @@ pub fn validate_protocol_token(protocol: &str) -> bool {
     if bytes.is_empty() || !bytes[0].is_ascii_lowercase() {
         return false;
     }
-    let mut saw_digit_v = false;
+    // (bytes[0] was validated lowercase above — no i == 0 re-check needed.)
+    let mut version_at = None;
     for (i, b) in bytes.iter().enumerate() {
         if !(b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'_') {
-            return false;
-        }
-        if i == 0 && !b.is_ascii_lowercase() {
             return false;
         }
         // version suffix: `_v<digits>` at the end
         if *b == b'_' && i + 2 < bytes.len() && bytes[i + 1] == b'v' {
             let rest = &protocol[i + 2..];
             if !rest.is_empty() && rest.bytes().all(|c| c.is_ascii_digit()) {
-                saw_digit_v = true;
+                version_at = Some(i);
             }
         }
     }
-    if !saw_digit_v {
-        return false;
-    }
     // ensure it ends with _v<digits>
-    let Some(underscore) = protocol.rfind("_v") else {
+    let Some(underscore) = version_at else {
         return false;
     };
     let suffix = &protocol[underscore + 2..];

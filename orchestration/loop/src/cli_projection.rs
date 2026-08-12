@@ -36,6 +36,10 @@ pub fn render_quota_projection(
     out.push_str(&render_decision_line(packet));
     out.push('\n');
     out.push_str(&format!("reason: {}\n", packet.reason));
+    // P1-1①: the machine-readable code next to the prose reason.
+    if !packet.reason_code.is_empty() {
+        out.push_str(&format!("reason_code: {}\n", packet.reason_code));
+    }
     if let Some(todo) = packet
         .interaction_contract
         .agent_channel
@@ -291,6 +295,27 @@ mod tests {
         let proj = render_quota_projection(&packet, None, stall.as_ref());
         assert!(proj.contains("stall: succession_obligation"));
         assert!(proj.contains("replan hint:"));
+    }
+
+    #[test]
+    fn quota_projection_shows_terminal_closure() {
+        // Validated closure: the only todo completed with no-follow-up.
+        let mut g = Goal::new("g", "o", "/tmp");
+        let mut t = Todo::advancement("T1", "done");
+        t.status = crate::state::TodoStatus::Done;
+        t.no_follow_up = true;
+        g.add(t);
+        let packet = decide(&g, std::time::SystemTime::now());
+        assert!(packet.terminal_closure.is_some());
+        let proj = render_quota_projection(&packet, None, None);
+        assert!(proj.contains("terminal closure: kind="), "{proj}");
+    }
+
+    #[test]
+    fn cadence_plan_without_progression_omits_the_line() {
+        let plan = render_cadence_plan("custom", &[15], 0);
+        assert!(plan.contains("interval"), "{plan}");
+        assert!(!plan.contains("progression"), "{plan}");
     }
 
     #[test]

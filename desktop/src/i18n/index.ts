@@ -13,13 +13,11 @@ const modules = import.meta.glob("./locales/*/*.json", { eager: true }) as Recor
 
 const resources: Record<string, Record<string, Record<string, unknown>>> = {};
 for (const [path, mod] of Object.entries(modules)) {
-  const match = path.match(/\.\/locales\/([^/]+)\/([^/]+)\.json$/);
-  if (!match)
-    continue;
-  const lang = match[1];
-  const namespace = match[2];
-  if (!lang || !namespace)
-    continue;
+  // The glob pattern guarantees "./locales/<lang>/<namespace>.json", so the
+  // match and both capture groups always exist (invariant, not a guess).
+  const match = /\.\/locales\/([^/]+)\/([^/]+)\.json$/.exec(path)!;
+  const lang = match[1]!;
+  const namespace = match[2]!;
   (resources[lang] ??= {})[namespace] = mod.default;
 }
 
@@ -34,6 +32,20 @@ export const LANGUAGE_LABELS: Record<Language, string> = {
 const STORAGE_KEY = "future.language";
 export const DEFAULT_LANGUAGE: Language = "zh";
 
+/**
+ * First-run default follows the OS: the webview mirrors the system locale, and
+ * we only ship zh/en bundles, so a Chinese system picks "zh" and any other
+ * language falls back to English. `navigator` is guarded for non-DOM contexts.
+ */
+function systemLanguage(): Language {
+  try {
+    return navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en";
+  }
+  catch {
+    return DEFAULT_LANGUAGE;
+  }
+}
+
 function readStoredLanguage(): Language {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
@@ -41,9 +53,9 @@ function readStoredLanguage(): Language {
       return stored;
   }
   catch {
-    // localStorage may be unavailable; fall through to the default.
+    // localStorage may be unavailable; fall through to the system language.
   }
-  return DEFAULT_LANGUAGE;
+  return systemLanguage();
 }
 
 const namespaces = Object.keys(resources[DEFAULT_LANGUAGE] ?? {});

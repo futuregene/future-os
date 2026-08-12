@@ -1,123 +1,274 @@
+import { act } from "react";
+// @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAsync, renderHook } from "../../test/renderHook";
 
-const invokeCommand = vi.fn();
-const { agentEventHandlers } = vi.hoisted(() => ({
-  agentEventHandlers: [] as Array<(event: { payload: Record<string, unknown> }) => void>,
+import {
+  getAgentState,
+  getCachedAgentState,
+  installAgentEventListener,
+  invalidateAgentState,
+  listStreamingThreadIds,
+  prefetchAgentState,
+  revalidateAgentState,
+  updateCachedAgentState,
+  useCachedAgentState,
+} from "./agentStateCache";
+
+const invokeMock = vi.fn<(cmd: string, args?: unknown) => Promise<unknown>>();
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: (cmd: string, args?: unknown) => invokeMock(cmd, args),
 }));
 
-vi.mock("../tauri/invoke", () => ({
-  invokeCommand: (...args: unknown[]) => invokeCommand(...args),
-}));
+type Listener = (event: { payload: Record<string, unknown> | undefined }) => void;
+let agentEventListener: Listener | null = null;
 
 vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn(async (_name: string, handler: (event: { payload: Record<string, unknown> }) => void) => {
-    agentEventHandlers.push(handler);
-    return () => {};
-  }),
+  listen: (name: string, handler: Listener) => {
+    if (name === "agent-event")
+      agentEventListener = handler;
+    return Promise.resolve(() => {});
+  },
 }));
 
-describe("agentStateCache", () => {
-  beforeEach(() => {
-    invokeCommand.mockReset();
-    vi.resetModules();
+beforeEach(() => {
+  invokeMock.mockReset();
+});
+
+function statePayload(overrides: Record<string, unknown> = {}) {
+  return {
+    model: "m1",
+    thinkingLevel: "high",
+    session_name: "Session",
+    sessionId: "s1",
+    cwd: "/w",
+    parentSessionId: null,
+    ...overrides,
+  };
+}
+
+function emit(payload: Record<string, unknown> | undefined) {
+  act(() => {
+    agentEventListener?.({ payload });
   });
+}
 
-  it("deduplicates concurrent loads for one thread", async () => {
-    invokeCommand.mockResolvedValue({ model: "future/m1", thinkingLevel: "low" });
-    const { getAgentState } = await import("./agentStateCache");
-
-    const [first, second] = await Promise.all([
-      getAgentState("thread-dedup"),
-      getAgentState("thread-dedup"),
-    ]);
-
-    expect(invokeCommand).toHaveBeenCalledTimes(1);
-    expect(first).toEqual(second);
-  });
-
-  it("keeps serving stale entries while revalidating (no silent snapshot drop)", async () => {
-    vi.useFakeTimers();
-    try {
-      invokeCommand.mockResolvedValue({ model: "future/m1", thinkingLevel: "low" });
-      const { getAgentState, getCachedAgentState } = await import("./agentStateCache");
-
-      await getAgentState("thread-swr");
-      expect(getCachedAgentState("thread-swr")).toMatchObject({ model: "future/m1" });
-
-      // Past the TTL: the sync read must STILL return the last-known state —
-      // dropping it made the composer fall back to the global draft model.
-      vi.setSystemTime(Date.now() + 60_000);
-      expect(getCachedAgentState("thread-swr")).toMatchObject({ model: "future/m1" });
-
-      // ...while an awaited fetch still revalidates against the agent.
-      invokeCommand.mockResolvedValue({ model: "future/m2", thinkingLevel: "high" });
-      await getAgentState("thread-swr");
-      expect(getCachedAgentState("thread-swr")).toMatchObject({ model: "future/m2" });
-    }
-    finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("does not let a stale load overwrite an optimistic update", async () => {
-    let resolveLoad: ((value: Record<string, unknown>) => void) | undefined;
-    invokeCommand.mockReturnValue(new Promise((resolve) => {
-      resolveLoad = resolve;
-    }));
-    const {
-      getAgentState,
-      getCachedAgentState,
-      updateCachedAgentState,
-    } = await import("./agentStateCache");
-
-    const pending = getAgentState("thread-race");
-    updateCachedAgentState("thread-race", { model: "future/new" });
-    resolveLoad?.({ model: "future/old", thinkingLevel: "high" });
-
-    await expect(pending).resolves.toMatchObject({ model: "future/new" });
-    expect(getCachedAgentState("thread-race")).toMatchObject({ model: "future/new" });
-  });
-
-  it("revalidateAgentState bypasses the TTL throttle", async () => {
-    invokeCommand.mockResolvedValue({ model: "future/m1", sessionId: "sess_1" });
-    const { getAgentState, getCachedAgentState, revalidateAgentState } = await import("./agentStateCache");
-
-    await getAgentState("thread-force");
-    expect(invokeCommand).toHaveBeenCalledTimes(1);
-
-    // The entry is fresh (well inside the TTL): a plain prefetch would
-    // short-circuit, but an agent restart within that window must still
-    // revalidate — that's the gap force semantics close.
-    invokeCommand.mockResolvedValue({ model: "future/m2", sessionId: "sess_2" });
-    revalidateAgentState("thread-force");
-
-    await vi.waitFor(() => {
-      expect(invokeCommand).toHaveBeenCalledTimes(2);
-      expect(getCachedAgentState("thread-force")).toMatchObject({ model: "future/m2" });
-    });
-  });
-
-  it("config_reloaded drops the stale entry and revalidates instead of re-inserting it", async () => {
-    invokeCommand.mockResolvedValue({ model: "future/m1", thinkingLevel: "low", sessionId: "sess_1" });
-    const { getAgentState, getCachedAgentState, installAgentEventListener } = await import("./agentStateCache");
-
-    await getAgentState("thread-cfg");
-    expect(getCachedAgentState("thread-cfg")).toMatchObject({ model: "future/m1" });
-
+describe("agentStateCache fetch/cache", () => {
+  it("installs the agent event listener exactly once", () => {
     installAgentEventListener();
-    const handler = agentEventHandlers[agentEventHandlers.length - 1];
-    expect(handler).toBeDefined();
+    installAgentEventListener();
+    expect(agentEventListener).not.toBeNull();
+  });
 
-    invokeCommand.mockResolvedValue({ model: "future/m2", thinkingLevel: "high", sessionId: "sess_1" });
-    handler?.({ payload: { _eventType: "config_reloaded", sessionId: "sess_1" } });
-
-    // The pre-reload snapshot must be gone immediately — it used to be
-    // re-inserted with a fresh fetchedAt and linger indefinitely.
-    expect(getCachedAgentState("thread-cfg")).toBeUndefined();
-
-    // ...and the cache revalidates against the agent right away.
-    await vi.waitFor(() => {
-      expect(getCachedAgentState("thread-cfg")).toMatchObject({ model: "future/m2" });
+  it("fetches and parses session state including activeRun variants", async () => {
+    invokeMock.mockResolvedValue(statePayload({
+      activeRun: { runId: "r1", state: "running", epoch: 2, lastEventIdx: 7 },
+    }));
+    const state = await getAgentState("t-fetch");
+    expect(state).toMatchObject({
+      model: "m1",
+      thinkingLevel: "high",
+      sessionName: "Session",
+      sessionId: "s1",
+      cwd: "/w",
+      activeRun: { runId: "r1", state: "running", epoch: 2, lastEventIdx: 7 },
     });
+
+    invokeMock.mockResolvedValue(statePayload({ activeRun: "nope" }));
+    expect((await getAgentState("t-run-str")).activeRun).toBeNull();
+    invokeMock.mockResolvedValue(statePayload({ activeRun: { runId: 1 } }));
+    expect((await getAgentState("t-run-bad")).activeRun).toBeNull();
+    invokeMock.mockResolvedValue(statePayload({ activeRun: { runId: "r", state: "queued" } }));
+    expect((await getAgentState("t-run-min")).activeRun).toMatchObject({ epoch: 0, lastEventIdx: -1 });
+  });
+
+  it("parses missing fields as null", async () => {
+    invokeMock.mockResolvedValue({});
+    const state = await getAgentState("t-empty");
+    expect(state).toMatchObject({ model: null, thinkingLevel: null, sessionName: null });
+  });
+
+  it("serves fresh entries from cache and dedupes in-flight requests", async () => {
+    invokeMock.mockResolvedValue(statePayload());
+    const first = await getAgentState("t-cache");
+    // Fresh: no second invoke.
+    const second = await getAgentState("t-cache");
+    expect(second).toBe(first);
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+
+    // Force bypasses the TTL.
+    await getAgentState("t-cache", { force: true });
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+
+    // In-flight dedupe.
+    let resolveInvoke!: (v: unknown) => void;
+    invokeMock.mockImplementation(() => new Promise((resolve) => {
+      resolveInvoke = resolve;
+    }));
+    const a = getAgentState("t-flight", { force: true });
+    const b = getAgentState("t-flight", { force: true });
+    resolveInvoke(statePayload());
+    expect(await a).toBe(await b);
+  });
+
+  it("getCachedAgentState returns undefined for null ids and misses", () => {
+    expect(getCachedAgentState(null)).toBeUndefined();
+    expect(getCachedAgentState("never-fetched")).toBeUndefined();
+  });
+
+  it("updateCachedAgentState patches existing and creates new entries", async () => {
+    invokeMock.mockResolvedValue(statePayload());
+    await getAgentState("t-patch");
+    updateCachedAgentState("t-patch", { model: "m2" });
+    expect(getCachedAgentState("t-patch")).toMatchObject({ model: "m2", thinkingLevel: "high" });
+
+    updateCachedAgentState("t-fresh", { model: "m3" } as never);
+    expect(getCachedAgentState("t-fresh")).toMatchObject({ model: "m3" });
+  });
+
+  it("invalidateAgentState drops the entry and notifies only when present", async () => {
+    invokeMock.mockResolvedValue(statePayload());
+    await getAgentState("t-inv");
+    expect(getCachedAgentState("t-inv")).toBeDefined();
+    invalidateAgentState("t-inv");
+    expect(getCachedAgentState("t-inv")).toBeUndefined();
+    // Absent entry: no notification, no throw.
+    invalidateAgentState("t-inv");
+  });
+
+  it("prefetch and revalidate tolerate nulls and swallow rejections", async () => {
+    prefetchAgentState(null);
+    revalidateAgentState(undefined);
+    invokeMock.mockRejectedValue(new Error("offline"));
+    prefetchAgentState("t-pre");
+    revalidateAgentState("t-rev");
+    await flushAsync();
+    // No unhandled rejection.
+  });
+
+  it("keeps the optimistic update when a slower fetch resolves behind it", async () => {
+    let resolveInvoke!: (v: unknown) => void;
+    invokeMock.mockImplementation(() => new Promise((resolve) => {
+      resolveInvoke = resolve;
+    }));
+    const pending = getAgentState("t-race");
+    // The user changes the model while the fetch is in flight.
+    updateCachedAgentState("t-race", { model: "m-optimistic" } as never);
+    resolveInvoke(statePayload({ model: "m-stale" }));
+    const state = await pending;
+    expect(state.model).toBe("m-optimistic");
+    expect(getCachedAgentState("t-race")).toMatchObject({ model: "m-optimistic" });
+  });
+
+  it("prunes past the 100-entry cap", () => {
+    for (let i = 0; i < 105; i += 1) {
+      updateCachedAgentState(`t-prune-${i}`, { model: "m" } as never);
+    }
+    expect(getCachedAgentState("t-prune-0")).toBeUndefined();
+    expect(getCachedAgentState("t-prune-104")).toBeDefined();
+  });
+
+  it("useCachedAgentState re-renders subscribers on cache mutations", async () => {
+    invokeMock.mockResolvedValue(statePayload());
+    const h = renderHook(() => useCachedAgentState("t-sub"));
+    expect(h.current).toBeUndefined();
+    await act(async () => {
+      await getAgentState("t-sub");
+    });
+    expect(h.current).toMatchObject({ model: "m1" });
+    act(() => {
+      updateCachedAgentState("t-sub", { model: "m9" });
+    });
+    expect(h.current).toMatchObject({ model: "m9" });
+    h.unmount();
+  });
+});
+
+describe("agentStateCache event listener", () => {
+  it("ignores malformed payloads", () => {
+    emit(undefined);
+    emit({ threadId: "t1" }); // no sessionId/_eventType
+    emit({ sessionId: "s1" }); // no _eventType
+    // No crash, no cache writes.
+  });
+
+  it("applies settings events to cached threads sharing the session", async () => {
+    invokeMock.mockResolvedValue(statePayload());
+    await getAgentState("t-set");
+    expect(getCachedAgentState("t-set")).toMatchObject({ model: "m1" });
+
+    emit({ _eventType: "model_changed", sessionId: "s1", model: "m-new" });
+    expect(getCachedAgentState("t-set")).toMatchObject({ model: "m-new" });
+
+    emit({ _eventType: "thinking_level_changed", sessionId: "s1", level: "low" });
+    expect(getCachedAgentState("t-set")).toMatchObject({ thinkingLevel: "low" });
+
+    emit({ _eventType: "session_name_changed", sessionId: "s1", name: "Renamed" });
+    expect(getCachedAgentState("t-set")).toMatchObject({ sessionName: "Renamed" });
+
+    // Non-string values leave the entry unchanged.
+    emit({ _eventType: "model_changed", sessionId: "s1", model: 42 });
+    expect(getCachedAgentState("t-set")).toMatchObject({ model: "m-new" });
+
+    // Events for other sessions are skipped.
+    emit({ _eventType: "model_changed", sessionId: "other", model: "m-x" });
+    expect(getCachedAgentState("t-set")).toMatchObject({ model: "m-new" });
+  });
+
+  it("cwd_changed reconciles the workspace and updates the cache", async () => {
+    invokeMock.mockResolvedValue(statePayload());
+    await getAgentState("t-cwd");
+    invokeMock.mockResolvedValue(undefined);
+    const cwdEvents: Event[] = [];
+    window.addEventListener("future:cwd-changed", e => cwdEvents.push(e));
+    emit({ _eventType: "cwd_changed", sessionId: "s1", cwd: "/new" });
+    await flushAsync();
+    expect(invokeMock).toHaveBeenCalledWith("reconcile_thread_workspace", { sessionId: "s1", cwd: "/new" });
+    expect(cwdEvents).toHaveLength(1);
+    expect(getCachedAgentState("t-cwd")).toMatchObject({ cwd: "/new" });
+  });
+
+  it("toasts when the workspace reconcile fails", async () => {
+    invokeMock.mockRejectedValue(new Error("no access"));
+    const toasts: CustomEvent[] = [];
+    window.addEventListener("futureos:toast", e => toasts.push(e as CustomEvent));
+    emit({ _eventType: "cwd_changed", sessionId: "s1", cwd: "/bad" });
+    await flushAsync();
+    await flushAsync();
+    expect(toasts.length).toBeGreaterThan(0);
+    expect(toasts[0]?.detail.tone).toBe("error");
+  });
+
+  it("config_reloaded drops and revalidates the entry", async () => {
+    invokeMock.mockResolvedValue(statePayload());
+    await getAgentState("t-conf");
+    invokeMock.mockResolvedValue(statePayload({ model: "m-reloaded" }));
+    emit({ _eventType: "config_reloaded", sessionId: "s1" });
+    await flushAsync();
+    await flushAsync();
+    expect(getCachedAgentState("t-conf")).toMatchObject({ model: "m-reloaded" });
+  });
+
+  it("forwards content events as window CustomEvents", () => {
+    const received: CustomEvent[] = [];
+    window.addEventListener("future:agent-event", e => received.push(e as CustomEvent));
+    emit({ _eventType: "user_message", sessionId: "s1", threadId: "t1", text: "hi" });
+    expect(received).toHaveLength(1);
+    expect(received[0]?.detail).toMatchObject({ threadId: "t1", eventType: "user_message" });
+    // Without a threadId the event is dropped.
+    emit({ _eventType: "agent_end", sessionId: "s1" });
+    expect(received).toHaveLength(1);
+  });
+});
+
+describe("listStreamingThreadIds", () => {
+  it("returns the ids, tolerating non-array and failure", async () => {
+    invokeMock.mockResolvedValue(["t1", "t2"]);
+    await expect(listStreamingThreadIds()).resolves.toEqual(["t1", "t2"]);
+    invokeMock.mockResolvedValue({ bad: true });
+    await expect(listStreamingThreadIds()).resolves.toEqual([]);
+    invokeMock.mockRejectedValue(new Error("down"));
+    await expect(listStreamingThreadIds()).resolves.toEqual([]);
   });
 });

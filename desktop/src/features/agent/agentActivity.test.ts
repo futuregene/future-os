@@ -374,3 +374,126 @@ describe("createRunProjector incremental ingestion", () => {
     expect(projector.lastSequence).toBe(-1);
   });
 });
+
+describe("buildAssistantRunProjection edge branches", () => {
+  it("opens a thinking block lazily for a delta without a start", () => {
+    const projection = buildAssistantRunProjection(
+      events([["thinking_delta", { text: "musing" }]]),
+    );
+    expect(projection.thinking).toBe("musing");
+    expect(projection.segments[0]).toMatchObject({ kind: "thinking" });
+  });
+
+  it("ignores a tool delta with no active tool call", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["tool_delta", { text: "{\"path\":" }],
+        ["text_chunk", { text: "done" }],
+      ]),
+    );
+    expect(projection.content).toBe("done");
+  });
+
+  it("ignores a tool end whose payload names no known tool", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["tool_end", { tool_name: "mystery" }],
+        ["text_chunk", { text: "done" }],
+      ]),
+    );
+    expect(projection.activityItems).toHaveLength(0);
+  });
+
+  it("slots a tool result that arrives without a start", () => {
+    const projection = buildAssistantRunProjection(
+      events([["tool_end", { tool_name: "read", tool_id: "orphan", tool_args: { path: "/a.ts" } }]]),
+    );
+    expect(projection.activityItems[0]).toMatchObject({ id: "orphan", status: "completed" });
+  });
+
+  it("matches an id-less tool end to the latest running tool of its kind", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["tool_start", { tool_name: "read", tool_id: "r1", tool_args: { path: "/a.ts" } }],
+        ["tool_start", { tool_name: "read", tool_id: "r2", tool_args: { path: "/b.ts" } }],
+        ["tool_end", { tool_name: "read" }],
+      ]),
+    );
+    // The later (higher-order) running tool settles first.
+    const byId = Object.fromEntries(projection.activityItems.map(i => [i.id, i.status]));
+    expect(byId).toEqual({ r1: "running", r2: "completed" });
+  });
+
+  it("surfaces the streaming args target from partial JSON", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["tool_start", { tool_name: "edit", tool_id: "e1", tool_args: {} }],
+        ["toolcall_delta", { text: "{\"file_path\": \"/partial.ts\"" }],
+        ["tool_end", { tool_name: "edit", tool_id: "e1" }],
+      ]),
+    );
+    expect(projection.activityItems[0]).toMatchObject({ target: "/partial.ts" });
+  });
+
+  it("tolerates an invalid JSON string field in partial args", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["tool_start", { tool_name: "edit", tool_id: "e1", tool_args: {} }],
+        ["toolcall_delta", { text: "{\"path\": \"/bad\\q.ts\"" }],
+        ["tool_end", { tool_name: "edit", tool_id: "e1" }],
+      ]),
+    );
+    expect(projection.activityItems[0]?.status).toBe("completed");
+  });
+
+  it("breaks a collapsible tool run at a compaction marker", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["tool_start", edit("t1", "/a.ts")[0]],
+        ["tool_end", edit("t1", "/a.ts")[0]],
+        ["tool_start", edit("t2", "/b.ts")[0]],
+        ["tool_end", edit("t2", "/b.ts")[0]],
+        ["compaction_end", { tokens_before: 100, aborted: false }],
+        ["tool_start", edit("t3", "/c.ts")[0]],
+        ["tool_end", edit("t3", "/c.ts")[0]],
+      ]),
+    );
+    // The first pair collapses; the post-compaction tool stays separate.
+    const kinds = projection.segments.map(s => s.kind);
+    expect(kinds).toEqual(["activity", "compaction", "activity"]);
+  });
+
+  it("handles non-record and malformed event payloads", () => {
+    const raw: StoredRunEvent[] = [
+      { id: "e0", runId: "r1", eventType: "usage", payload: "5", sequence: 0, createdAt: 0 },
+      { id: "e1", runId: "r1", eventType: "compaction_end", payload: "\"x\"", sequence: 1, createdAt: 1 },
+      { id: "e2", runId: "r1", eventType: "tool_start", payload: "5", sequence: 2, createdAt: 2 },
+      { id: "e3", runId: "r1", eventType: "text_chunk", payload: "5", sequence: 3, createdAt: 3 },
+      { id: "e4", runId: "r1", eventType: "text_chunk", payload: null, sequence: 4, createdAt: 4 },
+      { id: "e5", runId: "r1", eventType: "text_chunk", payload: "not json", sequence: 5, createdAt: 5 },
+      { id: "e6", runId: "r1", eventType: "text_chunk", payload: "{\"text\": \"ok\"}", sequence: 6, createdAt: 6 },
+    ];
+    const projection = buildAssistantRunProjection(raw);
+    expect(projection.content).toBe("ok");
+  });
+
+  it("marks a tool failed by its error field", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["tool_start", { tool_name: "read", tool_id: "r1", tool_args: { path: "/a" } }],
+        ["tool_end", { tool_name: "read", tool_id: "r1", error: "permission denied" }],
+      ]),
+    );
+    expect(projection.activityItems[0]?.status).toBe("failed");
+  });
+
+  it("marks a shell tool failed by a non-zero exit footer", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["tool_start", { tool_name: "shell", tool_id: "s1", tool_args: { command: "make" } }],
+        ["tool_end", { tool_name: "shell", tool_id: "s1", text: "boom\n[exit: 2]" }],
+      ]),
+    );
+    expect(projection.activityItems[0]?.status).toBe("failed");
+  });
+});

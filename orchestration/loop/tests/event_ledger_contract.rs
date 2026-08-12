@@ -273,3 +273,100 @@ fn append_with_meta_requires_registered_goal() {
     );
     assert!(err.is_err());
 }
+
+/// ── Fencing token (schema reservation): optional, backward compatible ─────
+#[test]
+fn fencing_token_is_reserved_and_never_populated_by_kernel_appends() {
+    let root = tmp_root("fencing-reserved");
+    let mut store = Store::open(&root).unwrap();
+    open_goal(&mut store, "g1");
+    store
+        .append(Event::TodoAdded {
+            goal_id: "g1".into(),
+            todo: Todo::advancement("t1", "work"),
+            ts: 1_000,
+        })
+        .unwrap();
+    // Kernel appends do not populate the reserved token and the on-disk line
+    // shape is unchanged (no `fencing_token` key) — pre-reservation readers
+    // tolerate new lines and content-derived ids stay stable.
+    for line in store.raw_ledger_lines("g1").unwrap() {
+        assert!(
+            !line.contains("fencing_token"),
+            "reserved field stays absent: {line}"
+        );
+    }
+    // ...and reads back as None.
+    let events = store.events("g1").unwrap();
+    assert!(events.iter().all(|e| e.fencing_token.is_none()));
+}
+
+/// ── Fencing token: lines carrying a token parse and round-trip ────────────
+#[test]
+fn fencing_token_round_trips_when_present() {
+    use future_loop::store::StoredEvent;
+    // A future-producer line carrying a token deserializes (old ledgers
+    // without the key deserialize as None — covered by every other test).
+    let line = r#"{"event_id":"evt-0123456789abcdef","fencing_token":7,"kind":"goal_started","goal_id":"g1","ts":1000}"#;
+    let stored: StoredEvent = serde_json::from_str(line).unwrap();
+    assert_eq!(stored.fencing_token, Some(7));
+    assert_eq!(stored.event_id, "evt-0123456789abcdef");
+    // Re-serializing preserves the token.
+    let value = serde_json::to_value(&stored).unwrap();
+    assert_eq!(value["fencing_token"], serde_json::json!(7));
+    // None is omitted from serialization entirely.
+    let without: StoredEvent =
+        serde_json::from_str(r#"{"kind":"goal_started","goal_id":"g1","ts":1000}"#).unwrap();
+    assert_eq!(without.fencing_token, None);
+    assert!(!serde_json::to_string(&without)
+        .unwrap()
+        .contains("fencing_token"));
+}
+
+/// ── Fencing token: writer metadata, not content (idempotent re-append) ────
+#[test]
+fn fencing_token_does_not_break_idempotent_reappend() {
+    // Two raw lines with identical event content and ids but different
+    // fencing tokens have equal fingerprints (token is envelope metadata,
+    // stripped like `producer` / `privacy`).
+    let base: serde_json::Value = serde_json::from_str(
+        r#"{"event_id":"evt-abc","kind":"goal_started","goal_id":"g1","ts":1000}"#,
+    )
+    .unwrap();
+    let mut fenced = base.clone();
+    fenced["fencing_token"] = serde_json::json!(9);
+    assert_eq!(
+        future_loop::store::event_fingerprint(&base),
+        future_loop::store::event_fingerprint(&fenced)
+    );
+
+    // End-to-end: a ledger line that differs from a pending append only in
+    // its fencing token is an idempotent no-op, NOT a conflict.
+    let root = tmp_root("fencing-idempotent");
+    let mut store = Store::open(&root).unwrap();
+    open_goal(&mut store, "g1");
+    let event = Event::TodoAdded {
+        goal_id: "g1".into(),
+        todo: Todo::advancement("t1", "work"),
+        ts: 1_000,
+    };
+    let id = store.append(event.clone()).unwrap();
+    // Rewrite the ledger line as a future producer would: same id/content
+    // plus a fencing token.
+    let dir = store.goal_dir("g1");
+    let path = dir.join("events.jsonl");
+    let mut lines = store.raw_ledger_lines("g1").unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&lines.pop().unwrap()).unwrap();
+    value["fencing_token"] = serde_json::json!(42);
+    lines.push(serde_json::to_string(&value).unwrap());
+    std::fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+    // Re-append of the same event: no-op, no conflict, no duplicate line.
+    let again = store.append(event).unwrap();
+    assert_eq!(id, again);
+    assert_eq!(store.raw_ledger_lines("g1").unwrap().len(), 2);
+    // Read path collapses the token-carrying duplicate and keeps the token.
+    let events = store.events("g1").unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1].fencing_token, Some(42));
+    assert!(store.verify("g1").unwrap().ok);
+}

@@ -172,24 +172,17 @@ pub fn extension_doctor(manifest: &super::manifest::ExtensionManifest) -> Doctor
         };
     }
     // doctor_args configured but no probe execution in v1 — the identity
-    // resolution is the readiness check.
+    // resolution is the readiness check. `available` is always true here
+    // (the !available case returned above), so this arm is always Ready.
     DoctorReport {
         schema_version: EXTENSION_DOCTOR_SCHEMA_VERSION.to_string(),
         extension_id,
         version,
-        status: if available {
-            DoctorStatus::Ready.label().to_string()
-        } else {
-            DoctorStatus::EntrypointMissing.label().to_string()
-        },
+        status: DoctorStatus::Ready.label().to_string(),
         available,
         verified: available,
         entrypoint_identity: identity_before.map(|e| e.identity),
-        failure_kind: if available {
-            None
-        } else {
-            Some("entrypoint_missing".to_string())
-        },
+        failure_kind: None,
         external_writes_performed: false,
     }
 }
@@ -197,7 +190,9 @@ pub fn extension_doctor(manifest: &super::manifest::ExtensionManifest) -> Doctor
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::manifest::{validate_manifest_value, ExtensionManifest};
+    use crate::extensions::manifest::{
+        validate_manifest_value, ExtensionManifest, ManifestRuntime,
+    };
 
     fn manifest_with(
         entrypoint: Option<&str>,
@@ -228,6 +223,40 @@ mod tests {
             "implements": [{"capability_id": "ext-readiness_cap", "protocol": "command_json_v0"}]
         });
         validate_manifest_value(&raw, "test").unwrap()
+    }
+
+    #[test]
+    fn which_resolves_direct_file_paths() {
+        // A command not on PATH but present as a literal relative file path
+        // resolves via the path-form fallback.
+        std::fs::create_dir_all("target").unwrap();
+        let rel = format!("target/which-probe-{}", std::process::id());
+        std::fs::write(&rel, b"x").unwrap();
+        assert_eq!(which(&rel).as_deref(), Some(std::path::Path::new(&rel)));
+        std::fs::remove_file(&rel).unwrap();
+    }
+
+    #[test]
+    fn resolve_without_entrypoint_or_module_is_none() {
+        let runtime = ManifestRuntime {
+            protocol: "command_json_v0".to_string(),
+            entrypoint: None,
+            python_module: None,
+            args: vec![],
+            doctor_args: vec![],
+            required_permissions: vec![],
+            timeout_seconds: 30,
+        };
+        assert!(resolve_runtime_entrypoint(&runtime).is_none());
+    }
+
+    #[test]
+    fn missing_entrypoint_without_doctor_args_is_not_ready() {
+        let m = manifest_with(Some("/definitely/not/a/real/command-xyz"), None, vec![]);
+        let report = extension_doctor(&m);
+        assert_eq!(report.status, DoctorStatus::EntrypointMissing.label());
+        assert!(!report.available);
+        assert_eq!(report.failure_kind.as_deref(), Some("entrypoint_missing"));
     }
 
     #[test]

@@ -427,7 +427,7 @@ mod tests {
 
     const SAMPLE: &str = "---\nstatus: active\n---\n\n# Active Goal State\n\n\
         ## Agent Todo\n\n\
-        - [ ] [P1] Run the check\n  <!-- future-loop:todo todo_id=todo_abc123 status=open action_kind=shell updated_at=2026-08-05T12:00:00+00:00 -->\n\
+        - [ ] [P1] Run the check\n  <!-- future-loop:todo todo_id=todo_abc123 status=open action_kind=shell unknown_key=ignored updated_at=2026-08-05T12:00:00+00:00 -->\n\
         - [x] Ship the artifact\n  <!-- future-loop:todo todo_id=todo_def456 status=done no_followup=true evidence=done%20well completed_at=2026-08-05T13:00:00+00:00 updated_at=2026-08-05T13:00:00+00:00 -->\n\n\
         ## User Todo / Owner Review Reading Queue\n\n\
         - [ ] Decide the scope\n  <!-- future-loop:todo todo_id=todo_ghi789 status=open task_class=user_gate updated_at=2026-08-05T12:30:00+00:00 -->\n";
@@ -459,26 +459,20 @@ mod tests {
         assert_eq!(add.source_ref, "ACTIVE_GOAL_STATE.md");
         assert_eq!(add.source_section, "Agent Todo");
         assert_eq!(add.source_line, 9);
-        match &add.event {
-            Event::TodoAdded { todo, .. } => {
-                assert_eq!(todo.id, "todo_abc123");
-                assert_eq!(todo.class, TaskClass::Advancement);
-                assert_eq!(todo.priority, Priority::P1);
-            }
-            _ => panic!("expected TodoAdded"),
-        }
+        assert!(
+            matches!(&add.event, Event::TodoAdded { todo, .. } if todo.id == "todo_abc123" && todo.class == TaskClass::Advancement && todo.priority == Priority::P1),
+            "expected TodoAdded for todo_abc123"
+        );
         // The done todo produces a TodoCompleted with URL-decoded evidence.
         let complete = outcome
             .events
             .iter()
             .find(|e| e.event_id.starts_with("backfill-complete-"))
             .unwrap();
-        match &complete.event {
-            Event::TodoCompleted { evidence, .. } => {
-                assert_eq!(evidence.as_deref(), Some("done well"));
-            }
-            _ => panic!("expected TodoCompleted"),
-        }
+        assert!(
+            matches!(&complete.event, Event::TodoCompleted { evidence, .. } if evidence.as_deref() == Some("done well")),
+            "expected TodoCompleted with decoded evidence"
+        );
         // Re-running yields identical ids (idempotent re-append).
         let again = backfill_todo_events(SAMPLE, "g1", PrivacyLevel::LocalPrivate).unwrap();
         for (a, b) in outcome.events.iter().zip(again.events.iter()) {
@@ -490,19 +484,15 @@ mod tests {
     fn public_safe_backfill_redacts_private_text() {
         let md = "## Agent Todo\n\n- [ ] touch /Users/geilige/secret\n  <!-- future-loop:todo todo_id=todo_x status=open -->\n";
         let public = backfill_todo_events(md, "g1", PrivacyLevel::PublicSafe).unwrap();
-        match &public.events[0].event {
-            Event::TodoAdded { todo, .. } => {
-                assert!(todo.text.contains("[redacted-private-state]"));
-            }
-            _ => panic!("expected TodoAdded"),
-        }
+        assert!(
+            matches!(&public.events[0].event, Event::TodoAdded { todo, .. } if todo.text.contains("[redacted-private-state]")),
+            "expected redacted TodoAdded"
+        );
         let local = backfill_todo_events(md, "g1", PrivacyLevel::LocalPrivate).unwrap();
-        match &local.events[0].event {
-            Event::TodoAdded { todo, .. } => {
-                assert!(todo.text.contains("/Users/geilige"));
-            }
-            _ => panic!("expected TodoAdded"),
-        }
+        assert!(
+            matches!(&local.events[0].event, Event::TodoAdded { todo, .. } if todo.text.contains("/Users/geilige")),
+            "expected unredacted TodoAdded"
+        );
     }
 
     #[test]
