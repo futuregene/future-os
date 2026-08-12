@@ -507,16 +507,18 @@ function buildLiveAssistantItem(
   return item;
 }
 
-/** Map a shared MessageSegment onto the mobile bubble's inline segment union. */
+/** Map a shared MessageSegment onto the mobile bubble's inline segment union.
+ * The shared segment's stable `id` is kept for React keys. */
 function segmentToTimeline(segment: MessageSegment): TimelineSegment {
   switch (segment.kind) {
     case "text":
-      return { kind: "text", text: segment.text };
+      return { id: segment.id, kind: "text", text: segment.text };
     case "thinking":
-      return { kind: "thinking", text: segment.text };
+      return { id: segment.id, kind: "thinking", text: segment.text };
     case "activity": {
       const activity = segment.item;
       return {
+        id: segment.id,
         kind: "tool",
         tool: {
           name: activity.kind,
@@ -532,6 +534,7 @@ function segmentToTimeline(segment: MessageSegment): TimelineSegment {
     }
     case "compaction":
       return {
+        id: segment.id,
         kind: "compaction",
         ...(segment.tokensBefore ? { tokensBefore: segment.tokensBefore } : {}),
       };

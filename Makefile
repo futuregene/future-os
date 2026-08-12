@@ -176,11 +176,11 @@ build-desktop: build-desktop-dist desktop-sidecars
 	cd desktop && npx tauri build --no-bundle
 
 # Mobile native projects are generated locally by Expo (gitignored).
-build-mobile-android:
+build-mobile-android: build-thread-projection
 	$(call npm-install-if-needed,mobile)
 	cd mobile && npm run android
 
-build-mobile-ios:
+build-mobile-ios: build-thread-projection
 	$(call npm-install-if-needed,mobile)
 	cd mobile && npm run ios
 
@@ -282,11 +282,11 @@ run-loop:
 run-desktop: desktop-sidecars
 	cd desktop && npm run tauri:dev
 
-run-mobile-android:
+run-mobile-android: build-thread-projection
 	$(call npm-install-if-needed,mobile)
 	cd mobile && npm run android:device
 
-run-mobile-ios:
+run-mobile-ios: build-thread-projection
 	$(call npm-install-if-needed,mobile)
 	cd mobile && npm run ios
 

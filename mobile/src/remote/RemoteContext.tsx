@@ -713,7 +713,11 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         // correctly instead of restarting from an empty accumulator.
         const baseStripped = stripRunItems(baseForReplay, activeRunId);
         const projectionEvents = normalizeReplayEvents(response.projection.events);
-        let next = baseStripped;
+        // The stripped base carries live-accumulated seenEvents keys for this
+        // run; folding the replay through applyStreamEvent would dedup every
+        // event against them and silently drop the whole reply. Reset the seen
+        // set so the projection's events always apply.
+        let next = { ...baseStripped, seenEvents: new Set<string>() };
         for (const ev of projectionEvents) next = applyStreamEvent(next, ev);
         const cursorIdx =
           response.projection.cursor ??

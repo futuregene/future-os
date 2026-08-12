@@ -160,10 +160,10 @@ describe("entry reducer", () => {
       outputTokens: 12,
     });
     expect(reply.segments).toEqual([
-      { kind: "thinking", text: "reasoning…" },
-      { kind: "text", text: "interim analysis" },
-      { kind: "tool", tool: { name: "read", status: "completed", complete: true, detail: "/tmp/x" } },
-      { kind: "text", text: "done" },
+      { id: expect.any(String), kind: "thinking", text: "reasoning…" },
+      { id: expect.any(String), kind: "text", text: "interim analysis" },
+      { id: expect.any(String), kind: "tool", tool: { name: "read", status: "completed", complete: true, detail: "/tmp/x" } },
+      { id: expect.any(String), kind: "text", text: "done" },
     ]);
     // A reply-less run (empty assistant entry) renders nothing extra.
     const divider = timelineFromEntries([
@@ -201,8 +201,8 @@ describe("projection reducer", () => {
     expect(reply).toMatchObject({ kind: "message", role: "assistant", text: "answer" });
     // The tool row renders inline inside the bubble, in stream order.
     expect(reply.segments).toEqual([
-      { kind: "tool", tool: { name: "read", status: "completed", complete: true } },
-      { kind: "text", text: "answer" },
+      { id: expect.any(String), kind: "tool", tool: { name: "read", status: "completed", complete: true } },
+      { id: expect.any(String), kind: "text", text: "answer" },
     ]);
     expect(timeline.streaming).toBe(false);
   });
@@ -425,7 +425,7 @@ describe("stream event reducer", () => {
     expect(host.streaming).toBe(true);
     expect(host.text).toBe("");
     // Chronological order: the reasoning renders inline inside the bubble.
-    expect(host.segments).toEqual([{ kind: "thinking", text: "reasoning…" }]);
+    expect(host.segments).toEqual([{ id: expect.any(String), kind: "thinking", text: "reasoning…" }]);
     expect(thinking.items.map(item => item.kind)).toEqual(["message"]);
 
     // The reply text merges into that same bubble — no duplicate assistant row.
@@ -560,7 +560,7 @@ describe("stream event reducer", () => {
     const shell = state.items.find(item => item.kind === "message");
     if (!shell || shell.kind !== "message") throw new Error("shell bubble missing");
     expect(shell.segments).toEqual([
-      { kind: "tool", tool: { name: "shell", status: "running", complete: false, detail: "ls -la" } },
+      { id: expect.any(String), kind: "tool", tool: { name: "shell", status: "running", complete: false, detail: "ls -la" } },
     ]);
     state = applyStreamEvent(state, {
       type: "tool_start",
@@ -572,10 +572,12 @@ describe("stream event reducer", () => {
     if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
     expect(reply.segments).toEqual([
       {
+        id: expect.any(String),
         kind: "tool",
         tool: { name: "shell", status: "running", complete: false, detail: "ls -la" },
       },
       {
+        id: expect.any(String),
         kind: "tool",
         tool: { name: "read", status: "running", complete: false, detail: "/tmp/x" },
       },
@@ -593,7 +595,7 @@ describe("stream event reducer", () => {
     const reply = state.items.find(item => item.kind === "message" && item.role === "assistant");
     if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
     // The thinking slice stays inline in the bubble; the settled reply keeps it.
-    expect(reply.segments).toEqual([{ kind: "thinking", text: "hmm" }]);
+    expect(reply.segments).toEqual([{ id: expect.any(String), kind: "thinking", text: "hmm" }]);
     expect(reply.streaming).toBe(false);
   });
 
@@ -734,8 +736,8 @@ describe("shared-projection semantic flags", () => {
     const reply = state.items.find(item => item.kind === "message");
     if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
     expect(reply.segments).toEqual([
-      { kind: "compaction", tokensBefore: 190_000 },
-      { kind: "text", text: "Continuing." },
+      { id: expect.any(String), kind: "compaction", tokensBefore: 190_000 },
+      { id: expect.any(String), kind: "text", text: "Continuing." },
     ]);
   });
 

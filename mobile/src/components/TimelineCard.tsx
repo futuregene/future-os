@@ -21,7 +21,13 @@ import {
   approvalPaths,
 } from "@future-os/thread-projection";
 import { MarkdownText } from "./MarkdownText";
-import type { ApprovalPayload, HistoryAttachment, TimelineItem, TimelineSegment } from "../remote/types";
+import type {
+  ApprovalPayload,
+  HistoryAttachment,
+  TimelineItem,
+  TimelineSegment,
+  TimelineToolRow,
+} from "../remote/types";
 import { colors, radius, spacing } from "../theme/tokens";
 import { Button } from "./Button";
 
@@ -280,40 +286,102 @@ function CompactionDivider({ tokensBefore }: { tokensBefore?: number }) {
   );
 }
 
+/**
+ * The inline tool-activity row inside a reply bubble (desktop parity:
+ * AgentActivityLine). A failed tool (shell non-zero exit / error) renders
+ * danger-styled; a collapsed same-kind burst carries its child calls on
+ * `tool.children` and its count — the row reads "Ran N commands", and tapping
+ * it reveals the individual targets.
+ */
+function ToolRow({ tool }: { tool: TimelineToolRow }) {
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
+  const kind = toolKind(tool.name);
+  const failed = tool.status === "failed";
+  const detail = tool.detail?.trim() ? tool.detail.trim() : null;
+  const children = tool.children && tool.children.length > 0 ? tool.children : null;
+  const label =
+    tool.count != null && tool.count > 1
+      ? t("chat.runCount", {
+          count: tool.count,
+          action: toolLabel(t, kind, true),
+        })
+      : toolLabel(t, kind, tool.complete);
+  return (
+    <View style={[styles.inlineTool, failed ? styles.inlineToolFailed : null]}>
+      <Pressable
+        accessibilityRole="button"
+        disabled={!detail && !children}
+        onPress={() => setExpanded(value => !value)}
+        style={styles.toolHeader}
+      >
+        <ToolGlyph kind={kind} />
+        <Text style={[styles.toolText, failed ? styles.toolTextFailed : null]}>{label}</Text>
+        {detail && !children ? (
+          <Text selectable style={styles.inlineToolDetail}>
+            {detail}
+          </Text>
+        ) : null}
+        {children ? (
+          expanded ? (
+            <ChevronUp color={colors.inkMuted} size={14} />
+          ) : (
+            <ChevronDown color={colors.inkMuted} size={14} />
+          )
+        ) : null}
+      </Pressable>
+      {expanded && children ? (
+        <View style={styles.inlineToolChildren}>
+          {children.map(child => (
+            <Text key={`${child.name}:${child.detail ?? ""}`} style={styles.inlineToolChild}>
+              {child.detail ?? toolLabel(t, toolKind(child.name), child.complete)}
+            </Text>
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/**
+ * Inline thinking block inside a reply bubble. The mobile product decision
+ * (audit D4) is that reasoning always renders collapsed — a muted one-line
+ * label, expandable on tap — so long reasoning never floods the bubble or the
+ * FlatList. The shared projection captures the full text; the collapse is a
+ * render concern only.
+ */
+function ThinkingRow({ text }: { text: string }) {
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <View style={styles.inlineThinking}>
+      <Pressable
+        accessibilityRole="button"
+        onPress={() => setExpanded(value => !value)}
+        style={styles.inlineThinkingHeader}
+      >
+        <Text style={styles.inlineThinkingLabel}>{t("chat.thoughtCompleted")}</Text>
+        {expanded ? (
+          <ChevronUp color={colors.inkMuted} size={14} />
+        ) : (
+          <ChevronDown color={colors.inkMuted} size={14} />
+        )}
+      </Pressable>
+      {expanded && <Text style={styles.inlineThinkingText}>{text}</Text>}
+    </View>
+  );
+}
+
 /** One inline slice of an assistant reply, in stream order (desktop parity). */
 function SegmentBlock({ segment }: { segment: TimelineSegment }) {
-  const { t } = useTranslation();
   if (segment.kind === "text") {
     return <MarkdownText text={segment.text} />;
   }
   if (segment.kind === "thinking") {
-    return (
-      <View style={styles.inlineThinking}>
-        <Text style={styles.inlineThinkingLabel}>{t("chat.thoughtCompleted")}</Text>
-        <Text style={styles.inlineThinkingText}>{segment.text}</Text>
-      </View>
-    );
+    return <ThinkingRow text={segment.text} />;
   }
   if (segment.kind === "tool") {
-    const { tool } = segment;
-    const kind = toolKind(tool.name);
-    const failed = tool.status === "failed";
-    const detail = tool.detail?.trim() ? tool.detail.trim() : null;
-    return (
-      <View style={[styles.inlineTool, failed ? styles.inlineToolFailed : null]}>
-        <View style={styles.toolHeader}>
-          <ToolGlyph kind={kind} />
-          <Text style={[styles.toolText, failed ? styles.toolTextFailed : null]}>
-            {toolLabel(t, kind, tool.complete)}
-          </Text>
-          {detail ? (
-            <Text selectable style={styles.inlineToolDetail}>
-              {detail}
-            </Text>
-          ) : null}
-        </View>
-      </View>
-    );
+    return <ToolRow tool={segment.tool} />;
   }
   // compaction
   return <CompactionDivider tokensBefore={segment.tokensBefore} />;
@@ -338,18 +406,25 @@ export function TimelineCard({ item, onOpenAttachment }: TimelineCardProps) {
       ]
         .filter((part): part is string => !!part)
         .join(" · ");
+      // A compaction-only message is a standalone divider (the agent replaced
+      // summarized history with a marker) — render just the hairline rule, no
+      // copy footer, mirroring the desktop's MessageBlock special case.
+      const dividerOnly =
+        !item.streaming &&
+        item.segments?.length === 1 &&
+        item.segments[0]?.kind === "compaction";
       return (
         <View style={styles.assistantMessage}>
           {item.segments && item.segments.length > 0 ? (
             <View style={styles.segmentList}>
               {item.segments.map(segment => (
-                <SegmentBlock key={`${item.id}:${segment.kind}`} segment={segment} />
+                <SegmentBlock key={segment.id} segment={segment} />
               ))}
             </View>
           ) : item.text.trim().length > 0 ? (
             <MarkdownText text={item.text} />
           ) : null}
-          {item.streaming && item.startedAt != null ? (
+          {dividerOnly ? null : item.streaming && item.startedAt != null ? (
             // In-flight: the generating indicator occupies the same footer slot
             // the copy button uses once settled (desktop parity), so a streaming
             // reply never shows a copy button.
@@ -525,12 +600,16 @@ const styles = StyleSheet.create({
     paddingLeft: spacing.md,
     gap: 2,
   },
-  inlineThinkingLabel: { color: colors.inkSoft, fontSize: 12, fontWeight: "600" },
-  inlineThinkingText: { color: colors.inkSoft, fontSize: 13, lineHeight: 19 },
-  inlineTool: {
+  inlineThinkingHeader: {
     flexDirection: "row",
     alignItems: "center",
+    gap: spacing.sm,
+  },
+  inlineThinkingLabel: { color: colors.inkSoft, fontSize: 12, fontWeight: "600" },
+  inlineThinkingText: { color: colors.inkSoft, fontSize: 13, lineHeight: 19, marginTop: 2 },
+  inlineTool: {
     paddingVertical: 2,
+    gap: 2,
   },
   inlineToolFailed: {
     backgroundColor: colors.dangerSoft,
@@ -545,6 +624,13 @@ const styles = StyleSheet.create({
     color: colors.inkSoft,
     fontFamily: "monospace",
     fontSize: 12,
+  },
+  inlineToolChildren: { gap: 2, marginTop: 2, paddingLeft: spacing.md + spacing.sm },
+  inlineToolChild: {
+    color: colors.inkSoft,
+    fontFamily: "monospace",
+    fontSize: 12,
+    lineHeight: 18,
   },
   compactionDivider: {
     flexDirection: "row",

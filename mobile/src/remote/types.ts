@@ -195,13 +195,15 @@ export interface TimelineToolRow {
 /**
  * One ordered slice of an assistant reply bubble (shared `MessageSegment`
  * parity). Text/tool/thinking/compaction are kept in the chronological order
- * the agent produced them instead of being flattened.
+ * the agent produced them instead of being flattened. `id` is the stable
+ * shared-projection segment id — React keys must use it, never `kind` (an
+ * interleaved reply has many same-kind segments).
  */
 export type TimelineSegment =
-  | { kind: "text"; text: string }
-  | { kind: "thinking"; text: string }
-  | { kind: "tool"; tool: TimelineToolRow }
-  | { kind: "compaction"; tokensBefore?: number };
+  | { id: string; kind: "text"; text: string }
+  | { id: string; kind: "thinking"; text: string }
+  | { id: string; kind: "tool"; tool: TimelineToolRow }
+  | { id: string; kind: "compaction"; tokensBefore?: number };
 
 export type TimelineItem =
   | {
