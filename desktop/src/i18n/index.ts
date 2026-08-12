@@ -13,14 +13,10 @@ const modules = import.meta.glob("./locales/*/*.json", { eager: true }) as Recor
 
 const resources: Record<string, Record<string, Record<string, unknown>>> = {};
 for (const [path, mod] of Object.entries(modules)) {
-  const match = path.match(/\.\/locales\/([^/]+)\/([^/]+)\.json$/);
-  if (!match)
-    continue;
-  const lang = match[1];
-  const namespace = match[2];
-  if (!lang || !namespace)
-    continue;
-  (resources[lang] ??= {})[namespace] = mod.default;
+  // The glob pattern guarantees "./locales/<lang>/<namespace>.json", so the
+  // match and both capture groups always exist (invariant, not a guess).
+  const match = /\.\/locales\/([^/]+)\/([^/]+)\.json$/.exec(path)!;
+  (resources[match[1]] ??= {})[match[2]] = mod.default;
 }
 
 export const SUPPORTED_LANGUAGES = ["zh", "en"] as const;
