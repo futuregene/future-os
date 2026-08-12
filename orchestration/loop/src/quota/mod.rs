@@ -12,7 +12,11 @@
 //!     `build_usage_summary`).
 //!   - [`stall_repair`]    stall detection → replan hint (the delivery guard
 //!     that generalizes the old `MAX_REPAIR_ATTEMPTS` shortcut).
+//!   - [`tool_quota`]      per-tool quota at the capability boundary
+//!     (invocation count / limit / trailing window) feeding the packet's
+//!     `capability_repair_allowed` predicate.
 
 pub mod slot_accounting;
 pub mod stall_repair;
+pub mod tool_quota;
 pub mod usage_summary;

@@ -11,9 +11,12 @@
 //! 2. For every decision path fixture, run BOTH pipelines on the same
 //!    (goal, now, agent_id) and compare the serialized packets field by
 //!    field (recursive JSON equality, volatile fields masked).
-//! 3. The ONLY intended delta is the G-2/G-11 `scheduler_arbitration`
-//!    record (new field, observe-only): asserted present, then removed
-//!    from the comparison.
+//! 3. The ONLY intended deltas are the G-2/G-11 `scheduler_arbitration`
+//!    record (new field, observe-only) and the per-tool-quota
+//!    `capability_repair_allowed` predicate (LoopX 对比改进项 ②: was a
+//!    constant `false` pre-split, now computed from the goal's capability
+//!    invocation projection): both asserted, then removed from the
+//!    comparison.
 //!
 //! If this test fails, the split drifted from the baseline: either a helper
 //! subdomain changed a field, or the arbitration layer mutated behavior.
@@ -87,6 +90,24 @@ fn assert_packet_parity(goal: &Goal, now: SystemTime, agent_id: Option<&str>) ->
     );
     if let serde_json::Value::Object(map) = &mut current_json {
         map.remove("scheduler_arbitration");
+    }
+
+    // Per-tool quota (LoopX 对比改进项 ②): `capability_repair_allowed` was a
+    // constant `false` in the pre-split kernel; it is now computed from the
+    // goal's capability invocation projection (false only when a tool is
+    // over its quota). These fixtures carry no invocations, so the lane
+    // must read open — assert the intended delta, then normalize both sides.
+    assert_eq!(
+        current_json.get("capability_repair_allowed"),
+        Some(&serde_json::Value::Bool(true)),
+        "fixtures carry no capability invocations — the capability-repair \
+         lane must be open (per-tool quota, 对比改进项 ②)"
+    );
+    if let serde_json::Value::Object(map) = &mut current_json {
+        map.remove("capability_repair_allowed");
+    }
+    if let serde_json::Value::Object(map) = &mut legacy_json {
+        map.remove("capability_repair_allowed");
     }
 
     assert_eq!(

@@ -344,8 +344,15 @@ Notable extras beyond the workflow commands:
 - **gates & replan**: `gate resolve`; `replan ack|obligations`.
 - **agents**: `agent list|register|onboard`; `scope`; `lane`; `supervisor
   propose|receipt|events`.
-- **quota/scheduler**: `quota should-run|usage|spend`; `scheduler
-  tick|show|record-host-failure`.
+- **quota/scheduler**: `quota should-run|usage|spend|tools`; `scheduler
+  tick|show|record-host-failure`. `quota tools --goal G` shows per-tool
+  quota at the capability boundary (invocations used / limit / trailing
+  window): `capability propose` and the per-capability command hooks accept
+  `--goal G`, which ledgers every accepted invocation (`capability_invoked`
+  event) and refuses calls once a tool reaches 30 accepted invocations in
+  the trailing hour (the refusal itself is ledgered); without `--goal` the
+  call proceeds uncounted. A saturated tool flips the should-run packet's
+  `capability_repair_allowed` predicate to false.
 - **ops**: `diagnose [--format json]`; `doctor`; `runs
   history|compact|retention|stale`; `backup`; `evidence-log`; `todo-event`;
   `turn`; `privacy`; `store verify|migrate|bridge`; `authority`; `profile`;
