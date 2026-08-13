@@ -2531,13 +2531,15 @@ mod runtime_tests {
             agent_session_id: None,
         })
         .unwrap();
-        let (payload, sig_without_session) = build_sessions_snapshot("pair_x");
+        let (payload, sig_without_session) =
+            build_sessions_snapshot("pair_x").expect("store readable");
         assert_eq!(payload["sessions"], json!([]));
         // The full presence snapshot skips session-less threads the same way.
         let (payload, _) = build_presence_snapshot("pair_x", "bridge_x");
         assert_eq!(payload["sessions"], json!([]));
         crate::store::update_thread_session_id(&thread.id, "sess-snap").unwrap();
-        let (payload, sig_with_session) = build_sessions_snapshot("pair_x");
+        let (payload, sig_with_session) =
+            build_sessions_snapshot("pair_x").expect("store readable");
         assert_eq!(payload["sessions"].as_array().unwrap().len(), 1);
         assert_ne!(sig_without_session, sig_with_session);
 
