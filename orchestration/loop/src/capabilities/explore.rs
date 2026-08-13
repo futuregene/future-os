@@ -3038,6 +3038,56 @@ mod tests {
     }
 
     #[test]
+    fn validation_rebuild_errors_tag_overlap_and_unattached_finding() {
+        let edge_event = build_explore_edge_event(
+            "g", "h_1", "h_2", "supports", None, None, None, None, Some("2026-08-01T00:00:00Z"),
+        )
+        .unwrap();
+        let mut bad_edge = edge_event.clone();
+        bad_edge["edge_type"] = Value::String("ghost".into());
+        assert!(validate_explore_result_event(&bad_edge, Some("g")).is_err());
+        let finding_event = build_explore_finding_event(
+            "g", "t", Some("f_1"), Some("h_1"), Some(FINDING_STATUS_CONFIRMED), None, None,
+            None, None, &[], &[], None, Some("2026-08-01T00:00:00Z"),
+        )
+        .unwrap();
+        let mut bad_finding = finding_event.clone();
+        bad_finding["status"] = Value::String("ghost".into());
+        assert!(validate_explore_result_event(&bad_finding, Some("g")).is_err());
+        let unattached = build_explore_finding_event(
+            "g", "t", Some("f_2"), None, None, None, None, None, None, &[], &[], None,
+            Some("2026-08-01T00:00:00Z"),
+        )
+        .unwrap();
+        let projection = build_explore_result_projection(
+            &[unattached], "g", DEFAULT_FINDING_LIMIT, DEFAULT_MERMAID_NODE_LIMIT,
+        )
+        .unwrap();
+        assert_eq!(projection["counts"]["finding_count"], 1);
+        let (nodes, findings, edges) = views(vec![
+            node("h_1", NODE_KIND_HYPOTHESIS, NODE_STATUS_OPEN, "claim", &at(1), None),
+            edge("h_1", "subtopic_of", "e_y", None, &at(2)),
+        ]);
+        let record = verify(
+            nodes.iter().find(|n| n["node_id"] == "h_1").unwrap(),
+            &findings,
+            &edges,
+        );
+        assert_eq!(record["verification_state"], VERIFICATION_UNVERIFIED);
+    }
+
+    #[test]
+    fn graph_view_tag_overlap_matches() {
+        let mut n = node(
+            "h_1", NODE_KIND_HYPOTHESIS, NODE_STATUS_OPEN, "claim", &at(1), None,
+        );
+        n["tags"] = serde_json::json!(["foo"]);
+        let (nodes, _, edges) = views(vec![n]);
+        let view = build_explore_graph_view(&nodes, &edges, &[], &["foo"], true, 60).unwrap();
+        assert_eq!(view["graph_counts"]["matched_node_count"], 1);
+    }
+
+    #[test]
     fn graph_view_tag_filter_and_ancestor_cycle_break() {
         let events = vec![
             node("area_1", NODE_KIND_AREA, NODE_STATUS_OPEN, "root area", &at(1), None),
