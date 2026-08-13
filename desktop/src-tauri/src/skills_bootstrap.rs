@@ -6,7 +6,6 @@
 //! endpoints are unauthenticated). Used by the post-login onboarding flow; runs
 //! on a background thread since it blocks on the CLI child process.
 
-use tauri::AppHandle;
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
@@ -14,7 +13,7 @@ const INIT_ARGS: [&str; 1] = ["init"];
 
 /// Force-run the skill bootstrap. Idempotent — the CLI itself skips
 /// already-installed skills. Used by the post-login onboarding flow.
-pub fn run_builtin_skills(app: &AppHandle) {
+pub fn run_builtin_skills<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let command = match app.shell().sidecar("future") {
         Ok(command) => command.args(INIT_ARGS),
         Err(error) => {
@@ -118,5 +117,16 @@ mod tests {
         .unwrap();
         drop(tx);
         assert_eq!(drain_skill_events(rx), Some(2));
+    }
+
+    #[test]
+    fn run_builtin_skills_logs_spawn_failure() {
+        // No bundled `future` sidecar binary in a mock app → the spawn fails and
+        // is logged, without draining anything.
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_shell::init())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build mock app");
+        run_builtin_skills(app.handle());
     }
 }

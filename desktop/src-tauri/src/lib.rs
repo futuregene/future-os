@@ -48,7 +48,7 @@ static APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::
 /// excludes the taskbar/dock/menubar) and center it there — near-fullscreen but
 /// not maximized, correct on every OS. Best effort: any failure leaves the
 /// config default (1440x960).
-fn size_main_window_to_screen(app: &tauri::App) {
+fn size_main_window_to_screen<R: tauri::Runtime>(app: &tauri::App<R>) {
     use tauri::Manager;
     let Some(window) = app.get_webview_window("main") else {
         return;
@@ -58,19 +58,39 @@ fn size_main_window_to_screen(app: &tauri::App) {
     };
     let scale = monitor.scale_factor();
     let area = monitor.work_area();
-    let area_w = area.size.width as f64 / scale;
-    let area_h = area.size.height as f64 / scale;
-    let area_x = area.position.x as f64 / scale;
-    let area_y = area.position.y as f64 / scale;
+    let (width, height, x, y) = main_window_geometry(
+        scale,
+        area.size.width as f64,
+        area.size.height as f64,
+        area.position.x as f64,
+        area.position.y as f64,
+    );
+    let _ = window.set_size(tauri::LogicalSize::new(width, height));
+    // Center horizontally; sit a bit above vertical center (smaller top gap).
+    let _ = window.set_position(tauri::LogicalPosition::new(x, y));
+}
+
+/// Compute the main-window size (near-fullscreen, clamped) and centered position
+/// — both in logical units — from a monitor's scale factor and physical work
+/// area. Extracted so the geometry is unit-testable without a live
+/// window/monitor.
+fn main_window_geometry(
+    scale: f64,
+    area_w: f64,
+    area_h: f64,
+    area_x: f64,
+    area_y: f64,
+) -> (f64, f64, f64, f64) {
+    let area_w = area_w / scale;
+    let area_h = area_h / scale;
+    let area_x = area_x / scale;
+    let area_y = area_y / scale;
 
     let width = (area_w * 0.94).clamp(1024.0, area_w);
     let height = (area_h * 0.94).clamp(720.0, area_h);
-    let _ = window.set_size(tauri::LogicalSize::new(width, height));
-    // Center horizontally; sit a bit above vertical center (smaller top gap).
-    let _ = window.set_position(tauri::LogicalPosition::new(
-        area_x + (area_w - width) / 2.0,
-        area_y + (area_h - height) * 0.35,
-    ));
+    let x = area_x + (area_w - width) / 2.0;
+    let y = area_y + (area_h - height) * 0.35;
+    (width, height, x, y)
 }
 
 /// Set a crisp taskbar icon on Windows by loading the multi-size ICO directly.
@@ -212,18 +232,31 @@ fn icon_ico_bytes() -> &'static [u8] {
 /// frontend bridges this to its typed event bus (§6.1, C1).
 pub(crate) fn emit_review_updated(thread_id: &str) {
     if let Some(handle) = APP_HANDLE.get() {
-        use tauri::Emitter;
-        let _ = handle.emit("review-updated", thread_id.to_string());
+        emit_review_updated_on(handle, thread_id);
     }
+}
+
+/// Emit the "review-updated" event on a caller-supplied handle. Extracted so the
+/// `.emit()` body is testable with a mock handle (the process-global
+/// `APP_HANDLE` is only populated when the real app runs).
+fn emit_review_updated_on<R: tauri::Runtime>(handle: &tauri::AppHandle<R>, thread_id: &str) {
+    use tauri::Emitter;
+    let _ = handle.emit("review-updated", thread_id.to_string());
 }
 
 /// Notify the frontend that a remote (phone) client created/drove a thread, so
 /// the thread list + runs refresh and the conversation shows up live.
 pub(crate) fn emit_remote_activity(thread_id: &str) {
     if let Some(handle) = APP_HANDLE.get() {
-        use tauri::Emitter;
-        let _ = handle.emit("remote-activity", thread_id.to_string());
+        emit_remote_activity_on(handle, thread_id);
     }
+}
+
+/// Emit the "remote-activity" event on a caller-supplied handle (see
+/// [`emit_review_updated_on`]).
+fn emit_remote_activity_on<R: tauri::Runtime>(handle: &tauri::AppHandle<R>, thread_id: &str) {
+    use tauri::Emitter;
+    let _ = handle.emit("remote-activity", thread_id.to_string());
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -330,10 +363,7 @@ pub(crate) fn emit_thread_runtime_updated(
                         }
                     }
                     if let Some(handle) = APP_HANDLE.get() {
-                        use tauri::Emitter;
-                        for update in coalesce_runtime_updates(first, rest) {
-                            let _ = handle.emit("thread-runtime-updated", update);
-                        }
+                        emit_runtime_updates_on(handle, coalesce_runtime_updates(first, rest));
                     }
                 }
             })
@@ -373,6 +403,16 @@ pub(crate) fn emit_approvals_updated(thread_id: &str, approval_request_id: &str)
     let Some(handle) = APP_HANDLE.get() else {
         return;
     };
+    emit_approvals_updated_on(handle, thread_id, approval_request_id);
+}
+
+/// Emit the "approvals-updated" event on a caller-supplied handle (see
+/// [`emit_review_updated_on`]).
+fn emit_approvals_updated_on<R: tauri::Runtime>(
+    handle: &tauri::AppHandle<R>,
+    thread_id: &str,
+    approval_request_id: &str,
+) {
     use tauri::Emitter;
     let _ = handle.emit(
         "approvals-updated",
@@ -381,6 +421,18 @@ pub(crate) fn emit_approvals_updated(thread_id: &str, approval_request_id: &str)
             approval_request_id: approval_request_id.to_string(),
         },
     );
+}
+
+/// Emit the coalesced "thread-runtime-updated" updates on a caller-supplied
+/// handle (see [`emit_review_updated_on`]).
+fn emit_runtime_updates_on<R: tauri::Runtime>(
+    handle: &tauri::AppHandle<R>,
+    updates: Vec<ThreadRuntimeUpdate>,
+) {
+    use tauri::Emitter;
+    for update in updates {
+        let _ = handle.emit("thread-runtime-updated", update);
+    }
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -403,25 +455,52 @@ fn start_thread_streaming_monitor() {
     tauri::async_runtime::spawn(async move {
         let mut previous: Option<Vec<String>> = None;
         loop {
-            let mut thread_ids = list_streaming_thread_ids().await.unwrap_or_default();
-            thread_ids.sort_unstable();
-            thread_ids.dedup();
-            if previous.as_ref() != Some(&thread_ids) {
-                previous = Some(thread_ids.clone());
-                if let Some(handle) = APP_HANDLE.get() {
-                    use tauri::Emitter;
-                    let _ = handle.emit(
-                        "thread-streaming-updated",
-                        ThreadStreamingUpdate {
-                            revision: next_runtime_revision(),
-                            thread_ids,
-                        },
-                    );
-                }
+            if let Some(handle) = APP_HANDLE.get() {
+                sample_thread_streaming(handle, &mut previous).await;
             }
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
     });
+}
+
+/// Sample the agent's streaming thread ids once and, if the set changed, emit a
+/// "thread-streaming-updated" notification on the given handle. Extracted so the
+/// change-detection + emit body is testable without the process-global
+/// `APP_HANDLE` or a real agent.
+async fn sample_thread_streaming<R: tauri::Runtime>(
+    handle: &tauri::AppHandle<R>,
+    previous: &mut Option<Vec<String>>,
+) {
+    sample_thread_streaming_with(handle, previous, list_streaming_thread_ids).await;
+}
+
+/// The injectable core of [`sample_thread_streaming`]: fetch the current
+/// streaming thread ids, then — if the set changed — emit a
+/// "thread-streaming-updated" notification on the given handle. Extracted so the
+/// change-detection + emit body is testable with a deterministic id source.
+async fn sample_thread_streaming_with<R, F, Fut>(
+    handle: &tauri::AppHandle<R>,
+    previous: &mut Option<Vec<String>>,
+    fetch: F,
+) where
+    R: tauri::Runtime,
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<String>, crate::AppError>>,
+{
+    let mut thread_ids = fetch().await.unwrap_or_default();
+    thread_ids.sort_unstable();
+    thread_ids.dedup();
+    if previous.as_ref() != Some(&thread_ids) {
+        *previous = Some(thread_ids.clone());
+        use tauri::Emitter;
+        let _ = handle.emit(
+            "thread-streaming-updated",
+            ThreadStreamingUpdate {
+                revision: next_runtime_revision(),
+                thread_ids,
+            },
+        );
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -752,7 +831,11 @@ pub fn run() {
 
 #[cfg(test)]
 mod runtime_update_tests {
-    use super::{coalesce_runtime_updates, ThreadRuntimeUpdate};
+    use super::{
+        coalesce_runtime_updates, emit_approvals_updated_on, emit_remote_activity_on,
+        emit_review_updated_on, emit_runtime_updates_on, main_window_geometry,
+        sample_thread_streaming_with, size_main_window_to_screen, ThreadRuntimeUpdate,
+    };
 
     fn update(run_id: &str, revision: i64, status: &str, reset: bool) -> ThreadRuntimeUpdate {
         ThreadRuntimeUpdate {
@@ -807,5 +890,84 @@ mod runtime_update_tests {
         );
 
         assert_eq!(updates, vec![update("run-1", 2, "finalizing", false)]);
+    }
+
+    #[test]
+    fn main_window_geometry_scales_clamps_and_centers() {
+        // 2x scale → logical work area is 2000x1000 at (50, 25).
+        let (width, height, x, y) = main_window_geometry(2.0, 4000.0, 2000.0, 100.0, 50.0);
+        assert_eq!(width, 1880.0);
+        assert_eq!(height, 940.0);
+        assert_eq!(x, 50.0 + (2000.0 - 1880.0) / 2.0);
+        assert_eq!(y, 25.0 + (1000.0 - 940.0) * 0.35);
+    }
+
+    #[test]
+    fn main_window_geometry_clamps_to_minimums() {
+        // 0.94×1050 = 987 < 1024 → clamps to the 1024 floor; same for height.
+        let (width, height, _, _) = main_window_geometry(1.0, 1050.0, 730.0, 0.0, 0.0);
+        assert_eq!(width, 1024.0);
+        assert_eq!(height, 720.0);
+    }
+
+    #[test]
+    fn size_main_window_returns_without_main_window() {
+        // `mock_app` has no "main" window, so this takes the early-return path.
+        let app = tauri::test::mock_app();
+        size_main_window_to_screen(&app);
+    }
+
+    #[test]
+    fn size_main_window_returns_without_monitor() {
+        // A mock "main" window has no monitor, so the monitor lookup fails and
+        // the function returns before sizing/positioning.
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build mock app");
+        let _window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("build webview");
+        size_main_window_to_screen(&app);
+    }
+
+    #[test]
+    fn emit_helpers_emit_on_mock_handle() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle();
+        emit_review_updated_on(handle, "thread-1");
+        emit_remote_activity_on(handle, "thread-1");
+        emit_approvals_updated_on(handle, "thread-1", "approval-1");
+        emit_runtime_updates_on(
+            handle,
+            vec![
+                update("run-1", 1, "running", false),
+                update("run-1", 2, "completed", false),
+            ],
+        );
+    }
+
+    #[tokio::test]
+    async fn sample_thread_streaming_emits_only_on_change() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle();
+        let mut previous: Option<Vec<String>> = None;
+        // First sample emits and records the new set.
+        sample_thread_streaming_with(handle, &mut previous, || async {
+            Ok(vec!["a".to_string(), "a".to_string(), "b".to_string()])
+        })
+        .await;
+        assert_eq!(previous, Some(vec!["a".to_string(), "b".to_string()]));
+        // Unchanged sample → no emit, `previous` keeps the same value.
+        sample_thread_streaming_with(handle, &mut previous, || async {
+            Ok(vec!["b".to_string(), "a".to_string()])
+        })
+        .await;
+        assert_eq!(previous, Some(vec!["a".to_string(), "b".to_string()]));
+        // Changed sample → emit + record the new set.
+        sample_thread_streaming_with(handle, &mut previous, || async {
+            Ok(vec!["c".to_string()])
+        })
+        .await;
+        assert_eq!(previous, Some(vec!["c".to_string()]));
     }
 }

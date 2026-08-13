@@ -267,10 +267,7 @@ pub async fn poll(device_code: &str) -> Result<FutureLoginPoll, AppError> {
         // boot anyway).
         let base_url = format!("{platform}/api");
         let registered = crate::agent_bridge::config::future_login(key.trim(), &base_url).await?;
-        if !registered {
-            crate::auth_store::set_future_login(key.trim(), &base_url)?;
-            let _ = crate::agent_bridge::reload_agent_credentials().await;
-        }
+        persist_future_login_if_needed(registered, key.trim(), &base_url).await?;
         return Ok(FutureLoginPoll::of("authorized"));
     }
 
@@ -365,19 +362,39 @@ fn validate_browser_url(target: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Write the login key to `auth.json` and reload agent credentials when the
+/// RPC-first write did not already persist it (agent unreachable, or a legacy
+/// agent without `set_auth`). Extracted so the already-registered no-op path is
+/// testable without a live mock agent.
+async fn persist_future_login_if_needed(
+    registered: bool,
+    key: &str,
+    base_url: &str,
+) -> Result<(), AppError> {
+    if !registered {
+        crate::auth_store::set_future_login(key, base_url)?;
+        let _ = crate::agent_bridge::reload_agent_credentials().await;
+    }
+    Ok(())
+}
+
 /// Open a URL in the default browser, detached and best-effort (mirrors the
 /// CLI). Caller must validate the URL first (see [`validate_browser_url`]).
 /// Uses the `open` crate (ShellExecuteW on Windows) — never `cmd /c start`,
 /// which re-parses the URL so a `&` truncates it and `&cmd`-style payloads
 /// from a hostile platform host would execute.
 fn open_browser(url: &str) {
-    // Best-effort launch of the default browser. In tests this is a no-op so a
-    // `start()` success test doesn't spawn the real browser; the side effect is
-    // irrelevant to the code paths under test.
-    if !cfg!(test) {
-        let _ = open::that_detached(url);
-    }
+    // The opener is swappable so tests can assert the URL is passed through
+    // without launching a real browser (`open::that_detached` is a real side
+    // effect that would escape the test process).
+    let opener = BROWSER_OPENER.get_or_init(|| |url: &str| open::that_detached(url));
+    let _ = opener(url);
 }
+
+/// Swappable default-browser opener; production uses the default `open` crate
+/// launcher, tests install a no-op.
+static BROWSER_OPENER: std::sync::OnceLock<fn(&str) -> std::io::Result<()>> =
+    std::sync::OnceLock::new();
 
 #[cfg(target_os = "macos")]
 const LOGIN_PLATFORM: &str = "macOS";
@@ -498,6 +515,28 @@ mod tests {
         assert_eq!(future_api_key().unwrap(), "sekret");
     }
 
+    #[test]
+    fn open_browser_uses_injected_opener() {
+        let _ = BROWSER_OPENER.set(|_| Ok(()));
+        open_browser("https://example.com/device");
+    }
+
+    #[tokio::test]
+    async fn persist_future_login_skips_when_already_registered() {
+        // RPC-first path already persisted the key → the local fallback no-ops.
+        persist_future_login_if_needed(true, "key", "https://future-os.cn/api")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn broken_agent_endpoint_restores_unset_env() {
+        std::env::remove_var("FUTURE_AGENT_GRPC_ADDR");
+        let value = with_broken_agent_endpoint(|| async { 42 }).await;
+        assert_eq!(value, 42);
+        assert!(std::env::var("FUTURE_AGENT_GRPC_ADDR").is_err());
+    }
+
     // ─── async OAuth + account calls against a mock HTTP server ───────────
 
     fn mock_http_server(responses: Vec<(u16, &'static str, Vec<u8>)>) -> String {
@@ -527,6 +566,24 @@ mod tests {
 
     fn point_auth_with_key(url: &str) {
         crate::auth_store::set_future_login("sekret", &format!("{url}/api")).unwrap();
+    }
+
+    /// Run a closure with `FUTURE_AGENT_GRPC_ADDR` pointed at an unparseable
+    /// endpoint so `connect_agent` fails deterministically, then restore the
+    /// previous value (or remove it when it was unset).
+    async fn with_broken_agent_endpoint<F, Fut, T>(f: F) -> T
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = T>,
+    {
+        let previous = std::env::var("FUTURE_AGENT_GRPC_ADDR").ok();
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
+        let result = f().await;
+        match previous {
+            Some(value) => std::env::set_var("FUTURE_AGENT_GRPC_ADDR", value),
+            None => std::env::remove_var("FUTURE_AGENT_GRPC_ADDR"),
+        }
+        result
     }
 
     #[tokio::test]
@@ -635,6 +692,9 @@ mod tests {
     #[tokio::test]
     async fn start_returns_device_codes() {
         let _home = crate::auth_store::test_support::HomeGuard::new("fl-start");
+        // The success path reaches `open_browser`; install a no-op opener so it
+        // doesn't launch a real browser.
+        let _ = BROWSER_OPENER.set(|_| Ok(()));
         let body = r#"{"device_code":"dc-123","user_code":"uc-456","verification_uri":"https://example.com/device","verification_uri_complete":"https://example.com/device?code=uc-456","expires_in":300,"interval":5}"#;
         let url = mock_http_server(vec![(200, "application/json", body.as_bytes().to_vec())]);
         point_auth(&url);
@@ -847,13 +907,7 @@ mod tests {
         )]);
         point_auth(&url);
 
-        let previous = std::env::var("FUTURE_AGENT_GRPC_ADDR").ok();
-        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
-        let out = poll("dc").await.unwrap();
-        match previous {
-            Some(value) => std::env::set_var("FUTURE_AGENT_GRPC_ADDR", value),
-            None => std::env::remove_var("FUTURE_AGENT_GRPC_ADDR"),
-        }
+        let out = with_broken_agent_endpoint(|| poll("dc")).await.unwrap();
 
         assert_eq!(out.status, "authorized");
         assert_eq!(
