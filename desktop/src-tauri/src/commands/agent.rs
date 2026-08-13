@@ -94,4 +94,26 @@ mod tests {
         assert_eq!(result.model_count, 3);
         script_mock_agent(MockScript::default());
     }
+
+    #[tokio::test]
+    async fn agent_prompt_wrapper_delegates_and_propagates_errors() {
+        let _lock = mock_agent_lock();
+        let _home = crate::auth_store::test_support::HomeGuard::new("cmd-agent-prompt");
+        crate::store::initialize_app_store().expect("init store");
+        crate::commands::agent_mock::ensure_mock_agent();
+        // A thread the store has never seen fails before any prompt work — the
+        // wrapper's job is just to forward the error (and the message).
+        let error = agent_prompt(
+            "hi".to_string(),
+            None,
+            "ghost".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect_err("prompt should fail for a missing thread");
+        assert!(!error.to_string().is_empty());
+    }
 }

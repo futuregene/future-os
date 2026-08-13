@@ -40,3 +40,67 @@ pub async fn delete_custom_provider(
 ) -> Result<agent_providers::ProvidersView, crate::AppError> {
     agent_providers::delete_custom_provider(id).await
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::await_holding_lock)]
+    use super::*;
+    use crate::auth_store::test_support::HomeGuard;
+    use crate::remote::test_support::{ensure_mock_agent, mock_agent_lock};
+
+    #[tokio::test]
+    async fn command_wrappers_delegate_to_the_agent() {
+        let _lock = mock_agent_lock();
+        let _home = HomeGuard::new("cmd-providers");
+        let agent = ensure_mock_agent();
+
+        // list
+        let view = list_agent_providers().await.expect("list");
+        assert!(view.builtin.iter().any(|p| p.id == "deepseek"));
+
+        // upsert (create)
+        let view = upsert_custom_provider(agent_providers::UpsertCustomProviderInput {
+            id: "acme".to_string(),
+            name: "Acme".to_string(),
+            api: "openai-completions".to_string(),
+            base_url: "https://api.acme.com/v1".to_string(),
+            api_key: None,
+            models: vec![],
+            create: true,
+        })
+        .await
+        .expect("upsert");
+        assert!(agent.served("upsert_provider", ""));
+        assert!(view.builtin.iter().any(|p| p.id == "deepseek"));
+
+        // update key
+        let view = update_builtin_provider_key(agent_providers::UpdateBuiltinProviderKeyInput {
+            id: "deepseek".to_string(),
+            api_key: Some("sk-test".to_string()),
+        })
+        .await
+        .expect("key");
+        assert!(agent.served("set_auth", ""));
+        assert!(view.builtin.iter().any(|p| p.id == "deepseek"));
+
+        // set base url
+        let view = set_builtin_provider_base_url(
+            agent_providers::SetBuiltinProviderBaseUrlInput {
+                id: "deepseek".to_string(),
+                base_url: "https://custom.example.com/v1".to_string(),
+            },
+        )
+        .await
+        .expect("base url");
+        assert!(agent.served("upsert_provider", ""));
+        assert!(view.builtin.iter().any(|p| p.id == "deepseek"));
+
+        // delete
+        let view = delete_custom_provider("acme".to_string())
+            .await
+            .expect("delete");
+        assert!(agent.served("delete_provider", ""));
+        assert!(view.builtin.iter().any(|p| p.id == "deepseek"));
+    }
+}
+
