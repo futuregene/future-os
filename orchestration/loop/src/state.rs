@@ -622,13 +622,39 @@ pub fn delta_kind_changes_frontier(kind: &str) -> bool {
     )
 }
 
+/// P0-2: latest delivery-outcome state per work item — rebuilt by replay
+/// from `DeliveryOutcomeRecorded` / `FollowthroughCreated` events. The
+/// signal chain: `delivered` (pending verification) → `verified` / `failed`
+/// / `rework` (terminal resolutions). Domain rules live in
+/// [`crate::work_items::delivery_outcome`].
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DeliveryState {
+    pub todo_id: String,
+    /// `delivered` (pending) | `verified` | `failed` | `rework`.
+    pub outcome: String,
+    pub note: Option<String>,
+    /// Run-turn counter at delivery time (0 = recorded without run context).
+    pub delivered_turn: u32,
+    /// Follow-up todo auto-created by outcome_followthrough (P0-2②) — the
+    /// dedupe stamp so the follow-through fires exactly once per cycle.
+    pub followthrough_todo_id: Option<String>,
+    /// Per-todo outcome sequence number of the latest event (audit ordering;
+    /// also what makes each cycle's events content-distinct).
+    pub seq: u32,
+    pub updated_at: u64,
+}
+
 /// Agent peer profile (LoopX: coordination.agent_profiles — a registered
 /// peer plus the capabilities it declares; the capability gate uses these to
-/// decide which todos an agent may run).
+/// decide which todos an agent may run). `workspaces` is the P0-1 workspace
+/// guard declaration: the normalized absolute path set this agent writes
+/// into (empty = undeclared → the guard is fail-open for this agent).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AgentProfile {
     pub id: String,
     pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub workspaces: Vec<String>,
 }
 
 impl AgentProfile {
@@ -717,12 +743,60 @@ pub struct Goal {
     /// G-3: quota slots spent as recorded by QuotaSpent events (replay
     /// projection — the authoritative spend ledger stays runs.jsonl).
     pub quota_spent_slots: u32,
+    /// P0-2: per-work-item delivery outcome states (latest event wins —
+    /// folded from DeliveryOutcomeRecorded / FollowthroughCreated).
+    pub delivery_states: Vec<DeliveryState>,
     /// Per-tool quota read model (LoopX 对比改进项 ②): (ts, tool) pairs
     /// folded from accepted `CapabilityInvoked` events — the invocation
     /// count behind [`crate::quota::tool_quota`]. Rejected invocations are
     /// ledgered for audit but never folded in. Bounded by
     /// [`CAPABILITY_INVOCATION_PROJECTION_CAP`] (oldest dropped).
     pub capability_invocations: Vec<(u64, String)>,
+    /// P1-2②: replay-time freshness stamp of the event ledger this state
+    /// was rebuilt from (in-memory only — never persisted; `None` for
+    /// hand-built goals). The decision kernel copies it onto every
+    /// `ShouldRunPacket` as `decision_freshness`.
+    #[serde(skip)]
+    pub decision_freshness: Option<DecisionFreshness>,
+    /// P1-3①: latest scheduler heartbeat per agent (epoch secs), folded
+    /// from `SchedulerTicked`. The liveness check compares now against this.
+    #[serde(default)]
+    pub scheduler_heartbeats: std::collections::BTreeMap<String, u64>,
+    /// P1-3①: automation liveness breach alerts, folded from
+    /// `AutomationLivenessAlert` (append-only; recovery is derived by
+    /// comparing against `scheduler_heartbeats`).
+    #[serde(default)]
+    pub liveness_alerts: Vec<LivenessAlert>,
+}
+
+/// P1-3①: one automation-liveness breach alert (LoopX automation_liveness):
+/// the scheduler heartbeat for `agent_id` went silent past the threshold.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LivenessAlert {
+    pub agent_id: String,
+    pub elapsed_secs: u64,
+    pub threshold_secs: u64,
+    /// 1-based alert ordinal for this (goal, agent) scope.
+    pub consecutive: u32,
+    pub ts: u64,
+}
+
+/// P1-2②: freshness stamp of the event ledger a decision was compiled
+/// against (LoopX `runtime/decision_freshness.py` — decisions annotate the
+/// max seq / timestamp of the state they read, so a consumer can tell a
+/// stale decision from a fresh one without re-running the kernel).
+/// Stamped by `Store::replay`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DecisionFreshness {
+    /// Ledger length at read time = the 1-based sequence number of the
+    /// newest event the decision state was rebuilt from.
+    pub events_max_seq: u64,
+    /// Newest event timestamp (epoch secs) among the events read (`None`
+    /// when the ledger was empty).
+    #[serde(default)]
+    pub events_max_ts: Option<u64>,
+    /// When the state was replayed (epoch secs).
+    pub read_at: u64,
 }
 
 /// Safety bound on the per-tool invocation projection folded into
@@ -757,7 +831,11 @@ impl Goal {
             created_at: now_epoch(),
             next_index: 0,
             quota_spent_slots: 0,
+            delivery_states: vec![],
             capability_invocations: vec![],
+            decision_freshness: None,
+            scheduler_heartbeats: std::collections::BTreeMap::new(),
+            liveness_alerts: vec![],
         }
     }
 
@@ -913,7 +991,68 @@ impl Goal {
         self.agent_profiles.push(AgentProfile {
             id: agent_id.to_string(),
             capabilities,
+            workspaces: vec![],
         });
+    }
+
+    /// The latest delivery-outcome state for a work item (P0-2).
+    pub fn delivery_state(&self, todo_id: &str) -> Option<&DeliveryState> {
+        self.delivery_states.iter().find(|d| d.todo_id == todo_id)
+    }
+
+    /// Fold a `DeliveryOutcomeRecorded` event into the read model (latest
+    /// wins). A fresh `delivered` resets the cycle: the turn stamp moves and
+    /// the follow-through stamp clears, so a re-delivered item can fire its
+    /// own follow-through later. Resolutions keep the original turn stamp.
+    pub fn apply_delivery_outcome(
+        &mut self,
+        todo_id: &str,
+        outcome: &str,
+        note: Option<String>,
+        delivered_turn: u32,
+        seq: u32,
+        ts: u64,
+    ) {
+        let fresh_delivery = outcome == crate::work_items::delivery_outcome::OUTCOME_DELIVERED;
+        if let Some(d) = self
+            .delivery_states
+            .iter_mut()
+            .find(|d| d.todo_id == todo_id)
+        {
+            d.outcome = outcome.to_string();
+            if note.is_some() {
+                d.note = note;
+            }
+            if fresh_delivery {
+                d.delivered_turn = delivered_turn;
+                d.followthrough_todo_id = None;
+            }
+            d.seq = seq;
+            d.updated_at = ts;
+        } else {
+            self.delivery_states.push(DeliveryState {
+                todo_id: todo_id.to_string(),
+                outcome: outcome.to_string(),
+                note,
+                delivered_turn: if fresh_delivery { delivered_turn } else { 0 },
+                followthrough_todo_id: None,
+                seq,
+                updated_at: ts,
+            });
+        }
+    }
+
+    /// Fold a `FollowthroughCreated` event (P0-2②) — stamps the auto-created
+    /// follow-up todo on the pending delivery so it fires exactly once.
+    pub fn apply_followthrough(&mut self, source_todo_id: &str, followup_todo_id: &str, ts: u64) {
+        if let Some(d) = self
+            .delivery_states
+            .iter_mut()
+            .find(|d| d.todo_id == source_todo_id)
+        {
+            d.followthrough_todo_id = Some(followup_todo_id.to_string());
+            d.updated_at = ts;
+        }
     }
 
     /// Done advancement todos that declared NO successor and NO no-follow-up

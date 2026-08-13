@@ -42,7 +42,7 @@ pub fn list_threads() -> Result<Vec<ThreadRecord>, crate::AppError> {
         "SELECT {THREAD_COLUMNS}
              FROM threads
              WHERE status != 'deleted'
-             ORDER BY pinned DESC, COALESCE(last_message_at, updated_at) DESC"
+             ORDER BY pinned DESC, COALESCE(last_message_at, last_opened_at, updated_at) DESC"
     ))?;
     let rows = stmt.query_map([], thread_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -251,13 +251,16 @@ pub fn move_thread_to_workspace(
 }
 
 pub fn pin_thread(input: PinThreadInput) -> Result<ThreadRecord, crate::AppError> {
-    let now = now_millis();
+    // `updated_at` is deliberately untouched: pinning is an ordering flag, not
+    // an activity event. If it stamped `updated_at`, unpinning a thread would
+    // push it to the top of the recency sort (it just became "most recently
+    // updated") and the sidebar order would appear not to change.
     let conn = connect()?;
     conn.execute(
         "UPDATE threads
-         SET pinned = ?1, updated_at = ?2
-         WHERE id = ?3 AND status != 'deleted'",
-        params![if input.pinned { 1 } else { 0 }, now, input.thread_id],
+         SET pinned = ?1
+         WHERE id = ?2 AND status != 'deleted'",
+        params![if input.pinned { 1 } else { 0 }, input.thread_id],
     )?;
 
     loaded(get_thread(&input.thread_id)?, "Thread")

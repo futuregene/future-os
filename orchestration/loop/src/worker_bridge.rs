@@ -63,6 +63,14 @@ pub async fn run_bridge(store: &mut Store, opts: &BridgeOptions) -> Result<()> {
             std::time::SystemTime::now(),
             opts.agent_id.as_deref(),
         );
+        // P1-1②③: persist the compact decision projection + the heartbeat
+        // receipt for this turn (projection-only; replay ignores both).
+        crate::quota::decision_summary::record_turn_decision(
+            store,
+            &packet,
+            opts.agent_id.as_deref(),
+            turn,
+        )?;
         let mode = packet.interaction_contract.mode;
         if mode == TurnMode::Terminal {
             println!("BRIDGE terminal: validated closure — stopping");

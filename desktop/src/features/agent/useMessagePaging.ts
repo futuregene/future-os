@@ -1,5 +1,5 @@
+import type { AgentMessage } from "@future-os/thread-projection";
 import type { RefObject } from "react";
-import type { AgentMessage } from "./agentThreadTypes";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 /**

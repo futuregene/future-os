@@ -1,11 +1,10 @@
+import type { AgentMessage, AssistantRunProjection, MessageSegment, RunProjector } from "@future-os/thread-projection";
 import type { Dispatch, SetStateAction } from "react";
 import type { StoredRun, StoredRunEvent } from "../../integrations/storage/threadStore";
-import type { AssistantRunProjection, RunProjector } from "./agentActivity";
-import type { AgentMessage, MessageSegment } from "./agentThreadTypes";
+import { buildAssistantRunProjection, createRunProjector, matchesSettledRun } from "@future-os/thread-projection";
 import { getRun, listRunEvents, listRunEventsBulk, listRunEventsSince, storedTimeToIso } from "../../integrations/storage/threadStore";
 import { emitFutureEvent } from "../../lib/futureEvents";
-import { buildAssistantRunProjection, createRunProjector } from "./agentActivity";
-import { buildAgentFailureContent, matchesSettledRun } from "./agentMessageFormatters";
+import { buildAgentFailureContent } from "./agentMessageFormatters";
 
 /** Apply a patch to the single message with `id`, leaving the rest untouched. */
 export function patchMessage(

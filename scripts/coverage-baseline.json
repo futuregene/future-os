@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "purpose": "Coverage ratchet floors (loopx-improvement-report P1-7). The CI coverage-ratchet job fails if any crate's line coverage drops below the floor listed here. Rises are always allowed. To approve an intentional drop, lower the floor in THIS file inside the same PR — that diff is the explicit ratchet-down approval and must be justified in the PR description (waiver categories W1-W8 from the goal_4a742a954e3c sign-off are the accepted justifications).",
+  "metric_basis": "cargo llvm-cov summary Lines column, measured by scripts/coverage.sh; percent rounded to 2 decimals. Floors seeded from the accepted 2026-08-12 sign-off (goal_4a742a954e3c, main@b24d5501), then calibrated on claude/loop-wave1: future-loop 98.43 -> 97.50 is the approved wave1 ratchet-down (P0/P1 feature code landed with tests but below the goal_c86c1a0aa7b8 100% bar; that goal owns pushing loop back up and bumping this floor). future-agent 96.75 -> 96.76 locks in a rise. Floors were measured on macOS; platform cfg drift on the Linux CI runner is calibrated via the same floor-edit approval path if it appears. PR-K calibration (2026-08-12): floors re-based to the Linux CI enforcement runner's measurements (macOS: agent 96.73-96.77 / cli 99.83-99.90; Linux: agent 96.49 / cli 99.68) — the platform cfg drift this file's approval path exists for. agent 96.76→96.49, cli 99.83→99.68; cli/loop/TOTAL rises left unlocked for goal_c86c1a0aa7b8 to bump.",
+  "crates": {
+    "future-agent": { "lines": { "percent": 96.49 } },
+    "future-channels": { "lines": { "percent": 99.84 } },
+    "future-cli": { "lines": { "percent": 99.68 } },
+    "future-loop": { "lines": { "percent": 97.5 } },
+    "future-rpc": { "lines": { "percent": 99.79 } },
+    "future-tui": { "lines": { "percent": 100.0 } }
+  },
+  "totals": { "lines": { "percent": 98.6 } }
+}

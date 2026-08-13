@@ -1,5 +1,5 @@
+import { formatRequestedAction, parseAction, parseSaveSuggestion, unwrapNestedJson } from "@future-os/thread-projection";
 import { describe, expect, it } from "vitest";
-import { formatRequestedAction, parseAction, parseSaveSuggestion, unwrapNestedJson } from "./approvalPayload";
 
 describe("parseAction", () => {
   it("returns null for null/undefined/empty payloads", () => {

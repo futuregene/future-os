@@ -1256,9 +1256,14 @@ impl ServerSession {
         }
 
         // Load workspace memory (FUTURE.md) — a separate layer from project
-        // context, read fresh each run (cwd only; workspace-scoped).
+        // context, read fresh each run (cwd only; workspace-scoped). The index
+        // is linted and capped at load so bloat, malformed lines, and dead
+        // links surface to the model as a repairable warning.
         let memory_path = std::path::Path::new(cwd).join("FUTURE.md");
-        let memory_content = std::fs::read_to_string(&memory_path).unwrap_or_default();
+        let memory_content = crate::prompt::lint_memory_index(
+            &std::fs::read_to_string(&memory_path).unwrap_or_default(),
+            std::path::Path::new(cwd),
+        );
 
         crate::prompt::build_prompt(&crate::prompt::PromptOptions {
             working_directory: cwd.replace('\\', "/"),

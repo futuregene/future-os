@@ -1,9 +1,9 @@
+import type { MessageAttachment } from "@future-os/thread-projection";
 import type { StoredRun, StoredThread } from "../../integrations/storage/threadStore";
-import type { MessageAttachment } from "./agentThreadTypes";
+import { matchesSettledRun } from "@future-os/thread-projection";
 import { useCallback, useEffect, useRef } from "react";
 import { abortRun, getLatestRun } from "../../integrations/storage/threadStore";
 import { usePolling } from "../../lib/usePolling";
-import { matchesSettledRun } from "./agentMessageFormatters";
 import { useRunReattach } from "./useRunReattach";
 import { useSendMessage } from "./useSendMessage";
 import { useThreadMessages } from "./useThreadMessages";

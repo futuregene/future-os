@@ -1,6 +1,6 @@
+import type { AgentMessage } from "@future-os/thread-projection";
 import type { Dispatch, SetStateAction } from "react";
 import type { StoredRun, StoredThread } from "../../integrations/storage/threadStore";
-import type { AgentMessage } from "./agentThreadTypes";
 import type { ComposerSendPayload } from "./Composer";
 import { listen } from "@tauri-apps/api/event";
 import i18n from "../../i18n";

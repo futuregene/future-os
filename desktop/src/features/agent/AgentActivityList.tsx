@@ -1,4 +1,4 @@
-import type { AgentActivityItem, AgentActivityKind } from "./agentThreadTypes";
+import type { AgentActivityItem, AgentActivityKind } from "@future-os/thread-projection";
 import { Brain, ChevronLeft, ChevronRight, FileText, Pencil, TerminalSquare, TriangleAlert } from "lucide-react";
 import { useCallback, useState } from "react";
 import i18n from "../../i18n";

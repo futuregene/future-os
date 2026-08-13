@@ -192,5 +192,10 @@ else
     echo "CLEAN_NATIVE_BUILD=1 — clearing Xcode DerivedData before building."
     run_args+=(--no-build-cache)
   fi
-  cd "$MOBILE_DIR" && exec npx expo run:ios "${run_args[@]}"
+  cd "$MOBILE_DIR"
+  if [[ "${#run_args[@]}" -gt 0 ]]; then
+    exec npx expo run:ios "${run_args[@]}"
+  else
+    exec npx expo run:ios
+  fi
 fi

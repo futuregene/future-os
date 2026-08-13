@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::time::SystemTime;
 
-use crate::cli::registry::CommandRegistry;
+use crate::cli::registry::{CommandRegistry, Journey};
 use crate::decision::{complete_todo, decide_for, MAX_REPAIR_ATTEMPTS};
 use crate::executor::{execute_turn, writeback};
 use crate::state::{now_epoch, Goal, RunRecord, TaskClass, Todo, TodoStatus};
@@ -129,7 +129,7 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         "profile" => cmd_profile(&mut store, &args[1..]),
         "status" => cmd_status(&store, &args[1..]),
         "quota" => cmd_quota(&store, &args[1..]),
-        "scheduler" => cmd_scheduler(&store, &args[1..]),
+        "scheduler" => cmd_scheduler(&mut store, &args[1..]),
         "store" => cmd_store(&mut store, &args[1..]),
         "backfill" => cmd_backfill(&mut store, &args[1..]),
         "privacy" => cmd_privacy(&store, &args[1..]),
@@ -152,7 +152,11 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         "task-graph" => cmd_task_graph(&store, &args[1..]),
         "attention" => cmd_attention(&store, &args[1..]),
         "inbox" => cmd_inbox(&store, &args[1..]),
+        "delivery" => cmd_delivery(&mut store, &args[1..]),
+        "reward-memory" => cmd_reward_memory(&mut store, &args[1..]),
+        "decision-context" => cmd_decision_context(&mut store, &args[1..]),
         "registry" => cmd_registry(&registry, &args[1..]),
+        "commands" => cmd_commands(&registry, &args[1..]),
         // ── P4 commands (G-18 / G-19 / G-20 / G-27) ───────────────────────
         "benchmark" => cmd_benchmark(&store, &args[1..]).await,
         "replay" => cmd_replay(&store, &args[1..]),
@@ -174,6 +178,67 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         }
     }
 }
+
+/// P1-9: operator journey assignments for the statically registered
+/// commands (`future loop commands` grouped view; LoopX `loopx commands`
+/// five-group presentation). Capability command hooks are not listed here —
+/// they keep the maintainer default as ecosystem/adapter surface. A test
+/// (`journey_assignments_cover_every_static_command`) keeps this table in
+/// sync with `build_cli_registry`.
+const JOURNEY_ASSIGNMENTS: &[(&str, Journey)] = &[
+    // Start here — first goal, first status, install checks
+    ("goal", Journey::Starter),
+    ("status", Journey::Starter),
+    ("doctor", Journey::Starter),
+    ("agent", Journey::Starter),
+    // Daily operator — the day-to-day control surface
+    ("todo", Journey::Daily),
+    ("gate", Journey::Daily),
+    ("replan", Journey::Daily),
+    ("lease", Journey::Daily),
+    ("task-graph", Journey::Daily),
+    ("quota", Journey::Daily),
+    ("scheduler", Journey::Daily),
+    ("attention", Journey::Daily),
+    ("inbox", Journey::Daily),
+    ("delivery", Journey::Daily),
+    ("reward-memory", Journey::Daily),
+    ("decision-context", Journey::Daily),
+    ("diagnose", Journey::Daily),
+    ("evidence-log", Journey::Daily),
+    ("todo-event", Journey::Daily),
+    ("history", Journey::Daily),
+    ("handoff", Journey::Daily),
+    // Loop driver — per-turn execution surface for the driving agent
+    ("run", Journey::Driver),
+    ("turn", Journey::Driver),
+    ("heartbeat-prompt", Journey::Driver),
+    ("worker-bridge", Journey::Driver),
+    ("list", Journey::Driver),
+    ("scope", Journey::Driver),
+    ("lane", Journey::Driver),
+    ("supervisor", Journey::Driver),
+    // Setup & automation — one-time configuration
+    ("models", Journey::Setup),
+    ("authority", Journey::Setup),
+    ("profile", Journey::Setup),
+    ("store", Journey::Setup),
+    ("backfill", Journey::Setup),
+    ("privacy", Journey::Setup),
+    ("extension", Journey::Setup),
+    ("capability", Journey::Setup),
+    ("catalog", Journey::Setup),
+    ("serve-status", Journey::Setup),
+    // Maintainer & adapter — quality gates, retention, introspection
+    ("benchmark", Journey::Maintainer),
+    ("replay", Journey::Maintainer),
+    ("canary", Journey::Maintainer),
+    ("runs", Journey::Maintainer),
+    ("backup", Journey::Maintainer),
+    ("version", Journey::Maintainer),
+    ("registry", Journey::Maintainer),
+    ("commands", Journey::Maintainer),
+];
 
 /// G-26: build the command registry — groups + commands + capability command
 /// hooks (G-24), the aggregated help surface.
@@ -230,7 +295,7 @@ fn build_cli_registry() -> CommandRegistry {
         todo,
         "lease",
         "task lease lifecycle (claim/renew/release/expire/status)",
-        "lease claim|renew|release|expire|status --goal G --todo-id T [--agent-id A] [--format json (status)]",
+        "lease claim|renew|release|expire|status --goal G --todo-id T [--agent-id A] [--force (claim)] [--format json (status)]",
     );
     r.command(
         todo,
@@ -243,8 +308,8 @@ fn build_cli_registry() -> CommandRegistry {
     r.command(
         agent,
         "agent",
-        "register/onboard agents",
-        "agent onboard --goal G --agent-id A [--capabilities c1,c2]",
+        "register/onboard agents (declare capabilities + workspaces)",
+        "agent onboard --goal G --agent-id A [--capabilities c1,c2] [--workspace p1,p2]",
     );
     r.command(
         agent,
@@ -354,20 +419,20 @@ fn build_cli_registry() -> CommandRegistry {
     r.command(
         ops,
         "quota",
-        "quota should-run / usage / spend / tools",
-        "quota should-run --goal G [--format json] | usage [--goal G] [--all] | spend --goal G | tools --goal G [--format json]",
+        "quota should-run / usage / spend / tools / decisions",
+        "quota should-run --goal G [--format json] | usage [--goal G] [--all] | spend --goal G | tools --goal G [--format json] | decisions --goal G [--limit N]",
     );
     r.command(
         ops,
         "scheduler",
-        "scheduler tick/show/record-host-failure",
-        "scheduler tick|show|record-host-failure --goal G [--agent-id A] [--format json (show)]",
+        "scheduler tick/show/record-host-failure/ack/liveness",
+        "scheduler tick|show|record-host-failure|ack|liveness --goal G [--agent-id A] [--threshold-secs N (liveness)] [--format json (show|liveness)]",
     );
     r.command(
         ops,
         "store",
-        "event-store schema migration / ledger integrity",
-        "store migrate|verify|bridge --goal G",
+        "event-store schema migration / ledger integrity / read-model repair",
+        "store migrate|verify|bridge --goal G [--repair|--format json (verify)]",
     );
     r.command(
         ops,
@@ -409,10 +474,13 @@ fn build_cli_registry() -> CommandRegistry {
         ops,
         "run",
         "drive one bounded gRPC turn (requires --agent-id; auto-registers)",
-        "run --goal G --agent-id A [--model M] [--thinking-level L] [--max-turns N] [--lease-secs N]",
+        "run --goal G --agent-id A [--model M] [--thinking-level L] [--max-turns N] [--lease-secs N] [--force-workspace]",
     );
 
-    let work_items = r.group("work-items", "attention / operator inbox (G-15)");
+    let work_items = r.group(
+        "work-items",
+        "attention / operator inbox (G-15) / delivery outcome closure (P0-2) / reward memory (P1-5)",
+    );
     r.command(
         work_items,
         "attention",
@@ -424,6 +492,24 @@ fn build_cli_registry() -> CommandRegistry {
         "inbox",
         "project the operator inbox urgency",
         "inbox --project DIR [--scope addressed_only|configured_chat_all] [--name NAME] [--format json]",
+    );
+    r.command(
+        work_items,
+        "delivery",
+        "post-delivery outcome closure (P0-2): delivered → verified/failed/rework + follow-through",
+        "delivery status --goal G [--format json] | record --goal G --todo-id T --outcome verified|failed|rework [--note N] | followthrough --goal G [--turns N]",
+    );
+    r.command(
+        work_items,
+        "reward-memory",
+        "reward memory (P1-5): validator/delivery/evidence signal ingestion + scoped feedback",
+        "reward-memory query --goal G [--agent-id A] [--todo-id T] [--source S] [--format json] | record --goal G --todo-id T --score 0.0..1.0 [--source evidence] [--note N] [--agent-id A]",
+    );
+    r.command(
+        work_items,
+        "decision-context",
+        "decision context (P1-4): assembler read model + audited outcome-feedback writeback",
+        "decision-context assemble --goal G [--format json] | outcomes --goal G [--format json] | feedback --goal G --turn N --status verified|refuted|inconclusive [--note N] [--agent-id A] [--context-digest D]",
     );
 
     let handoff = r.group("handoff", "project handoff (G-17)");
@@ -440,6 +526,12 @@ fn build_cli_registry() -> CommandRegistry {
         "registry",
         "inspect the CLI registry (groups/commands)",
         "registry [--format json|--json] [--include-experimental]",
+    );
+    r.command(
+        cli,
+        "commands",
+        "grouped operator command reference (P1-9 journey view)",
+        "commands [--format json|--json] [--include-experimental]",
     );
 
     let benchmark = r.group("benchmark", "benchmark closed loop (G-18)");
@@ -462,9 +554,15 @@ fn build_cli_registry() -> CommandRegistry {
     r.command(
         canary,
         "canary",
-        "run a smoke profile (release gate default)",
-        "canary smoke [--profile core-control-plane|extension-runtime|release-gate] [--json]",
+        "run a smoke profile (release gate default) or the premerge CI gate",
+        "canary smoke [--profile core-control-plane|extension-runtime|release-gate|premerge] [--json] | canary premerge [--json]",
     );
+
+    // P1-9: journey metadata overlay (presentation only — the registry
+    // itself stays the flat machine catalog).
+    for (name, journey) in JOURNEY_ASSIGNMENTS {
+        r.set_journey(name, *journey);
+    }
 
     r
 }
@@ -974,12 +1072,23 @@ fn todo_claim(store: &mut Store, args: &[String]) -> Result<()> {
     let mut todo_id = None;
     let mut agent_id = None;
     let mut lease_secs = 3600u64;
-    reject_unknown_flags(args, &["--agent-id", "--goal", "--lease-secs", "--todo-id"])?;
+    let mut force = false;
+    reject_unknown_flags(
+        args,
+        &[
+            "--agent-id",
+            "--force",
+            "--goal",
+            "--lease-secs",
+            "--todo-id",
+        ],
+    )?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--todo-id" => todo_id = Some(v),
         "--agent-id" => agent_id = Some(v),
         "--lease-secs" => lease_secs = v.parse().unwrap_or(3600),
+        "--force" => force = true,
         _ => {}
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
@@ -992,6 +1101,16 @@ fn todo_claim(store: &mut Store, args: &[String]) -> Result<()> {
         bail!("agent `{agent}` is not registered for goal {goal_id} — `{} agent register --goal {goal_id} --agent-id {agent}` first", prog());
     }
     let now = crate::state::now_epoch();
+    // P0-1 workspace guard: refuse (degrade to serial) when a peer holds a
+    // live lease in an overlapping declared workspace, unless --force.
+    let conflicts = crate::agents::workspace_guard::live_workspace_conflicts(&goal, &agent, now);
+    if !conflicts.is_empty() && !force {
+        bail!(
+            "workspace conflict — claiming would race a peer writing the same workspace:\n{}\
+             degrade to serial: retry after the holder's lease expires, or pass --force",
+            crate::agents::workspace_guard::render_conflicts(&conflicts, now)
+        );
+    }
     let claimed = goal
         .todo_mut(&todo_id)
         .map(|t| t.claim(&agent, lease_secs, now))
@@ -1007,14 +1126,53 @@ fn todo_claim(store: &mut Store, args: &[String]) -> Result<()> {
         lease_expires_at: expires,
         ts: now,
     })?;
+    append_workspace_lock(store, &goal_id, &agent, &todo_id, &goal, force)?;
     refresh_next_action(store, &goal_id)?;
     sync_compat(store, &goal_id)?;
     println!("todo {todo_id} claimed by {agent} until epoch {expires} ✔");
     Ok(())
 }
 
-/// `loopx agent register --goal G --agent-id A` — register a peer (LoopX:
-/// coordination.registered_agents; precondition for quota --agent-id).
+/// P0-1: append the advisory write-lock record after a successful claim by
+/// a workspace-declaring agent (empty declared set → no record, the guard
+/// is fail-open). `goal` must be the pre-claim replay carrying the
+/// claimer's profile; `forced` marks a claim that overrode a conflict.
+fn append_workspace_lock(
+    store: &mut Store,
+    goal_id: &str,
+    agent_id: &str,
+    todo_id: &str,
+    goal: &Goal,
+    forced: bool,
+) -> Result<()> {
+    let paths = crate::agents::workspace_guard::agent_workspaces(goal, agent_id);
+    if paths.is_empty() {
+        return Ok(());
+    }
+    store.append(Event::WorkspaceLockAcquired {
+        goal_id: goal_id.to_string(),
+        agent_id: agent_id.to_string(),
+        todo_id: todo_id.to_string(),
+        paths,
+        forced,
+        ts: crate::state::now_epoch(),
+    })?;
+    Ok(())
+}
+
+/// Parse a `--workspace` flag value into normalized absolute paths
+/// (comma-separated, like `--capabilities`; empty entries dropped).
+fn parse_workspaces(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(crate::agents::workspace_guard::normalize_workspace_path)
+        .collect()
+}
+
+/// `loopx agent register --goal G --agent-id A [--workspace p1,p2]` —
+/// register a peer (LoopX: coordination.registered_agents; precondition for
+/// quota --agent-id). `--workspace` declares the P0-1 guard write set.
 fn cmd_agent(store: &mut Store, args: &[String]) -> Result<()> {
     if args.first().map(|s| s.as_str()) == Some("onboard") {
         return cmd_agent_onboard(store, &args[1..]);
@@ -1024,10 +1182,12 @@ fn cmd_agent(store: &mut Store, args: &[String]) -> Result<()> {
     }
     let mut goal_id = None;
     let mut agent_id = None;
-    reject_unknown_flags(args, &["--agent-id", "--goal"])?;
+    let mut workspaces = vec![];
+    reject_unknown_flags(args, &["--agent-id", "--goal", "--workspace"])?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
         "--agent-id" => agent_id = Some(v),
+        "--workspace" => workspaces = parse_workspaces(&v),
         _ => {}
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
@@ -1038,22 +1198,35 @@ fn cmd_agent(store: &mut Store, args: &[String]) -> Result<()> {
     store.append(Event::AgentRegistered {
         goal_id: goal_id.clone(),
         agent_id: agent_id.clone(),
+        workspaces: workspaces.clone(),
         ts: crate::state::now_epoch(),
     })?;
-    println!("agent `{agent_id}` registered for {goal_id} ✔");
+    if workspaces.is_empty() {
+        println!("agent `{agent_id}` registered for {goal_id} ✔");
+    } else {
+        println!("agent `{agent_id}` registered for {goal_id} (workspaces={workspaces:?}) ✔");
+    }
     Ok(())
 }
 
-/// `loopx agent onboard --goal G --agent-id A [--capability shell,github]`
-/// — register a peer AND declare its capabilities (LoopX: agent_profiles;
-/// input to the capability gate).
+/// `loopx agent onboard --goal G --agent-id A [--capability shell,github]
+/// [--workspace p1,p2]` — register a peer AND declare its capabilities
+/// (LoopX: agent_profiles; input to the capability gate) plus the P0-1
+/// workspace-guard write set.
 fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut agent_id = None;
     let mut capabilities = vec![];
+    let mut workspaces = vec![];
     reject_unknown_flags(
         args,
-        &["--agent-id", "--capabilities", "--capability", "--goal"],
+        &[
+            "--agent-id",
+            "--capabilities",
+            "--capability",
+            "--goal",
+            "--workspace",
+        ],
     )?;
     parse_pairs(args, |k, v| match k {
         "--goal" => goal_id = Some(v),
@@ -1061,6 +1234,7 @@ fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
         "--capability" | "--capabilities" => {
             capabilities = v.split(',').map(|s| s.trim().to_string()).collect()
         }
+        "--workspace" => workspaces = parse_workspaces(&v),
         _ => {}
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
@@ -1072,9 +1246,12 @@ fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
         goal_id: goal_id.clone(),
         agent_id: agent_id.clone(),
         capabilities: capabilities.clone(),
+        workspaces: workspaces.clone(),
         ts: crate::state::now_epoch(),
     })?;
-    println!("agent `{agent_id}` onboarded (capabilities={capabilities:?}) ✔");
+    println!(
+        "agent `{agent_id}` onboarded (capabilities={capabilities:?} workspaces={workspaces:?}) ✔"
+    );
     Ok(())
 }
 
@@ -1132,14 +1309,19 @@ fn cmd_agent_list(store: &Store, args: &[String]) -> Result<()> {
         goal.registered_agents.len()
     );
     println!(
-        "  {:<12} {:<8} {:<32} {:<14} {:<12}",
-        "agent_id", "status", "work-on", "capabilities", "last-active"
+        "  {:<12} {:<8} {:<28} {:<24} {:<14} {:<12}",
+        "agent_id", "status", "work-on", "workspaces", "capabilities", "last-active"
     );
     for row in &rows {
         let work_label = if row.work_on.is_empty() {
             "-".to_string()
         } else {
             row.work_on.join("; ")
+        };
+        let ws_label = if row.workspaces.is_empty() {
+            "-".to_string()
+        } else {
+            row.workspaces.join(",")
         };
         let caps = if row.capabilities.is_empty() {
             "-".to_string()
@@ -1151,9 +1333,28 @@ fn cmd_agent_list(store: &Store, args: &[String]) -> Result<()> {
             .map(|ts| format!("{} ago", human_dur(now.saturating_sub(ts))))
             .unwrap_or_else(|| "-".to_string());
         println!(
-            "  {:<12} {:<8} {:<32} {:<14} {:<12}",
-            row.agent_id, row.status, work_label, caps, last
+            "  {:<12} {:<8} {:<28} {:<24} {:<14} {:<12}",
+            row.agent_id, row.status, work_label, ws_label, caps, last
         );
+    }
+    // P0-1: live workspace conflicts — who occupies the paths you declared.
+    let mut any_conflict = false;
+    for row in &rows {
+        let conflicts =
+            crate::agents::workspace_guard::live_workspace_conflicts(&goal, &row.agent_id, now);
+        for c in &conflicts {
+            any_conflict = true;
+            println!(
+                "⚠ workspace conflict: {} ↔ {} share {} (holder lease expires in {})",
+                row.agent_id,
+                c.holder_agent_id,
+                c.overlapping_paths.join(", "),
+                human_dur(c.holder_lease_expires_at.saturating_sub(now))
+            );
+        }
+    }
+    if any_conflict {
+        println!("hint: conflicting claims need `--force` — or wait for the holder's lease");
     }
     println!(
         "hint: agent ids are goal-scoped; check this list before `agent register`/`onboard` \
@@ -1171,8 +1372,20 @@ struct AgentListRow {
     status: String,
     /// Human-readable live lease labels (todo id + remaining time).
     work_on: Vec<String>,
+    /// P0-1 declared workspace write set (display-shortened; a `✍` suffix
+    /// marks paths the agent currently occupies under a live lease).
+    workspaces: Vec<String>,
     capabilities: Vec<String>,
     last_active_ts: Option<u64>,
+}
+
+/// Shorten a workspace path for the agent-list table: `$HOME` → `~`.
+fn shorten_home(path: &str) -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    if !home.is_empty() && path.starts_with(&home) {
+        return format!("~{}", &path[home.len()..]);
+    }
+    path.to_string()
 }
 
 /// Build the agent-list projection rows (event-derived last-active map +
@@ -1191,16 +1404,29 @@ fn agent_list_rows(goal: &Goal, last_active: &HashMap<String, u64>, now: u64) ->
                 }
             }
             let status = if work.is_empty() { "idle" } else { "running" };
-            let caps = goal
-                .agent_profiles
-                .iter()
-                .find(|p| p.id == *aid)
-                .map(|p| p.capabilities.clone())
+            let occupying = !work.is_empty();
+            let profile = goal.agent_profiles.iter().find(|p| p.id == *aid);
+            let caps = profile.map(|p| p.capabilities.clone()).unwrap_or_default();
+            let workspaces = profile
+                .map(|p| {
+                    p.workspaces
+                        .iter()
+                        .map(|w| {
+                            let short = shorten_home(w);
+                            if occupying {
+                                format!("{short} ✍")
+                            } else {
+                                short
+                            }
+                        })
+                        .collect()
+                })
                 .unwrap_or_default();
             AgentListRow {
                 agent_id: aid.clone(),
                 status: status.to_string(),
                 work_on: work,
+                workspaces,
                 capabilities: caps,
                 last_active_ts: last_active.get(aid).copied(),
             }
@@ -1294,6 +1520,7 @@ fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
             );
         }
     }
+    let is_advancement = t.class == TaskClass::Advancement;
     let successors = successor.clone().into_iter().collect::<Vec<_>>();
     store.append(Event::TodoCompleted {
         goal_id: goal_id.clone(),
@@ -1303,6 +1530,25 @@ fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
         evidence: evidence.clone(),
         ts: now_epoch(),
     })?;
+    // P0-2①: a completed advancement todo is a delivery pending verification
+    // ("delivered ≠ succeeded") — record the outcome signal so it can be
+    // resolved (verified/failed/rework) and aged by the follow-through scan.
+    if is_advancement {
+        let delivered_turn = goal.history.iter().map(|r| r.turn).max().unwrap_or(0);
+        let seq = goal
+            .delivery_state(&todo_id)
+            .map(|d| d.seq + 1)
+            .unwrap_or(1);
+        store.append(Event::DeliveryOutcomeRecorded {
+            goal_id: goal_id.clone(),
+            todo_id: todo_id.clone(),
+            outcome: crate::work_items::delivery_outcome::OUTCOME_DELIVERED.to_string(),
+            note: None,
+            delivered_turn,
+            seq,
+            ts: now_epoch(),
+        })?;
+    }
     complete_todo(&mut goal, &todo_id, no_follow_up, successors);
     if let Some(ev) = &evidence {
         if let Some(t) = goal.todo_mut(&todo_id) {
@@ -1690,8 +1936,53 @@ fn cmd_quota(store: &Store, args: &[String]) -> Result<()> {
         Some("usage") => quota_usage(store, &args[1..]),
         Some("spend") => quota_spend(store, &args[1..]),
         Some("tools") => quota_tools(store, &args[1..]),
-        _ => bail!("quota subcommand must be `should-run`, `usage`, `spend`, or `tools`"),
+        Some("decisions") => quota_decisions(store, &args[1..]),
+        _ => bail!(
+            "quota subcommand must be `should-run`, `usage`, `spend`, `tools`, or `decisions`"
+        ),
     }
+}
+
+/// `loopx quota decisions --goal G [--limit N] [--format json]` — the
+/// persisted decision_summary projection (P1-1②): recent compact decisions
+/// (newest first) read straight from the ledger, so status/TUI/desktop-style
+/// consumers reuse the kernel's decision without re-running it.
+fn quota_decisions(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut format_json = false;
+    let mut limit = 10usize;
+    reject_unknown_flags(args, &["--format", "--goal", "--limit"])?;
+    parse_pairs(args, |k, v| match k {
+        "--goal" => goal_id = Some(v),
+        "--format" => format_json = v == "json",
+        "--limit" => limit = v.parse().unwrap_or(10),
+        _ => {}
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let events = store.events(&goal_id)?;
+    let summaries = crate::quota::decision_summary::decision_summaries(&events);
+    let recent: Vec<_> = summaries.into_iter().rev().take(limit).collect();
+    if format_json {
+        println!("{}", serde_json::to_string_pretty(&recent)?);
+        return Ok(());
+    }
+    if recent.is_empty() {
+        println!("goal {goal_id}: no decision summaries recorded yet (run a turn first)");
+        return Ok(());
+    }
+    for s in recent {
+        println!(
+            "turn={} decision={} action={} code={} selected={} slots={}/{}",
+            s.turn,
+            s.decision,
+            s.effective_action,
+            s.reason_code,
+            s.selected_todo.as_deref().unwrap_or("-"),
+            s.spent_slots,
+            s.allowed_slots
+        );
+    }
+    Ok(())
 }
 
 /// `loopx quota should-run --goal G [--format json] [--agent-id A]` — emit
@@ -1864,13 +2155,71 @@ fn quota_tools(store: &Store, args: &[String]) -> Result<()> {
 
 /// `loopx scheduler <tick|show|record-host-failure> --goal G [--agent-id A]`
 /// — drive the persisted scheduler state machine across decision cycles.
-fn cmd_scheduler(store: &Store, args: &[String]) -> Result<()> {
+fn cmd_scheduler(store: &mut Store, args: &[String]) -> Result<()> {
     match args.first().map(|s| s.as_str()) {
         Some("tick") => scheduler_tick(store, &args[1..]),
         Some("show") => scheduler_show(store, &args[1..]),
         Some("record-host-failure") => scheduler_record_failure(store, &args[1..]),
-        _ => bail!("scheduler subcommand must be `tick`, `show`, or `record-host-failure`"),
+        Some("ack") => scheduler_ack(store, &args[1..]),
+        Some("liveness") => scheduler_liveness(store, &args[1..]),
+        _ => bail!(
+            "scheduler subcommand must be `tick`, `show`, `record-host-failure`, `ack`, or `liveness`"
+        ),
     }
+}
+
+/// `loopx scheduler ack --goal G [--agent-id A] --action tick_next
+/// [--cadence-class C] [--rrule R] [--source S]` — record the host
+/// scheduler's acknowledgement that it applied the cadence hint (P1-1③;
+/// LoopX `scheduler_ack`). Projection-only audit event; scheduler state
+/// itself is still owned by `scheduler tick`.
+fn scheduler_ack(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut agent_id = None;
+    let mut action = None;
+    let mut cadence_class = String::new();
+    let mut rrule = None;
+    let mut source = "scheduler_cli".to_string();
+    reject_unknown_flags(
+        args,
+        &[
+            "--action",
+            "--agent-id",
+            "--cadence-class",
+            "--goal",
+            "--rrule",
+            "--source",
+        ],
+    )?;
+    parse_pairs(args, |k, v| match k {
+        "--goal" => goal_id = Some(v),
+        "--agent-id" => agent_id = Some(v),
+        "--action" => action = Some(v),
+        "--cadence-class" => cadence_class = v,
+        "--rrule" => rrule = Some(v),
+        "--source" => source = v,
+        _ => {}
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let action = action.ok_or_else(|| anyhow::anyhow!("--action required"))?;
+    store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let agent = agent_id.unwrap_or_else(|| "codex-app".to_string());
+    store.append(Event::SchedulerAcked {
+        goal_id: goal_id.clone(),
+        agent_id: agent.clone(),
+        action: action.clone(),
+        cadence_class,
+        rrule: rrule.clone(),
+        source,
+        ts: now_epoch(),
+    })?;
+    println!(
+        "scheduler ack recorded: goal={goal_id} agent={agent} action={action} rrule={}",
+        rrule.as_deref().unwrap_or("-")
+    );
+    Ok(())
 }
 
 fn scheduler_scope(
@@ -1897,7 +2246,9 @@ fn scheduler_scope(
 /// [--progression 15,30,60] [--action tick_next]` — load the persisted state
 /// (or bootstrap it from the cadence profile), advance the progression, and
 /// write the new state. Restart-safe: progression persists across cycles.
-fn scheduler_tick(store: &Store, args: &[String]) -> Result<()> {
+/// P1-3: each tick also lands a `SchedulerTicked` heartbeat (liveness) and
+/// projects the monitor poll plan (tick-driven poll policy executor).
+fn scheduler_tick(store: &mut Store, args: &[String]) -> Result<()> {
     let mut cadence_class = "monitor_backoff".to_string();
     let mut progression: Vec<i64> = vec![];
     let mut action = "tick_next".to_string();
@@ -1962,6 +2313,8 @@ fn scheduler_tick(store: &Store, args: &[String]) -> Result<()> {
             "→ bootstrapped (initial rrule {}); next tick advances progression",
             initial_rrule
         );
+        record_tick_heartbeat(store, &goal_id, &agent, &action, &state)?;
+        print_monitor_poll_plan(store, &goal_id)?;
         return Ok(());
     }
 
@@ -1973,7 +2326,211 @@ fn scheduler_tick(store: &Store, args: &[String]) -> Result<()> {
         Some(r) => println!("→ advanced progression to {r} (persisted)"),
         None => println!("→ no progression (single-execution cadence)"),
     }
+    record_tick_heartbeat(store, &goal_id, &agent, &action, &state)?;
+    print_monitor_poll_plan(store, &goal_id)?;
     Ok(())
+}
+
+/// P1-3①: land the tick heartbeat event (the liveness check's data source).
+fn record_tick_heartbeat(
+    store: &mut Store,
+    goal_id: &str,
+    agent: &str,
+    action: &str,
+    state: &crate::scheduler::state::SchedulerState,
+) -> Result<()> {
+    store.append(Event::SchedulerTicked {
+        goal_id: goal_id.to_string(),
+        agent_id: agent.to_string(),
+        action: action.to_string(),
+        rrule: if state.last_applied_rrule.is_empty() {
+            None
+        } else {
+            Some(state.last_applied_rrule.clone())
+        },
+        ts: now_epoch(),
+    })?;
+    Ok(())
+}
+
+/// P1-3②: project the monitor poll plan after each tick (the tick-driven
+/// poll policy executor — due monitors with target/policy/cadence and
+/// no-spend eligibility; the run loop executes the actual observation).
+fn print_monitor_poll_plan(store: &Store, goal_id: &str) -> Result<()> {
+    let Some(goal) = store.replay(goal_id)? else {
+        return Ok(());
+    };
+    let plan = crate::scheduler::monitor_poll::build_poll_plan(&goal, std::time::SystemTime::now());
+    if plan.due_monitors.is_empty() && plan.stalled_monitors.is_empty() {
+        if let Some(next) = plan.next_due_at {
+            let wait = next.saturating_sub(now_epoch());
+            println!("→ monitor poll plan: none due (next poll in {wait}s)");
+        }
+        return Ok(());
+    }
+    println!(
+        "→ monitor poll plan: {} due, {} stalled",
+        plan.due_monitors.len(),
+        plan.stalled_monitors.len()
+    );
+    for item in &plan.due_monitors {
+        println!(
+            "   poll {} (target={}, policy={}, overdue {}s{})",
+            item.todo_id,
+            item.target.as_deref().unwrap_or("-"),
+            item.policy.as_deref().unwrap_or("default"),
+            item.overdue_secs,
+            if item.no_spend_if_unchanged {
+                ", no-spend on unchanged"
+            } else {
+                ""
+            }
+        );
+    }
+    for id in &plan.stalled_monitors {
+        println!("   stalled {id} (decision kernel replans)");
+    }
+    Ok(())
+}
+
+/// `loopx scheduler liveness --goal G [--agent-id A] [--threshold-secs N]
+/// [--format json]` — P1-3① automation liveness check: compare now against
+/// the latest tick heartbeat (event log ∪ persisted scheduler state). A
+/// breach records an `AutomationLivenessAlert` (cooldown-deduped) and drops
+/// an operator-inbox alert file; the attention projection escalates the
+/// goal until a fresh heartbeat recovers the automation.
+fn scheduler_liveness(store: &mut Store, args: &[String]) -> Result<()> {
+    use crate::scheduler::liveness as lv;
+    let mut threshold = lv::DEFAULT_LIVENESS_THRESHOLD_SECS;
+    reject_unknown_flags(
+        args,
+        &[
+            "--agent-id",
+            "--format",
+            "--goal",
+            "--json",
+            "--threshold-secs",
+        ],
+    )?;
+    parse_pairs(args, |k, v| {
+        if k == "--threshold-secs" {
+            if let Ok(n) = v.parse::<u64>() {
+                if n > 0 {
+                    threshold = n;
+                }
+            }
+        }
+    });
+    let (goal_id, agent) = scheduler_scope(store, args, "codex-app")?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let now = now_epoch();
+    // Last heartbeat = max(heartbeat event ts, persisted state updated_at)
+    // — the state file predates heartbeat events (back-compat).
+    let mut last_tick = goal.scheduler_heartbeats.get(&agent).copied();
+    use crate::scheduler::state as st;
+    if let Some(s) = st::load_scheduler_state(
+        &store.goal_dir(&goal_id),
+        &agent,
+        st::CODEX_APP_SURFACE,
+        st::CODEX_APP_STATEFUL_BACKOFF_STATE_KEY,
+    ) {
+        last_tick = Some(last_tick.map_or(s.updated_at, |t| t.max(s.updated_at)));
+    }
+    let eval = lv::evaluate_liveness(&goal_id, &agent, last_tick, now, threshold);
+    let mut alert_note = String::new();
+    if eval.state == lv::LIVENESS_BREACH {
+        let alerts: Vec<u64> = goal
+            .liveness_alerts
+            .iter()
+            .filter(|a| a.agent_id == agent)
+            .map(|a| a.ts)
+            .collect();
+        if lv::alert_due(alerts.iter().max().copied(), now) {
+            store.append(Event::AutomationLivenessAlert {
+                goal_id: goal_id.clone(),
+                agent_id: agent.clone(),
+                elapsed_secs: eval.elapsed_secs.unwrap_or(0),
+                threshold_secs: threshold,
+                consecutive: alerts.len() as u32 + 1,
+                ts: now,
+            })?;
+            write_liveness_inbox_alert(&goal, &agent, &eval);
+            alert_note =
+                " → alert recorded (attention escalates; operator inbox notified)".to_string();
+        } else {
+            alert_note = " (alert suppressed: cooldown)".to_string();
+        }
+    }
+    if wants_json(args) {
+        println!("{}", serde_json::to_string_pretty(&eval)?);
+        return Ok(());
+    }
+    match eval.state.as_str() {
+        lv::LIVENESS_BREACH => println!(
+            "liveness: BREACH goal={goal_id} agent={agent} silent={}s threshold={}s{alert_note}",
+            eval.elapsed_secs.unwrap_or(0),
+            threshold
+        ),
+        lv::LIVENESS_NO_HEARTBEAT => println!(
+            "liveness: no heartbeat for goal={goal_id} agent={agent} (automation never ticked — run `scheduler tick` to install)"
+        ),
+        _ => println!(
+            "liveness: alive goal={goal_id} agent={agent} last tick {}s ago (threshold {}s)",
+            eval.elapsed_secs.unwrap_or(0),
+            threshold
+        ),
+    }
+    Ok(())
+}
+
+/// Best-effort operator-inbox alert file (LoopX: breach → operator_inbox).
+/// Written under the goal's project `.future/loop/inbox/` so the `inbox`
+/// urgency projection surfaces it as a direct mention.
+fn write_liveness_inbox_alert(
+    goal: &crate::state::Goal,
+    agent: &str,
+    eval: &crate::scheduler::liveness::LivenessEvaluation,
+) {
+    let inbox = std::path::Path::new(&goal.cwd)
+        .join(".future")
+        .join("loop")
+        .join("inbox");
+    if std::fs::create_dir_all(&inbox).is_err() {
+        return;
+    }
+    let clean = |s: &str| {
+        s.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>()
+    };
+    let path = inbox.join(format!(
+        "liveness-{}-{}-{}.json",
+        clean(&goal.goal_id),
+        clean(agent),
+        now_epoch()
+    ));
+    let payload = serde_json::json!({
+        "message_id": format!("liveness-{}-{}", clean(&goal.goal_id), now_epoch()),
+        "create_time": now_epoch().to_string(),
+        "content": format!(
+            "@operator automation liveness breach: goal {} agent {} silent {}s (> {}s threshold) — check/restart the host automation",
+            goal.goal_id,
+            agent,
+            eval.elapsed_secs.unwrap_or(0),
+            eval.threshold_secs
+        ),
+    });
+    if let Ok(text) = serde_json::to_string_pretty(&payload) {
+        let _ = std::fs::write(path, format!("{text}\n"));
+    }
 }
 
 /// `loopx scheduler show --goal G [--agent-id A] [--format json]` — print the
@@ -2155,7 +2712,10 @@ const DEFAULT_RUN_LEASE_SECS: u64 = 4 * 3600;
 /// nothing, so two agentless runs deterministically race on the same todo.
 /// An id that is not yet registered is auto-registered on first use (replay
 /// is idempotent, so `run` never needs a separate `agent register` step).
-/// `--anonymous` opts back into the legacy uncoordinated one-shot path.
+/// Auto-registration declares the process cwd as the agent's P0-1 workspace
+/// (parallel runs launched from the same checkout then trip the workspace
+/// guard instead of silently overwriting each other). `--anonymous` opts
+/// back into the legacy uncoordinated one-shot path.
 /// Returns the resolved agent id (None for `--anonymous`).
 pub fn ensure_run_identity(
     store: &mut Store,
@@ -2169,9 +2729,20 @@ pub fn ensure_run_identity(
                 .replay(goal_id)?
                 .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
             if !goal.is_registered_agent(Some(aid)) {
+                let cwd = std::env::current_dir()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let workspaces = if cwd.is_empty() {
+                    vec![]
+                } else {
+                    vec![crate::agents::workspace_guard::normalize_workspace_path(
+                        &cwd,
+                    )]
+                };
                 store.append(Event::AgentRegistered {
                     goal_id: goal_id.to_string(),
                     agent_id: aid.to_string(),
+                    workspaces,
                     ts: now_epoch(),
                 })?;
                 println!("agent `{aid}` auto-registered for {goal_id} ✔");
@@ -2201,11 +2772,13 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     let mut agent_id = None;
     let mut anonymous = false;
     let mut lease_secs = DEFAULT_RUN_LEASE_SECS;
+    let mut force_workspace = false;
     reject_unknown_flags(
         args,
         &[
             "--agent-id",
             "--anonymous",
+            "--force-workspace",
             "--goal",
             "--lease-secs",
             "--max-turn-secs",
@@ -2223,6 +2796,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         "--agent-id" => agent_id = Some(v),
         "--lease-secs" => lease_secs = v.parse().unwrap_or(DEFAULT_RUN_LEASE_SECS),
         "--anonymous" => anonymous = true,
+        "--force-workspace" => force_workspace = true,
         _ => {}
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
@@ -2258,6 +2832,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         lease_secs,
         agent_id.as_deref(),
         max_turn_secs,
+        force_workspace,
     )
     .await;
     if let Err(e) = client.delete_session(&session_id).await {
@@ -2438,8 +3013,25 @@ async fn run_turns(
     lease_secs: u64,
     agent_id: Option<&str>,
     max_turn_secs: u64,
+    force_workspace: bool,
 ) -> Result<()> {
     let mut turn = 0u32;
+    // P1-2③: read-model self-healing — a drifted run index means run-history
+    // consumers (status, stale-latest-run, run history projection) read stale
+    // state; rebuild it from the run files before the first decision and
+    // record the ProjectionRepaired audit event.
+    if let Some(outcome) = crate::runtime::run_index::repair_index_if_drifted(store, goal_id)? {
+        println!(
+            "⚒ projection self-heal: run_index drifted ({} rows) — rebuilt {} rows (backup {})",
+            outcome.drift.drift_count,
+            outcome.rebuilt.rows_written,
+            if outcome.rebuilt.backup_path.is_empty() {
+                "none".to_string()
+            } else {
+                outcome.rebuilt.backup_path
+            }
+        );
+    }
     loop {
         turn += 1;
         if turn > max_turns {
@@ -2449,6 +3041,9 @@ async fn run_turns(
             .replay(goal_id)?
             .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found (deleted while running?)"))?;
         let packet = decide_for(&goal, SystemTime::now(), agent_id);
+        // P1-1②③: persist the compact decision projection + the heartbeat
+        // receipt for this turn (projection-only; replay ignores both).
+        crate::quota::decision_summary::record_turn_decision(store, &packet, agent_id, turn)?;
         println!(
             "── turn {turn}: decision={} mode={} | {}",
             packet.decision,
@@ -2485,6 +3080,30 @@ async fn run_turns(
         }
 
         // bounded_delivery / monitor_poll: execute one turn.
+        // Claim with a lease BEFORE executing — atomically (check+append under
+        // one lock) so two concurrent `run --agent-id` workers can never both
+        // win the same todo; on contention, re-decide against the fresh
+        // ledger and pick the next runnable todo (up to 3 re-decides).
+        //
+        // P0-1 workspace guard: if a PEER agent holds a live lease in an
+        // overlapping declared workspace, degrade to serial — stop the run
+        // with a retry hint (the scheduler will relaunch later) unless the
+        // operator passed --force-workspace.
+        let mut workspace_conflict_forced = false;
+        if let Some(aid) = agent_id {
+            let now = crate::state::now_epoch();
+            let conflicts =
+                crate::agents::workspace_guard::live_workspace_conflicts(&goal, aid, now);
+            if !conflicts.is_empty() && !force_workspace {
+                bail!(
+                    "workspace conflict — running would race a peer writing the same workspace:\n{}\
+                     degrade to serial: rerun after the holder's lease expires, \
+                     or pass --force-workspace",
+                    crate::agents::workspace_guard::render_conflicts(&conflicts, now)
+                );
+            }
+            workspace_conflict_forced = !conflicts.is_empty() && force_workspace;
+        }
         let mut packet = packet;
         let Some(todo_id) =
             claim_selected_with_lease(store, goal_id, &mut packet, agent_id, lease_secs)?
@@ -2492,6 +3111,22 @@ async fn run_turns(
             println!("   no selected todo; stopping");
             break;
         };
+        // P0-1: record the advisory write lock for the claimed todo (audit
+        // trail for agent list / history). Best-effort against the
+        // turn-start replay — profiles rarely change mid-turn.
+        if let Some(aid) = agent_id {
+            let goal = store.replay(goal_id)?.ok_or_else(|| {
+                anyhow::anyhow!("goal {goal_id} not found (deleted while running?)")
+            })?;
+            append_workspace_lock(
+                store,
+                goal_id,
+                aid,
+                &todo_id,
+                &goal,
+                workspace_conflict_forced,
+            )?;
+        }
         let goal = store
             .replay(goal_id)?
             .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found (deleted while running?)"))?;
@@ -2607,6 +3242,11 @@ async fn run_turns(
             record: record.clone(),
             ts: now_epoch(),
         })?;
+        // P1-5 reward_memory ingestion: the turn's independent validation
+        // receipt (if any) lands in the reward ledger (source `validator`).
+        if ingest_validator_reward(store, goal_id, &todo_id, agent_id, &record)? {
+            println!("   ↳ reward signal ingested (validator)");
+        }
         // G-3: quota spend lands as a durable event alongside the run ledger
         // (source mirrors slot accounting; monitor no-change never spends).
         if monitor_changed != Some(false) {
@@ -2652,6 +3292,23 @@ async fn run_turns(
                 evidence: Some(record.evidence.clone()),
                 ts: now_epoch(),
             })?;
+            // P0-2①: a completed advancement todo is a delivery pending
+            // verification — record the outcome signal at this turn.
+            if g.todo(&todo_id)
+                .map(|t| t.class == crate::state::TaskClass::Advancement)
+                .unwrap_or(false)
+            {
+                let seq = g.delivery_state(&todo_id).map(|d| d.seq + 1).unwrap_or(1);
+                store.append(Event::DeliveryOutcomeRecorded {
+                    goal_id: goal_id.to_string(),
+                    todo_id: todo_id.clone(),
+                    outcome: crate::work_items::delivery_outcome::OUTCOME_DELIVERED.to_string(),
+                    note: None,
+                    delivered_turn: record.turn,
+                    seq,
+                    ts: now_epoch(),
+                })?;
+            }
         } else {
             // A missing todo (deleted mid-turn) carries no budget signal.
             let stop = g
@@ -2677,6 +3334,23 @@ async fn run_turns(
             if stop {
                 break;
             }
+        }
+        // P0-2②: outcome_followthrough — auto-derive a follow-up todo for any
+        // delivery left unverified past the threshold (fires once per cycle).
+        let followups = run_followthrough_check(
+            store,
+            goal_id,
+            crate::work_items::delivery_outcome::DEFAULT_FOLLOWTHROUGH_TURNS,
+        )?;
+        for followup in &followups {
+            println!("   ↻ follow-through: todo {followup} auto-created (unverified delivery)");
+        }
+        if !followups.is_empty() {
+            // The follow-up todo(s) joined the frontier — refresh the read
+            // model so the Next Action sync below cannot project a gap.
+            g = store.replay(goal_id)?.ok_or_else(|| {
+                anyhow::anyhow!("goal {goal_id} not found (deleted while running?)")
+            })?;
         }
         // Sync Next Action to the frontier (avoid projection gap).
         let next_text = g
@@ -2708,8 +3382,38 @@ fn cmd_store(store: &mut Store, args: &[String]) -> Result<()> {
             Ok(())
         }
         Some("verify") => {
-            let goal_id = goal_arg(args)?;
+            let mut goal_id = None;
+            let mut repair = false;
+            reject_unknown_flags(args, &["--format", "--goal", "--json", "--repair"])?;
+            parse_pairs(args, |k, v| match k {
+                "--goal" => goal_id = Some(v),
+                "--repair" => repair = true,
+                _ => {}
+            });
+            let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
             let report = store.verify(&goal_id)?;
+            // P1-2①: run-index drift detection (read-model self-diagnosis)
+            // alongside the ledger integrity check.
+            let drift =
+                crate::runtime::run_index::detect_index_drift(&store.root_path(), &goal_id)?;
+            // P1-2③: `--repair` rebuilds a drifted index (non-destructive)
+            // and records the ProjectionRepaired audit event.
+            let repaired = if repair {
+                crate::runtime::run_index::repair_index_if_drifted(store, &goal_id)?
+            } else {
+                None
+            };
+            if wants_json(args) {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "ledger": report,
+                        "run_index_drift": drift,
+                        "repaired": repaired,
+                    }))?
+                );
+                return Ok(());
+            }
             println!(
                 "ledger {goal_id}: schema={} events={} unique={} idempotent_dups={} legacy_without_id={} conflicts={:?} → {}",
                 report.schema_version,
@@ -2720,6 +3424,33 @@ fn cmd_store(store: &mut Store, args: &[String]) -> Result<()> {
                 report.conflicts,
                 if report.ok { "ok" } else { "CONFLICT" }
             );
+            println!(
+                "run_index {goal_id}: rows={} files={} missing={} stale={} duplicates={} → {}",
+                drift.index_rows,
+                drift.run_files,
+                drift.missing_rows,
+                drift.stale_rows,
+                drift.duplicate_rows,
+                if drift.repair_recommended {
+                    "DRIFT (repair with `store verify --repair`)"
+                } else {
+                    "ok"
+                }
+            );
+            if let Some(outcome) = repaired {
+                println!(
+                    "repaired run_index {goal_id}: {} drift rows → rebuilt {} rows (backup {})",
+                    outcome.drift.drift_count,
+                    outcome.rebuilt.rows_written,
+                    if outcome.rebuilt.backup_path.is_empty() {
+                        "none (index was missing)"
+                    } else {
+                        outcome.rebuilt.backup_path.as_str()
+                    }
+                );
+            } else if repair {
+                println!("repair: no drift — nothing to rebuild");
+            }
             Ok(())
         }
         Some("bridge") => {
@@ -2922,10 +3653,12 @@ fn cmd_lease(store: &mut Store, args: &[String]) -> Result<()> {
     let mut todo_id = None;
     let mut agent_id = None;
     let mut lease_secs = 0u64;
+    let mut force = false;
     reject_unknown_flags(
         &args[1..],
         &[
             "--agent-id",
+            "--force",
             "--format",
             "--goal",
             "--json",
@@ -2938,6 +3671,7 @@ fn cmd_lease(store: &mut Store, args: &[String]) -> Result<()> {
         "--todo-id" => todo_id = Some(v),
         "--agent-id" => agent_id = Some(v),
         "--lease-secs" => lease_secs = v.parse().unwrap_or(0),
+        "--force" => force = true,
         _ => {}
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
@@ -2973,6 +3707,20 @@ fn cmd_lease(store: &mut Store, args: &[String]) -> Result<()> {
         return Ok(());
     }
 
+    // P0-1 workspace guard (claim only): checked before the mutable todo
+    // borrow below; same conflict semantics as `todo claim`.
+    if sub == "claim" {
+        let conflicts =
+            crate::agents::workspace_guard::live_workspace_conflicts(&goal, &agent, now);
+        if !conflicts.is_empty() && !force {
+            bail!(
+                "workspace conflict — claiming would race a peer writing the same workspace:\n{}\
+                 degrade to serial: retry after the holder's lease expires, or pass --force",
+                crate::agents::workspace_guard::render_conflicts(&conflicts, now)
+            );
+        }
+    }
+
     let todo = goal
         .todo_mut(&todo_id)
         .ok_or_else(|| anyhow::anyhow!("todo {todo_id} not found"))?;
@@ -2995,6 +3743,8 @@ fn cmd_lease(store: &mut Store, args: &[String]) -> Result<()> {
                     lease_expires_at: expires,
                     ts: now,
                 })?;
+                // P0-1: advisory workspace write lock (audit for agent list).
+                append_workspace_lock(store, &goal_id, &agent, &todo_id, &goal, force)?;
             }
             let _ = sync_compat(store, &goal_id);
             println!(
@@ -4112,6 +4862,642 @@ fn cmd_inbox(store: &Store, args: &[String]) -> Result<()> {
     Ok(())
 }
 
+// ── delivery (P0-2: post-delivery outcome closure) ────────────────────────
+
+/// `delivery <status|record|followthrough>` — the P0-2 signal chain:
+/// delivered → verified/failed/rework, plus the manual follow-through scan
+/// (the run path also scans automatically after every turn).
+fn cmd_delivery(store: &mut Store, args: &[String]) -> Result<()> {
+    match args.first().map(|s| s.as_str()) {
+        Some("status") => delivery_status(store, &args[1..]),
+        Some("record") => delivery_record(store, &args[1..]),
+        Some("followthrough") => delivery_followthrough(store, &args[1..]),
+        _ => bail!("delivery subcommand must be `status`, `record`, or `followthrough`"),
+    }
+}
+
+/// `delivery status --goal G [--format json]` — the per-work-item delivery
+/// outcome read model (state, age in turns, follow-through linkage).
+fn delivery_status(store: &Store, args: &[String]) -> Result<()> {
+    reject_unknown_flags(args, &["--format", "--goal", "--json"])?;
+    let mut goal_id = None;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v)
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let current_turn = goal.history.iter().map(|r| r.turn).max().unwrap_or(0);
+    if wants_json(args) {
+        let items: Vec<serde_json::Value> = goal
+            .delivery_states
+            .iter()
+            .map(|d| {
+                serde_json::json!({
+                    "todo_id": d.todo_id,
+                    "todo_text": goal.todo(&d.todo_id).map(|t| t.text.clone()),
+                    "outcome": d.outcome,
+                    "delivered_turn": d.delivered_turn,
+                    "turns_since_delivery": current_turn.saturating_sub(d.delivered_turn),
+                    "pending_verification": d.outcome
+                        == crate::work_items::delivery_outcome::OUTCOME_DELIVERED,
+                    "followthrough_todo_id": d.followthrough_todo_id,
+                    "note": d.note,
+                    "updated_at": d.updated_at,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&items)?);
+        return Ok(());
+    }
+    if goal.delivery_states.is_empty() {
+        println!(
+            "no deliveries recorded for goal {goal_id} (a delivery is recorded when an advancement todo completes)"
+        );
+        return Ok(());
+    }
+    println!(
+        "deliveries for {goal_id} (current turn {current_turn}, follow-through threshold {} turns):",
+        crate::work_items::delivery_outcome::DEFAULT_FOLLOWTHROUGH_TURNS
+    );
+    for d in &goal.delivery_states {
+        let age = current_turn.saturating_sub(d.delivered_turn);
+        let pending = d.outcome == crate::work_items::delivery_outcome::OUTCOME_DELIVERED;
+        let follow = d
+            .followthrough_todo_id
+            .as_deref()
+            .map(|f| format!(" follow-through={f}"))
+            .unwrap_or_default();
+        let age = if pending {
+            format!(" age={age}turns")
+        } else {
+            String::new()
+        };
+        let note = d
+            .note
+            .as_deref()
+            .map(|n| format!(" note={n}"))
+            .unwrap_or_default();
+        println!(
+            "  {} [{}] delivered_turn={}{}{}{}",
+            d.todo_id, d.outcome, d.delivered_turn, age, follow, note
+        );
+    }
+    Ok(())
+}
+
+/// `delivery record --goal G --todo-id T --outcome <delivered|verified|
+/// failed|rework> [--note ...]` — manual outcome writeback (the operator /
+/// validator verification signal). Transitions are validated against the
+/// current state before the event lands.
+fn delivery_record(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut todo_id = None;
+    let mut outcome_raw = None;
+    let mut note = None;
+    reject_unknown_flags(args, &["--goal", "--note", "--outcome", "--todo-id"])?;
+    parse_pairs(args, |k, v| match k {
+        "--goal" => goal_id = Some(v),
+        "--todo-id" => todo_id = Some(v),
+        "--outcome" => outcome_raw = Some(v),
+        "--note" => note = Some(v),
+        _ => {}
+    });
+    use crate::work_items::delivery_outcome as dov;
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
+    let outcome_raw = outcome_raw.ok_or_else(|| anyhow::anyhow!("--outcome required"))?;
+    let outcome = dov::normalize_outcome(&outcome_raw).ok_or_else(|| {
+        anyhow::anyhow!(
+            "--outcome must be one of: {}",
+            dov::DELIVERY_OUTCOME_CHOICES.join(", ")
+        )
+    })?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    if goal.todo(&todo_id).is_none() {
+        bail!("todo {todo_id} not found in goal {goal_id}");
+    }
+    dov::validate_transition(goal.delivery_state(&todo_id), outcome)
+        .map_err(|e| anyhow::anyhow!("delivery {todo_id}: {e}"))?;
+    let current_turn = goal.history.iter().map(|r| r.turn).max().unwrap_or(0);
+    let seq = goal
+        .delivery_state(&todo_id)
+        .map(|d| d.seq + 1)
+        .unwrap_or(1);
+    store.append(Event::DeliveryOutcomeRecorded {
+        goal_id: goal_id.clone(),
+        todo_id: todo_id.clone(),
+        outcome: outcome.to_string(),
+        note: note.clone(),
+        delivered_turn: current_turn,
+        seq,
+        ts: now_epoch(),
+    })?;
+    // P1-5 reward_memory ingestion: a delivery RESOLUTION is a reward
+    // signal (the P0-2 outcome chain is reward_memory's phase-1 signal
+    // source); the pending `delivered` state ingests nothing.
+    if ingest_delivery_reward(store, &goal_id, &todo_id, outcome, note)? {
+        println!("   ↳ reward signal ingested (delivery_outcome/{outcome})");
+    }
+    println!("delivery {todo_id} → {outcome} ✔");
+    Ok(())
+}
+
+/// `delivery followthrough --goal G [--turns N]` — manually run the
+/// outcome_followthrough scan (P0-2②); the run path calls the same driver
+/// automatically after every turn.
+fn delivery_followthrough(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut turns = crate::work_items::delivery_outcome::DEFAULT_FOLLOWTHROUGH_TURNS;
+    reject_unknown_flags(args, &["--goal", "--turns"])?;
+    parse_pairs(args, |k, v| match k {
+        "--goal" => goal_id = Some(v),
+        "--turns" => turns = v.parse().unwrap_or(turns),
+        _ => {}
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let created = run_followthrough_check(store, &goal_id, turns)?;
+    if created.is_empty() {
+        println!("no overdue deliveries (all deliveries resolved or under {turns} turns old)");
+    } else {
+        for id in created {
+            println!("follow-through todo {id} auto-created ✔ (unverified delivery aged past {turns} turns)");
+        }
+    }
+    Ok(())
+}
+
+/// P0-2② outcome_followthrough driver: scan delivered-but-unverified work
+/// items and auto-derive a follow-up todo for each one overdue by at least
+/// `threshold` turns. Fires exactly once per delivery cycle — the
+/// `FollowthroughCreated` event stamps the source delivery. Returns the ids
+/// of the follow-up todos created.
+fn run_followthrough_check(
+    store: &mut Store,
+    goal_id: &str,
+    threshold: u32,
+) -> Result<Vec<String>> {
+    use crate::work_items::delivery_outcome as dov;
+    let goal = store
+        .replay(goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let current_turn = goal.history.iter().map(|r| r.turn).max().unwrap_or(0);
+    let overdue = dov::overdue_deliveries(&goal, current_turn, threshold);
+    let mut created = Vec::new();
+    for od in overdue {
+        let followup_id = gen_id("todo");
+        let mut todo = Todo::advancement(&followup_id, &dov::followthrough_todo_text(&od));
+        todo.note = Some(format!(
+            "auto-created by outcome_followthrough (source {}, turn {current_turn}, threshold {threshold})",
+            od.todo_id
+        ));
+        store.append(Event::TodoAdded {
+            goal_id: goal_id.to_string(),
+            todo,
+            ts: now_epoch(),
+        })?;
+        store.append(Event::FollowthroughCreated {
+            goal_id: goal_id.to_string(),
+            source_todo_id: od.todo_id.clone(),
+            followup_todo_id: followup_id.clone(),
+            turns_overdue: od.turns_overdue,
+            ts: now_epoch(),
+        })?;
+        created.push(followup_id);
+    }
+    Ok(created)
+}
+
+// ── reward-memory (P1-5: reward memory phase 1 — ingestion + scoped feedback) ──
+
+/// P1-5 ingestion helper: a turn that carried an independent validation
+/// receipt feeds the reward ledger (source `validator`). Returns true when
+/// a signal was appended (`not_required` / no receipt ingests nothing).
+fn ingest_validator_reward(
+    store: &mut Store,
+    goal_id: &str,
+    todo_id: &str,
+    agent_id: Option<&str>,
+    record: &RunRecord,
+) -> Result<bool> {
+    use crate::capabilities::reward_memory as rm;
+    let Some(v) = &record.validation else {
+        return Ok(false);
+    };
+    let Some((signal, score)) = rm::validator_signal(v) else {
+        return Ok(false);
+    };
+    let seq = rm::next_seq(&store.events(goal_id)?, todo_id);
+    store.append(Event::RewardSignalRecorded {
+        goal_id: goal_id.to_string(),
+        todo_id: todo_id.to_string(),
+        agent_id: agent_id.map(str::to_string),
+        run_id: Some(record.run_id.clone()),
+        source: rm::SOURCE_VALIDATOR.to_string(),
+        signal: signal.to_string(),
+        score,
+        note: Some(v.summary.clone()),
+        seq,
+        ts: now_epoch(),
+    })?;
+    Ok(true)
+}
+
+/// P1-5 ingestion helper: a delivery RESOLUTION (verified/failed/rework) is
+/// a reward signal (source `delivery_outcome`) — the P0-2 outcome chain is
+/// reward_memory's phase-1 signal source. Returns true when appended (the
+/// pending `delivered` state ingests nothing).
+fn ingest_delivery_reward(
+    store: &mut Store,
+    goal_id: &str,
+    todo_id: &str,
+    outcome: &str,
+    note: Option<String>,
+) -> Result<bool> {
+    use crate::capabilities::reward_memory as rm;
+    let Some((signal, score)) = rm::delivery_outcome_signal(outcome) else {
+        return Ok(false);
+    };
+    let seq = rm::next_seq(&store.events(goal_id)?, todo_id);
+    store.append(Event::RewardSignalRecorded {
+        goal_id: goal_id.to_string(),
+        todo_id: todo_id.to_string(),
+        agent_id: None,
+        run_id: None,
+        source: rm::SOURCE_DELIVERY_OUTCOME.to_string(),
+        signal: signal.to_string(),
+        score,
+        note,
+        seq,
+        ts: now_epoch(),
+    })?;
+    Ok(true)
+}
+
+/// `reward-memory <query|record>` — the P1-5 surface: scoped_feedback read
+/// model (query) + manual evidence scoring (record). Validator and
+/// delivery-outcome signals ingest automatically (run path / `delivery
+/// record`); experiment/dogfood are out of scope for phase 1.
+fn cmd_reward_memory(store: &mut Store, args: &[String]) -> Result<()> {
+    match args.first().map(|s| s.as_str()) {
+        Some("query") => reward_memory_query(store, &args[1..]),
+        Some("record") => reward_memory_record(store, &args[1..]),
+        _ => bail!("reward-memory subcommand must be `query` or `record`"),
+    }
+}
+
+/// `reward-memory query --goal G [--agent-id A] [--todo-id T] [--source S]
+/// [--format json]` — the scoped_feedback read model: reward signals from
+/// the goal ledger, filtered by agent / todo / source scope, plus a
+/// deterministic aggregate summary.
+fn reward_memory_query(store: &Store, args: &[String]) -> Result<()> {
+    use crate::capabilities::reward_memory as rm;
+    reject_unknown_flags(
+        args,
+        &[
+            "--agent-id",
+            "--format",
+            "--goal",
+            "--json",
+            "--source",
+            "--todo-id",
+        ],
+    )?;
+    let mut goal_id = None;
+    let mut agent_id = None;
+    let mut todo_id = None;
+    let mut source_raw = None;
+    parse_pairs(args, |k, v| match k {
+        "--goal" => goal_id = Some(v),
+        "--agent-id" => agent_id = Some(v),
+        "--todo-id" => todo_id = Some(v),
+        "--source" => source_raw = Some(v),
+        _ => {}
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let source = match source_raw.as_deref() {
+        None => None,
+        Some(raw) => Some(rm::normalize_source(raw).ok_or_else(|| {
+            anyhow::anyhow!(
+                "--source must be one of: {}",
+                rm::REWARD_SOURCE_CHOICES.join(", ")
+            )
+        })?),
+    };
+    if !store.registered(&goal_id) {
+        bail!("goal {goal_id} not found");
+    }
+    let events = store.events(&goal_id)?;
+    let scope = rm::RewardScope {
+        agent_id: agent_id.as_deref(),
+        todo_id: todo_id.as_deref(),
+        source,
+    };
+    let signals = rm::collect_signals(&events, &scope);
+    let summary = rm::summarize(&signals);
+    if wants_json(args) {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "goal_id": goal_id,
+                "scope": {
+                    "agent_id": agent_id,
+                    "todo_id": todo_id,
+                    "source": source,
+                },
+                "signals": signals,
+                "summary": summary,
+            }))?
+        );
+        return Ok(());
+    }
+    if signals.is_empty() {
+        println!(
+            "no reward signals for goal {goal_id} (signals ingest from validator receipts, delivery resolutions, and `reward-memory record`)"
+        );
+        return Ok(());
+    }
+    let avg = summary
+        .avg_score
+        .map(|a| format!("{a:.2}"))
+        .unwrap_or_else(|| "-".to_string());
+    println!(
+        "reward signals for {goal_id}: {} total (validator passed={} failed={}, scored={}, avg_score={})",
+        summary.total, summary.validator_passed, summary.validator_failed, summary.scored, avg
+    );
+    for s in &signals {
+        let score = s
+            .score
+            .map(|v| format!(" score={v:.2}"))
+            .unwrap_or_default();
+        let agent = s
+            .agent_id
+            .as_deref()
+            .map(|a| format!(" agent={a}"))
+            .unwrap_or_default();
+        let run = s
+            .run_id
+            .as_deref()
+            .map(|r| format!(" run={r}"))
+            .unwrap_or_default();
+        let note = s
+            .note
+            .as_deref()
+            .map(|n| format!(" note={n}"))
+            .unwrap_or_default();
+        println!(
+            "  {} [{}/{}]{}{}{}{}",
+            s.todo_id, s.source, s.signal, score, agent, run, note
+        );
+    }
+    Ok(())
+}
+
+/// `reward-memory record --goal G --todo-id T --score 0.0..1.0 [--source
+/// evidence] [--note N] [--agent-id A]` — manual evidence scoring into the
+/// reward ledger (phase-1 ingestion path for evidence that does not come
+/// from a validator receipt or a delivery resolution).
+fn reward_memory_record(store: &mut Store, args: &[String]) -> Result<()> {
+    use crate::capabilities::reward_memory as rm;
+    reject_unknown_flags(
+        args,
+        &[
+            "--agent-id",
+            "--goal",
+            "--note",
+            "--score",
+            "--source",
+            "--todo-id",
+        ],
+    )?;
+    let mut goal_id = None;
+    let mut todo_id = None;
+    let mut score_raw = None;
+    let mut source_raw = None;
+    let mut note = None;
+    let mut agent_id = None;
+    parse_pairs(args, |k, v| match k {
+        "--goal" => goal_id = Some(v),
+        "--todo-id" => todo_id = Some(v),
+        "--score" => score_raw = Some(v),
+        "--source" => source_raw = Some(v),
+        "--note" => note = Some(v),
+        "--agent-id" => agent_id = Some(v),
+        _ => {}
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
+    let score_raw = score_raw.ok_or_else(|| anyhow::anyhow!("--score required"))?;
+    let score: f64 = score_raw
+        .parse()
+        .map_err(|_| anyhow::anyhow!("--score must be a number in 0.0..=1.0"))?;
+    if !score.is_finite() || !(0.0..=1.0).contains(&score) {
+        bail!("--score must be a number in 0.0..=1.0");
+    }
+    let source = match source_raw.as_deref() {
+        None => rm::SOURCE_EVIDENCE,
+        Some(raw) => rm::normalize_source(raw).ok_or_else(|| {
+            anyhow::anyhow!(
+                "--source must be one of: {}",
+                rm::REWARD_SOURCE_CHOICES.join(", ")
+            )
+        })?,
+    };
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    if goal.todo(&todo_id).is_none() {
+        bail!("todo {todo_id} not found in goal {goal_id}");
+    }
+    let seq = rm::next_seq(&store.events(&goal_id)?, &todo_id);
+    store.append(Event::RewardSignalRecorded {
+        goal_id: goal_id.clone(),
+        todo_id: todo_id.clone(),
+        agent_id,
+        run_id: None,
+        source: source.to_string(),
+        signal: "scored".to_string(),
+        score: Some(score),
+        note,
+        seq,
+        ts: now_epoch(),
+    })?;
+    println!("reward signal recorded: {todo_id} [{source}/scored] score={score:.2} ✔");
+    Ok(())
+}
+
+// ── decision-context (P1-4: assembler + outcome feedback) ─────────────────
+
+/// `decision-context <assemble|outcomes|feedback>` — the P1-4 surface:
+/// the decision-context assembler read model plus the audited
+/// outcome-feedback writeback (LoopX `capabilities/decision_context/cli.py`,
+/// compact set).
+fn cmd_decision_context(store: &mut Store, args: &[String]) -> Result<()> {
+    match args.first().map(|s| s.as_str()) {
+        Some("assemble") => decision_context_assemble(store, &args[1..]),
+        Some("outcomes") => decision_context_outcomes(store, &args[1..]),
+        Some("feedback") => decision_context_feedback(store, &args[1..]),
+        _ => bail!("decision-context subcommand must be `assemble`, `outcomes` or `feedback`"),
+    }
+}
+
+/// `decision-context assemble --goal G [--format json]` — assemble the
+/// decision context for the goal's current state (run history / outcome
+/// streak / quota status providers + the goal-boundary header).
+fn decision_context_assemble(store: &Store, args: &[String]) -> Result<()> {
+    use crate::capabilities::decision_context::assembler::assemble_decision_context;
+    let mut goal_id = None;
+    reject_unknown_flags(args, &["--format", "--goal", "--json"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v)
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let packet = assemble_decision_context(&goal);
+    if wants_json(args) {
+        println!("{}", serde_json::to_string_pretty(&packet)?);
+        return Ok(());
+    }
+    println!(
+        "decision context for {goal_id} (digest {}):",
+        packet.digest()
+    );
+    println!(
+        "  goal_status={} providers=[{}]",
+        packet.goal_status,
+        packet.providers.join(", ")
+    );
+    println!(
+        "  run_history: runs={} material={} recent=[{}]",
+        packet.run_history.run_count,
+        packet.run_history.material_runs,
+        packet.run_history.recent_terminal_states.join(", ")
+    );
+    println!(
+        "  outcome_streak: streak={} threshold={} floor_breached={}",
+        packet.outcome_streak.surface_streak,
+        packet.outcome_streak.threshold,
+        packet.outcome_streak.floor_breached
+    );
+    println!(
+        "  quota: spent={}/{} (projected {})",
+        packet.quota.spent_slots, packet.quota.allowed_slots, packet.quota.projected_spent_slots
+    );
+    if !packet.open_acceptance_gaps.is_empty() {
+        println!(
+            "  open_acceptance_gaps: [{}]",
+            packet.open_acceptance_gaps.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// `decision-context outcomes --goal G [--format json]` — the outcome
+/// feedback read model: settled receipts in ledger order.
+fn decision_context_outcomes(store: &Store, args: &[String]) -> Result<()> {
+    use crate::capabilities::decision_context::outcome_feedback::decision_outcomes;
+    let mut goal_id = None;
+    reject_unknown_flags(args, &["--format", "--goal", "--json"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v)
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let events = store.events(&goal_id)?;
+    let receipts = decision_outcomes(&events);
+    if wants_json(args) {
+        println!("{}", serde_json::to_string_pretty(&receipts)?);
+        return Ok(());
+    }
+    if receipts.is_empty() {
+        println!(
+            "no decision outcome feedback for goal {goal_id} (settle one via `decision-context feedback`)"
+        );
+        return Ok(());
+    }
+    println!(
+        "decision outcome feedback for {goal_id} ({} receipt(s)):",
+        receipts.len()
+    );
+    for r in receipts {
+        println!(
+            "  {} {} → {} (decision={}, code={}, seq={})",
+            r.receipt_id,
+            r.decision_id,
+            r.verification_status,
+            r.accepted_decision,
+            r.reason_code,
+            r.seq
+        );
+    }
+    Ok(())
+}
+
+/// `decision-context feedback --goal G --turn N --status
+/// verified|refuted|inconclusive [--note N] [--agent-id A]
+/// [--context-digest D]` — settle an outcome against the persisted decision
+/// for turn N. Audited: fails closed when no decision summary anchors the
+/// turn. Decisive outcomes also ingest a `decision_outcome` reward signal.
+fn decision_context_feedback(store: &mut Store, args: &[String]) -> Result<()> {
+    use crate::capabilities::decision_context::outcome_feedback::record_outcome_feedback;
+    let mut goal_id = None;
+    let mut turn_raw = None;
+    let mut status = None;
+    let mut note = None;
+    let mut agent_id = None;
+    let mut context_digest = None;
+    reject_unknown_flags(
+        args,
+        &[
+            "--agent-id",
+            "--context-digest",
+            "--goal",
+            "--note",
+            "--status",
+            "--turn",
+        ],
+    )?;
+    parse_pairs(args, |k, v| match k {
+        "--goal" => goal_id = Some(v),
+        "--turn" => turn_raw = Some(v),
+        "--status" => status = Some(v),
+        "--note" => note = Some(v),
+        "--agent-id" => agent_id = Some(v),
+        "--context-digest" => context_digest = Some(v),
+        _ => {}
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let turn: u32 = turn_raw
+        .ok_or_else(|| anyhow::anyhow!("--turn required"))?
+        .parse()
+        .map_err(|_| anyhow::anyhow!("--turn must be a run-turn number"))?;
+    let status = status.ok_or_else(|| anyhow::anyhow!("--status required"))?;
+    let receipt = record_outcome_feedback(
+        store,
+        &goal_id,
+        turn,
+        &status,
+        note,
+        agent_id,
+        context_digest.as_deref().unwrap_or(""),
+    )?;
+    println!(
+        "decision outcome recorded: {} turn-{turn} → {} ✔",
+        receipt.receipt_id, receipt.verification_status
+    );
+    Ok(())
+}
+
 // ── registry (G-26) ────────────────────────────────────────────────────────
 
 /// `loopx registry [--format json|--json] [--include-experimental]` — inspect
@@ -4163,6 +5549,43 @@ fn cmd_registry(registry: &CommandRegistry, args: &[String]) -> Result<()> {
             println!("  {:<24} {}", c.name, c.summary);
         }
     }
+    Ok(())
+}
+
+/// P1-9: `future loop commands` — the operator journey view (LoopX `loopx
+/// commands` five-group presentation). The registry stays the flat machine
+/// catalog; this is a pure presentation overlay over the same metadata.
+fn cmd_commands(registry: &CommandRegistry, args: &[String]) -> Result<()> {
+    reject_unknown_flags(args, &["--format", "--json"])?;
+    let include_experimental = args.iter().any(|a| a == "--include-experimental");
+    if wants_json(args) {
+        let payload: Vec<serde_json::Value> = Journey::ALL
+            .iter()
+            .map(|j| {
+                let cmds: Vec<serde_json::Value> = registry
+                    .commands_in_journey(*j, include_experimental)
+                    .iter()
+                    .map(|c| {
+                        serde_json::json!({
+                            "name": c.name,
+                            "summary": c.summary,
+                            "usage": c.usage,
+                            "experimental": c.experimental,
+                        })
+                    })
+                    .collect();
+                serde_json::json!({
+                    "journey": j.key(),
+                    "title": j.title(),
+                    "summary": j.summary(),
+                    "commands": cmds,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
+    print!("{}", registry.render_journeys(include_experimental));
     Ok(())
 }
 
@@ -4639,7 +6062,22 @@ fn cmd_replay(store: &Store, args: &[String]) -> Result<()> {
 
 /// `loopx canary smoke [--profile X] [--json]` — run a smoke profile
 /// (default release-gate). Fails closed when any check fails.
+/// `loopx canary premerge [--json]` — P1-6 CI merge gate (isolated root).
 fn cmd_canary(store: &Store, args: &[String]) -> Result<()> {
+    match args.first().map(String::as_str) {
+        Some("premerge") => cmd_canary_premerge(&args[1..]),
+        Some("smoke") => cmd_canary_smoke(store, &args[1..]),
+        Some(other) if !other.starts_with('-') => {
+            anyhow::bail!("unknown canary subcommand `{other}` (expected `smoke` or `premerge`)")
+        }
+        // Legacy bare `canary` (or flags first) keeps the smoke default.
+        _ => cmd_canary_smoke(store, args),
+    }
+}
+
+/// `loopx canary smoke [--profile X] [--json]` — run a smoke profile
+/// (default release-gate). Fails closed when any check fails.
+fn cmd_canary_smoke(store: &Store, args: &[String]) -> Result<()> {
     let mut profile = None;
     let mut json = false;
     reject_unknown_flags(args, &["--json", "--profile"])?;
@@ -4682,6 +6120,48 @@ fn cmd_canary(store: &Store, args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// `loopx canary premerge [--json]` — the P1-6 CI merge gate. Runs against an
+/// isolated temporary state root (never the operator's live root) with a
+/// seeded fixture goal so the run is non-vacuous, then applies the release
+/// gate's all-passed rule. Exits non-zero when the gate fails.
+fn cmd_canary_premerge(args: &[String]) -> Result<()> {
+    let mut json = false;
+    reject_unknown_flags(args, &["--json"])?;
+    parse_pairs(args, |k, _v| {
+        if k == "--json" {
+            json = true;
+        }
+    });
+    let report = crate::canary::run_premerge_gate_isolated()?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!(
+            "canary premerge (suite {}): {} check(s) over {} goal(s)",
+            report.run.suite,
+            report.run.checks.len(),
+            report.gate.goals_checked
+        );
+        for check in &report.run.checks {
+            println!(
+                "  [{}] {:<24} {}",
+                if check.passed { "ok" } else { "FAIL" },
+                check.id,
+                check.detail
+            );
+        }
+        println!(
+            "gate: {} — {}",
+            if report.gate.passed { "PASS" } else { "FAIL" },
+            report.gate.reason
+        );
+    }
+    if !report.gate.passed {
+        anyhow::bail!("canary premerge gate failed: {}", report.gate.reason);
+    }
+    Ok(())
+}
+
 // ── P4: diagnostics & command surface (G-27) ───────────────────────────────
 
 /// `loopx version` — version + schema surface.
@@ -4694,6 +6174,7 @@ fn cmd_version(store: &Store, args: &[String]) -> Result<()> {
     println!("  public_safe_decision_replay_v0 (G-19)");
     println!("  model_behavior_corpus_v0 (G-19)");
     println!("  canary_smoke_run_v0 (G-20)");
+    println!("  canary_premerge_gate_v0 (P1-6)");
     println!("  future_loop_turn_envelope_v0 (G-9)");
     println!("  scheduler_arbitration_v0 (G-2/G-11)");
     let _ = store;
@@ -4997,8 +6478,17 @@ fn event_touches_todo(event: &crate::store::Event, todo_id: &str) -> bool {
         | Event::TodoRenewed { todo_id: id, .. }
         | Event::TodoReleased { todo_id: id, .. }
         | Event::TodoExpired { todo_id: id, .. }
+        | Event::WorkspaceLockAcquired { todo_id: id, .. }
+        | Event::RewardSignalRecorded { todo_id: id, .. }
+        | Event::DeliveryOutcomeRecorded { todo_id: id, .. }
         | Event::GateResolved { todo_id: id, .. } => id == todo_id,
+        Event::FollowthroughCreated {
+            source_todo_id,
+            followup_todo_id,
+            ..
+        } => source_todo_id == todo_id || followup_todo_id == todo_id,
         Event::RunRecorded { record, .. } => record.todo_id == todo_id,
+        Event::HeartbeatReceiptRecorded { todo_id: id, .. } => id.as_deref() == Some(todo_id),
         _ => false,
     }
 }
@@ -5062,6 +6552,19 @@ fn describe_event(event: &crate::store::Event) -> String {
             return format!(
                 "agent_onboarded agent={agent_id} capabilities={}",
                 capabilities.join(",")
+            );
+        }
+        Event::WorkspaceLockAcquired {
+            agent_id,
+            todo_id,
+            paths,
+            forced,
+            ..
+        } => {
+            return format!(
+                "workspace_lock agent={agent_id} todo={todo_id} paths={}{}",
+                paths.join(","),
+                if *forced { " (forced)" } else { "" }
             );
         }
         Event::ReplanAcked { delta_kinds, .. } => {
@@ -5134,6 +6637,82 @@ fn describe_event(event: &crate::store::Event) -> String {
         Event::TodoExpired { todo_id, .. } => {
             return format!("todo_expired todo={todo_id}");
         }
+        Event::DeliveryOutcomeRecorded {
+            todo_id, outcome, ..
+        } => {
+            return format!("delivery_outcome todo={todo_id} outcome={outcome}");
+        }
+        Event::FollowthroughCreated {
+            source_todo_id,
+            followup_todo_id,
+            ..
+        } => {
+            return format!(
+                "followthrough_created source={source_todo_id} followup={followup_todo_id}"
+            );
+        }
+        Event::RewardSignalRecorded {
+            todo_id,
+            source,
+            signal,
+            score,
+            ..
+        } => {
+            let score = score.map(|v| format!(" score={v:.2}")).unwrap_or_default();
+            return format!("reward_signal todo={todo_id} source={source} signal={signal}{score}");
+        }
+        Event::DecisionSummaryRecorded { summary, .. } => {
+            return format!(
+                "decision_summary decision={} action={} code={} turn={}",
+                summary.decision, summary.effective_action, summary.reason_code, summary.turn
+            );
+        }
+        Event::HeartbeatReceiptRecorded {
+            agent_id,
+            turn_instance_id,
+            todo_id,
+            ..
+        } => {
+            return format!(
+                "heartbeat_receipt agent={} turn={} todo={}",
+                agent_id.as_deref().unwrap_or("anonymous"),
+                turn_instance_id,
+                todo_id.as_deref().unwrap_or("-")
+            );
+        }
+        Event::SchedulerAcked {
+            agent_id,
+            action,
+            rrule,
+            ..
+        } => {
+            return format!(
+                "scheduler_ack agent={agent_id} action={action} rrule={}",
+                rrule.as_deref().unwrap_or("-")
+            );
+        }
+        Event::SchedulerTicked {
+            agent_id,
+            action,
+            rrule,
+            ..
+        } => {
+            return format!(
+                "scheduler_tick agent={agent_id} action={action} rrule={}",
+                rrule.as_deref().unwrap_or("-")
+            );
+        }
+        Event::AutomationLivenessAlert {
+            agent_id,
+            elapsed_secs,
+            threshold_secs,
+            consecutive,
+            ..
+        } => {
+            return format!(
+                "liveness_alert agent={agent_id} silent={elapsed_secs}s threshold={threshold_secs}s alert#{consecutive}"
+            );
+        }
         Event::SupervisorProposed {
             decision_id,
             target_agent_id,
@@ -5147,6 +6726,22 @@ fn describe_event(event: &crate::store::Event) -> String {
             ..
         } => {
             return format!("supervisor_receipt decision={decision_id} outcome={outcome}");
+        }
+        Event::ProjectionRepaired {
+            projection,
+            drift_count,
+            rows_written,
+            ..
+        } => {
+            return format!(
+                "projection_repaired projection={projection} drift={drift_count} rows_written={rows_written}"
+            );
+        }
+        Event::DecisionOutcomeRecorded { receipt, .. } => {
+            return format!(
+                "decision_outcome {} {} → {}",
+                receipt.receipt_id, receipt.decision_id, receipt.verification_status
+            );
         }
     };
     kind.to_string()
@@ -5526,12 +7121,14 @@ mod coverage_tests {
             Event::AgentRegistered {
                 goal_id: "g".into(),
                 agent_id: "a".into(),
+                workspaces: vec![],
                 ts: 1,
             },
             Event::AgentOnboarded {
                 goal_id: "g".into(),
                 agent_id: "a".into(),
                 capabilities: vec!["shell".into()],
+                workspaces: vec![],
                 ts: 1,
             },
             Event::ReplanAcked {
@@ -6139,6 +7736,67 @@ mod cli_quirks_tests {
         assert!(help.contains("unknown command"), "got: {help}");
     }
 
+    // P1-9: journey metadata + grouped command reference ──────────────────
+
+    #[test]
+    fn journey_assignments_cover_every_static_command() {
+        use std::collections::HashSet;
+        let registry = build_cli_registry();
+        // Capability command hooks are registered dynamically from the
+        // catalog and intentionally keep the maintainer default.
+        let hook_names: HashSet<String> =
+            crate::capabilities::catalog::CapabilityCatalog::with_builtin()
+                .records(true)
+                .iter()
+                .flat_map(|r| r.commands.iter().map(|c| c.name.clone()))
+                .collect();
+        let assigned: HashSet<&str> = JOURNEY_ASSIGNMENTS.iter().map(|(n, _)| *n).collect();
+        for c in registry.commands(true) {
+            if hook_names.contains(&c.name) {
+                continue;
+            }
+            assert!(
+                assigned.contains(c.name.as_str()),
+                "registered command `{}` has no journey assignment",
+                c.name
+            );
+        }
+        for name in &assigned {
+            assert!(
+                registry.find(name, true).is_some(),
+                "journey assignment `{name}` matches no registered command"
+            );
+        }
+    }
+
+    #[test]
+    fn commands_reference_groups_by_journey() {
+        let registry = build_cli_registry();
+        let text = registry.render_journeys(false);
+        for title in [
+            "Start here",
+            "Daily operator",
+            "Loop driver",
+            "Setup & automation",
+            "Maintainer & adapter",
+        ] {
+            assert!(text.contains(title), "missing journey `{title}`: {text}");
+        }
+        // spot-check placement
+        let starter = text.find("goal init --objective").unwrap();
+        let daily_pos = text.find("── Daily operator ──").unwrap();
+        assert!(starter < daily_pos, "goal must be in Start here: {text}");
+        let run_pos = text.find("run --goal G --agent-id A").unwrap();
+        assert!(run_pos > daily_pos, "run must come after daily: {text}");
+    }
+
+    #[test]
+    fn cmd_commands_rejects_unknown_flags() {
+        let registry = build_cli_registry();
+        let err = cmd_commands(&registry, &["--journey".to_string()]).unwrap_err();
+        assert!(format!("{err}").contains("unknown flag `--journey`"));
+    }
+
     // ③ --format json detection + read-only JSON projections ───────────────
 
     #[test]
@@ -6184,6 +7842,7 @@ mod cli_quirks_tests {
         goal.agent_profiles = vec![crate::state::AgentProfile {
             id: "alice".to_string(),
             capabilities: vec!["code".to_string()],
+            workspaces: vec![],
         }];
         let mut todo = Todo::advancement("t1", "work");
         todo.claimed_by = Some("alice".to_string());
@@ -6424,5 +8083,597 @@ mod cli_quirks_tests {
         assert_eq!(todo.status, crate::state::TodoStatus::Deferred);
         let deadline = todo.resume_when.expect("numeric sets a deadline");
         assert!(deadline >= before + std::time::Duration::from_secs(120));
+    }
+}
+
+// ── P0-1 workspace guard CLI contract tests ───────────────────────────────
+
+#[cfg(test)]
+mod workspace_guard_cli_tests {
+    use super::*;
+
+    fn tmp_store(tag: &str) -> Store {
+        let dir = std::env::temp_dir().join(format!(
+            "future-loop-p01-{tag}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        Store::open(dir.to_string_lossy().as_ref()).unwrap()
+    }
+
+    fn open_goal(store: &mut Store, goal_id: &str, todo_ids: &[&str]) {
+        let goal = Goal::new(goal_id, "objective", "/tmp");
+        store.register(&goal).unwrap();
+        let ts = goal.created_at;
+        store
+            .append(Event::GoalStarted {
+                goal_id: goal_id.into(),
+                ts,
+            })
+            .unwrap();
+        for id in todo_ids {
+            store
+                .append(Event::TodoAdded {
+                    goal_id: goal_id.into(),
+                    todo: Todo::advancement(id, "work"),
+                    ts,
+                })
+                .unwrap();
+        }
+    }
+
+    fn onboard(store: &mut Store, goal: &str, agent: &str, workspace: &str) {
+        cmd_agent_onboard(
+            store,
+            &[
+                "--goal".to_string(),
+                goal.to_string(),
+                "--agent-id".to_string(),
+                agent.to_string(),
+                "--workspace".to_string(),
+                workspace.to_string(),
+            ],
+        )
+        .unwrap();
+    }
+
+    fn claim_args(goal: &str, todo: &str, agent: &str, extra: &[&str]) -> Vec<String> {
+        let mut v = vec![
+            "--goal".to_string(),
+            goal.to_string(),
+            "--todo-id".to_string(),
+            todo.to_string(),
+            "--agent-id".to_string(),
+            agent.to_string(),
+        ];
+        v.extend(extra.iter().map(|s| s.to_string()));
+        v
+    }
+
+    fn lock_events(store: &Store, goal: &str) -> Vec<(String, String, bool)> {
+        store
+            .events(goal)
+            .unwrap()
+            .iter()
+            .filter_map(|se| match &se.event {
+                Event::WorkspaceLockAcquired {
+                    agent_id,
+                    todo_id,
+                    forced,
+                    ..
+                } => Some((agent_id.clone(), todo_id.clone(), *forced)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn register_and_onboard_workspace_roundtrip_through_replay() {
+        let mut store = tmp_store("declare");
+        open_goal(&mut store, "g1", &[]);
+        cmd_agent(
+            &mut store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--agent-id".to_string(),
+                "a1".to_string(),
+                "--workspace".to_string(),
+                "/definitely/not/here/wt1".to_string(),
+            ],
+        )
+        .unwrap();
+        onboard(&mut store, "g1", "a2", "/definitely/not/here/wt2");
+        let goal = store.replay("g1").unwrap().unwrap();
+        assert_eq!(
+            crate::agents::workspace_guard::agent_workspaces(&goal, "a1"),
+            vec!["/definitely/not/here/wt1".to_string()]
+        );
+        assert_eq!(
+            crate::agents::workspace_guard::agent_workspaces(&goal, "a2"),
+            vec!["/definitely/not/here/wt2".to_string()]
+        );
+    }
+
+    #[test]
+    fn legacy_agent_registered_event_without_workspaces_replays_empty() {
+        // Old ledger line (pre-P0-1) — no `workspaces` field.
+        let json = r#"{"kind":"agent_registered","goal_id":"g1","agent_id":"old","ts":1}"#;
+        let event: Event = serde_json::from_str(json).unwrap();
+        match event {
+            Event::AgentRegistered { workspaces, .. } => assert!(workspaces.is_empty()),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn claim_refuses_on_live_workspace_conflict_and_stays_serial() {
+        let mut store = tmp_store("conflict");
+        open_goal(&mut store, "g1", &["t1", "t2"]);
+        onboard(&mut store, "g1", "agent-a", "/definitely/not/here/wt1");
+        onboard(&mut store, "g1", "agent-b", "/definitely/not/here/wt1");
+        // agent-b claims t1 first (a is idle → no conflict).
+        todo_claim(&mut store, &claim_args("g1", "t1", "agent-b", &[])).unwrap();
+        // agent-a claiming t2 in the same workspace must be refused.
+        let err = todo_claim(&mut store, &claim_args("g1", "t2", "agent-a", &[])).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("workspace conflict"), "got: {msg}");
+        assert!(msg.contains("agent-b"), "holder missing: {msg}");
+        assert!(msg.contains("--force"), "force hint missing: {msg}");
+        // No claim for t2 landed in the ledger.
+        let goal = store.replay("g1").unwrap().unwrap();
+        assert!(goal.todo("t2").unwrap().claimed_by.is_none());
+    }
+
+    #[test]
+    fn claim_force_overrides_conflict_and_records_forced_lock() {
+        let mut store = tmp_store("force");
+        open_goal(&mut store, "g1", &["t1", "t2"]);
+        onboard(&mut store, "g1", "agent-a", "/definitely/not/here/wt1");
+        onboard(&mut store, "g1", "agent-b", "/definitely/not/here/wt1");
+        todo_claim(&mut store, &claim_args("g1", "t1", "agent-b", &[])).unwrap();
+        todo_claim(&mut store, &claim_args("g1", "t2", "agent-a", &["--force"])).unwrap();
+        let goal = store.replay("g1").unwrap().unwrap();
+        assert_eq!(
+            goal.todo("t2").unwrap().claimed_by.as_deref(),
+            Some("agent-a")
+        );
+        let locks = lock_events(&store, "g1");
+        assert_eq!(locks.len(), 2, "one lock per workspace-declaring claim");
+        assert_eq!(locks[0], ("agent-b".to_string(), "t1".to_string(), false));
+        assert_eq!(locks[1], ("agent-a".to_string(), "t2".to_string(), true));
+    }
+
+    #[test]
+    fn claim_without_conflict_records_unforced_lock_only_for_declaring_agents() {
+        let mut store = tmp_store("lock");
+        open_goal(&mut store, "g1", &["t1", "t2"]);
+        onboard(&mut store, "g1", "agent-a", "/definitely/not/here/wt1");
+        // agent-b registers WITHOUT a workspace declaration.
+        cmd_agent(
+            &mut store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--agent-id".to_string(),
+                "agent-b".to_string(),
+            ],
+        )
+        .unwrap();
+        todo_claim(&mut store, &claim_args("g1", "t1", "agent-a", &[])).unwrap();
+        todo_claim(&mut store, &claim_args("g1", "t2", "agent-b", &[])).unwrap();
+        let locks = lock_events(&store, "g1");
+        assert_eq!(
+            locks,
+            vec![("agent-a".to_string(), "t1".to_string(), false)],
+            "undeclared agents leave no lock record (fail-open)"
+        );
+    }
+
+    #[test]
+    fn disjoint_workspaces_claim_freely() {
+        let mut store = tmp_store("disjoint");
+        open_goal(&mut store, "g1", &["t1", "t2"]);
+        onboard(&mut store, "g1", "agent-a", "/definitely/not/here/wt1");
+        onboard(&mut store, "g1", "agent-b", "/definitely/not/here/wt2");
+        todo_claim(&mut store, &claim_args("g1", "t1", "agent-b", &[])).unwrap();
+        todo_claim(&mut store, &claim_args("g1", "t2", "agent-a", &[])).unwrap();
+    }
+
+    #[test]
+    fn lease_claim_applies_the_same_guard() {
+        let mut store = tmp_store("lease-guard");
+        open_goal(&mut store, "g1", &["t1", "t2"]);
+        onboard(&mut store, "g1", "agent-a", "/definitely/not/here/wt1");
+        onboard(&mut store, "g1", "agent-b", "/definitely/not/here/wt1");
+        let lease_args = |todo: &str, agent: &str, extra: &[&str]| {
+            let mut v = vec!["claim".to_string()];
+            v.extend(claim_args("g1", todo, agent, &["--lease-secs", "3600"]));
+            v.extend(extra.iter().map(|s| s.to_string()));
+            v
+        };
+        cmd_lease(&mut store, &lease_args("t1", "agent-b", &[])).unwrap();
+        let err = cmd_lease(&mut store, &lease_args("t2", "agent-a", &[])).unwrap_err();
+        assert!(format!("{err}").contains("workspace conflict"));
+        cmd_lease(&mut store, &lease_args("t2", "agent-a", &["--force"])).unwrap();
+        let locks = lock_events(&store, "g1");
+        assert_eq!(locks.len(), 2);
+        assert!(locks[1].2, "forced lease claim must record forced=true");
+    }
+
+    #[test]
+    fn agent_list_rows_show_declared_workspaces_and_occupancy() {
+        let mut goal = Goal::new("g1", "objective", "/tmp");
+        goal.registered_agents = vec!["alice".to_string()];
+        goal.agent_profiles = vec![crate::state::AgentProfile {
+            id: "alice".to_string(),
+            capabilities: vec![],
+            workspaces: vec!["/repo/wt1".to_string()],
+        }];
+        // idle: declared, not occupied.
+        let rows = agent_list_rows(&goal, &HashMap::new(), 1_000);
+        assert_eq!(rows[0].workspaces, vec!["/repo/wt1".to_string()]);
+        // running: occupancy marker on the declared path.
+        let mut todo = Todo::advancement("t1", "work");
+        todo.claimed_by = Some("alice".to_string());
+        todo.lease_expires_at = Some(2_000);
+        goal.todos.push(todo);
+        let rows = agent_list_rows(&goal, &HashMap::new(), 1_000);
+        assert_eq!(rows[0].workspaces, vec!["/repo/wt1 ✍".to_string()]);
+        let json = serde_json::to_string(&rows).unwrap();
+        assert!(json.contains("workspaces"));
+    }
+
+    #[test]
+    fn describe_event_renders_workspace_lock() {
+        let event = Event::WorkspaceLockAcquired {
+            goal_id: "g1".to_string(),
+            agent_id: "a1".to_string(),
+            todo_id: "t1".to_string(),
+            paths: vec!["/repo/wt1".to_string()],
+            forced: true,
+            ts: 1,
+        };
+        let text = describe_event(&event);
+        assert!(text.contains("workspace_lock"), "got: {text}");
+        assert!(text.contains("a1"), "got: {text}");
+        assert!(text.contains("(forced)"), "got: {text}");
+        // todo-event filtering picks the lock event up for its todo.
+        assert!(event_touches_todo(&event, "t1"));
+        assert!(!event_touches_todo(&event, "t2"));
+    }
+}
+
+#[cfg(test)]
+mod read_model_repair_cli_tests {
+    use super::*;
+
+    #[test]
+    fn describe_event_renders_projection_repair() {
+        let event = Event::ProjectionRepaired {
+            goal_id: "g1".to_string(),
+            projection: "run_index".to_string(),
+            drift_count: 2,
+            missing_rows: 1,
+            stale_rows: 1,
+            duplicate_rows: 0,
+            rows_written: 3,
+            backup_path: "/tmp/backup.jsonl".to_string(),
+            ts: 1,
+        };
+        let text = describe_event(&event);
+        assert!(text.contains("projection_repaired"), "got: {text}");
+        assert!(text.contains("run_index"), "got: {text}");
+        assert!(text.contains("drift=2"), "got: {text}");
+        // The repair audit is goal-scoped, not todo-scoped.
+        assert!(!event_touches_todo(&event, "t1"));
+    }
+}
+
+#[cfg(test)]
+mod reward_memory_cli_tests {
+    use super::*;
+    use crate::state::{task_validation_receipt, RecoveryKind, ValidationStatus};
+
+    fn tmp_store(tag: &str) -> Store {
+        let dir = std::env::temp_dir().join(format!(
+            "future-loop-p15-{tag}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        Store::open(dir.to_string_lossy().as_ref()).unwrap()
+    }
+
+    fn open_goal(store: &mut Store, goal_id: &str) {
+        let goal = Goal::new(goal_id, "objective", "/tmp");
+        store.register(&goal).unwrap();
+        let ts = goal.created_at;
+        store
+            .append(Event::GoalStarted {
+                goal_id: goal_id.into(),
+                ts,
+            })
+            .unwrap();
+        store
+            .append(Event::TodoAdded {
+                goal_id: goal_id.into(),
+                todo: Todo::advancement("t1", "shared work"),
+                ts,
+            })
+            .unwrap();
+    }
+
+    fn record_with_validation(validation: Option<crate::state::TaskValidation>) -> RunRecord {
+        RunRecord {
+            turn: 1,
+            todo_id: "t1".into(),
+            run_id: "r1".into(),
+            terminal_state: "completed".into(),
+            error: None,
+            tokens_in_delta: 0,
+            tokens_out_delta: 0,
+            cost_delta: 0.0,
+            tools: vec![],
+            evidence: "ev".into(),
+            recorded_at: 0,
+            spend_source: None,
+            validation,
+        }
+    }
+
+    fn signals(
+        store: &Store,
+        goal_id: &str,
+    ) -> Vec<crate::capabilities::reward_memory::RewardSignal> {
+        crate::capabilities::reward_memory::collect_signals(
+            &store.events(goal_id).unwrap(),
+            &crate::capabilities::reward_memory::RewardScope::default(),
+        )
+    }
+
+    #[test]
+    fn validator_ingestion_appends_signal_with_run_and_agent() {
+        let mut store = tmp_store("validator");
+        open_goal(&mut store, "g1");
+        // No receipt → nothing ingested.
+        let rec = record_with_validation(None);
+        assert!(!ingest_validator_reward(&mut store, "g1", "t1", Some("a1"), &rec).unwrap());
+        // not_required = no independent validation happened → nothing ingested.
+        let rec = record_with_validation(Some(task_validation_receipt(
+            ValidationStatus::NotRequired,
+            "shell",
+            "no validator",
+            None,
+            None,
+        )));
+        assert!(!ingest_validator_reward(&mut store, "g1", "t1", Some("a1"), &rec).unwrap());
+        assert!(signals(&store, "g1").is_empty());
+        // A passed receipt ingests score 1.0 with run/agent provenance.
+        let rec = record_with_validation(Some(task_validation_receipt(
+            ValidationStatus::Passed,
+            "shell",
+            "tests green",
+            None,
+            Some(0),
+        )));
+        assert!(ingest_validator_reward(&mut store, "g1", "t1", Some("a1"), &rec).unwrap());
+        let got = signals(&store, "g1");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].source, "validator");
+        assert_eq!(got[0].signal, "passed");
+        assert_eq!(got[0].score, Some(1.0));
+        assert_eq!(got[0].agent_id.as_deref(), Some("a1"));
+        assert_eq!(got[0].run_id.as_deref(), Some("r1"));
+        assert_eq!(got[0].note.as_deref(), Some("tests green"));
+        assert_eq!(got[0].seq, 1);
+        // A failed receipt ingests score 0.0 with the next sequence number.
+        let rec = record_with_validation(Some(task_validation_receipt(
+            ValidationStatus::Failed,
+            "shell",
+            "tests red",
+            Some(RecoveryKind::RepairRequired),
+            Some(1),
+        )));
+        assert!(ingest_validator_reward(&mut store, "g1", "t1", None, &rec).unwrap());
+        let got = signals(&store, "g1");
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[1].signal, "failed");
+        assert_eq!(got[1].score, Some(0.0));
+        assert_eq!(got[1].agent_id, None);
+        assert_eq!(got[1].seq, 2);
+    }
+
+    #[test]
+    fn delivery_ingestion_appends_only_for_resolutions() {
+        let mut store = tmp_store("delivery");
+        open_goal(&mut store, "g1");
+        // Pending state and garbage ingest nothing.
+        assert!(!ingest_delivery_reward(&mut store, "g1", "t1", "delivered", None).unwrap());
+        assert!(!ingest_delivery_reward(&mut store, "g1", "t1", "bogus", None).unwrap());
+        assert!(signals(&store, "g1").is_empty());
+        // Resolutions ingest their phase-1 scores.
+        assert!(ingest_delivery_reward(
+            &mut store,
+            "g1",
+            "t1",
+            "verified",
+            Some("confirmed".into())
+        )
+        .unwrap());
+        assert!(ingest_delivery_reward(&mut store, "g1", "t1", "rework", None).unwrap());
+        let got = signals(&store, "g1");
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].source, "delivery_outcome");
+        assert_eq!(got[0].signal, "verified");
+        assert_eq!(got[0].score, Some(1.0));
+        assert_eq!(got[0].note.as_deref(), Some("confirmed"));
+        assert_eq!(got[1].signal, "rework");
+        assert_eq!(got[1].score, Some(0.5));
+        assert_eq!(got[1].seq, 2);
+    }
+
+    #[test]
+    fn record_command_validates_inputs() {
+        let mut store = tmp_store("record-validate");
+        open_goal(&mut store, "g1");
+        let args = |extra: &[&str]| extra.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // Missing --goal / --todo-id / --score each fail fast.
+        assert!(
+            reward_memory_record(&mut store, &args(&["--todo-id", "t1", "--score", "0.5"]))
+                .is_err()
+        );
+        assert!(
+            reward_memory_record(&mut store, &args(&["--goal", "g1", "--score", "0.5"])).is_err()
+        );
+        assert!(
+            reward_memory_record(&mut store, &args(&["--goal", "g1", "--todo-id", "t1"])).is_err()
+        );
+        // Score must be a finite number in 0.0..=1.0.
+        for bad in ["abc", "1.5", "-0.1", "NaN"] {
+            assert!(
+                reward_memory_record(
+                    &mut store,
+                    &args(&["--goal", "g1", "--todo-id", "t1", "--score", bad])
+                )
+                .is_err(),
+                "score {bad} must be rejected"
+            );
+        }
+        // Unknown todo / goal fail closed.
+        assert!(reward_memory_record(
+            &mut store,
+            &args(&["--goal", "g1", "--todo-id", "nope", "--score", "0.5"])
+        )
+        .is_err());
+        assert!(reward_memory_record(
+            &mut store,
+            &args(&["--goal", "nope", "--todo-id", "t1", "--score", "0.5"])
+        )
+        .is_err());
+        // Unknown source is rejected; unknown flags are rejected.
+        assert!(reward_memory_record(
+            &mut store,
+            &args(&[
+                "--goal",
+                "g1",
+                "--todo-id",
+                "t1",
+                "--score",
+                "0.5",
+                "--source",
+                "nope"
+            ])
+        )
+        .is_err());
+        assert!(reward_memory_record(
+            &mut store,
+            &args(&[
+                "--goal",
+                "g1",
+                "--todo-id",
+                "t1",
+                "--score",
+                "0.5",
+                "--bogus"
+            ])
+        )
+        .is_err());
+        assert!(signals(&store, "g1").is_empty());
+    }
+
+    #[test]
+    fn record_command_appends_evidence_signal() {
+        let mut store = tmp_store("record-ok");
+        open_goal(&mut store, "g1");
+        let args = |extra: &[&str]| extra.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        reward_memory_record(
+            &mut store,
+            &args(&[
+                "--goal",
+                "g1",
+                "--todo-id",
+                "t1",
+                "--score",
+                "0.8",
+                "--note",
+                "solid evidence",
+                "--agent-id",
+                "a9",
+            ]),
+        )
+        .unwrap();
+        let got = signals(&store, "g1");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].source, "evidence");
+        assert_eq!(got[0].signal, "scored");
+        assert_eq!(got[0].score, Some(0.8));
+        assert_eq!(got[0].note.as_deref(), Some("solid evidence"));
+        assert_eq!(got[0].agent_id.as_deref(), Some("a9"));
+        // Boundary scores are legal.
+        reward_memory_record(
+            &mut store,
+            &args(&["--goal", "g1", "--todo-id", "t1", "--score", "0"]),
+        )
+        .unwrap();
+        reward_memory_record(
+            &mut store,
+            &args(&["--goal", "g1", "--todo-id", "t1", "--score", "1"]),
+        )
+        .unwrap();
+        assert_eq!(signals(&store, "g1").len(), 3);
+    }
+
+    #[test]
+    fn describe_event_and_todo_filter_cover_reward_signals() {
+        let event = Event::RewardSignalRecorded {
+            goal_id: "g1".into(),
+            todo_id: "t1".into(),
+            agent_id: Some("a1".into()),
+            run_id: None,
+            source: "validator".into(),
+            signal: "passed".into(),
+            score: Some(1.0),
+            note: None,
+            seq: 1,
+            ts: 1,
+        };
+        let text = describe_event(&event);
+        assert!(text.contains("reward_signal"), "got: {text}");
+        assert!(text.contains("validator"), "got: {text}");
+        assert!(text.contains("score=1.00"), "got: {text}");
+        assert!(event_touches_todo(&event, "t1"));
+        assert!(!event_touches_todo(&event, "t2"));
+    }
+
+    #[test]
+    fn todo_filter_covers_delivery_and_followthrough_events() {
+        let delivery = Event::DeliveryOutcomeRecorded {
+            goal_id: "g1".into(),
+            todo_id: "t1".into(),
+            outcome: "verified".into(),
+            note: None,
+            delivered_turn: 3,
+            seq: 1,
+            ts: 1,
+        };
+        assert!(event_touches_todo(&delivery, "t1"));
+        assert!(!event_touches_todo(&delivery, "t2"));
+        let follow = Event::FollowthroughCreated {
+            goal_id: "g1".into(),
+            source_todo_id: "t1".into(),
+            followup_todo_id: "t9".into(),
+            turns_overdue: 4,
+            ts: 1,
+        };
+        // Visible from BOTH the source delivery and the derived follow-up.
+        assert!(event_touches_todo(&follow, "t1"));
+        assert!(event_touches_todo(&follow, "t9"));
+        assert!(!event_touches_todo(&follow, "t2"));
     }
 }

@@ -624,6 +624,7 @@ fn apply_matrix() {
             .append(Event::AgentRegistered {
                 goal_id: "g1".into(),
                 agent_id: "a".into(),
+                workspaces: vec![],
                 ts: now_epoch(),
             })
             .unwrap();
@@ -633,6 +634,7 @@ fn apply_matrix() {
             goal_id: "g1".into(),
             agent_id: "a".into(),
             capabilities: vec!["shell".into()],
+            workspaces: vec![],
             ts: now_epoch(),
         })
         .unwrap();
@@ -641,6 +643,7 @@ fn apply_matrix() {
             goal_id: "g1".into(),
             agent_id: "a".into(),
             capabilities: vec!["web".into()],
+            workspaces: vec![],
             ts: now_epoch(),
         })
         .unwrap();

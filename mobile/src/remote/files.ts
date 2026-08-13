@@ -10,7 +10,11 @@ export const MAX_FILE_BYTES = 10 * 1024 * 1024;
 export const MAX_MESSAGE_BYTES = 20 * 1024 * 1024;
 export const MAX_ATTACHMENTS = 10;
 export const MAX_IMAGES = 4;
-export const MAX_IMAGE_EDGE = 2000;
+// Longest-edge cap for image attachments. Images over this are downsampled
+// (never rejected) so every source — camera, album, screenshot — behaves the
+// same. 1600px keeps documents/screenshots readable and the transfer small
+// (report 06 decision D1). The desktop receive-side 2000px check still passes.
+export const MAX_IMAGE_EDGE = 1600;
 const MAX_PREVIEW_CACHE_BYTES = 100 * 1024 * 1024;
 const preparedPreviewIndex = new Map<string, DownloadInfo>();
 
@@ -213,11 +217,12 @@ async function prepareFile(
   } catch {
     throw new Error("attachment_image_decode");
   }
-  if (Math.max(dimensions.width, dimensions.height) > MAX_IMAGE_EDGE) {
-    throw new Error("attachment_image_dimensions");
-  }
+  const oversized = Math.max(dimensions.width, dimensions.height) > MAX_IMAGE_EDGE;
   const previewUnsupported = mobilePreviewUnsupported(file, format);
-  if (!forceJpeg && !JPEG_OUTPUT_INPUTS.has(format)) {
+  // A small source in a non-JPEG format passes through untouched (animated GIF
+  // must stay GIF); anything that needs re-encoding — oversized (downsampled to
+  // the 1600px cap), or a JPEG-adjacent input — goes through the converter.
+  if (!oversized && !forceJpeg && !JPEG_OUTPUT_INPUTS.has(format)) {
     return {
       localUri: file.uri,
       name: file.name,
@@ -229,9 +234,27 @@ async function prepareFile(
     };
   }
 
+  const resizeActions: ImageManipulator.Action[] = oversized
+    ? [
+        {
+          // Preserve aspect ratio: only the longer edge is capped, the other
+          // edge scales proportionally.
+          resize: {
+            width:
+              dimensions.width >= dimensions.height
+                ? MAX_IMAGE_EDGE
+                : Math.round((dimensions.width / dimensions.height) * MAX_IMAGE_EDGE),
+            height:
+              dimensions.height > dimensions.width
+                ? MAX_IMAGE_EDGE
+                : Math.round((dimensions.height / dimensions.width) * MAX_IMAGE_EDGE),
+          },
+        },
+      ]
+    : [];
   let converted: ImageManipulator.ImageResult;
   try {
-    converted = await ImageManipulator.manipulateAsync(file.uri, [], {
+    converted = await ImageManipulator.manipulateAsync(file.uri, resizeActions, {
       compress: 0.65,
       format: ImageManipulator.SaveFormat.JPEG,
     });

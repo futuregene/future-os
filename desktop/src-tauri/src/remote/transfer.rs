@@ -90,6 +90,26 @@ fn transfer_root() -> PathBuf {
         .join("mobile")
 }
 
+/// Create a staging directory with owner-only permissions (0700 on unix).
+/// Attachment bytes (uploaded `.part` files and downloaded previews) sit here
+/// until claimed or TTL'd — on a multi-user machine the default `/tmp` mode
+/// would expose them to any local user. Windows has no 0700 equivalent; the
+/// per-user profile directory is relied on there, matching `config_io`.
+fn ensure_private_dir(path: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let permissions = std::fs::Permissions::from_mode(0o700);
+        std::fs::set_permissions(path, permissions)?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
+
 fn new_transfer_id(prefix: &str) -> String {
     format!("{prefix}_{}", nkeys::KeyPair::new_user().public_key())
 }
@@ -164,7 +184,7 @@ pub fn init_upload(
     }
     let upload_id = new_transfer_id("upload");
     let dir = transfer_root().join("upload");
-    std::fs::create_dir_all(&dir)?;
+    ensure_private_dir(&dir)?;
     let path = dir.join(format!("{upload_id}.part"));
     File::create(&path)?;
     UPLOADS.lock().unwrap().insert(
@@ -409,15 +429,10 @@ pub async fn prepare_download(
         return Err("The attachment is no longer available.".to_string().into());
     }
     let prepared = prepare_preview(&source, &display_name)?;
+    // prepare_preview already bounds its output: text/markdown previews are
+    // byte-copies of a size-checked source and image previews are re-encoded at
+    // ≤600px, so the preview can never exceed MAX_FILE_BYTES here.
     let size = std::fs::metadata(&prepared.path)?.len();
-    if size > MAX_FILE_BYTES {
-        let _ = std::fs::remove_file(&prepared.path);
-        return Err(
-            "The mobile preview is still larger than 10 MiB; view it on desktop."
-                .to_string()
-                .into(),
-        );
-    }
     let transfer_id = new_transfer_id("download");
     let content_hash = sha256_file(&prepared.path)?;
     let info = DownloadInfo {
@@ -440,6 +455,7 @@ pub async fn prepare_download(
     Ok(info)
 }
 
+#[derive(Debug)]
 struct PreparedPreview {
     path: PathBuf,
     name: String,
@@ -500,7 +516,7 @@ fn prepare_preview(
         .to_ascii_lowercase();
     let original_name = display_name(requested_display_name, "attachment");
     let dir = transfer_root().join("download");
-    std::fs::create_dir_all(&dir)?;
+    ensure_private_dir(&dir)?;
     let stamp = new_transfer_id("preview");
 
     if is_animated_image(source)? {
@@ -625,6 +641,26 @@ pub fn clear_all() {
     }
 }
 
+/// First resubscribe delay after a failed subscribe / ended stream (doubles up
+/// to 30s). Tests shrink it so the self-heal path runs without real waits.
+fn resubscribe_backoff() -> Duration {
+    #[cfg(test)]
+    const BACKOFF: Duration = Duration::from_millis(10);
+    #[cfg(not(test))]
+    const BACKOFF: Duration = Duration::from_secs(1);
+    BACKOFF
+}
+
+/// Periodic expiry sweep cadence inside the transfer loop. Tests shrink it so
+/// the sweep path runs without a one-minute wait.
+fn cleanup_tick() -> Duration {
+    #[cfg(test)]
+    const TICK: Duration = Duration::from_millis(20);
+    #[cfg(not(test))]
+    const TICK: Duration = Duration::from_secs(60);
+    TICK
+}
+
 pub fn spawn_transfer_loop(
     client: async_nats::Client,
     pair_id: String,
@@ -635,7 +671,7 @@ pub fn spawn_transfer_loop(
         let queue = format!("bridge-transfer.{pair_id}");
         // Self-heal like command_loop: a dead transfer loop times out every
         // chunk pull until the next generation swap.
-        let mut backoff = Duration::from_secs(1);
+        let mut backoff = resubscribe_backoff();
         loop {
             let mut sub = match client.queue_subscribe(subject.clone(), queue.clone()).await {
                 Ok(sub) => sub,
@@ -646,8 +682,8 @@ pub fn spawn_transfer_loop(
                     continue;
                 }
             };
-            backoff = Duration::from_secs(1);
-            let mut cleanup = tokio::time::interval(Duration::from_secs(60));
+            backoff = resubscribe_backoff();
+            let mut cleanup = tokio::time::interval(cleanup_tick());
             loop {
                 tokio::select! {
                     _ = cleanup.tick() => prune_expired(),
@@ -681,9 +717,10 @@ pub fn spawn_transfer_loop(
                                 Ok(data) => json!({ "success": true, "data": data }),
                                 Err(error) => json!({ "success": false, "error": error }),
                             };
-                            if let Ok(bytes) = serde_json::to_vec(&body) {
-                                let _ = client.publish(reply, bytes.into()).await;
-                            }
+                            // A Value always serializes.
+                            let bytes = serde_json::to_vec(&body)
+                                .expect("a transfer reply Value always serializes");
+                            let _ = client.publish(reply, bytes.into()).await;
                         }
                     }
                 }
@@ -697,7 +734,11 @@ pub fn spawn_transfer_loop(
     })
 }
 
-fn write_upload_chunk(transfer_id: &str, index: u64, payload: &[u8]) -> Result<Value, String> {
+pub(crate) fn write_upload_chunk(
+    transfer_id: &str,
+    index: u64,
+    payload: &[u8],
+) -> Result<Value, String> {
     if payload.len() as u64 > CHUNK_BYTES {
         return Err("Chunk exceeds the 512 KiB limit.".to_string());
     }
@@ -720,11 +761,11 @@ fn write_upload_chunk(transfer_id: &str, index: u64, payload: &[u8]) -> Result<V
     if item.received.saturating_add(payload.len() as u64) > item.transfer_size {
         return Err("Chunk exceeds the declared transfer size.".to_string());
     }
-    let mut file = OpenOptions::new()
+    OpenOptions::new()
         .append(true)
         .open(&item.path)
+        .and_then(|mut file| file.write_all(payload))
         .map_err(|error| error.to_string())?;
-    file.write_all(payload).map_err(|error| error.to_string())?;
     item.received += payload.len() as u64;
     item.next_chunk += 1;
     Ok(json!({ "index": index, "received": item.received }))
@@ -764,14 +805,24 @@ fn publish_download_chunk(
 #[cfg(test)]
 mod tests {
     use super::{
-        attachment_is_in_session, display_name, is_animated_image, prepare_preview, safe_disk_name,
-        validate_mobile_image, MAX_FILE_BYTES,
+        attachment_is_in_session, display_name, ensure_private_dir, is_animated_image,
+        prepare_preview, safe_disk_name, validate_mobile_image, MAX_FILE_BYTES,
     };
     use serde_json::json;
 
     #[test]
     fn sanitizes_upload_names() {
         assert_eq!(safe_disk_name("../../hello?.md", "x"), "hello.md");
+    }
+
+    #[test]
+    fn name_fallbacks_cover_names_that_clean_to_nothing() {
+        // Dots/control characters only → the display name falls back…
+        assert_eq!(display_name("...", "x"), "x");
+        assert_eq!(display_name("a/\u{7}", "x"), "x");
+        // …and a name that survives display but loses every ASCII-safe
+        // character falls back at the disk-name layer.
+        assert_eq!(safe_disk_name("日本語", "x"), "x");
     }
 
     #[test]
@@ -790,6 +841,21 @@ mod tests {
     #[test]
     fn limits_match_remote_contract() {
         assert_eq!(MAX_FILE_BYTES, 10 * 1024 * 1024);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staging_dir_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "futureos-transfer-mode-test-{}",
+            nkeys::KeyPair::new_user().public_key()
+        ));
+        ensure_private_dir(&dir).unwrap();
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+        // Group/other bits must be cleared; owner rwx may be stricter.
+        assert_eq!(mode & 0o077, 0, "group/other access not cleared: {mode:o}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -865,11 +931,730 @@ mod tests {
 
         let pdf = dir.join("document.pdf");
         std::fs::write(&pdf, b"%PDF-1.7\0binary").unwrap();
-        let error = match prepare_preview(&pdf, "document.pdf") {
-            Ok(_) => panic!("PDF should not get a mobile preview"),
-            Err(error) => error,
-        };
+        let error =
+            prepare_preview(&pdf, "document.pdf").expect_err("PDF should not get a mobile preview");
         assert!(error.to_string().contains("view it on desktop"));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod flow_tests {
+    use super::super::test_support::{
+        assert_no_publish, await_publish, ensure_mock_agent, nats_connect_once, unique, FakeNats,
+        HomeGuard,
+    };
+    use super::*;
+    use serde_json::json;
+    use std::sync::{atomic::Ordering, Arc};
+    use std::time::Duration;
+
+    fn tiny_png() -> Vec<u8> {
+        let dir = std::env::temp_dir().join(unique("futureos-png-src"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tiny.png");
+        image::DynamicImage::new_rgb8(1, 1).save(&path).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+        bytes
+    }
+
+    fn init_file_upload(name: &str, size: u64) -> String {
+        init_upload(name, "", "application/octet-stream", "file", size, size)
+            .unwrap()
+            .upload_id
+    }
+
+    #[test]
+    fn upload_lifecycle_end_to_end() {
+        let _home = HomeGuard::new("xfer-lifecycle");
+        let upload_id = init_file_upload("dir/hello.txt", 5);
+        assert!(upload_id.starts_with("upload_"));
+
+        // Out-of-order and oversized chunks are rejected; duplicates are idempotent.
+        let gap = write_upload_chunk(&upload_id, 1, b"!").unwrap_err();
+        assert!(gap.contains("Expected chunk 0"));
+        let oversized = vec![0_u8; (CHUNK_BYTES + 1) as usize];
+        assert!(write_upload_chunk(&upload_id, 0, &oversized)
+            .unwrap_err()
+            .contains("512 KiB"));
+        let first = write_upload_chunk(&upload_id, 0, b"hel").unwrap();
+        assert_eq!(first["received"], json!(3));
+        let duplicate = write_upload_chunk(&upload_id, 0, b"hel").unwrap();
+        assert_eq!(duplicate["duplicate"], json!(true));
+        write_upload_chunk(&upload_id, 1, b"lo").unwrap();
+        let overflow = write_upload_chunk(&upload_id, 2, b"!!").unwrap_err();
+        assert!(overflow.contains("declared transfer size"));
+
+        let complete = complete_upload(&upload_id).unwrap();
+        assert_eq!(complete.upload_id, upload_id);
+        assert_eq!(complete.content_hash.len(), 64);
+        // Completing twice fails the size check (the upload is done receiving).
+        let again = write_upload_chunk(&upload_id, 2, b"!!").unwrap_err();
+        assert!(again.contains("already complete"));
+
+        // Claim moves the bytes into the thread's attachment dir.
+        let references = vec![UploadReference {
+            upload_id: upload_id.clone(),
+        }];
+        let claimed = claim_uploads(&references, "thread-life").unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].kind, "file");
+        assert_eq!(claimed[0].name, "hello.txt");
+        assert_eq!(std::fs::read(&claimed[0].path).unwrap(), b"hello");
+        assert!(claimed[0].thumbnail.is_none());
+        // The upload record and staging file are gone after the claim.
+        assert!(complete_upload(&upload_id).is_err());
+        assert!(UPLOADS.lock().unwrap().get(&upload_id).is_none());
+
+        rollback_claimed(&claimed);
+        assert!(!Path::new(&claimed[0].path).exists());
+    }
+
+    #[test]
+    fn init_upload_prefers_a_non_empty_transfer_name_for_the_disk_name() {
+        let _home = HomeGuard::new("xfer-transfer-name");
+        let result =
+            init_upload("报告.txt", "My Transfer?.txt", "text/plain", "file", 4, 4).unwrap();
+        let uploads = UPLOADS.lock().unwrap();
+        let record = uploads.get(&result.upload_id).expect("upload record");
+        assert_eq!(record.name, "报告.txt");
+        assert_eq!(record.transfer_name, "My Transfer.txt");
+        drop(uploads);
+        cancel_upload(&result.upload_id).unwrap();
+    }
+
+    #[test]
+    fn init_upload_validates_sizes_and_kind() {
+        let _home = HomeGuard::new("xfer-init");
+        assert!(init_upload("a", "", "m", "file", 0, 1).is_err());
+        assert!(init_upload("a", "", "m", "file", MAX_FILE_BYTES + 1, 1).is_err());
+        assert!(init_upload("a", "", "m", "file", 1, 0).is_err());
+        assert!(init_upload("a", "", "m", "file", 1, MAX_FILE_BYTES + 1).is_err());
+        assert!(init_upload("a", "", "m", "video", 1, 1).is_err());
+    }
+
+    #[test]
+    fn upload_chunk_and_complete_error_paths() {
+        let _home = HomeGuard::new("xfer-errors");
+        assert!(write_upload_chunk("missing", 0, b"x")
+            .unwrap_err()
+            .contains("expired or does not exist"));
+        assert!(complete_upload("missing").is_err());
+        // cancel on a missing id is a no-op success.
+        cancel_upload("missing").unwrap();
+
+        let upload_id = init_file_upload("partial.bin", 10);
+        // Not fully received → completion refused.
+        write_upload_chunk(&upload_id, 0, b"abc").unwrap();
+        let incomplete = complete_upload(&upload_id).unwrap_err();
+        assert!(incomplete.to_string().contains("incomplete"));
+
+        // A staging file that vanished mid-upload surfaces as a chunk error.
+        let path = UPLOADS
+            .lock()
+            .unwrap()
+            .get(&upload_id)
+            .unwrap()
+            .path
+            .clone();
+        std::fs::remove_file(&path).unwrap();
+        assert!(write_upload_chunk(&upload_id, 1, b"def").is_err());
+
+        cancel_upload(&upload_id).unwrap();
+        assert!(UPLOADS.lock().unwrap().get(&upload_id).is_none());
+    }
+
+    #[test]
+    fn complete_upload_fails_when_staging_file_is_gone() {
+        let _home = HomeGuard::new("xfer-hash-missing");
+        let upload_id = init_file_upload("gone.bin", 3);
+        write_upload_chunk(&upload_id, 0, b"abc").unwrap();
+        let path = UPLOADS
+            .lock()
+            .unwrap()
+            .get(&upload_id)
+            .unwrap()
+            .path
+            .clone();
+        std::fs::remove_file(&path).unwrap();
+        assert!(complete_upload(&upload_id).is_err());
+    }
+
+    #[test]
+    fn claim_uploads_enforces_message_limits() {
+        let _home = HomeGuard::new("xfer-limits");
+        let make = |size: u64| {
+            let id = init_upload("f.bin", "", "m", "file", size, 1)
+                .unwrap()
+                .upload_id;
+            write_upload_chunk(&id, 0, b"x").unwrap();
+            complete_upload(&id).unwrap();
+            UploadReference { upload_id: id }
+        };
+
+        // More than MAX_ATTACHMENTS references.
+        let too_many: Vec<UploadReference> = (0..=MAX_ATTACHMENTS)
+            .map(|_| UploadReference {
+                upload_id: unique("ref"),
+            })
+            .collect();
+        assert!(claim_uploads(&too_many, "thread-x").is_err());
+
+        // Duplicate reference.
+        let one = make(1);
+        assert!(claim_uploads(&[one.clone(), one], "thread-x").is_err());
+
+        // Unknown reference.
+        assert!(claim_uploads(
+            &[UploadReference {
+                upload_id: "nope".to_string()
+            }],
+            "thread-x"
+        )
+        .is_err());
+
+        // Still uploading (not complete).
+        let pending = init_file_upload("pending.bin", 10);
+        assert!(claim_uploads(
+            &[UploadReference {
+                upload_id: pending.clone()
+            }],
+            "thread-x"
+        )
+        .is_err());
+        cancel_upload(&pending).unwrap();
+
+        // Combined size over the 20 MiB message limit.
+        let big = vec![
+            make(9 * 1024 * 1024),
+            make(9 * 1024 * 1024),
+            make(9 * 1024 * 1024),
+        ];
+        let error = claim_uploads(&big, "thread-x").unwrap_err();
+        assert!(error.to_string().contains("20 MiB"));
+    }
+
+    #[test]
+    fn claim_uploads_enforces_image_rules() {
+        let _home = HomeGuard::new("xfer-images");
+        let png = tiny_png();
+        let make_image = || {
+            let id = init_upload(
+                "pic.png",
+                "",
+                "image/png",
+                "image",
+                png.len() as u64,
+                png.len() as u64,
+            )
+            .unwrap()
+            .upload_id;
+            write_upload_chunk(&id, 0, &png).unwrap();
+            complete_upload(&id).unwrap();
+            UploadReference { upload_id: id }
+        };
+
+        // Five images exceed the four-image cap.
+        let five: Vec<UploadReference> = (0..5).map(|_| make_image()).collect();
+        let error = claim_uploads(&five, "thread-img").unwrap_err();
+        assert!(error.to_string().contains("at most 4 images"));
+
+        // A non-image payload claiming to be an image fails validation.
+        let bogus = init_upload("pic.png", "", "image/png", "image", 4, 4)
+            .unwrap()
+            .upload_id;
+        write_upload_chunk(&bogus, 0, b"nope").unwrap();
+        complete_upload(&bogus).unwrap();
+        let error = claim_uploads(
+            &[UploadReference {
+                upload_id: bogus.clone(),
+            }],
+            "thread-img",
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("Unreadable image")
+                || error.to_string().contains("Undecodable")
+        );
+        cancel_upload(&bogus).ok();
+
+        // Four valid images claim fine and get thumbnails.
+        let four: Vec<UploadReference> = (0..4).map(|_| make_image()).collect();
+        let claimed = claim_uploads(&four, "thread-img").unwrap();
+        assert_eq!(claimed.len(), 4);
+        assert!(claimed.iter().all(|a| a.kind == "image"));
+        rollback_claimed(&claimed);
+    }
+
+    #[test]
+    fn claim_uploads_rolls_back_copies_on_copy_failure() {
+        let _home = HomeGuard::new("xfer-rollback");
+        let first = init_file_upload("one.txt", 1);
+        write_upload_chunk(&first, 0, b"1").unwrap();
+        complete_upload(&first).unwrap();
+        let second = init_file_upload("two.txt", 1);
+        write_upload_chunk(&second, 0, b"2").unwrap();
+        complete_upload(&second).unwrap();
+
+        // Pre-create a DIRECTORY where the second attachment's file must land,
+        // so its copy fails and the already-copied first file is rolled back.
+        let origin = crate::store::thread_images_dir("thread-rb")
+            .unwrap()
+            .join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        let blocker = origin.join(format!("{second}_two.txt"));
+        std::fs::create_dir_all(&blocker).unwrap();
+
+        let references = vec![
+            UploadReference {
+                upload_id: first.clone(),
+            },
+            UploadReference {
+                upload_id: second.clone(),
+            },
+        ];
+        assert!(claim_uploads(&references, "thread-rb").is_err());
+        // The first copy was removed again; nothing leaks into the thread dir.
+        assert!(!origin.join(format!("{first}_one.txt")).exists());
+        std::fs::remove_dir_all(&blocker).unwrap();
+    }
+
+    #[test]
+    fn prune_expired_removes_stale_records_and_files() {
+        let _home = HomeGuard::new("xfer-prune");
+        let upload_id = init_file_upload("stale.bin", 1);
+        let upload_path = UPLOADS
+            .lock()
+            .unwrap()
+            .get(&upload_id)
+            .unwrap()
+            .path
+            .clone();
+        let download_path = transfer_root().join("download").join("stale.txt");
+        std::fs::create_dir_all(download_path.parent().unwrap()).unwrap();
+        std::fs::write(&download_path, b"x").unwrap();
+        DOWNLOADS.lock().unwrap().insert(
+            "download_stale".to_string(),
+            DownloadRecord {
+                path: download_path.clone(),
+                size: 1,
+                created_at: SystemTime::now(),
+            },
+        );
+        // Age both records past the TTL.
+        UPLOADS
+            .lock()
+            .unwrap()
+            .get_mut(&upload_id)
+            .unwrap()
+            .created_at = SystemTime::now() - (TRANSFER_TTL + Duration::from_secs(60));
+        DOWNLOADS
+            .lock()
+            .unwrap()
+            .get_mut("download_stale")
+            .unwrap()
+            .created_at = SystemTime::now() - (TRANSFER_TTL + Duration::from_secs(60));
+
+        prune_expired();
+        assert!(UPLOADS.lock().unwrap().get(&upload_id).is_none());
+        assert!(DOWNLOADS.lock().unwrap().get("download_stale").is_none());
+        assert!(!upload_path.exists());
+        assert!(!download_path.exists());
+
+        // A fresh record survives the sweep.
+        let fresh = init_file_upload("fresh.bin", 1);
+        prune_expired();
+        assert!(UPLOADS.lock().unwrap().get(&fresh).is_some());
+        cancel_upload(&fresh).unwrap();
+    }
+
+    #[test]
+    fn clear_all_drains_both_maps() {
+        let _home = HomeGuard::new("xfer-clear");
+        let upload_id = init_file_upload("a.bin", 1);
+        let upload_path = UPLOADS
+            .lock()
+            .unwrap()
+            .get(&upload_id)
+            .unwrap()
+            .path
+            .clone();
+        let download_path = transfer_root().join("download").join("b.txt");
+        std::fs::create_dir_all(download_path.parent().unwrap()).unwrap();
+        std::fs::write(&download_path, b"x").unwrap();
+        DOWNLOADS.lock().unwrap().insert(
+            "download_b".to_string(),
+            DownloadRecord {
+                path: download_path.clone(),
+                size: 1,
+                created_at: SystemTime::now(),
+            },
+        );
+        clear_all();
+        assert!(UPLOADS.lock().unwrap().is_empty());
+        assert!(DOWNLOADS.lock().unwrap().is_empty());
+        assert!(!upload_path.exists());
+        assert!(!download_path.exists());
+        // Idempotent on empty maps.
+        clear_all();
+    }
+
+    #[test]
+    fn session_attachment_name_falls_back_to_the_path_file_name() {
+        let entries = json!({"entries":[{"meta":{"attachments":[{"path":"/tmp/no-name.md"}]}}]});
+        assert_eq!(
+            session_attachment_name(&entries, "/tmp/no-name.md"),
+            Some("no-name.md".to_string())
+        );
+        let named =
+            json!({"entries":[{"meta":{"attachments":[{"path":"/tmp/x","name":"Pretty.txt"}]}}]});
+        assert_eq!(
+            session_attachment_name(&named, "/tmp/x"),
+            Some("Pretty.txt".to_string())
+        );
+        assert_eq!(session_attachment_name(&json!({}), "/tmp/x"), None);
+    }
+
+    #[tokio::test]
+    async fn prepare_download_flows() {
+        let _home = HomeGuard::new("xfer-download");
+        let agent = ensure_mock_agent();
+        let session = unique("sess");
+
+        // Not an attachment of the session.
+        agent.set_session_entries(&session, json!({ "entries": [] }));
+        let error = prepare_download(&session, "/tmp/whatever.txt")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("not an attachment"));
+
+        // Attachment row exists but the file is gone.
+        let dir = std::env::temp_dir().join(unique("futureos-dl"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let gone = dir.join("gone.txt");
+        agent.set_session_entries(
+            &session,
+            json!({"entries":[{"meta":{"attachments":[{"path": gone.to_string_lossy(),"name":"gone.txt"}]}}]}),
+        );
+        assert!(prepare_download(&session, &gone.to_string_lossy())
+            .await
+            .is_err());
+
+        // An attachment path that still exists but is a directory, not a file.
+        agent.set_session_entries(
+            &session,
+            json!({"entries":[{"meta":{"attachments":[{"path": dir.to_string_lossy(),"name":"adir"}]}}]}),
+        );
+        let error = prepare_download(&session, &dir.to_string_lossy())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("no longer available"));
+
+        // A real text file gets a preview + a download record.
+        let notes = dir.join("notes.txt");
+        std::fs::write(&notes, b"hello download").unwrap();
+        agent.set_session_entries(
+            &session,
+            json!({"entries":[{"meta":{"attachments":[{"path": notes.to_string_lossy(),"name":"notes.txt"}]}}]}),
+        );
+        let info = prepare_download(&session, &notes.to_string_lossy())
+            .await
+            .unwrap();
+        assert_eq!(info.name, "notes.txt");
+        assert_eq!(info.mime_type, "text/plain");
+        assert_eq!(info.preview_kind, "text");
+        assert_eq!(info.size, 14);
+        assert_eq!(info.chunk_bytes, CHUNK_BYTES);
+        assert_eq!(info.content_hash.len(), 64);
+        assert!(DOWNLOADS.lock().unwrap().contains_key(&info.transfer_id));
+        cancel_download(&info.transfer_id);
+        assert!(!DOWNLOADS.lock().unwrap().contains_key(&info.transfer_id));
+        cancel_download("never-existed");
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn animated_image_detection_edge_cases() {
+        let dir = std::env::temp_dir().join(unique("futureos-anim"));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // GIF magic (both versions) is animated.
+        let gif = dir.join("a.gif");
+        std::fs::write(&gif, b"GIF89a...").unwrap();
+        assert!(is_animated_image(&gif).unwrap());
+
+        // Static WebP (VP8X without the animation flag) is not.
+        let webp = dir.join("static.webp");
+        let mut bytes = vec![0_u8; 21];
+        bytes[0..4].copy_from_slice(b"RIFF");
+        bytes[8..12].copy_from_slice(b"WEBP");
+        bytes[12..16].copy_from_slice(b"VP8X");
+        std::fs::write(&webp, &bytes).unwrap();
+        assert!(!is_animated_image(&webp).unwrap());
+
+        // A short, non-image file is not animated.
+        let tiny = dir.join("tiny.bin");
+        std::fs::write(&tiny, b"12345").unwrap();
+        assert!(!is_animated_image(&tiny).unwrap());
+
+        // PNG whose first chunk is IDAT (no acTL) is static.
+        let png = dir.join("static.png");
+        let mut png_bytes = vec![137, 80, 78, 71, 13, 10, 26, 10];
+        png_bytes.extend_from_slice(&[0, 0, 0, 0]);
+        png_bytes.extend_from_slice(b"IDAT");
+        png_bytes.extend_from_slice(&[0, 0, 0, 0]);
+        std::fs::write(&png, &png_bytes).unwrap();
+        assert!(!is_animated_image(&png).unwrap());
+
+        // PNG with a chunk length running past EOF is treated as static.
+        let truncated = dir.join("truncated.png");
+        let mut truncated_bytes = vec![137, 80, 78, 71, 13, 10, 26, 10];
+        truncated_bytes.extend_from_slice(&[0x7F, 0xFF, 0xFF, 0xFF]);
+        truncated_bytes.extend_from_slice(b"tEXt");
+        truncated_bytes.extend_from_slice(&[0, 0]);
+        std::fs::write(&truncated, &truncated_bytes).unwrap();
+        assert!(!is_animated_image(&truncated).unwrap());
+
+        // PNG whose chunks are walked to the end with no acTL/IDAT/IEND.
+        let exhausted = dir.join("exhausted.png");
+        let mut exhausted_bytes = vec![137, 80, 78, 71, 13, 10, 26, 10];
+        exhausted_bytes.extend_from_slice(&[0, 0, 0, 0]);
+        exhausted_bytes.extend_from_slice(b"tEXt");
+        exhausted_bytes.extend_from_slice(&[0, 0, 0, 0]);
+        std::fs::write(&exhausted, &exhausted_bytes).unwrap();
+        assert!(!is_animated_image(&exhausted).unwrap());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn prepare_preview_image_variants() {
+        let dir = std::env::temp_dir().join(unique("futureos-imgprev"));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // JPEG input → quality-reduced JPEG preview.
+        let jpg = dir.join("photo.jpg");
+        image::DynamicImage::new_rgb8(100, 50).save(&jpg).unwrap();
+        let preview = prepare_preview(&jpg, "My Photo.jpg").unwrap();
+        assert_eq!(preview.mime_type, "image/jpeg");
+        assert_eq!(preview.name, "My Photo.jpg");
+        assert_eq!(preview.preview_kind, "image");
+        std::fs::remove_file(preview.path).unwrap();
+
+        // Large PNG → resized PNG preview.
+        let png = dir.join("big.png");
+        image::DynamicImage::new_rgb8(1200, 800).save(&png).unwrap();
+        let preview = prepare_preview(&png, "big.png").unwrap();
+        assert_eq!(preview.mime_type, "image/png");
+        let decoded = image::ImageReader::open(&preview.path)
+            .unwrap()
+            .with_guessed_format()
+            .unwrap()
+            .decode()
+            .unwrap();
+        assert!(decoded.width().max(decoded.height()) <= 600);
+        std::fs::remove_file(preview.path).unwrap();
+
+        // Corrupt bytes under an image extension → undecodable.
+        let corrupt = dir.join("broken.png");
+        std::fs::write(&corrupt, b"not really a png").unwrap();
+        let error = prepare_preview(&corrupt, "broken.png").unwrap_err();
+        assert!(
+            error.to_string().contains("Unreadable") || error.to_string().contains("Undecodable")
+        );
+
+        // Animated GIF → refused.
+        let gif = dir.join("dance.gif");
+        std::fs::write(&gif, b"GIF89a animated").unwrap();
+        let error = prepare_preview(&gif, "dance.gif").unwrap_err();
+        assert!(error.to_string().contains("Animated"));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn prepare_preview_rejects_oversized_and_binary_files() {
+        let dir = std::env::temp_dir().join(unique("futureos-bigprev"));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let big = dir.join("huge.txt");
+        std::fs::write(&big, vec![b'x'; (MAX_FILE_BYTES + 1) as usize]).unwrap();
+        let error = prepare_preview(&big, "huge.txt").unwrap_err();
+        assert!(error.to_string().contains("10 MiB"));
+
+        // Invalid UTF-8 is not previewable as text.
+        let binary = dir.join("data.bin");
+        std::fs::write(&binary, [0xFF, 0xFE, 0x00, 0x01]).unwrap();
+        assert!(!is_plain_utf8_text(&binary).unwrap());
+        let error = prepare_preview(&binary, "data.bin").unwrap_err();
+        assert!(error.to_string().contains("cannot be previewed"));
+
+        // Control characters other than whitespace are not plain text.
+        let control = dir.join("ctrl.txt");
+        std::fs::write(&control, b"hello\x07world").unwrap();
+        assert!(!is_plain_utf8_text(&control).unwrap());
+        assert!(is_plain_utf8_text(&dir.join("..").join("does-not-exist")).is_err());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn validate_mobile_image_decode_failures() {
+        let dir = std::env::temp_dir().join(unique("futureos-mobileimg"));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Missing file → open error.
+        assert!(validate_mobile_image(&dir.join("nope.png")).is_err());
+
+        // Garbage → unreadable format.
+        let garbage = dir.join("garbage.png");
+        std::fs::write(&garbage, b"garbage bytes").unwrap();
+        assert!(validate_mobile_image(&garbage).is_err());
+
+        // A PNG header whose body is truncated passes dimension sniffing but
+        // fails the full decode.
+        let mut truncated = image::DynamicImage::new_rgb8(10, 10)
+            .save(dir.join("full.png"))
+            .map(|_| std::fs::read(dir.join("full.png")).unwrap())
+            .unwrap();
+        truncated.truncate(40);
+        let truncated_path = dir.join("truncated.png");
+        std::fs::write(&truncated_path, &truncated).unwrap();
+        assert!(validate_mobile_image(&truncated_path).is_err());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn transfer_loop_handles_chunks_pulls_and_reconnects() {
+        let _home = HomeGuard::new("xfer-loop");
+        let nats = FakeNats::start().await;
+        let client = nats_connect_once(&nats).await;
+        let pair = unique("pair");
+        let active = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let loop_handle = spawn_transfer_loop(client.clone(), pair.clone(), active.clone());
+        nats.wait_for_sub(&format!("p.{pair}.xfer.up.>"), Duration::from_secs(5))
+            .await;
+
+        // While the handshake gate is closed, transfer messages are skipped
+        // (no reply is published).
+        active.store(false, Ordering::Release);
+        let skipped_reply = format!("rep-{}", unique("skip"));
+        let mut tap = nats.tap();
+        nats.inject(
+            &format!("p.{pair}.xfer.up.skip.chunk.0"),
+            Some(&skipped_reply),
+            b"xx".to_vec(),
+        );
+        assert_no_publish(&mut tap, &skipped_reply, Duration::from_millis(200)).await;
+        active.store(true, Ordering::Release);
+
+        // Upload chunks flow through the loop into the staging file.
+        let upload_id = init_file_upload("loop.bin", 4);
+        let chunk_reply = format!("rep-{}", unique("chunk"));
+        nats.inject(
+            &format!("p.{pair}.xfer.up.{upload_id}.chunk.0"),
+            Some(&chunk_reply),
+            b"loop".to_vec(),
+        );
+        let reply = await_publish(&mut tap, &chunk_reply, Duration::from_secs(5)).await;
+        assert_eq!(reply.json()["success"], json!(true));
+        assert_eq!(reply.json()["data"]["received"], json!(4));
+
+        // Malformed chunk indexes and unknown operations get error replies.
+        let bad_index_reply = format!("rep-{}", unique("badidx"));
+        nats.inject(
+            &format!("p.{pair}.xfer.up.{upload_id}.chunk.abc"),
+            Some(&bad_index_reply),
+            b"x".to_vec(),
+        );
+        let reply = await_publish(&mut tap, &bad_index_reply, Duration::from_secs(5)).await;
+        assert_eq!(reply.json()["success"], json!(false));
+        assert!(reply.json()["error"]
+            .as_str()
+            .unwrap()
+            .contains("Invalid chunk index"));
+
+        let bogus_reply = format!("rep-{}", unique("bogus"));
+        nats.inject(
+            &format!("p.{pair}.xfer.up.{upload_id}.bogus.0"),
+            Some(&bogus_reply),
+            b"x".to_vec(),
+        );
+        let reply = await_publish(&mut tap, &bogus_reply, Duration::from_secs(5)).await;
+        assert!(reply.json()["error"]
+            .as_str()
+            .unwrap()
+            .contains("Unsupported transfer operation"));
+
+        // Download pulls publish file bytes on the down subject.
+        let download_path = transfer_root().join("download").join("pull.txt");
+        std::fs::create_dir_all(download_path.parent().unwrap()).unwrap();
+        std::fs::write(&download_path, b"download-bytes").unwrap();
+        DOWNLOADS.lock().unwrap().insert(
+            "download_loop".to_string(),
+            DownloadRecord {
+                path: download_path.clone(),
+                size: 14,
+                created_at: SystemTime::now(),
+            },
+        );
+        let pull_reply = format!("rep-{}", unique("pull"));
+        nats.inject(
+            &format!("p.{pair}.xfer.up.download_loop.pull.0"),
+            Some(&pull_reply),
+            Vec::new(),
+        );
+        let reply = await_publish(&mut tap, &pull_reply, Duration::from_secs(5)).await;
+        assert_eq!(reply.json()["success"], json!(true));
+        assert_eq!(reply.json()["data"]["published"], json!(true));
+        let chunk = await_publish(
+            &mut tap,
+            &format!("p.{pair}.xfer.down.download_loop.chunk.0"),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(chunk.payload, b"download-bytes");
+
+        // Out-of-range and unknown pulls get error replies.
+        let range_reply = format!("rep-{}", unique("range"));
+        nats.inject(
+            &format!("p.{pair}.xfer.up.download_loop.pull.9"),
+            Some(&range_reply),
+            Vec::new(),
+        );
+        let reply = await_publish(&mut tap, &range_reply, Duration::from_secs(5)).await;
+        assert!(reply.json()["error"]
+            .as_str()
+            .unwrap()
+            .contains("outside the file"));
+
+        let missing_reply = format!("rep-{}", unique("missing"));
+        nats.inject(
+            &format!("p.{pair}.xfer.up.download_nope.pull.0"),
+            Some(&missing_reply),
+            Vec::new(),
+        );
+        let reply = await_publish(&mut tap, &missing_reply, Duration::from_secs(5)).await;
+        assert!(reply.json()["error"]
+            .as_str()
+            .unwrap()
+            .contains("expired or does not exist"));
+
+        // A transfer request without a reply subject is processed but never
+        // answered (the reply-match `None` arm).
+        nats.inject(&format!("p.{pair}.xfer.up.ghost.bogus.0"), None, Vec::new());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Losing the server ends the subscription stream; the loop logs and
+        // resubscribes (failing while the server stays down) instead of dying.
+        nats.kill();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!loop_handle.is_finished(), "transfer loop must self-heal");
+        loop_handle.abort();
+        cancel_upload(&upload_id).unwrap();
+        std::fs::remove_file(&download_path).ok();
     }
 }

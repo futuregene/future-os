@@ -1,4 +1,4 @@
-import type { MessageAttachment } from "./agentThreadTypes";
+import type { MessageAttachment } from "@future-os/thread-projection";
 
 /**
  * Per-conversation composer draft: the *unsent* input a conversation carries

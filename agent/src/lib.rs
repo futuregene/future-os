@@ -54,6 +54,21 @@ pub(crate) mod test_support {
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
+    /// Unique temp path for a test fixture: timestamp plus a process-wide
+    /// atomic sequence. The macOS clock ticks at ~µs granularity, so bare
+    /// nanosecond stamps collide when two parallel tests draw the same
+    /// tick — a shared path breaks tests that assume exclusive use of the
+    /// directory (one creates it while another assumes it never exists).
+    pub(crate) fn unique_temp_path(tag: &str) -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::env::temp_dir().join(format!("futureos-{tag}-{stamp}-{seq}"))
+    }
+
     /// Redirect HOME/USERPROFILE to an isolated directory for the duration of
     /// a test. The directory is anchored under the workspace target/ dir —
     /// never the system temp dir, whose writes sandbox rules allow (a temp

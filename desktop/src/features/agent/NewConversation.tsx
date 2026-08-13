@@ -1,7 +1,7 @@
+import type { MessageAttachment } from "@future-os/thread-projection";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { StoredWorkspace } from "../../integrations/storage/threadStore";
-import type { MessageAttachment } from "./agentThreadTypes";
 import type { ComposerDragState, ComposerSendPayload } from "./Composer";
 import type { WorkspaceCreateRequest, WorkspaceFormMode } from "./useWorkspaceForm";
 import {
@@ -210,7 +210,6 @@ export function NewConversation({
               onSend={handleSend}
               disabled={catalogLoading}
               placeholder={t("newConversation.placeholder")}
-              textareaClassName="h-16 text-sm leading-5"
               workspaceId={mode === "workspace" ? activeWorkspace?.id : null}
               draftKey="new"
             />

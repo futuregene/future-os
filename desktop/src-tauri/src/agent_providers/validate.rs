@@ -49,6 +49,7 @@ pub(super) fn model_json_values(models: &[ValidatedModel]) -> Vec<Value> {
 /// A custom-provider request with every field validated and normalized, ready
 /// for the locked models.json read-modify-write in
 /// [`super::write::upsert_custom_provider`].
+#[derive(Debug)]
 pub(super) struct ValidatedCustomProvider {
     pub(super) id: String,
     pub(super) name: String,

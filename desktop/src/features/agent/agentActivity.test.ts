@@ -1,6 +1,6 @@
 import type { StoredRunEvent } from "../../integrations/storage/threadStore";
+import { buildAssistantRunProjection, createRunProjector, isSoftExit, nonZeroExitCode } from "@future-os/thread-projection";
 import { describe, expect, it } from "vitest";
-import { buildAssistantRunProjection, createRunProjector, isSoftExit, nonZeroExitCode } from "./agentActivity";
 
 function events(list: Array<[string, Record<string, unknown>]>): StoredRunEvent[] {
   return list.map(([eventType, payload], index) => ({
@@ -273,6 +273,64 @@ describe("buildAssistantRunProjection output tokens", () => {
     );
 
     expect(projection.outputTokens).toBe(0);
+  });
+});
+
+// The agent marks a stream that ended before the model finished by setting
+// `agent_end` reason "incomplete" (agent/src/rpc/session_prompt.rs). Both ends
+// must treat the resulting prefix as failed, never as a clean completion.
+describe("buildAssistantRunProjection truncated", () => {
+  it("flags a run whose agent_end carried reason incomplete", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["text_chunk", { text: "partial answer" }],
+        ["agent_end", { type: "agent_end", reason: "incomplete" }],
+      ]),
+    );
+
+    expect(projection.truncated).toBe(true);
+  });
+
+  it("stays untruncated for a clean agent_end", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["text_chunk", { text: "full answer" }],
+        ["agent_end", { type: "agent_end" }],
+      ]),
+    );
+
+    expect(projection.truncated).toBe(false);
+  });
+
+  it("stays untruncated when no agent_end was seen (in-flight)", () => {
+    const projection = buildAssistantRunProjection(
+      events([["text_chunk", { text: "still streaming" }]]),
+    );
+
+    expect(projection.truncated).toBe(false);
+  });
+});
+
+describe("buildAssistantRunProjection stopped", () => {
+  it("flags a run the user cancelled (agent_end state cancelled)", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["text_chunk", { text: "partial answer" }],
+        ["agent_end", { type: "agent_end", state: "cancelled" }],
+      ]),
+    );
+
+    expect(projection.stopped).toBe(true);
+    expect(projection.truncated).toBe(false);
+  });
+
+  it("stays unstopped for a clean or truncated end", () => {
+    expect(buildAssistantRunProjection(
+      events([["text_chunk", { text: "full" }], ["agent_end", { type: "agent_end" }]]),
+    ).stopped).toBe(false);
+    expect(buildAssistantRunProjection(
+      events([["text_chunk", { text: "cut" }], ["agent_end", { type: "agent_end", reason: "incomplete" }]]),
+    ).stopped).toBe(false);
   });
 });
 

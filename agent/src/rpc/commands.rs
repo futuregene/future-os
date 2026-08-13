@@ -2195,12 +2195,7 @@ mod tests {
     }
 
     fn test_workspace() -> String {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir()
-            .join(format!("futureos-cmd-test-{stamp}"))
+        crate::test_support::unique_temp_path("cmd-test")
             .to_string_lossy()
             .to_string()
     }

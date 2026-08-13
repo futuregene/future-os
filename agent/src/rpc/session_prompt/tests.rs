@@ -1213,7 +1213,7 @@ async fn prompt_persistence_commit_and_rewrite_failure_marks_degraded() {
 #[allow(clippy::await_holding_lock)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prompt_workspace_permission_routes_through_approval_gate() {
-    let _home_guard = crate::HOME_ENV_LOCK.lock().unwrap();
+    let _home_guard = crate::test_support::home_env_lock();
     let outside = dirs::home_dir()
         .unwrap()
         .join(format!("futureos-gate-target-{}.txt", std::process::id()));
