@@ -22,8 +22,19 @@ use tokio_stream::StreamExt;
 // sites keep their `proto::...` paths.
 pub use future_rpc::proto;
 
-/// Start a gRPC-only server (no HTTP).
+/// Start a gRPC-only server (no HTTP). Runs until process exit.
 pub async fn serve(state: AppState, host: &str, port: u16) -> Result<()> {
+    serve_with(state, host, port, std::future::pending()).await
+}
+
+/// `serve` with an injectable shutdown trigger so tests can drive the server
+/// to a clean `Ok(())` completion (production never exits).
+async fn serve_with(
+    state: AppState,
+    host: &str,
+    port: u16,
+    shutdown: impl std::future::Future<Output = ()>,
+) -> Result<()> {
     tracing::info!("gRPC server listening on {}:{}", host, port);
 
     // Build gRPC service
@@ -43,7 +54,7 @@ pub async fn serve(state: AppState, host: &str, port: u16) -> Result<()> {
                 .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE)
                 .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE),
         )
-        .serve(grpc_addr)
+        .serve_with_shutdown(grpc_addr, shutdown)
         .await?;
 
     Ok(())
@@ -52,6 +63,18 @@ pub async fn serve(state: AppState, host: &str, port: u16) -> Result<()> {
 #[derive(Clone)]
 struct FutureAgentService {
     state: AppState,
+}
+
+/// Test seam driving execute_command's two transport-failure arms:
+/// "__test_panic__" makes the blocking command task panic (JoinError), and
+/// "__test_bad_json__" makes it return a non-JSON payload.
+#[cfg(test)]
+fn execute_command_test_override(cmd_type: &str) -> Option<String> {
+    match cmd_type {
+        "__test_panic__" => panic!("injected command task panic"),
+        "__test_bad_json__" => Some("not json".to_string()),
+        _ => None,
+    }
 }
 
 #[allow(clippy::result_large_err)] // tonic stream items require `tonic::Status` directly.
@@ -268,6 +291,10 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
         // session ordered persistence worker is introduced incrementally.
         let command_state = self.state.clone();
         let resp_str = tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            if let Some(override_resp) = execute_command_test_override(&internal_cmd.cmd_type) {
+                return override_resp;
+            }
             handle_command_internal(&command_state, internal_cmd)
         })
         .await
@@ -482,6 +509,23 @@ mod tests {
     use std::sync::Arc;
     use tokio_stream::wrappers::ReceiverStream;
 
+    /// Provider double for the service harness: an immediately-empty stream.
+    struct NoopProvider;
+
+    #[async_trait::async_trait]
+    impl crate::types::LLMProvider for NoopProvider {
+        async fn stream_chat(
+            &self,
+            _model: String,
+            _messages: Vec<crate::types::Message>,
+            _tools: Vec<crate::types::ToolDef>,
+            _system_prompt: String,
+        ) -> anyhow::Result<ReceiverStream<crate::types::StreamEvent>> {
+            let (_tx, rx) = tokio::sync::mpsc::channel(1);
+            Ok(ReceiverStream::new(rx))
+        }
+    }
+
     #[tokio::test]
     async fn broadcast_overflow_records_lag_through_grpc_mapper() {
         let broadcaster = SseBroadcaster::new();
@@ -529,20 +573,6 @@ mod tests {
         let session_manager = Arc::new(crate::session::Manager::new(session_dir));
         let approval_gate = crate::rpc::ApprovalGate::default();
         let queue_budget = Arc::new(crate::runtime::GlobalQueueBudget::defaults());
-        struct NoopProvider;
-        #[async_trait::async_trait]
-        impl crate::types::LLMProvider for NoopProvider {
-            async fn stream_chat(
-                &self,
-                _model: String,
-                _messages: Vec<crate::types::Message>,
-                _tools: Vec<crate::types::ToolDef>,
-                _system_prompt: String,
-            ) -> anyhow::Result<ReceiverStream<crate::types::StreamEvent>> {
-                let (_tx, rx) = tokio::sync::mpsc::channel(1);
-                Ok(ReceiverStream::new(rx))
-            }
-        }
         let session = crate::rpc::ServerSession::new_with_queue_budget(
             "default".to_string(),
             Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
@@ -831,5 +861,178 @@ mod tests {
             .map(|_| ())
             .expect_err("expected an error");
         assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    }
+
+    #[test]
+    fn nonempty_maps_empty_to_none() {
+        assert_eq!(nonempty(String::new()), None);
+        assert_eq!(nonempty("x".to_string()), Some("x".to_string()));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn serve_with_shutdown_completes_cleanly() {
+        let state = grpc_app_state(false);
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(serve_with(state, "127.0.0.1", 0, async move {
+            let _ = rx.await;
+        }));
+        // Give the server a moment to bind, then trigger shutdown.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let _ = tx.send(());
+        tokio::time::timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .expect("server shuts down promptly")
+            .expect("server task did not panic")
+            .expect("clean shutdown is Ok");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn execute_command_serializes_error_data() {
+        let service = FutureAgentService {
+            state: grpc_app_state(false),
+        };
+        // prompt with an unknown busy policy → error_code + error_data.
+        let cmd = proto::RpcCommand {
+            id: "cmd-err".to_string(),
+            r#type: "prompt".to_string(),
+            session_id: "default".to_string(),
+            message: "hello".to_string(),
+            busy_policy: "frobnicate".to_string(),
+            ..Default::default()
+        };
+        let resp = service
+            .execute_command(tonic::Request::new(cmd))
+            .await
+            .expect("command executes")
+            .into_inner();
+        assert!(!resp.success);
+        assert_eq!(resp.error_code, "invalid_busy_policy");
+        assert!(
+            resp.error_data.contains("frobnicate"),
+            "error_data must be serialized onto the wire: {}",
+            resp.error_data
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn execute_command_maps_task_panic_and_bad_json_to_internal() {
+        let service = FutureAgentService {
+            state: grpc_app_state(false),
+        };
+        // The command task itself panicked → JoinError → internal status.
+        let err = service
+            .execute_command(tonic::Request::new(proto::RpcCommand {
+                id: "cmd-panic".to_string(),
+                r#type: "__test_panic__".to_string(),
+                session_id: "default".to_string(),
+                ..Default::default()
+            }))
+            .await
+            .expect_err("panic surfaces as an error");
+        assert_eq!(err.code(), tonic::Code::Internal);
+        assert!(err.message().contains("command task failed"), "{err}");
+
+        // The dispatcher returned non-JSON → parse failure → internal status.
+        let err = service
+            .execute_command(tonic::Request::new(proto::RpcCommand {
+                id: "cmd-badjson".to_string(),
+                r#type: "__test_bad_json__".to_string(),
+                session_id: "default".to_string(),
+                ..Default::default()
+            }))
+            .await
+            .expect_err("bad json surfaces as an error");
+        assert_eq!(err.code(), tonic::Code::Internal);
+        assert!(err.message().contains("Failed to parse response"), "{err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stream_events_atomic_attach_includes_projection_snapshot_events() {
+        let service = FutureAgentService {
+            state: grpc_app_state(false),
+        };
+        let session = service.state.get_session("default").unwrap();
+        {
+            let mut sess = session.write();
+            // A journal-less broadcaster: a truncated attach then has no disk
+            // to fall back on and returns the projection snapshot instead.
+            sess.broadcaster = std::sync::Arc::new(SseBroadcaster::new());
+            sess.broadcaster.start_run("run-long".to_string(), 1);
+            // Overflow the in-memory ring (MAX_RUN_EVENTS) so an attach at
+            // after_idx=-1 is truncated → projection snapshot path.
+            for idx in 0..2100 {
+                sess.broadcaster.broadcast(SseEvent::new(
+                    "text_chunk",
+                    serde_json::json!({"text": format!("tok{idx} ")}),
+                ));
+            }
+        }
+        let response = service
+            .stream_events(tonic::Request::new(proto::StreamRequest {
+                session_id: "default".to_string(),
+                atomic_attach: true,
+                run_id: "run-long".to_string(),
+                after_idx: -1,
+                ..Default::default()
+            }))
+            .await
+            .expect("truncated attach succeeds");
+        let mut stream = response.into_inner();
+        let first = stream.next().await.unwrap().unwrap();
+        assert_eq!(first.r#type, "run_snapshot");
+        assert!(first.projection_snapshot);
+        assert!(
+            !first.snapshot_events.is_empty(),
+            "projection carries the coalesced event stream"
+        );
+        assert_eq!(first.snapshot_events[0].r#type, "text_chunk");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stream_events_lag_bypasses_type_filter_as_dataloss() {
+        let service = FutureAgentService {
+            state: grpc_app_state(false),
+        };
+        // Subscribe with a type filter, then overflow the broadcast channel
+        // (capacity 256) without draining: the next poll yields Lagged,
+        // which must bypass the filter and surface as DataLoss.
+        let response = service
+            .stream_events(tonic::Request::new(proto::StreamRequest {
+                session_id: "default".to_string(),
+                event_types: vec!["text_chunk".to_string()],
+                ..Default::default()
+            }))
+            .await
+            .expect("filtered subscribe succeeds");
+        {
+            let sess = service.state.get_session("default").unwrap();
+            let sess = sess.read();
+            sess.broadcaster.start_run("run-flood".to_string(), 1);
+            for idx in 0..300 {
+                sess.broadcaster.broadcast(SseEvent::new(
+                    "text_chunk",
+                    serde_json::json!({"text": idx.to_string()}),
+                ));
+            }
+        }
+        let mut stream = response.into_inner();
+        let item = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+            .await
+            .expect("lagged item arrives")
+            .expect("stream yields the lag");
+        let status = item.expect_err("lag maps to an error status");
+        assert_eq!(status.code(), tonic::Code::DataLoss);
+    }
+
+    #[tokio::test]
+    async fn noop_provider_stream_chat_is_an_empty_stream() {
+        // Exercise the harness provider double's stream body directly.
+        use crate::types::LLMProvider;
+        use tokio_stream::StreamExt;
+        let mut stream = NoopProvider
+            .stream_chat("m".to_string(), vec![], vec![], String::new())
+            .await
+            .unwrap();
+        assert!(stream.next().await.is_none());
     }
 }

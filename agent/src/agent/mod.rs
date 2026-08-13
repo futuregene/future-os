@@ -878,4 +878,98 @@ mod tests {
             "EOF without a provider stop frame must not be a clean completion"
         );
     }
+
+    fn cov_ok_handler(
+        _: serde_json::Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send>> {
+        Box::pin(async { Ok("contents of SKILL.md body".to_string()) })
+    }
+
+    fn cov_err_handler(
+        _: serde_json::Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send>> {
+        Box::pin(async { Err(anyhow::anyhow!("fixture failure")) })
+    }
+
+    fn cov_tool(name: &str, ok: bool) -> crate::types::AgentTool {
+        let handler: crate::types::ToolHandler = if ok { cov_ok_handler } else { cov_err_handler };
+        crate::types::AgentTool {
+            def: crate::types::ToolDef {
+                tool_type: "function".to_string(),
+                function: crate::types::FunctionDef {
+                    name: name.to_string(),
+                    description: "coverage fixture".to_string(),
+                    parameters: serde_json::json!({}),
+                },
+            },
+            handler,
+            guidelines: vec![],
+        }
+    }
+
+    fn cov_tool_call(id: &str, name: &str, args: serde_json::Value) -> crate::types::ToolCall {
+        crate::types::ToolCall {
+            id: id.to_string(),
+            call_type: "function".to_string(),
+            function: crate::types::ToolCallFn {
+                name: name.to_string(),
+                arguments: args,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_one_tool_finalize_hook_sees_error_arm() {
+        let config = crate::types::AgentConfig {
+            finalize_tool_call: Some(std::sync::Arc::new(|name, _result, err| {
+                (format!("finalized[{name}]"), Some(err))
+            })),
+            ..Default::default()
+        };
+        let tc = cov_tool_call("c1", "no_such_tool", serde_json::json!({}));
+        let (result, err, _) = Loop::execute_one_tool_impl_static(&tc, &[], &config).await;
+        assert_eq!(result, "finalized[no_such_tool]");
+        assert!(err.unwrap().to_string().contains("Unknown tool"));
+    }
+
+    #[tokio::test]
+    async fn sequential_tools_verbose_logs_skill_tag_and_error() {
+        // tracing event regions only evaluate under a subscriber.
+        let _subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .finish(),
+        );
+        let mut loop_ = make_loop();
+        loop_.verbose = true;
+        loop_.tools = vec![cov_tool("read", true), cov_tool("explode", false)];
+        let calls = vec![
+            cov_tool_call("c1", "read", serde_json::json!({"path": "SKILL.md"})),
+            cov_tool_call("c2", "explode", serde_json::json!({})),
+        ];
+        let mut messages = Vec::new();
+        loop_
+            .execute_tools_sequential(0, &calls, &mut messages, &None, &None)
+            .await;
+        assert_eq!(messages.len(), 2);
+        assert!(messages[0].text().contains("SKILL.md"));
+        assert!(messages[1].text().contains("fixture failure"));
+    }
+
+    #[tokio::test]
+    async fn sequential_tools_interrupt_placeholders_serialize_object_args() {
+        let loop_ = make_loop();
+        loop_.abort(); // interrupted before the first tool runs
+        let calls = vec![
+            cov_tool_call("c1", "read", serde_json::json!({"path": "a.rs"})),
+            cov_tool_call("c2", "shell", serde_json::json!({"command": "ls"})),
+        ];
+        let mut messages = Vec::new();
+        loop_
+            .execute_tools_sequential(0, &calls, &mut messages, &None, &None)
+            .await;
+        assert_eq!(messages.len(), 2);
+        assert!(messages[0].text().contains("cancelled"));
+        assert!(messages[1].text().contains("cancelled"));
+    }
 }

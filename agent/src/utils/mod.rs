@@ -126,7 +126,11 @@ pub fn image_data_url_for_model(path: &str) -> Option<String> {
         img
     };
     let rgb = scaled.to_rgb8();
-    for quality in [80u8, 70, 60, 50, 40] {
+    // First quality whose JPEG fits the base64 budget wins. `None` (every
+    // quality too big, or the encoder failed) means the caller skips the
+    // image — with the current caps a 2000px JPEG at q40 is always far under
+    // 5 MiB, so in practice this only triggers on an encoder error.
+    [80u8, 70, 60, 50, 40].into_iter().find_map(|quality| {
         let mut buf = Vec::new();
         let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality);
         let encoded = image::ImageEncoder::write_image(
@@ -137,11 +141,8 @@ pub fn image_data_url_for_model(path: &str) -> Option<String> {
             image::ExtendedColorType::Rgb8,
         )
         .is_ok();
-        if encoded && fits_base64(buf.len()) {
-            return Some(data_url("image/jpeg", &buf));
-        }
-    }
-    None
+        (encoded && fits_base64(buf.len())).then(|| data_url("image/jpeg", &buf))
+    })
 }
 
 /// Version string — injected at build time via build.rs from FUTURE_VERSION
@@ -314,6 +315,47 @@ mod image_prep_tests {
     fn missing_or_undecodable_returns_none() {
         assert!(image_data_url_for_model("/no/such/file-xyz.png").is_none());
     }
+
+    #[test]
+    fn over_25mb_source_returns_none() {
+        // Sparse file past MAX_SOURCE_BYTES: rejected before any decode work.
+        let path =
+            std::env::temp_dir().join(format!("futureos-imgtest-{}-huge.bin", std::process::id()));
+        let f = std::fs::File::create(&path).unwrap();
+        f.set_len(26 * 1024 * 1024).unwrap();
+        drop(f);
+        assert!(image_data_url_for_model(path.to_str().unwrap()).is_none());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn small_dims_but_fat_bytes_reencode_without_resize() {
+        // Dimensions under MAX_DIM but a payload over the base64 budget
+        // (incompressible noise): takes the no-resize arm and JPEG-encodes.
+        let mut state: u32 = 0x12345678;
+        let img = image::RgbImage::from_fn(1200, 1200, |_, _| {
+            // xorshift32 — deterministic high-entropy pixels.
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            image::Rgb([state as u8, (state >> 8) as u8, (state >> 16) as u8])
+        });
+        let path =
+            std::env::temp_dir().join(format!("futureos-imgtest-{}-noise.png", std::process::id()));
+        img.save(&path).unwrap();
+        // Sanity: the fixture really is over the base64 budget, or the test
+        // stops exercising the re-encode path.
+        let raw_len = std::fs::metadata(&path).unwrap().len() as usize;
+        assert!(
+            raw_len.div_ceil(3) * 4 > 5 * 1024 * 1024,
+            "fixture too small"
+        );
+
+        let url = image_data_url_for_model(path.to_str().unwrap());
+        std::fs::remove_file(&path).ok();
+        let url = url.expect("noise image should still fit after JPEG q80");
+        assert!(url.starts_with("data:image/jpeg;base64,"), "{url:.40}");
+    }
 }
 
 #[cfg(test)]
@@ -360,13 +402,30 @@ mod util_tests {
         let dir = tempfile::tempdir().unwrap();
         // chmod 000 — directory still exists but the test file write must fail.
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o000)).unwrap();
-        // Repair is best-effort: it works when the test runs as the owner.
+        // The test created the tempdir, so the repair always succeeds.
         let result = ensure_workspace_accessible(dir.path(), true);
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-        if result.is_ok() {
-            let mode = std::fs::metadata(dir.path()).unwrap().permissions().mode();
-            assert_ne!(mode & 0o700, 0, "owner bits should have been restored");
-        }
+        result.expect("repair of an owned dir must succeed");
+        let mode = std::fs::metadata(dir.path()).unwrap().permissions().mode();
+        assert_ne!(mode & 0o700, 0, "owner bits should have been restored");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repair_dir_permissions_noop_when_owner_bits_present() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        // Force the repair path with permissions already intact: the write
+        // test fails because `.future_write_test` is an existing DIRECTORY,
+        // not because of mode bits — repaired == mode, so no chmod happens.
+        std::fs::create_dir(dir.path().join(".future_write_test")).unwrap();
+        let mode_before = std::fs::metadata(dir.path()).unwrap().permissions().mode();
+        assert_eq!(mode_before & 0o700, 0o700, "tempdir starts with owner rwx");
+        // The repair runs (no-op chmod arm) and the retry still fails on the
+        // directory collision → overall error.
+        assert!(ensure_workspace_accessible(dir.path(), true).is_err());
+        let mode_after = std::fs::metadata(dir.path()).unwrap().permissions().mode();
+        assert_eq!(mode_before, mode_after);
     }
 
     #[cfg(unix)]

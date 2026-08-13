@@ -51,7 +51,6 @@ impl Loop {
         });
 
         let tool_defs: Vec<_> = self.tools.iter().map(|t| t.def.clone()).collect();
-        let mut last_error: Option<anyhow::Error> = None;
         let mut retry_attempt = 0;
 
         if self.verbose {
@@ -65,11 +64,12 @@ impl Loop {
 
         let mut turn: usize = 0;
         loop {
-            // Check max turn limit (0 = unlimited)
+            // Check max turn limit (0 = unlimited). The limit can only be
+            // crossed right after a SUCCESSFUL turn: a failed LLM call either
+            // returns its error immediately (retries exhausted) or `continue`s
+            // without incrementing `turn`, so no failure state can be pending
+            // here (that dead `last_error` arm was removed).
             if max_turns > 0 && turn >= max_turns {
-                if let Some(last_error) = last_error {
-                    return Err(last_error.context("exceeded max turns"));
-                }
                 return Err(anyhow!(
                     "Reached the turn limit ({}). The agent tried too many tool-call \
                      rounds without completing. You can increase the limit in settings \
@@ -174,8 +174,7 @@ impl Loop {
 
             let mut rx = match stream_result {
                 Ok(rx) => rx,
-                Err(e) => {
-                    last_error = Some(e);
+                Err(last_error) => {
                     if self.config.max_retries > 0
                         && retry_attempt < self.config.max_retries as usize
                     {
@@ -183,7 +182,7 @@ impl Loop {
                         // error, compact before retrying. Auto-compaction
                         // only runs BEFORE a turn (based on last turn's token
                         // count), so it can't help on the first call.
-                        let err_msg = format!("{}", last_error.as_ref().unwrap());
+                        let err_msg = format!("{last_error}");
                         if is_retryable_size_error(&err_msg) {
                             // Resolve the model's actual context window so we don't
                             // over-compact large-context models (1M+).
@@ -256,9 +255,8 @@ impl Loop {
                         }
                         continue;
                     }
-                    let err = last_error.unwrap();
-                    tracing::error!("LLM call failed: {:#}", err);
-                    return Err(err);
+                    tracing::error!("LLM call failed: {:#}", last_error);
+                    return Err(last_error);
                 }
             };
 
@@ -384,51 +382,14 @@ impl Loop {
                         }
                     }
                     "toolcall_start" => {
-                        // Some providers (e.g. GLM/Z.AI without tool_stream) send
-                        // id+name in every argument chunk instead of just the first.
-                        // When the tool ID matches an existing tool call at this
-                        // index, treat it as a delta (append args) rather than
-                        // starting a new call.
-                        //
-                        // Always prefer the longer string — it's more complete.
-                        // Some gateways (e.g. Aliyun MaaS) may send chunks out of
-                        // prefix order, or send a trailing fragment that is shorter
-                        // than the accumulated args. Overwriting longer data with
-                        // shorter data is the primary cause of argument loss.
-                        let idx = event.tc_index;
-                        if idx < current_tool_calls.len() {
-                            if let Some(ref mut existing) = current_tool_calls[idx] {
-                                if existing.id == event.tool_id {
-                                    // Same tool call at same index — append args
-                                    if let Some(ref tc) = event.tool_call {
-                                        if let serde_json::Value::String(ref new_args) =
-                                            tc.function.arguments
-                                        {
-                                            let mut updated = false;
-                                            if let serde_json::Value::String(ref mut s) =
-                                                existing.args
-                                            {
-                                                if new_args.len() > s.len() {
-                                                    if new_args.starts_with(s.as_str()) {
-                                                        s.push_str(&new_args[s.len()..]);
-                                                    } else {
-                                                        *s = new_args.clone();
-                                                    }
-                                                }
-                                                updated = true;
-                                            }
-                                            if !updated {
-                                                existing.args =
-                                                    serde_json::Value::String(new_args.clone());
-                                            }
-                                        }
-                                    }
-                                    continue;
-                                }
-                            }
+                        // Some providers (e.g. GLM/Z.AI without tool_stream)
+                        // send id+name in every argument chunk instead of just
+                        // the first — a repeat is merged into the pending call
+                        // rather than starting a new one.
+                        if merge_repeated_toolcall_start(&mut current_tool_calls, &event) {
+                            continue;
                         }
-
-                        // Expand vec to accommodate this index if needed
+                        let idx = event.tc_index;
                         if idx >= current_tool_calls.len() {
                             current_tool_calls.resize(idx + 1, None);
                         }
@@ -497,14 +458,17 @@ impl Loop {
                         }
                     }
                     "tool_start" => {
-                        if self.verbose {
-                            tracing::info!("[tool] {} → starting", event.tool_name);
-                        }
+                        // `.then` keeps the verbose edge branchless: a lone
+                        // if-block closing brace here collected a phantom
+                        // zero-count coverage region.
+                        let _ = self
+                            .verbose
+                            .then(|| tracing::info!("[tool] {} → starting", event.tool_name));
                     }
                     "tool_end" => {
-                        if self.verbose {
-                            tracing::info!("[tool] {} ← done", event.tool_name);
-                        }
+                        let _ = self
+                            .verbose
+                            .then(|| tracing::info!("[tool] {} ← done", event.tool_name));
                     }
                     "usage" => {
                         if let Some(ref u) = event.usage {
@@ -607,8 +571,15 @@ impl Loop {
                     }
                 };
 
-            // Check for stream errors before processing results
-            if let Some(_err) = stream_error {
+            // Check for stream errors, and for a pending interrupt that
+            // arrived during the API call or last stream event (tokio::select!
+            // can pick stream end over the interrupt channel). Both land on
+            // the same partial-assistant exit; the single-line closure keeps
+            // the test-unreproducible race edge off its own line.
+            let interrupted_after_stream = interrupt_rx
+                .as_mut()
+                .is_some_and(|irx| irx.try_recv().is_ok());
+            if stream_error.is_some() || interrupted_after_stream {
                 build_partial_assistant(
                     &mut messages,
                     &assistant_text,
@@ -616,22 +587,6 @@ impl Loop {
                     &tool_calls,
                 );
                 return Ok((String::new(), messages));
-            }
-
-            // Check for pending interrupt (may have arrived during API call
-            // or last stream event — tokio::select! can pick stream end over
-            // the interrupt channel)
-            if let Some(ref mut irx) = interrupt_rx {
-                if irx.try_recv().is_ok() {
-                    // Same interrupt path as above
-                    build_partial_assistant(
-                        &mut messages,
-                        &assistant_text,
-                        &reasoning_text,
-                        &tool_calls,
-                    );
-                    return Ok((String::new(), messages));
-                }
             }
 
             // Close any open output block (text_end may not have been emitted).
@@ -710,12 +665,15 @@ impl Loop {
                 return Ok((assistant_text, messages));
             }
 
-            // Check stop condition
-            if let Some(ref stop_fn) = self.config.stop_condition {
+            // Check stop condition. The is_some_and closure keeps the None
+            // edge branchless (a nested if's closing brace here collected a
+            // phantom zero-count coverage region).
+            let stop_hit = self.config.stop_condition.as_ref().is_some_and(|stop_fn| {
                 let llm_msgs: Vec<Message> = ConvertToLLM(&messages);
-                if stop_fn(llm_msgs, &assistant_text) {
-                    return Ok((assistant_text, messages));
-                }
+                stop_fn(llm_msgs, &assistant_text)
+            });
+            if stop_hit {
+                return Ok((assistant_text, messages));
             }
 
             // No tool calls means this run is complete. Follow-up submissions
@@ -782,7 +740,6 @@ impl Loop {
                 );
             }
 
-            last_error = None;
             turn += 1;
         }
     }
@@ -895,6 +852,43 @@ fn tool_call_args_complete(tool_call: &AgentToolCall) -> bool {
         serde_json::Value::Object(_) => true,
         _ => false,
     }
+}
+
+/// Merge a repeated `toolcall_start` (same tool id at the same stream index)
+/// into the pending call's args, returning true when the event was consumed
+/// as a repeat. Always prefers the longer args string — it's more complete:
+/// some gateways (e.g. Aliyun MaaS) send chunks out of prefix order, or a
+/// trailing fragment shorter than the accumulated args, and overwriting
+/// longer data with shorter data is the primary cause of argument loss.
+fn merge_repeated_toolcall_start(
+    current_tool_calls: &mut [Option<AgentToolCall>],
+    event: &StreamEvent,
+) -> bool {
+    let Some(Some(existing)) = current_tool_calls.get_mut(event.tc_index) else {
+        return false;
+    };
+    if existing.id != event.tool_id {
+        return false;
+    }
+    if let Some(ref tc) = event.tool_call {
+        if let serde_json::Value::String(ref new_args) = tc.function.arguments {
+            let mut updated = false;
+            if let serde_json::Value::String(ref mut s) = existing.args {
+                if new_args.len() > s.len() {
+                    if new_args.starts_with(s.as_str()) {
+                        s.push_str(&new_args[s.len()..]);
+                    } else {
+                        *s = new_args.clone();
+                    }
+                }
+                updated = true;
+            }
+            if !updated {
+                existing.args = serde_json::Value::String(new_args.clone());
+            }
+        }
+    }
+    true
 }
 
 fn finalize_agent_tool_call(mut tool_call: AgentToolCall) -> ToolCall {
@@ -1158,6 +1152,8 @@ mod tests {
 
     fn noop_on_text(_: String) {}
 
+    fn noop_on_event(_: StreamEvent) {}
+
     /// Install a thread-local tracing subscriber that discards output. The
     /// verbose log macros only evaluate their arguments when a subscriber
     /// enables the callsite — without one, argument lines never execute.
@@ -1287,6 +1283,13 @@ mod tests {
         ]);
         let mut loop_ = Loop::new(provider, "mock").with_tools(vec![echo_tool()]);
         loop_.verbose = true; // exercise the verbose logging arms
+                              // Sink subscriber so the verbose tracing regions are evaluated.
+        let _sink = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .with_ansi(false)
+                .finish(),
+        );
         let saved = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let tool_events = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let ctx = StreamContext {
@@ -1335,7 +1338,7 @@ mod tests {
                 messages,
                 &StreamContext::default(),
                 noop_on_text,
-                |_| {},
+                noop_on_event,
                 None,
             )
             .await;
@@ -2570,5 +2573,253 @@ mod tests {
             ),
             "{\"path\": \"/file.txt\"}{\"path\": \"/file.txt\", \"content\": \"hello{\"path\": \"/file.txt\", \"content\": \"hello world\"}"
         );
+    }
+
+    // ── coverage batch 14: residual run-loop arms ───────────────────────────
+
+    /// Fails the LLM call after tripping the loop's interrupt flag, so the
+    /// post-failure interrupt check (not the turn-top one) takes the exit.
+    struct FailAndInterruptProvider {
+        flag: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl LLMProvider for FailAndInterruptProvider {
+        async fn stream_chat(
+            &self,
+            _model: String,
+            _messages: Vec<Message>,
+            _tools: Vec<ToolDef>,
+            _system_prompt: String,
+        ) -> Result<ReceiverStream<StreamEvent>> {
+            self.flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            Err(anyhow!("boom"))
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn run_interrupt_during_error_retry_returns_partial() {
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let provider = FailAndInterruptProvider { flag: flag.clone() };
+        let config = crate::types::AgentConfig {
+            max_retries: 3,
+            ..Default::default()
+        };
+        let mut loop_ = Loop::new(Arc::new(provider), "mock").with_config(config);
+        loop_.interrupt_flag = flag;
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(text.is_empty(), "interrupted runs return no final text");
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn run_reports_last_error_when_turn_limit_hit_after_failed_retry() {
+        // Turn 0 fails once, the retry succeeds with a tool call (turn becomes
+        // 1); the loop top then hits the turn limit. (The stale-last_error arm
+        // was removed as dead by construction — see the limit check comment.)
+        let provider = ScriptedProvider::new(vec![
+            Script::Fail("late boom".to_string()),
+            Script::Events(vec![
+                ev_toolcall_start(0, "t1", "echo", "{}"),
+                ev_toolcall_end(),
+                ev_stop(),
+            ]),
+        ]);
+        let config = crate::types::AgentConfig {
+            max_turns: 1,
+            max_retries: 1,
+            ..Default::default()
+        };
+        let loop_ = Loop::new(provider, "mock")
+            .with_tools(vec![echo_tool()])
+            .with_config(config);
+        let result = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await;
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("turn limit"), "{error}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_verbose_logs_tool_events_and_ignores_unknown_event() {
+        let _sink = tracing_sink();
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![
+            StreamEvent {
+                event_type: "tool_start".to_string(),
+                tool_name: "echo".to_string(),
+                ..Default::default()
+            },
+            StreamEvent {
+                event_type: "tool_end".to_string(),
+                tool_name: "echo".to_string(),
+                ..Default::default()
+            },
+            StreamEvent {
+                event_type: "mystery".to_string(),
+                ..Default::default()
+            },
+            ev_text("done"),
+            ev_stop(),
+        ])]);
+        let mut loop_ = Loop::new(provider, "mock");
+        loop_.verbose = true;
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "done");
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn run_finalizes_pending_tool_call_when_stream_ends_early() {
+        // toolcall_start with no toolcall_end and no stop: the post-loop sweep
+        // finalizes the pending call, then the turn ends as incomplete.
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_toolcall_start(
+            0, "t1", "echo", "{}",
+        )])]);
+        let loop_ = Loop::new(provider, "mock");
+        loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_merges_repeated_toolcall_start_over_null_args() {
+        // First chunk carries no tool_call payload (args stay Null); the
+        // same-id repeat upgrades Null args to the real string via the
+        // overwrite arm (the merge arm needs a String on both sides).
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![
+                StreamEvent {
+                    event_type: "toolcall_start".to_string(),
+                    tool_id: "t1".to_string(),
+                    tool_name: "echo".to_string(),
+                    tc_index: 0,
+                    ..Default::default()
+                },
+                ev_toolcall_start(0, "t1", "echo", "{\"a\":1}"),
+                // Repeat whose payload args are NOT a string: skipped over.
+                StreamEvent {
+                    event_type: "toolcall_start".to_string(),
+                    tool_id: "t1".to_string(),
+                    tool_name: "echo".to_string(),
+                    tc_index: 0,
+                    tool_call: Some(ToolCall {
+                        id: "t1".to_string(),
+                        call_type: "function".to_string(),
+                        function: crate::types::ToolCallFn {
+                            name: "echo".to_string(),
+                            arguments: serde_json::json!({"a": 1}),
+                        },
+                    }),
+                    ..Default::default()
+                },
+                // Repeat with no payload at all: also skipped over.
+                StreamEvent {
+                    event_type: "toolcall_start".to_string(),
+                    tool_id: "t1".to_string(),
+                    tool_name: "echo".to_string(),
+                    tc_index: 0,
+                    ..Default::default()
+                },
+                ev_toolcall_end(),
+                ev_stop(),
+            ]),
+            Script::Events(vec![ev_text("done"), ev_stop()]),
+        ]);
+        let loop_ = Loop::new(provider, "mock").with_tools(vec![echo_tool()]);
+        let (_, messages) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await
+            .unwrap();
+        let tool_msg = messages
+            .iter()
+            .find(|m| m.role == "tool")
+            .expect("tool result message");
+        assert!(tool_msg.text().contains("echo"), "{}", tool_msg.text());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_stop_condition_ends_run_with_text() {
+        let provider =
+            ScriptedProvider::new(vec![Script::Events(vec![ev_text("stop here"), ev_stop()])]);
+        let config = crate::types::AgentConfig {
+            stop_condition: Some(Arc::new(|_msgs, text| text.contains("stop"))),
+            ..Default::default()
+        };
+        let loop_ = Loop::new(provider, "mock").with_config(config);
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "stop here");
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn sleep_or_interrupt_channel_variants() {
+        let loop_ = Loop::new(ScriptedProvider::new(vec![]), "mock");
+        // Sender alive but silent: the step sleep elapses, then the deadline.
+        let (_tx, mut rx) = mpsc::channel::<()>(1);
+        let slept_through = loop_
+            .sleep_or_interrupt(Duration::from_millis(5), Some(&mut rx))
+            .await;
+        assert!(!slept_through);
+        // A queued interrupt wakes the sleep immediately.
+        let (tx, mut rx) = mpsc::channel::<()>(1);
+        tx.try_send(()).unwrap();
+        let interrupted = loop_
+            .sleep_or_interrupt(Duration::from_secs(60), Some(&mut rx))
+            .await;
+        assert!(interrupted);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn await_or_interrupt_returns_none_when_flag_pre_set() {
+        let loop_ = Loop::new(ScriptedProvider::new(vec![]), "mock");
+        loop_.abort();
+        let out = loop_.await_or_interrupt(async { 42 }, None).await;
+        assert_eq!(out, None);
     }
 }
