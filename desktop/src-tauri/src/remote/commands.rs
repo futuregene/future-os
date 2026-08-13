@@ -2703,6 +2703,7 @@ mod bridge_tests {
     async fn continue_run_resumes_a_failed_run_and_rejects_busy_sessions() {
         let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-continue").await;
+        let agent = ensure_mock_agent();
         let session = unique("sess");
 
         // A thread bound to the session + a failed run with terminal events.
@@ -2739,12 +2740,12 @@ mod bridge_tests {
         })
         .unwrap();
 
-        // Break the agent endpoint so the Ok arm's spawned `run_prepared_prompt`
-        // fails at `connect_agent` BEFORE it can spawn a session observer — the
-        // ack path (prepare_remote_prompt) is store-only and unaffected. This
-        // keeps the shared mock script clean for later tests (no zombie).
-        let prev_addr = std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock addr");
-        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
+        // Reject the Ok arm's spawned `run_prepared_prompt` at session
+        // provisioning (new_session) so it fails BEFORE spawning a session
+        // observer — the ack path (prepare_remote_prompt) is store-only and
+        // unaffected. This keeps the shared mock script clean for later tests
+        // (no zombie) without touching the process-global agent endpoint.
+        agent.script("new_session", false, json!(null), "rejected");
 
         // Ok arm: continue the failed run → ack carries the fresh run ids.
         let reply = bridge
@@ -2754,8 +2755,8 @@ mod bridge_tests {
         assert_eq!(reply["data"]["sessionId"], json!(session));
         assert_eq!(reply["data"]["threadId"], json!(thread.id));
 
-        // The spawned pipeline settles the new run as failed (its connect_agent
-        // fails) — poll until the run leaves the running state.
+        // The spawned pipeline settles the new run as failed (its session
+        // provisioning is rejected) — poll until the run leaves the running state.
         let continued_run = reply["data"]["runId"].as_str().unwrap().to_string();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
@@ -2773,7 +2774,6 @@ mod bridge_tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
 
-        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev_addr);
         bridge.stop();
     }
 
