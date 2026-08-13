@@ -495,14 +495,18 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         // NOTE: `new_session` is intentionally NOT matched here — it is handled
         // in the sessionless branch above (a new session has no existing session
         // to resolve). An arm here would be unreachable dead code.
-        "get_state" => match get_state_internal(
-            state,
-            &cmd.session_id,
-            (!cmd.run_id.is_empty()).then_some(cmd.run_id.as_str()),
-        ) {
-            Some(state_val) => RpcResponse::ok(id, "get_state", state_val),
-            None => RpcResponse::build_fail(id, "get_state", "session not found"),
-        },
+        "get_state" => {
+            // The session-scoped guard above already resolved `session`, so
+            // get_state_internal's only None path (unknown session) is
+            // unreachable here.
+            let state_val = get_state_internal(
+                state,
+                &cmd.session_id,
+                (!cmd.run_id.is_empty()).then_some(cmd.run_id.as_str()),
+            )
+            .expect("session-scoped guard guarantees a live session");
+            RpcResponse::ok(id, "get_state", state_val)
+        }
         "get_messages" => {
             let msgs = rlock!(session, id).get_messages();
             RpcResponse::ok(id, "get_messages", serde_json::json!({"messages": msgs}))
@@ -609,11 +613,12 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             RpcResponse::ok(id, "set_thinking_level", serde_json::json!({}))
         }
         "compact" => {
-            let result = wlock!(session, id).compact(&cmd.custom_instructions);
-            match result {
-                Ok(r) => RpcResponse::ok(id, "compact", r),
-                Err(e) => RpcResponse::build_fail(id, "compact", &e.to_string()),
-            }
+            // compact() never returns Err (its body has no error path), so
+            // the old Err arm was unreachable.
+            let result = wlock!(session, id)
+                .compact(&cmd.custom_instructions)
+                .expect("compact never fails");
+            RpcResponse::ok(id, "compact", result)
         }
         "set_auto_compaction" => {
             let enabled = cmd.enabled;
