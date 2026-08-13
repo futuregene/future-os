@@ -27,7 +27,9 @@ function friendlyError(
     return t("connection.errorAgentOffline");
   }
   if (/time-?out|timed out/i.test(trimmed)) return t("connection.errorTimeout");
-  if (/network|unreachable|load failed|fetch failed|econn|connection (refused|reset)/i.test(trimmed)) {
+  if (
+    /network|unreachable|load failed|fetch failed|econn|connection (refused|reset)/i.test(trimmed)
+  ) {
     return t("connection.errorNetwork");
   }
   return t("connection.errorWithReason", { reason: message });
@@ -42,13 +44,7 @@ function friendlyError(
  * states (desktop asleep, reconnecting) never reach the banner; the badge and
  * offline empty state are their dedicated UI.
  */
-export function ErrorBanner({
-  message,
-  onDismiss,
-}: {
-  message: string;
-  onDismiss: () => void;
-}) {
+export function ErrorBanner({ message, onDismiss }: { message: string; onDismiss: () => void }) {
   const { t } = useTranslation();
   return (
     <View style={styles.banner}>

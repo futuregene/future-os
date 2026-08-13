@@ -222,11 +222,7 @@ export function SessionsScreen() {
         unread={remote.unreadSessions.has(item.sessionId)}
       />
       {item.pinned && (
-        <Pin
-          accessibilityLabel={t("sessions.pin")}
-          color={colors.accent}
-          size={16}
-        />
+        <Pin accessibilityLabel={t("sessions.pin")} color={colors.accent} size={16} />
       )}
     </Pressable>
   );

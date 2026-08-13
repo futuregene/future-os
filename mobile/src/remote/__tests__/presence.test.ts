@@ -61,11 +61,7 @@ describe("isDesktopOnline (relative heartbeat, L7)", () => {
   it("marks offline when the delta jumps past the stale window (heartbeat stopped)", () => {
     let state: Result = { ...freshState(), online: false };
     for (let i = 0; i < 3; i += 1) {
-      state = isDesktopOnline(
-        presence({ lastHeartbeatTs: (now - i * 1_000) / 1000 }),
-        now,
-        state,
-      );
+      state = isDesktopOnline(presence({ lastHeartbeatTs: (now - i * 1_000) / 1000 }), now, state);
       expect(state.online).toBe(true);
     }
     const result = isDesktopOnline(
@@ -95,7 +91,11 @@ describe("isDesktopOnline (relative heartbeat, L7)", () => {
     // Healthy connection, phone clock in sync.
     let state: Result = { ...freshState(), online: false };
     state = isDesktopOnline(presence({ lastHeartbeatTs: now / 1000 }), now, state);
-    state = isDesktopOnline(presence({ lastHeartbeatTs: (now + 1_000) / 1000 }), now + 1_000, state);
+    state = isDesktopOnline(
+      presence({ lastHeartbeatTs: (now + 1_000) / 1000 }),
+      now + 1_000,
+      state,
+    );
     expect(state.online).toBe(true);
 
     // NTP jumps the phone clock +90s. Each new heartbeat now arrives with a

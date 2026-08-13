@@ -411,19 +411,21 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
 }
 
 function isRunEvent(type: string): boolean {
-  return type === "agent_start"
-    || type === "text_chunk"
-    || type === "thinking_start"
-    || type === "thinking_delta"
-    || type === "thinking_end"
-    || type === "tool_start"
-    || type === "tool_delta"
-    || type === "toolcall_delta"
-    || type === "tool_end"
-    || type === "tool_result"
-    || type === "usage"
-    || type === "compaction_end"
-    || type === "agent_end";
+  return (
+    type === "agent_start" ||
+    type === "text_chunk" ||
+    type === "thinking_start" ||
+    type === "thinking_delta" ||
+    type === "thinking_end" ||
+    type === "tool_start" ||
+    type === "tool_delta" ||
+    type === "toolcall_delta" ||
+    type === "tool_end" ||
+    type === "tool_result" ||
+    type === "usage" ||
+    type === "compaction_end" ||
+    type === "agent_end"
+  );
 }
 
 /** Fold one run event through the run's shared projector and rebuild the
@@ -464,14 +466,26 @@ function applyLiveEvent(
     acc.durationMs = durationMs;
   }
   const assistantItem = buildLiveAssistantItem(acc, runId, projection, durationMs);
-  const items = upsertItem(state.items, acc.assistantId, () => assistantItem, () => assistantItem);
+  const items = upsertItem(
+    state.items,
+    acc.assistantId,
+    () => assistantItem,
+    () => assistantItem,
+  );
   return { items, streaming: acc.streaming, liveRuns };
 }
 
 function toRunEvent(
   runId: string,
   event: StreamEvent,
-): { id: string; runId: string; eventType: string; payload: string | null; sequence: number; createdAt: number } {
+): {
+  id: string;
+  runId: string;
+  eventType: string;
+  payload: string | null;
+  sequence: number;
+  createdAt: number;
+} {
   return {
     id: `${runId}:${event.idx ?? 0}`,
     runId,

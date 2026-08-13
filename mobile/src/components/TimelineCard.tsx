@@ -44,7 +44,7 @@ function formatDuration(durationMs: number): string {
 }
 
 function RunIndicator({ startedAt }: { startedAt: number }) {
-  const [now, setNow] = useState(startedAt);
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 500);
     return () => clearInterval(timer);
@@ -701,7 +701,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
   },
   runDot: { width: 14, height: 14, borderRadius: radius.pill, backgroundColor: colors.generating },
-  runDuration: { color: colors.inkMuted, fontSize: 16 },
+  runDuration: { color: colors.inkMuted, fontSize: 12 },
   secondaryCard: {
     borderLeftWidth: 2,
     borderLeftColor: colors.line,

@@ -27,13 +27,10 @@ describe("effectiveRunStatus", () => {
 
 describe("detectFinished", () => {
   test("flags a run that transitions running → completed", () => {
-    const { finished } = detectFinished(
-      { "s-1": "running", "s-2": "completed" },
-      [
-        { sessionId: "s-1", status: "completed" },
-        { sessionId: "s-2", status: "completed" },
-      ],
-    );
+    const { finished } = detectFinished({ "s-1": "running", "s-2": "completed" }, [
+      { sessionId: "s-1", status: "completed" },
+      { sessionId: "s-2", status: "completed" },
+    ]);
     expect(finished).toEqual(["s-1"]);
   });
 

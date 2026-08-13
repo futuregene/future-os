@@ -2,19 +2,9 @@ import type { NatsConnection } from "nats.ws";
 import { connect, jwtAuthenticator } from "nats.ws";
 import { fromSeed } from "nkeys.js";
 import { ensureFreshCredentials, refreshCredentials } from "./pairing";
-import { jwtExpiry, randomId } from "./codec";
-import {
-  backoffDelayMs,
-  classifyError,
-  transition,
-  type ConnectionState,
-} from "./connectionState";
-import {
-  encodeBase64Url,
-  handshakeTranscript,
-  type HandshakeChallenge,
-  verifyDesktopChallenge,
-} from "./handshake";
+import { jwtExpiry, randomId, encodeBase64Url } from "./codec";
+import { backoffDelayMs, classifyError, transition, type ConnectionState } from "./connectionState";
+import { handshakeTranscript, type HandshakeChallenge, verifyDesktopChallenge } from "./handshake";
 import type {
   Presence,
   PresenceSession,
