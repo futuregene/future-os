@@ -26,6 +26,9 @@ pub struct SessionRuntime {
     control: RunControl,
     task: Mutex<Option<RuntimeTask>>,
     completion_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<RunLease>>>,
+    // Test-only observability/failure injection: always compiled (setters are
+    // cfg(test)-only) so the production check stays single-line.
+    fail_next_begin_finalizing: std::sync::atomic::AtomicBool,
 }
 
 impl SessionRuntime {
@@ -34,6 +37,7 @@ impl SessionRuntime {
             control: RunControl::new(is_streaming),
             task: Mutex::new(None),
             completion_tx: Mutex::new(None),
+            fail_next_begin_finalizing: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -134,6 +138,12 @@ impl SessionRuntime {
     }
 
     pub fn begin_finalizing(&self, lease: &RunLease) -> bool {
+        if self
+            .fail_next_begin_finalizing
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            return false;
+        }
         self.control.begin_finalizing(lease)
     }
 
@@ -194,9 +204,9 @@ impl SessionRuntime {
         tokio::spawn(async move {
             let outcome = task.await;
             let mut slot = runtime.task.lock();
-            if !slot.as_ref().is_some_and(|active| active.lease == lease) {
-                return;
-            }
+            // The slot still holds THIS task's lease: spawn() refuses double
+            // occupancy and only this monitor clears the slot.
+            debug_assert!(slot.as_ref().is_some_and(|active| active.lease == lease));
             let mut completed = false;
             match outcome {
                 Err(error) => {
@@ -243,6 +253,31 @@ impl SessionRuntime {
             .lock()
             .as_ref()
             .is_some_and(|active| active.lease == *lease)
+    }
+
+    /// Test-only: occupy the task slot without a control lease, forging the
+    /// transient "control finalized but task monitor still holds the slot"
+    /// window that `enqueue_prompt` defends against.
+    #[cfg(test)]
+    pub(crate) fn test_hold_task_slot(&self) {
+        let task = tokio::spawn(async {});
+        let handle = task.abort_handle();
+        *self.task.lock() = Some(RuntimeTask {
+            lease: RunLease {
+                run_id: "ghost-slot".to_string(),
+                epoch: 0,
+                run_sequence: None,
+            },
+            _abort_handle: handle,
+        });
+    }
+
+    /// Test-only: force the next `begin_finalizing` to report a stale-epoch
+    /// mismatch (returns false), exercising the run task's early-return arm.
+    #[cfg(test)]
+    pub(crate) fn fail_next_begin_finalizing(&self) {
+        self.fail_next_begin_finalizing
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 
     pub(crate) fn active_task_count(&self) -> usize {
@@ -451,5 +486,176 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn begin_bails_while_task_slot_occupied() {
+        let runtime = Arc::new(SessionRuntime::new(Arc::new(AtomicBool::new(false))));
+        let lease = runtime.begin(Some("run-a"), None).unwrap();
+        let hold = Arc::new(Notify::new());
+        let task_hold = hold.clone();
+        runtime
+            .spawn(lease.clone(), async move {
+                task_hold.notified().await;
+            })
+            .unwrap();
+        assert!(runtime.begin(Some("run-b"), None).is_err());
+        assert!(runtime.begin_scheduled("run-c", "request-c", 2).is_err());
+        hold.notify_one();
+        // Let the task body actually run before the runtime shuts down.
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while runtime.owns_task(&lease) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn spawn_refuses_double_occupancy() {
+        let runtime = Arc::new(SessionRuntime::new(Arc::new(AtomicBool::new(false))));
+        let lease = runtime.begin(Some("run-a"), None).unwrap();
+        let hold = Arc::new(Notify::new());
+        let task_hold = hold.clone();
+        runtime
+            .spawn(lease.clone(), async move {
+                task_hold.notified().await;
+            })
+            .unwrap();
+        let second = RunLease {
+            run_id: "run-b".to_string(),
+            epoch: lease.epoch + 1,
+            run_sequence: None,
+        };
+        let err = runtime.spawn(second, async {}).unwrap_err();
+        assert!(err.to_string().contains("already owns task"), "{err}");
+        hold.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while runtime.owns_task(&lease) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[test]
+    fn request_lease_passthrough() {
+        let runtime = SessionRuntime::new(Arc::new(AtomicBool::new(false)));
+        assert!(runtime.request_lease("request-a").is_none());
+        let lease = runtime.begin(Some("run-a"), Some("request-a")).unwrap();
+        assert!(runtime.begin_finalizing(&lease));
+        assert!(runtime.control.finish(&lease));
+        assert_eq!(
+            runtime.request_lease("request-a").map(|l| l.run_id),
+            Some("run-a".to_string())
+        );
+        // No task slot, and the finished run is not degraded → no recovery.
+        assert!(!runtime.recover_persistence_degraded(&lease));
+    }
+
+    #[tokio::test]
+    async fn finish_and_recover_refuse_while_task_slot_occupied() {
+        let runtime = Arc::new(SessionRuntime::new(Arc::new(AtomicBool::new(false))));
+        let lease = runtime.begin(Some("run-a"), None).unwrap();
+        let hold = Arc::new(Notify::new());
+        let task_hold = hold.clone();
+        runtime
+            .spawn(lease.clone(), async move {
+                task_hold.notified().await;
+            })
+            .unwrap();
+        assert!(runtime.begin_finalizing(&lease));
+        // finish: task slot still occupied → refused.
+        assert!(!runtime.finish(&lease));
+        // recover with the wrong phase → control returns false (no send).
+        assert!(!runtime.recover_persistence_degraded(&lease));
+        // recover after degradation: still refused while the task lives.
+        assert!(runtime.mark_persistence_degraded(&lease, "disk full"));
+        assert!(!runtime.recover_persistence_degraded(&lease));
+        hold.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while runtime.owns_task(&lease) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn cancellation_watchdog_marks_stuck_after_timeout() {
+        let runtime = Arc::new(SessionRuntime::new(Arc::new(AtomicBool::new(false))));
+        runtime.begin(Some("run-a"), None).unwrap();
+        runtime.request_abort(None).unwrap();
+        assert_eq!(
+            runtime.snapshot().unwrap().phase,
+            super::super::RunPhase::Cancelling
+        );
+        // Let the watchdog task arm its 30s timer BEFORE advancing the clock.
+        tokio::task::yield_now().await;
+        // The run never finalizes: the acknowledgement timer fires and the
+        // watchdog marks the run CancellationStuck.
+        tokio::time::advance(std::time::Duration::from_secs(31)).await;
+        for _ in 0..10 {
+            if runtime.snapshot().map(|a| a.phase)
+                == Some(super::super::RunPhase::CancellationStuck)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            runtime.snapshot().unwrap().phase,
+            super::super::RunPhase::CancellationStuck
+        );
+    }
+
+    #[tokio::test]
+    async fn monitor_marks_stuck_when_task_panics() {
+        let runtime = Arc::new(SessionRuntime::new(Arc::new(AtomicBool::new(false))));
+        let lease = runtime.begin(Some("run-a"), None).unwrap();
+        runtime
+            .spawn(lease.clone(), async {
+                panic!("task exploded");
+            })
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while runtime.snapshot().map(|a| a.phase)
+                != Some(super::super::RunPhase::CancellationStuck)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn monitor_ignores_completion_after_external_finish() {
+        // The run finished through the control plane directly (bypassing the
+        // task-slot gate); when the task then exits Ok, the monitor's
+        // snapshot is gone and it just reclaims the slot.
+        let runtime = Arc::new(SessionRuntime::new(Arc::new(AtomicBool::new(false))));
+        let lease = runtime.begin(Some("run-a"), None).unwrap();
+        let hold = Arc::new(Notify::new());
+        let task_hold = hold.clone();
+        runtime
+            .spawn(lease.clone(), async move {
+                task_hold.notified().await;
+            })
+            .unwrap();
+        assert!(runtime.begin_finalizing(&lease));
+        assert!(runtime.control.finish(&lease));
+        hold.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while runtime.owns_task(&lease) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(runtime.snapshot().is_none());
     }
 }

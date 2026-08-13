@@ -647,4 +647,113 @@ mod tests {
         assert_eq!(control.active_task_count(), 1);
         assert_eq!(control.persistence_degraded_count(), 1);
     }
+
+    #[test]
+    fn run_phase_as_str_covers_all_variants() {
+        assert_eq!(RunPhase::Starting.as_str(), "starting");
+        assert_eq!(RunPhase::Running.as_str(), "running");
+        assert_eq!(RunPhase::Cancelling.as_str(), "cancelling");
+        assert_eq!(RunPhase::CancellationStuck.as_str(), "cancellation_stuck");
+        assert_eq!(
+            RunPhase::PersistenceDegraded.as_str(),
+            "persistence_degraded"
+        );
+        assert_eq!(RunPhase::Finalizing.as_str(), "finalizing");
+    }
+
+    fn tracing_sink() -> impl tracing::Subscriber {
+        tracing_subscriber::fmt()
+            .with_writer(std::io::sink)
+            .with_max_level(tracing::Level::TRACE)
+            .finish()
+    }
+
+    #[test]
+    fn install_cancellation_without_active_or_with_stale_lease_fails() {
+        let control = RunControl::new(Arc::new(AtomicBool::new(false)));
+        let lease = control.begin(Some("run-a"), None).unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        let flag = Arc::new(AtomicBool::new(false));
+        // A lease that matches nothing active.
+        let foreign = RunLease {
+            run_id: "run-x".to_string(),
+            epoch: 999,
+            run_sequence: None,
+        };
+        assert!(!control.install_cancellation(&foreign, tx.clone(), flag.clone()));
+        assert!(control.install_cancellation(&lease, tx.clone(), flag.clone()));
+        // After finish, even the real lease is stale.
+        assert!(control.begin_finalizing(&lease));
+        assert!(control.finish(&lease));
+        assert!(!control.install_cancellation(&lease, tx, flag));
+    }
+
+    #[test]
+    fn abort_expected_errors_for_unknown_run() {
+        let control = RunControl::new(Arc::new(AtomicBool::new(false)));
+        assert!(control.abort_expected(Some("run-missing")).is_err());
+        assert!(control.abort_expected(None).unwrap().is_none());
+        // Mismatched expectation against a live run also errors.
+        let _lease = control.begin(Some("run-a"), None).unwrap();
+        assert!(control.abort_expected(Some("run-b")).is_err());
+    }
+
+    #[test]
+    fn abort_ignored_when_finalizing_and_logs_phase() {
+        let _subscriber = tracing::subscriber::set_default(tracing_sink());
+        let control = RunControl::new(Arc::new(AtomicBool::new(false)));
+        let lease = control.begin(Some("run-a"), None).unwrap();
+        assert!(control.begin_finalizing(&lease));
+        // Finalizing is past the abort point: a no-op returning None.
+        assert!(control.abort().is_none());
+        assert!(control.finish(&lease));
+    }
+
+    #[test]
+    fn abort_success_logs_phase_with_subscriber() {
+        let _subscriber = tracing::subscriber::set_default(tracing_sink());
+        let control = RunControl::new(Arc::new(AtomicBool::new(false)));
+        let lease = control.begin(Some("run-a"), None).unwrap();
+        let snapshot = control.abort().expect("abortable run");
+        assert_eq!(snapshot.phase, RunPhase::Cancelling);
+        assert!(control.begin_finalizing(&lease));
+        assert!(control.finish(&lease));
+    }
+
+    #[test]
+    fn stale_and_missing_lease_arms_across_lifecycle_ops() {
+        let _subscriber = tracing::subscriber::set_default(tracing_sink());
+        let control = RunControl::new(Arc::new(AtomicBool::new(false)));
+        let foreign = RunLease {
+            run_id: "run-x".to_string(),
+            epoch: 999,
+            run_sequence: None,
+        };
+        // No active run at all.
+        assert!(!control.begin_finalizing(&foreign));
+        assert!(!control.mark_stuck(&foreign, "stuck"));
+        assert!(!control.mark_persistence_degraded(&foreign, "degraded"));
+        assert!(!control.finish(&foreign));
+        assert!(!control.recover_persistence_degraded(&foreign));
+
+        // Active run, wrong lease.
+        let lease = control.begin(Some("run-a"), None).unwrap();
+        assert!(!control.mark_stuck(&foreign, "stuck"));
+        assert!(!control.mark_persistence_degraded(&foreign, "degraded"));
+        assert!(!control.recover_persistence_degraded(&foreign));
+
+        // mark_stuck / mark_persistence_degraded with the RIGHT lease log
+        // their phase fields (subscriber active).
+        assert!(control.mark_stuck(&lease, "stuck"));
+        assert!(control.mark_persistence_degraded(&lease, "degraded"));
+
+        // recover requires phase == PersistenceDegraded.
+        assert!(control.recover_persistence_degraded(&lease));
+    }
+
+    #[test]
+    fn request_lease_rejects_empty_request_id() {
+        let control = RunControl::new(Arc::new(AtomicBool::new(false)));
+        assert!(control.request_lease("").is_none());
+    }
 }

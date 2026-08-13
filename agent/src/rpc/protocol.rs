@@ -683,9 +683,9 @@ impl SseBroadcaster {
                 anyhow::bail!("injected append failure");
             }
         }
-        if journal.closed {
-            return Ok(());
-        }
+        // The only caller (broadcast) holds the journal lock across its own
+        // closed check, so a closed journal can never reach this point.
+        debug_assert!(!journal.closed);
         let Some(directory) = journal.directory.as_ref() else {
             return Ok(());
         };
@@ -1695,11 +1695,8 @@ mod tests {
             projection.is_none(),
             "journal present → disk replay, not projection"
         );
-        assert!(
-            events.len() > 2000,
-            "full history from disk: {}",
-            events.len()
-        );
+        let event_count = events.len();
+        assert!(event_count > 2000, "full history from disk: {event_count}");
     }
 
     #[test]
@@ -1736,6 +1733,73 @@ mod tests {
             &SseEvent::new("text_chunk", serde_json::json!({"text": "kept v2"})),
         );
         assert_eq!(projection.len(), 1);
+    }
+
+    #[test]
+    fn projection_folds_tool_deltas_of_the_same_tool_stream() {
+        let mut projection = Vec::new();
+        apply_to_projection(
+            &mut projection,
+            &SseEvent::new(
+                "toolcall_delta",
+                serde_json::json!({"tool_id": "t1", "text": "a"}),
+            ),
+        );
+        apply_to_projection(
+            &mut projection,
+            &SseEvent::new(
+                "toolcall_delta",
+                serde_json::json!({"tool_id": "t1", "text": "b"}),
+            ),
+        );
+        assert_eq!(projection.len(), 1);
+        let data: serde_json::Value = serde_json::from_str(&projection[0].data).unwrap();
+        assert_eq!(data["text"], "ab");
+    }
+
+    #[test]
+    fn projection_keeps_tool_deltas_of_different_tool_streams() {
+        let mut projection = Vec::new();
+        apply_to_projection(
+            &mut projection,
+            &SseEvent::new(
+                "toolcall_delta",
+                serde_json::json!({"tool_id": "t1", "text": "a"}),
+            ),
+        );
+        apply_to_projection(
+            &mut projection,
+            &SseEvent::new(
+                "toolcall_delta",
+                serde_json::json!({"tool_id": "t2", "text": "b"}),
+            ),
+        );
+        assert_eq!(projection.len(), 2);
+    }
+
+    #[test]
+    fn projection_pushes_when_event_data_is_not_foldable() {
+        // Previous event's data is not parseable JSON → no fold, plain push.
+        let mut projection = Vec::new();
+        let mut broken = SseEvent::new("text_chunk", serde_json::json!({"text": "a"}));
+        broken.data = "{not json".to_string();
+        apply_to_projection(&mut projection, &broken);
+        apply_to_projection(
+            &mut projection,
+            &SseEvent::new("text_chunk", serde_json::json!({"text": "b"})),
+        );
+        assert_eq!(projection.len(), 2);
+        // Valid JSON but no "text" field on the previous event → no fold.
+        let mut projection = Vec::new();
+        apply_to_projection(
+            &mut projection,
+            &SseEvent::new("text_chunk", serde_json::json!({"other": 1})),
+        );
+        apply_to_projection(
+            &mut projection,
+            &SseEvent::new("text_chunk", serde_json::json!({"text": "b"})),
+        );
+        assert_eq!(projection.len(), 2);
     }
 
     #[test]

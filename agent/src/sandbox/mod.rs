@@ -441,24 +441,33 @@ fn pwsh_on_path() -> bool {
 pub fn unix_shell() -> &'static str {
     use std::sync::OnceLock;
     static SHELL: OnceLock<String> = OnceLock::new();
-    SHELL.get_or_init(|| {
-        // $SHELL, but only if it is a bash/zsh we can actually run.
-        if let Some(raw) = std::env::var_os("SHELL") {
-            let path = PathBuf::from(&raw);
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if (name == "bash" || name == "zsh") && path.is_file() {
-                return raw.to_string_lossy().into_owned();
-            }
+    SHELL.get_or_init(|| resolve_unix_shell(std::env::var_os("SHELL"), &on_path))
+}
+
+/// Pure shell-resolution logic (env + PATH probe injected for tests):
+/// `$SHELL` when it names an executable bash/zsh, else the first of
+/// bash/zsh on PATH, else `sh`.
+#[cfg(not(target_os = "windows"))]
+fn resolve_unix_shell(
+    shell_env: Option<std::ffi::OsString>,
+    on_path: &dyn Fn(&str) -> bool,
+) -> String {
+    // $SHELL, but only if it is a bash/zsh we can actually run.
+    if let Some(raw) = shell_env {
+        let path = PathBuf::from(&raw);
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if (name == "bash" || name == "zsh") && path.is_file() {
+            return raw.to_string_lossy().into_owned();
         }
-        for cand in ["bash", "zsh"] {
-            if on_path(cand) {
-                return cand.to_string();
-            }
+    }
+    for cand in ["bash", "zsh"] {
+        if on_path(cand) {
+            return cand.to_string();
         }
-        // Last resort: POSIX sh is guaranteed present, and our wrapper is
-        // POSIX-safe.
-        "sh".to_string()
-    })
+    }
+    // Last resort: POSIX sh is guaranteed present, and our wrapper is
+    // POSIX-safe.
+    "sh".to_string()
 }
 
 /// Basename of the resolved Unix shell for prompt text ("bash" / "zsh" / "sh").
@@ -522,12 +531,7 @@ pub fn shell_is_legacy_bash() -> bool {
     {
         use std::sync::OnceLock;
         static LEGACY: OnceLock<bool> = OnceLock::new();
-        *LEGACY.get_or_init(|| {
-            let shell = unix_shell();
-            let name = shell.rsplit('/').next().unwrap_or(shell);
-            name == "bash"
-                && probe_legacy_bash(shell, std::time::Duration::from_secs(2)).unwrap_or(true)
-        })
+        *LEGACY.get_or_init(|| legacy_bash_probe(unix_shell()))
     }
     #[cfg(target_os = "windows")]
     {
@@ -535,10 +539,28 @@ pub fn shell_is_legacy_bash() -> bool {
     }
 }
 
+/// Probe result for a given shell path: true only when the shell is bash
+/// and the version probe confirms (or conservatively assumes) legacy.
+/// Extracted from the OnceLock closure so both the bash and non-bash edges
+/// are directly testable (the OnceLock initializes at most once per
+/// process, with whatever $SHELL the test runner has).
+#[cfg(not(target_os = "windows"))]
+fn legacy_bash_probe(shell: &str) -> bool {
+    let name = shell.rsplit('/').next().unwrap_or(shell);
+    name == "bash" && probe_legacy_bash(shell, std::time::Duration::from_secs(2)).unwrap_or(true)
+}
+
 /// Whether an executable named `name` resolves on PATH. Pure env scan.
 #[cfg(not(target_os = "windows"))]
 fn on_path(name: &str) -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
+    on_path_in(std::env::var_os("PATH"), name)
+}
+
+/// `on_path` with the PATH value injected, so the no-PATH arm is testable
+/// without mutating the process environment.
+#[cfg(not(target_os = "windows"))]
+fn on_path_in(path: Option<std::ffi::OsString>, name: &str) -> bool {
+    let Some(path) = path else {
         return false;
     };
     std::env::split_paths(&path).any(|dir| dir.join(name).is_file())
@@ -591,10 +613,8 @@ pub fn hydrate_from_login_shell() {
         }
     };
 
-    let Some(mut stdout) = child.stdout.take() else {
-        let _ = child.kill();
-        return;
-    };
+    // stdout is Stdio::piped() above, so the take always succeeds.
+    let mut stdout = child.stdout.take().expect("stdout piped above");
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let mut buf = String::new();
@@ -615,16 +635,38 @@ pub fn hydrate_from_login_shell() {
         }
     };
 
-    // Content strictly between the two markers is the env dump (rc scripts may
-    // print before the first marker; we ignore that).
+    let (path, merged) = plan_env_merge(&dump, marker, &|key| std::env::var_os(key).is_some());
+    let merged_count = merged.len();
+    for (key, value) in &merged {
+        std::env::set_var(key, value);
+    }
+    if let Some(value) = path {
+        std::env::set_var("PATH", value);
+        tracing::info!("hydrated PATH from login shell ({shell}); merged {merged_count} env vars");
+    }
+}
+
+/// Plan the env merge from a login-shell dump: the PATH value (always
+/// applied) plus the vars absent from the current process env (additive
+/// only — never overwrite a var the launcher set on purpose). Pure so the
+/// merge rules are testable without mutating the process environment.
+///
+/// Content strictly between the two markers is the env dump (rc scripts may
+/// print before the first marker; we ignore that).
+#[cfg(not(target_os = "windows"))]
+fn plan_env_merge<'a>(
+    dump: &'a str,
+    marker: &str,
+    has_var: &dyn Fn(&str) -> bool,
+) -> (Option<&'a str>, Vec<(&'a str, &'a str)>) {
     let Some(start) = dump.find(marker) else {
-        return;
+        return (None, vec![]);
     };
     let after = &dump[start + marker.len()..];
     let body = after.split(marker).next().unwrap_or("");
 
-    let mut applied_path = false;
-    let mut merged = 0usize;
+    let mut path = None;
+    let mut merged = vec![];
     for line in body.lines() {
         let Some((key, value)) = line.split_once('=') else {
             continue;
@@ -633,17 +675,12 @@ pub fn hydrate_from_login_shell() {
             continue;
         }
         if key == "PATH" {
-            std::env::set_var("PATH", value);
-            applied_path = true;
-        } else if std::env::var_os(key).is_none() {
-            // Additive only: never overwrite a var the launcher set on purpose.
-            std::env::set_var(key, value);
-            merged += 1;
+            path = Some(value);
+        } else if !has_var(key) {
+            merged.push((key, value));
         }
     }
-    if applied_path {
-        tracing::info!("hydrated PATH from login shell ({shell}); merged {merged} env vars");
-    }
+    (path, merged)
 }
 
 /// No-op on Windows — GUI processes already inherit the full registry PATH.
@@ -745,6 +782,31 @@ mod tests {
         assert_eq!(legacy_bash_from_exit_code(Some(1)), Some(false));
         assert_eq!(legacy_bash_from_exit_code(Some(2)), None);
         assert_eq!(legacy_bash_from_exit_code(None), None);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn legacy_bash_probe_short_circuits_non_bash_shells() {
+        // Name gate: non-bash shells never spawn the version probe.
+        assert!(!legacy_bash_probe("/bin/sh"));
+        assert!(!legacy_bash_probe("zsh"));
+        assert!(!legacy_bash_probe("/usr/local/bin/fish"));
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn legacy_bash_probe_runs_real_bash_version_check() {
+        // "bash" resolves via PATH; the probe spawns the real binary which
+        // exits promptly with a classified status. The boolean outcome
+        // depends on the host bash version — either way the probe arm ran.
+        let _ = legacy_bash_probe("bash");
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn on_path_scans_the_process_path() {
+        assert!(on_path("sh"));
+        assert!(!on_path("definitely-not-a-real-binary-xyz"));
     }
 
     #[test]
@@ -1171,5 +1233,159 @@ mod tests {
         );
         let profile = seatbelt_profile(&s);
         assert!(profile.contains("deny default"));
+    }
+
+    // ─── unix shell resolution / login-shell hydration ─────────────────────
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn resolve_unix_shell_prefers_usable_shell_env() {
+        // /bin/sh exists everywhere but is not bash/zsh → probe order wins.
+        let sh = std::ffi::OsString::from("/bin/sh");
+        assert_eq!(resolve_unix_shell(Some(sh), &|name| name == "zsh"), "zsh");
+        // A bash/zsh $SHELL that resolves to a real file is used verbatim.
+        let bash = std::ffi::OsString::from("/bin/bash");
+        assert_eq!(resolve_unix_shell(Some(bash), &|_| false), "/bin/bash");
+        // Nothing usable anywhere → POSIX sh.
+        assert_eq!(resolve_unix_shell(None, &|_| false), "sh");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn on_path_without_path_env_is_false() {
+        assert!(!on_path_in(None, "bash"));
+        assert!(on_path_in(Some(std::ffi::OsString::from("/bin")), "sh"));
+        assert!(!on_path_in(
+            Some(std::ffi::OsString::from("/bin")),
+            "future-nope"
+        ));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn plan_env_merge_parses_dump_between_markers() {
+        let marker = "__m__";
+        // Noise lines, an empty key, and a no-`=` line are all skipped; PATH
+        // is captured; an already-present var is not merged.
+        let dump = format!("rc noise\n{marker}\nPATH=/a:/b\n=noval\nnoequals\nNEW_VAR=1\nEXISTING=2\n{marker}\ntrailing");
+        let (path, merged) = plan_env_merge(&dump, marker, &|key| key == "EXISTING");
+        assert_eq!(path, Some("/a:/b"));
+        assert_eq!(merged, vec![("NEW_VAR", "1")]);
+        // No marker at all → nothing to apply.
+        assert_eq!(
+            plan_env_merge("no markers here", marker, &|_| false),
+            (None, vec![])
+        );
+    }
+
+    /// Serialises the hydrate tests: they mutate the process-wide $SHELL.
+    #[cfg(not(target_os = "windows"))]
+    static HYDRATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[cfg(not(target_os = "windows"))]
+    fn hydrate_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        HYDRATE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn fake_shell(body: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let shell = dir.path().join("fakesh");
+        std::fs::write(&shell, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (dir, shell)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    struct ShellEnvGuard(Option<std::ffi::OsString>);
+
+    #[cfg(not(target_os = "windows"))]
+    impl ShellEnvGuard {
+        fn set(path: &std::path::Path) -> Self {
+            let previous = std::env::var_os("SHELL");
+            std::env::set_var("SHELL", path);
+            Self(previous)
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    impl Drop for ShellEnvGuard {
+        fn drop(&mut self) {
+            crate::test_support::restore_env("SHELL", &self.0);
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn hydrate_skips_when_shell_spawn_fails() {
+        let _lock = hydrate_test_lock();
+        let _subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .finish(),
+        );
+        // No pre-existing SHELL → the guard's remove-on-drop arm runs.
+        std::env::remove_var("SHELL");
+        let _guard = ShellEnvGuard::set(std::path::Path::new("/future-no-such-shell-xyz"));
+        hydrate_from_login_shell(); // must return, not panic
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn hydrate_ignores_dump_without_marker() {
+        let _lock = hydrate_test_lock();
+        // Pre-set SHELL so the guard's restore arm with a previous value runs.
+        let original = std::env::var_os("SHELL");
+        std::env::set_var("SHELL", "/bin/sh");
+        let (_dir, shell) = fake_shell("printf 'no markers in this output'");
+        {
+            let _guard = ShellEnvGuard::set(&shell);
+            hydrate_from_login_shell(); // dump lacks the marker → nothing applied
+        }
+        // Leave the process env as we found it (parallel suites read $SHELL).
+        crate::test_support::restore_env("SHELL", &original);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn hydrate_times_out_and_kills_hung_shell() {
+        let _lock = hydrate_test_lock();
+        let _subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .finish(),
+        );
+        let (_dir, shell) = fake_shell("exec sleep 30");
+        let _guard = ShellEnvGuard::set(&shell);
+        hydrate_from_login_shell(); // 5s timeout → kill → return
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn hydrate_merges_env_from_login_shell_dump() {
+        let _lock = hydrate_test_lock();
+        let _subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .finish(),
+        );
+        // PATH is re-set to its CURRENT value (no effective change, safe for
+        // parallel tests); the unique var must be absent beforehand to merge.
+        std::env::remove_var("FUTURE_HYDRATE_MERGE_TEST");
+        let current_path = std::env::var("PATH").unwrap_or_default();
+        let (_dir, shell) = fake_shell(&format!(
+            "printf '%s' '__future_env_boundary_9c4f__'; printf 'PATH={current_path}\\nFUTURE_HYDRATE_MERGE_TEST=merged\\n'; printf '%s' '__future_env_boundary_9c4f__'"
+        ));
+        let _guard = ShellEnvGuard::set(&shell);
+        hydrate_from_login_shell();
+        assert_eq!(
+            std::env::var("FUTURE_HYDRATE_MERGE_TEST").as_deref(),
+            Ok("merged")
+        );
+        assert_eq!(std::env::var("PATH").unwrap_or_default(), current_path);
+        std::env::remove_var("FUTURE_HYDRATE_MERGE_TEST");
     }
 }

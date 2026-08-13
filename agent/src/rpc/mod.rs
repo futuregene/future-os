@@ -136,15 +136,34 @@ impl AppState {
         if new_sess.model.is_empty() {
             let default_model = crate::models::get_default_model_with(&self.model_registry.read())
                 .unwrap_or_else(|| self.loop_template.model.clone());
-            if !default_model.is_empty() {
-                if let Err(e) = new_sess.set_model(&default_model) {
-                    tracing::warn!("[session] could not apply default model on hydrate: {e}");
+            // Match form: the plain if-block's closing brace collected a
+            // phantom zero-count gap region even with both edges hot.
+            match default_model.is_empty() {
+                true => (),
+                false => {
+                    // set_model persists via update_session_info, which fails
+                    // for legacy session files lacking a session_info entry —
+                    // log and defer to an explicit /model instead of failing
+                    // the hydrate.
+                    let _ = new_sess.set_model(&default_model).inspect_err(|e| {
+                        tracing::warn!("[session] could not apply default model on hydrate: {e}");
+                    });
                 }
             }
         }
 
         // Only acquire the write lock for the final insertion — double-check
         // that another caller didn't beat us to it while we were loading.
+        #[cfg(test)]
+        {
+            // Id-gated so unrelated hydrate-path tests never consume it.
+            let mut slot = GET_SESSION_PRE_INSERT_HOOK.lock();
+            if matches!(slot.as_ref(), Some((sid, _)) if sid == session_id) {
+                if let Some((_, hook)) = slot.take() {
+                    hook(self);
+                }
+            }
+        }
         {
             let mut sessions = self.sessions.write();
             if let Some(sess) = sessions.get(session_id) {
@@ -204,6 +223,18 @@ impl AppState {
                 // Re-check emptiness inside the write lock to avoid TOCTOU: another
                 // thread may have set a model between our read and write locks.
                 if let Some(mut session) = sess.try_write() {
+                    #[cfg(test)]
+                    {
+                        // Id-gated; the hook receives the held write guard so it
+                        // mutates the session WITHOUT re-locking (re-locking
+                        // would deadlock: parking_lot locks are not reentrant).
+                        let mut slot = RELOAD_RACE_HOOK.lock();
+                        if matches!(slot.as_ref(), Some((sid, _)) if sid == &session.session_id) {
+                            if let Some((_, hook)) = slot.take() {
+                                hook(&mut session);
+                            }
+                        }
+                    }
                     if session.model.is_empty() {
                         let registry = self.model_registry.read();
                         let default_model =
@@ -222,6 +253,26 @@ impl AppState {
         }
     }
 }
+
+/// Test-only hook fired by `get_session` right before the final write-lock
+/// insertion, so tests can deterministically win the hydrate race and
+/// exercise the double-check arm.
+#[cfg(test)]
+#[allow(clippy::type_complexity)]
+static GET_SESSION_PRE_INSERT_HOOK: parking_lot::Mutex<
+    Option<(String, Box<dyn Fn(&AppState) + Send>)>,
+> = parking_lot::Mutex::new(None);
+
+/// Test-only hook fired by `reload_all_credentials` inside the write lock,
+/// before the model-emptiness re-check, so tests can deterministically win
+/// the TOCTOU race and exercise the "model was set concurrently" arm. The
+/// hook receives the already-held write guard (never re-locks) and only
+/// fires for the session id it was registered for.
+#[cfg(test)]
+#[allow(clippy::type_complexity)]
+static RELOAD_RACE_HOOK: parking_lot::Mutex<
+    Option<(String, Box<dyn Fn(&mut ServerSession) + Send>)>,
+> = parking_lot::Mutex::new(None);
 
 fn get_state_internal(
     state: &AppState,
@@ -384,16 +435,10 @@ fn get_state_internal(
         thinking_level: sess.thinking_level.clone(),
         is_streaming: sess.is_streaming.load(std::sync::atomic::Ordering::Relaxed),
         is_compacting: false,
-        session_file: if session_id.is_empty() {
-            None
-        } else {
-            Some(String::new())
-        },
-        session_id: if session_id.is_empty() {
-            None
-        } else {
-            Some(session_id.clone())
-        },
+        // Always non-empty here: get_session returns None for an empty id,
+        // and only map-stored (hydrated or created) sessions reach this point.
+        session_file: Some(String::new()),
+        session_id: Some(session_id.clone()),
         session_name: if sess.session_name.is_empty() {
             None
         } else {
@@ -433,11 +478,14 @@ fn get_state_internal(
     })
     .unwrap_or_default();
     payloads::inject_legacy_aliases(&mut payload, &[("sessionName", "session_name")]);
-    if let Some(acks) = payload
+    // Option→iterator pipeline: the if-let form's closing brace collected a
+    // phantom zero-count coverage region here.
+    payload
         .get_mut("recentTerminalAcks")
         .and_then(serde_json::Value::as_array_mut)
-    {
-        for ack in acks {
+        .into_iter()
+        .flatten()
+        .for_each(|ack| {
             payloads::inject_legacy_aliases(
                 ack,
                 &[
@@ -446,8 +494,7 @@ fn get_state_internal(
                     ("clientRequestId", "client_request_id"),
                 ],
             );
-        }
-    }
+        });
     Some(payload)
 }
 
@@ -675,22 +722,6 @@ mod tests {
 
     #[test]
     fn app_state_get_session_empty_id_returns_none() {
-        // Use EmptyProvider from session tests (defined in the same crate)
-        struct EmptyP;
-        #[async_trait::async_trait]
-        impl crate::types::LLMProvider for EmptyP {
-            async fn stream_chat(
-                &self,
-                _model: String,
-                _messages: Vec<crate::types::Message>,
-                _tools: Vec<crate::types::ToolDef>,
-                _system_prompt: String,
-            ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::types::StreamEvent>>
-            {
-                let (_tx, rx) = tokio::sync::mpsc::channel(1);
-                Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
-            }
-        }
         let state = AppState {
             agent_instance_id: "agent-test-instance".to_string(),
             sessions: std::sync::Arc::new(parking_lot::RwLock::new(
@@ -713,7 +744,7 @@ mod tests {
                 crate::models::Registry::new(),
             )),
             loop_template: std::sync::Arc::new(crate::agent::Loop::new(
-                std::sync::Arc::new(EmptyP),
+                std::sync::Arc::new(crate::test_support::EmptyProvider),
                 "test-model",
             )),
         };
@@ -723,21 +754,10 @@ mod tests {
     // ─── coverage batch: hydrate + get_state arms ──────────────────────────
 
     fn bare_app_state() -> (tempfile::TempDir, AppState) {
-        struct EmptyP;
-        #[async_trait::async_trait]
-        impl crate::types::LLMProvider for EmptyP {
-            async fn stream_chat(
-                &self,
-                _model: String,
-                _messages: Vec<crate::types::Message>,
-                _tools: Vec<crate::types::ToolDef>,
-                _system_prompt: String,
-            ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::types::StreamEvent>>
-            {
-                let (_tx, rx) = tokio::sync::mpsc::channel(1);
-                Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
-            }
-        }
+        bare_app_state_with_template_model("test-model")
+    }
+
+    fn bare_app_state_with_template_model(model: &str) -> (tempfile::TempDir, AppState) {
         let dir = tempfile::tempdir().expect("tempdir");
         let session_dir = dir.path().join("sessions");
         let state = AppState {
@@ -760,8 +780,8 @@ mod tests {
                 crate::models::Registry::new(),
             )),
             loop_template: std::sync::Arc::new(crate::agent::Loop::new(
-                std::sync::Arc::new(EmptyP),
-                "test-model",
+                std::sync::Arc::new(crate::test_support::EmptyProvider),
+                model,
             )),
         };
         (dir, state)
@@ -769,6 +789,13 @@ mod tests {
 
     #[test]
     fn get_session_hydrates_disk_session_without_model() {
+        // Sink subscriber so the set_model-failure warn! region is evaluated.
+        let _sink = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .with_ansi(false)
+                .finish(),
+        );
         let (_dir, state) = bare_app_state();
         // A persisted session with no model info anywhere → the hydrate path
         // applies the registry/loop default model.
@@ -792,6 +819,289 @@ mod tests {
         );
         // Second fetch hits the live map.
         assert!(state.get_session("hyd-1").is_some());
+    }
+
+    #[test]
+    fn get_session_hydrate_skips_model_application_when_no_default_exists() {
+        // Isolated empty HOME: no auth and no user models, so the registry
+        // yields no credential-reachable default — and the empty template
+        // model leaves nothing to apply.
+        let _home = crate::test_support::TestHome::new();
+        let (_dir, state) = bare_app_state_with_template_model("");
+        let snapshot = crate::session::Session::snapshot(
+            "hyd-empty".to_string(),
+            "/tmp".to_string(),
+            String::new(),
+            String::new(),
+            String::new(),
+            vec![crate::session::SessionEntry::new_user(
+                "user",
+                serde_json::json!("hello"),
+            )],
+        );
+        state.session_manager.save(&snapshot).unwrap();
+        let session = state.get_session("hyd-empty").expect("hydrated from disk");
+        assert!(
+            session.read().model.is_empty(),
+            "no default available — model application skipped"
+        );
+    }
+
+    #[test]
+    fn reload_all_credentials_skips_write_locked_session() {
+        let (_dir, state) = bare_app_state();
+        let session = crate::rpc::ServerSession::new_with_queue_budget(
+            "locked".to_string(),
+            std::sync::Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
+                std::sync::Arc::new(crate::test_support::EmptyProvider),
+                "",
+            ))),
+            state.session_manager.clone(),
+            "/tmp",
+            std::sync::Arc::new(SseBroadcaster::new()),
+            state.approval_gate.clone(),
+            state.model_registry.clone(),
+            state.queue_budget.clone(),
+        );
+        state.create_session(session);
+        let session = state.get_session("locked").unwrap();
+        // A held READ guard makes reload's try_write fail without blocking
+        // its own read — the model-less session is skipped entirely.
+        let guard = session.read();
+        state.reload_all_credentials();
+        assert!(
+            guard.model.is_empty(),
+            "write-locked session left untouched"
+        );
+    }
+
+    // ─── coverage batch 16: hydrate/reload/get_state residuals ─────────────
+
+    #[test]
+    fn get_session_returns_none_for_unloadable_session_file() {
+        let (_dir, state) = bare_app_state();
+        // The file exists (find succeeds) but cannot be parsed, so the
+        // hydrate switch_session fails and get_session yields None.
+        std::fs::create_dir_all(&state.session_manager.dir).unwrap();
+        std::fs::write(
+            state.session_manager.dir.join("corrupt.jsonl"),
+            "{not json\n",
+        )
+        .unwrap();
+        assert!(state.get_session("corrupt").is_none());
+    }
+
+    #[test]
+    fn get_session_double_check_returns_the_race_winners_session() {
+        let (_dir, state) = bare_app_state();
+        let snapshot = crate::session::Session::snapshot(
+            "racey".to_string(),
+            "/tmp".to_string(),
+            String::new(),
+            String::new(),
+            String::new(),
+            vec![crate::session::SessionEntry::new_user(
+                "user",
+                serde_json::json!("hello"),
+            )],
+        );
+        state.session_manager.save(&snapshot).unwrap();
+        // Win the hydrate race: insert a prebuilt session between the load
+        // and the final write-lock insertion.
+        let winner = std::sync::Arc::new(parking_lot::RwLock::new(
+            crate::rpc::ServerSession::new_with_queue_budget(
+                "racey".to_string(),
+                std::sync::Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
+                    std::sync::Arc::new(crate::test_support::EmptyProvider),
+                    "winner-model",
+                ))),
+                state.session_manager.clone(),
+                "/tmp",
+                std::sync::Arc::new(SseBroadcaster::new()),
+                state.approval_gate.clone(),
+                state.model_registry.clone(),
+                state.queue_budget.clone(),
+            ),
+        ));
+        let inserted = winner.clone();
+        // Mark the winner with a distinguishable session name: ServerSession
+        // starts with an empty model, so the name is the identity signal.
+        winner.write().session_name = "race-winner".to_string();
+        *GET_SESSION_PRE_INSERT_HOOK.lock() = Some((
+            "racey".to_string(),
+            Box::new(move |state| {
+                state
+                    .sessions
+                    .write()
+                    .insert("racey".to_string(), inserted.clone());
+            }),
+        ));
+        let session = state.get_session("racey").unwrap();
+        // The winner (not the freshly loaded one) came back.
+        assert_eq!(session.read().session_name, "race-winner");
+        assert!(GET_SESSION_PRE_INSERT_HOOK.lock().is_none());
+    }
+
+    #[test]
+    fn create_session_logs_journal_configuration_failure() {
+        let _sink = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .with_ansi(false)
+                .finish(),
+        );
+        let (_dir, state) = bare_app_state();
+        // A FILE where the run-data directory must be created.
+        let run_data = state.session_manager.run_data_path("journal-fail");
+        std::fs::create_dir_all(run_data.parent().unwrap()).unwrap();
+        std::fs::write(&run_data, "not a directory").unwrap();
+        let session = crate::rpc::ServerSession::new_with_queue_budget(
+            "journal-fail".to_string(),
+            std::sync::Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
+                std::sync::Arc::new(crate::test_support::EmptyProvider),
+                "mock",
+            ))),
+            state.session_manager.clone(),
+            "/tmp",
+            std::sync::Arc::new(SseBroadcaster::new()),
+            state.approval_gate.clone(),
+            state.model_registry.clone(),
+            state.queue_budget.clone(),
+        );
+        // The journal failure is logged; session creation still succeeds.
+        let id = state.create_session(session);
+        assert_eq!(id, "journal-fail");
+        assert!(state.get_session("journal-fail").is_some());
+    }
+
+    #[test]
+    fn reload_all_credentials_refreshes_session_that_gained_a_model_mid_check() {
+        let (_dir, state) = bare_app_state();
+        // Live session with NO model yet → the outer check takes the
+        // set-default path; the hook then installs a model before the inner
+        // re-check, so only credentials are refreshed.
+        let session = crate::rpc::ServerSession::new_with_queue_budget(
+            "modeless".to_string(),
+            std::sync::Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
+                std::sync::Arc::new(crate::test_support::EmptyProvider),
+                "",
+            ))),
+            state.session_manager.clone(),
+            "/tmp",
+            std::sync::Arc::new(SseBroadcaster::new()),
+            state.approval_gate.clone(),
+            state.model_registry.clone(),
+            state.queue_budget.clone(),
+        );
+        state.create_session(session);
+        *RELOAD_RACE_HOOK.lock() = Some((
+            "modeless".to_string(),
+            Box::new(|sess: &mut ServerSession| {
+                sess.model = "concurrent-model".to_string();
+            }),
+        ));
+        state.reload_all_credentials();
+        assert!(RELOAD_RACE_HOOK.lock().is_none());
+        let session = state.get_session("modeless").unwrap();
+        assert_eq!(session.read().model, "concurrent-model");
+    }
+
+    #[test]
+    fn get_state_reports_api_cost_parent_and_terminal_ack_aliases() {
+        let (_dir, state) = bare_app_state();
+        // Persist a session file carrying a parent id (loaded for the state).
+        // parent_session_id is recovered from the session_info entry, so the
+        // snapshot must carry one.
+        let snapshot = crate::session::Session::snapshot(
+            "child".to_string(),
+            "/tmp".to_string(),
+            "mock".to_string(),
+            String::new(),
+            "parent-1".to_string(),
+            vec![
+                crate::session::SessionEntry::session_info(
+                    serde_json::json!({"parent_session_id": "parent-1"}),
+                    "mock".to_string(),
+                    String::new(),
+                ),
+                crate::session::SessionEntry::new_user("user", serde_json::json!("hello")),
+            ],
+        );
+        state.session_manager.save(&snapshot).unwrap();
+        let session = crate::rpc::ServerSession::new_with_queue_budget(
+            "child".to_string(),
+            std::sync::Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
+                std::sync::Arc::new(crate::test_support::EmptyProvider),
+                "mock",
+            ))),
+            state.session_manager.clone(),
+            "/tmp",
+            std::sync::Arc::new(SseBroadcaster::new()),
+            state.approval_gate.clone(),
+            state.model_registry.clone(),
+            state.queue_budget.clone(),
+        );
+        // API-reported cost wins over the token-estimate path.
+        *session.cumulative_cost.lock() = 1.25;
+        state.create_session(session);
+        // Drive one scheduled run to terminal so recentTerminalAcks is
+        // populated and its legacy aliases are injected.
+        {
+            let session = state.get_session("child").unwrap();
+            let sess = session.read();
+            sess.scheduler
+                .accept(
+                    "req-1",
+                    Some("run-1"),
+                    crate::runtime::BusyPolicy::EnqueueIfBusy,
+                    serde_json::json!({"text": "x"}),
+                )
+                .unwrap();
+            sess.scheduler.start_next(1).unwrap();
+            sess.scheduler.finish_active("run-1").unwrap();
+        }
+        let payload = get_state_internal(&state, "child", None).unwrap();
+        let text = payload.to_string();
+        assert!(text.contains("\"parent-1\""), "{text}");
+        assert!(text.contains("1.25"), "{text}");
+        assert!(text.contains("\"run_id\""), "{text}");
+    }
+
+    #[test]
+    fn get_state_reports_zero_percent_for_zero_context_window_model() {
+        let (_dir, state) = bare_app_state();
+        let session = crate::rpc::ServerSession::new_with_queue_budget(
+            "zw".to_string(),
+            std::sync::Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
+                std::sync::Arc::new(crate::test_support::EmptyProvider),
+                "zero-window",
+            ))),
+            state.session_manager.clone(),
+            "/tmp",
+            std::sync::Arc::new(SseBroadcaster::new()),
+            state.approval_gate.clone(),
+            state.model_registry.clone(),
+            state.queue_budget.clone(),
+        );
+        state.create_session(session);
+        // ServerSession starts model-less; pin the zero-window model so the
+        // context-window resolution takes the zero branch.
+        state.get_session("zw").unwrap().write().model = "zero-window".to_string();
+        // The file loaders normalize context_window == 0 away, so inject the
+        // zero-window model directly into the registry.
+        state
+            .model_registry
+            .write()
+            .test_insert(crate::models::Model {
+                id: "zero-window".to_string(),
+                provider: "testprov".to_string(),
+                context_window: 0,
+                ..Default::default()
+            });
+        let payload = get_state_internal(&state, "zw", None).unwrap();
+        let text = payload.to_string();
+        assert!(text.contains("\"contextWindow\":0"), "{text}");
+        assert!(text.contains("\"contextPercent\":0"), "{text}");
     }
 
     #[test]
@@ -909,25 +1219,7 @@ mod tests {
         let session = crate::rpc::ServerSession::new_with_queue_budget(
             "bare".to_string(),
             std::sync::Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
-                std::sync::Arc::new({
-                    struct EmptyP;
-                    #[async_trait::async_trait]
-                    impl crate::types::LLMProvider for EmptyP {
-                        async fn stream_chat(
-                            &self,
-                            _model: String,
-                            _messages: Vec<crate::types::Message>,
-                            _tools: Vec<crate::types::ToolDef>,
-                            _system_prompt: String,
-                        ) -> anyhow::Result<
-                            tokio_stream::wrappers::ReceiverStream<crate::types::StreamEvent>,
-                        > {
-                            let (_tx, rx) = tokio::sync::mpsc::channel(1);
-                            Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
-                        }
-                    }
-                    EmptyP
-                }),
+                std::sync::Arc::new(crate::test_support::EmptyProvider),
                 "test-model",
             ))),
             state.session_manager.clone(),

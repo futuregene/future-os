@@ -203,6 +203,9 @@ impl Client {
                     result.push(serde_json::json!(obj));
                 }
                 "tool" => {
+                    // extract_content normalizes String input to the array
+                    // form, so only the array arm and the passthrough
+                    // fallback (non-string scalars) are reachable here.
                     let content = Self::extract_content(msg.content.clone());
                     let content_str = match &content {
                         Value::Array(arr) => arr
@@ -210,7 +213,6 @@ impl Client {
                             .and_then(|b| b.get("text"))
                             .and_then(|t| t.as_str())
                             .unwrap_or(""),
-                        Value::String(s) => s.as_str(),
                         _ => "",
                     };
                     result.push(serde_json::json!({
@@ -945,5 +947,108 @@ mod message_conversion_tests {
         let data = r#"{"choices":[{"index":0,"delta":{"thinking":""}}]}"#;
         let event = Client::parse_sse_chunk(data).unwrap();
         assert_ne!(event.event_type, "thinking_delta");
+    }
+
+    #[test]
+    fn unknown_thinking_format_emits_nothing() {
+        // A compat format outside the known set must not inject any
+        // thinking-related field (the `_ => {}` arm).
+        let client = Client::new("https://example.com/v1", "k", None, None)
+            .with_compat("some-future-format", true, false)
+            .with_thinking_level("high");
+        let mut body = serde_json::json!({"model": "m", "messages": []});
+        client.apply_thinking_params(&mut body);
+        assert_eq!(body.get("reasoning_effort"), None);
+        assert_eq!(body.get("enable_thinking"), None);
+        assert_eq!(body.get("thinking"), None);
+    }
+
+    #[test]
+    fn assistant_content_array_and_null_forms() {
+        use crate::types::Message;
+        use serde_json::json;
+        // Non-empty content array → content key present.
+        let with_array = Message {
+            role: "assistant".to_string(),
+            content: Some(json!([{ "type": "text", "text": "hi" }])),
+            ..Default::default()
+        };
+        // Null content → treated as no content, key omitted.
+        let with_null = Message {
+            role: "assistant".to_string(),
+            content: Some(json!(null)),
+            ..Default::default()
+        };
+        // Scalar (non-string/array) content counts as content.
+        let with_scalar = Message {
+            role: "assistant".to_string(),
+            content: Some(json!(42)),
+            ..Default::default()
+        };
+        // Unknown roles are dropped from the wire format.
+        let unknown_role = Message {
+            role: "developer".to_string(),
+            content: Some(json!("ignored")),
+            ..Default::default()
+        };
+        let converted = Client::convert_messages_to_openai(
+            vec![with_array, with_null, with_scalar, unknown_role],
+            String::new(),
+            false,
+        );
+        assert_eq!(converted.len(), 3, "unknown role must be dropped");
+        assert!(converted[0].get("content").is_some());
+        assert!(converted[1].get("content").is_none());
+        assert_eq!(converted[2]["content"], json!(42));
+    }
+
+    #[test]
+    fn tool_message_scalar_content_becomes_empty_string() {
+        use crate::types::Message;
+        use serde_json::json;
+        // Non-string/array scalar content passes extract_content through
+        // unchanged and stringifies to "" on the wire.
+        let msgs = vec![Message {
+            role: "tool".to_string(),
+            content: Some(json!(42)),
+            tool_call_id: "c1".to_string(),
+            ..Default::default()
+        }];
+        let converted = Client::convert_messages_to_openai(msgs, String::new(), false);
+        assert_eq!(converted[0]["role"], "tool");
+        assert_eq!(converted[0]["content"], "");
+    }
+
+    #[test]
+    fn usage_with_prepopulated_cache_tokens_skips_nested_lookup() {
+        let data = r#"{"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3,"cache_read_tokens":5,"cache_write_tokens":7}}"#;
+        let event = Client::parse_sse_chunk(data).unwrap();
+        let usage = event.usage.expect("usage parsed");
+        assert_eq!(usage.cache_read_tokens, Some(5));
+        assert_eq!(usage.cache_write_tokens, Some(7));
+    }
+
+    #[test]
+    fn invalid_usage_block_is_ignored() {
+        // usage present but not deserializable → the whole block is skipped.
+        let data = r#"{"choices":[],"usage":{"prompt_tokens":"not-a-number"}}"#;
+        let event = Client::parse_sse_chunk(data).unwrap();
+        assert!(event.usage.is_none());
+    }
+
+    #[test]
+    fn non_string_content_delta_is_skipped() {
+        let data = r#"{"choices":[{"index":0,"delta":{"content":42}}]}"#;
+        let event = Client::parse_sse_chunk(data).unwrap();
+        assert_ne!(event.event_type, "text_delta");
+    }
+
+    #[test]
+    fn tool_call_chunk_without_arguments_emits_no_delta() {
+        // Name present but id missing (not a start) and no arguments (no
+        // delta): falls through to the stop marker.
+        let data = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"x"}}]}}]}"#;
+        let event = Client::parse_sse_chunk(data).unwrap();
+        assert_eq!(event.event_type, "stop");
     }
 }

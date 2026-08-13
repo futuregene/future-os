@@ -1546,25 +1546,34 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
     // ─── interactive approval flows (decider thread + blocking ask) ────────
 
     /// Poll the gate until the request appears, then deliver the decision.
+    /// Returns whether the request showed up (a never-taken `panic!` arm would
+    /// itself be an uncoverable line, so the outcome is asserted by callers).
     fn spawn_decider(
         gate: &ApprovalGate,
         session_id: &str,
         decision: ApprovalDecision,
-    ) -> std::thread::JoinHandle<()> {
+    ) -> std::thread::JoinHandle<bool> {
         let gate = gate.clone();
         let session_id = session_id.to_string();
-        std::thread::spawn(move || {
-            for _ in 0..2000 {
-                let pending = gate.pending_for_session(&session_id);
-                if let Some(first) = pending.first() {
-                    let request_id = first["approval_request_id"].as_str().unwrap().to_string();
-                    let _ = gate.decide(&request_id, &session_id, decision);
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
+        std::thread::spawn(move || poll_and_decide(&gate, &session_id, decision, 2000))
+    }
+
+    fn poll_and_decide(
+        gate: &ApprovalGate,
+        session_id: &str,
+        decision: ApprovalDecision,
+        max_polls: u32,
+    ) -> bool {
+        for _ in 0..max_polls {
+            let pending = gate.pending_for_session(session_id);
+            if let Some(first) = pending.first() {
+                let request_id = first["approval_request_id"].as_str().unwrap().to_string();
+                let _ = gate.decide(&request_id, session_id, decision);
+                return true;
             }
-            panic!("approval request never appeared");
-        })
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        false
     }
 
     fn approved() -> ApprovalDecision {
@@ -1609,7 +1618,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
             &serde_json::json!({"command": "rm -rf /tmp/some-build-dir"}),
             &sandbox,
         );
-        decider.join().unwrap();
+        assert!(decider.join().unwrap(), "approval request never appeared");
         assert!(result.is_none(), "approved shell runs");
     }
 
@@ -1637,7 +1646,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
             &serde_json::json!({"command": "rm -rf /tmp/some-build-dir"}),
             &sandbox,
         );
-        decider.join().unwrap();
+        assert!(decider.join().unwrap(), "approval request never appeared");
         let denial = result.expect("rejection returns a tool result");
         assert!(denial.is_error);
         assert!(denial
@@ -1669,7 +1678,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
             &serde_json::json!({"command": "rm -rf /tmp/some-build-dir"}),
             &sandbox,
         );
-        decider.join().unwrap();
+        assert!(decider.join().unwrap(), "approval request never appeared");
         let cancellation = result.expect("cancel returns a tool result");
         assert!(cancellation.is_error);
         assert!(cancellation.result.contains("cancelled"));
@@ -1695,7 +1704,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
             &serde_json::json!({"path": outside.to_string_lossy(), "content": "x"}),
             &sandbox,
         );
-        decider.join().unwrap();
+        assert!(decider.join().unwrap(), "approval request never appeared");
         assert!(result.is_none(), "approved write proceeds");
     }
 
@@ -1727,7 +1736,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
             &serde_json::json!({"path": outside.to_string_lossy(), "content": "x"}),
             &sandbox,
         );
-        decider.join().unwrap();
+        assert!(decider.join().unwrap(), "approval request never appeared");
         let denial = result.expect("rejection returns a tool result");
         assert!(denial.is_error);
         assert!(denial.result.contains("rejected by the user."));
@@ -1760,7 +1769,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
             &serde_json::json!({"path": secret.to_string_lossy()}),
             &sandbox,
         );
-        decider.join().unwrap();
+        assert!(decider.join().unwrap(), "approval request never appeared");
         let denial = result.expect("rejection returns a tool result");
         assert!(denial.is_error);
         assert!(denial.result.contains("rejected"));
@@ -1816,7 +1825,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
             },
             &sandbox,
         );
-        decider.join().unwrap();
+        assert!(decider.join().unwrap(), "approval request never appeared");
         assert!(matches!(
             decision,
             crate::sandbox::EscalationDecision::Approved
@@ -1842,7 +1851,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
             },
             &sandbox,
         );
-        decider.join().unwrap();
+        assert!(decider.join().unwrap(), "approval request never appeared");
         match decision {
             crate::sandbox::EscalationDecision::Denied(note) => {
                 assert_eq!(note, "stay sandboxed")
@@ -1887,6 +1896,13 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
     }
 
     #[test]
+    fn poll_and_decide_times_out_when_no_request_appears() {
+        // The give-up path: no request ever lands for the session.
+        let gate = ApprovalGate::default();
+        assert!(!poll_and_decide(&gate, "nobody", approved(), 2));
+    }
+
+    #[test]
     fn decide_on_unknown_or_consumed_request_fails() {
         let gate = ApprovalGate::default();
         let _rx = gate.insert_pending_for_test("ap-once", "s1");
@@ -1894,5 +1910,281 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
         // The entry was consumed — a second decision fails.
         let again = gate.decide("ap-once", "s1", approved());
         assert!(again.unwrap_err().contains("not pending"));
+    }
+
+    // ─── coverage batch 14: residual decision arms ─────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn request_shell_passes_through_when_sandbox_wraps_shell() {
+        let ws = temp_ws("shell-wrapped");
+        let mut sandbox = ResolvedSandbox::resolve(
+            &SandboxPolicy {
+                tier: crate::sandbox::SandboxTier::Sandbox,
+            },
+            &ws,
+        );
+        // Force availability so the wrap check is platform-independent.
+        sandbox.available = true;
+        let gate = ApprovalGate::default();
+        let broadcaster = SseBroadcaster::new();
+        // A command that would ASK under the manual tier runs ungated here:
+        // the Seatbelt boundary is the enforcement point instead.
+        let result = gate.request(
+            &broadcaster,
+            "s1",
+            &ws,
+            "shell",
+            "t1",
+            &serde_json::json!({"command": "rm -rf /tmp/some-build-dir"}),
+            &sandbox,
+        );
+        assert!(result.is_none(), "wrapped shell never pre-asks");
+        assert!(gate.pending_for_session("s1").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn request_shell_ask_rejected_without_note() {
+        let ws = temp_ws("shell-rej-plain");
+        let sandbox = enabled(&ws);
+        let gate = ApprovalGate::default();
+        let broadcaster = SseBroadcaster::new();
+        let decider = spawn_decider(
+            &gate,
+            "s1",
+            ApprovalDecision {
+                approved: false,
+                note: String::new(),
+                status: ApprovalDecisionStatus::Rejected,
+            },
+        );
+        let result = gate.request(
+            &broadcaster,
+            "s1",
+            &ws,
+            "shell",
+            "t1",
+            &serde_json::json!({"command": "rm -rf /tmp/some-build-dir"}),
+            &sandbox,
+        );
+        assert!(decider.join().unwrap(), "approval request never appeared");
+        let denial = result.expect("rejection returns a tool result");
+        assert!(denial.result.contains("rejected by the user."));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn request_file_tool_cancelled_and_rejected_with_note() {
+        let _home_guard = crate::HOME_ENV_LOCK.lock().unwrap();
+        let ws = temp_ws("file-cancel");
+        let sandbox = enabled(&ws);
+        let broadcaster = SseBroadcaster::new();
+        let outside = dirs::home_dir()
+            .unwrap()
+            .join(format!("futureos-approval-fc-{}.txt", std::process::id()));
+        let args = serde_json::json!({"path": outside.to_string_lossy(), "content": "x"});
+
+        // Cancelled: the approval card went away without a decision.
+        let gate = ApprovalGate::default();
+        let decider = spawn_decider(
+            &gate,
+            "s1",
+            ApprovalDecision {
+                approved: false,
+                note: String::new(),
+                status: ApprovalDecisionStatus::Cancelled,
+            },
+        );
+        let result = gate.request(&broadcaster, "s1", &ws, "write", "t1", &args, &sandbox);
+        assert!(decider.join().unwrap(), "approval request never appeared");
+        let cancel = result.expect("cancel returns a tool result");
+        assert!(cancel.result.contains("approval request ended"));
+
+        // Rejected with a note: the note is appended after a colon.
+        let gate = ApprovalGate::default();
+        let decider = spawn_decider(
+            &gate,
+            "s1",
+            ApprovalDecision {
+                approved: false,
+                note: "not today".to_string(),
+                status: ApprovalDecisionStatus::Rejected,
+            },
+        );
+        let result = gate.request(&broadcaster, "s1", &ws, "write", "t2", &args, &sandbox);
+        assert!(decider.join().unwrap(), "approval request never appeared");
+        let denial = result.expect("rejection returns a tool result");
+        assert!(denial.result.contains("rejected by the user: not today."));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn request_escalation_cancelled_variants() {
+        let ws = temp_ws("esc-cancel");
+        let sandbox = enabled(&ws);
+        let broadcaster = SseBroadcaster::new();
+        let request = crate::sandbox::EscalationRequest {
+            command: "touch /System/x".to_string(),
+            justification: String::new(),
+            failure_summary: String::new(),
+        };
+
+        // Empty note → the generic "approval request ended" denial reason.
+        let gate = ApprovalGate::default();
+        let decider = spawn_decider(
+            &gate,
+            "s1",
+            ApprovalDecision {
+                approved: false,
+                note: String::new(),
+                status: ApprovalDecisionStatus::Cancelled,
+            },
+        );
+        let decision = gate.request_escalation(&broadcaster, "s1", &request, &sandbox);
+        assert!(decider.join().unwrap(), "approval request never appeared");
+        assert!(matches!(
+            decision,
+            crate::sandbox::EscalationDecision::Denied(ref note) if note == "approval request ended"
+        ));
+
+        // Non-empty note → the note is the denial reason.
+        let gate = ApprovalGate::default();
+        let decider = spawn_decider(
+            &gate,
+            "s1",
+            ApprovalDecision {
+                approved: false,
+                note: "window closed".to_string(),
+                status: ApprovalDecisionStatus::Cancelled,
+            },
+        );
+        let decision = gate.request_escalation(&broadcaster, "s1", &request, &sandbox);
+        assert!(decider.join().unwrap(), "approval request never appeared");
+        assert!(matches!(
+            decision,
+            crate::sandbox::EscalationDecision::Denied(ref note) if note == "window closed"
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ask_user_sender_drop_reads_as_session_end() {
+        // The session-torn-down arm: the pending entry (and its sender) is
+        // dropped without a decision, so the blocked receiver errors.
+        let ws = temp_ws("ask-drop");
+        let sandbox = enabled(&ws);
+        let gate = ApprovalGate::default();
+        let broadcaster = SseBroadcaster::new();
+        let requester_gate = gate.clone();
+        let requester = std::thread::spawn(move || {
+            requester_gate.request(
+                &broadcaster,
+                "s1",
+                &ws,
+                "shell",
+                "t1",
+                &serde_json::json!({"command": "rm -rf /tmp/some-build-dir"}),
+                &sandbox,
+            )
+        });
+        let mut request_id = String::new();
+        for _ in 0..2000 {
+            let pending = gate.pending_for_session("s1");
+            if let Some(first) = pending.first() {
+                request_id = first["approval_request_id"].as_str().unwrap().to_string();
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!request_id.is_empty(), "approval request never appeared");
+        // Dropping the entry drops the sender — the waiter observes Err.
+        let removed = gate.pending.lock().remove(&request_id);
+        assert!(removed.is_some());
+        drop(removed);
+        let result = requester.join().unwrap();
+        // The dropped sender surfaced as a cancellation (the shell path uses
+        // the generic cancel message; the "session ended" note is broadcast).
+        let cancel = result.expect("drop produces a cancel tool result");
+        assert!(cancel.result.contains("cancelled"));
+        assert!(gate.pending_for_session("s1").is_empty());
+    }
+
+    #[test]
+    fn approval_shape_edit_tool_variants() {
+        let _home_guard = crate::HOME_ENV_LOCK.lock().unwrap();
+        let ws = temp_ws("shape-edit");
+        let sandbox = enabled(&ws);
+        // Canonicalize: the resolved workspace is canonical (macOS symlinks
+        // /var → /private/var), so raw temp paths would compare as outside.
+        let inside =
+            crate::sandbox::paths::canonicalize_lenient(&Path::new(&ws).join("src/main.rs"));
+        let shape = approval_shape(
+            "edit",
+            &inside,
+            Op::Write,
+            &serde_json::json!({"path": inside}),
+            &sandbox,
+        );
+        assert_eq!(shape.kind, "file_write");
+        assert_eq!(shape.action["category"], "file_edit");
+        let outside = dirs::home_dir()
+            .unwrap()
+            .join("futureos-shape-edit-out.txt");
+        let shape = approval_shape(
+            "edit",
+            &outside,
+            Op::Write,
+            &serde_json::json!({"path": outside}),
+            &sandbox,
+        );
+        assert_eq!(shape.kind, "outside_workspace_write");
+        assert_eq!(shape.action["category"], "file_edit");
+    }
+
+    #[test]
+    fn extract_blocked_paths_skips_pathless_lines_and_caps_at_five() {
+        // A denial line with no quoted/absolute token is skipped…
+        let mut stderr = String::from("sandbox: deny(1) file-write: Operation not permitted\n");
+        // …and the extractor stops after five paths.
+        for i in 0..7 {
+            stderr.push_str(&format!(
+                "gpg: cannot open '/dev/null/path{i}': Operation not permitted\n"
+            ));
+        }
+        let paths = extract_blocked_paths(&stderr);
+        assert_eq!(paths.len(), 5);
+        assert_eq!(paths[0], "/dev/null/path0");
+        assert_eq!(paths[4], "/dev/null/path4");
+    }
+
+    #[test]
+    fn escalation_save_suggestion_workspace_root_and_subdir() {
+        let ws = temp_ws("esc-glob");
+        let sandbox = enabled(&ws);
+        // Blocked path directly at the workspace root → bare "*". Paths are
+        // canonicalized to match the resolved (symlink-free) workspace.
+        let root_file =
+            crate::sandbox::paths::canonicalize_lenient(&Path::new(&ws).join("note.txt"));
+        let sug = escalation_save_suggestion(&[root_file.to_string_lossy().into_owned()], &sandbox)
+            .expect("workspace-root path is persistable");
+        assert_eq!(sug["path"], "*");
+        // Blocked path in a workspace subdir → "sub/*".
+        let sub_file =
+            crate::sandbox::paths::canonicalize_lenient(&Path::new(&ws).join("build/out.bin"));
+        let sug = escalation_save_suggestion(&[sub_file.to_string_lossy().into_owned()], &sandbox)
+            .expect("workspace subdir path is persistable");
+        assert_eq!(sug["path"], "build/*");
+    }
+
+    #[test]
+    fn quoted_path_skips_non_path_spans() {
+        // First quoted span has no '/', so the scan skips ahead (and its
+        // following outside span) to the next quoted span.
+        assert_eq!(
+            quoted_path("cmd 'not a path' then '/real/path'"),
+            Some("/real/path".to_string())
+        );
+    }
+
+    #[test]
+    fn argument_write_preview_unrepairable_string_returns_none() {
+        // A string argument that is neither valid JSON nor repairable.
+        assert!(argument_write_preview(&serde_json::json!("{not json at all")).is_none());
     }
 }
