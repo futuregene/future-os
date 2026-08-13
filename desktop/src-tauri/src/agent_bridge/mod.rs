@@ -3333,9 +3333,9 @@ mod pipeline_tests {
 
         // No local run: the agent's active run gets a local row + observer.
         let thread3 = seed_thread(&workspace.id, Some("sess-at3"));
-        mock.push_data(
-            "get_state",
-            serde_json::json!({"activeRun": {"runId": "run-remote-1"}}),
+        mock.push_state_for_session(
+            "sess-at3",
+            Reply::Data(r#"{"activeRun": {"runId": "run-remote-1"}}"#.to_string()),
         );
         let run_id = attach_remote_stream(&thread3.id).await.expect("attach");
         assert_eq!(run_id, "run-remote-1");
@@ -3346,7 +3346,10 @@ mod pipeline_tests {
 
         // No active run agent-side → error.
         let thread4 = seed_thread(&workspace.id, Some("sess-at4"));
-        mock.push_data("get_state", serde_json::json!({"isStreaming": false}));
+        mock.push_state_for_session(
+            "sess-at4",
+            Reply::Data(r#"{"isStreaming": false}"#.to_string()),
+        );
         let error = attach_remote_stream(&thread4.id)
             .await
             .expect_err("no active");
@@ -3354,7 +3357,7 @@ mod pipeline_tests {
 
         // Transport failure → error.
         let thread5 = seed_thread(&workspace.id, Some("sess-at5"));
-        mock.push("get_state", Reply::Status(tonic::Code::Unavailable, "down"));
+        mock.push_state_for_session("sess-at5", Reply::Status(tonic::Code::Unavailable, "down"));
         let error = attach_remote_stream(&thread5.id)
             .await
             .expect_err("transport");

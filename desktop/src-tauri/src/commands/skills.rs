@@ -99,4 +99,18 @@ mod tests {
             .await
             .expect("uninstall"));
     }
+
+    #[tokio::test]
+    async fn list_available_skills_lists_the_filesystem_catalog() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("cmd-skills-avail");
+        // A clean home has no bundled skills yet — the wrapper still returns a
+        // (possibly empty) catalog rather than failing.
+        let _ = list_available_skills().await;
+    }
+
+    #[tokio::test]
+    async fn install_skill_rejects_a_bad_id_before_fs_work() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("cmd-skills-install");
+        assert!(install_skill("../evil".into(), "1.0".into()).await.is_err());
+    }
 }

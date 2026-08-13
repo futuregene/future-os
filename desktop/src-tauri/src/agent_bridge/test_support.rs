@@ -104,17 +104,21 @@ impl FutureAgent for MockAgent {
             // get_run_state (get_state with a run id) has its own queues keyed
             // by run id: spawned session observers fire plain get_state probes
             // concurrently, and a shared FIFO would let them steal run-scoped
-            // replies.
-            let key = if cmd.r#type == "get_state" && !cmd.run_id.is_empty() {
-                format!("get_state#{}", cmd.run_id)
-            } else {
-                cmd.r#type.clone()
+            // replies. A session-scoped queue (`get_state@<session>`) lets a
+            // test target one session's probe deterministically; it falls back
+            // to the shared `get_state` queue so legacy call sites keep
+            // working.
+            let mut take = |key: &str| -> Option<Reply> {
+                state.replies.get_mut(key).and_then(VecDeque::pop_front)
             };
-            state
-                .replies
-                .get_mut(&key)
-                .and_then(VecDeque::pop_front)
-                .unwrap_or_else(|| Reply::Data(default_reply_data(&cmd)))
+            let reply = if cmd.r#type == "get_state" && !cmd.run_id.is_empty() {
+                take(&format!("get_state#{}", cmd.run_id))
+            } else if cmd.r#type == "get_state" && !cmd.session_id.is_empty() {
+                take(&format!("get_state@{}", cmd.session_id)).or_else(|| take("get_state"))
+            } else {
+                take(&cmd.r#type)
+            };
+            reply.unwrap_or_else(|| Reply::Data(default_reply_data(&cmd)))
         };
         match reply {
             Reply::Data(data) => Ok(tonic::Response::new(rpc_response(
@@ -300,6 +304,20 @@ impl MockAgentGuard {
             &format!("get_state#{run_id}"),
             Reply::Data(value.to_string()),
         );
+    }
+
+    /// Queue a plain `get_state` reply for one specific session. Targets only
+    /// that session's probe (the dispatch keys plain get_state by session and
+    /// falls back to the shared queue), so concurrently-spawned observers for
+    /// other sessions cannot steal it.
+    pub(crate) fn push_state_for_session(&self, session_id: &str, reply: Reply) {
+        STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replies
+            .entry(format!("get_state@{session_id}"))
+            .or_default()
+            .push_back(reply);
     }
 
     /// Queue one atomic-attach (`atomic_attach: true`) stream outcome — the
