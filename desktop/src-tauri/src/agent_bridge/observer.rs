@@ -1229,4 +1229,531 @@ mod tests {
         );
         assert_eq!(state.cursors.get("run-fresh"), Some(&0));
     }
+
+    // ── manager + task helpers ────────────────────────────────────────
+
+    use super::super::test_support::{
+        break_home, mock_agent, restore_home, seed_thread, seed_workspace, Reply, TestHome,
+    };
+
+    #[tokio::test]
+    async fn ensure_observer_rejects_invalid_or_missing_owners() {
+        let _home = TestHome::new("observer-ensure-err");
+        let _mock = mock_agent();
+
+        assert_eq!(
+            ensure_observer_for_thread("", "thread-1").unwrap_err(),
+            "Observer requires both thread_id and session_id"
+        );
+        assert_eq!(
+            ensure_observer_for_thread("sess-1", "").unwrap_err(),
+            "Observer requires both thread_id and session_id"
+        );
+        assert_eq!(
+            ensure_observer_for_thread("sess-1", "no-such-thread").unwrap_err(),
+            "Observer owner thread no-such-thread does not exist"
+        );
+
+        let prev = break_home();
+        let err = ensure_observer_for_thread("sess-1", "thread-1").unwrap_err();
+        restore_home(prev);
+        assert!(err.starts_with("get observer owner:"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn ensure_observer_rejects_a_binding_mismatch() {
+        let home = TestHome::new("observer-ensure-mismatch");
+        let _mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-other"));
+        let err = ensure_observer_for_thread("sess-wrong", &thread.id).unwrap_err();
+        assert!(err.starts_with("observer_binding_mismatch:"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn ensure_observer_touches_an_existing_observer() {
+        let home = TestHome::new("observer-touch");
+        let _mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-touch"));
+
+        let (cancel, _rx) = oneshot::channel();
+        let shared = Arc::new(ObserverShared::new(thread.id.clone()));
+        OBSERVERS.lock().unwrap().insert(
+            "sess-touch".to_string(),
+            ObserverHandle { cancel, shared },
+        );
+
+        ensure_observer_for_thread("sess-touch", &thread.id).expect("existing touch");
+        ensure_passive_observer("sess-touch", &thread.id).expect("existing passive");
+
+        OBSERVERS.lock().unwrap().remove("sess-touch");
+    }
+
+    #[test]
+    fn seed_observers_handles_empty_and_broken_store() {
+        let _home = TestHome::new("observer-seed-empty");
+        let _mock = mock_agent();
+        seed_observers_from_store();
+        let prev = break_home();
+        seed_observers_from_store();
+        restore_home(prev);
+    }
+
+    #[test]
+    fn seed_observers_creates_and_logs_conflicts() {
+        let home = TestHome::new("observer-seed-conflict");
+        let _mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let t1 = seed_thread(&workspace.id, Some("sess-shared"));
+        let _t2 = seed_thread(&workspace.id, Some("sess-shared"));
+        seed_observers_from_store();
+        assert!(OBSERVERS.lock().unwrap().contains_key("sess-shared"));
+        drop_observer("sess-shared");
+        let _ = t1;
+    }
+
+    #[tokio::test]
+    async fn drop_observer_cancels_a_registered_observer() {
+        let (cancel, rx) = oneshot::channel();
+        let shared = Arc::new(ObserverShared::new("thread-drop"));
+        OBSERVERS.lock().unwrap().insert(
+            "sess-drop".to_string(),
+            ObserverHandle { cancel, shared },
+        );
+        drop_observer("sess-drop");
+        assert!(rx.await.is_ok(), "cancel was sent");
+        assert!(!OBSERVERS.lock().unwrap().contains_key("sess-drop"));
+    }
+
+    #[test]
+    fn unregister_removes_only_the_matching_shared() {
+        let (cancel1, _rx1) = oneshot::channel();
+        let shared1 = Arc::new(ObserverShared::new("t1"));
+        let shared1_clone = shared1.clone();
+        let shared2 = Arc::new(ObserverShared::new("t2"));
+        OBSERVERS.lock().unwrap().insert(
+            "sess-u".to_string(),
+            ObserverHandle {
+                cancel: cancel1,
+                shared: shared1,
+            },
+        );
+        // A mismatched shared does NOT remove the entry.
+        unregister("sess-u", &shared2);
+        assert!(OBSERVERS.lock().unwrap().contains_key("sess-u"));
+        // The matching shared removes it.
+        unregister("sess-u", &shared1_clone);
+        assert!(!OBSERVERS.lock().unwrap().contains_key("sess-u"));
+    }
+
+    #[tokio::test]
+    async fn ensure_run_binding_cached_cross_thread_own_and_fallback() {
+        let home = TestHome::new("observer-run-binding");
+        let _mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-rb"));
+
+        // Cached binding returns without touching the store.
+        let (cancel, _rx) = oneshot::channel();
+        let shared = Arc::new(ObserverShared::new(thread.id.clone()));
+        shared
+            .run_bindings
+            .lock()
+            .unwrap()
+            .insert("run-cached".to_string(), "local-cached".to_string());
+        OBSERVERS.lock().unwrap().insert(
+            "sess-rb".to_string(),
+            ObserverHandle { cancel, shared },
+        );
+        assert_eq!(
+            ensure_run_binding("sess-rb", "run-cached", &thread.id).as_deref(),
+            Some("local-cached")
+        );
+
+        // A run owned by another thread → refused.
+        let other = seed_thread(&workspace.id, Some("sess-other"));
+        crate::store::create_run(crate::store::CreateRunInput {
+            id: Some("run-foreign".to_string()),
+            thread_id: other.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("foreign run");
+        assert!(ensure_run_binding("sess-rb", "run-foreign", &thread.id).is_none());
+
+        // A run on THIS thread → bound + returned.
+        crate::store::create_run(crate::store::CreateRunInput {
+            id: Some("run-own".to_string()),
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("own run");
+        assert_eq!(
+            ensure_run_binding("sess-rb", "run-own", &thread.id).as_deref(),
+            Some("run-own")
+        );
+
+        // A fresh canonical id → created + bound.
+        assert_eq!(
+            ensure_run_binding("sess-rb", "run-fresh", &thread.id).as_deref(),
+            Some("run-fresh")
+        );
+
+        // Broken store → create_run fails and the fallback read also fails.
+        let prev = break_home();
+        assert!(ensure_run_binding("sess-rb", "run-fresh-2", &thread.id).is_none());
+        restore_home(prev);
+        OBSERVERS.lock().unwrap().remove("sess-rb");
+    }
+
+    #[tokio::test]
+    async fn bind_run_records_into_a_registered_observer_only() {
+        // No observer registered → bind_run is a no-op.
+        bind_run("sess-no-observer", "run-1", "local-1");
+
+        let home = TestHome::new("observer-bind-run");
+        let _mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-bind"));
+        let (cancel, _rx) = oneshot::channel();
+        let shared = Arc::new(ObserverShared::new(thread.id.clone()));
+        OBSERVERS.lock().unwrap().insert(
+            "sess-bind".to_string(),
+            ObserverHandle { cancel, shared },
+        );
+        bind_run("sess-bind", "run-1", "local-1");
+        assert_eq!(
+            OBSERVERS
+                .lock()
+                .unwrap()
+                .get("sess-bind")
+                .and_then(|h| h.shared.run_bindings.lock().ok()?.get("run-1").cloned()),
+            Some("local-1".to_string())
+        );
+        OBSERVERS.lock().unwrap().remove("sess-bind");
+    }
+
+    #[tokio::test]
+    async fn probe_active_run_resolves_or_declines() {
+        let mock = mock_agent();
+        let mut client = super::super::client::connect_agent().await.expect("connect");
+
+        // No activeRun → None.
+        mock.push_data("get_state", serde_json::json!({"isStreaming": false}));
+        assert!(probe_active_run(&mut client, "sess").await.is_none());
+
+        // activeRun with a runId → Some.
+        mock.push_data("get_state", serde_json::json!({"activeRun": {"runId": "run-1"}}));
+        assert_eq!(
+            probe_active_run(&mut client, "sess").await.as_deref(),
+            Some("run-1")
+        );
+
+        // activeRun with an empty runId → None.
+        mock.push_data("get_state", serde_json::json!({"activeRun": {"runId": ""}}));
+        assert!(probe_active_run(&mut client, "sess").await.is_none());
+
+        // Reject → None.
+        mock.push("get_state", Reply::Reject("nope".to_string()));
+        assert!(probe_active_run(&mut client, "sess").await.is_none());
+
+        // Transport error → None.
+        mock.push("get_state", Reply::Status(tonic::Code::Internal, "down"));
+        assert!(probe_active_run(&mut client, "sess").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn sleep_or_cancel_returns_true_only_on_cancel() {
+        let (_tx, mut rx) = oneshot::channel::<()>();
+        assert!(!sleep_or_cancel(&mut rx, Duration::from_millis(5)).await);
+
+        let (tx, mut rx) = oneshot::channel::<()>();
+        tx.send(()).unwrap();
+        assert!(sleep_or_cancel(&mut rx, Duration::from_secs(10)).await);
+    }
+
+    #[tokio::test]
+    async fn replay_session_events_reconstructs_and_detects_gaps() {
+        let mock = mock_agent();
+        let mut client = super::super::client::connect_agent().await.expect("connect");
+        let shared = Arc::new(ObserverShared::new("thread-rp"));
+        let mut state = ObserverState::default();
+
+        // Transport error → false.
+        mock.push(
+            "get_session_events_since",
+            Reply::Status(tonic::Code::Internal, "down"),
+        );
+        assert!(!replay_session_events(&mut client, "sess-rp", &shared, &mut state).await);
+
+        // Reject → false.
+        mock.push(
+            "get_session_events_since",
+            Reply::Reject("nope".to_string()),
+        );
+        assert!(!replay_session_events(&mut client, "sess-rp", &shared, &mut state).await);
+
+        // No events → true.
+        mock.push_data("get_session_events_since", serde_json::json!({"events": []}));
+        assert!(replay_session_events(&mut client, "sess-rp", &shared, &mut state).await);
+
+        // One session-level event → true, cursor advanced.
+        mock.push_data(
+            "get_session_events_since",
+            serde_json::json!({"events": [{"type": "model_changed", "data": "{}", "sessionIdx": 0}]}),
+        );
+        assert!(replay_session_events(&mut client, "sess-rp", &shared, &mut state).await);
+        assert_eq!(state.session_cursor, 0);
+
+        // A gap → handle_event false → replay false.
+        mock.push_data(
+            "get_session_events_since",
+            serde_json::json!({"events": [{"type": "model_changed", "data": "{}", "sessionIdx": 2}]}),
+        );
+        assert!(!replay_session_events(&mut client, "sess-rp", &shared, &mut state).await);
+    }
+
+    #[test]
+    fn forward_settings_event_returns_without_an_app_handle() {
+        // No APP_HANDLE (unit test) → early return.
+        forward_settings_event("sess", "thread", "model_changed", "{}");
+        // Malformed JSON → the parse arm is skipped without an emit.
+        forward_settings_event("sess", "thread", "model_changed", "not json");
+    }
+
+    #[tokio::test]
+    async fn discover_streaming_sessions_paths() {
+        let home = TestHome::new("observer-discover");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        seed_thread(&workspace.id, Some("sess-known"));
+
+        // Empty sessionIds → no-op.
+        mock.push_data(
+            "list_streaming_sessions",
+            serde_json::json!({"sessionIds": []}),
+        );
+        discover_streaming_sessions().await;
+
+        // A known session → only ensure_observer.
+        mock.push_data(
+            "list_streaming_sessions",
+            serde_json::json!({"sessionIds": ["sess-known"]}),
+        );
+        discover_streaming_sessions().await;
+        assert!(OBSERVERS.lock().unwrap().contains_key("sess-known"));
+        drop_observer("sess-known");
+
+        // An unknown session → import + observe.
+        mock.push_data(
+            "list_streaming_sessions",
+            serde_json::json!({"sessionIds": ["sess-new"]}),
+        );
+        mock.push_data(
+            "get_state",
+            serde_json::json!({"sessionId": "sess-new", "sessionName": "New", "cwd": "", "model": "future/k3"}),
+        );
+        discover_streaming_sessions().await;
+        assert!(OBSERVERS.lock().unwrap().contains_key("sess-new"));
+        drop_observer("sess-new");
+
+        // Reject (success=false) → return.
+        mock.push(
+            "list_streaming_sessions",
+            Reply::Reject("nope".to_string()),
+        );
+        discover_streaming_sessions().await;
+
+        // Transport error → return.
+        mock.push(
+            "list_streaming_sessions",
+            Reply::Status(tonic::Code::Internal, "down"),
+        );
+        discover_streaming_sessions().await;
+
+        // Connect failure → return.
+        let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock addr");
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
+        discover_streaming_sessions().await;
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
+    }
+
+    #[tokio::test]
+    async fn spawn_observer_unregisters_on_cancel() {
+        let home = TestHome::new("observer-cancel");
+        let _mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-cancel"));
+
+        ensure_observer_for_thread("sess-cancel", &thread.id).expect("spawn");
+        assert!(OBSERVERS.lock().unwrap().contains_key("sess-cancel"));
+
+        // Let the observer reach the streaming loop, then cancel and wait for
+        // run_observer to return and unregister.
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        drop_observer("sess-cancel");
+        for _ in 0..50 {
+            if !OBSERVERS.lock().unwrap().contains_key("sess-cancel") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!OBSERVERS.lock().unwrap().contains_key("sess-cancel"));
+    }
+
+    /// A run-scoped event owned by the observer (not pipeline-owned) is
+    /// persisted and settled end-to-end.
+    #[tokio::test]
+    async fn handle_event_projects_and_settles_an_owned_run() {
+        let home = TestHome::new("observer-owned-run");
+        let _mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-owned"));
+        let shared = Arc::new(ObserverShared::new(thread.id.clone()));
+        let mut state = ObserverState::default();
+
+        assert!(
+            handle_event(
+                "sess-owned",
+                &shared,
+                &mut state,
+                stream_event("agent_start", "run-owned", 0)
+            )
+            .await
+        );
+        assert_eq!(state.active_run.as_deref(), Some("run-owned"));
+        assert_eq!(
+            crate::store::get_run("run-owned")
+                .expect("get")
+                .expect("some")
+                .thread_id,
+            thread.id
+        );
+
+        assert!(
+            handle_event(
+                "sess-owned",
+                &shared,
+                &mut state,
+                stream_event("text_chunk", "run-owned", 1)
+            )
+            .await
+        );
+
+        // Clean agent_end → completed + settled.
+        let mut end = stream_event("agent_end", "run-owned", 2);
+        end.data = r#"{"reason":"complete"}"#.to_string();
+        assert!(handle_event("sess-owned", &shared, &mut state, end).await);
+        assert_eq!(
+            crate::store::get_run("run-owned")
+                .expect("get")
+                .expect("some")
+                .status,
+            "completed"
+        );
+        assert!(state.active_run.is_none());
+        assert_eq!(state.last_settled_run.as_deref(), Some("run-owned"));
+    }
+
+    /// Incomplete `agent_end` and `error` terminals both settle the owned run
+    /// to failed.
+    #[tokio::test]
+    async fn handle_event_settles_failed_terminals() {
+        let home = TestHome::new("observer-failed");
+        let _mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-failed"));
+        let shared = Arc::new(ObserverShared::new(thread.id.clone()));
+        let mut state = ObserverState::default();
+
+        assert!(
+            handle_event(
+                "sess-failed",
+                &shared,
+                &mut state,
+                stream_event("agent_start", "run-inc", 0)
+            )
+            .await
+        );
+        let mut end = stream_event("agent_end", "run-inc", 1);
+        end.data = r#"{"reason":"incomplete"}"#.to_string();
+        assert!(handle_event("sess-failed", &shared, &mut state, end).await);
+        assert_eq!(
+            crate::store::get_run("run-inc")
+                .expect("get")
+                .expect("some")
+                .status,
+            "failed"
+        );
+
+        // A fresh run that errors.
+        assert!(
+            handle_event(
+                "sess-failed",
+                &shared,
+                &mut state,
+                stream_event("agent_start", "run-err", 0)
+            )
+            .await
+        );
+        assert!(
+            handle_event(
+                "sess-failed",
+                &shared,
+                &mut state,
+                stream_event("error", "run-err", 1)
+            )
+            .await
+        );
+        assert_eq!(
+            crate::store::get_run("run-err")
+                .expect("get")
+                .expect("some")
+                .status,
+            "failed"
+        );
+    }
+
+    /// Projection snapshots replace the local replica wholesale and settle a
+    /// terminal snapshot.
+    #[tokio::test]
+    async fn handle_event_applies_a_projection_snapshot() {
+        let home = TestHome::new("observer-snapshot");
+        let _mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-snap"));
+        let shared = Arc::new(ObserverShared::new(thread.id.clone()));
+        let mut state = ObserverState::default();
+
+        let snapshot = crate::agent_proto::StreamEvent {
+            r#type: "projection_snapshot".to_string(),
+            data: "{}".to_string(),
+            run_id: "run-snap".to_string(),
+            idx: -1,
+            projection_snapshot: true,
+            snapshot_cursor: 5,
+            snapshot_events: vec![crate::agent_proto::ProjectedRunEvent {
+                r#type: "text_chunk".to_string(),
+                data: "hello".to_string(),
+                idx: 0,
+                ..Default::default()
+            }],
+            session_id: "sess-snap".to_string(),
+            epoch: 1,
+            event_id: String::new(),
+            timestamp: String::new(),
+            session_idx: -1,
+            run_sequence: 1,
+            payload: None,
+        };
+        assert!(
+            handle_event("sess-snap", &shared, &mut state, snapshot).await,
+            "a projection snapshot is applied"
+        );
+        assert_eq!(state.cursors.get("run-snap"), Some(&5));
+    }
 }

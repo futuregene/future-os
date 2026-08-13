@@ -804,7 +804,7 @@ mod tests {
 
     #[test]
     fn thread_mode_routes_empty_cwd_to_a_chat_workspace() {
-        let home = super::super::test_support::TestHome::new("import-mode-empty");
+        let _home = super::super::test_support::TestHome::new("import-mode-empty");
         let s = summary("sess", "");
         let title = session_title(&s);
         let (mode, workspace_id, workspace_path, _name) = thread_mode(&s, &title);
@@ -897,7 +897,7 @@ mod tests {
 
     #[test]
     fn thread_mode_chat_workspace_failure_falls_back_to_no_workspace() {
-        let home = super::super::test_support::TestHome::new("import-mode-chat-err");
+        let _home = super::super::test_support::TestHome::new("import-mode-chat-err");
         // The tilde form makes `is_desktop_chat_cwd` true without reading HOME,
         // so breaking HOME only fails the store's `get_or_create_chat_workspace`.
         let s = summary("sess", "~/.future/workspaces/chat/sess");
@@ -912,7 +912,7 @@ mod tests {
 
     #[test]
     fn thread_mode_empty_cwd_failure_falls_back_to_no_workspace() {
-        let home = super::super::test_support::TestHome::new("import-mode-empty-err");
+        let _home = super::super::test_support::TestHome::new("import-mode-empty-err");
         let s = summary("sess", "");
         let title = session_title(&s);
         let prev = super::super::test_support::break_home();
@@ -991,7 +991,7 @@ mod tests {
 
     #[tokio::test]
     async fn import_missing_sessions_logs_an_import_failure() {
-        let home = super::super::test_support::TestHome::new("import-missing-err");
+        let _home = super::super::test_support::TestHome::new("import-missing-err");
         let mock = super::super::test_support::mock_agent();
         mock.push_data(
             "list_sessions",
@@ -1057,7 +1057,7 @@ mod tests {
 
     #[tokio::test]
     async fn import_one_spawns_cwd_write_back_and_logs_its_failure() {
-        let home = super::super::test_support::TestHome::new("import-cwd-fail");
+        let _home = super::super::test_support::TestHome::new("import-cwd-fail");
         let mock = super::super::test_support::mock_agent();
         mock.push_data("get_session_entries", serde_json::json!({"entries": []}));
         // The spawned cwd write-back calls `new_session`; reject it so the
@@ -1074,7 +1074,7 @@ mod tests {
 
     #[tokio::test]
     async fn import_missing_sessions_logs_a_panicking_import() {
-        let home = super::super::test_support::TestHome::new("import-missing-panic");
+        let _home = super::super::test_support::TestHome::new("import-missing-panic");
         let mock = super::super::test_support::mock_agent();
         mock.push_data(
             "list_sessions",
@@ -1154,7 +1154,7 @@ mod tests {
 
     #[tokio::test]
     async fn import_one_creates_a_new_chat_thread_and_runs() {
-        let home = super::super::test_support::TestHome::new("import-new");
+        let _home = super::super::test_support::TestHome::new("import-new");
         let mock = super::super::test_support::mock_agent();
         mock.push_data(
             "get_session_entries",
@@ -1193,7 +1193,7 @@ mod tests {
 
     #[tokio::test]
     async fn import_streaming_session_variants() {
-        let home = super::super::test_support::TestHome::new("import-streaming");
+        let _home = super::super::test_support::TestHome::new("import-streaming");
         let mock = super::super::test_support::mock_agent();
 
         // get_state reject → Err.
@@ -1228,7 +1228,7 @@ mod tests {
 
     #[tokio::test]
     async fn import_missing_sessions_imports_and_logs_errors() {
-        let home = super::super::test_support::TestHome::new("import-missing");
+        let _home = super::super::test_support::TestHome::new("import-missing");
         let mock = super::super::test_support::mock_agent();
 
         // Empty list → silent Ok.
