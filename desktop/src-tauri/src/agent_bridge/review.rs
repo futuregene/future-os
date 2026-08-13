@@ -847,8 +847,8 @@ mod tests {
         // Drop the snapshot table so the capture write fails deterministically
         // (rusqlite does not enforce FKs by default, so deleting the Run row
         // alone does not break the snapshot write).
-        let conn = rusqlite::Connection::open(_fx.base.join("home/.future/app/app.db"))
-            .expect("open db");
+        let conn =
+            rusqlite::Connection::open(_fx.base.join("home/.future/app/app.db")).expect("open db");
         conn.execute_batch("DROP TABLE review_snapshots;").unwrap();
         drop(conn);
 
