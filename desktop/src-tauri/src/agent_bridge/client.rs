@@ -86,12 +86,29 @@ pub fn map_rpc_error(context: &str, status: tonic::Status) -> crate::AppError {
     }
 }
 
+/// Channel cache keyed by endpoint. The GUI talks to a single agent in
+/// production, but the test binary hosts more than one in-process mock agent;
+/// keying by address lets a changed `FUTURE_AGENT_GRPC_ADDR` reconnect instead
+/// of reusing a stale connection to the previous mock.
+static AGENT_CHANNEL: tokio::sync::Mutex<Option<(String, Channel)>> =
+    tokio::sync::Mutex::const_new(None);
+
 /// Resolve the agent endpoint and open a gRPC client. A connection failure maps
 /// to `AppError::AgentUnavailable` so callers can tolerate a down agent (e.g.
 /// `abort_run` still cancels the run locally).
 pub async fn connect_agent() -> Result<FutureAgentClient<Channel>, crate::AppError> {
-    static AGENT_CHANNEL: tokio::sync::OnceCell<Channel> = tokio::sync::OnceCell::const_new();
     let endpoint_str = agent_endpoint();
+    // A cached channel already targeting this endpoint is reused as-is.
+    {
+        let cached = AGENT_CHANNEL.lock().await;
+        if let Some((addr, channel)) = cached.as_ref() {
+            if addr == &endpoint_str {
+                return Ok(FutureAgentClient::new(channel.clone())
+                    .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
+                    .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE));
+            }
+        }
+    }
     let unavailable = |error: tonic::transport::Error| {
         crate::AppError::AgentUnavailable(format!(
             "Unable to connect to Future Agent at {endpoint_str}: {error}"
@@ -100,6 +117,7 @@ pub async fn connect_agent() -> Result<FutureAgentClient<Channel>, crate::AppErr
     let endpoint = Endpoint::from_shared(endpoint_str.clone())
         .map_err(unavailable)?
         .connect_timeout(CONNECT_TIMEOUT);
+    let health_endpoint = endpoint_str.clone();
     // Shared, lazily-established HTTP/2 channel. Previously every command
     // opened a fresh TCP connection (incl. the per-second status polls), so a
     // fully idle GUI burnt ~0.25 core in backend just on connect/teardown.
@@ -110,22 +128,20 @@ pub async fn connect_agent() -> Result<FutureAgentClient<Channel>, crate::AppErr
     // reachability on first init so callers see a friendly error.
     let channel = agent_channel_runtime()
         .spawn(async move {
-            AGENT_CHANNEL
-                .get_or_try_init(|| async {
-                    let ch = endpoint.connect_lazy();
-                    let mut client = FutureAgentClient::new(ch.clone())
-                        .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
-                        .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE);
-                    health_check(&mut client, &endpoint_str).await?;
-                    Ok::<Channel, crate::AppError>(ch)
-                })
-                .await
-                .cloned()
+            let ch = endpoint.connect_lazy();
+            let mut client = FutureAgentClient::new(ch.clone())
+                .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
+                .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE);
+            health_check(&mut client, &health_endpoint).await?;
+            Ok::<Channel, crate::AppError>(ch)
         })
         .await
         // The pinned runtime is process-lifetime (parked forever) and the
         // task body returns every failure as a value — no panic/abort path.
         .expect("agent channel task: pinned runtime outlives the process")?;
+    // Remember the freshly connected channel for this endpoint; a later call
+    // to a different endpoint overwrites it (and drops the old connection).
+    *AGENT_CHANNEL.lock().await = Some((endpoint_str, channel.clone()));
     Ok(FutureAgentClient::new(channel)
         .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
         .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE))
