@@ -2804,9 +2804,10 @@ mod tests {
             .entries
             .iter()
             .any(|entry| entry.content == Some(serde_json::json!("legacy reply"))));
-        assert!(loaded.entries.iter().all(|entry| {
-            !is_lifecycle_marker(entry.entry_type.as_str())
-        }));
+        assert!(loaded
+            .entries
+            .iter()
+            .all(|entry| { !is_lifecycle_marker(entry.entry_type.as_str()) }));
         let _ = state.session_manager.delete(session_id);
     }
 
@@ -5409,7 +5410,12 @@ mod tests {
     #[test]
     fn prompt_reports_busy_configuration_error() {
         let state = make_app_state();
-        let agent_loop = state.get_session("default").unwrap().read().agent_loop.clone();
+        let agent_loop = state
+            .get_session("default")
+            .unwrap()
+            .read()
+            .agent_loop
+            .clone();
         let _guard = agent_loop.try_write().unwrap();
 
         let mut cmd = make_cmd("prompt");
@@ -5490,10 +5496,7 @@ mod tests {
             .read()
             .persistence
             .fail_next_close();
-        let resp = parse_response(&handle_command_internal(
-            &state,
-            make_cmd("delete_session"),
-        ));
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("delete_session")));
         assert_eq!(resp["success"], false);
         assert_eq!(resp["error_code"], "delete_failed");
     }

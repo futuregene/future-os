@@ -1287,17 +1287,17 @@ async fn enqueue_prompt_defers_when_control_idle_but_task_slot_held() {
             crate::runtime::BusyPolicy::EnqueueIfBusy,
         )
         .unwrap();
-    assert_eq!(
-        ack.accepted_state,
-        crate::runtime::RunAcceptedState::Queued
-    );
+    assert_eq!(ack.accepted_state, crate::runtime::RunAcceptedState::Queued);
     // Deferred: the run stays queued until the ghost slot is released.
     assert_eq!(session.scheduler.queued().len(), 1);
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn enqueue_prompt_releases_active_when_scheduled_start_fails() {
-    let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("x")]), "post-start-fail");
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("x")]),
+        "post-start-fail",
+    );
     let mut session = fixture.session;
     *super::POST_START_FAIL_RUN.lock() = Some("run-known".to_string());
     let result = session.enqueue_prompt(
@@ -1369,7 +1369,10 @@ async fn scheduled_run_empty_dequeue_reports_error() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn prompt_append_failure_logs_session_entry_error() {
-    let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("hello")]), "append-fail");
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("hello")]),
+        "append-fail",
+    );
     let mut session = fixture.session;
     // Both worker-spawn attempts fail, so the mid-run save_closure append
     // observes an unavailable worker and logs (rather than failing the run).
@@ -1380,7 +1383,10 @@ async fn prompt_append_failure_logs_session_entry_error() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn prompt_stale_epoch_begin_finalizing_returns_early() {
-    let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("done")]), "stale-finalize");
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("done")]),
+        "stale-finalize",
+    );
     let mut session = fixture.session;
     session.runtime.fail_next_begin_finalizing();
     session.prompt("hi", &[], &[], None, None).unwrap();
@@ -1405,7 +1411,10 @@ async fn prompt_stale_epoch_begin_finalizing_returns_early() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn prompt_persistence_commit_panic_marks_degraded() {
-    let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("doomed")]), "commit-panic");
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("doomed")]),
+        "commit-panic",
+    );
     let mut session = fixture.session;
     session.persistence.panic_next_commit();
     session.prompt("hi", &[], &[], None, None).unwrap();
@@ -1427,7 +1436,10 @@ async fn prompt_persistence_commit_panic_marks_degraded() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn prompt_spawn_double_occupancy_reports_error() {
-    let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("x")]), "spawn-occupied");
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("x")]),
+        "spawn-occupied",
+    );
     let mut session = fixture.session;
     *super::RUN_SPAWN_HOOK.lock() = Some((
         "run-a".to_string(),
@@ -1448,7 +1460,10 @@ async fn prompt_spawn_double_occupancy_reports_error() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn prompt_empty_message_hits_empty_context_early_return() {
-    let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("done")]), "empty-context");
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("done")]),
+        "empty-context",
+    );
     let mut session = fixture.session;
     session.model = "glm-4.5v".to_string();
     // An empty first message estimates to zero context tokens, hitting the
@@ -1482,7 +1497,10 @@ fn wire_auto_compaction_flags_failure_when_needed_but_no_cut_point() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn prompt_with_auto_compaction_disabled_completes() {
-    let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("done")]), "compaction-off");
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("done")]),
+        "compaction-off",
+    );
     let mut session = fixture.session;
     session.set_auto_compaction(false);
     session.prompt("hi", &[], &[], None, None).unwrap();

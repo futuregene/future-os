@@ -174,11 +174,7 @@ impl SessionPersistence {
     /// full rewrite instead of committing an incomplete run.
     pub fn commit_run(&self, entries: Vec<SessionEntry>) -> Result<()> {
         #[cfg(test)]
-        if self
-            .inner
-            .panic_next_commit
-            .swap(false, Ordering::AcqRel)
-        {
+        if self.inner.panic_next_commit.swap(false, Ordering::AcqRel) {
             panic!("injected persistence commit panic");
         }
         let (ack_tx, ack_rx) = mpsc::sync_channel(1);
@@ -222,7 +218,9 @@ impl SessionPersistence {
     /// session is persistence-degraded.
     pub fn close(&self) -> Result<()> {
         if self.inner.fail_next_close.swap(false, Ordering::AcqRel) {
-            return Err(anyhow!("session persistence worker stopped before close boundary"));
+            return Err(anyhow!(
+                "session persistence worker stopped before close boundary"
+            ));
         }
         let worker = {
             let worker = self.inner.worker.lock();
