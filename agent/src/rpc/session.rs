@@ -2494,6 +2494,9 @@ mod tests {
                 task_hold.notified().await;
             })
             .unwrap();
+        // Drive the current-thread executor so the spawned task is polled
+        // (reaching its notify await) before we degrade the lease.
+        tokio::task::yield_now().await;
         assert!(session
             .runtime
             .mark_persistence_degraded(&lease, "disk full"));
@@ -2503,6 +2506,9 @@ mod tests {
             "{error}"
         );
         hold.notify_one();
+        // Let the spawned task wake, run to completion, and release the slot
+        // before the tempdir is torn down.
+        tokio::task::yield_now().await;
         let _ = std::fs::remove_dir_all(&session.cwd);
     }
 

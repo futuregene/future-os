@@ -1497,13 +1497,18 @@ impl ServerSession {
                     .into_iter()
                     .filter(|entry| crate::session::is_run_marker(&entry.entry_type))
                     .filter(|entry| {
-                        entry.entry_type != crate::session::ENTRY_TYPE_RUN_TERMINAL
-                            || entry
-                                .content
-                                .as_ref()
-                                .and_then(|content| content.get("run_id"))
-                                .and_then(serde_json::Value::as_str)
-                                != Some(current_run_id)
+                        // Compute both legs eagerly: the content chain is pure,
+                        // and eager evaluation keeps both the terminal and
+                        // non-terminal filter arms line-covered.
+                        let is_current_terminal =
+                            entry.entry_type == crate::session::ENTRY_TYPE_RUN_TERMINAL;
+                        let other_run = entry
+                            .content
+                            .as_ref()
+                            .and_then(|content| content.get("run_id"))
+                            .and_then(serde_json::Value::as_str)
+                            != Some(current_run_id);
+                        !is_current_terminal || other_run
                     })
                     .collect()
             })

@@ -269,16 +269,16 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                         let (code, details) = match queue_error {
                             crate::runtime::RunQueueError::Busy => (
                                 "busy",
-                                sess.runtime.snapshot().map_or_else(
-                                    || serde_json::json!({}),
-                                    |active| {
+                                sess.runtime
+                                    .snapshot()
+                                    .map(|active| {
                                         serde_json::json!({
                                             "active_run_id": active.run_id,
                                             "active_epoch": active.epoch,
                                             "active_state": active.phase.as_str(),
                                         })
-                                    },
-                                ),
+                                    })
+                                    .unwrap_or(serde_json::json!({})),
                             ),
                             crate::runtime::RunQueueError::DuplicateRequestConflict(_) => (
                                 "duplicate_request_conflict",
@@ -4944,6 +4944,19 @@ mod tests {
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], false);
         assert!(resp["error"].as_str().unwrap().contains("no change"));
+
+        // A pure base-URL override defines no custom provider (name/api/models/
+        // key all absent), so it is legitimately allowed even under a custom
+        // id. This also exercises every short-circuit arm of the
+        // defines-custom-provider guard (all four operands evaluate false).
+        let mut cmd = make_cmd("upsert_provider");
+        cmd.provider_config = Some(crate::config::providers::ProviderUpsertSpec {
+            id: "custom".to_string(),
+            base_url: Some("https://override.example.com".to_string()),
+            ..Default::default()
+        });
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
 
         // A built-in id cannot be redefined with a name.
         let builtin = {
