@@ -2,6 +2,13 @@ import type { Presence } from "./types";
 
 export const PRESENCE_STALE_AFTER_MS = 60_000;
 /**
+ * The desktop bridge beats once per second, so a *receipt gap* — no presence
+ * packet arriving for this long — is a much faster death signal than the
+ * 60s wall-clock staleness window (which exists to absorb clock skew, not to
+ * detect death). Purely local timing, immune to inter-device clock offset.
+ */
+export const PRESENCE_RECEIPT_STALE_MS = 15_000;
+/**
  * Consecutive out-of-window samples at a *stable, advancing* new offset before
  * we adopt it as the new baseline. The structural discriminator is the
  * desktop's own `lastHeartbeatTs`:

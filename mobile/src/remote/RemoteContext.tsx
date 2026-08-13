@@ -25,7 +25,12 @@ import {
   ensureFreshCredentials,
   serverRevoke,
 } from "./pairing";
-import { INITIAL_PRESENCE_STATE, isDesktopOnline, type PresenceState } from "./presence";
+import {
+  INITIAL_PRESENCE_STATE,
+  isDesktopOnline,
+  PRESENCE_RECEIPT_STALE_MS,
+  type PresenceState,
+} from "./presence";
 import { detectFinished } from "./sessionStatus";
 import { type RunCursor } from "./runCursor";
 import { SyncEngine, type ReconcileReason } from "./syncEngine";
@@ -269,6 +274,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // by clock-offset drift, so the running baseline survives recomputes. Reset
   // on every reconnect so a clock that jumped while offline re-baselines.
   const presenceStateRef = useRef<PresenceState>(INITIAL_PRESENCE_STATE);
+  // Local receipt time of the last presence packet — the fast desktop-death
+  // signal (beats arrive every 1s; a gap means the bridge stopped).
+  const lastPresenceReceiptRef = useRef(0);
   // Per-session timelines: events for EVERY session are consumed (the desktop
   // observer mirrors all of them), so a background run keeps advancing and
   // switching to it renders its live state without a fresh history load. The
@@ -590,6 +598,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         },
         onEvent: handleEvent,
         onPresence: nextPresence => {
+          lastPresenceReceiptRef.current = Date.now();
           setPresence(nextPresence);
         },
         onSessions: sessionList => {
@@ -897,15 +906,19 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         const matchingModel = models.find(model => modelReference(model) === currentModel);
         setModelId(matchingModel ? modelReference(matchingModel) : currentModel);
         setThinkingLevelState(state.data.thinkingLevel ?? "off");
-        syncEngineRef.current?.reconcile(sessionId, "open");
-        // A cached timeline may have been assembled from real-time events,
-        // whose user_message payload deliberately omits attachments.
-        void hydrateAttachmentsRef.current(sessionId);
       } catch (nextError) {
         setError(nextError instanceof Error ? nextError.message : String(nextError));
       } finally {
         setBusy(false);
       }
+      // Reconcile regardless of the state read: a desktop still warming after a
+      // restart fails get_state, but the history rebuild must not be skipped —
+      // the lane's own reconcile re-reads the state and self-heals once the
+      // backend recovers (reconnect recovery re-triggers established lanes).
+      syncEngineRef.current?.reconcile(sessionId, "open");
+      // A cached timeline may have been assembled from real-time events,
+      // whose user_message payload deliberately omits attachments.
+      void hydrateAttachmentsRef.current(sessionId);
     },
     [hydrateAttachmentsRef, models],
   );
@@ -1212,7 +1225,12 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     if (phase !== "connected") return false;
     const next = isDesktopOnline(presence, clock, presenceStateRef.current);
     presenceStateRef.current = next;
-    return next.online;
+    // Fast death detection: the bridge beats once per second, so a local
+    // receipt gap flags a dead desktop within ~25s — well before the
+    // skew-tolerant 60s staleness window would flip the badge.
+    return (
+      next.online && clock - lastPresenceReceiptRef.current < PRESENCE_RECEIPT_STALE_MS
+    );
   }, [clock, phase, presence]);
   // The selected conversation's timeline — derived from the per-session cache
   // so ChatScreen reads it exactly as before. An empty draft (no session yet)

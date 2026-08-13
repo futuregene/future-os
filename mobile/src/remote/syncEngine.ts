@@ -145,10 +145,13 @@ export class SyncEngine {
     this.enqueueReplay(this.laneFor(sessionId), { reason, runId });
   }
 
-  /** Reconcile every lane that has established a timeline (reconnect recovery). */
+  /** Reconcile every real lane (reconnect recovery). Lanes that never
+   * established (their first history load failed while the backend was down)
+   * are included — this is exactly the case that must self-heal on recovery;
+   * the draft lane ("") has no desktop state and is skipped by runReconcile. */
   reconcileAll(reason: ReconcileReason): void {
     for (const lane of this.lanes.values()) {
-      if (lane.established) this.enqueueReplay(lane, { reason });
+      if (lane.sessionId !== "") this.enqueueReplay(lane, { reason });
     }
   }
 
