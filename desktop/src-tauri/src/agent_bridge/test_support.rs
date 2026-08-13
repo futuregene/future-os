@@ -330,6 +330,17 @@ impl MockAgentGuard {
             .push_back(script);
     }
 
+    /// Queue one plain-subscribe (`atomic_attach: false`) stream outcome — the
+    /// kind idle observers open. Lets observer retry/idle paths be scripted
+    /// deterministically.
+    pub(crate) fn push_plain_stream(&self, script: StreamScript) {
+        STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .plain_streams
+            .push_back(script);
+    }
+
     /// Every `execute_command` the mock has seen since the guard was taken.
     pub(crate) fn requests(&self) -> Vec<RpcCommand> {
         STATE
