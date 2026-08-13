@@ -5,6 +5,7 @@ import {
   messageText,
   pairingCodeFromQr,
   parsePairingInvitation,
+  randomId,
   utf8Bytes,
 } from "../codec";
 
@@ -56,6 +57,13 @@ describe("pairing codec", () => {
     expect(pairingCodeFromQr("futureos://remote/pair?code=abc_123")).toBeNull();
     expect(pairingCodeFromQr("raw-code")).toBeNull();
   });
+
+  test("rejects a malformed invitation URL instead of throwing", () => {
+    // A non-URL (or URL without a parseable host) makes `new URL` throw — the
+    // parser must degrade to null rather than leak a TypeError to the caller.
+    expect(parsePairingInvitation("not a url")).toBeNull();
+    expect(parsePairingInvitation("%%%")).toBeNull();
+  });
 });
 
 describe("history text", () => {
@@ -90,6 +98,13 @@ describe("prompt payload budget", () => {
     const prompt = "a".repeat(MAX_PROMPT_MESSAGE_BYTES);
     expect(utf8Bytes(prompt)).toBe(MAX_PROMPT_MESSAGE_BYTES);
     expect(utf8Bytes(prompt)).toBeLessThan(900 * 1024);
+  });
+});
+
+describe("randomId", () => {
+  test("prefixes a 128-bit hex random value", () => {
+    const id = randomId("dev");
+    expect(id).toMatch(/^dev_[0-9a-f]{32}$/);
   });
 });
 

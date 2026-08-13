@@ -52,12 +52,7 @@ pub(super) fn resolve_markdown_reference(
             Err(error) => failed_reference(target_type, target_id, error),
         },
         "file" => match resolve_file_reference(conn, workspace_id, &target_id) {
-            Ok(Some(file)) => resolved_reference(target_type, target_id, file),
-            Ok(None) => missing_reference(
-                target_type,
-                target_id,
-                "file was not found in the workspace",
-            ),
+            Ok(file) => resolved_reference(target_type, target_id, file),
             Err(error) => failed_reference(target_type, target_id, error),
         },
         "run" => match get_run_in_workspace(conn, workspace_id, &target_id) {
@@ -164,15 +159,14 @@ struct ResolvedFile {
 /// Turn a file reference into its display model. The path may be absolute (the
 /// model writes it verbatim, so the leading slash is intact) or workspace-
 /// relative; anything not absolute is resolved against the workspace root.
+/// Never returns None: the caller already rejected an empty (trimmed) id, and
+/// resolution is pure path arithmetic — any non-empty path becomes a link.
 fn resolve_file_reference(
     conn: &Connection,
     workspace_id: &str,
     raw_path: &str,
-) -> Result<Option<ResolvedFile>, crate::AppError> {
+) -> Result<ResolvedFile, crate::AppError> {
     let raw = raw_path.trim();
-    if raw.is_empty() {
-        return Ok(None);
-    }
 
     let workspace_path: Option<String> = conn
         .query_row(
@@ -208,12 +202,12 @@ fn resolve_file_reference(
         None => (false, None),
     };
 
-    Ok(Some(ResolvedFile {
+    Ok(ResolvedFile {
         path: absolute.to_string_lossy().into_owned(),
         name,
         relative_path,
         inside_workspace,
-    }))
+    })
 }
 
 fn get_run_in_workspace(
@@ -274,4 +268,156 @@ fn get_review_changeset_in_workspace(
     )
     .optional()
     .map_err(crate::AppError::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::schema::SCHEMA;
+
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        conn.execute_batch(SCHEMA).expect("initialize test schema");
+        conn
+    }
+
+    /// Workspace `ws1` (`/tmp/ws1`) with thread `t1` carrying run `r1`,
+    /// approval `a1`, and review changeset `rc1`.
+    fn seed_objects(conn: &Connection) {
+        conn.execute_batch(
+            "INSERT INTO workspaces (
+                 id, name, kind, path, cleanup_status, created_at, updated_at
+             ) VALUES ('ws1', 'WS', 'temporary', '/tmp/ws1', 'active', 1, 1);
+             INSERT INTO threads (
+                 id, workspace_id, mode, title, status, pinned, readonly,
+                 created_at, updated_at
+             ) VALUES ('t1', 'ws1', 'chat', 'T', 'active', 0, 0, 1, 1);
+             INSERT INTO runs (id, thread_id, status, created_at, updated_at)
+             VALUES ('r1', 't1', 'completed', 1, 1);
+             INSERT INTO approval_requests (
+                 id, thread_id, kind, status, title, created_at, updated_at
+             ) VALUES ('a1', 't1', 'shell', 'pending', 'Deploy', 1, 1);
+             INSERT INTO review_changesets (
+                 id, thread_id, title, status, created_at, updated_at
+             ) VALUES ('rc1', 't1', 'Changes', 'ready', 1, 1);",
+        )
+        .expect("seed objects");
+    }
+
+    fn reference(target_type: &str, target_id: &str) -> MarkdownReferenceInput {
+        MarkdownReferenceInput {
+            target_id: target_id.to_string(),
+            target_type: target_type.to_string(),
+        }
+    }
+
+    #[test]
+    fn public_resolver_requires_a_workspace_id() {
+        let result = resolve_markdown_references(ResolveMarkdownReferencesInput {
+            workspace_id: "  ".to_string(),
+            references: vec![],
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn public_resolver_maps_each_reference() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("resolve_pub");
+        {
+            let conn = connect().expect("connect");
+            crate::store::db::apply_schema(&conn).expect("apply schema");
+        }
+        let resolved = resolve_markdown_references(ResolveMarkdownReferencesInput {
+            workspace_id: "ws_any".to_string(),
+            references: vec![reference("run", "missing_run")],
+        })
+        .expect("resolve batch");
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].status, "missing");
+    }
+
+    #[test]
+    fn resolves_runs_scoped_to_the_workspace() {
+        let conn = test_conn();
+        seed_objects(&conn);
+
+        let resolved = resolve_markdown_reference(&conn, "ws1", reference("run", "r1"));
+        assert_eq!(resolved.status, "resolved");
+        assert_eq!(resolved.data.expect("data")["id"], "r1");
+
+        let missing = resolve_markdown_reference(&conn, "ws1", reference("run", "nope"));
+        assert_eq!(missing.status, "missing");
+        assert_eq!(missing.error.as_deref(), Some("run was not found"));
+    }
+
+    #[test]
+    fn resolves_approvals_scoped_to_the_workspace() {
+        let conn = test_conn();
+        seed_objects(&conn);
+
+        let resolved = resolve_markdown_reference(&conn, "ws1", reference("approval", "a1"));
+        assert_eq!(resolved.status, "resolved");
+        assert_eq!(resolved.data.expect("data")["title"], "Deploy");
+
+        let missing = resolve_markdown_reference(&conn, "ws1", reference("approval", "nope"));
+        assert_eq!(
+            missing.error.as_deref(),
+            Some("approval request was not found")
+        );
+    }
+
+    #[test]
+    fn resolves_review_changesets_scoped_to_the_workspace() {
+        let conn = test_conn();
+        seed_objects(&conn);
+
+        let resolved = resolve_markdown_reference(&conn, "ws1", reference("review", "rc1"));
+        assert_eq!(resolved.status, "resolved");
+        assert_eq!(resolved.data.expect("data")["title"], "Changes");
+
+        let missing = resolve_markdown_reference(&conn, "ws1", reference("review", "nope"));
+        assert_eq!(
+            missing.error.as_deref(),
+            Some("review changeset was not found")
+        );
+    }
+
+    #[test]
+    fn unsupported_types_and_query_failures_resolve_as_missing() {
+        let conn = test_conn();
+        let unsupported = resolve_markdown_reference(&conn, "ws1", reference("tool", "t1"));
+        assert_eq!(unsupported.status, "missing");
+        assert_eq!(
+            unsupported.error.as_deref(),
+            Some("reference type is not supported yet")
+        );
+
+        // A connection without the schema turns each lookup's error into a
+        // `missing` result carrying the message — never a batch abort.
+        let bare = Connection::open_in_memory().expect("open bare database");
+        for target_type in ["artifact", "file", "run", "approval", "review"] {
+            let failed = resolve_markdown_reference(&bare, "ws1", reference(target_type, "x"));
+            assert_eq!(failed.status, "missing", "{target_type}");
+            assert!(failed.error.is_some(), "{target_type}");
+        }
+    }
+
+    #[test]
+    fn file_reference_relative_path_without_workspace_root_is_anchored_absolute() {
+        let conn = test_conn();
+        // No `ws_ghost` row: a relative path is surfaced as `/<raw>`.
+        let file = resolve_file_reference(&conn, "ws_ghost", "notes/a.md").expect("resolve");
+        assert_eq!(file.path, "/notes/a.md");
+        assert!(!file.inside_workspace);
+        assert_eq!(file.relative_path, None);
+    }
+
+    #[test]
+    fn file_reference_root_path_has_no_name() {
+        let conn = test_conn();
+        seed_objects(&conn);
+        let file = resolve_file_reference(&conn, "ws1", "/").expect("resolve");
+        assert_eq!(file.name, "");
+        assert!(!file.inside_workspace);
+    }
 }

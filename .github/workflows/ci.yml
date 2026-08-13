@@ -33,6 +33,7 @@ jobs:
     outputs:
       rust_workspace: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.rust_workspace == 'true' || steps.filter.outputs.ci == 'true' }}
       loop_canary: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.loop_canary == 'true' || steps.filter.outputs.ci == 'true' }}
+      coverage_scripts: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.coverage_scripts == 'true' || steps.filter.outputs.ci == 'true' }}
       desktop_tauri: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.desktop_tauri == 'true' || steps.filter.outputs.ci == 'true' }}
       desktop_frontend: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.desktop_frontend == 'true' || steps.filter.outputs.ci == 'true' }}
       mobile: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.mobile == 'true' || steps.filter.outputs.ci == 'true' }}
@@ -75,6 +76,12 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
+            # P1-7: the ratchet machinery itself must revalidate the gate (a
+            # baseline-only edit is the ratchet-down approval path).
+            coverage_scripts:
+              - 'scripts/coverage.sh'
+              - 'scripts/coverage_ratchet.py'
+              - 'scripts/coverage-baseline.json'
             desktop_tauri:
               - 'desktop/src-tauri/**'
               - '.cargo/**'
@@ -182,29 +189,89 @@ jobs:
         if: needs.changes.outputs.desktop_tauri == 'true'
         run: cargo clippy --all-targets --manifest-path desktop/src-tauri/Cargo.toml -- -D warnings
 
-  # ─── Rust test gate (Linux) ───────────────────────────────────────────────
-  # This deliberately duplicates setup from `rust-quality`: separate jobs do
-  # not share a live target directory, but running lint and tests in parallel
-  # reduces PR wall-clock time.
+  # ─── Rust test gates (Linux) ──────────────────────────────────────────────
+  # One matrix job split into four parallel groups, each paying only its own
+  # compile+run cost instead of everything serializing behind one big
+  # `cargo test --workspace` and behind the desktop backend's independent
+  # webkit/gtk dep tree. Groups map to crate clusters that share a build
+  # graph; a PR pays setup+compile+run only for the groups it touches.
   #
-  # `cargo test --workspace` covers every workspace crate including tui/cli
-  # (their former dedicated jobs were folded in here — see #120). The cli/tui
+  # Groups are always-present (per-step `if`, never job-level): branch
+  # protection treats a *skipped* required check as unsatisfied, so e.g. a
+  # mobile-only PR must still report success for every group (no-op echo
+  # below). `rust-tests-gate` aggregates the groups into the single stable
+  # required context "Rust tests (Linux)", so splitting/renaming groups never
+  # requires touching the branch-protection ruleset.
+  #
+  # Workspace groups gate on `rust_workspace` only: workspace crates do not
+  # depend on desktop/src-tauri, so a desktop-only change cannot break them
+  # (the reverse is NOT true — future-rpc feeds the Tauri backend, and the
+  # path filter marks rpc/** as desktop_tauri too, so rpc changes also run
+  # the desktop group).
+  #
+  # CARGO_PROFILE_TEST_DEBUG=1 keeps file:line in panic backtraces while
+  # dropping full debuginfo codegen — the dominant cost of building test
+  # binaries. The cli/tui
   # golden-diff harnesses are NOT part of CI: they were the TS→Rust migration
-  # acceptance gate and now only run manually (make test-cli-diff / test-tui-diff)
-  # before a release.
+  # acceptance gate and now only run manually (make test-cli-diff /
+  # test-tui-diff) before a release.
   rust-tests:
-    name: Rust tests (Linux)
+    name: Rust tests (Linux) (${{ matrix.name }})
     needs: changes
-    if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.desktop_tauri == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: agent
+            filter: rust_workspace
+            packages: -p future-agent
+            desktop: 'false'
+          - name: tui, cli
+            filter: rust_workspace
+            packages: -p future-tui -p future-cli
+            desktop: 'false'
+          - name: channels, rpc, loop
+            filter: rust_workspace
+            packages: -p future-channel -p future-rpc -p future-loop
+            desktop: 'false'
+          - name: desktop backend
+            filter: desktop_tauri
+            packages: ''
+            desktop: 'true'
     steps:
+      # Per-group affected check: reads the matching `changes` output by name
+      # so each group gates independently without a job-level `if` (which
+      # would skip the whole matrix and leave required checks "Expected").
+      - name: Is this test group affected?
+        id: affected
+        env:
+          FILTER: ${{ matrix.filter }}
+          OUTPUTS: ${{ toJSON(needs.changes.outputs) }}
+        run: |
+          run=$(echo "$OUTPUTS" | jq -r --arg k "$FILTER" '.[$k] // "false"')
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+      - name: No affected Rust tests in this group
+        if: steps.affected.outputs.run != 'true'
+        run: echo "No affected Rust tests in this group; skipped."
+
       - name: Checkout
+        if: steps.affected.outputs.run == 'true'
         uses: actions/checkout@v5
 
       - name: Setup Rust
+        if: steps.affected.outputs.run == 'true'
         uses: dtolnay/rust-toolchain@1.97.0
 
+      # All groups share the automatic cache key (job id is identical across
+      # matrix entries) so every group restores the same warm snapshot; per-
+      # group `key` slots would quadruple cache storage (~4 × ~500MB) and
+      # push the repo cache quota into LRU eviction of other jobs' entries.
+      # Concurrent saves race on one key (first wins) — the losers just
+      # recompile their own crates next run, which is bounded and parallel.
       - name: Cache Rust
+        if: steps.affected.outputs.run == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
@@ -213,7 +280,10 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true
 
+      # The WebKit/GTK stack is only needed by the desktop backend's -sys
+      # build scripts; workspace groups skip it (~40s of apt each).
       - name: Install Linux deps
+        if: steps.affected.outputs.run == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -221,26 +291,53 @@ jobs:
             binutils \
             mold \
             pkg-config \
-            libayatana-appindicator3-dev \
-            libgtk-3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev
+            libssl-dev
+          if [ "${{ matrix.desktop }}" = 'true' ]; then
+            sudo apt-get install -y \
+              libayatana-appindicator3-dev \
+              libgtk-3-dev \
+              librsvg2-dev \
+              libwebkit2gtk-4.1-dev
+          fi
 
+      # tauri-build's build script aborts with `resource path ... doesn't
+      # exist` unless every `bundle.externalBin` sidecar is present; empty
+      # placeholders suffice for tests.
       - name: Create placeholder sidecars
-        if: needs.changes.outputs.desktop_tauri == 'true'
+        if: steps.affected.outputs.run == 'true' && matrix.desktop == 'true'
         run: |
           triple=$(rustc -Vv | sed -n 's/^host: //p')
           mkdir -p desktop/src-tauri/binaries
           : > "desktop/src-tauri/binaries/future-$triple"
 
-      - name: cargo test (workspace)
-        if: needs.changes.outputs.rust_workspace == 'true'
-        run: cargo test --workspace --manifest-path Cargo.toml
+      - name: cargo test (${{ matrix.name }})
+        if: steps.affected.outputs.run == 'true'
+        env:
+          CARGO_PROFILE_TEST_DEBUG: 1
+        run: |
+          if [ "${{ matrix.desktop }}" = 'true' ]; then
+            cargo test --manifest-path desktop/src-tauri/Cargo.toml
+          else
+            cargo test ${{ matrix.packages }}
+          fi
 
-      - name: cargo test (desktop backend)
-        if: needs.changes.outputs.desktop_tauri == 'true'
-        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml
+  # Aggregator keeping the required check name stable across group splits:
+  # fails iff any Rust test group failed. `if: always()` so a failed group
+  # still yields an explicit red X on this required check (a skipped required
+  # check would block the PR with a confusing "Expected" instead).
+  rust-tests-gate:
+    name: Rust tests (Linux)
+    needs: rust-tests
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: All Rust test groups passed?
+        run: |
+          if [ "${{ needs.rust-tests.result }}" != 'success' ]; then
+            echo "Rust test groups result: ${{ needs.rust-tests.result }}"
+            exit 1
+          fi
+          echo "All Rust test groups passed."
 
   # ─── Loop canary premerge gate (P1-6) ────────────────────────────────────
   # Behavioral merge gate for the loop control plane: runs
@@ -283,6 +380,54 @@ jobs:
 
       - name: Canary premerge gate
         run: ./target/debug/future-loop canary premerge --json
+
+  # ─── Coverage ratchet gate (P1-7) ────────────────────────────────────────
+  # Only-up coverage gate: measures workspace line coverage via
+  # scripts/coverage.sh (cargo llvm-cov) and fails if any crate drops below
+  # its floor in scripts/coverage-baseline.json. Rises are always allowed;
+  # an intentional drop is approved by lowering the floor file in the same
+  # PR (that diff is the explicit ratchet-down approval). This deliberately
+  # re-runs the test suite instrumented rather than sharing rust-tests'
+  # run — llvm-cov needs its own build profile.
+  coverage-ratchet:
+    name: Coverage ratchet (workspace lines)
+    needs: changes
+    if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.coverage_scripts == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Install llvm-tools-preview
+        run: rustup component add llvm-tools-preview
+
+      # Prebuilt binary install (cargo install would compile for minutes).
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+          cache-on-failure: true
+          cache-all-crates: true
+
+      # mold: .cargo/config.toml pins -fuse-ld=mold for Linux targets. No
+      # WebKit/GTK needed — the desktop Tauri backend is not part of the
+      # workspace coverage measurement. libssl for the agent's TLS deps.
+      - name: Install Linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential mold pkg-config libssl-dev
+
+      - name: Coverage ratchet gate
+        run: scripts/coverage.sh --check
 
   # ─── Rust 3-platform compile check ───────────────────────────────────────
   # The quality gate above only runs on Linux, so platform-conditional code was

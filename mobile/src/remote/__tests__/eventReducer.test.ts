@@ -2,6 +2,7 @@ import {
   applyStreamEvent,
   appendUserMessage,
   emptyTimeline,
+  markApprovalDecision,
   mergeHistoryAttachments,
   normalizeReplayEvents,
   stripRunItems,
@@ -162,7 +163,11 @@ describe("entry reducer", () => {
     expect(reply.segments).toEqual([
       { id: expect.any(String), kind: "thinking", text: "reasoning…" },
       { id: expect.any(String), kind: "text", text: "interim analysis" },
-      { id: expect.any(String), kind: "tool", tool: { name: "read", status: "completed", complete: true, detail: "/tmp/x" } },
+      {
+        id: expect.any(String),
+        kind: "tool",
+        tool: { name: "read", status: "completed", complete: true, detail: "/tmp/x" },
+      },
       { id: expect.any(String), kind: "text", text: "done" },
     ]);
     // A reply-less run (empty assistant entry) renders nothing extra.
@@ -201,7 +206,11 @@ describe("projection reducer", () => {
     expect(reply).toMatchObject({ kind: "message", role: "assistant", text: "answer" });
     // The tool row renders inline inside the bubble, in stream order.
     expect(reply.segments).toEqual([
-      { id: expect.any(String), kind: "tool", tool: { name: "read", status: "completed", complete: true } },
+      {
+        id: expect.any(String),
+        kind: "tool",
+        tool: { name: "read", status: "completed", complete: true },
+      },
       { id: expect.any(String), kind: "text", text: "answer" },
     ]);
     expect(timeline.streaming).toBe(false);
@@ -341,7 +350,12 @@ describe("stream event reducer", () => {
       idx: 5,
     });
     expect(timeline.items).toEqual([
-      expect.objectContaining({ kind: "notice", tone: "warning", text: "truncated", runId: "run-1" }),
+      expect.objectContaining({
+        kind: "notice",
+        tone: "warning",
+        text: "truncated",
+        runId: "run-1",
+      }),
     ]);
     // A second marker for the same run must not duplicate the notice.
     const again = applyStreamEvent(timeline, {
@@ -460,7 +474,9 @@ describe("stream event reducer", () => {
     expect(host.streaming).toBe(true);
     expect(host.text).toBe("");
     // Chronological order: the reasoning renders inline inside the bubble.
-    expect(host.segments).toEqual([{ id: expect.any(String), kind: "thinking", text: "reasoning…" }]);
+    expect(host.segments).toEqual([
+      { id: expect.any(String), kind: "thinking", text: "reasoning…" },
+    ]);
     expect(thinking.items.map(item => item.kind)).toEqual(["message"]);
 
     // The reply text merges into that same bubble — no duplicate assistant row.
@@ -595,7 +611,11 @@ describe("stream event reducer", () => {
     const shell = state.items.find(item => item.kind === "message");
     if (!shell || shell.kind !== "message") throw new Error("shell bubble missing");
     expect(shell.segments).toEqual([
-      { id: expect.any(String), kind: "tool", tool: { name: "shell", status: "running", complete: false, detail: "ls -la" } },
+      {
+        id: expect.any(String),
+        kind: "tool",
+        tool: { name: "shell", status: "running", complete: false, detail: "ls -la" },
+      },
     ]);
     state = applyStreamEvent(state, {
       type: "tool_start",
@@ -664,7 +684,11 @@ describe("shared-projection semantic flags", () => {
   test("a shell exit-code footer marks the tool row failed (G1)", () => {
     let state = applyStreamEvent(emptyTimeline(), {
       type: "tool_start",
-      data: JSON.stringify({ tool_id: "t1", tool_name: "shell", tool_args: { command: "future nosuch" } }),
+      data: JSON.stringify({
+        tool_id: "t1",
+        tool_name: "shell",
+        tool_args: { command: "future nosuch" },
+      }),
       runId: "run-1",
       idx: 0,
     });
@@ -688,7 +712,11 @@ describe("shared-projection semantic flags", () => {
   test("a bare grep exit-1 is a soft fail, not a tool failure (G1 exemption)", () => {
     let state = applyStreamEvent(emptyTimeline(), {
       type: "tool_start",
-      data: JSON.stringify({ tool_id: "t1", tool_name: "shell", tool_args: { command: "grep foo file" } }),
+      data: JSON.stringify({
+        tool_id: "t1",
+        tool_name: "shell",
+        tool_args: { command: "grep foo file" },
+      }),
       runId: "run-1",
       idx: 0,
     });
@@ -798,5 +826,90 @@ describe("shared-projection semantic flags", () => {
     const reply = state.items.find(item => item.kind === "message");
     if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
     expect(reply.outputTokens).toBe(2965);
+  });
+});
+
+describe("approval decisions", () => {
+  test("a repeated approval_request with the same id does not duplicate the card", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "approval_request",
+      data: JSON.stringify({ approval_request_id: "approval-1", title: "Write file" }),
+      runId: "run-1",
+      idx: 1,
+    });
+    state = applyStreamEvent(state, {
+      type: "approval_request",
+      data: JSON.stringify({ approval_request_id: "approval-1", title: "Write file" }),
+      runId: "run-1",
+      idx: 2,
+    });
+    expect(state.items.filter(item => item.kind === "approval")).toHaveLength(1);
+  });
+
+  test("markApprovalDecision stamps a decision only on the matching approval", () => {
+    const state = applyStreamEvent(emptyTimeline(), {
+      type: "approval_request",
+      data: JSON.stringify({ approval_request_id: "approval-1" }),
+      runId: "run-1",
+      idx: 1,
+    });
+    const decided = markApprovalDecision(state, "approval-1", "approved");
+    expect(decided.items[0]).toMatchObject({ kind: "approval", decision: "approved" });
+    const untouched = markApprovalDecision(state, "approval-other", "rejected");
+    expect(untouched.items[0]).not.toHaveProperty("decision");
+  });
+});
+
+describe("stream event edge cases", () => {
+  test("malformed event JSON degrades to an empty payload", () => {
+    const state = applyStreamEvent(emptyTimeline(), {
+      type: "user_message",
+      data: "not json{",
+      runId: "run-1",
+      idx: 1,
+    });
+    // The unparseable payload yields no text, so no user bubble is appended.
+    expect(state.items).toEqual([]);
+  });
+
+  test("a burst of same-kind completed tools collapses into a summary row with children", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "agent_start",
+      data: "{}",
+      runId: "run-1",
+      idx: 0,
+    });
+    state = applyStreamEvent(state, {
+      type: "tool_start",
+      data: JSON.stringify({ tool_id: "t1", tool_name: "read", tool_args: { path: "/tmp/a" } }),
+      runId: "run-1",
+      idx: 1,
+    });
+    state = applyStreamEvent(state, {
+      type: "tool_end",
+      data: JSON.stringify({ tool_id: "t1", tool_name: "read" }),
+      runId: "run-1",
+      idx: 2,
+    });
+    state = applyStreamEvent(state, {
+      type: "tool_start",
+      data: JSON.stringify({ tool_id: "t2", tool_name: "read", tool_args: { path: "/tmp/b" } }),
+      runId: "run-1",
+      idx: 3,
+    });
+    state = applyStreamEvent(state, {
+      type: "tool_end",
+      data: JSON.stringify({ tool_id: "t2", tool_name: "read" }),
+      runId: "run-1",
+      idx: 4,
+    });
+    const reply = state.items.find(item => item.kind === "message" && item.role === "assistant");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    const toolSegment = reply.segments?.find(segment => segment.kind === "tool");
+    expect(toolSegment && toolSegment.kind === "tool").toBe(true);
+    if (toolSegment?.kind === "tool") {
+      expect(toolSegment.tool.count).toBe(2);
+      expect(toolSegment.tool.children?.map(child => child.name)).toEqual(["read", "read"]);
+    }
   });
 });

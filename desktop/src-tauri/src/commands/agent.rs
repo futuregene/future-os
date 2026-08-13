@@ -43,3 +43,55 @@ pub async fn agent_prompt(
     )
     .await
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::await_holding_lock)]
+    use super::*;
+    use crate::commands::agent_mock::{mock_agent_lock, script_mock_agent, MockScript};
+    use std::collections::HashMap;
+
+    #[tokio::test]
+    async fn list_agent_models_parses_the_agent_response() {
+        let _lock = mock_agent_lock();
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([("list_models".to_string(), "{\"models\":[]}".to_string())]),
+            ..Default::default()
+        });
+        let models = list_agent_models().await.expect("models");
+        assert!(models.is_empty());
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn set_default_model_succeeds() {
+        let _lock = mock_agent_lock();
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([("set_default_model".to_string(), "{}".to_string())]),
+            ..Default::default()
+        });
+        set_default_model("future/deepseek".into())
+            .await
+            .expect("set");
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn sync_future_models_parses_the_agent_result() {
+        let _lock = mock_agent_lock();
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "sync_future_models".to_string(),
+                "{\"synced\":true,\"modelCount\":3}".to_string(),
+            )]),
+            ..Default::default()
+        });
+        let result = sync_future_models().await.expect("sync");
+        assert!(result.synced);
+        assert_eq!(result.model_count, 3);
+        script_mock_agent(MockScript::default());
+    }
+}

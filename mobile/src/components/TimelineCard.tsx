@@ -34,6 +34,8 @@ import { Button } from "./Button";
 interface TimelineCardProps {
   item: TimelineItem;
   onOpenAttachment?(attachment: HistoryAttachment): void;
+  onRetry?(item: TimelineItem): void;
+  onContinue?(item: TimelineItem): void;
 }
 
 // Same shape as the desktop footer (desktop/src/lib/date.ts formatDuration): "5s"
@@ -393,7 +395,7 @@ function SegmentBlock({ segment, streaming }: { segment: TimelineSegment; stream
   return <CompactionDivider tokensBefore={segment.tokensBefore} />;
 }
 
-export function TimelineCard({ item, onOpenAttachment }: TimelineCardProps) {
+export function TimelineCard({ item, onOpenAttachment, onRetry, onContinue }: TimelineCardProps) {
   const { t, i18n } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const { copied, copy } = useCopyState();
@@ -461,6 +463,22 @@ export function TimelineCard({ item, onOpenAttachment }: TimelineCardProps) {
                 )}
               </Pressable>
               {footerStats.length > 0 && <Text style={styles.messageDuration}>{footerStats}</Text>}
+            </View>
+          )}
+          {(item.failed || item.truncated) && (
+            <View style={styles.recoveryRow}>
+              <Button
+                compact
+                label={t("chat.retry")}
+                onPress={() => onRetry?.(item)}
+                variant="secondary"
+              />
+              <Button
+                compact
+                label={t("chat.continue")}
+                onPress={() => onContinue?.(item)}
+                variant="secondary"
+              />
             </View>
           )}
         </View>
@@ -648,6 +666,11 @@ const styles = StyleSheet.create({
   compactionLine: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: colors.line },
   compactionLabel: { color: colors.inkMuted, fontSize: 12 },
   messageDuration: { color: colors.inkMuted, fontSize: 12 },
+  recoveryRow: {
+    flexDirection: "row",
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+  },
   copyButton: {
     flexDirection: "row",
     alignItems: "center",

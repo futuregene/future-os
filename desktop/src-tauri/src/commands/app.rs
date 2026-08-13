@@ -26,3 +26,21 @@ pub fn app_build_info() -> BuildInfo {
 pub fn initialize_app_store() -> Result<(), crate::AppError> {
     store::initialize_app_store()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_info_mirrors_the_crate_constant() {
+        let info = app_build_info();
+        assert_eq!(info.version, crate::build_info::VERSION);
+        assert_eq!(info.is_release, crate::build_info::is_release());
+    }
+
+    #[test]
+    fn initialize_creates_a_fresh_store() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("cmd_app_init");
+        initialize_app_store().expect("initialize the store");
+    }
+}

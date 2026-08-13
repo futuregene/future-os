@@ -1,5 +1,5 @@
 .PHONY: help version \
-	build build-cli build-desktop build-desktop-dist build-mobile-android build-mobile-ios desktop-sidecars build-thread-projection \
+	build build-cli build-desktop build-mobile-android build-mobile-ios desktop-sidecars build-thread-projection \
 	test test-agent test-channels test-cli test-tui test-cli-diff test-tui-diff test-tui-tmux \
 	test-desktop test-desktop-rust test-mobile \
 	lint lint-rust lint-desktop stylelint-desktop lint-mobile check-desktop check-mobile fmt fmt-mobile \
@@ -57,7 +57,10 @@ ifeq ($(OS),windows)
 	@if not exist "$(USERPROFILE)\.future\bin" mkdir "$(USERPROFILE)\.future\bin"
 	$(COPY_CMD) target\release\future$(EXE_SUFFIX) "$(PREFIX)\future$(EXE_SUFFIX)"
 else
-	$(SUDO) cp target/release/future "$(PREFIX)/future"
+	# `install` unlinks+creates a fresh inode; plain `cp` overwrites in place
+	# and macOS taskgated can then SIGKILL the binary ("Code Signature
+	# Invalid") because the vnode's cached signing state no longer matches.
+	$(SUDO) install -m 755 target/release/future "$(PREFIX)/future"
 endif
 
 install-desktop: install-cli desktop-sidecars
@@ -66,7 +69,7 @@ install-desktop: install-cli desktop-sidecars
 ifeq ($(OS),windows)
 	$(COPY_CMD) desktop\src-tauri\target\release\futureos$(EXE_SUFFIX) "$(PREFIX)\future-desktop$(EXE_SUFFIX)"
 else
-	$(SUDO) cp desktop/src-tauri/target/release/futureos "$(PREFIX)/future-desktop"
+	$(SUDO) install -m 755 desktop/src-tauri/target/release/futureos "$(PREFIX)/future-desktop"
 endif
 
 # Also removes pre-unification installs (future-agent/-tui/-channel).
@@ -151,22 +154,23 @@ endif
 
 # Shared thread projection package: desktop/mobile both depend on its compiled
 # dist/ via a `file:` dep, so any TS change here must rebuild before either app
-# typechecks. Depends on nothing else; run once per source change.
+# typechecks or runs. Every desktop/mobile build, test, lint and run target
+# below depends on this, so it always reflects the latest source — no manual step.
+# The stale-check lives in helper scripts: make recipes run under cmd.exe on
+# Windows, which cannot parse POSIX shell (`if [ ! -f ... ]`).
 build-thread-projection:
-	$(call npm-install-if-needed,thread-projection)
-	@if [ ! -f thread-projection/dist/index.js ] || find thread-projection/src -newer thread-projection/dist/index.js -print -quit | grep -q .; then \
-		echo "  build thread-projection/"; \
-		cd thread-projection && npm run build; \
-	fi
-
-# React frontend only (dep of build-desktop / check-desktop).
-build-desktop-dist: build-thread-projection
-	$(call npm-install-if-needed,desktop)
-	cd desktop && npm run build
+ifeq ($(OS),windows)
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-thread-projection.ps1
+else
+	bash scripts/build-thread-projection.sh
+endif
 
 # Self-contained standalone binary (no installer):
 #   desktop/src-tauri/target/release/futureos$(EXE_SUFFIX)
-build-desktop: build-desktop-dist desktop-sidecars
+# `tauri build` runs the frontend build (`npm run build`) via beforeBuildCommand,
+# so it is not repeated here.
+build-desktop: build-thread-projection desktop-sidecars
+	$(call npm-install-if-needed,desktop)
 	cd desktop && npx tauri build --no-bundle
 
 # Mobile native projects are generated locally by Expo (gitignored).
@@ -237,7 +241,9 @@ lint-mobile: build-thread-projection
 	$(call npm-install-if-needed,mobile)
 	cd mobile && npm run typecheck && npm run lint
 
-check-desktop: lint-desktop stylelint-desktop build-desktop-dist desktop-sidecar-placeholder
+check-desktop: lint-desktop stylelint-desktop build-thread-projection desktop-sidecar-placeholder
+	$(call npm-install-if-needed,desktop)
+	cd desktop && npm run build
 	cd desktop/src-tauri && cargo check
 
 check-mobile: lint-mobile test-mobile
@@ -273,7 +279,7 @@ run-channels:
 run-loop:
 	cd orchestration/loop && cargo run
 
-run-desktop: desktop-sidecars
+run-desktop: build-thread-projection desktop-sidecars
 	cd desktop && npm run tauri:dev
 
 run-mobile-android: build-thread-projection

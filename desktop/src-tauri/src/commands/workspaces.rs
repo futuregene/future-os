@@ -61,3 +61,75 @@ pub async fn delete_workspace(
     let _ = store::reconcile_orphan_chat_workspaces();
     Ok(workspace)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth_store::test_support::HomeGuard;
+
+    fn init(label: &str) -> HomeGuard {
+        let home = HomeGuard::new(label);
+        crate::store::initialize_app_store().expect("init store");
+        home
+    }
+
+    fn create_input() -> store::CreateWorkspaceInput {
+        store::CreateWorkspaceInput {
+            name: Some("Project".into()),
+            path: std::env::temp_dir()
+                .join(format!("futureos-cmd-ws-{}", std::process::id()))
+                .display()
+                .to_string(),
+            description: Some("a project".into()),
+            create_directory: Some(true),
+        }
+    }
+
+    #[tokio::test]
+    async fn workspace_commands_round_trip() {
+        let _home = init("cmd_workspaces");
+        assert!(list_workspaces().expect("list empty").is_empty());
+
+        let created = create_workspace(create_input()).expect("create");
+        assert_eq!(created.name, "Project");
+        assert_eq!(list_workspaces().expect("list").len(), 1);
+
+        let renamed = rename_workspace(store::RenameWorkspaceInput {
+            workspace_id: created.id.clone(),
+            name: "Renamed".into(),
+        })
+        .expect("rename");
+        assert_eq!(renamed.name, "Renamed");
+
+        let deleted = delete_workspace(created.id.clone()).await.expect("delete");
+        assert_eq!(deleted.id, created.id);
+        assert!(list_workspaces().expect("list after delete").is_empty());
+    }
+
+    #[test]
+    fn ensure_workspace_git_is_false_for_a_non_git_path() {
+        let _home = init("cmd_ws_git");
+        let created = create_workspace(create_input()).expect("create");
+        // The freshly created dir is not a git repo, so the report is false.
+        assert!(!ensure_workspace_git(created.id).expect("check git"));
+    }
+
+    #[test]
+    fn ensure_workspace_git_skips_non_user_workspaces() {
+        let _home = init("cmd_ws_git_kind");
+        let chat = get_or_create_chat_workspace("thread_x".into(), Some("Chat".into()))
+            .expect("chat workspace");
+        assert_eq!(chat.kind, "temporary");
+        // Non-user workspaces never probe git.
+        assert!(!ensure_workspace_git(chat.id).expect("check kind"));
+    }
+
+    #[test]
+    fn get_or_create_chat_workspace_is_idempotent() {
+        let _home = init("cmd_ws_chat");
+        let first =
+            get_or_create_chat_workspace("thread_x".into(), Some("Chat".into())).expect("first");
+        let second = get_or_create_chat_workspace("thread_x".into(), None).expect("second");
+        assert_eq!(first.id, second.id);
+    }
+}

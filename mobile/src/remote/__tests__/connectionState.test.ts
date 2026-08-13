@@ -109,6 +109,16 @@ describe("connectionState FSM", () => {
     }
   });
 
+  test("unrecognized event types degrade to a no-op instead of falling through", () => {
+    // A forward-compat guard: a new LifecycleEvent variant that an older FSM
+    // build doesn't know about must be absorbed (state + no effects), never
+    // accidentally dropped into another transition arm.
+    const action = transition("connecting", {
+      type: "unrecognized",
+    } as unknown as LifecycleEvent);
+    expect(action).toEqual({ next: "connecting", effects: [] });
+  });
+
   test("terminal states ignore every event — except unpaired/open_started", () => {
     // revoked is a hard stop; unpaired only exits via a fresh open (a new
     // RemoteClient starts its first connect from unpaired).

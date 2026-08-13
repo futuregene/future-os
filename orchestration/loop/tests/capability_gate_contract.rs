@@ -112,7 +112,11 @@ fn per_capability_command_hooks_register_with_status_gate() {
     // Experimental hooks hidden by default, visible with the flag.
     assert!(registry.find("auto-research", false).is_none());
     assert!(registry.find("auto-research", true).is_some());
-    assert!(registry.find("pr-review-queue", false).is_none());
+    assert!(registry.find("context-providers", false).is_none());
+    assert!(registry.find("context-providers", true).is_some());
+    // pr_review_queue shipped its P2-3 rule version as active-preview → its
+    // hook is stable-visible.
+    assert!(registry.find("pr-review-queue", false).is_some());
     assert!(registry.find("pr-review-queue", true).is_some());
     // Hook name ↔ capability id mapping is resolvable (dispatch target).
     let snake = "auto-research".replace('-', "_");

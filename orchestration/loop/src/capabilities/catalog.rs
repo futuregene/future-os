@@ -7,8 +7,9 @@
 //! user-facing value/next-step strings reference requires on every public record.
 //!
 //! All 14 domain packs ship with their reference catalog status; the 15th
-//! capability (`pr_review_queue`) is registered as `experimental` per the P3
-//! plan (the reference package exists; our rule version is a placeholder).
+//! capability (`pr_review_queue`) ships its queue-observation + review-contract
+//! rule version as active-preview (P2-3; the reference package is
+//! `capabilities/pr_review_queue/`).
 
 use std::collections::BTreeMap;
 
@@ -189,8 +190,8 @@ impl CapabilityCatalog {
     }
 
     /// Build the shipped catalog: the 14 domain packs (with their LoopX
-    /// catalog status) + pr_review_queue (15th, experimental) under the
-    /// builtin `future-loop-core` provider.
+    /// catalog status) + pr_review_queue (15th, active-preview — the P2-3
+    /// rule version) under the builtin `future-loop-core` provider.
     pub fn with_builtin() -> Self {
         let mut catalog = Self::new();
         let core = CapabilityProvider::builtin("future-loop-core");
@@ -309,7 +310,14 @@ fn builtin_records() -> Vec<(
             "Bounded exploration with replay/trace hygiene.",
             "Exercise deterministic exploration guards on a fixture before live exploration.",
             vec![cmd("explore", "Run one bounded exploration probe with trace hygiene.")],
-            vec![packet("explore_v0", "explore")],
+            // Wave 2 deepening: the hypothesis-tracking + explore-graph rule
+            // version ships its event / projection / verification packets.
+            vec![
+                packet("explore_v0", "explore"),
+                packet("loopx_explore_result_event_v0", "explore"),
+                packet("loopx_explore_result_projection_v0", "explore"),
+                packet("loopx_explore_hypothesis_verification_v0", "explore"),
+            ],
         ),
         (
             "integration_branch",
@@ -380,11 +388,22 @@ fn builtin_records() -> Vec<(
         (
             "pr_review_queue",
             "PR Review Queue",
-            CAPABILITY_STATUS_EXPERIMENTAL,
-            "PR review queue projection (15th capability; placeholder rule version).",
-            "Project one PR-review queue bucket from current PR lifecycle state.",
-            vec![cmd("pr-review-queue", "Project one PR-review queue bucket from current PR lifecycle state.")],
-            vec![packet("pr_review_queue_v0", "pr_review_queue")],
+            CAPABILITY_STATUS_ACTIVE_PREVIEW,
+            "Turn one complete open-PR observation into a deterministic exact-head review candidate without repeating unchanged work or granting review writes.",
+            "Persist one observation fingerprint in a continuous-monitor todo, observe a changed head, and materialize exactly one candidate through normal todo authority.",
+            vec![cmd(
+                "pr-review-queue",
+                "Observe one complete PR queue and emit at most one exact-head candidate (capability hook).",
+            )],
+            vec![
+                packet("pr_review_queue_v0", "pr_review_queue"),
+                packet("pull_request_review_queue_observation_v0", "pr_review_queue"),
+                packet("pull_request_review_candidate_v0", "pr_review_queue"),
+                packet("pull_request_review_todo_preview_v0", "pr_review_queue"),
+                packet("pull_request_review_execution_contract_v1", "pr_review_queue"),
+                packet("pull_request_review_plan_v1", "pr_review_queue"),
+                packet("pull_request_review_result_v1", "pr_review_queue"),
+            ],
         ),
     ]
 }
@@ -411,7 +430,9 @@ mod tests {
     #[test]
     fn experimental_commands_hidden_unless_requested() {
         let catalog = CapabilityCatalog::with_builtin();
-        assert!(catalog.commands_for("pr_review_queue", false).is_empty());
+        // pr_review_queue shipped its P2-3 rule version → active-preview, so
+        // its capability hook is visible without --include-experimental.
+        assert_eq!(catalog.commands_for("pr_review_queue", false).len(), 1);
         assert_eq!(catalog.commands_for("pr_review_queue", true).len(), 1);
         assert_eq!(catalog.commands_for("issue_fix", false).len(), 1);
     }

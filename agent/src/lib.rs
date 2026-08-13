@@ -54,6 +54,21 @@ pub(crate) mod test_support {
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
+    /// Unique temp path for a test fixture: timestamp plus a process-wide
+    /// atomic sequence. The macOS clock ticks at ~µs granularity, so bare
+    /// nanosecond stamps collide when two parallel tests draw the same
+    /// tick — a shared path breaks tests that assume exclusive use of the
+    /// directory (one creates it while another assumes it never exists).
+    pub(crate) fn unique_temp_path(tag: &str) -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::env::temp_dir().join(format!("futureos-{tag}-{stamp}-{seq}"))
+    }
+
     /// Redirect HOME/USERPROFILE to an isolated directory for the duration of
     /// a test. The directory is anchored under the workspace target/ dir —
     /// never the system temp dir, whose writes sandbox rules allow (a temp
@@ -110,14 +125,69 @@ pub(crate) mod test_support {
 
     impl Drop for TestHome {
         fn drop(&mut self) {
-            match &self.previous_home {
-                Some(value) => std::env::set_var("HOME", value),
-                None => std::env::remove_var("HOME"),
-            }
-            match &self.previous_userprofile {
-                Some(value) => std::env::set_var("USERPROFILE", value),
-                None => std::env::remove_var("USERPROFILE"),
-            }
+            restore_env("HOME", &self.previous_home);
+            restore_env("USERPROFILE", &self.previous_userprofile);
+        }
+    }
+
+    /// Put an env var back to its pre-test state: restore the saved value, or
+    /// remove the var when it was absent before the test redirected it.
+    pub(crate) fn restore_env(key: &str, previous: &Option<std::ffi::OsString>) {
+        match previous {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    /// A provider whose stream never yields events. Shared by every test
+    /// that needs a provider the run never actually queries for content —
+    /// per-line coverage counts each uncalled mock's body, so there is
+    /// exactly one implementation and one test that drives it.
+    pub(crate) struct EmptyProvider;
+
+    #[async_trait::async_trait]
+    impl crate::types::LLMProvider for EmptyProvider {
+        async fn stream_chat(
+            &self,
+            _model: String,
+            _messages: Vec<crate::types::Message>,
+            _tools: Vec<crate::types::ToolDef>,
+            _system_prompt: String,
+        ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::types::StreamEvent>>
+        {
+            let (_tx, rx) = tokio::sync::mpsc::channel(1);
+            Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
+        }
+    }
+
+    mod provider_tests {
+        #[tokio::test(flavor = "current_thread")]
+        async fn empty_provider_streams_nothing() {
+            use crate::types::LLMProvider;
+            use tokio_stream::StreamExt;
+            let provider = super::EmptyProvider;
+            let mut stream = provider
+                .stream_chat("mock".to_string(), vec![], vec![], String::new())
+                .await
+                .unwrap();
+            assert!(stream.next().await.is_none());
+        }
+    }
+
+    #[cfg(test)]
+    mod env_restore_tests {
+        /// Both restore arms, exercised directly (the Some/None mix a real
+        /// TestHome sees depends on the host env, which unit tests can't
+        /// control — HOME is always set under cargo test, USERPROFILE never).
+        #[test]
+        fn restore_env_handles_present_and_absent_values() {
+            let _guard = super::home_env_lock();
+            let key = "FUTURE_TEST_RESTORE_ENV";
+            std::env::set_var(key, "original");
+            super::restore_env(key, &Some(std::ffi::OsString::from("saved")));
+            assert_eq!(std::env::var(key).as_deref(), Ok("saved"));
+            super::restore_env(key, &None);
+            assert!(std::env::var_os(key).is_none());
         }
     }
 }

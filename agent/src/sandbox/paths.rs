@@ -13,13 +13,19 @@ use std::path::{Component, Path, PathBuf};
 /// contradicts what the OS sandbox enforces (real `$HOME/x`). Boundary
 /// decisions must use this function instead.
 pub fn expand_tilde(path: &str) -> PathBuf {
+    expand_tilde_with_home(path, dirs::home_dir().as_deref())
+}
+
+/// `expand_tilde` with the home directory injected, so the no-home fallback
+/// arms stay testable (a real host always resolves a home).
+fn expand_tilde_with_home(path: &str, home: Option<&Path>) -> PathBuf {
     if path == "~" {
-        if let Some(home) = dirs::home_dir() {
-            return home;
+        if let Some(home) = home {
+            return home.to_path_buf();
         }
     }
     if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
+        if let Some(home) = home {
             return home.join(rest);
         }
     }
@@ -141,6 +147,40 @@ mod tests {
         let home = dirs::home_dir().unwrap();
         assert_eq!(expand_tilde("~/x.txt"), home.join("x.txt"));
         assert_eq!(expand_tilde("~"), home);
+    }
+
+    #[test]
+    fn tilde_without_home_returns_input_verbatim() {
+        // No home available (injected None): both tilde forms pass through.
+        assert_eq!(expand_tilde_with_home("~", None), PathBuf::from("~"));
+        assert_eq!(
+            expand_tilde_with_home("~/x.txt", None),
+            PathBuf::from("~/x.txt")
+        );
+        // And with a home the injected value is used.
+        let home = Path::new("/home/tester");
+        assert_eq!(expand_tilde_with_home("~", Some(home)), home);
+        assert_eq!(expand_tilde_with_home("~/x", Some(home)), home.join("x"));
+    }
+
+    #[test]
+    fn normalize_lexically_skips_leading_curdir() {
+        // `Path::components` only yields CurDir at the start of a relative
+        // path, so exercise it there.
+        assert_eq!(
+            normalize_lexically(Path::new("./a/b")),
+            PathBuf::from("a/b")
+        );
+    }
+
+    #[test]
+    fn canonicalize_lenient_bare_relative_name_returns_input() {
+        // A bare relative filename has no canonicalizable ancestor: the
+        // parent walk bottoms out at the empty path and returns the input.
+        assert_eq!(
+            canonicalize_lenient(Path::new("future-no-such-file-xyz")),
+            PathBuf::from("future-no-such-file-xyz")
+        );
     }
 
     #[test]

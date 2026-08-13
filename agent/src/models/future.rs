@@ -31,6 +31,14 @@ static FUTURE_MODELS_REFRESH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 /// the file cache to be read back from disk.
 static FUTURE_MODELS_MEMORY_CACHE: RwLock<Option<FutureModelsCache>> = RwLock::new(None);
 
+/// Test-only: serialize the single-flight gate's check-and-acquire against
+/// concurrent `Registry::new()` threads, which share these process-global
+/// statics but do NOT hold `future_models_test_lock`. Without this, a refresh
+/// spawned by an unrelated test can stamp `LAST_ATTEMPT` / hold `IN_FLIGHT`
+/// inside a future-models test's reset→assert window and flip its assertions.
+#[cfg(test)]
+static FUTURE_REFRESH_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -43,25 +51,46 @@ fn now_secs() -> u64 {
 /// written to both the file cache and the in-process memory cache, so the next
 /// registry rebuild picks up fresh data immediately.
 fn spawn_future_models_refresh(api_key: &str, base_url: &str) {
+    // Test builds serialize the single-flight gate's check-and-acquire against
+    // concurrent `Registry::new()` threads, which share these process-global
+    // statics but do NOT hold `future_models_test_lock`. Without the gate, a
+    // refresh spawned by an unrelated test can stamp `LAST_ATTEMPT` or hold
+    // `IN_FLIGHT` inside a future-models test's reset→assert window.
+    #[cfg(test)]
+    let _gate = FUTURE_REFRESH_GATE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let _ = spawn_future_models_refresh_unlocked(api_key, base_url);
+}
+
+/// Gate already held by the caller (a test that owns the [`FUTURE_REFRESH_GATE`]
+/// guard, or the gated wrapper above). The actual backoff + single-flight gate.
+/// Returns the refresh thread's handle when a refresh was actually spawned.
+fn spawn_future_models_refresh_unlocked(
+    api_key: &str,
+    base_url: &str,
+) -> Option<std::thread::JoinHandle<()>> {
     let now = now_secs();
     if now.saturating_sub(FUTURE_MODELS_LAST_ATTEMPT.load(Ordering::Relaxed))
         < FUTURE_MODELS_REFRESH_BACKOFF
     {
-        return;
+        return None;
     }
     // Single-flight: bail if a refresh is already running.
     if FUTURE_MODELS_REFRESH_IN_FLIGHT
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
-        return;
+        return None;
     }
     FUTURE_MODELS_LAST_ATTEMPT.store(now, Ordering::Relaxed);
 
     let api_key = api_key.to_string();
     let base_url = base_url.to_string();
-    std::thread::spawn(move || {
+    Some(std::thread::spawn(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            #[cfg(test)]
+            inject_test_panic();
             if let Some(models) = fetch_future_models(&api_key, &base_url) {
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -86,16 +115,35 @@ fn spawn_future_models_refresh(api_key: &str, base_url: &str) {
         // Always reset the flag — a panic must not permanently block
         // future refreshes.
         FUTURE_MODELS_REFRESH_IN_FLIGHT.store(false, Ordering::Release);
-    });
+    }))
+}
+
+/// Test seam: force the background-refresh closure down its panic-recovery
+/// path. 0 = off, 1 = &str payload, 2 = String payload, 3 = other payload.
+#[cfg(test)]
+static REFRESH_TEST_PANIC: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+fn inject_test_panic() {
+    match REFRESH_TEST_PANIC.swap(0, Ordering::Relaxed) {
+        1 => panic!("injected refresh panic"),
+        2 => std::panic::panic_any(String::from("injected owned panic")),
+        3 => std::panic::panic_any(42i32),
+        _ => {}
+    }
 }
 
 fn future_models_cache_path() -> String {
-    let home = dirs::home_dir()
-        .map(|h| h.join(".future/agent/.future-models-cache.json"))
-        .unwrap_or_else(|| {
-            std::path::PathBuf::from("/tmp/.future/agent/.future-models-cache.json")
-        });
-    home.to_string_lossy().to_string()
+    future_models_cache_path_in(dirs::home_dir())
+}
+
+/// `future_models_cache_path` with the home dir injected, so the no-home
+/// fallback arm is testable (a real host always resolves one).
+fn future_models_cache_path_in(home: Option<std::path::PathBuf>) -> String {
+    home.map(|h| h.join(".future/agent/.future-models-cache.json"))
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/.future/agent/.future-models-cache.json"))
+        .to_string_lossy()
+        .to_string()
 }
 
 /// Future models cache format
@@ -435,9 +483,23 @@ fn load_future_models_cache() -> Option<FutureModelsCache> {
 
 /// Save future models cache to disk (internal helper).
 fn save_future_models_cache_inner(cache: &FutureModelsCache) {
-    if let Ok(json) = serde_json::to_string_pretty(cache) {
-        let path = future_models_cache_path();
-        let _ = std::fs::write(&path, json);
+    // `FutureModelsCache` is a flat serializable struct (string-keyed maps,
+    // integer/bool/string fields); serde_json cannot fail here, so an
+    // `if let Ok` guard would leave an unreachable Err arm.
+    let json =
+        serde_json::to_string_pretty(cache).expect("FutureModelsCache serialization cannot fail");
+    let path = std::path::PathBuf::from(future_models_cache_path());
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    // Atomic replace: write a sibling temp file and rename it over the
+    // target. A plain truncate+write lets a concurrent reader (the GUI
+    // polls models every 10s; a test reading right after a background
+    // refresh) observe an empty/partial file. Rename swaps the contents
+    // atomically within the same directory on all supported platforms.
+    let tmp = path.with_extension("tmp");
+    if std::fs::write(&tmp, json).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
     }
 }
 
@@ -471,10 +533,15 @@ pub(super) fn get_future_models_with_cache(api_key: &str, base_url: &str) -> Vec
                 *mem = Some(cache);
             }
         }
-        // Re-read to return (avoids clone before moving into mem).
-        if let Some(ref cache) = *FUTURE_MODELS_MEMORY_CACHE.read() {
-            return cache.models.clone();
-        }
+        // Re-read to return (avoids clone before moving into mem). The seed
+        // above (or a concurrently completed refresh) guarantees the memory
+        // cache is populated here.
+        return FUTURE_MODELS_MEMORY_CACHE
+            .read()
+            .as_ref()
+            .expect("memory cache seeded above")
+            .models
+            .clone();
     }
 
     // First login on this machine: no cache at all.  The background refresh
@@ -512,6 +579,39 @@ pub(super) fn sync_future_models_cache() -> bool {
     save_future_models_cache_inner(&cache);
     *FUTURE_MODELS_MEMORY_CACHE.write() = Some(cache);
     true
+}
+
+/// Process-global future-models caches are shared across test modules
+/// (models::mod tests build a Registry that reads them) — serialize every
+/// accessor through one lock.
+#[cfg(test)]
+pub(crate) static FUTURE_MODELS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn future_models_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    FUTURE_MODELS_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+}
+
+/// Reset every future-models cache static to a clean slate for tests. This
+/// force-clears `IN_FLIGHT` rather than waiting out a slow in-flight refresh
+/// (which may be hitting a real URL for up to 10s); a leftover thread that later
+/// finishes only re-stores `false` and is otherwise harmless to these tests.
+#[cfg(test)]
+pub(crate) fn reset_future_caches_for_tests() {
+    let _gate = FUTURE_REFRESH_GATE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    reset_future_caches_for_tests_unlocked();
+}
+
+/// Gate already held by the caller.
+#[cfg(test)]
+fn reset_future_caches_for_tests_unlocked() {
+    FUTURE_MODELS_LAST_ATTEMPT.store(0, Ordering::Relaxed);
+    FUTURE_MODELS_REFRESH_IN_FLIGHT.store(false, Ordering::Relaxed);
+    *FUTURE_MODELS_MEMORY_CACHE.write() = None;
 }
 
 #[cfg(test)]
@@ -854,9 +954,9 @@ mod tests {
         std::thread::spawn(move || {
             use std::io::{Read, Write};
             for _ in 0..8 {
-                let Ok((mut stream, _)) = listener.accept() else {
-                    return;
-                };
+                // Blocking accept on a live listener does not error; a parked
+                // surplus iteration is harmless (test process exit reaps it).
+                let (mut stream, _) = listener.accept().expect("mock server accept");
                 let mut sink = [0u8; 8192];
                 let _ = stream.read(&mut sink);
                 let response = format!(
@@ -873,25 +973,21 @@ mod tests {
     }
 
     /// Serializes tests that touch the process-global future-models statics.
-    static FUTURE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn future_test_lock() -> std::sync::MutexGuard<'static, ()> {
-        FUTURE_TEST_LOCK
+        super::future_models_test_lock()
+    }
+
+    /// Serializes the single-flight gate against concurrent `Registry::new()`
+    /// threads (which don't hold `future_test_lock`), for tests that reset the
+    /// shared statics and then assert on them exclusively.
+    fn future_refresh_gate() -> std::sync::MutexGuard<'static, ()> {
+        FUTURE_REFRESH_GATE
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
     fn reset_future_cache_state() {
-        FUTURE_MODELS_LAST_ATTEMPT.store(0, Ordering::Relaxed);
-        // A refresh thread from an earlier test may still hold the flag under
-        // heavy load; wait briefly rather than inherit a stuck in-flight.
-        for _ in 0..200 {
-            if !FUTURE_MODELS_REFRESH_IN_FLIGHT.load(Ordering::Relaxed) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        *FUTURE_MODELS_MEMORY_CACHE.write() = None;
+        super::reset_future_caches_for_tests();
     }
 
     #[test]
@@ -953,6 +1049,64 @@ mod tests {
     }
 
     #[test]
+    fn cache_save_and_concurrent_load_never_torn() {
+        let _guard = future_test_lock();
+        let home = crate::test_support::TestHome::new();
+        reset_future_cache_state();
+        std::fs::create_dir_all(home.path().join(".future/agent")).unwrap();
+
+        // A large payload stretches the truncate→write window of a non-atomic
+        // save, so a reader racing the writer observes torn (empty/partial)
+        // files unless the save goes through tmp+rename.
+        let models: Vec<Model> = (0..800)
+            .map(|i| {
+                convert_future_model(
+                    serde_json::from_str(&format!(
+                        r#"{{"id":"big-model-{i}","name":"Big {i}","context_length":64000}}"#
+                    ))
+                    .unwrap(),
+                    "http://x/v1",
+                )
+            })
+            .collect();
+        let expected_len = models.len();
+
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let first_write_done = std::sync::Arc::new(AtomicBool::new(false));
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let writer = std::thread::spawn({
+            let first_write_done = first_write_done.clone();
+            let stop = stop.clone();
+            move || {
+                let mut i = 0u64;
+                while !stop.load(Ordering::Relaxed) {
+                    save_future_models_cache_inner(&FutureModelsCache {
+                        fetched_at: i,
+                        models: models.clone(),
+                    });
+                    first_write_done.store(true, Ordering::Relaxed);
+                    i += 1;
+                }
+            }
+        });
+
+        while !first_write_done.load(Ordering::Relaxed) {
+            std::hint::spin_loop();
+        }
+        let mut torn = 0u64;
+        for _ in 0..500 {
+            // After the first completed save, the file must always exist and
+            // parse to complete content — None/short content = torn read.
+            torn += u64::from(
+                load_future_models_cache().is_none_or(|c| c.models.len() != expected_len),
+            );
+        }
+        stop.store(true, Ordering::Relaxed);
+        writer.join().unwrap();
+        assert_eq!(torn, 0, "torn/partial cache reads observed");
+    }
+
+    #[test]
     fn get_future_models_with_cache_prefers_memory_then_disk() {
         let _guard = future_test_lock();
         let home = crate::test_support::TestHome::new();
@@ -972,7 +1126,6 @@ mod tests {
 
         // Clear memory; seed only the disk cache → disk arm re-seeds memory.
         reset_future_cache_state();
-        // save_future_models_cache_inner does not create parent dirs.
         std::fs::create_dir_all(home.path().join(".future/agent")).unwrap();
         let disk_model = convert_future_model(
             serde_json::from_str(r#"{"id":"disk-model"}"#).unwrap(),
@@ -991,20 +1144,120 @@ mod tests {
     #[test]
     fn spawn_refresh_respects_backoff_window() {
         let _guard = future_test_lock();
-        reset_future_cache_state();
+        let _gate = future_refresh_gate();
+        reset_future_caches_for_tests_unlocked();
         // First call spawns a refresh thread (fetch to a dead port fails fast).
-        spawn_future_models_refresh("k", "http://127.0.0.1:1");
+        let handle = spawn_future_models_refresh_unlocked("k", "http://127.0.0.1:1")
+            .expect("first refresh spawns");
         // The attempt timestamp is now fresh — an immediate second call hits
         // the backoff window and returns without spawning.
-        spawn_future_models_refresh("k", "http://127.0.0.1:1");
+        assert!(
+            spawn_future_models_refresh_unlocked("k", "http://127.0.0.1:1").is_none(),
+            "second call must be blocked by the backoff window"
+        );
         assert!(FUTURE_MODELS_LAST_ATTEMPT.load(Ordering::Relaxed) > 0);
-        // Wait for the refresh thread to release the single-flight flag.
-        for _ in 0..100 {
-            if !FUTURE_MODELS_REFRESH_IN_FLIGHT.load(Ordering::Relaxed) {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+        // Join the refresh thread deterministically, then assert the flag cleared.
+        handle.join().unwrap();
+        assert!(!FUTURE_MODELS_REFRESH_IN_FLIGHT.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn refresh_bails_when_already_in_flight() {
+        let _guard = future_test_lock();
+        let _gate = future_refresh_gate();
+        reset_future_caches_for_tests_unlocked();
+        FUTURE_MODELS_REFRESH_IN_FLIGHT.store(true, Ordering::Relaxed);
+        assert!(
+            spawn_future_models_refresh_unlocked("k", "http://127.0.0.1:1").is_none(),
+            "already-in-flight must bail"
+        );
+        // Bailed at the single-flight gate: no new attempt was stamped.
+        assert_eq!(FUTURE_MODELS_LAST_ATTEMPT.load(Ordering::Relaxed), 0);
+        FUTURE_MODELS_REFRESH_IN_FLIGHT.store(false, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn refresh_recovers_from_closure_panics() {
+        let _guard = future_test_lock();
+        let _gate = future_refresh_gate();
+        let _subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .finish(),
+        );
+        for payload_kind in [1usize, 2, 3] {
+            reset_future_caches_for_tests_unlocked();
+            REFRESH_TEST_PANIC.store(payload_kind, Ordering::Relaxed);
+            let handle = spawn_future_models_refresh_unlocked("k", "http://127.0.0.1:1")
+                .expect("refresh spawns");
+            // The panic is caught and the single-flight flag released.
+            handle.join().unwrap();
+            assert!(
+                !FUTURE_MODELS_REFRESH_IN_FLIGHT.load(Ordering::Relaxed),
+                "panic must not wedge the in-flight flag"
+            );
         }
-        panic!("refresh thread never released the in-flight flag");
+    }
+
+    #[test]
+    fn cache_path_falls_back_to_tmp_without_home() {
+        assert_eq!(
+            future_models_cache_path_in(None),
+            "/tmp/.future/agent/.future-models-cache.json"
+        );
+        assert_eq!(
+            future_models_cache_path_in(Some(std::path::PathBuf::from("/home/x"))),
+            "/home/x/.future/agent/.future-models-cache.json"
+        );
+    }
+
+    #[test]
+    fn fetch_returns_none_for_unexpected_json_shape() {
+        let _guard = future_test_lock();
+        // Valid JSON, but neither the {data:[...]} form nor the array form.
+        let base = mock_json_server(200, "42".to_string());
+        assert!(fetch_future_models("k", &base).is_none());
+    }
+
+    #[test]
+    fn get_models_with_cache_cold_start_returns_empty() {
+        let _guard = future_test_lock();
+        let _home = crate::test_support::TestHome::new();
+        reset_future_cache_state();
+        // No memory cache, no disk cache, refresh target unreachable → the
+        // first-login path returns an empty catalog immediately.
+        let models = get_future_models_with_cache("k", "http://127.0.0.1:1");
+        assert!(models.is_empty());
+    }
+
+    #[test]
+    fn sync_cache_returns_false_when_fetch_fails() {
+        let _guard = future_test_lock();
+        let home = crate::test_support::TestHome::new();
+        reset_future_cache_state();
+        let auth_path = home.auth_path();
+        std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &auth_path,
+            r#"{"future": {"type": "api_key", "key": "k", "base_url": "http://127.0.0.1:1/api"}}"#,
+        )
+        .unwrap();
+        assert!(!sync_future_models_cache());
+    }
+
+    #[test]
+    fn save_cache_inner_ignores_write_failure() {
+        let _guard = future_test_lock();
+        let home = crate::test_support::TestHome::new();
+        reset_future_cache_state();
+        // Make the cache's parent directory a plain file so both the
+        // create_dir_all and the temp write fail (no panic; rename skipped).
+        let agent_dir = home.path().join(".future/agent");
+        std::fs::create_dir_all(home.path().join(".future")).unwrap();
+        std::fs::write(&agent_dir, "not a dir").unwrap();
+        save_future_models_cache_inner(&FutureModelsCache {
+            fetched_at: 1,
+            models: vec![],
+        });
     }
 }

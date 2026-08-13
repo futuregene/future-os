@@ -73,6 +73,8 @@ export interface RemoteModel {
   label?: string;
   provider?: string;
   isDefault?: boolean;
+  /** Whether the model's input modality accepts images (agent catalogue). */
+  supportsImages?: boolean;
 }
 
 /** Stable agent model identifier; model ids are only unique within a provider. */
@@ -308,6 +310,7 @@ export interface RemoteCommand {
   modelId?: string;
   providerId?: string;
   level?: string;
+  tier?: string;
   name?: string;
   transferName?: string;
   workspaceId?: string;

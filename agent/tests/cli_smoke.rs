@@ -360,3 +360,192 @@ fn agent_survives_unwritable_profile_path() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[cfg(not(windows))]
+#[test]
+fn agent_profiler_build_failure_continues_without_profiling() {
+    let home = isolated_home();
+    let profile = home.path().join("flame.svg");
+    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        .args([
+            "--grpc-addr",
+            "127.0.0.1:0",
+            "--profile-seconds",
+            "0",
+            "--profile",
+            profile.to_str().unwrap(),
+        ])
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("FUTURE_TEST_PROFILER_FAIL_AT", "build")
+        .output()
+        .expect("spawn future-agent");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !profile.exists(),
+        "no flamegraph when the profiler never started"
+    );
+}
+
+#[cfg(not(windows))]
+#[test]
+fn agent_profiler_report_failure_is_logged_and_ignored() {
+    let home = isolated_home();
+    let profile = home.path().join("flame.svg");
+    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        .args([
+            "--grpc-addr",
+            "127.0.0.1:0",
+            "--profile-seconds",
+            "0",
+            "--profile",
+            profile.to_str().unwrap(),
+        ])
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("FUTURE_TEST_PROFILER_FAIL_AT", "report")
+        .output()
+        .expect("spawn future-agent");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!profile.exists(), "report build failed before any write");
+}
+
+#[cfg(not(windows))]
+#[test]
+fn agent_profiler_write_failure_is_logged_and_ignored() {
+    let home = isolated_home();
+    let profile = home.path().join("flame.svg");
+    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        .args([
+            "--grpc-addr",
+            "127.0.0.1:0",
+            "--profile-seconds",
+            "0",
+            "--profile",
+            profile.to_str().unwrap(),
+        ])
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("FUTURE_TEST_PROFILER_FAIL_AT", "write")
+        .output()
+        .expect("spawn future-agent");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // The file was created; only the flamegraph write failed.
+    assert!(profile.exists());
+}
+
+#[test]
+fn agent_bare_nonnumeric_addr_falls_back_to_default_port() {
+    // "banana" has no ':' and does not parse as u16, so the agent falls back
+    // to 127.0.0.1:50051. On a dev machine that port may legitimately be in
+    // use (then the bind fails and the agent exits 1) — both outcomes
+    // exercise the fallback arm, which is what this test pins.
+    let home = isolated_home();
+    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        .args(["--grpc-addr", "banana", "--profile-seconds", "0"])
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .output()
+        .expect("spawn future-agent");
+    assert!(
+        output.status.code() == Some(0) || output.status.code() == Some(1),
+        "unexpected exit {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn agent_model_without_base_url_or_key_uses_builtin_defaults() {
+    let home = isolated_home();
+    let agent_dir = home.path().join(".future/agent");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    // apiKey but no baseUrl: the model is credential-reachable (so it is
+    // selected as the default) while its base_url stays empty, exercising the
+    // empty-base_url filter arm of the resolver.
+    std::fs::write(
+        agent_dir.join("models.json"),
+        r#"{
+          "providers": {
+            "bare": {
+              "api": "openai-completions",
+              "apiKey": "sk-bare",
+              "models": [{"id": "bare-model", "limit": {"context": 64000, "output": 4096}}]
+            }
+          }
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        agent_dir.join("settings.json"),
+        r#"{"defaultModel": "bare/bare-model"}"#,
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "0"])
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .output()
+        .expect("spawn future-agent");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn agent_skips_unreadable_project_context_file() {
+    let home = isolated_home();
+    let work = home.path().join("work");
+    // CLAUDE.md exists but is a directory: read_to_string fails (EISDIR, even
+    // for root) and the agent falls through to the next context file name.
+    std::fs::create_dir_all(work.join("CLAUDE.md")).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "0"])
+        .current_dir(&work)
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .output()
+        .expect("spawn future-agent");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn agent_warns_when_orphan_run_data_root_is_unreadable() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = isolated_home();
+    // run-events exists but is unreadable → gc_orphan_run_data errors and the
+    // agent logs a warning instead of failing startup.
+    let run_events = home.path().join(".future/agent/run-events");
+    std::fs::create_dir_all(&run_events).unwrap();
+    std::fs::set_permissions(&run_events, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "0"])
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .output()
+        .expect("spawn future-agent");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

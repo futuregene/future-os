@@ -1,5 +1,6 @@
 import { createUser } from "nkeys.js";
 import {
+  decodeBase64Url,
   encodeBase64Url,
   handshakeTranscript,
   type HandshakeChallenge,
@@ -66,5 +67,16 @@ describe("signed pairing handshake", () => {
         },
       ),
     ).toBe(false);
+  });
+});
+
+describe("base64url codec", () => {
+  it("round-trips bytes", () => {
+    const bytes = new Uint8Array([0, 1, 2, 253, 254, 255]);
+    expect(decodeBase64Url(encodeBase64Url(bytes))).toEqual(bytes);
+  });
+
+  it("returns null for undecodable input instead of throwing", () => {
+    expect(decodeBase64Url("!!!")).toBeNull();
   });
 });
