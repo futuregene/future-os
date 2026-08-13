@@ -34,6 +34,9 @@ pub(crate) use self::run_control::{abort_session, wait_for_agent_idle};
 pub use self::session::fork_agent_session;
 pub use self::skills::{list_installed_skills, refresh_skills, InstalledSkill};
 pub use review::retry as retry_run_review;
+pub use review::capture_before;
+#[cfg(test)]
+pub use review::finalize_after;
 
 use serde::Serialize;
 

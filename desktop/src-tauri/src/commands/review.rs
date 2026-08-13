@@ -166,6 +166,19 @@ mod tests {
     }
 
     #[test]
+    fn get_workspace_review_capabilities_marks_oversized_non_git_workspaces() {
+        let _home = init("cmd_review_caps_too_large");
+        let ws = workspace("too_large_ws");
+        let big = std::path::Path::new(&ws.path).join("huge.bin");
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len(512 * 1024 * 1024 + 1)
+            .unwrap();
+        let caps = get_workspace_review_capabilities(ws.id).expect("caps");
+        assert_eq!(caps.change_preview, "unsupported_too_large");
+    }
+
+    #[test]
     fn get_workspace_review_capabilities_reports_a_git_workspace() {
         let _home = init("cmd_review_caps_git");
         let repo = git_repo("caps-git");
@@ -198,6 +211,28 @@ mod tests {
     fn retry_run_review_errors_for_an_unknown_run() {
         let _home = init("cmd_review_retry");
         assert!(retry_run_review("ghost_run".into()).is_err());
+    }
+
+    #[test]
+    fn retry_run_review_returns_the_changeset_after_a_capture() {
+        let _home = init("cmd_review_retry_ok");
+        let ws = workspace("retry_ws");
+        let thread = thread_in(&ws);
+        let run = crate::store::create_run(crate::store::CreateRunInput {
+            id: None,
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("run");
+        // Real captures produce real shadow commits — the only seeding the
+        // retry path accepts.
+        std::fs::write(std::path::Path::new(&ws.path).join("a.txt"), b"hello").unwrap();
+        crate::agent_bridge::capture_before(&thread.id, &run.id);
+        crate::agent_bridge::finalize_after(&thread.id, &run.id);
+        let review = retry_run_review(run.id).expect("retry");
+        assert!(review.is_some());
     }
 
     #[test]
