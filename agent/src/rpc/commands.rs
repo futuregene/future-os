@@ -4375,6 +4375,33 @@ mod tests {
     }
 
     #[test]
+    fn clone_rejects_disk_session_with_idless_last_entry() {
+        let state = make_app_state();
+        {
+            let session = state.get_session("default").unwrap();
+            session
+                .read()
+                .messages
+                .write()
+                .push(crate::types::AgentMessage::new_user(
+                    "user",
+                    serde_json::json!("in-memory only"),
+                ));
+        }
+        // A disk session whose last entry carries no id -> the clone leaf id
+        // resolves empty and hits the "no messages found" arm.
+        let mut entry = crate::session::SessionEntry::new_user("user", serde_json::json!("legacy"));
+        entry.id = String::new();
+        save_via(&state, "default", "mock", vec![entry]);
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("clone")));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("no messages found"));
+    }
+
+    #[test]
     fn clone_succeeds_from_leaf_entry() {
         let state = make_app_state();
         {
@@ -4913,6 +4940,32 @@ mod tests {
         });
         let resp = parse_response(&handle_command_internal(&state, cmd));
         assert_eq!(resp["success"], false);
+    }
+
+    #[test]
+    fn list_models_uses_id_label_for_unnamed_model() {
+        let _home = TestHome::new();
+        let state = make_app_state();
+        // The file loaders normalize an absent name to the model id, so a
+        // genuinely empty name only exists via the verbatim test seam.
+        state
+            .model_registry
+            .write()
+            .test_insert(crate::models::Model {
+                id: "unnamed-model".to_string(),
+                name: String::new(),
+                provider: "custom".to_string(),
+                api_key: "k".to_string(),
+                output: vec!["text".to_string()],
+                ..Default::default()
+            });
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("list_models")));
+        let models = resp["data"]["models"].as_array().unwrap();
+        let model = models
+            .iter()
+            .find(|m| m["id"] == "unnamed-model")
+            .expect("unnamed model listed");
+        assert_eq!(model["label"], "unnamed-model");
     }
 
     #[test]
