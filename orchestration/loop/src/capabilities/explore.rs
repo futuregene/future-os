@@ -2893,13 +2893,38 @@ mod tests {
         assert_eq!(event["blocked_reason"], "blocked reason");
         // empty title
         assert!(build_explore_node_event(
-            "g", "   ", None, None, None, None, None, None, None, None, &[], &[], None, None,
+            "g",
+            "   ",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            None,
         )
         .is_err());
         // blocked_reason carrying private material
         assert!(build_explore_node_event(
-            "g", "t", None, None, Some("open"), None, Some("api_key: x"), None, None, None,
-            &[], &[], None, None,
+            "g",
+            "t",
+            None,
+            None,
+            Some("open"),
+            None,
+            Some("api_key: x"),
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            None,
         )
         .is_err());
     }
@@ -2907,8 +2932,15 @@ mod tests {
     #[test]
     fn edge_event_optional_fields() {
         let event = build_explore_edge_event(
-            "g", "h_1", "h_2", "supports", Some("summary"), Some(0.8),
-            Some("agent-1"), Some("run-1"), Some("2026-08-01T00:00:00Z"),
+            "g",
+            "h_1",
+            "h_2",
+            "supports",
+            Some("summary"),
+            Some(0.8),
+            Some("agent-1"),
+            Some("run-1"),
+            Some("2026-08-01T00:00:00Z"),
         )
         .unwrap();
         assert_eq!(event["summary"], "summary");
@@ -2920,9 +2952,18 @@ mod tests {
     #[test]
     fn finding_event_optional_fields_and_errors() {
         let event = build_explore_finding_event(
-            "g", "finding title", Some("f_1"), Some("h_1"), Some(FINDING_STATUS_CONFIRMED),
-            Some("summary"), Some(0.9), Some("agent-1"), Some("run-1"),
-            &["ref_1".to_string()], &["tag_1".to_string()], Some("old_id"),
+            "g",
+            "finding title",
+            Some("f_1"),
+            Some("h_1"),
+            Some(FINDING_STATUS_CONFIRMED),
+            Some("summary"),
+            Some(0.9),
+            Some("agent-1"),
+            Some("run-1"),
+            &["ref_1".to_string()],
+            &["tag_1".to_string()],
+            Some("old_id"),
             Some("2026-08-01T00:00:00Z"),
         )
         .unwrap();
@@ -2935,18 +2976,54 @@ mod tests {
         assert_eq!(event["node_id"], "h_1");
         // node_id omitted → the field is absent
         let no_node = build_explore_finding_event(
-            "g", "t", None, None, None, None, None, None, None, &[], &[], None, None,
+            "g",
+            "t",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            None,
         )
         .unwrap();
         assert!(no_node.get("node_id").is_none());
         // empty title
         assert!(build_explore_finding_event(
-            "g", "   ", None, None, None, None, None, None, None, &[], &[], None, None,
+            "g",
+            "   ",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            None,
         )
         .is_err());
         // unknown status
         assert!(build_explore_finding_event(
-            "g", "t", None, None, Some("ghost"), None, None, None, None, &[], &[], None, None,
+            "g",
+            "t",
+            None,
+            None,
+            Some("ghost"),
+            None,
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            None,
         )
         .is_err());
     }
@@ -2954,19 +3031,48 @@ mod tests {
     #[test]
     fn validation_covers_edge_finding_and_goal_errors() {
         let edge = build_explore_edge_event(
-            "g", "h_1", "h_2", "supports", None, Some(0.8), None, None,
+            "g",
+            "h_1",
+            "h_2",
+            "supports",
+            None,
+            Some(0.8),
+            None,
+            None,
             Some("2026-08-01T00:00:00Z"),
         )
         .unwrap();
-        assert_eq!(validate_explore_result_event(&edge, Some("g")).unwrap(), edge);
+        assert_eq!(
+            validate_explore_result_event(&edge, Some("g")).unwrap(),
+            edge
+        );
         let finding = build_explore_finding_event(
-            "g", "t", Some("f_1"), Some("h_1"), Some(FINDING_STATUS_CONFIRMED), None, None, None, None,
-            &["r".to_string()], &["tag".to_string()], None, Some("2026-08-01T00:00:00Z"),
+            "g",
+            "t",
+            Some("f_1"),
+            Some("h_1"),
+            Some(FINDING_STATUS_CONFIRMED),
+            None,
+            None,
+            None,
+            None,
+            &["r".to_string()],
+            &["tag".to_string()],
+            None,
+            Some("2026-08-01T00:00:00Z"),
         )
         .unwrap();
-        assert_eq!(validate_explore_result_event(&finding, Some("g")).unwrap(), finding);
+        assert_eq!(
+            validate_explore_result_event(&finding, Some("g")).unwrap(),
+            finding
+        );
         let n = node(
-            "h_1", NODE_KIND_HYPOTHESIS, NODE_STATUS_OPEN, "claim", "2026-08-01T00:00:00Z", None,
+            "h_1",
+            NODE_KIND_HYPOTHESIS,
+            NODE_STATUS_OPEN,
+            "claim",
+            "2026-08-01T00:00:00Z",
+            None,
         );
         // expected_goal_id None → the goal check is skipped
         assert_eq!(validate_explore_result_event(&n, None).unwrap(), n);
@@ -2989,7 +3095,12 @@ mod tests {
     #[test]
     fn node_and_finding_views_surface_lists() {
         let mut n = node(
-            "h_1", NODE_KIND_HYPOTHESIS, NODE_STATUS_OPEN, "claim", "2026-08-01T00:00:00Z", None,
+            "h_1",
+            NODE_KIND_HYPOTHESIS,
+            NODE_STATUS_OPEN,
+            "claim",
+            "2026-08-01T00:00:00Z",
+            None,
         );
         n["evidence_refs"] = serde_json::json!(["r1"]);
         n["tags"] = serde_json::json!(["t1"]);
@@ -2997,7 +3108,12 @@ mod tests {
         assert_eq!(view["evidence_refs"], serde_json::json!(["r1"]));
         assert_eq!(view["tags"], serde_json::json!(["t1"]));
         let mut f = finding(
-            "f_1", "h_1", FINDING_STATUS_TENTATIVE, "probe", Some(0.5), "2026-08-01T00:00:00Z",
+            "f_1",
+            "h_1",
+            FINDING_STATUS_TENTATIVE,
+            "probe",
+            Some(0.5),
+            "2026-08-01T00:00:00Z",
         );
         f["evidence_refs"] = serde_json::json!(["r2"]);
         f["tags"] = serde_json::json!(["t2"]);
@@ -3012,22 +3128,51 @@ mod tests {
         assert_eq!(mermaid_id("h-1"), "h_1");
         assert_eq!(mermaid_id("a.b:c"), "a_b_c");
         let two = vec![
-            node("h_1", NODE_KIND_HYPOTHESIS, NODE_STATUS_OPEN, "a", "2026-08-01T00:00:00Z", None),
-            node("h_2", NODE_KIND_HYPOTHESIS, NODE_STATUS_OPEN, "b", "2026-08-01T00:00:00Z", None),
+            node(
+                "h_1",
+                NODE_KIND_HYPOTHESIS,
+                NODE_STATUS_OPEN,
+                "a",
+                "2026-08-01T00:00:00Z",
+                None,
+            ),
+            node(
+                "h_2",
+                NODE_KIND_HYPOTHESIS,
+                NODE_STATUS_OPEN,
+                "b",
+                "2026-08-01T00:00:00Z",
+                None,
+            ),
         ];
         let mermaid = build_explore_mermaid(&two, &[], 1);
         assert!(mermaid.contains("1 more nodes omitted"));
         // a tree deeper than the depth limit prunes children
         let mut h1 = node(
-            "h_1", NODE_KIND_HYPOTHESIS, NODE_STATUS_OPEN, "claim", "2026-08-01T00:00:00Z", None,
+            "h_1",
+            NODE_KIND_HYPOTHESIS,
+            NODE_STATUS_OPEN,
+            "claim",
+            "2026-08-01T00:00:00Z",
+            None,
         );
         h1["parent_id"] = Value::String("area_1".into());
         let mut area = node(
-            "area_1", NODE_KIND_AREA, NODE_STATUS_OPEN, "area", "2026-08-01T00:00:00Z", None,
+            "area_1",
+            NODE_KIND_AREA,
+            NODE_STATUS_OPEN,
+            "area",
+            "2026-08-01T00:00:00Z",
+            None,
         );
         area["parent_id"] = Value::String("root_1".into());
         let root = node(
-            "root_1", NODE_KIND_AREA, NODE_STATUS_OPEN, "root", "2026-08-01T00:00:00Z", None,
+            "root_1",
+            NODE_KIND_AREA,
+            NODE_STATUS_OPEN,
+            "root",
+            "2026-08-01T00:00:00Z",
+            None,
         );
         let (nodes, _, _) = views(vec![root, area, h1]);
         let parents = parent_map(&nodes, &[]);
@@ -3040,32 +3185,72 @@ mod tests {
     #[test]
     fn validation_rebuild_errors_tag_overlap_and_unattached_finding() {
         let edge_event = build_explore_edge_event(
-            "g", "h_1", "h_2", "supports", None, None, None, None, Some("2026-08-01T00:00:00Z"),
+            "g",
+            "h_1",
+            "h_2",
+            "supports",
+            None,
+            None,
+            None,
+            None,
+            Some("2026-08-01T00:00:00Z"),
         )
         .unwrap();
         let mut bad_edge = edge_event.clone();
         bad_edge["edge_type"] = Value::String("ghost".into());
         assert!(validate_explore_result_event(&bad_edge, Some("g")).is_err());
         let finding_event = build_explore_finding_event(
-            "g", "t", Some("f_1"), Some("h_1"), Some(FINDING_STATUS_CONFIRMED), None, None,
-            None, None, &[], &[], None, Some("2026-08-01T00:00:00Z"),
+            "g",
+            "t",
+            Some("f_1"),
+            Some("h_1"),
+            Some(FINDING_STATUS_CONFIRMED),
+            None,
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            Some("2026-08-01T00:00:00Z"),
         )
         .unwrap();
         let mut bad_finding = finding_event.clone();
         bad_finding["status"] = Value::String("ghost".into());
         assert!(validate_explore_result_event(&bad_finding, Some("g")).is_err());
         let unattached = build_explore_finding_event(
-            "g", "t", Some("f_2"), None, None, None, None, None, None, &[], &[], None,
+            "g",
+            "t",
+            Some("f_2"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            None,
             Some("2026-08-01T00:00:00Z"),
         )
         .unwrap();
         let projection = build_explore_result_projection(
-            &[unattached], "g", DEFAULT_FINDING_LIMIT, DEFAULT_MERMAID_NODE_LIMIT,
+            &[unattached],
+            "g",
+            DEFAULT_FINDING_LIMIT,
+            DEFAULT_MERMAID_NODE_LIMIT,
         )
         .unwrap();
         assert_eq!(projection["counts"]["finding_count"], 1);
         let (nodes, findings, edges) = views(vec![
-            node("h_1", NODE_KIND_HYPOTHESIS, NODE_STATUS_OPEN, "claim", &at(1), None),
+            node(
+                "h_1",
+                NODE_KIND_HYPOTHESIS,
+                NODE_STATUS_OPEN,
+                "claim",
+                &at(1),
+                None,
+            ),
             edge("h_1", "subtopic_of", "e_y", None, &at(2)),
         ]);
         let record = verify(
@@ -3079,7 +3264,12 @@ mod tests {
     #[test]
     fn graph_view_tag_overlap_matches() {
         let mut n = node(
-            "h_1", NODE_KIND_HYPOTHESIS, NODE_STATUS_OPEN, "claim", &at(1), None,
+            "h_1",
+            NODE_KIND_HYPOTHESIS,
+            NODE_STATUS_OPEN,
+            "claim",
+            &at(1),
+            None,
         );
         n["tags"] = serde_json::json!(["foo"]);
         let (nodes, _, edges) = views(vec![n]);
@@ -3090,8 +3280,22 @@ mod tests {
     #[test]
     fn graph_view_tag_filter_and_ancestor_cycle_break() {
         let events = vec![
-            node("area_1", NODE_KIND_AREA, NODE_STATUS_OPEN, "root area", &at(1), None),
-            node("h_1", NODE_KIND_HYPOTHESIS, NODE_STATUS_RESOLVED, "supported", &at(1), None),
+            node(
+                "area_1",
+                NODE_KIND_AREA,
+                NODE_STATUS_OPEN,
+                "root area",
+                &at(1),
+                None,
+            ),
+            node(
+                "h_1",
+                NODE_KIND_HYPOTHESIS,
+                NODE_STATUS_RESOLVED,
+                "supported",
+                &at(1),
+                None,
+            ),
         ];
         let (nodes, _, edges) = views(events);
         // tags-only filter (no statuses) → status block skipped
@@ -3102,48 +3306,98 @@ mod tests {
         assert_eq!(view["graph_counts"]["node_count"], 2);
         // an ancestor cycle breaks the walk instead of looping forever
         let mut a = node(
-            "a", NODE_KIND_HYPOTHESIS, NODE_STATUS_OPEN, "A", &at(1), None,
+            "a",
+            NODE_KIND_HYPOTHESIS,
+            NODE_STATUS_OPEN,
+            "A",
+            &at(1),
+            None,
         );
         a["parent_id"] = Value::String("b".into());
         let mut b = node(
-            "b", NODE_KIND_HYPOTHESIS, NODE_STATUS_OPEN, "B", &at(1), None,
+            "b",
+            NODE_KIND_HYPOTHESIS,
+            NODE_STATUS_OPEN,
+            "B",
+            &at(1),
+            None,
         );
         b["parent_id"] = Value::String("a".into());
         let (nodes, _, edges) = views(vec![a, b]);
-        let view = build_explore_graph_view(&nodes, &edges, &[NODE_STATUS_OPEN], &[], true, 60).unwrap();
+        let view =
+            build_explore_graph_view(&nodes, &edges, &[NODE_STATUS_OPEN], &[], true, 60).unwrap();
         assert!(view["graph_counts"]["node_count"].as_u64().unwrap() >= 2);
     }
 
     #[test]
     fn verification_skips_unrelated_and_activity_edges() {
         let (nodes, findings, edges) = views(vec![
-            node("h_1", NODE_KIND_HYPOTHESIS, NODE_STATUS_OPEN, "claim", &at(1), None),
-            finding("f_other", "h_other", FINDING_STATUS_CONFIRMED, "other", None, &at(2)),
+            node(
+                "h_1",
+                NODE_KIND_HYPOTHESIS,
+                NODE_STATUS_OPEN,
+                "claim",
+                &at(1),
+                None,
+            ),
+            finding(
+                "f_other",
+                "h_other",
+                FINDING_STATUS_CONFIRMED,
+                "other",
+                None,
+                &at(2),
+            ),
             {
-                let mut f = finding("f_ghost", "h_1", FINDING_STATUS_TENTATIVE, "ghost", None, &at(2));
+                let mut f = finding(
+                    "f_ghost",
+                    "h_1",
+                    FINDING_STATUS_TENTATIVE,
+                    "ghost",
+                    None,
+                    &at(2),
+                );
                 f["status"] = Value::String("ghost-status".into());
                 f
             },
             edge("e_a", "answers", "e_b", None, &at(2)),
             edge("h_1", "leads_to", "e_x", None, &at(2)),
         ]);
-        let record = verify(nodes.iter().find(|n| n["node_id"] == "h_1").unwrap(), &findings, &edges);
+        let record = verify(
+            nodes.iter().find(|n| n["node_id"] == "h_1").unwrap(),
+            &findings,
+            &edges,
+        );
         // the incident `leads_to` edge counts as activity → testing
         assert_eq!(record["verification_state"], VERIFICATION_TESTING);
     }
 
     #[test]
     fn strip_claim_prefix_is_case_insensitive() {
-        assert_eq!(ExploreCapability::strip_claim_prefix("Hypothesis: bigger"), "bigger");
-        assert_eq!(ExploreCapability::strip_claim_prefix("HYPOTHESIS: bigger"), "bigger");
-        assert_eq!(ExploreCapability::strip_claim_prefix("hypothesis:bigger"), "bigger");
+        assert_eq!(
+            ExploreCapability::strip_claim_prefix("Hypothesis: bigger"),
+            "bigger"
+        );
+        assert_eq!(
+            ExploreCapability::strip_claim_prefix("HYPOTHESIS: bigger"),
+            "bigger"
+        );
+        assert_eq!(
+            ExploreCapability::strip_claim_prefix("hypothesis:bigger"),
+            "bigger"
+        );
     }
 
     #[test]
     fn propose_testing_hypothesis_advances_experiment() {
         let cap = ExploreCapability;
         let testing_h = node(
-            "h_1", NODE_KIND_HYPOTHESIS, NODE_STATUS_EXPLORING, "claim", &at(1), None,
+            "h_1",
+            NODE_KIND_HYPOTHESIS,
+            NODE_STATUS_EXPLORING,
+            "claim",
+            &at(1),
+            None,
         );
         let input = serde_json::json!({"goal_id": "g", "events": [testing_h]}).to_string();
         let proposals = cap.propose(&input);

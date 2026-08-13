@@ -185,7 +185,9 @@ mod tests {
     #[test]
     #[should_panic(expected = "expected quota status section")]
     fn quota_status_extraction_rejects_wrong_variant() {
-        expect_quota_status(ProviderSection::OutcomeStreak(OutcomeStreakSection::default()));
+        expect_quota_status(ProviderSection::OutcomeStreak(
+            OutcomeStreakSection::default(),
+        ));
     }
 
     #[test]
