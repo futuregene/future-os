@@ -1,5 +1,5 @@
+import type { AgentMessage } from "@future-os/thread-projection";
 import type { StoredRun, StoredRunEvent } from "../../integrations/storage/threadStore";
-import type { AgentMessage } from "./agentThreadTypes";
 import { describe, expect, it } from "vitest";
 import { applyRecoveredEvents, applyRunMetadata, deriveRenderFields, mergeStreamingPreview, patchMessage, recoverFailedRuns, runDurationMs, streamingBubbleBase } from "./threadRunProjection";
 

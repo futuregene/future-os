@@ -1,6 +1,7 @@
-import type { AgentActivityItem, AgentMessage, MessageAttachment, MessageSegment } from "./agentThreadTypes";
-import type { ToolKind } from "./toolActivityModel";
-import { isSoftExit, nonZeroExitCode } from "./agentActivity";
+import type { AgentActivityItem, AgentMessage, MessageAttachment, MessageSegment } from "./model";
+import type { ToolKind } from "./group";
+import type { SessionEntry } from "./events";
+import { isSoftExit, nonZeroExitCode } from "./liveApply";
 import {
   asToolKind,
   COLLAPSIBLE_KINDS,
@@ -8,35 +9,7 @@ import {
   foldCollapsibleRuns,
   normalizeArgs,
   targetFromArgs,
-} from "./toolActivityModel";
-
-/** Raw entry from agent get_session_entries RPC. */
-export interface SessionEntry {
-  id: string;
-  role: "user" | "assistant" | "tool";
-  content: string;
-  name?: string;
-  tool_args?: string;
-  thinking?: string;
-  tool_calls?: Array<{ id: string; function: { name: string; arguments: unknown } }>;
-  /** RFC3339 entry time; preserved across re-saves so history keeps real times. */
-  timestamp?: string;
-  /** Output tokens for the reply — only the final assistant entry of a run. */
-  output_tokens?: number;
-  /** Run wall-clock duration in ms — paired with `output_tokens`. */
-  duration_ms?: number;
-  /** Structured per-entry metadata; user entries carry attached files here. */
-  meta?: {
-    /** Canonical Agent run identity (new entries; absent in legacy JSONL). */
-    run_id?: string;
-    attachments?: Array<{
-      path: string;
-      kind?: "image" | "file" | null;
-      name: string;
-      thumbnail?: string | null;
-    }>;
-  };
-}
+} from "./group";
 
 /** Rebuild the message's attachment chips from a user entry's meta. */
 function attachmentsFromMeta(entry: SessionEntry): MessageAttachment[] | undefined {
@@ -265,9 +238,6 @@ function flushAcc(messages: AgentMessage[], acc: ExchangeAcc) {
       id: acc.assistantEntryId ? `m_${acc.assistantEntryId}` : segId(),
       role: "assistant",
       authorKey: "author.researchCopilot",
-      // Invariant: a non-empty textSegments implies finalText was set (every
-      // text segment assigns it), so the fallback only ever joins zero segments.
-      /* v8 ignore next -- the join closure never runs (see invariant above) */
       content: acc.finalText || textSegments.map(s => s.text).join("\n"),
       segments: segments.length > 0 ? segments : undefined,
       status: "complete",

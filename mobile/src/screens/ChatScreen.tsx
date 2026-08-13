@@ -6,6 +6,7 @@ import {
   ChevronDown,
   FileText,
   Paperclip,
+  Pencil,
   Send,
   Square,
   X,
@@ -36,8 +37,10 @@ import { File } from "expo-file-system";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { PendingApprovalCard, TimelineCard } from "../components/TimelineCard";
+import { Button } from "../components/Button";
 import { MarkdownText } from "../components/MarkdownText";
 import { useRemote } from "../remote/RemoteContext";
+import { loadSessionDraft, saveSessionDraft } from "../remote/draftStorage";
 import { deleteTemporaryAttachment, pickAttachments, takePhoto } from "../remote/files";
 import {
   modelReference,
@@ -118,8 +121,16 @@ export function ChatScreen() {
     truncated?: boolean;
   } | null>(null);
   const [selector, setSelector] = useState<"model" | "thinking" | null>(null);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
   const [showOffline, setShowOffline] = useState(false);
   const [atLatest, setAtLatest] = useState(true);
+  // Per-session composer draft: the unsent text/attachments survive leaving the
+  // screen and coming back (G6). The draft conversation (no session yet) uses a
+  // fixed key so a re-created new-conversation draft restores what was started.
+  const draftKey = remote.selectedSessionId || "draft:new";
+  const restoringDraftRef = useRef(false);
+  const activeDraftKeyRef = useRef(draftKey);
   // Measured height of the floating composer dock — the list's bottom padding
   // tracks it so the last message always lands just above the composer (no
   // gap, no hidden content) regardless of docked approvals or input height.
@@ -174,6 +185,23 @@ export function ChatScreen() {
     [remote, t],
   );
 
+  const openRename = () => {
+    // Pre-fill the current title so the user can edit in place.
+    setRenameValue(remote.selectedTitle || "");
+    setRenameOpen(true);
+  };
+
+  const submitRename = async () => {
+    const name = renameValue.trim();
+    if (!name) return;
+    setRenameOpen(false);
+    try {
+      await remote.rename(remote.selectedSessionId, name);
+    } catch {
+      Alert.alert(t("common.error"));
+    }
+  };
+
   useEffect(() => {
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
       closeConversation();
@@ -206,6 +234,31 @@ export function ChatScreen() {
     );
     return () => clearTimeout(timer);
   }, [remote.desktopOnline]);
+
+  // Restore this conversation's draft when the screen (re)opens. Uses the
+  // sessionId captured at mount — the draft conversation key stays stable
+  // across the "" placeholder, and a bound session keeps its own slot.
+  useEffect(() => {
+    restoringDraftRef.current = true;
+    activeDraftKeyRef.current = draftKey;
+    const key = draftKey;
+    void loadSessionDraft(key).then(draft => {
+      // Guard against a conversation switch racing the async load.
+      if (restoringDraftRef.current && activeDraftKeyRef.current === key) {
+        setMessage(draft?.text ?? "");
+        setAttachments(draft?.attachments ?? []);
+        restoringDraftRef.current = false;
+      }
+    });
+  }, [draftKey]);
+
+  // Persist edits. The restore-driven update is skipped (the effect above
+  // already loaded the draft), and temporary camera/cache files are released
+  // when removed so they don't accumulate on disk.
+  useEffect(() => {
+    if (restoringDraftRef.current) return;
+    void saveSessionDraft(draftKey, { text: message, attachments });
+  }, [attachments, draftKey, message]);
 
   const chooseFiles = async () => {
     setAttachmentMenu(false);
@@ -264,9 +317,12 @@ export function ChatScreen() {
         setTransferProgress(total > 0 ? done / total : null),
       );
       setAttachments([]);
-    } catch {
+    } catch (error) {
+      // M9: sendMessage now throws for busy/streaming/disconnected instead of
+      // swallowing the input — always restore the draft so nothing vanishes.
       setMessage(value);
-      setAttachmentError(t("chat.sendFailed"));
+      const key = error instanceof Error ? error.message : "";
+      setAttachmentError(key === "prompt_too_large" ? t("chat.promptTooLarge") : t("chat.sendFailed"));
     } finally {
       setTransferProgress(null);
     }
@@ -435,7 +491,17 @@ export function ChatScreen() {
               {title}
             </Text>
           </View>
-          <View style={styles.iconButton} />
+          {!remote.draft && (
+            <Pressable
+              accessibilityLabel={t("chat.rename")}
+              accessibilityRole="button"
+              onPress={openRename}
+              style={styles.iconButton}
+            >
+              <Pencil color={colors.ink} size={18} />
+            </Pressable>
+          )}
+          {remote.draft && <View style={styles.iconButton} />}
         </View>
 
         <View style={styles.chatContent}>
@@ -517,6 +583,12 @@ export function ChatScreen() {
             )}
             {showOffline && (
               <Text style={styles.offlineComposer}>{t("connection.offlineHint")}</Text>
+            )}
+            {!remote.draft &&
+              remote.desktopOnline &&
+              remote.models.length === 0 &&
+              !remote.modelId && (
+              <Text style={styles.offlineComposer}>{t("connection.noModelsHint")}</Text>
             )}
             {pendingApprovals.map(item => (
               <View key={item.id} style={styles.dockedApproval}>
@@ -822,6 +894,46 @@ export function ChatScreen() {
               </TouchableWithoutFeedback>
             </View>
           </TouchableWithoutFeedback>
+        </Modal>
+        <Modal
+          animationType="fade"
+          onRequestClose={() => setRenameOpen(false)}
+          transparent
+          visible={renameOpen}
+        >
+          <View style={styles.overlay}>
+            <View style={styles.dialog}>
+              <Text style={styles.dialogTitle}>{t("chat.renameTitle")}</Text>
+              <TextInput
+                autoFocus
+                onChangeText={setRenameValue}
+                onSubmitEditing={() => void submitRename()}
+                placeholder={t("sessions.unnamed")}
+                placeholderTextColor={colors.inkMuted}
+                returnKeyType="done"
+                style={styles.nameInput}
+                value={renameValue}
+              />
+              <View style={styles.dialogActions}>
+                <View style={styles.dialogAction}>
+                  <Button
+                    compact
+                    label={t("chat.cancel")}
+                    onPress={() => setRenameOpen(false)}
+                    variant="secondary"
+                  />
+                </View>
+                <View style={styles.dialogAction}>
+                  <Button
+                    compact
+                    disabled={!renameValue.trim()}
+                    label={t("chat.save")}
+                    onPress={() => void submitRename()}
+                  />
+                </View>
+              </View>
+            </View>
+          </View>
         </Modal>
       </KeyboardAvoidingView>
     </SafeAreaView>

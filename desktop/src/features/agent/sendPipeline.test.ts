@@ -1,6 +1,6 @@
+import type { AgentMessage } from "@future-os/thread-projection";
 import type { SetStateAction } from "react";
 import type { StoredRun, StoredThread } from "../../integrations/storage/threadStore";
-import type { AgentMessage } from "./agentThreadTypes";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { sendPromptToFutureAgent } from "../../integrations/agent/agentClient";
 import { createRun, getRun, listRunEvents, updateRunStatus } from "../../integrations/storage/threadStore";

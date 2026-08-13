@@ -1,9 +1,9 @@
-import type { AgentActivityKind } from "./agentThreadTypes";
-import { isRecord } from "../../lib/objects";
+import type { AgentActivityKind } from "./model";
+import { isRecord } from "./utils";
 
 // Shared tool-activity model: the constants and folding rules that both the live
-// streaming projection (agentActivity.ts) and the reload-from-JSONL projection
-// (entryProjection.ts) build on. Keeping these in one place is what stops the two
+// streaming projection (liveApply.ts) and the reload-from-JSONL projection
+// (projection.ts) build on. Keeping these in one place is what stops the two
 // paths from drifting — a collapse or target-extraction tweak lands in both.
 
 /** The four tool kinds the activity UI models (every other tool maps to "shell"). */

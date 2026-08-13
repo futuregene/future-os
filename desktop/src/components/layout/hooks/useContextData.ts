@@ -1,8 +1,8 @@
 import type { ReviewBase } from "../../../integrations/storage/review";
 import type { GitReview, StoredArtifact, StoredRun, StoredThread, StoredToolCall } from "../../../integrations/storage/threadStore";
 import type { WorkspaceReviewCapabilities } from "../../../integrations/storage/types";
+import { matchesSettledRun } from "@future-os/thread-projection";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { matchesSettledRun } from "../../../features/agent/agentMessageFormatters";
 import {
   ensureWorkspaceGit,
   getGitReview,

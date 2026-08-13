@@ -98,6 +98,9 @@ struct IncomingCmd {
     // set_session_name
     name: String,
     transfer_name: String,
+    // delete_session / set_session_pinned (thread-scoped, see ThreadRecord)
+    thread_id: String,
+    pinned: bool,
     // prompt creation mode / existing workspace selection
     workspace_id: String,
     // file transfer control + prompt attachment references
@@ -138,6 +141,8 @@ impl Default for IncomingCmd {
             level: String::new(),
             name: String::new(),
             transfer_name: String::new(),
+            thread_id: String::new(),
+            pinned: false,
             workspace_id: String::new(),
             mime_type: String::new(),
             kind: String::new(),
@@ -345,10 +350,11 @@ async fn handle_command(
                             let status = run_status_by_thread.get(t.id.as_str()).copied();
                             json!({
                                 "sessionId": sid,
-                                "title": t.title,
                                 "threadId": t.id,
+                                "title": t.title,
                                 "mode": t.mode,
                                 "workspaceId": t.workspace_id,
+                                "pinned": t.pinned,
                                 "streaming": streaming,
                                 "status": status,
                             })
@@ -446,6 +452,12 @@ async fn handle_command(
         }
         "get_events_since" => {
             // P1c: replay buffered events for the current in-progress run, so late-joining clients can catch up on missed prefix events.
+            let offset = cmd.offset.max(0) as usize;
+            let limit = if cmd.limit > 0 {
+                cmd.limit as usize
+            } else {
+                DEFAULT_MESSAGE_PAGE_LIMIT
+            };
             match crate::agent_bridge::get_events_since(
                 cmd.session_id.clone(),
                 cmd.run_id.clone(),
@@ -453,7 +465,16 @@ async fn handle_command(
             )
             .await
             {
-                Ok(data) => reply(client, &msg, true, data, None).await,
+                Ok(data) => {
+                    reply(
+                        client,
+                        &msg,
+                        true,
+                        paginate_events(data, offset, limit),
+                        None,
+                    )
+                    .await
+                }
                 Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
             }
         }
@@ -628,8 +649,45 @@ async fn handle_command(
             match crate::agent_bridge::rename_session(cmd.session_id.clone(), cmd.name.clone())
                 .await
             {
-                Ok(()) => reply(client, &msg, true, json!({}), None).await,
+                Ok(()) => {
+                    if let Ok(Some(thread)) =
+                        crate::store::find_thread_by_agent_session(&cmd.session_id)
+                    {
+                        crate::emit_remote_activity(&thread.id);
+                    }
+                    reply(client, &msg, true, json!({}), None).await
+                }
                 Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
+            }
+        }
+        "set_session_pinned" => {
+            match crate::store::pin_thread(crate::store::PinThreadInput {
+                thread_id: cmd.thread_id.clone(),
+                pinned: cmd.pinned,
+            }) {
+                Ok(_) => {
+                    crate::emit_remote_activity(&cmd.thread_id);
+                    reply(client, &msg, true, json!({}), None).await
+                }
+                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
+            }
+        }
+        "delete_session" => {
+            // Matches the desktop single-thread delete: the session record is
+            // removed (and, when it is the only owner, the agent session too),
+            // but the temporary chat workspace files are kept (delete_files =
+            // false). Only reachable with a non-empty thread id from the remote
+            // client; a missing id is a malformed request, not a deletion.
+            if cmd.thread_id.is_empty() {
+                reply(client, &msg, false, Value::Null, Some("missing thread_id")).await;
+            } else {
+                match crate::store::delete_thread_with_files(&cmd.thread_id, false) {
+                    Ok(_) => {
+                        crate::emit_remote_activity(&cmd.thread_id);
+                        reply(client, &msg, true, json!({}), None).await
+                    }
+                    Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
+                }
             }
         }
         other => {
@@ -682,7 +740,6 @@ async fn handle_pair_handshake(
     cmd: &IncomingCmd,
     state: &HandshakeState,
 ) {
-    state.active.store(false, Ordering::Release);
     let desktop_public_key = match crate::remote::pairing::public_key(&state.creds) {
         Ok(key) => key,
         Err(error) => {
@@ -690,6 +747,10 @@ async fn handle_pair_handshake(
             return;
         }
     };
+    // Validate BEFORE deactivating commands: a garbage handshake must not lock
+    // the bridge (active=false gates every command) — only a well-formed
+    // handshake from a party that holds the pair's identity may suspend the
+    // current session while it re-authenticates.
     let valid = cmd.protocol_version == HANDSHAKE_PROTOCOL_VERSION
         && cmd.pair_id == state.creds.pair_id
         && cmd.expected_desktop_id == state.creds.desktop_id
@@ -708,6 +769,10 @@ async fn handle_pair_handshake(
         .await;
         return;
     }
+
+    // Identity validated — the handshake may now suspend command processing
+    // until the confirm round completes (see handle_pair_handshake_confirm).
+    state.active.store(false, Ordering::Release);
 
     let desktop_nonce = nkeys::KeyPair::new_user().public_key();
     let transcript = handshake_transcript(&HandshakeTranscript {
@@ -1048,6 +1113,34 @@ fn paginate_items(mut items: Vec<Value>, offset: usize, limit: usize, key: &str)
     value
 }
 
+/// Page a session's replay event tail into a reply that fits the NATS payload
+/// cap, mirroring `paginate_items` (each event's `data` is capped, then events
+/// accumulate until the page would exceed [`MESSAGES_PAGE_BYTES`]). The reply
+/// keeps the envelope's non-event fields (`runId`, `projection`, `truncated`)
+/// on every page so the client can distinguish a ring-overflow projection from
+/// a plain tail replay regardless of which page it lands on.
+fn paginate_events(mut data: Value, offset: usize, limit: usize) -> Value {
+    let run_id = data.get("runId").cloned().unwrap_or(Value::Null);
+    let projection = data.get("projection").cloned().unwrap_or(Value::Null);
+    let truncated = data.get("truncated").cloned().unwrap_or(Value::Null);
+    let events = data
+        .get_mut("events")
+        .and_then(Value::as_array_mut)
+        .map(std::mem::take)
+        .unwrap_or_default();
+    let mut page = paginate_items(events, offset, limit, "events");
+    if !run_id.is_null() {
+        page["runId"] = run_id;
+    }
+    if !projection.is_null() {
+        page["projection"] = projection;
+    }
+    if !truncated.is_null() {
+        page["truncated"] = truncated;
+    }
+    page
+}
+
 /// Cap the serialized size of a single message by truncating its `content`
 /// (a string or an array of `{type:"text", text}` blocks). Non-text blocks
 /// (tool_use etc.) are left intact so the shape stays renderable.
@@ -1056,6 +1149,23 @@ fn truncate_message_content(message: &mut Value, cap: usize) {
         .map(|bytes| bytes.len() > cap)
         .unwrap_or(false);
     if !oversized {
+        return;
+    }
+    // Replay events carry their payload in `data` (a JSON string), not
+    // `content` — a single oversized event (e.g. a multi-MB tool result kept
+    // verbatim in the journal) would otherwise page out whole and be silently
+    // dropped by the relay, failing every reconcile on that session (H2
+    // residual). Mirror the live path (`cap_event_data`): swap the oversized
+    // `data` for a `_truncated` placeholder the client reducer consumes.
+    if message.get("content").is_none() {
+        if let Some(Value::String(data)) = message.get_mut("data") {
+            if data.len() > cap {
+                *data = format!(
+                    r#"{{"_truncated":true,"bytes":{},"note":"event exceeded the relay payload limit and was truncated; full content is available via get_messages"}}"#,
+                    data.len()
+                );
+            }
+        }
         return;
     }
     let Some(content) = message.get_mut("content") else {
@@ -1309,5 +1419,79 @@ mod tests {
         let (end, truncated) = byte_cut(s, 1024);
         assert_eq!(end, s.len());
         assert!(!truncated);
+    }
+
+    #[test]
+    fn paginate_events_pages_a_large_tail() {
+        // A multi-MB replay tail must page instead of shipping as one reply.
+        let big = "y".repeat(100 * 1024);
+        let events: Vec<Value> = (0..6)
+            .map(|i| json!({ "type": "text_chunk", "run_id": "run-1", "idx": i, "data": big }))
+            .collect();
+        let data = json!({ "runId": "run-1", "events": events });
+        let first = paginate_events(data, 0, 100);
+        let arr = first["events"].as_array().unwrap();
+        assert!(
+            arr.len() < 6,
+            "byte budget should split the tail, got {}",
+            arr.len()
+        );
+        assert_eq!(first["runId"], "run-1");
+        assert_eq!(first["hasMore"], true);
+        let size = serde_json::to_vec(&first).map(|b| b.len()).unwrap();
+        assert!(size < 1024 * 1024, "page too large: {size}");
+    }
+
+    #[test]
+    fn paginate_events_carries_projection_on_first_page() {
+        let events = vec![json!({ "type": "text_chunk", "run_id": "run-1", "idx": 0 })];
+        let data = json!({
+            "runId": "run-1",
+            "events": events,
+            "projection": { "run_id": "run-1", "cursor": 42, "events": [] },
+        });
+        let page = paginate_events(data, 0, 100);
+        assert_eq!(page["projection"]["cursor"], 42);
+        assert_eq!(page["events"].as_array().unwrap().len(), 1);
+        assert_eq!(page["hasMore"], false);
+    }
+
+    #[test]
+    fn paginate_events_truncates_a_single_oversized_event_data() {
+        // A single journal event larger than the relay payload cap (a multi-MB
+        // tool result) must not page out whole — the "at least one item per
+        // page" rule would otherwise ship it intact and the relay silently
+        // drops it, failing every reconcile on that session (H2 residual).
+        let huge = "z".repeat(3 * 1024 * 1024);
+        let events =
+            vec![json!({ "type": "tool_result", "run_id": "run-1", "idx": 0, "data": huge })];
+        let data = json!({ "runId": "run-1", "events": events });
+        let page = paginate_events(data, 0, 100);
+        let arr = page["events"].as_array().unwrap();
+        assert_eq!(arr.len(), 1, "the single event still pages through");
+        let data_str = arr[0]["data"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(data_str).unwrap();
+        assert_eq!(
+            parsed["_truncated"], true,
+            "oversized event data must be swapped for the _truncated marker"
+        );
+        // The page must now fit well under the relay cap.
+        let size = serde_json::to_vec(&page).map(|b| b.len()).unwrap();
+        assert!(
+            size < 1024 * 1024,
+            "page too large after truncation: {size}"
+        );
+    }
+
+    #[test]
+    fn truncate_swaps_oversized_event_data_but_keeps_small() {
+        let mut big = json!({ "type": "tool_result", "run_id": "r", "idx": 0, "data": "x".repeat(MESSAGE_CONTENT_CAP_BYTES + 10) });
+        truncate_message_content(&mut big, MESSAGE_CONTENT_CAP_BYTES);
+        let parsed: Value = serde_json::from_str(big["data"].as_str().unwrap()).unwrap();
+        assert_eq!(parsed["_truncated"], true);
+
+        let mut small = json!({ "type": "text_chunk", "run_id": "r", "idx": 1, "data": "ok" });
+        truncate_message_content(&mut small, MESSAGE_CONTENT_CAP_BYTES);
+        assert_eq!(small["data"], "ok");
     }
 }

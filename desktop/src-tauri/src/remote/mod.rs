@@ -222,11 +222,17 @@ pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppE
     // keep propagating as `Err`.
     let (creds, pairing_code, pairing_code_expires_at) = match establish().await {
         Ok(value) => value,
-        Err(error) => return start_failure(error),
+        Err(error) => {
+            eprintln!("remote: start failed at establish: {error}");
+            return start_failure(error);
+        }
     };
     let client = match connect_nats(&creds).await {
         Ok(client) => client,
-        Err(error) => return start_failure(error),
+        Err(error) => {
+            eprintln!("remote: start failed at connect_nats: {error}");
+            return start_failure(error);
+        }
     };
     let pairing_confirmed = Arc::new(AtomicBool::new(pairing_code.is_none()));
     if pairing_confirmed.load(Ordering::Acquire) {
@@ -375,6 +381,14 @@ fn start_failure(error: crate::AppError) -> Result<RemoteStatus, crate::AppError
     }
 }
 
+/// The desktop bridge talks NATS **directly** (`nats://…`) to the operator's
+/// own server over a trusted path; the server is this deployment's own
+/// infrastructure. TLS on this hop is the operator's choice, not something we
+/// can hard-assert here — the remote-link TLS invariant lives on the *mobile
+/// / web* side (`wss://`, enforced in the mobile client's `assertSecureNatsUrl`
+/// and the web server's own URL construction). Do NOT reintroduce a `wss://`
+/// assertion on this hop: the platform hands the desktop a `nats://` URL by
+/// design.
 async fn connect_nats(
     creds: &pairing::PairingCreds,
 ) -> Result<async_nats::Client, crate::AppError> {
@@ -921,6 +935,7 @@ fn build_presence_snapshot(pair_id: &str, bridge_instance_id: &str) -> (serde_js
             "title": t.title,
             "mode": t.mode,
             "workspaceId": t.workspace_id,
+            "pinned": t.pinned,
             "streaming": streaming,
             "status": status,
         }));
@@ -930,6 +945,7 @@ fn build_presence_snapshot(pair_id: &str, bridge_instance_id: &str) -> (serde_js
         push_sig_field(&mut signature, &t.title);
         push_sig_field(&mut signature, &t.mode);
         push_sig_field(&mut signature, &t.workspace_id);
+        push_sig_field(&mut signature, if t.pinned { "1" } else { "0" });
         push_sig_field(&mut signature, if streaming { "1" } else { "0" });
         push_sig_field(&mut signature, status.unwrap_or(""));
     }
@@ -995,6 +1011,7 @@ fn build_sessions_snapshot(pair_id: &str) -> (serde_json::Value, String) {
             "title": t.title,
             "mode": t.mode,
             "workspaceId": t.workspace_id,
+            "pinned": t.pinned,
             "streaming": streaming,
             "status": status,
         }));
@@ -1003,6 +1020,7 @@ fn build_sessions_snapshot(pair_id: &str) -> (serde_json::Value, String) {
         push_sig_field(&mut signature, &t.title);
         push_sig_field(&mut signature, &t.mode);
         push_sig_field(&mut signature, &t.workspace_id);
+        push_sig_field(&mut signature, if t.pinned { "1" } else { "0" });
         push_sig_field(&mut signature, if streaming { "1" } else { "0" });
         push_sig_field(&mut signature, status.unwrap_or(""));
     }
