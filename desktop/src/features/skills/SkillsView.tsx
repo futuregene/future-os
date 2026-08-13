@@ -1,5 +1,5 @@
 import type { AvailableSkill, InstalledSkill } from "../../integrations/skills/skillsClient";
-import type { SkillFilters } from "./skillsFilter";
+import type { CategoryOption, SkillFilters } from "./skillsFilter";
 import { ArrowUpCircle, Blocks, Download, RotateCcw, Search, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -23,9 +23,9 @@ import { startWindowDrag } from "../../lib/windowDrag";
 import { computeSkillUpgrades } from "./autoUpgrade";
 import {
   allCategoriesValue,
+  categoryOptions,
   matchesAvailableSkill,
   matchesInstalledSkill,
-  uniqueSorted,
 } from "./skillsFilter";
 import { isUpgradeAvailable } from "./skillVersion";
 
@@ -34,7 +34,8 @@ type SkillsTab = "installed" | "all";
 const emptyFilters: SkillFilters = { category: allCategoriesValue, query: "" };
 
 export function SkillsView({ leftPanelExpanded, onToggleLeftPanel }: { leftPanelExpanded: boolean; onToggleLeftPanel: () => void }) {
-  const { t } = useTranslation("skills");
+  const { i18n, t } = useTranslation("skills");
+  const useChinese = i18n.language !== "en";
   const [tab, setTab] = useState<SkillsTab>("installed");
   const [installed, setInstalled] = useState<InstalledSkill[]>([]);
   const [available, setAvailable] = useState<AvailableSkill[]>([]);
@@ -63,8 +64,8 @@ export function SkillsView({ leftPanelExpanded, onToggleLeftPanel }: { leftPanel
   );
 
   const allCategories = useMemo(
-    () => uniqueSorted(available.map(skill => skill.category)),
-    [available],
+    () => categoryOptions(available, useChinese),
+    [available, useChinese],
   );
 
   // Catalogue lookup for installed skills. Used for filtering (category + the
@@ -77,14 +78,11 @@ export function SkillsView({ leftPanelExpanded, onToggleLeftPanel }: { leftPanel
 
   // Categories that have at least one installed skill (matched via catalogue).
   const installedCategories = useMemo(() => {
-    const catSet = new Set<string>();
-    for (const s of installed) {
-      const cat = availableById.get(s.id)?.category;
-      if (cat)
-        catSet.add(cat);
-    }
-    return [...catSet].sort();
-  }, [installed, availableById]);
+    const catalogueEntries = installed
+      .map(skill => availableById.get(skill.id))
+      .filter((skill): skill is AvailableSkill => Boolean(skill));
+    return categoryOptions(catalogueEntries, useChinese);
+  }, [installed, availableById, useChinese]);
 
   const filteredInstalled = useMemo(
     () => installed.filter(skill => matchesInstalledSkill(skill, installedFilters, availableById.get(skill.id))),
@@ -288,7 +286,7 @@ function InstalledTab({
 }: {
   busy: Record<string, boolean>;
   catalogue: AvailableSkill[];
-  categories: string[];
+  categories: CategoryOption[];
   error: string | null;
   filters: SkillFilters;
   loading: boolean;
@@ -362,6 +360,7 @@ function InstalledTab({
         const description = useChinese
           ? cat?.descriptionZh || skill.descriptionZh || skill.description
           : cat?.description || skill.description;
+        const category = (useChinese && cat?.categoryZh ? cat.categoryZh : cat?.category) || undefined;
         const latest = cat?.latestVersion ?? null;
         const canUpgrade = isUpgradeAvailable(skill.version, latest);
         return (
@@ -370,7 +369,7 @@ function InstalledTab({
             name={name || skill.id}
             description={description}
             version={skill.version}
-            meta={cat?.category || undefined}
+            meta={category}
             action={(
               <div className="flex items-center gap-2">
                 <UninstallButton busy={busy[skill.id]} onClick={() => onUninstall(skill.id)} />
@@ -410,7 +409,7 @@ function AllTab({
   totalCount,
 }: {
   busy: Record<string, boolean>;
-  categories: string[];
+  categories: CategoryOption[];
   error: string | null;
   filters: SkillFilters;
   installedById: Map<string, InstalledSkill>;
@@ -471,7 +470,7 @@ function AllTab({
             name={name || skill.id}
             description={description}
             version={skill.latestVersion}
-            meta={skill.category || undefined}
+            meta={(useChineseCatalogueText && skill.categoryZh ? skill.categoryZh : skill.category) || undefined}
             action={
               isInstalled
                 ? (
@@ -515,7 +514,7 @@ function SkillFiltersBar({
   totalCount,
   trailing,
 }: {
-  categories: string[];
+  categories: CategoryOption[];
   filters: SkillFilters;
   onChange: (filters: SkillFilters) => void;
   resultCount: number;
@@ -536,8 +535,8 @@ function SkillFiltersBar({
         wrapperClassName="w-full sm:w-48"
       >
         <option value={allCategoriesValue}>{t("filter.allCategories")}</option>
-        {categories.map(category => (
-          <option key={category} value={category}>{category}</option>
+        {categories.map(option => (
+          <option key={option.value} value={option.value}>{option.label}</option>
         ))}
       </Select>
       <div className="relative min-w-0 flex-1">
