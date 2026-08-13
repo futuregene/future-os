@@ -60,7 +60,6 @@ const styles = StyleSheet.create({
   badge: {
     flexDirection: "row",
     alignItems: "center",
-    alignSelf: "flex-start",
     gap: 6,
     borderWidth: 1,
     borderRadius: radius.pill,
