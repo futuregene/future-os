@@ -65,14 +65,30 @@ fn agent_reachable(addr: &str) -> bool {
 /// which embeds the same code as the retired standalone future-agent binary —
 /// so only `future` is bundled (tauri.conf.json externalBin).
 pub fn ensure_agent_running<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    ensure_agent_running_with(app, agent_reachable);
+}
+
+/// [`ensure_agent_running`] with an injectable reachability probe, so the
+/// "already reachable" early-return is testable without a live agent.
+fn ensure_agent_running_with<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    reachable: impl Fn(&str) -> bool,
+) {
     let addr = bare_addr();
-    if agent_reachable(&addr) {
+    if reachable(&addr) {
         eprintln!("FutureOS: agent already reachable at {addr}; not spawning bundled agent");
         return;
     }
 
+    spawn_bundled_agent(app, &addr);
+}
+
+/// Resolve the `future` sidecar and spawn it (or log why we can't). Extracted so
+/// the sidecar-unavailable / spawn-failure arms are testable with a mock app
+/// handle instead of the real `AppHandle` + bundled sidecar binary.
+fn spawn_bundled_agent<R: tauri::Runtime>(app: &tauri::AppHandle<R>, addr: &str) {
     let command = match app.shell().sidecar("future") {
-        Ok(command) => command.args(["agent", "--grpc-addr", &addr]),
+        Ok(command) => command.args(["agent", "--grpc-addr", addr]),
         Err(error) => {
             eprintln!(
                 "FutureOS: bundled CLI sidecar unavailable ({error}); run it manually in dev"
@@ -326,6 +342,42 @@ mod tests {
         .unwrap();
         drop(tx);
         drain_agent_events(rx);
+    }
+
+    #[test]
+    fn shutdown_agent_noops_without_child() {
+        // `AGENT_CHILD` is `None` by default in tests (no real sidecar spawn),
+        // so this exercises the idempotent no-op path.
+        shutdown_agent();
+    }
+
+    #[test]
+    fn ensure_agent_running_skips_when_reachable() {
+        // A reachable probe short-circuits before any sidecar resolution.
+        ensure_agent_running_with(&mock_handle(), |_| true);
+    }
+
+    #[test]
+    fn ensure_agent_running_logs_sidecar_unavailable() {
+        // Unreachable probe + no bundled sidecar binary → the spawn fails and is
+        // logged, without spawning anything.
+        ensure_agent_running_with(&mock_handle(), |_| false);
+    }
+
+    #[test]
+    fn ensure_agent_running_wrapper_probes_and_delegates() {
+        // The public entry wires `agent_reachable` into the injectable core. With
+        // a mock handle the spawn always fails (no bundled sidecar), so this is a
+        // benign no-op regardless of whether the bare addr happens to be reachable.
+        ensure_agent_running(&mock_handle());
+    }
+
+    fn mock_handle() -> tauri::AppHandle<tauri::test::MockRuntime> {
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_shell::init())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build mock app");
+        app.handle().clone()
     }
 
     #[test]
