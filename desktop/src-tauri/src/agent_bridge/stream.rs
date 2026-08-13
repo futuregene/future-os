@@ -917,6 +917,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn collect_propagates_a_projection_snapshot_error() {
+        let mock = mock_agent();
+        mock.push_stream(StreamScript::Events(
+            vec![snapshot_event(
+                "run-1",
+                1,
+                vec![
+                    projected("text_chunk", r#"{"text":"prefix"}"#, 0),
+                    projected("error", r#"{"error":"snapshot error"}"#, 1),
+                ],
+            )],
+            None,
+        ));
+        let error = collect_agent_response(None, "run-1", "sess-1", "thread-1")
+            .await
+            .expect_err("error inside a projection snapshot");
+        assert_eq!(crate::AppError::from(error).to_string(), "snapshot error");
+    }
+
+    #[tokio::test]
+    async fn collect_gives_up_after_six_stream_breaks() {
+        let mock = mock_agent();
+        // Seven streams that each close without a terminal event (and without
+        // ever resetting `reconnect_attempt` via a valid event): the seventh
+        // break exhausts the budget and surfaces the reconnect error.
+        for _ in 0..=STREAM_RECONNECT_ATTEMPTS {
+            mock.push_stream(StreamScript::Events(vec![], None));
+        }
+        let error = collect_agent_response(None, "run-1", "sess-1", "thread-1")
+            .await
+            .expect_err("repeated stream breaks");
+        let message = crate::AppError::from(error).to_string();
+        assert!(
+            message.contains("could not be resumed after 6 attempts"),
+            "{message}"
+        );
+    }
+
+    #[tokio::test]
     async fn collect_persists_events_off_thread_for_local_runs() {
         let home = TestHome::new("stream-persist");
         let mock = mock_agent();

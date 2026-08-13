@@ -1178,6 +1178,36 @@ mod tests {
     }
 
     #[test]
+    fn shell_command_double_encoded_is_unwrapped_for_soft_fail() {
+        let fixture = fixture("persist-shell-double");
+        let inside = touch(&std::path::Path::new(&fixture.workspace.path).join("out.txt"));
+        // tool_args double-encoded: the shell command lives two string layers
+        // deep, so `shell_command_from_input` must unwrap twice to read it.
+        let inner = json!({"path": inside, "command": "grep needle file"}).to_string();
+        let double = serde_json::Value::String(inner).to_string();
+        persist_run_event(
+            Some(&fixture.run.id),
+            "tool_start",
+            &json!({"tool_id": "tc-ds", "tool_name": "shell", "tool_args": double}).to_string(),
+            0,
+        );
+        // grep exits 1 on "no match": a soft-fail, so the write artifact (from
+        // the double-encoded path) is still recorded.
+        persist_run_event(
+            Some(&fixture.run.id),
+            "tool_end",
+            &json!({"tool_name": "write", "tool_id": "tc-ds", "text": "no match\n[exit: 1]"})
+                .to_string(),
+            1,
+        );
+        let paths: Vec<_> = artifacts(&fixture)
+            .iter()
+            .filter_map(|a| a.path.clone())
+            .collect();
+        assert!(paths.contains(&inside), "paths: {paths:?}");
+    }
+
+    #[test]
     fn footer_exit_codes_above_one_are_failures() {
         let fixture = fixture("persist-footer-fail");
         persist_run_event(
