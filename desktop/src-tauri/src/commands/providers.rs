@@ -84,12 +84,10 @@ mod tests {
         assert!(view.builtin.iter().any(|p| p.id == "deepseek"));
 
         // set base url
-        let view = set_builtin_provider_base_url(
-            agent_providers::SetBuiltinProviderBaseUrlInput {
-                id: "deepseek".to_string(),
-                base_url: "https://custom.example.com/v1".to_string(),
-            },
-        )
+        let view = set_builtin_provider_base_url(agent_providers::SetBuiltinProviderBaseUrlInput {
+            id: "deepseek".to_string(),
+            base_url: "https://custom.example.com/v1".to_string(),
+        })
         .await
         .expect("base url");
         assert!(agent.served("upsert_provider", ""));
@@ -103,4 +101,3 @@ mod tests {
         assert!(view.builtin.iter().any(|p| p.id == "deepseek"));
     }
 }
-

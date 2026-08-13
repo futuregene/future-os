@@ -3364,10 +3364,7 @@ mod pipeline_tests {
 
         // Transport failure → error.
         let thread5 = seed_thread(&workspace.id, Some("sess-at5"));
-        mock.push_state_for_session(
-            "sess-at5",
-            Reply::Status(tonic::Code::Unavailable, "down"),
-        );
+        mock.push_state_for_session("sess-at5", Reply::Status(tonic::Code::Unavailable, "down"));
         let error = attach_remote_stream(&thread5.id)
             .await
             .expect_err("transport");

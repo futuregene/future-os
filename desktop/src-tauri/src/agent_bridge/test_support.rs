@@ -109,10 +109,7 @@ impl FutureAgent for MockAgent {
             // to the shared `get_state` queue so legacy call sites keep
             // working.
             let mut take = |key: &str| -> Option<Reply> {
-                state
-                    .replies
-                    .get_mut(key)
-                    .and_then(VecDeque::pop_front)
+                state.replies.get_mut(key).and_then(VecDeque::pop_front)
             };
             let reply = if cmd.r#type == "get_state" && !cmd.run_id.is_empty() {
                 take(&format!("get_state#{}", cmd.run_id))

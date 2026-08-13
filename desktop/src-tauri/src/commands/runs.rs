@@ -464,10 +464,7 @@ mod tests {
         create_run(run_input(&thread.id, "run_since_rej")).expect("create run");
         crate::commands::agent_mock::ensure_mock_agent();
         script_mock_agent(MockScript {
-            errors: HashMap::from([(
-                "get_events_since".to_string(),
-                "unknown run".to_string(),
-            )]),
+            errors: HashMap::from([("get_events_since".to_string(), "unknown run".to_string())]),
             ..Default::default()
         });
         let events = list_run_events_since("run_since_rej".into(), 0)
