@@ -264,9 +264,12 @@ jobs:
         if: steps.affected.outputs.run == 'true'
         uses: dtolnay/rust-toolchain@1.97.0
 
-      # Same cache key as before the split (both workspaces) so every group
-      # keeps restoring the warm artifacts previous runs saved and only
-      # compiles the crates this PR actually changed.
+      # All groups share the automatic cache key (job id is identical across
+      # matrix entries) so every group restores the same warm snapshot; per-
+      # group `key` slots would quadruple cache storage (~4 × ~500MB) and
+      # push the repo cache quota into LRU eviction of other jobs' entries.
+      # Concurrent saves race on one key (first wins) — the losers just
+      # recompile their own crates next run, which is bounded and parallel.
       - name: Cache Rust
         if: steps.affected.outputs.run == 'true'
         uses: Swatinem/rust-cache@v2
