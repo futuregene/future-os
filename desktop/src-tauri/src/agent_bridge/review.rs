@@ -815,37 +815,15 @@ mod tests {
         );
     }
 
-    /// When the Run row disappears (raw cleanup with FK enforcement off),
-    /// capture's snapshot INSERT fails on the `run_id` FK and records a
-    /// `failed` before row.
+    /// When the review-snapshot store vanishes (raw table drop on the app
+    /// db), capture fails at the snapshot write and records a `failed` before
+    /// row (ignored, same table); materialize fails reading the snapshots.
     #[test]
-    fn capture_fails_when_run_row_is_gone() {
+    fn capture_and_materialize_fail_when_the_snapshot_store_is_gone() {
         let _lock = crate::TEST_HOME_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let (_fx, thread, run) = fixture("run-gone-capture");
-
-        let conn =
-            rusqlite::Connection::open(_fx.base.join("home/.future/app/app.db")).expect("open db");
-        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
-        conn.execute("DELETE FROM runs WHERE id = ?1", [&run.id])
-            .unwrap();
-        drop(conn);
-
-        // capture_before: resolve + shadow open succeed, capture's snapshot
-        // INSERT fails on the missing run FK → record_failure + Err.
-        let err = super::try_capture_before(&thread.id, &run.id).unwrap_err();
-        assert!(!err.to_string().is_empty());
-    }
-
-    /// When the Run row disappears, materialize fails at the changeset upsert
-    /// (its INSERT references the missing run).
-    #[test]
-    fn materialize_fails_when_run_row_is_gone() {
-        let _lock = crate::TEST_HOME_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let (_fx, thread, run) = fixture("run-gone-materialize");
+        let (_fx, thread, run) = fixture("store-gone");
         let ws_id = store::get_thread(&thread.id).unwrap().unwrap().workspace_id;
 
         for (phase, status) in [("before", "complete"), ("after", "complete")] {
@@ -866,15 +844,20 @@ mod tests {
             .unwrap();
         }
 
-        let conn =
-            rusqlite::Connection::open(_fx.base.join("home/.future/app/app.db")).expect("open db");
-        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
-        conn.execute("DELETE FROM runs WHERE id = ?1", [&run.id])
-            .unwrap();
+        // Drop the snapshot table so the capture write fails deterministically
+        // (rusqlite does not enforce FKs by default, so deleting the Run row
+        // alone does not break the snapshot write).
+        let conn = rusqlite::Connection::open(_fx.base.join("home/.future/app/app.db"))
+            .expect("open db");
+        conn.execute_batch("DROP TABLE review_snapshots;").unwrap();
         drop(conn);
 
-        // materialize: resolve + both snapshots + bare open succeed, then the
-        // changeset upsert fails on the missing run FK.
+        // capture_before: resolve + shadow open succeed, capture's snapshot
+        // write fails → record_failure (ignored) + Err (the error surfaces).
+        let err = super::try_capture_before(&thread.id, &run.id).unwrap_err();
+        assert!(!err.to_string().is_empty());
+
+        // materialize: reading the snapshots fails on the dropped table.
         let err = super::try_materialize_changeset(&thread.id, &run.id, vec![]).unwrap_err();
         assert!(!err.to_string().is_empty());
     }
