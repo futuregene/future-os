@@ -3331,13 +3331,6 @@ mod pipeline_tests {
         let run_id = attach_remote_stream(&thread2.id).await.expect("attach");
         assert_eq!(run_id, parked.id);
 
-        // The short-circuit paths above spawned observers for `sess-at` /
-        // `sess-at2`; their async `get_state` probes would otherwise race the
-        // scripted replies below. Cancel them, and script the remaining
-        // replies per session so any still-in-flight probe for another session
-        // cannot steal them (the mock keys plain get_state by session).
-        super::observer::cancel_all_observers();
-
         // No local run: the agent's active run gets a local row + observer.
         let thread3 = seed_thread(&workspace.id, Some("sess-at3"));
         mock.push_state_for_session(
