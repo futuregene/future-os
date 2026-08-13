@@ -19,15 +19,23 @@ pub const WORKSPACE_GUARD_SCHEMA_VERSION: &str = "agent_workspace_guard_v1";
 /// Expand a leading `~` to the user's home directory (HOME, else
 /// USERPROFILE on Windows). Anything else is returned unchanged.
 fn expand_home(raw: &str) -> String {
-    if raw == "~" || raw.starts_with("~/") || raw.starts_with("~\\") {
-        let home = std::env::var("HOME")
+    expand_home_with(
+        raw,
+        std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
-            .unwrap_or_default();
-        if !home.is_empty() {
-            return format!("{}{}", home, &raw[1..]);
-        }
+            .unwrap_or_default(),
+    )
+}
+
+/// Deterministic core of [`expand_home`]: the home value is passed in so the
+/// empty-home fallback is testable without mutating process env.
+fn expand_home_with(raw: &str, home: String) -> String {
+    let tilde = raw == "~" || raw.starts_with("~/") || raw.starts_with("~\\");
+    if tilde && !home.is_empty() {
+        format!("{}{}", home, &raw[1..])
+    } else {
+        raw.to_string()
     }
-    raw.to_string()
 }
 
 /// Lexically normalize a path (resolve `.`/`..` components, drop trailing
@@ -62,10 +70,9 @@ pub fn normalize_workspace_path(raw: &str) -> String {
     let abs = if path.is_absolute() {
         path
     } else {
-        match std::env::current_dir() {
-            Ok(cwd) => cwd.join(path),
-            Err(_) => path,
-        }
+        std::env::current_dir()
+            .expect("invariant: process cwd must be readable")
+            .join(path)
     };
     if let Ok(canon) = abs.canonicalize() {
         return canon.to_string_lossy().into_owned();
@@ -222,14 +229,31 @@ mod tests {
     }
 
     #[test]
+    fn lexical_normalize_handles_curdir_and_leading_parentdir() {
+        assert_eq!(lexical_normalize(std::path::Path::new("./foo")), "foo");
+        assert_eq!(lexical_normalize(std::path::Path::new("../foo")), "../foo");
+        assert_eq!(lexical_normalize(std::path::Path::new("a/../b")), "b");
+    }
+
+    #[test]
+    fn expand_home_handles_tilde_and_empty_home() {
+        assert_eq!(expand_home_with("~/x", "/home/u".into()), "/home/u/x");
+        assert_eq!(expand_home_with("~", "/home/u".into()), "/home/u");
+        assert_eq!(expand_home_with("~/x", String::new()), "~/x");
+        assert_eq!(expand_home_with("~\\x", "C:\\u".into()), "C:\\u\\x");
+        assert_eq!(expand_home_with("plain", "/home/u".into()), "plain");
+    }
+
+    #[test]
     fn normalize_expands_home_tilde() {
-        let home = std::env::var("HOME").unwrap_or_default();
-        if home.is_empty() {
-            return; // no HOME on this host (CI Windows) — nothing to assert
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_default();
+        if !home.is_empty() {
+            let got = normalize_workspace_path("~/some-workspace");
+            assert!(!got.contains('~'), "tilde must expand: {got}");
+            assert!(got.ends_with("/some-workspace"), "got: {got}");
         }
-        let got = normalize_workspace_path("~/some-workspace");
-        assert!(!got.contains('~'), "tilde must expand: {got}");
-        assert!(got.ends_with("/some-workspace"), "got: {got}");
     }
 
     // ── overlap semantics ────────────────────────────────────────────────

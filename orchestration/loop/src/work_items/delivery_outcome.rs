@@ -189,6 +189,14 @@ mod tests {
     }
 
     #[test]
+    fn transition_rejects_unknown_outcome() {
+        let g = Goal::new("g", "obj", "/tmp");
+        let err = validate_transition(g.delivery_state("t1"), "bogus").unwrap_err();
+        assert!(err.contains("unknown outcome"), "got: {err}");
+        assert!(err.contains(DELIVERY_OUTCOME_CHOICES.join(", ").as_str()));
+    }
+
+    #[test]
     fn transition_redelivery_after_failure_but_not_after_verified() {
         let g = goal_with_delivery(OUTCOME_FAILED, 1);
         assert!(validate_transition(g.delivery_state("t1"), OUTCOME_DELIVERED).is_ok());

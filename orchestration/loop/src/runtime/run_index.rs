@@ -468,6 +468,14 @@ mod tests {
     #[test]
     fn repair_rebuilds_and_records_the_audit_event() {
         let (mut store, dir) = drifted_store("repair");
+        // A non-projection event in the ledger exercises the `_ => None` arm
+        // of the audit-event filter below.
+        store
+            .append(crate::store::Event::GoalStarted {
+                goal_id: "g1".to_string(),
+                ts: 0,
+            })
+            .unwrap();
         let outcome = repair_index_if_drifted(&mut store, "g1")
             .unwrap()
             .expect("drift should trigger repair");

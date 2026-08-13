@@ -185,23 +185,25 @@ pub fn record_outcome_feedback(
     })?;
     // Reward-memory writeback (LoopX: audited feedback into reward memory):
     // decisive outcomes become a `decision_outcome` signal, scoped to the
-    // anchored decision's selected todo (empty = goal-scoped).
-    if let Some((signal, score)) = outcome_signal(status) {
-        let todo_id = summary.selected_todo.clone().unwrap_or_default();
-        let reward_seq = rm::next_seq(&store.events(goal_id)?, &todo_id);
-        store.append(Event::RewardSignalRecorded {
-            goal_id: goal_id.to_string(),
-            todo_id,
-            agent_id,
-            run_id: None,
-            source: rm::SOURCE_DECISION_OUTCOME.to_string(),
-            signal: signal.to_string(),
-            score,
-            note: Some(format!("decision {decision_id} {}", receipt.receipt_id)),
-            seq: reward_seq,
-            ts: now,
-        })?;
-    }
+    // anchored decision's selected todo (empty = goal-scoped). `status` is
+    // terminal here (settle_receipt rejected `pending` above), so the signal
+    // is always present.
+    let (signal, score) = outcome_signal(status)
+        .expect("terminal verification status always yields an outcome signal");
+    let todo_id = summary.selected_todo.clone().unwrap_or_default();
+    let reward_seq = rm::next_seq(&store.events(goal_id)?, &todo_id);
+    store.append(Event::RewardSignalRecorded {
+        goal_id: goal_id.to_string(),
+        todo_id,
+        agent_id,
+        run_id: None,
+        source: rm::SOURCE_DECISION_OUTCOME.to_string(),
+        signal: signal.to_string(),
+        score,
+        note: Some(format!("decision {decision_id} {}", receipt.receipt_id)),
+        seq: reward_seq,
+        ts: now,
+    })?;
     Ok(receipt)
 }
 

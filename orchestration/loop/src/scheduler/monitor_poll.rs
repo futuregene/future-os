@@ -247,6 +247,17 @@ mod tests {
     }
 
     #[test]
+    fn unscheduled_monitor_is_neither_due_nor_waiting() {
+        let mut g = Goal::new("g1", "o", "/tmp");
+        g.add(Todo::monitor("M1", "unscheduled", Duration::from_secs(1)));
+        g.todo_mut("M1").unwrap().resume_when = None;
+        let plan = build_poll_plan(&g, SystemTime::now());
+        assert!(plan.due_monitors.is_empty());
+        assert!(plan.stalled_monitors.is_empty());
+        assert_eq!(plan.next_due_at, None);
+    }
+
+    #[test]
     fn empty_goal_plans_empty() {
         let g = Goal::new("g1", "o", "/tmp");
         let plan = build_poll_plan(&g, SystemTime::now());

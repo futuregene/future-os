@@ -150,6 +150,22 @@ mod tests {
     }
 
     #[test]
+    fn default_assembler_uses_builtin_providers_and_describe() {
+        let g = Goal::new("g1", "objective", "/tmp");
+        let packet = DecisionContextAssembler::default().assemble(&g, 1);
+        assert_eq!(
+            packet.providers,
+            vec![
+                "run_history".to_string(),
+                "outcome_streak".to_string(),
+                "quota_status".to_string()
+            ]
+        );
+        // The duplicate-provider test double exposes its description.
+        assert_eq!(DuplicateRunHistory.describe(), "test double");
+    }
+
+    #[test]
     fn empty_provider_set_yields_header_only_packet() {
         let g = Goal::new("g1", "objective", "/tmp");
         let packet = DecisionContextAssembler::new(vec![]).assemble(&g, 7);
