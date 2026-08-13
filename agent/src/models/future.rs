@@ -31,6 +31,14 @@ static FUTURE_MODELS_REFRESH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 /// the file cache to be read back from disk.
 static FUTURE_MODELS_MEMORY_CACHE: RwLock<Option<FutureModelsCache>> = RwLock::new(None);
 
+/// Test-only: serialize the single-flight gate's check-and-acquire against
+/// concurrent `Registry::new()` threads, which share these process-global
+/// statics but do NOT hold `future_models_test_lock`. Without this, a refresh
+/// spawned by an unrelated test can stamp `LAST_ATTEMPT` / hold `IN_FLIGHT`
+/// inside a future-models test's reset→assert window and flip its assertions.
+#[cfg(test)]
+static FUTURE_REFRESH_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -43,24 +51,43 @@ fn now_secs() -> u64 {
 /// written to both the file cache and the in-process memory cache, so the next
 /// registry rebuild picks up fresh data immediately.
 fn spawn_future_models_refresh(api_key: &str, base_url: &str) {
+    // Test builds serialize the single-flight gate's check-and-acquire against
+    // concurrent `Registry::new()` threads, which share these process-global
+    // statics but do NOT hold `future_models_test_lock`. Without the gate, a
+    // refresh spawned by an unrelated test can stamp `LAST_ATTEMPT` or hold
+    // `IN_FLIGHT` inside a future-models test's reset→assert window.
+    #[cfg(test)]
+    let _gate = FUTURE_REFRESH_GATE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let _ = spawn_future_models_refresh_unlocked(api_key, base_url);
+}
+
+/// Gate already held by the caller (a test that owns the [`FUTURE_REFRESH_GATE`]
+/// guard, or the gated wrapper above). The actual backoff + single-flight gate.
+/// Returns the refresh thread's handle when a refresh was actually spawned.
+fn spawn_future_models_refresh_unlocked(
+    api_key: &str,
+    base_url: &str,
+) -> Option<std::thread::JoinHandle<()>> {
     let now = now_secs();
     if now.saturating_sub(FUTURE_MODELS_LAST_ATTEMPT.load(Ordering::Relaxed))
         < FUTURE_MODELS_REFRESH_BACKOFF
     {
-        return;
+        return None;
     }
     // Single-flight: bail if a refresh is already running.
     if FUTURE_MODELS_REFRESH_IN_FLIGHT
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
-        return;
+        return None;
     }
     FUTURE_MODELS_LAST_ATTEMPT.store(now, Ordering::Relaxed);
 
     let api_key = api_key.to_string();
     let base_url = base_url.to_string();
-    std::thread::spawn(move || {
+    Some(std::thread::spawn(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             #[cfg(test)]
             inject_test_panic();
@@ -88,7 +115,7 @@ fn spawn_future_models_refresh(api_key: &str, base_url: &str) {
         // Always reset the flag — a panic must not permanently block
         // future refreshes.
         FUTURE_MODELS_REFRESH_IN_FLIGHT.store(false, Ordering::Release);
-    });
+    }))
 }
 
 /// Test seam: force the background-refresh closure down its panic-recovery
@@ -567,17 +594,23 @@ pub(crate) fn future_models_test_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|poison| poison.into_inner())
 }
 
-/// Reset every future-models cache static, waiting out any in-flight
-/// background refresh first.
+/// Reset every future-models cache static to a clean slate for tests. This
+/// force-clears `IN_FLIGHT` rather than waiting out a slow in-flight refresh
+/// (which may be hitting a real URL for up to 10s); a leftover thread that later
+/// finishes only re-stores `false` and is otherwise harmless to these tests.
 #[cfg(test)]
 pub(crate) fn reset_future_caches_for_tests() {
+    let _gate = FUTURE_REFRESH_GATE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    reset_future_caches_for_tests_unlocked();
+}
+
+/// Gate already held by the caller.
+#[cfg(test)]
+fn reset_future_caches_for_tests_unlocked() {
     FUTURE_MODELS_LAST_ATTEMPT.store(0, Ordering::Relaxed);
-    for _ in 0..200 {
-        if !FUTURE_MODELS_REFRESH_IN_FLIGHT.load(Ordering::Relaxed) {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    FUTURE_MODELS_REFRESH_IN_FLIGHT.store(false, Ordering::Relaxed);
     *FUTURE_MODELS_MEMORY_CACHE.write() = None;
 }
 
@@ -944,6 +977,15 @@ mod tests {
         super::future_models_test_lock()
     }
 
+    /// Serializes the single-flight gate against concurrent `Registry::new()`
+    /// threads (which don't hold `future_test_lock`), for tests that reset the
+    /// shared statics and then assert on them exclusively.
+    fn future_refresh_gate() -> std::sync::MutexGuard<'static, ()> {
+        FUTURE_REFRESH_GATE
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
     fn reset_future_cache_state() {
         super::reset_future_caches_for_tests();
     }
@@ -1102,31 +1144,33 @@ mod tests {
     #[test]
     fn spawn_refresh_respects_backoff_window() {
         let _guard = future_test_lock();
-        reset_future_cache_state();
+        let _gate = future_refresh_gate();
+        reset_future_caches_for_tests_unlocked();
         // First call spawns a refresh thread (fetch to a dead port fails fast).
-        spawn_future_models_refresh("k", "http://127.0.0.1:1");
+        let handle = spawn_future_models_refresh_unlocked("k", "http://127.0.0.1:1")
+            .expect("first refresh spawns");
         // The attempt timestamp is now fresh — an immediate second call hits
         // the backoff window and returns without spawning.
-        spawn_future_models_refresh("k", "http://127.0.0.1:1");
+        assert!(
+            spawn_future_models_refresh_unlocked("k", "http://127.0.0.1:1").is_none(),
+            "second call must be blocked by the backoff window"
+        );
         assert!(FUTURE_MODELS_LAST_ATTEMPT.load(Ordering::Relaxed) > 0);
-        // Wait for the refresh thread to release the single-flight flag.
-        let mut released = false;
-        for _ in 0..100 {
-            if !FUTURE_MODELS_REFRESH_IN_FLIGHT.load(Ordering::Relaxed) {
-                released = true;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        assert!(released, "refresh thread never released the in-flight flag");
+        // Join the refresh thread deterministically, then assert the flag cleared.
+        handle.join().unwrap();
+        assert!(!FUTURE_MODELS_REFRESH_IN_FLIGHT.load(Ordering::Relaxed));
     }
 
     #[test]
     fn refresh_bails_when_already_in_flight() {
         let _guard = future_test_lock();
-        reset_future_cache_state();
+        let _gate = future_refresh_gate();
+        reset_future_caches_for_tests_unlocked();
         FUTURE_MODELS_REFRESH_IN_FLIGHT.store(true, Ordering::Relaxed);
-        spawn_future_models_refresh("k", "http://127.0.0.1:1");
+        assert!(
+            spawn_future_models_refresh_unlocked("k", "http://127.0.0.1:1").is_none(),
+            "already-in-flight must bail"
+        );
         // Bailed at the single-flight gate: no new attempt was stamped.
         assert_eq!(FUTURE_MODELS_LAST_ATTEMPT.load(Ordering::Relaxed), 0);
         FUTURE_MODELS_REFRESH_IN_FLIGHT.store(false, Ordering::Relaxed);
@@ -1135,25 +1179,23 @@ mod tests {
     #[test]
     fn refresh_recovers_from_closure_panics() {
         let _guard = future_test_lock();
+        let _gate = future_refresh_gate();
         let _subscriber = tracing::subscriber::set_default(
             tracing_subscriber::fmt()
                 .with_writer(std::io::sink)
                 .finish(),
         );
         for payload_kind in [1usize, 2, 3] {
-            reset_future_cache_state();
+            reset_future_caches_for_tests_unlocked();
             REFRESH_TEST_PANIC.store(payload_kind, Ordering::Relaxed);
-            spawn_future_models_refresh("k", "http://127.0.0.1:1");
+            let handle = spawn_future_models_refresh_unlocked("k", "http://127.0.0.1:1")
+                .expect("refresh spawns");
             // The panic is caught and the single-flight flag released.
-            let mut released = false;
-            for _ in 0..200 {
-                if !FUTURE_MODELS_REFRESH_IN_FLIGHT.load(Ordering::Relaxed) {
-                    released = true;
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            assert!(released, "panic must not wedge the in-flight flag");
+            handle.join().unwrap();
+            assert!(
+                !FUTURE_MODELS_REFRESH_IN_FLIGHT.load(Ordering::Relaxed),
+                "panic must not wedge the in-flight flag"
+            );
         }
     }
 
