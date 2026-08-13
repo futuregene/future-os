@@ -58,9 +58,7 @@ fn injected_auth_write_failure() -> Result<(), AppError> {
 /// failure injection (see above) shares one line with the real call.
 fn paired_key_write(id: &str, key: &str) -> Result<(), AppError> {
     #[cfg(test)]
-    if let Err(error) = injected_auth_write_failure() {
-        return Err(error);
-    }
+    injected_auth_write_failure()?;
     crate::auth_store::set_provider_key(id, key)
 }
 
@@ -188,17 +186,13 @@ fn apply_builtin_base_url_local(id: &str, base_url: &str) -> Result<(), AppError
 
         if base_url.is_empty() {
             // Clear the override; drop the entry entirely if nothing else remains.
-            match root.get_mut("providers").and_then(Value::as_object_mut) {
-                Some(providers) => match providers.get_mut(id).and_then(Value::as_object_mut) {
-                    Some(entry) => {
-                        entry.remove("baseUrl");
-                        if entry.is_empty() {
-                            providers.remove(id);
-                        }
+            if let Some(providers) = root.get_mut("providers").and_then(Value::as_object_mut) {
+                if let Some(entry) = providers.get_mut(id).and_then(Value::as_object_mut) {
+                    entry.remove("baseUrl");
+                    if entry.is_empty() {
+                        providers.remove(id);
                     }
-                    None => {}
-                },
-                None => {}
+                }
             }
         } else {
             let providers = root
@@ -495,11 +489,12 @@ fn apply_delete_local(id: &str) -> Result<(), AppError> {
         // models → auth everywhere, so nesting is safe. Errors are collected
         // and returned at the end so no block ends on an early-return edge.
         let mut error = None;
-        if models_changed {
-            if let Err(e) = config_io::write_json_atomic(&models_path, &models_doc, false) {
-                config_io::restore_file(&models_path, models_snapshot.as_deref(), false);
-                error = Some(e);
-            }
+        if let Some(e) = models_changed
+            .then(|| config_io::write_json_atomic(&models_path, &models_doc, false))
+            .and_then(Result::err)
+        {
+            config_io::restore_file(&models_path, models_snapshot.as_deref(), false);
+            error = Some(e);
         }
         if auth_changed && error.is_none() {
             let result = config_io::with_config_lock(&auth_path, || {

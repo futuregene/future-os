@@ -68,7 +68,9 @@ pub(crate) static INJECT_SAVE_FAILURE: std::sync::atomic::AtomicBool =
 pub fn save_creds(creds: &PairingCreds) -> Result<(), crate::AppError> {
     #[cfg(test)]
     if INJECT_SAVE_FAILURE.swap(false, std::sync::atomic::Ordering::Relaxed) {
-        return Err(crate::AppError::Message("injected save failure".to_string()));
+        return Err(crate::AppError::Message(
+            "injected save failure".to_string(),
+        ));
     }
     let path = pairing_path()?;
     let value = serde_json::to_value(creds)
@@ -546,9 +548,15 @@ mod http_tests {
         let _home = HomeGuard::new("pairing-create-bad-body");
         let platform = MockPlatform::start().await;
         sign_in(platform.url());
-        platform.push("/client/v1/remote/pair/code", 200, json!({ "unexpected": 1 }));
+        platform.push(
+            "/client/v1/remote/pair/code",
+            200,
+            json!({ "unexpected": 1 }),
+        );
         let error = create_pairing().await.unwrap_err();
-        assert!(error.to_string().contains("Failed to parse create pairing code"));
+        assert!(error
+            .to_string()
+            .contains("Failed to parse create pairing code"));
     }
 
     #[tokio::test]
@@ -609,10 +617,7 @@ mod http_tests {
 
     #[test]
     fn pairing_code_expiry_decodes_only_valid_codes() {
-        assert_eq!(
-            pairing_code_expiry(&pairing_code(1234)),
-            Some(1234)
-        );
+        assert_eq!(pairing_code_expiry(&pairing_code(1234)), Some(1234));
         assert_eq!(pairing_code_expiry("!!! not base64 !!!"), None);
         assert_eq!(
             pairing_code_expiry(&URL_SAFE_NO_PAD.encode(json!({ "nope": 1 }).to_string())),
@@ -689,7 +694,11 @@ mod http_tests {
     /// Destructure a remote error; panics (with the actual variant) otherwise.
     fn remote_error_parts(error: crate::AppError) -> (u16, Option<String>, String) {
         match error {
-            crate::AppError::Remote { status, code, message } => (status, code, message),
+            crate::AppError::Remote {
+                status,
+                code,
+                message,
+            } => (status, code, message),
             other => panic!("expected Remote, got {other:?}"),
         }
     }

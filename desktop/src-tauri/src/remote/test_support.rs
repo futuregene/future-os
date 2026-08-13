@@ -29,7 +29,11 @@ pub(crate) use crate::auth_store::test_support::HomeGuard;
 /// pair ids, or transfer subjects.
 pub(crate) fn unique(tag: &str) -> String {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    format!("{tag}-{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    format!(
+        "{tag}-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
 }
 
 /// Initialize the GUI store (SQLite schema + dirs) under the current
@@ -412,27 +416,28 @@ impl FakeNats {
         let accept_tap = tap.clone();
         let accept_task = tokio::spawn(async move {
             loop {
-                let Ok((stream, _)) = listener.accept().await else { continue };
-                let conn_id = {
-                    let mut state = accept_state.lock().unwrap();
-                    state.next_id += 1;
-                    state.next_id
-                };
-                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                accept_state.lock().unwrap().conns.insert(
-                    conn_id,
-                    ConnHandle {
-                        subs: Vec::new(),
-                        tx,
-                    },
-                );
-                tokio::spawn(serve_conn(
-                    conn_id,
-                    stream,
-                    rx,
-                    accept_state.clone(),
-                    accept_tap.clone(),
-                ));
+                if let Ok((stream, _)) = listener.accept().await {
+                    let conn_id = {
+                        let mut state = accept_state.lock().unwrap();
+                        state.next_id += 1;
+                        state.next_id
+                    };
+                    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                    accept_state.lock().unwrap().conns.insert(
+                        conn_id,
+                        ConnHandle {
+                            subs: Vec::new(),
+                            tx,
+                        },
+                    );
+                    tokio::spawn(serve_conn(
+                        conn_id,
+                        stream,
+                        rx,
+                        accept_state.clone(),
+                        accept_tap.clone(),
+                    ));
+                }
             }
         });
         FakeNats {
@@ -534,14 +539,17 @@ pub(crate) async fn assert_no_publish(
     )
     .await
     {
-        assert_ne!(published.subject, subject, "unexpected publish on {subject}");
+        assert_ne!(
+            published.subject, subject,
+            "unexpected publish on {subject}"
+        );
     }
 }
 
 fn subject_matches(pattern: &str, subject: &str) -> bool {
-    let mut pattern_tokens = pattern.split('.').peekable();
+    let pattern_tokens = pattern.split('.');
     let mut subject_tokens = subject.split('.');
-    while let Some(pattern_token) = pattern_tokens.next() {
+    for pattern_token in pattern_tokens {
         if pattern_token == ">" {
             return true;
         }
@@ -781,8 +789,9 @@ impl MockPlatform {
         let accept_state = state.clone();
         let task = tokio::spawn(async move {
             loop {
-                let Ok((stream, _)) = listener.accept().await else { continue };
-                tokio::spawn(serve_http(stream, accept_state.clone()));
+                if let Ok((stream, _)) = listener.accept().await {
+                    tokio::spawn(serve_http(stream, accept_state.clone()));
+                }
             }
         });
         MockPlatform {
@@ -1089,7 +1098,12 @@ mod tests {
     async fn await_publish_times_out_when_nothing_matches() {
         let nats = FakeNats::start().await;
         let mut tap = nats.tap();
-        await_publish(&mut tap, "never.published", std::time::Duration::from_millis(30)).await;
+        await_publish(
+            &mut tap,
+            "never.published",
+            std::time::Duration::from_millis(30),
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -1128,7 +1142,9 @@ mod tests {
 
         // Headers that never terminate.
         let mut raw = tokio::net::TcpStream::connect(&addr).await.unwrap();
-        raw.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n").await.unwrap();
+        raw.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n")
+            .await
+            .unwrap();
         raw.shutdown().await.unwrap();
         drop(raw);
 
@@ -1160,4 +1176,3 @@ mod tests {
         assert_eq!(response.status().as_u16(), 404);
     }
 }
-

@@ -706,21 +706,23 @@ fn spawn_event_publisher(
 
 /// Heartbeat cadence. Tests shrink it to milliseconds so the publish pattern
 /// (baseline → signature change → self-heal) can be observed without a
-/// multi-second wall-clock wait. The single-line if keeps both branches on
-/// one DA-covered line (the non-test artifact is never executed under
-/// llvm-cov).
+/// multi-second wall-clock wait.
 fn presence_tick() -> std::time::Duration {
-    const LIVE: std::time::Duration = std::time::Duration::from_secs(1);
-    const TEST: std::time::Duration = std::time::Duration::from_millis(10);
-    if cfg!(test) { TEST } else { LIVE }
+    #[cfg(test)]
+    const TICK: std::time::Duration = std::time::Duration::from_millis(10);
+    #[cfg(not(test))]
+    const TICK: std::time::Duration = std::time::Duration::from_secs(1);
+    TICK
 }
 
 /// Credential-refresh / health-check cadence. Tests shrink it to milliseconds
 /// so the generation swap can run without a 15s wall-clock wait per tick.
 fn refresh_tick() -> std::time::Duration {
-    const LIVE: std::time::Duration = std::time::Duration::from_secs(15);
-    const TEST: std::time::Duration = std::time::Duration::from_millis(10);
-    if cfg!(test) { TEST } else { LIVE }
+    #[cfg(test)]
+    const TICK: std::time::Duration = std::time::Duration::from_millis(10);
+    #[cfg(not(test))]
+    const TICK: std::time::Duration = std::time::Duration::from_secs(15);
+    TICK
 }
 
 fn spawn_presence_heartbeat(
@@ -1108,9 +1110,11 @@ const WEB_MAX_CONNECTIONS: usize = 32;
 /// open indefinitely; its read times out and the connection is dropped. Tests
 /// shrink the timeout so the silent-client path runs fast.
 fn web_read_timeout() -> std::time::Duration {
-    const LIVE: std::time::Duration = std::time::Duration::from_secs(5);
-    const TEST: std::time::Duration = std::time::Duration::from_millis(50);
-    if cfg!(test) { TEST } else { LIVE }
+    #[cfg(test)]
+    const TIMEOUT: std::time::Duration = std::time::Duration::from_millis(50);
+    #[cfg(not(test))]
+    const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+    TIMEOUT
 }
 
 /// `desktop/web/` on disk — one level up from CARGO_MANIFEST_DIR (desktop/src-tauri/).
@@ -1168,14 +1172,22 @@ fn spawn_web_server(listener: tokio::net::TcpListener) -> tokio::task::JoinHandl
                 .expect("web connection semaphore is never closed");
             // An accept failure drops the permit with the temporary and tries
             // the next connection.
-            let Ok((mut stream, _)) = listener.accept().await else { continue };
-            let web_dir = web_dir.clone();
-            tokio::spawn(async move {
-                let _permit = permit; // held until the handler returns
-                handle_web_request(&mut stream, &web_dir).await;
-            });
+            if let Ok((stream, _)) = listener.accept().await {
+                spawn_web_connection(permit, stream, web_dir.clone());
+            }
         }
     })
+}
+
+fn spawn_web_connection(
+    permit: tokio::sync::OwnedSemaphorePermit,
+    mut stream: tokio::net::TcpStream,
+    web_dir: std::path::PathBuf,
+) {
+    tokio::spawn(async move {
+        let _permit = permit; // held until the handler returns
+        handle_web_request(&mut stream, &web_dir).await;
+    });
 }
 
 async fn handle_web_request(stream: &mut tokio::net::TcpStream, web_dir: &std::path::Path) {
@@ -1320,8 +1332,8 @@ mod contract_tests {
 #[cfg(test)]
 mod runtime_tests {
     use super::test_support::{
-        await_publish, init_store, jwt, nats_connect, nats_connect_once, now_secs, sign_in,
-        unique, FakeNats, HomeGuard, MockPlatform,
+        await_publish, init_store, jwt, nats_connect, nats_connect_once, now_secs, sign_in, unique,
+        FakeNats, HomeGuard, MockPlatform,
     };
     use super::*;
     use serde_json::json;
@@ -1491,8 +1503,20 @@ mod runtime_tests {
         install_state(state);
         let mut tap = nats.tap();
 
-        publish_event("sess-a", "text_chunk", r#"{"text":"hi"}"#, "run-1", 3, 1, "e1", "", -1, 7);
-        let published = await_publish(&mut tap, "p.pair_pub.evt.sess-a", Duration::from_secs(5)).await;
+        publish_event(
+            "sess-a",
+            "text_chunk",
+            r#"{"text":"hi"}"#,
+            "run-1",
+            3,
+            1,
+            "e1",
+            "",
+            -1,
+            7,
+        );
+        let published =
+            await_publish(&mut tap, "p.pair_pub.evt.sess-a", Duration::from_secs(5)).await;
         let body = published.json();
         assert_eq!(body["type"], json!("text_chunk"));
         assert_eq!(body["data"], json!(r#"{"text":"hi"}"#));
@@ -1501,8 +1525,20 @@ mod runtime_tests {
         // An oversized event keeps its identity but ships a truncation marker
         // (as the `data` string payload).
         let huge = "x".repeat(MAX_EVENT_BYTES + 10);
-        publish_event("sess-a", "tool_delta", &huge, "run-1", 4, 1, "e2", "", -1, 8);
-        let published = await_publish(&mut tap, "p.pair_pub.evt.sess-a", Duration::from_secs(5)).await;
+        publish_event(
+            "sess-a",
+            "tool_delta",
+            &huge,
+            "run-1",
+            4,
+            1,
+            "e2",
+            "",
+            -1,
+            8,
+        );
+        let published =
+            await_publish(&mut tap, "p.pair_pub.evt.sess-a", Duration::from_secs(5)).await;
         let body = published.json();
         assert_eq!(body["type"], json!("tool_delta"));
         assert_eq!(body["idx"], json!(4));
@@ -1522,7 +1558,8 @@ mod runtime_tests {
             }],
             7,
         );
-        let published = await_publish(&mut tap, "p.pair_pub.evt.sess-a", Duration::from_secs(5)).await;
+        let published =
+            await_publish(&mut tap, "p.pair_pub.evt.sess-a", Duration::from_secs(5)).await;
         let body = published.json();
         assert_eq!(body["type"], json!("run_snapshot"));
         let data: serde_json::Value = serde_json::from_str(body["data"].as_str().unwrap()).unwrap();
@@ -1587,10 +1624,8 @@ mod runtime_tests {
 
         // Recovery: a successful enqueue after the episode reports once.
         let (tx, rx) = tokio::sync::mpsc::channel(EVENT_QUEUE_CAPACITY);
-        let drain = spawn_event_publisher(
-            STATE.lock().unwrap().as_ref().unwrap().client.clone(),
-            rx,
-        );
+        let drain =
+            spawn_event_publisher(STATE.lock().unwrap().as_ref().unwrap().client.clone(), rx);
         {
             let mut guard = STATE.lock().unwrap();
             guard.as_mut().unwrap().event_tx = tx;
@@ -1644,7 +1679,12 @@ mod runtime_tests {
         })
         .await
         .unwrap();
-        await_publish(&mut tap, "p.pair_drain.evt.sess.after", Duration::from_secs(5)).await;
+        await_publish(
+            &mut tap,
+            "p.pair_drain.evt.sess.after",
+            Duration::from_secs(5),
+        )
+        .await;
 
         // Publishing after the broker dies logs the failure and keeps draining.
         nats.kill();
@@ -1713,14 +1753,45 @@ mod runtime_tests {
 
         let mut tap = nats.tap();
         // The presence heartbeat and both catalog snapshots flow.
-        let presence = await_publish(&mut tap, &format!("p.{}.presence", started.pair_id), Duration::from_secs(5)).await;
+        let presence = await_publish(
+            &mut tap,
+            &format!("p.{}.presence", started.pair_id),
+            Duration::from_secs(5),
+        )
+        .await;
         assert_eq!(presence.json()["online"], json!(true));
-        await_publish(&mut tap, &format!("p.{}.state.sessions", started.pair_id), Duration::from_secs(5)).await;
-        await_publish(&mut tap, &format!("p.{}.state.workspaces", started.pair_id), Duration::from_secs(5)).await;
+        await_publish(
+            &mut tap,
+            &format!("p.{}.state.sessions", started.pair_id),
+            Duration::from_secs(5),
+        )
+        .await;
+        await_publish(
+            &mut tap,
+            &format!("p.{}.state.workspaces", started.pair_id),
+            Duration::from_secs(5),
+        )
+        .await;
 
         // The event mirror is live.
-        publish_event("sess-live", "text_chunk", "{}", "run-1", 1, 0, "e", "", -1, 0);
-        await_publish(&mut tap, &format!("p.{}.evt.sess-live", started.pair_id), Duration::from_secs(5)).await;
+        publish_event(
+            "sess-live",
+            "text_chunk",
+            "{}",
+            "run-1",
+            1,
+            0,
+            "e",
+            "",
+            -1,
+            0,
+        );
+        await_publish(
+            &mut tap,
+            &format!("p.{}.evt.sess-live", started.pair_id),
+            Duration::from_secs(5),
+        )
+        .await;
 
         // The web client serves over HTTP.
         let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", WEB_PORT))
@@ -1743,7 +1814,12 @@ mod runtime_tests {
 
         // stop() publishes offline presence and clears the state.
         stop();
-        let offline = await_publish(&mut tap, &format!("p.{}.presence", started.pair_id), Duration::from_secs(5)).await;
+        let offline = await_publish(
+            &mut tap,
+            &format!("p.{}.presence", started.pair_id),
+            Duration::from_secs(5),
+        )
+        .await;
         assert_eq!(offline.json()["online"], json!(false));
         assert!(STATE.lock().unwrap().is_none());
         wait_for_web_port_free().await;
@@ -1753,8 +1829,8 @@ mod runtime_tests {
     async fn start_reports_web_bind_failure_but_keeps_running() {
         let _home = HomeGuard::new("remote-web-bind");
         wait_for_web_port_free().await;
-        let blocker = std::net::TcpListener::bind(("0.0.0.0", WEB_PORT))
-            .expect("occupy the web port");
+        let blocker =
+            std::net::TcpListener::bind(("0.0.0.0", WEB_PORT)).expect("occupy the web port");
         let platform = MockPlatform::start().await;
         let nats = FakeNats::start().await;
         sign_in(platform.url());
@@ -1848,7 +1924,9 @@ mod runtime_tests {
 
         // Platform unreachable → categorized "network" status, not running.
         sign_in("http://127.0.0.1:9");
-        let started = start(RemoteStartInput {}).await.expect("network maps to status");
+        let started = start(RemoteStartInput {})
+            .await
+            .expect("network maps to status");
         assert!(!started.running);
         assert_eq!(started.error_code.as_deref(), Some("network"));
         // The code sticks for later status() polls.
@@ -1858,7 +1936,9 @@ mod runtime_tests {
         let platform = MockPlatform::start().await;
         sign_in(platform.url());
         platform.respond_pair_code("nats://127.0.0.1:9");
-        let started = start(RemoteStartInput {}).await.expect("nats failure maps to status");
+        let started = start(RemoteStartInput {})
+            .await
+            .expect("nats failure maps to status");
         assert_eq!(started.error_code.as_deref(), Some("network"));
 
         // An uncategorized local failure (the credential directory is
@@ -1897,8 +1977,11 @@ mod runtime_tests {
         let state = fake_state(&nats, "pair_swap").await;
         let confirmed = state.pairing_confirmed.clone();
         install_state(state);
-        let handshake =
-            commands::HandshakeState::new(creds.clone(), confirmed.clone(), "bridge_swap".to_string());
+        let handshake = commands::HandshakeState::new(
+            creds.clone(),
+            confirmed.clone(),
+            "bridge_swap".to_string(),
+        );
         let handle = spawn_credential_refresh(
             "pair_swap".to_string(),
             commands::new_reply_slots(),
@@ -1919,7 +2002,10 @@ mod runtime_tests {
             if swapped {
                 break;
             }
-            assert!(std::time::Instant::now() < deadline, "generation never swapped");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "generation never swapped"
+            );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         // The refreshed credential was persisted under the STATE lock.
@@ -1987,7 +2073,8 @@ mod runtime_tests {
         let state = fake_state(&nats, "pair_rev").await;
         let confirmed = state.pairing_confirmed.clone();
         install_state(state);
-        let handshake = commands::HandshakeState::new(creds, confirmed.clone(), "bridge_rev".into());
+        let handshake =
+            commands::HandshakeState::new(creds, confirmed.clone(), "bridge_rev".into());
         let handle = spawn_credential_refresh(
             "pair_rev".to_string(),
             commands::new_reply_slots(),
@@ -2000,10 +2087,7 @@ mod runtime_tests {
             .expect("refresh task ends after revocation")
             .expect("refresh task not panicked");
         assert!(STATE.lock().unwrap().is_none(), "bridge stopped itself");
-        assert_eq!(
-            LAST_ERROR_CODE.lock().unwrap().as_deref(),
-            Some("revoked")
-        );
+        assert_eq!(LAST_ERROR_CODE.lock().unwrap().as_deref(), Some("revoked"));
         assert!(pairing::load_creds().is_none());
         *LAST_ERROR_CODE.lock().unwrap() = None;
     }
@@ -2019,14 +2103,19 @@ mod runtime_tests {
         // Transient server error → retry; then refreshes pointing at a dead
         // broker → reconnect failure → retry (scripted twice so the loop is
         // observed completing a full failure iteration, not aborting mid-nap).
-        platform.push("/client/v1/remote/auth/token", 500, json!({ "message": "busy" }));
+        platform.push(
+            "/client/v1/remote/auth/token",
+            500,
+            json!({ "message": "busy" }),
+        );
         platform.respond_refresh("nats://127.0.0.1:9");
         platform.respond_refresh("nats://127.0.0.1:9");
 
         let state = fake_state(&nats, "pair_retry").await;
         let confirmed = state.pairing_confirmed.clone();
         install_state(state);
-        let handshake = commands::HandshakeState::new(creds, confirmed.clone(), "bridge_retry".into());
+        let handshake =
+            commands::HandshakeState::new(creds, confirmed.clone(), "bridge_retry".into());
         let handle = spawn_credential_refresh(
             "pair_retry".to_string(),
             commands::new_reply_slots(),
@@ -2038,7 +2127,10 @@ mod runtime_tests {
         // proves the dead-broker iteration ran its sleep+continue to the end.
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while platform.requests().len() < 3 {
-            assert!(std::time::Instant::now() < deadline, "refresh never retried");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "refresh never retried"
+            );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         handle.abort();
@@ -2159,7 +2251,10 @@ mod runtime_tests {
             if swapped {
                 break;
             }
-            assert!(std::time::Instant::now() < deadline, "unhealthy swap never ran");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "unhealthy swap never ran"
+            );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         handle.abort();
@@ -2206,17 +2301,35 @@ mod runtime_tests {
         let mut tap = nats.tap();
         let handle = spawn_presence_heartbeat(client.clone(), pair.clone(), "bridge_hb".into());
 
-        let presence = await_publish(&mut tap, &format!("p.{pair}.presence"), Duration::from_secs(5)).await;
+        let presence = await_publish(
+            &mut tap,
+            &format!("p.{pair}.presence"),
+            Duration::from_secs(5),
+        )
+        .await;
         assert_eq!(presence.json()["online"], json!(true));
         assert_eq!(presence.json()["pairId"], json!(pair));
 
-        let sessions = await_publish(&mut tap, &format!("p.{pair}.state.sessions"), Duration::from_secs(5)).await;
+        let sessions = await_publish(
+            &mut tap,
+            &format!("p.{pair}.state.sessions"),
+            Duration::from_secs(5),
+        )
+        .await;
         let rows = sessions.json()["sessions"].as_array().unwrap().clone();
-        let row = rows.iter().find(|row| row["sessionId"] == json!(session)).unwrap();
+        let row = rows
+            .iter()
+            .find(|row| row["sessionId"] == json!(session))
+            .unwrap();
         assert_eq!(row["streaming"], json!(true));
         assert_eq!(row["title"], json!("Heartbeat thread"));
 
-        let workspaces = await_publish(&mut tap, &format!("p.{pair}.state.workspaces"), Duration::from_secs(5)).await;
+        let workspaces = await_publish(
+            &mut tap,
+            &format!("p.{pair}.state.workspaces"),
+            Duration::from_secs(5),
+        )
+        .await;
         let list = workspaces.json()["workspaces"].as_array().unwrap().clone();
         assert!(list.iter().any(|w| w["name"] == json!("HB Workspace")));
 
@@ -2295,7 +2408,9 @@ mod runtime_tests {
         std::fs::write(dir.join("logo.dat"), vec![0_u8; 8]).unwrap();
 
         async fn request(dir: &std::path::Path, raw: &str) -> String {
-            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .unwrap();
             let port = listener.local_addr().unwrap().port();
             let accept = tokio::spawn({
                 let dir = dir.to_path_buf();
@@ -2345,7 +2460,9 @@ mod runtime_tests {
     #[tokio::test]
     async fn web_server_drops_silent_clients() {
         let _home = HomeGuard::new("remote-web-timeout");
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
         let port = listener.local_addr().unwrap().port();
         let dir = std::env::temp_dir().join(unique("futureos-webt"));
         std::fs::create_dir_all(&dir).unwrap();
@@ -2373,7 +2490,9 @@ mod runtime_tests {
         let _home = HomeGuard::new("remote-lan");
         // `lan_ip` may be None when the host has no routable probe address; when
         // it yields a literal it must be a valid IPv4 address.
-        let ipv4 = lan_ip().map(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok()).unwrap_or(true);
+        let ipv4 = lan_ip()
+            .map(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok())
+            .unwrap_or(true);
         assert!(ipv4, "lan_ip yielded a non-IPv4 literal");
     }
 

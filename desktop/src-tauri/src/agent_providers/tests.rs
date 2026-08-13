@@ -572,7 +572,10 @@ fn validate_api_key_rules() {
     // A whitespace-only key is treated as absent (existing key untouched).
     let mut blank_key = valid_input();
     blank_key.api_key = Some("   ".to_string());
-    assert!(validate_custom_provider(blank_key).unwrap().api_key.is_none());
+    assert!(validate_custom_provider(blank_key)
+        .unwrap()
+        .api_key
+        .is_none());
 }
 
 #[test]
@@ -685,20 +688,38 @@ async fn builtin_key_update_applied_by_agent_and_validated() {
     let agent = ensure_mock_agent();
 
     // Agent applies the change: the view comes straight back, no local write.
-    let view = update_builtin_provider_key(key_input("deepseek", Some("sk-live"))).await.unwrap();
+    let view = update_builtin_provider_key(key_input("deepseek", Some("sk-live")))
+        .await
+        .unwrap();
     assert!(view.builtin.iter().any(|p| p.id == "deepseek"));
     assert!(agent.served("set_auth", ""));
     assert!(crate::auth_store::read().unwrap().get("deepseek").is_none());
 
     // Clearing a key takes the clear path.
-    update_builtin_provider_key(key_input("deepseek", None)).await.unwrap();
+    update_builtin_provider_key(key_input("deepseek", None))
+        .await
+        .unwrap();
 
     // Request-local validation runs before the RPC.
-    assert!(update_builtin_provider_key(key_input("", Some("k"))).await.is_err());
-    assert!(update_builtin_provider_key(key_input("future", Some("k"))).await.is_err());
-    assert!(update_builtin_provider_key(key_input("unknown", Some("k"))).await.is_err());
-    assert!(update_builtin_provider_key(key_input("deepseek", Some(&"k".repeat(513)))).await.is_err());
-    assert!(update_builtin_provider_key(key_input("deepseek", Some("bad\nkey"))).await.is_err());
+    assert!(update_builtin_provider_key(key_input("", Some("k")))
+        .await
+        .is_err());
+    assert!(update_builtin_provider_key(key_input("future", Some("k")))
+        .await
+        .is_err());
+    assert!(update_builtin_provider_key(key_input("unknown", Some("k")))
+        .await
+        .is_err());
+    assert!(
+        update_builtin_provider_key(key_input("deepseek", Some(&"k".repeat(513))))
+            .await
+            .is_err()
+    );
+    assert!(
+        update_builtin_provider_key(key_input("deepseek", Some("bad\nkey")))
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -707,13 +728,16 @@ async fn builtin_key_update_falls_back_to_local_writes() {
     let agent = ensure_mock_agent();
     // A pre-item-2 agent answers "unknown command" → local fallback + reload.
     agent.script("set_auth", false, json!(null), "unknown command: set_auth");
-    let view = update_builtin_provider_key(key_input("deepseek", Some("sk-local"))).await.unwrap();
-    assert!(view
-        .builtin
-        .iter()
-        .find(|p| p.id == "deepseek")
-        .unwrap()
-        .has_api_key);
+    let view = update_builtin_provider_key(key_input("deepseek", Some("sk-local")))
+        .await
+        .unwrap();
+    assert!(
+        view.builtin
+            .iter()
+            .find(|p| p.id == "deepseek")
+            .unwrap()
+            .has_api_key
+    );
     assert_eq!(
         crate::auth_store::read()
             .unwrap()
@@ -755,31 +779,60 @@ async fn builtin_base_url_update_paths() {
     assert!(agent.served("upsert_provider", ""));
 
     // Validation before the RPC.
-    assert!(set_builtin_provider_base_url(base_url_input("", "https://x.com")).await.is_err());
-    assert!(set_builtin_provider_base_url(base_url_input("future", "https://x.com")).await.is_err());
-    assert!(set_builtin_provider_base_url(base_url_input("unknown", "https://x.com")).await.is_err());
-    let long = format!("https://{}.com", "a".repeat(2048));
-    assert!(set_builtin_provider_base_url(base_url_input("deepseek", &long)).await.is_err());
-    assert!(set_builtin_provider_base_url(base_url_input("deepseek", "ftp://x.com")).await.is_err());
     assert!(
-        set_builtin_provider_base_url(base_url_input("deepseek", "https://YOUR_RESOURCE.x.com"))
+        set_builtin_provider_base_url(base_url_input("", "https://x.com"))
             .await
             .is_err()
     );
+    assert!(
+        set_builtin_provider_base_url(base_url_input("future", "https://x.com"))
+            .await
+            .is_err()
+    );
+    assert!(
+        set_builtin_provider_base_url(base_url_input("unknown", "https://x.com"))
+            .await
+            .is_err()
+    );
+    let long = format!("https://{}.com", "a".repeat(2048));
+    assert!(
+        set_builtin_provider_base_url(base_url_input("deepseek", &long))
+            .await
+            .is_err()
+    );
+    assert!(
+        set_builtin_provider_base_url(base_url_input("deepseek", "ftp://x.com"))
+            .await
+            .is_err()
+    );
+    assert!(set_builtin_provider_base_url(base_url_input(
+        "deepseek",
+        "https://YOUR_RESOURCE.x.com"
+    ))
+    .await
+    .is_err());
 
     // Fallback: unknown command → local models.json override + reload.
-    agent.script("upsert_provider", false, json!(null), "unknown command: upsert_provider");
-    let view = set_builtin_provider_base_url(base_url_input("deepseek", "https://local.example.com/v1"))
-        .await
-        .unwrap();
+    agent.script(
+        "upsert_provider",
+        false,
+        json!(null),
+        "unknown command: upsert_provider",
+    );
+    let view =
+        set_builtin_provider_base_url(base_url_input("deepseek", "https://local.example.com/v1"))
+            .await
+            .unwrap();
     let deepseek = view.builtin.iter().find(|p| p.id == "deepseek").unwrap();
     assert_eq!(deepseek.base_url, "https://local.example.com/v1");
 
     // Explicit rejection surfaces.
     agent.script("upsert_provider", false, json!(null), "bad base url");
-    assert!(set_builtin_provider_base_url(base_url_input("deepseek", "https://y.com"))
-        .await
-        .is_err());
+    assert!(
+        set_builtin_provider_base_url(base_url_input("deepseek", "https://y.com"))
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -800,7 +853,12 @@ async fn custom_provider_upsert_paths() {
     assert!(agent.served("upsert_provider", ""));
 
     // Fallback writes models.json + auth.json locally.
-    agent.script("upsert_provider", false, json!(null), "unknown command: upsert_provider");
+    agent.script(
+        "upsert_provider",
+        false,
+        json!(null),
+        "unknown command: upsert_provider",
+    );
     let mut local = input("localp", "LocalP", true);
     local.api_key = Some("sk-local".to_string());
     let view = upsert_custom_provider(local).await.unwrap();
@@ -817,7 +875,12 @@ async fn custom_provider_upsert_paths() {
     );
 
     // Explicit rejection surfaces.
-    agent.script("upsert_provider", false, json!(null), "duplicate provider id");
+    agent.script(
+        "upsert_provider",
+        false,
+        json!(null),
+        "duplicate provider id",
+    );
     assert!(upsert_custom_provider(input("another", "Another", true))
         .await
         .is_err());
@@ -888,19 +951,33 @@ async fn custom_provider_delete_paths() {
     // Validation guards.
     assert!(delete_custom_provider("  ".to_string()).await.is_err());
     assert!(delete_custom_provider("future".to_string()).await.is_err());
-    assert!(delete_custom_provider("deepseek".to_string()).await.is_err());
+    assert!(delete_custom_provider("deepseek".to_string())
+        .await
+        .is_err());
 
     // Fallback deletes both local entries.
     upsert_custom_provider_with_catalog(input("gone2", "Gone2", true), &fixture_catalog()).unwrap();
     crate::auth_store::set_provider_key("gone2", "sk-g").unwrap();
-    agent.script("delete_provider", false, json!(null), "unknown command: delete_provider");
+    agent.script(
+        "delete_provider",
+        false,
+        json!(null),
+        "unknown command: delete_provider",
+    );
     let view = delete_custom_provider("gone2".to_string()).await.unwrap();
     assert!(view.custom.iter().all(|p| p.id != "gone2"));
     assert!(crate::auth_store::read().unwrap().get("gone2").is_none());
 
     // Explicit rejection surfaces.
-    agent.script("delete_provider", false, json!(null), "cannot delete in use");
-    assert!(delete_custom_provider("whatever".to_string()).await.is_err());
+    agent.script(
+        "delete_provider",
+        false,
+        json!(null),
+        "cannot delete in use",
+    );
+    assert!(delete_custom_provider("whatever".to_string())
+        .await
+        .is_err());
 }
 
 #[test]

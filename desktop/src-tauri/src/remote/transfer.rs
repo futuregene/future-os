@@ -643,20 +643,22 @@ pub fn clear_all() {
 
 /// First resubscribe delay after a failed subscribe / ended stream (doubles up
 /// to 30s). Tests shrink it so the self-heal path runs without real waits.
-/// The single-line if keeps both branches on one DA-covered line (the
-/// non-test artifact is never executed under llvm-cov).
 fn resubscribe_backoff() -> Duration {
-    const LIVE: Duration = Duration::from_secs(1);
-    const TEST: Duration = Duration::from_millis(10);
-    if cfg!(test) { TEST } else { LIVE }
+    #[cfg(test)]
+    const BACKOFF: Duration = Duration::from_millis(10);
+    #[cfg(not(test))]
+    const BACKOFF: Duration = Duration::from_secs(1);
+    BACKOFF
 }
 
 /// Periodic expiry sweep cadence inside the transfer loop. Tests shrink it so
 /// the sweep path runs without a one-minute wait.
 fn cleanup_tick() -> Duration {
-    const LIVE: Duration = Duration::from_secs(60);
-    const TEST: Duration = Duration::from_millis(20);
-    if cfg!(test) { TEST } else { LIVE }
+    #[cfg(test)]
+    const TICK: Duration = Duration::from_millis(20);
+    #[cfg(not(test))]
+    const TICK: Duration = Duration::from_secs(60);
+    TICK
 }
 
 pub fn spawn_transfer_loop(
@@ -710,18 +712,15 @@ pub fn spawn_transfer_loop(
                                 }),
                             _ => Err("Unsupported transfer operation.".to_string()),
                         };
-                        match message.reply {
-                            Some(reply) => {
-                                let body = match response {
-                                    Ok(data) => json!({ "success": true, "data": data }),
-                                    Err(error) => json!({ "success": false, "error": error }),
-                                };
-                                // A Value always serializes.
-                                let bytes = serde_json::to_vec(&body)
-                                    .expect("a transfer reply Value always serializes");
-                                let _ = client.publish(reply, bytes.into()).await;
-                            }
-                            None => {}
+                        if let Some(reply) = message.reply {
+                            let body = match response {
+                                Ok(data) => json!({ "success": true, "data": data }),
+                                Err(error) => json!({ "success": false, "error": error }),
+                            };
+                            // A Value always serializes.
+                            let bytes = serde_json::to_vec(&body)
+                                .expect("a transfer reply Value always serializes");
+                            let _ = client.publish(reply, bytes.into()).await;
                         }
                     }
                 }
@@ -735,7 +734,11 @@ pub fn spawn_transfer_loop(
     })
 }
 
-pub(crate) fn write_upload_chunk(transfer_id: &str, index: u64, payload: &[u8]) -> Result<Value, String> {
+pub(crate) fn write_upload_chunk(
+    transfer_id: &str,
+    index: u64,
+    payload: &[u8],
+) -> Result<Value, String> {
     if payload.len() as u64 > CHUNK_BYTES {
         return Err("Chunk exceeds the 512 KiB limit.".to_string());
     }
@@ -928,8 +931,8 @@ mod tests {
 
         let pdf = dir.join("document.pdf");
         std::fs::write(&pdf, b"%PDF-1.7\0binary").unwrap();
-        let error = prepare_preview(&pdf, "document.pdf")
-            .expect_err("PDF should not get a mobile preview");
+        let error =
+            prepare_preview(&pdf, "document.pdf").expect_err("PDF should not get a mobile preview");
         assert!(error.to_string().contains("view it on desktop"));
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -938,8 +941,8 @@ mod tests {
 #[cfg(test)]
 mod flow_tests {
     use super::super::test_support::{
-        assert_no_publish, await_publish, ensure_mock_agent, nats_connect_once, unique,
-        FakeNats, HomeGuard,
+        assert_no_publish, await_publish, ensure_mock_agent, nats_connect_once, unique, FakeNats,
+        HomeGuard,
     };
     use super::*;
     use serde_json::json;
@@ -1048,7 +1051,13 @@ mod flow_tests {
         assert!(incomplete.to_string().contains("incomplete"));
 
         // A staging file that vanished mid-upload surfaces as a chunk error.
-        let path = UPLOADS.lock().unwrap().get(&upload_id).unwrap().path.clone();
+        let path = UPLOADS
+            .lock()
+            .unwrap()
+            .get(&upload_id)
+            .unwrap()
+            .path
+            .clone();
         std::fs::remove_file(&path).unwrap();
         assert!(write_upload_chunk(&upload_id, 1, b"def").is_err());
 
@@ -1061,7 +1070,13 @@ mod flow_tests {
         let _home = HomeGuard::new("xfer-hash-missing");
         let upload_id = init_file_upload("gone.bin", 3);
         write_upload_chunk(&upload_id, 0, b"abc").unwrap();
-        let path = UPLOADS.lock().unwrap().get(&upload_id).unwrap().path.clone();
+        let path = UPLOADS
+            .lock()
+            .unwrap()
+            .get(&upload_id)
+            .unwrap()
+            .path
+            .clone();
         std::fs::remove_file(&path).unwrap();
         assert!(complete_upload(&upload_id).is_err());
     }
@@ -1070,7 +1085,9 @@ mod flow_tests {
     fn claim_uploads_enforces_message_limits() {
         let _home = HomeGuard::new("xfer-limits");
         let make = |size: u64| {
-            let id = init_upload("f.bin", "", "m", "file", size, 1).unwrap().upload_id;
+            let id = init_upload("f.bin", "", "m", "file", size, 1)
+                .unwrap()
+                .upload_id;
             write_upload_chunk(&id, 0, b"x").unwrap();
             complete_upload(&id).unwrap();
             UploadReference { upload_id: id }
@@ -1109,7 +1126,11 @@ mod flow_tests {
         cancel_upload(&pending).unwrap();
 
         // Combined size over the 20 MiB message limit.
-        let big = vec![make(9 * 1024 * 1024), make(9 * 1024 * 1024), make(9 * 1024 * 1024)];
+        let big = vec![
+            make(9 * 1024 * 1024),
+            make(9 * 1024 * 1024),
+            make(9 * 1024 * 1024),
+        ];
         let error = claim_uploads(&big, "thread-x").unwrap_err();
         assert!(error.to_string().contains("20 MiB"));
     }
@@ -1119,9 +1140,16 @@ mod flow_tests {
         let _home = HomeGuard::new("xfer-images");
         let png = tiny_png();
         let make_image = || {
-            let id = init_upload("pic.png", "", "image/png", "image", png.len() as u64, png.len() as u64)
-                .unwrap()
-                .upload_id;
+            let id = init_upload(
+                "pic.png",
+                "",
+                "image/png",
+                "image",
+                png.len() as u64,
+                png.len() as u64,
+            )
+            .unwrap()
+            .upload_id;
             write_upload_chunk(&id, 0, &png).unwrap();
             complete_upload(&id).unwrap();
             UploadReference { upload_id: id }
@@ -1133,7 +1161,9 @@ mod flow_tests {
         assert!(error.to_string().contains("at most 4 images"));
 
         // A non-image payload claiming to be an image fails validation.
-        let bogus = init_upload("pic.png", "", "image/png", "image", 4, 4).unwrap().upload_id;
+        let bogus = init_upload("pic.png", "", "image/png", "image", 4, 4)
+            .unwrap()
+            .upload_id;
         write_upload_chunk(&bogus, 0, b"nope").unwrap();
         complete_upload(&bogus).unwrap();
         let error = claim_uploads(
@@ -1143,7 +1173,10 @@ mod flow_tests {
             "thread-img",
         )
         .unwrap_err();
-        assert!(error.to_string().contains("Unreadable image") || error.to_string().contains("Undecodable"));
+        assert!(
+            error.to_string().contains("Unreadable image")
+                || error.to_string().contains("Undecodable")
+        );
         cancel_upload(&bogus).ok();
 
         // Four valid images claim fine and get thumbnails.
@@ -1191,7 +1224,13 @@ mod flow_tests {
     fn prune_expired_removes_stale_records_and_files() {
         let _home = HomeGuard::new("xfer-prune");
         let upload_id = init_file_upload("stale.bin", 1);
-        let upload_path = UPLOADS.lock().unwrap().get(&upload_id).unwrap().path.clone();
+        let upload_path = UPLOADS
+            .lock()
+            .unwrap()
+            .get(&upload_id)
+            .unwrap()
+            .path
+            .clone();
         let download_path = transfer_root().join("download").join("stale.txt");
         std::fs::create_dir_all(download_path.parent().unwrap()).unwrap();
         std::fs::write(&download_path, b"x").unwrap();
@@ -1234,7 +1273,13 @@ mod flow_tests {
     fn clear_all_drains_both_maps() {
         let _home = HomeGuard::new("xfer-clear");
         let upload_id = init_file_upload("a.bin", 1);
-        let upload_path = UPLOADS.lock().unwrap().get(&upload_id).unwrap().path.clone();
+        let upload_path = UPLOADS
+            .lock()
+            .unwrap()
+            .get(&upload_id)
+            .unwrap()
+            .path
+            .clone();
         let download_path = transfer_root().join("download").join("b.txt");
         std::fs::create_dir_all(download_path.parent().unwrap()).unwrap();
         std::fs::write(&download_path, b"x").unwrap();
@@ -1262,7 +1307,8 @@ mod flow_tests {
             session_attachment_name(&entries, "/tmp/no-name.md"),
             Some("no-name.md".to_string())
         );
-        let named = json!({"entries":[{"meta":{"attachments":[{"path":"/tmp/x","name":"Pretty.txt"}]}}]});
+        let named =
+            json!({"entries":[{"meta":{"attachments":[{"path":"/tmp/x","name":"Pretty.txt"}]}}]});
         assert_eq!(
             session_attachment_name(&named, "/tmp/x"),
             Some("Pretty.txt".to_string())
@@ -1415,7 +1461,9 @@ mod flow_tests {
         let corrupt = dir.join("broken.png");
         std::fs::write(&corrupt, b"not really a png").unwrap();
         let error = prepare_preview(&corrupt, "broken.png").unwrap_err();
-        assert!(error.to_string().contains("Unreadable") || error.to_string().contains("Undecodable"));
+        assert!(
+            error.to_string().contains("Unreadable") || error.to_string().contains("Undecodable")
+        );
 
         // Animated GIF → refused.
         let gif = dir.join("dance.gif");
@@ -1468,7 +1516,7 @@ mod flow_tests {
         // A PNG header whose body is truncated passes dimension sniffing but
         // fails the full decode.
         let mut truncated = image::DynamicImage::new_rgb8(10, 10)
-            .save(&dir.join("full.png"))
+            .save(dir.join("full.png"))
             .map(|_| std::fs::read(dir.join("full.png")).unwrap())
             .unwrap();
         truncated.truncate(40);
@@ -1597,11 +1645,7 @@ mod flow_tests {
 
         // A transfer request without a reply subject is processed but never
         // answered (the reply-match `None` arm).
-        nats.inject(
-            &format!("p.{pair}.xfer.up.ghost.bogus.0"),
-            None,
-            Vec::new(),
-        );
+        nats.inject(&format!("p.{pair}.xfer.up.ghost.bogus.0"), None, Vec::new());
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Losing the server ends the subscription stream; the loop logs and

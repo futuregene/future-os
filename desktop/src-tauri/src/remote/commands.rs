@@ -71,21 +71,23 @@ pub(super) fn new_reply_slots() -> ReplySlots {
 
 /// How long a completed single-flight response stays cached for retrying
 /// clients (matches the planned NATS duplicate window). Tests shrink it to
-/// milliseconds so expiry can be observed without a ten-minute wait. The
-/// single-line if keeps both branches on one DA-covered line (the non-test
-/// artifact is never executed under llvm-cov).
+/// milliseconds so expiry can be observed without a ten-minute wait.
 fn reply_slot_ttl() -> Duration {
-    const LIVE: Duration = Duration::from_secs(600);
-    const TEST: Duration = Duration::from_millis(20);
-    if cfg!(test) { TEST } else { LIVE }
+    #[cfg(test)]
+    const TTL: Duration = Duration::from_millis(20);
+    #[cfg(not(test))]
+    const TTL: Duration = Duration::from_secs(600);
+    TTL
 }
 
 /// First resubscribe delay after a failed subscribe / ended stream (doubles up
 /// to 30s). Tests shrink it so the self-heal path runs without real waits.
 fn resubscribe_backoff() -> Duration {
-    const LIVE: Duration = Duration::from_secs(1);
-    const TEST: Duration = Duration::from_millis(10);
-    if cfg!(test) { TEST } else { LIVE }
+    #[cfg(test)]
+    const BACKOFF: Duration = Duration::from_millis(10);
+    #[cfg(not(test))]
+    const BACKOFF: Duration = Duration::from_secs(1);
+    BACKOFF
 }
 
 tokio::task_local! {
@@ -535,7 +537,12 @@ async fn handle_command(
             Err(error) => reply(client, &msg, false, Value::Null, Some(&error.to_string())).await,
         },
         "upload_cancel" => {
-            reply_unit(client, &msg, super::transfer::cancel_upload(&cmd.transfer_id)).await
+            reply_unit(
+                client,
+                &msg,
+                super::transfer::cancel_upload(&cmd.transfer_id),
+            )
+            .await
         }
         "download_prepare" => {
             match super::transfer::prepare_download(&cmd.session_id, &cmd.file_path).await {
@@ -600,8 +607,12 @@ async fn handle_command(
             }
         }
         "abort" => {
-            reply_unit(client, &msg, crate::agent_bridge::abort_session(&cmd.session_id).await)
-                .await
+            reply_unit(
+                client,
+                &msg,
+                crate::agent_bridge::abort_session(&cmd.session_id).await,
+            )
+            .await
         }
         "approval_decision" => {
             let ownership = (|| -> Result<(), crate::AppError> {
@@ -1205,9 +1216,9 @@ fn truncate_message_content(message: &mut Value, cap: usize) {
         }
         return;
     }
-    let Some(content) = message.get_mut("content") else {
-        return;
-    };
+    let content = message
+        .get_mut("content")
+        .expect("content presence checked above");
     match content {
         Value::String(text) => {
             let (end, truncated) = byte_cut(text, cap);
@@ -1227,19 +1238,16 @@ fn truncate_message_content(message: &mut Value, cap: usize) {
                 if !is_text {
                     continue;
                 }
-                match block.get_mut("text") {
-                    Some(Value::String(text)) => {
-                        let (end, truncated) = byte_cut(text, remaining);
-                        if truncated {
-                            let mut cut = text[..end].to_string();
-                            cut.push('…');
-                            *text = cut;
-                            remaining = 0;
-                        } else {
-                            remaining = remaining.saturating_sub(text.len());
-                        }
+                if let Some(Value::String(text)) = block.get_mut("text") {
+                    let (end, truncated) = byte_cut(text, remaining);
+                    if truncated {
+                        let mut cut = text[..end].to_string();
+                        cut.push('…');
+                        *text = cut;
+                        remaining = 0;
+                    } else {
+                        remaining = remaining.saturating_sub(text.len());
                     }
-                    _ => {}
                 }
             }
         }
@@ -1545,10 +1553,10 @@ mod tests {
         let data = json!({ "runId": "run-1", "events": events });
         let first = paginate_events(data, 0, 100);
         let arr = first["events"].as_array().unwrap();
+        let arr_len = arr.len();
         assert!(
-            arr.len() < 6,
-            "byte budget should split the tail, got {}",
-            arr.len()
+            arr_len < 6,
+            "byte budget should split the tail, got {arr_len}"
         );
         assert_eq!(first["runId"], "run-1");
         assert_eq!(first["hasMore"], true);
@@ -1568,6 +1576,19 @@ mod tests {
         assert_eq!(page["projection"]["cursor"], 42);
         assert_eq!(page["events"].as_array().unwrap().len(), 1);
         assert_eq!(page["hasMore"], false);
+    }
+
+    #[test]
+    fn paginate_events_carries_truncated_flag() {
+        let events = vec![json!({ "type": "text_chunk", "run_id": "run-1", "idx": 0 })];
+        let data = json!({
+            "runId": "run-1",
+            "events": events,
+            "truncated": true,
+        });
+        let page = paginate_events(data, 0, 100);
+        assert_eq!(page["truncated"], json!(true));
+        assert_eq!(page["events"].as_array().unwrap().len(), 1);
     }
 
     #[test]
@@ -1627,7 +1648,10 @@ mod bridge_tests {
         assert_eq!(derive_thread_title(""), "New Chat");
         assert_eq!(derive_thread_title("  \n\t  "), "New Chat");
         // Whitespace collapses; 28 chars is the cut, ellipsized beyond it.
-        assert_eq!(derive_thread_title("hello   there\nworld"), "hello there world");
+        assert_eq!(
+            derive_thread_title("hello   there\nworld"),
+            "hello there world"
+        );
         let long = "abcdefghijklmnopqrstuvwxyz0123456789";
         assert_eq!(derive_thread_title(long), "abcdefghijklmnopqrstuvwxyz01...");
     }
@@ -1706,7 +1730,10 @@ mod bridge_tests {
         }
     }
 
-    fn handshake_cmd(creds: &crate::remote::pairing::PairingCreds, client_key: &nkeys::KeyPair) -> Value {
+    fn handshake_cmd(
+        creds: &crate::remote::pairing::PairingCreds,
+        client_key: &nkeys::KeyPair,
+    ) -> Value {
         json!({
             "id": unique("cmd"),
             "type": "pair_handshake",
@@ -1844,9 +1871,7 @@ mod bridge_tests {
         assert_eq!(reply["error"], json!("pairing_challenge_expired"));
 
         // A forged client signature → rejected.
-        let forged = client_key
-            .sign(b"a different transcript entirely")
-            .unwrap();
+        let forged = client_key.sign(b"a different transcript entirely").unwrap();
         let reply = bridge
             .call(json!({
                 "id": unique("cmd"),
@@ -2087,7 +2112,13 @@ mod bridge_tests {
         assert_eq!(reply["data"]["hasMore"], json!(true));
 
         // Agent failure → the remote-specific error text.
-        agent.script_for("get_messages", &session, false, json!(null), "agent exploded");
+        agent.script_for(
+            "get_messages",
+            &session,
+            false,
+            json!(null),
+            "agent exploded",
+        );
         let reply = bridge
             .call(json!({ "id": unique("cmd"), "type": "get_messages", "sessionId": session }))
             .await;
@@ -2103,7 +2134,9 @@ mod bridge_tests {
             json!({ "entries": [{ "entryType": "user", "content": "hi" }] }),
         );
         let reply = bridge
-            .call(json!({ "id": unique("cmd"), "type": "get_session_entries", "sessionId": session }))
+            .call(
+                json!({ "id": unique("cmd"), "type": "get_session_entries", "sessionId": session }),
+            )
             .await;
         assert_eq!(reply["success"], json!(true));
         assert_eq!(reply["data"]["entries"].as_array().unwrap().len(), 1);
@@ -2116,7 +2149,9 @@ mod bridge_tests {
         assert_eq!(reply["data"]["entries"].as_array().unwrap().len(), 1);
         agent.script_for("get_session_entries", &session, false, json!(null), "nope");
         let reply = bridge
-            .call(json!({ "id": unique("cmd"), "type": "get_session_entries", "sessionId": session }))
+            .call(
+                json!({ "id": unique("cmd"), "type": "get_session_entries", "sessionId": session }),
+            )
             .await;
         assert_eq!(reply["success"], json!(false));
 
@@ -2126,7 +2161,19 @@ mod bridge_tests {
             .await;
         assert_eq!(reply["success"], json!(true));
         assert_eq!(reply["data"]["events"], json!([]));
-        agent.script_for("get_events_since", &session, false, json!(null), "stale run");
+        // A positive limit uses the caller's page size (limit > 0 branch).
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "get_events_since", "sessionId": session, "runId": "run-1", "sinceIdx": -1, "limit": 5 }))
+            .await;
+        assert_eq!(reply["success"], json!(true));
+        assert_eq!(reply["data"]["events"], json!([]));
+        agent.script_for(
+            "get_events_since",
+            &session,
+            false,
+            json!(null),
+            "stale run",
+        );
         let reply = bridge
             .call(json!({ "id": unique("cmd"), "type": "get_events_since", "sessionId": session, "runId": "run-1", "sinceIdx": -1 }))
             .await;
@@ -2153,12 +2200,16 @@ mod bridge_tests {
 
         // upload_complete on an incomplete upload → error; after the bytes, ok.
         let reply = bridge
-            .call(json!({ "id": unique("cmd"), "type": "upload_complete", "transferId": upload_id }))
+            .call(
+                json!({ "id": unique("cmd"), "type": "upload_complete", "transferId": upload_id }),
+            )
             .await;
         assert_eq!(reply["success"], json!(false));
         transfer::write_upload_chunk(&upload_id, 0, b"data").unwrap();
         let reply = bridge
-            .call(json!({ "id": unique("cmd"), "type": "upload_complete", "transferId": upload_id }))
+            .call(
+                json!({ "id": unique("cmd"), "type": "upload_complete", "transferId": upload_id }),
+            )
             .await;
         assert_eq!(reply["success"], json!(true), "got: {reply}");
         assert_eq!(reply["data"]["contentHash"].as_str().unwrap().len(), 64);
@@ -2256,10 +2307,7 @@ mod bridge_tests {
             .call(json!({ "id": unique("cmd"), "type": "prompt", "sessionId": session, "message": "too soon" }))
             .await;
         assert_eq!(reply["success"], json!(false));
-        assert!(reply["error"]
-            .as_str()
-            .unwrap()
-            .contains("still running"));
+        assert!(reply["error"].as_str().unwrap().contains("still running"));
 
         bridge.stop();
     }
@@ -2298,7 +2346,12 @@ mod bridge_tests {
 
         // Agent-side session provisioning failure → the just-created orphan
         // thread is removed and the error surfaces.
-        agent.script("new_session", false, json!(null), "agent rejected the session");
+        agent.script(
+            "new_session",
+            false,
+            json!(null),
+            "agent rejected the session",
+        );
         let before = crate::store::list_threads().unwrap().len();
         let reply = bridge
             .call(json!({ "id": unique("cmd"), "type": "prompt", "message": "fail provisioning" }))
@@ -2403,7 +2456,13 @@ mod bridge_tests {
             .call(json!({ "id": unique("cmd"), "type": "set_thinking_level", "sessionId": session, "level": "high" }))
             .await;
         assert_eq!(reply["success"], json!(true));
-        agent.script_for("set_thinking_level", &session, false, json!(null), "bad level");
+        agent.script_for(
+            "set_thinking_level",
+            &session,
+            false,
+            json!(null),
+            "bad level",
+        );
         let reply = bridge
             .call(json!({ "id": unique("cmd"), "type": "set_thinking_level", "sessionId": session, "level": "high" }))
             .await;
@@ -2413,9 +2472,59 @@ mod bridge_tests {
             .call(json!({ "id": unique("cmd"), "type": "set_session_name", "sessionId": session, "name": "Renamed" }))
             .await;
         assert_eq!(reply["success"], json!(true));
-        agent.script_for("set_session_name", &session, false, json!(null), "no rename");
+        agent.script_for(
+            "set_session_name",
+            &session,
+            false,
+            json!(null),
+            "no rename",
+        );
         let reply = bridge
             .call(json!({ "id": unique("cmd"), "type": "set_session_name", "sessionId": session, "name": "Renamed" }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+
+        // A rename that resolves to a GUI thread emits remote activity
+        // (the Ok(Some) find_thread_by_agent_session branch).
+        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some("Phone".to_string()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some(session.clone()),
+        })
+        .unwrap();
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "set_session_name", "sessionId": session, "name": "Renamed" }))
+            .await;
+        assert_eq!(reply["success"], json!(true));
+
+        // set_session_pinned: success and unknown-thread failure.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "set_session_pinned", "threadId": thread.id, "pinned": true }))
+            .await;
+        assert_eq!(reply["success"], json!(true));
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "set_session_pinned", "threadId": "missing-thread", "pinned": false }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+
+        // delete_session: missing id, success, and unknown-thread failure.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "delete_session" }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        assert!(reply["error"]
+            .as_str()
+            .unwrap()
+            .contains("missing thread_id"));
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "delete_session", "threadId": thread.id }))
+            .await;
+        assert_eq!(reply["success"], json!(true));
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "delete_session", "threadId": "missing-thread" }))
             .await;
         assert_eq!(reply["success"], json!(false));
 
@@ -2487,10 +2596,7 @@ mod bridge_tests {
             .call(json!({ "id": unique("cmd"), "type": "approval_decision", "sessionId": "someone-else", "entryId": "appr-1", "mode": "approved" }))
             .await;
         assert_eq!(reply["success"], json!(false));
-        assert!(reply["error"]
-            .as_str()
-            .unwrap()
-            .contains("does not belong"));
+        assert!(reply["error"].as_str().unwrap().contains("does not belong"));
 
         // Owning session decides → the agent is notified and the reply is ok.
         let reply = bridge
@@ -2569,9 +2675,7 @@ mod bridge_tests {
         let session = unique("sess");
 
         let command_id = unique("cmdid");
-        let cmd = || {
-            json!({ "id": command_id, "type": "get_state", "sessionId": session })
-        };
+        let cmd = || json!({ "id": command_id, "type": "get_state", "sessionId": session });
         // Two concurrent deliveries → a single agent call, identical replies.
         let (first, second) = tokio::join!(bridge.call(cmd()), bridge.call(cmd()));
         assert_eq!(first, second);
