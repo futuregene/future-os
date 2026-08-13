@@ -165,3 +165,13 @@ pub fn clear_all_data() -> Result<(), crate::AppError> {
     let _ = std::fs::remove_dir_all(future_dir()?.join("workspaces").join("chat"));
     Ok(())
 }
+
+/// Test fixture: a fake HOME whose pooled connection already has the schema
+/// applied (the connection is dropped back into the pool), so subsequent
+/// `connect()`-backed store calls from other modules observe the tables.
+#[cfg(test)]
+pub(crate) fn test_schema_home(label: &str) -> crate::auth_store::test_support::HomeGuard {
+    let (home, conn) = db::test_support::guarded_conn(label);
+    drop(conn);
+    home
+}

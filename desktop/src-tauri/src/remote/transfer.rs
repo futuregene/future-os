@@ -413,18 +413,42 @@ fn session_attachment_name(entries: &Value, requested: &str) -> Option<String> {
         })
 }
 
+/// Resolve a markdown local-file link to a path on this machine: absolute
+/// targets are used as-is; relative targets resolve against the session's
+/// working directory (its thread workspace) — the directory the model writes
+/// its links relative to. Returns the canonicalized path when it exists.
+fn resolve_local_link(session_id: &str, requested_path: &str) -> Option<PathBuf> {
+    let requested = Path::new(requested_path);
+    if requested.is_absolute() {
+        return requested.canonicalize().ok();
+    }
+    let thread = crate::store::find_thread_by_agent_session(session_id).ok()??;
+    let cwd = crate::agent_bridge::workspace_path_for_thread(&thread.id).ok()?;
+    Path::new(&cwd).join(requested).canonicalize().ok()
+}
+
 pub async fn prepare_download(
     session_id: &str,
     requested_path: &str,
 ) -> Result<DownloadInfo, crate::AppError> {
     prune_expired();
     let entries = crate::agent_bridge::get_session_entries(session_id.to_string()).await?;
-    let display_name = session_attachment_name(&entries, requested_path).ok_or_else(|| {
-        crate::AppError::Message(
-            "The requested file is not an attachment in this session.".to_string(),
-        )
-    })?;
-    let source = Path::new(requested_path).canonicalize()?;
+    let (source, display_name) = match session_attachment_name(&entries, requested_path) {
+        Some(name) => (Path::new(requested_path).canonicalize()?, name),
+        // Not a session attachment: treat the request as a markdown local-file
+        // link — absolute targets are used as-is, relative ones resolve against
+        // the session's working directory. A paired phone is a trusted device
+        // (it can already read any file via the agent), matching the desktop
+        // UI, which opens model-written links against the local disk.
+        None => {
+            let source = resolve_local_link(session_id, requested_path).ok_or_else(|| {
+                crate::AppError::Message(
+                    "The requested file is not an attachment in this session.".to_string(),
+                )
+            })?;
+            (source, requested_path.to_string())
+        }
+    };
     if !source.is_file() {
         return Err("The attachment is no longer available.".to_string().into());
     }
@@ -1373,6 +1397,42 @@ mod flow_tests {
         cancel_download("never-existed");
 
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn prepare_download_resolves_workspace_relative_links() {
+        // Schema-applied fake HOME: the pooled connection is dropped back so
+        // the store calls below observe the tables.
+        let _home = crate::store::test_schema_home("xfer-link-resolve");
+        let agent = ensure_mock_agent();
+        let session = unique("sess");
+        agent.set_session_entries(&session, json!({ "entries": [] }));
+
+        // A chat thread bound to the session; its chat workspace is the
+        // working directory relative links resolve against.
+        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: None,
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some(session.clone()),
+        })
+        .expect("create thread");
+        let cwd = crate::agent_bridge::workspace_path_for_thread(&thread.id).expect("cwd");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::write(Path::new(&cwd).join("poem.txt"), b"a quiet poem").unwrap();
+
+        let info = prepare_download(&session, "poem.txt")
+            .await
+            .expect("resolve link");
+        assert_eq!(info.name, "poem.txt");
+        assert_eq!(info.mime_type, "text/plain");
+        assert_eq!(info.preview_kind, "text");
+        assert_eq!(info.size, 12);
+
+        // A relative link with no matching file in the workspace still fails.
+        assert!(prepare_download(&session, "missing.txt").await.is_err());
     }
 
     #[test]
