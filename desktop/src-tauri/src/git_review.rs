@@ -484,7 +484,10 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        run_git(&dir, &["init", "-q"]);
+        // Pin the initial branch to `main`: CI runners and developer machines
+        // differ on git's compiled-in default (master vs main), and
+        // `git branch --show-current` feeds the review's `branch` field.
+        run_git(&dir, &["init", "-q", "-b", "main"]);
         run_git(&dir, &["config", "user.email", "t@example.com"]);
         run_git(&dir, &["config", "user.name", "T"]);
         std::fs::write(dir.join("a.txt"), "hello\n").unwrap();
