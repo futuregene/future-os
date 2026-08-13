@@ -412,7 +412,6 @@ fn append_login_platform(url: String) -> String {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::await_holding_lock)]
     use super::*;
 
     #[test]
@@ -833,15 +832,14 @@ mod tests {
 
     #[tokio::test]
     async fn poll_authorized_writes_key_via_local_fallback() {
-        use crate::commands::agent_mock::{mock_agent_lock, with_broken_endpoint};
-
-        let _lock = mock_agent_lock();
         let _home = crate::auth_store::test_support::HomeGuard::new("fl-poll-ok");
-        crate::commands::agent_mock::ensure_mock_agent();
-        // Force `connect_agent` to fail deterministically (a broken endpoint is
-        // rejected before the latched channel is consulted) so the RPC-first
-        // write reports "unreachable" and poll falls back to the local
-        // auth.json write.
+        // Force `connect_agent` to fail deterministically with an unparseable
+        // endpoint — `Endpoint::from_shared` fails before the latched channel
+        // is consulted, so the RPC-first write reports "unreachable" and poll
+        // falls back to the local auth.json write. Restore the env var after
+        // instead of re-pointing at the shared mock: starting the mock here
+        // would re-order the process-wide agent-channel latch and break the
+        // agent_bridge mock tests.
         let url = mock_http_server(vec![(
             200,
             "application/json",
@@ -849,7 +847,14 @@ mod tests {
         )]);
         point_auth(&url);
 
-        let out = with_broken_endpoint(|| poll("dc")).await.unwrap();
+        let previous = std::env::var("FUTURE_AGENT_GRPC_ADDR").ok();
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
+        let out = poll("dc").await.unwrap();
+        match previous {
+            Some(value) => std::env::set_var("FUTURE_AGENT_GRPC_ADDR", value),
+            None => std::env::remove_var("FUTURE_AGENT_GRPC_ADDR"),
+        }
+
         assert_eq!(out.status, "authorized");
         assert_eq!(
             crate::auth_store::read().unwrap()["future"]["key"],
