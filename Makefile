@@ -57,7 +57,10 @@ ifeq ($(OS),windows)
 	@if not exist "$(USERPROFILE)\.future\bin" mkdir "$(USERPROFILE)\.future\bin"
 	$(COPY_CMD) target\release\future$(EXE_SUFFIX) "$(PREFIX)\future$(EXE_SUFFIX)"
 else
-	$(SUDO) cp target/release/future "$(PREFIX)/future"
+	# `install` unlinks+creates a fresh inode; plain `cp` overwrites in place
+	# and macOS taskgated can then SIGKILL the binary ("Code Signature
+	# Invalid") because the vnode's cached signing state no longer matches.
+	$(SUDO) install -m 755 target/release/future "$(PREFIX)/future"
 endif
 
 install-desktop: install-cli desktop-sidecars
@@ -66,7 +69,7 @@ install-desktop: install-cli desktop-sidecars
 ifeq ($(OS),windows)
 	$(COPY_CMD) desktop\src-tauri\target\release\futureos$(EXE_SUFFIX) "$(PREFIX)\future-desktop$(EXE_SUFFIX)"
 else
-	$(SUDO) cp desktop/src-tauri/target/release/futureos "$(PREFIX)/future-desktop"
+	$(SUDO) install -m 755 desktop/src-tauri/target/release/futureos "$(PREFIX)/future-desktop"
 endif
 
 # Also removes pre-unification installs (future-agent/-tui/-channel).
