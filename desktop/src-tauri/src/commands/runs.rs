@@ -272,6 +272,42 @@ mod tests {
     }
 
     #[test]
+    fn async_command_wrappers_reject_malformed_bodies() {
+        crate::commands::ipc_harness::assert_all_reject_bad_body(
+            tauri::generate_handler![
+                abort_run,
+                list_run_events,
+                list_run_events_since,
+                list_run_events_bulk,
+                list_tool_calls,
+                list_tool_calls_bulk,
+                list_tool_outputs
+            ],
+            &[
+                "abort_run",
+                "list_run_events",
+                "list_run_events_since",
+                "list_run_events_bulk",
+                "list_tool_calls",
+                "list_tool_calls_bulk",
+                "list_tool_outputs",
+            ],
+        );
+        // Multi-argument commands fail their *first* missing key with the
+        // empty body above, whose error arm is attributed to the signature
+        // line. Fail the *last* argument instead to hit the error arm on the
+        // `#[tauri::command]` attribute line.
+        crate::commands::ipc_harness::assert_all_reject_bodies(
+            tauri::generate_handler![abort_run, list_run_events_since, list_tool_outputs],
+            &[
+                ("abort_run", serde_json::json!({ "threadId": "x" })),
+                ("list_run_events_since", serde_json::json!({ "runId": "x" })),
+                ("list_tool_outputs", serde_json::json!({ "runId": "x" })),
+            ],
+        );
+    }
+
+    #[test]
     fn run_read_wrappers_round_trip() {
         let (_home, thread) = seeded("cmd_runs");
         let created = create_run(run_input(&thread.id, "run_1")).expect("create run");

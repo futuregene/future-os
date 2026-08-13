@@ -61,6 +61,22 @@ mod tests {
     use crate::commands::agent_mock::{mock_agent_lock, script_mock_agent, MockScript};
     use std::collections::HashMap;
 
+    #[test]
+    fn async_command_wrappers_reject_malformed_bodies() {
+        crate::commands::ipc_harness::assert_all_reject_bad_body(
+            tauri::generate_handler![install_skill, uninstall_skill],
+            &["install_skill", "uninstall_skill"],
+        );
+        // `install_skill` takes two arguments, so the empty-body rejection above
+        // only exercises its *first* argument's error arm (attributed to the
+        // signature line). Fail the *last* argument instead to hit the error arm
+        // attributed to the `#[tauri::command]` attribute line.
+        crate::commands::ipc_harness::assert_all_reject_bodies(
+            tauri::generate_handler![install_skill],
+            &[("install_skill", serde_json::json!({ "id": "x" }))],
+        );
+    }
+
     #[tokio::test]
     async fn list_installed_skills_parses_skill_sourced_commands() {
         let _lock = mock_agent_lock();

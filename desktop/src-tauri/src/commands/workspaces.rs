@@ -85,6 +85,14 @@ mod tests {
         }
     }
 
+    #[test]
+    fn async_command_wrapper_rejects_malformed_body() {
+        crate::commands::ipc_harness::assert_all_reject_bad_body(
+            tauri::generate_handler![delete_workspace],
+            &["delete_workspace"],
+        );
+    }
+
     #[tokio::test]
     async fn workspace_commands_round_trip() {
         let _home = init("cmd_workspaces");

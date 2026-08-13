@@ -51,6 +51,27 @@ mod tests {
     use crate::commands::agent_mock::{mock_agent_lock, script_mock_agent, MockScript};
     use std::collections::HashMap;
 
+    #[test]
+    fn async_command_wrappers_reject_malformed_bodies() {
+        crate::commands::ipc_harness::assert_all_reject_bad_body(
+            tauri::generate_handler![set_default_model, agent_prompt],
+            &["set_default_model", "agent_prompt"],
+        );
+        // `agent_prompt` takes seven arguments; its *last* argument
+        // (`thinking_level: Option<String>`) deserializes a missing key to
+        // `None`, so the empty-body rejection above never reaches its error
+        // arm. Feed it a wrong-typed value instead to make the final
+        // `CommandArg::from_command(..)?` fail and hit the error arm
+        // attributed to the `#[tauri::command]` attribute line.
+        crate::commands::ipc_harness::assert_all_reject_bodies(
+            tauri::generate_handler![agent_prompt],
+            &[(
+                "agent_prompt",
+                serde_json::json!({ "message": "hi", "attachments": null, "threadId": "t", "sessionId": null, "runId": null, "modelId": null, "thinkingLevel": 123 }),
+            )],
+        );
+    }
+
     #[tokio::test]
     async fn list_agent_models_parses_the_agent_response() {
         let _lock = mock_agent_lock();
