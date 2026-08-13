@@ -50,15 +50,6 @@ function pdfjsWasm(): Plugin {
 export default defineConfig({
   plugins: [react(), tailwindcss(), pdfjsWasm()],
   clearScreen: false,
-  // The shared @future-os/thread-projection package is a `file:` symlink to a
-  // CommonJS dist. Vite skips dependency optimization for linked packages, so its
-  // named CJS exports never get the CJS→ESM interop the browser needs — every
-  // `import { ... } from "@future-os/thread-projection"` fails at module load and
-  // the app renders a white screen with no console error. Force-prebundle it so
-  // esbuild applies the interop.
-  optimizeDeps: {
-    include: ["@future-os/thread-projection"],
-  },
   test: {
     setupFiles: ["./src/test/i18nTestSetup.ts"],
   },
