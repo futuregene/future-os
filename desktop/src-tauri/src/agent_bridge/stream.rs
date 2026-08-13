@@ -12,11 +12,26 @@ use crate::agent_proto::StreamRequest;
 const AGENT_EVENT_STREAM_TIMEOUT_SECS: u64 = 600;
 const STREAM_RECONNECT_ATTEMPTS: u32 = 6;
 
+/// Idle timeout for one stream read while the run is not parked on an
+/// approval. The 600s production budget is unexercisable in real time, so
+/// tests override it via env (a cfg(test)-only seam).
+fn agent_event_stream_timeout() -> Duration {
+    #[cfg(test)]
+    if let Some(ms) = std::env::var("FUTURE_TEST_AGENT_STREAM_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        return Duration::from_millis(ms);
+    }
+    Duration::from_secs(AGENT_EVENT_STREAM_TIMEOUT_SECS)
+}
+
 /// Outcome of collecting one canonical Agent run. `RunGone` is distinct from a
 /// transient/`App` failure: the Agent explicitly does not recognize the run
 /// (it rolled over, restarted, or already settled and dropped the ring), so the
 /// caller must reconcile the local row from the Agent's journal (`get_state`)
 /// instead of retrying the attach or marking the run failed.
+#[derive(Debug)]
 pub(super) enum CollectError {
     App(crate::AppError),
     RunGone(String),
@@ -119,6 +134,7 @@ pub(super) async fn replace_projection_off_thread(
 /// agent restarted mid-reply) before signalling completion — the text is a
 /// prefix, not the whole answer, and the caller must mark the run `failed`
 /// rather than persist a silently truncated reply as `completed`.
+#[derive(Debug)]
 pub(super) struct AgentResponse {
     pub content: String,
     pub complete: bool,
@@ -187,12 +203,7 @@ pub(super) async fn collect_agent_response(
             let next_event = if waiting_for_approval {
                 stream.message().await
             } else {
-                match timeout(
-                    Duration::from_secs(AGENT_EVENT_STREAM_TIMEOUT_SECS),
-                    stream.message(),
-                )
-                .await
-                {
+                match timeout(agent_event_stream_timeout(), stream.message()).await {
                     Ok(result) => result,
                     Err(_) => {
                         break "Future Agent response timed out.".to_string();
@@ -480,5 +491,498 @@ mod tests {
             reconnect_delay(u32::MAX),
             std::time::Duration::from_millis(1_600)
         );
+    }
+
+    // ── collect_agent_response against the scripted mock ────────────────
+
+    use super::super::test_support::{
+        mock_agent, seed_run, seed_thread, seed_workspace, stream_event, StreamScript, TestHome,
+    };
+    use super::{collect_agent_response, CollectError};
+    use crate::agent_proto::ProjectedRunEvent;
+
+    fn projected(event_type: &str, data: &str, idx: i64) -> ProjectedRunEvent {
+        ProjectedRunEvent {
+            r#type: event_type.to_string(),
+            data: data.to_string(),
+            idx,
+            payload: None,
+        }
+    }
+
+    fn snapshot_event(
+        run_id: &str,
+        cursor: i64,
+        events: Vec<ProjectedRunEvent>,
+    ) -> crate::agent_proto::StreamEvent {
+        crate::agent_proto::StreamEvent {
+            projection_snapshot: true,
+            snapshot_cursor: cursor,
+            snapshot_events: events,
+            run_id: run_id.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// A clean one-shot run: text then a complete agent_end.
+    #[tokio::test]
+    async fn collect_clean_run_assembles_content() {
+        let mock = mock_agent();
+        mock.push_stream(StreamScript::Events(
+            vec![
+                stream_event("run-1", 0, "text_chunk", r#"{"text":"hello"}"#),
+                stream_event("run-1", 1, "text_chunk", r#"{"text":" world"}"#),
+                stream_event("run-1", 2, "agent_end", r#"{"reason":"complete"}"#),
+            ],
+            None,
+        ));
+        let response = collect_agent_response(None, "run-1", "sess-1", "thread-1")
+            .await
+            .expect("collect");
+        assert_eq!(response.content, "hello world");
+        assert!(response.complete);
+        // The collector attaches atomically from the start.
+        let attaches = mock.stream_requests();
+        assert_eq!(attaches.len(), 1);
+        assert!(attaches[0].atomic_attach);
+        assert_eq!(attaches[0].after_idx, -1);
+    }
+
+    /// The lease-coupled collector path (replica.rs collect) end to end.
+    #[tokio::test]
+    async fn collect_through_replica_lease_binds_and_releases() {
+        let home = TestHome::new("stream-lease");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-1"));
+        let run = seed_run(&thread.id);
+
+        mock.push_stream(StreamScript::Events(
+            vec![
+                stream_event(&run.id, 0, "text_chunk", r#"{"text":"via lease"}"#),
+                stream_event(&run.id, 1, "agent_end", r#"{"reason":"complete"}"#),
+            ],
+            None,
+        ));
+        let manager = &super::super::replica::AGENT_REPLICAS;
+        let lease = manager.acquire(&run.id).expect("lease");
+        let response = lease
+            .collect(Some(&run.id), &run.id, "sess-1", &thread.id)
+            .await
+            .expect("collect");
+        assert_eq!(response.content, "via lease");
+        assert!(
+            manager.canonical_for_local(&run.id).is_none(),
+            "the binding drops with the lease"
+        );
+        assert!(
+            manager.is_owned_or_recently_released(&run.id),
+            "the grace window marks the run recently released"
+        );
+        // The agent_end off-thread persist flipped the run to finalizing
+        // bookkeeping without a pipeline settle; the row stays non-terminal
+        // until the caller settles it.
+    }
+
+    #[tokio::test]
+    async fn collect_marks_incomplete_agent_end() {
+        let mock = mock_agent();
+        mock.push_stream(StreamScript::Events(
+            vec![
+                stream_event("run-1", 0, "text_chunk", r#"{"text":"prefix"}"#),
+                stream_event("run-1", 1, "agent_end", r#"{"reason":"incomplete"}"#),
+            ],
+            None,
+        ));
+        let response = collect_agent_response(None, "run-1", "sess-1", "thread-1")
+            .await
+            .expect("collect");
+        assert_eq!(response.content, "prefix");
+        assert!(!response.complete);
+    }
+
+    #[tokio::test]
+    async fn collect_error_event_aborts_with_its_message() {
+        let mock = mock_agent();
+        mock.push_stream(StreamScript::Events(
+            vec![stream_event(
+                "run-1",
+                0,
+                "error",
+                r#"{"error":"model exploded"}"#,
+            )],
+            None,
+        ));
+        let error = collect_agent_response(None, "run-1", "sess-1", "thread-1")
+            .await
+            .expect_err("error event");
+        assert!(matches!(error, CollectError::App(_)));
+        assert_eq!(crate::AppError::from(error).to_string(), "model exploded");
+
+        // No error/message field → generic message.
+        mock.push_stream(StreamScript::Events(
+            vec![stream_event("run-2", 0, "error", r#"{"what":"unknown"}"#)],
+            None,
+        ));
+        let error = collect_agent_response(None, "run-2", "sess-1", "thread-1")
+            .await
+            .expect_err("error event");
+        assert_eq!(
+            crate::AppError::from(error).to_string(),
+            "Future Agent returned an error event."
+        );
+    }
+
+    #[tokio::test]
+    async fn collect_rejects_events_for_a_different_run() {
+        let mock = mock_agent();
+        mock.push_stream(StreamScript::Events(
+            vec![stream_event(
+                "run-other",
+                0,
+                "text_chunk",
+                r#"{"text":"x"}"#,
+            )],
+            None,
+        ));
+        let error = collect_agent_response(None, "run-1", "sess-1", "thread-1")
+            .await
+            .expect_err("wrong run");
+        assert_eq!(
+            crate::AppError::from(error).to_string(),
+            "Future Agent sent event for run run-other, expected run-1"
+        );
+    }
+
+    #[tokio::test]
+    async fn collect_skips_replay_overlap_and_duplicate_idx() {
+        let mock = mock_agent();
+        mock.push_stream(StreamScript::Events(
+            vec![
+                stream_event("run-1", 0, "text_chunk", r#"{"text":"a"}"#),
+                stream_event("run-1", 0, "text_chunk", r#"{"text":"dup"}"#),
+                stream_event("run-1", 1, "agent_end", r#"{"reason":"complete"}"#),
+            ],
+            None,
+        ));
+        let response = collect_agent_response(None, "run-1", "sess-1", "thread-1")
+            .await
+            .expect("collect");
+        assert_eq!(response.content, "a", "the idx-0 replay was deduped");
+    }
+
+    #[tokio::test]
+    async fn collect_reattaches_after_a_mid_stream_close() {
+        let mock = mock_agent();
+        // First stream closes without a terminal event.
+        mock.push_stream(StreamScript::Events(
+            vec![stream_event("run-1", 0, "text_chunk", r#"{"text":"a"}"#)],
+            None,
+        ));
+        // Reattach resumes from the cursor and finishes.
+        mock.push_stream(StreamScript::Events(
+            vec![
+                stream_event("run-1", 1, "text_chunk", r#"{"text":"b"}"#),
+                stream_event("run-1", 2, "agent_end", r#"{"reason":"complete"}"#),
+            ],
+            None,
+        ));
+        let response = collect_agent_response(None, "run-1", "sess-1", "thread-1")
+            .await
+            .expect("collect");
+        assert_eq!(response.content, "ab");
+        assert!(response.complete);
+        let attaches = mock.stream_requests();
+        assert_eq!(attaches.len(), 2);
+        assert_eq!(attaches[1].after_idx, 0, "reattach resumes from the cursor");
+    }
+
+    #[tokio::test]
+    async fn collect_reattaches_after_a_mid_stream_transport_error() {
+        let mock = mock_agent();
+        mock.push_stream(StreamScript::Events(
+            vec![stream_event("run-1", 0, "text_chunk", r#"{"text":"a"}"#)],
+            Some((tonic::Code::DataLoss, "frame exploded")),
+        ));
+        mock.push_stream(StreamScript::Events(
+            vec![stream_event(
+                "run-1",
+                1,
+                "agent_end",
+                r#"{"reason":"complete"}"#,
+            )],
+            None,
+        ));
+        let response = collect_agent_response(None, "run-1", "sess-1", "thread-1")
+            .await
+            .expect("collect");
+        assert!(response.complete);
+    }
+
+    #[tokio::test]
+    async fn collect_idx_gap_forces_reattach_and_run_gone_surfaces() {
+        let mock = mock_agent();
+        // idx skips 1 → gap → drop the stream and reattach.
+        mock.push_stream(StreamScript::Events(
+            vec![
+                stream_event("run-1", 0, "text_chunk", r#"{"text":"a"}"#),
+                stream_event("run-1", 2, "text_chunk", r#"{"text":"c"}"#),
+            ],
+            None,
+        ));
+        // The agent no longer knows the run on reattach.
+        mock.push_stream(StreamScript::AttachError(
+            tonic::Code::FailedPrecondition,
+            "unknown run",
+        ));
+        let error = collect_agent_response(None, "run-1", "sess-1", "thread-1")
+            .await
+            .expect_err("run gone");
+        match error {
+            CollectError::RunGone(reason) => {
+                assert!(reason.contains("unknown run"), "reason: {reason}");
+                let app_error = crate::AppError::from(CollectError::RunGone(reason));
+                assert!(app_error
+                    .to_string()
+                    .contains("Future Agent run no longer active"));
+            }
+            CollectError::App(other) => panic!("expected RunGone, got {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn collect_treats_legacy_stream_gap_as_reattach_signal() {
+        let mock = mock_agent();
+        mock.push_stream(StreamScript::Events(
+            vec![
+                stream_event("run-1", 0, "text_chunk", r#"{"text":"a"}"#),
+                stream_event("run-1", 1, "stream_gap", "{}"),
+            ],
+            None,
+        ));
+        mock.push_stream(StreamScript::Events(
+            vec![
+                stream_event("run-1", 1, "text_chunk", r#"{"text":"b"}"#),
+                stream_event("run-1", 2, "agent_end", r#"{"reason":"complete"}"#),
+            ],
+            None,
+        ));
+        let response = collect_agent_response(None, "run-1", "sess-1", "thread-1")
+            .await
+            .expect("collect");
+        assert_eq!(response.content, "ab");
+    }
+
+    #[tokio::test]
+    async fn collect_gives_up_after_six_transient_attach_failures() {
+        let mock = mock_agent();
+        for _ in 0..=STREAM_RECONNECT_ATTEMPTS {
+            mock.push_stream(StreamScript::AttachError(
+                tonic::Code::Unavailable,
+                "still down",
+            ));
+        }
+        let error = collect_agent_response(None, "run-1", "sess-1", "thread-1")
+            .await
+            .expect_err("attach failures");
+        let message = crate::AppError::from(error).to_string();
+        assert!(
+            message.contains("could not be resumed after 6 attempts"),
+            "message: {message}"
+        );
+        assert!(message.contains("still down"), "message: {message}");
+    }
+
+    #[tokio::test]
+    async fn collect_stream_timeout_reattaches() {
+        let mock = mock_agent();
+        std::env::set_var("FUTURE_TEST_AGENT_STREAM_TIMEOUT_MS", "50");
+        // First attach hangs (no events within the idle budget)...
+        mock.push_stream(StreamScript::Hang);
+        // ...the reattach finishes the run.
+        mock.push_stream(StreamScript::Events(
+            vec![stream_event(
+                "run-1",
+                0,
+                "agent_end",
+                r#"{"reason":"complete"}"#,
+            )],
+            None,
+        ));
+        let response = collect_agent_response(None, "run-1", "sess-1", "thread-1")
+            .await
+            .expect("collect");
+        std::env::remove_var("FUTURE_TEST_AGENT_STREAM_TIMEOUT_MS");
+        assert!(response.complete);
+        assert_eq!(mock.stream_requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn collect_approval_wait_disables_the_idle_timeout() {
+        let mock = mock_agent();
+        mock.push_stream(StreamScript::Events(
+            vec![
+                stream_event(
+                    "run-1",
+                    0,
+                    "approval_request",
+                    r#"{"approval_request_id":"a1"}"#,
+                ),
+                stream_event(
+                    "run-1",
+                    1,
+                    "approval_decision",
+                    r#"{"approval_request_id":"a1","status":"approved"}"#,
+                ),
+                stream_event("run-1", 2, "text_chunk", r#"{"text":"done"}"#),
+                stream_event("run-1", 3, "agent_end", r#"{"reason":"complete"}"#),
+            ],
+            None,
+        ));
+        let response = collect_agent_response(None, "run-1", "sess-1", "thread-1")
+            .await
+            .expect("collect");
+        assert_eq!(response.content, "done");
+        assert!(response.complete);
+    }
+
+    #[tokio::test]
+    async fn collect_applies_a_terminal_projection_snapshot() {
+        let home = TestHome::new("stream-snapshot");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-1"));
+        let run = seed_run(&thread.id);
+
+        mock.push_stream(StreamScript::Events(
+            vec![snapshot_event(
+                &run.id,
+                2,
+                vec![
+                    projected("text_chunk", r#"{"text":"from snapshot "}"#, 0),
+                    projected("text_chunk", r#"{"text":"tail"}"#, 1),
+                    projected("agent_end", r#"{"reason":"complete"}"#, 2),
+                ],
+            )],
+            None,
+        ));
+        let response = collect_agent_response(Some(&run.id), &run.id, "sess-1", &thread.id)
+            .await
+            .expect("collect");
+        assert_eq!(response.content, "from snapshot tail");
+        assert!(response.complete);
+    }
+
+    #[tokio::test]
+    async fn collect_skips_a_stale_snapshot_and_folds_a_fresh_one() {
+        let mock = mock_agent();
+        mock.push_stream(StreamScript::Events(
+            vec![
+                stream_event("run-1", 0, "text_chunk", r#"{"text":"live-a"}"#),
+                stream_event("run-1", 1, "text_chunk", r#"{"text":"live-b"}"#),
+                // Stale snapshot (cursor below the stream position): skipped.
+                snapshot_event(
+                    "run-1",
+                    0,
+                    vec![projected("text_chunk", r#"{"text":"stale"}"#, 0)],
+                ),
+                // Fresh snapshot replaces the accumulated content wholesale.
+                snapshot_event(
+                    "run-1",
+                    3,
+                    vec![
+                        projected("text_chunk", r#"{"text":"snap"}"#, 2),
+                        projected("approval_request", r#"{"approval_request_id":"a1"}"#, 3),
+                    ],
+                ),
+                // The stream continues after the snapshot cursor.
+                stream_event(
+                    "run-1",
+                    4,
+                    "approval_decision",
+                    r#"{"approval_request_id":"a1"}"#,
+                ),
+                stream_event("run-1", 5, "agent_end", r#"{"reason":"complete"}"#),
+            ],
+            None,
+        ));
+        let response = collect_agent_response(None, "run-1", "sess-1", "thread-1")
+            .await
+            .expect("collect");
+        assert_eq!(
+            response.content, "snap",
+            "snapshot replaced the live prefix"
+        );
+        assert!(response.complete);
+    }
+
+    #[tokio::test]
+    async fn collect_propagates_a_projection_snapshot_error() {
+        let mock = mock_agent();
+        mock.push_stream(StreamScript::Events(
+            vec![snapshot_event(
+                "run-1",
+                1,
+                vec![
+                    projected("text_chunk", r#"{"text":"prefix"}"#, 0),
+                    projected("error", r#"{"error":"snapshot error"}"#, 1),
+                ],
+            )],
+            None,
+        ));
+        let error = collect_agent_response(None, "run-1", "sess-1", "thread-1")
+            .await
+            .expect_err("error inside a projection snapshot");
+        assert_eq!(crate::AppError::from(error).to_string(), "snapshot error");
+    }
+
+    #[tokio::test]
+    async fn collect_gives_up_after_six_stream_breaks() {
+        let mock = mock_agent();
+        // Seven streams that each close without a terminal event (and without
+        // ever resetting `reconnect_attempt` via a valid event): the seventh
+        // break exhausts the budget and surfaces the reconnect error.
+        for _ in 0..=STREAM_RECONNECT_ATTEMPTS {
+            mock.push_stream(StreamScript::Events(vec![], None));
+        }
+        let error = collect_agent_response(None, "run-1", "sess-1", "thread-1")
+            .await
+            .expect_err("repeated stream breaks");
+        let message = crate::AppError::from(error).to_string();
+        assert!(
+            message.contains("could not be resumed after 6 attempts"),
+            "{message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn collect_persists_events_off_thread_for_local_runs() {
+        let home = TestHome::new("stream-persist");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-1"));
+        let run = seed_run(&thread.id);
+
+        mock.push_stream(StreamScript::Events(
+            vec![
+                stream_event(
+                    &run.id,
+                    0,
+                    "tool_start",
+                    r#"{"tool_id":"tc1","tool_name":"shell","tool_args":"{}"}"#,
+                ),
+                stream_event(&run.id, 1, "tool_end", r#"{"tool_id":"tc1","text":"ok"}"#),
+                stream_event(&run.id, 2, "agent_end", r#"{"reason":"complete"}"#),
+            ],
+            None,
+        ));
+        let response = collect_agent_response(Some(&run.id), &run.id, "sess-1", &thread.id)
+            .await
+            .expect("collect");
+        assert!(response.complete);
+        // The off-thread persistence is awaited per event, so the tool
+        // projection is warm by the time collect returns.
+        let input = crate::store::get_tool_call_input(&run.id, "tc1").expect("projection");
+        assert_eq!(input.as_deref(), Some("{}"));
     }
 }

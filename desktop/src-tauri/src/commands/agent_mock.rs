@@ -15,7 +15,13 @@
 //!   script mutations across the commands tests.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, MutexGuard};
+
+/// The cross-family serialization lock lives with the canonical mock in
+/// [`crate::remote::test_support`] so remote one-shot-script tests and the
+/// `commands`/`store` persistent-script tests share a single serialization
+/// point. Re-exported here for the existing `use ...::agent_mock::mock_agent_lock`
+/// call sites.
+pub(crate) use crate::remote::test_support::mock_agent_lock;
 
 /// What the mock answers. `down` answers every command *except* the
 /// connect-time health check with `Code::Unavailable` — indistinguishable from
@@ -36,15 +42,6 @@ pub(crate) struct MockScript {
     pub data: HashMap<String, String>,
     /// Per-command canned rejections (success = false, message as given).
     pub errors: HashMap<String, String>,
-}
-
-static MOCK_LOCK: Mutex<()> = Mutex::new(());
-
-/// Serialize tests that re-script the shared mock.
-pub(crate) fn mock_agent_lock() -> MutexGuard<'static, ()> {
-    MOCK_LOCK
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
 }
 
 /// Start the shared mock (idempotent) and point `FUTURE_AGENT_GRPC_ADDR` at
@@ -72,7 +69,13 @@ pub(crate) fn script_mock_agent(script: MockScript) {
     // scripted streaming sessions.
     data.entry("list_streaming_sessions".to_string())
         .or_insert_with(|| serde_json::json!({ "sessionIds": script.streaming_ids }).to_string());
-    ensure_mock_agent().set_persistent_script(data, errors, script.down);
+    let agent = ensure_mock_agent();
+    // One-shot scripts take precedence over this facade's persistent maps, so
+    // clear any a previous (remote) test left behind before installing the new
+    // script; otherwise a stale one-shot response would answer a caller that
+    // expected the persistent canned answer.
+    agent.clear_scripts();
+    agent.set_persistent_script(data, errors, script.down);
 }
 
 /// Run `call` with a deliberately unparseable agent endpoint, then restore

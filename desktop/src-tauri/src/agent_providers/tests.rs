@@ -3,6 +3,8 @@
 //! catalog into the synchronous `_with_catalog` cores instead, so nothing here
 //! needs a running agent.
 
+#![allow(clippy::await_holding_lock)]
+
 use super::catalog::{future_models_cache_path, models_json_path, CatalogProviderSummary};
 use super::write::{
     delete_custom_provider_with_catalog, set_builtin_provider_base_url_with_catalog,
@@ -474,7 +476,7 @@ fn set_builtin_base_url_rejects_placeholder_and_bad_url() {
 // ── validate.rs field-rule coverage ─────────────────────────────────────────
 
 use super::validate::{model_json_values, validate_custom_provider};
-use crate::remote::test_support::ensure_mock_agent;
+use crate::remote::test_support::{ensure_mock_agent, mock_agent_lock};
 
 fn valid_input() -> UpsertCustomProviderInput {
     input("prov", "Prov", true)
@@ -651,6 +653,7 @@ fn catalog_unavailable_logs_and_returns_empty() {
 
 #[tokio::test]
 async fn builtin_catalog_providers_fetches_from_the_agent() {
+    let _lock = mock_agent_lock();
     let _home = HomeGuard::new("cat-fetch");
     ensure_mock_agent();
     let catalog = super::catalog::builtin_catalog_providers().await;
@@ -666,6 +669,7 @@ async fn builtin_catalog_providers_fetches_from_the_agent() {
 
 #[tokio::test]
 async fn list_agent_providers_builds_the_view() {
+    let _lock = mock_agent_lock();
     let _home = HomeGuard::new("cat-list");
     ensure_mock_agent();
     let view = list_agent_providers().await.unwrap();
@@ -684,6 +688,7 @@ fn key_input(id: &str, api_key: Option<&str>) -> UpdateBuiltinProviderKeyInput {
 
 #[tokio::test]
 async fn builtin_key_update_applied_by_agent_and_validated() {
+    let _lock = mock_agent_lock();
     let _home = HomeGuard::new("wr-key-rpc");
     let agent = ensure_mock_agent();
 
@@ -724,6 +729,7 @@ async fn builtin_key_update_applied_by_agent_and_validated() {
 
 #[tokio::test]
 async fn builtin_key_update_falls_back_to_local_writes() {
+    let _lock = mock_agent_lock();
     let _home = HomeGuard::new("wr-key-local");
     let agent = ensure_mock_agent();
     // A pre-item-2 agent answers "unknown command" → local fallback + reload.
@@ -758,6 +764,7 @@ async fn builtin_key_update_falls_back_to_local_writes() {
 
 #[tokio::test]
 async fn builtin_base_url_update_paths() {
+    let _lock = mock_agent_lock();
     let _home = HomeGuard::new("wr-url-rpc");
     let agent = ensure_mock_agent();
     let base_url_input = |id: &str, base_url: &str| SetBuiltinProviderBaseUrlInput {
@@ -837,6 +844,7 @@ async fn builtin_base_url_update_paths() {
 
 #[tokio::test]
 async fn custom_provider_upsert_paths() {
+    let _lock = mock_agent_lock();
     let _home = HomeGuard::new("wr-upsert-rpc");
     let agent = ensure_mock_agent();
 
@@ -938,6 +946,7 @@ fn upsert_local_rolls_back_when_models_write_fails() {
 
 #[tokio::test]
 async fn custom_provider_delete_paths() {
+    let _lock = mock_agent_lock();
     let _home = HomeGuard::new("wr-delete-rpc");
     let agent = ensure_mock_agent();
 

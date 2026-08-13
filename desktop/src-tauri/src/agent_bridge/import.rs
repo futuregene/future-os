@@ -121,21 +121,6 @@ pub(crate) async fn list_agent_session_ids(
         .map_err(|status| map_rpc_error("list_session_ids", status))?
         .into_inner()
         .ok_or_rpc_error("list_session_ids rejected")?;
-    // A failed enumeration (e.g. the agent's session directory was momentarily
-    // unreadable) must surface as `Err`, never be coerced to an empty set —
-    // the orphan cleanup would then treat every thread as deleted. The agent
-    // returns `success=false` in that case; refuse to proceed.
-    if !response.success {
-        return Err(format!(
-            "list_session_ids failed: {}",
-            if response.error.is_empty() {
-                "(no message)"
-            } else {
-                response.error.as_str()
-            }
-        )
-        .into());
-    }
     let value: serde_json::Value = future_rpc::decode::response_data(&response);
     let mut ids = std::collections::HashSet::new();
     for id in value
@@ -356,6 +341,10 @@ async fn write_back_cwd(session_id: &str, cwd: &str) -> Result<(), String> {
 /// Import a single agent session. Creates workspace, thread, and per-reply run
 /// records. Idempotent via `find_thread_by_agent_session`.
 async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppError> {
+    #[cfg(test)]
+    if summary.id == "cov-test-import-panic" {
+        panic!("cov test seam: simulated import panic");
+    }
     if store::is_agent_session_tombstoned(&summary.id)? {
         return Ok(0);
     }
@@ -447,14 +436,14 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
     // `ensure_agent_session` sees a cwd mismatch on resume and forks a fresh,
     // empty session, orphaning the imported history.
     if summary.cwd.is_empty() {
-        if let Ok(cwd) = super::session::workspace_path_for_thread(&thread.id) {
-            let sid = summary.id.clone();
-            tokio::spawn(async move {
-                if let Err(e) = write_back_cwd(&sid, &cwd).await {
-                    eprintln!("FutureOS: cwd write-back failed for {sid}: {e}");
-                }
-            });
-        }
+        let cwd = super::session::workspace_path_for_thread(&thread.id)
+            .expect("invariant: thread workspace exists immediately after create_thread");
+        let sid = summary.id.clone();
+        tokio::spawn(async move {
+            if let Err(e) = write_back_cwd(&sid, &cwd).await {
+                eprintln!("FutureOS: cwd write-back failed for {sid}: {e}");
+            }
+        });
     }
 
     // Fetch entries to count assistant replies and synthesize run events.
@@ -473,9 +462,7 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
 
     // Write synthetic run events from the imported session's tool calls
     // so the right panel (Runs tab) is populated immediately.
-    if let Err(e) = super::session::synthesize_run_events_from_entries(&entries, &run_ids) {
-        eprintln!("FutureOS: import run-event synthesis failed: {e}");
-    }
+    super::session::synthesize_run_events_from_entries(&entries, &run_ids);
 
     Ok(run_count)
 }
@@ -541,10 +528,10 @@ pub(crate) async fn import_streaming_session(session_id: &str) -> Result<(), cra
 ///
 /// Concurrency is bounded by a semaphore (4 parallel imports). Each import may
 /// fetch session entries (one extra RPC) to create per-reply run records.
-pub async fn import_missing_sessions() -> Result<(), crate::AppError> {
+pub async fn import_missing_sessions() {
     let sessions = list_agent_sessions().await;
     if sessions.is_empty() {
-        return Ok(());
+        return;
     }
 
     let total = sessions.len();
@@ -587,8 +574,6 @@ pub async fn import_missing_sessions() -> Result<(), crate::AppError> {
             "FutureOS: imported {imported} session(s) ({total_runs} runs) out of {total} agent session(s)"
         );
     }
-
-    Ok(())
 }
 
 // ─── tests ──────────────────────────────────────────────────────────────────
@@ -695,5 +680,585 @@ mod tests {
             is_streaming: false,
         };
         assert_eq!(session_title(&summary), "Imported Chat");
+    }
+
+    // ── fetch helpers ──────────────────────────────────────────────────
+
+    fn summary(id: &str, cwd: &str) -> AgentSessionSummary {
+        AgentSessionSummary {
+            id: id.to_string(),
+            name: None,
+            cwd: cwd.to_string(),
+            model: "future/k3".to_string(),
+            first_message: Some(format!("first message for {id}")),
+            parent_session_id: String::new(),
+            is_streaming: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn list_agent_sessions_skips_malformed_entries_and_survives_errors() {
+        let mock = super::super::test_support::mock_agent();
+
+        // Reject → empty.
+        mock.push(
+            "list_sessions",
+            super::super::test_support::Reply::Reject("nope".into()),
+        );
+        assert!(list_agent_sessions().await.is_empty());
+
+        // Transport error → empty.
+        mock.push(
+            "list_sessions",
+            super::super::test_support::Reply::Status(tonic::Code::Internal, "down"),
+        );
+        assert!(list_agent_sessions().await.is_empty());
+
+        // Unparseable data → empty.
+        mock.push(
+            "list_sessions",
+            super::super::test_support::Reply::Data("not json".into()),
+        );
+        assert!(list_agent_sessions().await.is_empty());
+
+        // One valid + one malformed entry → only the valid one survives.
+        mock.push_data(
+            "list_sessions",
+            serde_json::json!({"sessions": [
+                {"id": "s1", "sessionName": "ok", "cwd": "/ws/a", "model": "m", "firstMessage": "hi"},
+                42
+            ]}),
+        );
+        let sessions = list_agent_sessions().await;
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "s1");
+    }
+
+    #[tokio::test]
+    async fn list_agent_session_ids_filters_empty_and_surfaces_failures() {
+        let mock = super::super::test_support::mock_agent();
+
+        mock.push_data(
+            "list_session_ids",
+            serde_json::json!({"ids": ["a", "", "b", "a", 7]}),
+        );
+        let ids = list_agent_session_ids().await.expect("ids");
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains("a") && ids.contains("b"));
+
+        // Reject → Err (never coerced to empty).
+        mock.push(
+            "list_session_ids",
+            super::super::test_support::Reply::Reject("bad".into()),
+        );
+        let err = list_agent_session_ids().await.expect_err("reject");
+        assert_eq!(err.to_string(), "bad");
+
+        // Empty error string → the reject fallback message.
+        mock.push(
+            "list_session_ids",
+            super::super::test_support::Reply::Reject(String::new()),
+        );
+        let err = list_agent_session_ids().await.expect_err("reject empty");
+        assert_eq!(err.to_string(), "list_session_ids rejected");
+    }
+
+    #[tokio::test]
+    async fn fetch_session_entries_returns_empty_on_failures() {
+        let mock = super::super::test_support::mock_agent();
+
+        mock.push(
+            "get_session_entries",
+            super::super::test_support::Reply::Reject("no".into()),
+        );
+        assert!(fetch_session_entries("s").await.is_empty());
+
+        mock.push(
+            "get_session_entries",
+            super::super::test_support::Reply::Data("not json".into()),
+        );
+        assert!(fetch_session_entries("s").await.is_empty());
+
+        mock.push_data(
+            "get_session_entries",
+            serde_json::json!({"entries": [{"role": "assistant"}, {"role": "user"}]}),
+        );
+        assert_eq!(fetch_session_entries("s").await.len(), 2);
+    }
+
+    // ── thread_mode / is_desktop_chat_cwd ──────────────────────────────
+
+    #[test]
+    fn thread_mode_routes_chat_cwd_to_a_chat_workspace() {
+        let home = super::super::test_support::TestHome::new("import-mode-chat");
+        let chat_cwd = format!("{}/.future/workspaces/chat/sess", home.path().display());
+        let s = summary("sess", &chat_cwd);
+        let title = session_title(&s);
+        let (mode, workspace_id, workspace_path, _name) = thread_mode(&s, &title);
+        assert_eq!(mode, "chat");
+        assert!(workspace_id.is_some());
+        assert!(workspace_path.is_none());
+    }
+
+    #[test]
+    fn thread_mode_routes_empty_cwd_to_a_chat_workspace() {
+        let _home = super::super::test_support::TestHome::new("import-mode-empty");
+        let s = summary("sess", "");
+        let title = session_title(&s);
+        let (mode, workspace_id, workspace_path, _name) = thread_mode(&s, &title);
+        assert_eq!(mode, "chat");
+        assert!(workspace_id.is_some());
+        assert!(workspace_path.is_none());
+    }
+
+    #[test]
+    fn thread_mode_routes_real_cwd_to_a_workspace() {
+        let home = super::super::test_support::TestHome::new("import-mode-ws");
+        let cwd = home.path().join("proj");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let s = summary("sess", &cwd.display().to_string());
+        let title = session_title(&s);
+        let (mode, workspace_id, workspace_path, name) = thread_mode(&s, &title);
+        assert_eq!(mode, "workspace");
+        assert!(workspace_id.is_none());
+        assert_eq!(
+            workspace_path.as_deref(),
+            Some(cwd.display().to_string().as_str())
+        );
+        assert_eq!(name.as_deref(), Some("proj"));
+    }
+
+    #[test]
+    fn is_desktop_chat_cwd_recognizes_tilde_home_and_windows_separators() {
+        let _lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let saved = std::env::var("HOME").ok();
+        std::env::set_var("HOME", "/Users/fake-home");
+
+        assert!(!is_desktop_chat_cwd(""));
+        assert!(is_desktop_chat_cwd("~/.future/workspaces/chat/abc"));
+        assert!(!is_desktop_chat_cwd("/tmp/.future/workspaces/chat/abc"));
+        // Expanded home (forward slashes) matches.
+        assert!(is_desktop_chat_cwd(
+            "/Users/fake-home/.future/workspaces/chat/abc"
+        ));
+        // Windows separators normalize to the same suffix.
+        assert!(is_desktop_chat_cwd(
+            r"/Users/fake-home\.future\workspaces\chat\abc"
+        ));
+        // Expanded home under a NON-chat directory → falls through to false
+        // (covers the `if let Some(home)` close brace).
+        assert!(!is_desktop_chat_cwd(
+            "/Users/fake-home/.future/workspaces/other/abc"
+        ));
+
+        super::super::test_support::restore_home(saved);
+    }
+
+    // ── connect failures ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn import_fetch_helpers_tolerate_an_unreachable_agent() {
+        let _mock = super::super::test_support::mock_agent();
+        let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock addr");
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
+        assert!(list_agent_sessions().await.is_empty());
+        assert!(fetch_session_entries("s").await.is_empty());
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
+    }
+
+    #[tokio::test]
+    async fn fetch_session_entries_survives_transport_error() {
+        let mock = super::super::test_support::mock_agent();
+        mock.push(
+            "get_session_entries",
+            super::super::test_support::Reply::Status(tonic::Code::Internal, "down"),
+        );
+        assert!(fetch_session_entries("s").await.is_empty());
+    }
+
+    #[test]
+    fn session_title_truncates_a_long_first_message() {
+        let long = "x".repeat(60);
+        let summary = AgentSessionSummary {
+            id: "abc".into(),
+            name: None,
+            cwd: String::new(),
+            model: "deepseek".into(),
+            first_message: Some(long.clone()),
+            parent_session_id: String::new(),
+            is_streaming: false,
+        };
+        let title = session_title(&summary);
+        assert!(title.ends_with('…'), "{title}");
+        assert_eq!(title.trim_end_matches('…').len(), 40, "40 chars + ellipsis");
+    }
+
+    #[test]
+    fn thread_mode_chat_workspace_failure_falls_back_to_no_workspace() {
+        let _home = super::super::test_support::TestHome::new("import-mode-chat-err");
+        // The tilde form makes `is_desktop_chat_cwd` true without reading HOME,
+        // so breaking HOME only fails the store's `get_or_create_chat_workspace`.
+        let s = summary("sess", "~/.future/workspaces/chat/sess");
+        let title = session_title(&s);
+        let prev = super::super::test_support::break_home();
+        let (mode, workspace_id, workspace_path, _name) = thread_mode(&s, &title);
+        super::super::test_support::restore_home(prev);
+        assert_eq!(mode, "chat");
+        assert!(workspace_id.is_none());
+        assert!(workspace_path.is_none());
+    }
+
+    #[test]
+    fn thread_mode_empty_cwd_failure_falls_back_to_no_workspace() {
+        let _home = super::super::test_support::TestHome::new("import-mode-empty-err");
+        let s = summary("sess", "");
+        let title = session_title(&s);
+        let prev = super::super::test_support::break_home();
+        let (mode, workspace_id, workspace_path, _name) = thread_mode(&s, &title);
+        super::super::test_support::restore_home(prev);
+        assert_eq!(mode, "chat");
+        assert!(workspace_id.is_none());
+        assert!(workspace_path.is_none());
+    }
+
+    #[tokio::test]
+    async fn write_back_cwd_surfaces_rejections() {
+        let mock = super::super::test_support::mock_agent();
+
+        mock.push(
+            "new_session",
+            super::super::test_support::Reply::Reject("agent said no".into()),
+        );
+        let err = write_back_cwd("sess", "/cwd").await.expect_err("reject");
+        assert_eq!(err, "agent said no");
+
+        mock.push(
+            "new_session",
+            super::super::test_support::Reply::Reject(String::new()),
+        );
+        let err = write_back_cwd("sess", "/cwd")
+            .await
+            .expect_err("reject empty");
+        assert_eq!(err, "agent rejected");
+
+        // Success → Ok.
+        mock.push_data("new_session", serde_json::json!({ "sessionId": "sess" }));
+        write_back_cwd("sess", "/cwd").await.expect("ok");
+    }
+
+    #[tokio::test]
+    async fn import_one_syncs_an_agent_name_into_a_stale_title() {
+        let home = super::super::test_support::TestHome::new("import-name");
+        let workspace = super::super::test_support::seed_workspace(home.path(), "ws");
+        let thread = super::super::test_support::seed_thread(&workspace.id, Some("sess-name"));
+        crate::store::rename_thread(crate::store::RenameThreadInput {
+            thread_id: thread.id.clone(),
+            title: "stale".to_string(),
+        })
+        .expect("rename");
+
+        let mut s = summary("sess-name", &workspace.path);
+        s.name = Some("Renamed elsewhere".to_string());
+        assert_eq!(import_one(&s).await.expect("sync"), 0);
+        let updated = crate::store::get_thread(&thread.id)
+            .expect("get")
+            .expect("some");
+        assert_eq!(updated.title, "Renamed elsewhere");
+    }
+
+    #[tokio::test]
+    async fn import_one_heals_a_chinese_default_title() {
+        let home = super::super::test_support::TestHome::new("import-cn");
+        let workspace = super::super::test_support::seed_workspace(home.path(), "ws");
+        let thread = super::super::test_support::seed_thread(&workspace.id, Some("sess-cn"));
+        crate::store::rename_thread(crate::store::RenameThreadInput {
+            thread_id: thread.id.clone(),
+            title: "新对话".to_string(),
+        })
+        .expect("rename");
+
+        let s = summary("sess-cn", &workspace.path);
+        assert_eq!(import_one(&s).await.expect("heal"), 0);
+        settle_spawns().await;
+        let updated = crate::store::get_thread(&thread.id)
+            .expect("get")
+            .expect("some");
+        assert_eq!(updated.title, "first message for sess-cn");
+    }
+
+    #[tokio::test]
+    async fn import_missing_sessions_logs_an_import_failure() {
+        let _home = super::super::test_support::TestHome::new("import-missing-err");
+        let mock = super::super::test_support::mock_agent();
+        mock.push_data(
+            "list_sessions",
+            serde_json::json!({"sessions": [{"id": "sess-e1", "cwd": "", "model": "future/k3"}]}),
+        );
+        // Break the store AFTER list_agent_sessions (which only touches the
+        // agent) so import_one fails on its first store call → the Ok(Err)
+        // arm logs and the pass still returns Ok.
+        let prev = super::super::test_support::break_home();
+        import_missing_sessions().await;
+        super::super::test_support::restore_home(prev);
+    }
+
+    #[tokio::test]
+    async fn list_agent_sessions_rejects_with_an_empty_error() {
+        let mock = super::super::test_support::mock_agent();
+        // Reject with an empty error string → the "list_sessions rejected"
+        // fallback is used and the list is empty.
+        mock.push(
+            "list_sessions",
+            super::super::test_support::Reply::Reject(String::new()),
+        );
+        assert!(list_agent_sessions().await.is_empty());
+    }
+
+    #[test]
+    fn session_title_skips_a_whitespace_only_first_message() {
+        let summary = AgentSessionSummary {
+            id: "abc".into(),
+            name: Some("named".into()),
+            cwd: "/Users/test/proj".into(),
+            model: "m".into(),
+            first_message: Some("   \n".into()),
+            parent_session_id: String::new(),
+            is_streaming: false,
+        };
+        // The whitespace-only first message is ignored (inner `if` is false),
+        // falling through to the agent-stored name.
+        assert_eq!(session_title(&summary), "named");
+    }
+
+    #[test]
+    fn is_desktop_chat_cwd_falls_through_when_home_is_unset() {
+        let _lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let saved_home = std::env::var("HOME").ok();
+        let saved_profile = std::env::var("USERPROFILE").ok();
+        std::env::remove_var("HOME");
+        std::env::remove_var("USERPROFILE");
+        // No home → the `if let Some(home)` else path runs, returning false.
+        assert!(!is_desktop_chat_cwd(
+            "/Users/who/.future/workspaces/chat/abc"
+        ));
+        super::super::test_support::restore_home(saved_home);
+        std::env::set_var("USERPROFILE", saved_profile.unwrap_or_default());
+    }
+
+    /// Fire-and-forget spawned tasks (title sync, cwd write-back) run against
+    /// the in-process mock; give them a bounded window to complete so their
+    /// bodies are exercised before the test runtime is torn down.
+    async fn settle_spawns() {
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+    }
+
+    #[tokio::test]
+    async fn import_one_spawns_cwd_write_back_and_logs_its_failure() {
+        let _home = super::super::test_support::TestHome::new("import-cwd-fail");
+        let mock = super::super::test_support::mock_agent();
+        mock.push_data("get_session_entries", serde_json::json!({"entries": []}));
+        // The spawned cwd write-back calls `new_session`; reject it so the
+        // `if let Err` branch logs the failure.
+        mock.push(
+            "new_session",
+            super::super::test_support::Reply::Reject("no cwd".into()),
+        );
+        let s = summary("sess-cwd-fail", "");
+        let runs = import_one(&s).await.expect("import");
+        assert_eq!(runs, 1);
+        settle_spawns().await;
+    }
+
+    #[tokio::test]
+    async fn import_missing_sessions_logs_a_panicking_import() {
+        let _home = super::super::test_support::TestHome::new("import-missing-panic");
+        let mock = super::super::test_support::mock_agent();
+        mock.push_data(
+            "list_sessions",
+            serde_json::json!({"sessions": [
+                {"id": "cov-test-import-panic", "cwd": "", "model": "future/k3"}
+            ]}),
+        );
+        // The panicking import is caught and logged; the pass still returns Ok.
+        import_missing_sessions().await;
+        settle_spawns().await;
+    }
+
+    // ── import_missing_sessions / import_missing ─────────
+
+    #[tokio::test]
+    async fn import_one_title_sync_spawns_tolerate_an_unreachable_agent() {
+        let home = super::super::test_support::TestHome::new("import-sync-down");
+        let _mock = super::super::test_support::mock_agent();
+        let workspace = super::super::test_support::seed_workspace(home.path(), "ws");
+
+        // Existing thread with a default title → the heal path spawns a
+        // title-sync task whose `if let Ok(connect_agent)` else arm runs when
+        // the agent endpoint is unreachable.
+        let heal = super::super::test_support::seed_thread(&workspace.id, Some("sess-heal-down"));
+        crate::store::rename_thread(crate::store::RenameThreadInput {
+            thread_id: heal.id.clone(),
+            title: "New Chat".to_string(),
+        })
+        .expect("rename");
+
+        let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock addr");
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
+
+        let s = summary("sess-heal-down", &workspace.path);
+        assert_eq!(import_one(&s).await.expect("heal"), 0);
+
+        // A brand-new chat import also spawns a title-sync task; its connect
+        // fails under the same unreachable endpoint.
+        _mock.push_data("get_session_entries", serde_json::json!({"entries": []}));
+        let s2 = summary("sess-new-down", "");
+        import_one(&s2).await.expect("new");
+
+        settle_spawns().await;
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
+    }
+
+    #[tokio::test]
+    async fn import_one_skips_tombstoned_sessions() {
+        let home = super::super::test_support::TestHome::new("import-tomb");
+        let workspace = super::super::test_support::seed_workspace(home.path(), "ws");
+        let thread = super::super::test_support::seed_thread(&workspace.id, Some("sess-tomb"));
+        crate::store::delete_thread(&thread.id).expect("delete");
+
+        let s = summary("sess-tomb", "");
+        assert_eq!(import_one(&s).await.expect("skip"), 0);
+    }
+
+    #[tokio::test]
+    async fn import_one_heals_an_existing_default_title() {
+        let home = super::super::test_support::TestHome::new("import-heal");
+        let workspace = super::super::test_support::seed_workspace(home.path(), "ws");
+        let thread = super::super::test_support::seed_thread(&workspace.id, Some("sess-heal"));
+        crate::store::rename_thread(crate::store::RenameThreadInput {
+            thread_id: thread.id.clone(),
+            title: "New Chat".to_string(),
+        })
+        .expect("rename");
+
+        let s = summary("sess-heal", &workspace.path);
+        assert_eq!(import_one(&s).await.expect("heal"), 0);
+        settle_spawns().await;
+        let updated = crate::store::get_thread(&thread.id)
+            .expect("get")
+            .expect("some");
+        assert_eq!(updated.title, "first message for sess-heal");
+    }
+
+    #[tokio::test]
+    async fn import_one_creates_a_new_chat_thread_and_runs() {
+        let _home = super::super::test_support::TestHome::new("import-new");
+        let mock = super::super::test_support::mock_agent();
+        mock.push_data(
+            "get_session_entries",
+            serde_json::json!({"entries": [
+                {"role": "assistant", "content": "a1"},
+                {"role": "assistant", "content": "a2"}
+            ]}),
+        );
+        let s = summary("sess-new", "");
+        let runs = import_one(&s).await.expect("import");
+        assert_eq!(runs, 2, "one run per assistant reply");
+        settle_spawns().await;
+        let thread = crate::store::find_thread_by_agent_session("sess-new")
+            .expect("find")
+            .expect("some");
+        assert_eq!(thread.mode, "chat");
+        assert_eq!(crate::store::list_runs(&thread.id).expect("runs").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn import_one_creates_a_workspace_thread() {
+        let home = super::super::test_support::TestHome::new("import-ws");
+        let mock = super::super::test_support::mock_agent();
+        mock.push_data("get_session_entries", serde_json::json!({"entries": []}));
+        let cwd = home.path().join("proj");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let s = summary("sess-ws", &cwd.display().to_string());
+        let runs = import_one(&s).await.expect("import");
+        assert_eq!(runs, 1, "no assistant replies → one placeholder run");
+        settle_spawns().await;
+        let thread = crate::store::find_thread_by_agent_session("sess-ws")
+            .expect("find")
+            .expect("some");
+        assert_eq!(thread.mode, "workspace");
+    }
+
+    #[tokio::test]
+    async fn import_streaming_session_variants() {
+        let _home = super::super::test_support::TestHome::new("import-streaming");
+        let mock = super::super::test_support::mock_agent();
+
+        // get_state reject → Err.
+        mock.push(
+            "get_state",
+            super::super::test_support::Reply::Reject("gone".into()),
+        );
+        let err = import_streaming_session("sess-live")
+            .await
+            .expect_err("reject");
+        assert!(err.to_string().contains("get_state"), "{err}");
+
+        // Success → thread stub created.
+        mock.push_data(
+            "get_state",
+            serde_json::json!({
+                "sessionId": "sess-live",
+                "sessionName": "Live Session",
+                "cwd": "",
+                "model": "future/k3"
+            }),
+        );
+        import_streaming_session("sess-live").await.expect("import");
+        let thread = crate::store::find_thread_by_agent_session("sess-live")
+            .expect("find")
+            .expect("some");
+        assert_eq!(thread.title, "Live Session");
+
+        // Already-known session → no-op Ok.
+        import_streaming_session("sess-live")
+            .await
+            .expect("idempotent");
+    }
+
+    #[tokio::test]
+    async fn import_missing_sessions_imports_and_logs_errors() {
+        let _home = super::super::test_support::TestHome::new("import-missing");
+        let mock = super::super::test_support::mock_agent();
+
+        // Empty list → silent Ok.
+        mock.push_data("list_sessions", serde_json::json!({}));
+        import_missing_sessions().await;
+
+        // Two sessions, each with one assistant reply.
+        mock.push_data(
+            "list_sessions",
+            serde_json::json!({"sessions": [
+                {"id": "sess-m1", "cwd": "", "model": "future/k3", "firstMessage": "one"},
+                {"id": "sess-m2", "cwd": "", "model": "future/k3", "firstMessage": "two"}
+            ]}),
+        );
+        for _ in 0..2 {
+            mock.push_data(
+                "get_session_entries",
+                serde_json::json!({"entries": [{"role": "assistant"}]}),
+            );
+        }
+        import_missing_sessions().await;
+        settle_spawns().await;
+        assert!(crate::store::find_thread_by_agent_session("sess-m1")
+            .expect("find")
+            .is_some());
+        assert!(crate::store::find_thread_by_agent_session("sess-m2")
+            .expect("find")
+            .is_some());
     }
 }
