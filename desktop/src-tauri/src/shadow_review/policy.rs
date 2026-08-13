@@ -290,12 +290,12 @@ mod tests {
         assert!(is_excluded_dir("target"));
         assert!(!is_excluded_dir("src"));
     }
-}
 
-#[cfg(all(test, unix))]
-fn make_symlink(target: &Path, link: &Path) {
-    std::os::unix::fs::symlink(target, link).unwrap();
-}
+    #[cfg(unix)]
+    fn make_symlink(target: &Path, link: &Path) {
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
 
-#[cfg(all(test, not(unix)))]
-fn make_symlink(_target: &Path, _link: &Path) {}
+    #[cfg(not(unix))]
+    fn make_symlink(_target: &Path, _link: &Path) {}
+}
