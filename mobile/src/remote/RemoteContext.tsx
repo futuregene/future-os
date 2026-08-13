@@ -20,6 +20,7 @@ import {
 import { RemoteClient } from "./client";
 import { MAX_PROMPT_MESSAGE_BYTES, utf8Bytes } from "./codec";
 import type { ConnectionState } from "./connectionState";
+import { classifyError } from "./connectionState";
 import {
   claimPairingCode,
   ensureFreshCredentials,
@@ -582,6 +583,15 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     };
   }, [loadHistory]);
 
+  // Reachability failures (desktop asleep, network down, relay blip) are
+  // normal business states: the reconnecting badge and the offline empty
+  // state already communicate them, so the red banner is reserved for
+  // unexpected errors only.
+  const recordError = useCallback((nextError: unknown) => {
+    if (classifyError(nextError) === "transport") return;
+    setError(nextError instanceof Error ? nextError.message : String(nextError));
+  }, []);
+
   const connect = useCallback(
     async (nextCredentials: RemoteCredentials) => {
       // Dispose any previous client first — it owns its own reconnect timer,
@@ -674,6 +684,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
           // and backoff timer — the context only mirrors the state.
           if (state === "ready") {
             setPhase("connected");
+            // A healthy link invalidates any lingering banner — connection
+            // complaints self-clear once the outage is over.
+            setError(null);
           } else if (state === "revoked") {
             setPhase("revoked");
           } else if (state === "unpaired") {
@@ -701,7 +714,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
           presenceStateRef.current = INITIAL_PRESENCE_STATE;
         },
         onError: nextError => {
-          setError(nextError.message);
+          recordError(nextError);
         },
       });
       clientRef.current = client;
@@ -711,7 +724,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       await client.open();
       await Promise.all([refreshModels(), refreshSessions(), refreshWorkspaces(), refreshSettings()]);
     },
-    [closeConversation, handleEvent, reconcileSession, refreshModels, refreshSessions, refreshWorkspaces, refreshSettings],
+    [closeConversation, handleEvent, recordError, reconcileSession, refreshModels, refreshSessions, refreshWorkspaces, refreshSettings],
   );
 
   useEffect(() => {
@@ -908,7 +921,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         setModelId(matchingModel ? modelReference(matchingModel) : currentModel);
         setThinkingLevelState(state.data.thinkingLevel ?? "off");
       } catch (nextError) {
-        setError(nextError instanceof Error ? nextError.message : String(nextError));
+        // A desktop still warming after a restart fails get_state; that is an
+        // expected reachability state (the timeline self-heals via reconcile),
+        // not banner-worthy.
+        recordError(nextError);
       } finally {
         setBusy(false);
       }
@@ -921,7 +937,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       // whose user_message payload deliberately omits attachments.
       void hydrateAttachmentsRef.current(sessionId);
     },
-    [hydrateAttachmentsRef, models],
+    [hydrateAttachmentsRef, models, recordError],
   );
 
   const newConversation = useCallback(
