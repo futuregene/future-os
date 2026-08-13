@@ -48,6 +48,24 @@ mod tests {
     use crate::auth_store::test_support::HomeGuard;
     use crate::remote::test_support::{ensure_mock_agent, mock_agent_lock};
 
+    #[test]
+    fn async_command_wrappers_reject_malformed_bodies() {
+        crate::commands::ipc_harness::assert_all_reject_bad_body(
+            tauri::generate_handler![
+                upsert_custom_provider,
+                update_builtin_provider_key,
+                set_builtin_provider_base_url,
+                delete_custom_provider
+            ],
+            &[
+                "upsert_custom_provider",
+                "update_builtin_provider_key",
+                "set_builtin_provider_base_url",
+                "delete_custom_provider",
+            ],
+        );
+    }
+
     #[tokio::test]
     async fn command_wrappers_delegate_to_the_agent() {
         let _lock = mock_agent_lock();

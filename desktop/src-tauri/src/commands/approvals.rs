@@ -116,6 +116,14 @@ mod tests {
     }
 
     #[test]
+    fn async_command_wrappers_reject_malformed_bodies() {
+        crate::commands::ipc_harness::assert_all_reject_bad_body(
+            tauri::generate_handler![decide_approval_request, save_approval_rule],
+            &["decide_approval_request", "save_approval_rule"],
+        );
+    }
+
+    #[test]
     fn list_approval_requests_returns_the_threads_pending_approval() {
         let (_home, thread) = seeded("cmd_approvals");
         assert!(list_approval_requests(thread.id.clone())

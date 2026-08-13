@@ -12,6 +12,8 @@ mod approvals;
 mod artifacts;
 mod debug;
 mod files;
+#[cfg(test)]
+pub(crate) mod ipc_harness;
 mod login;
 mod providers;
 mod references;

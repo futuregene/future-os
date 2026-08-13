@@ -74,6 +74,14 @@ mod tests {
     use crate::auth_store::test_support::HomeGuard;
 
     #[test]
+    fn async_command_wrapper_rejects_malformed_body() {
+        crate::commands::ipc_harness::assert_all_reject_bad_body(
+            tauri::generate_handler![remote_start],
+            &["remote_start"],
+        );
+    }
+
+    #[test]
     fn remote_status_and_stop_report_no_bridge_when_idle() {
         let _home = HomeGuard::new("remote_idle");
         let status = remote_status().expect("status");
