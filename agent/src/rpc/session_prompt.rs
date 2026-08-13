@@ -948,8 +948,6 @@ impl ServerSession {
                         &parent_session_id,
                         &messages,
                         info_entry,
-                        run_output_tokens,
-                        run_duration_ms,
                         tokens_in.load(Ordering::Relaxed),
                         tokens_out.load(Ordering::Relaxed),
                         run_started,
@@ -983,8 +981,6 @@ impl ServerSession {
                             &parent_session_id,
                             &messages,
                             info_entry,
-                            run_output_tokens,
-                            run_duration_ms,
                             tokens_in.load(Ordering::Relaxed),
                             tokens_out.load(Ordering::Relaxed),
                             run_started,
@@ -1290,15 +1286,18 @@ impl ServerSession {
                     .find(|e| e.role == "user")
                     .and_then(|e| e.content.as_ref())
                     .map(|c| {
-                        if let Some(arr) = c.as_array() {
-                            arr.iter()
-                                .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                                .next()
-                                .unwrap_or("")
-                                .to_string()
-                        } else {
-                            c.as_str().unwrap_or("").to_string()
-                        }
+                        // agent_message_to_entry always serializes content as
+                        // an array, so the legacy plain-string arm is
+                        // unreachable here — handle the array shape directly.
+                        c.as_array()
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                                    .next()
+                                    .unwrap_or("")
+                                    .to_string()
+                            })
+                            .unwrap_or_default()
                     })
                     .map(|s| crate::session::truncate_visible(s.trim(), 40))
                     .unwrap_or_default()
@@ -1364,8 +1363,6 @@ impl ServerSession {
         parent_session_id: &str,
         messages: &[crate::types::AgentMessage],
         info_entry: crate::session::SessionEntry,
-        run_output_tokens: i64,
-        run_duration_ms: i64,
         tokens_in: i64,
         tokens_out: i64,
         run_started: crate::session::SessionEntry,
@@ -1408,39 +1405,10 @@ impl ServerSession {
             .unwrap_or_default();
         for (new_entry, old_entry) in entries.iter_mut().zip(old_msg_entries.iter()) {
             new_entry.timestamp = old_entry.timestamp;
-            // Preserve run stats from the old entry's content.
-            if let Some(ref old_content) = old_entry.content {
-                if let Some(obj) = new_entry.content.as_mut().and_then(|c| c.as_object_mut()) {
-                    if let Some(v) = old_content.get("run_tokens") {
-                        obj.insert("run_tokens".to_string(), v.clone());
-                    }
-                    if let Some(v) = old_content.get("run_duration_ms") {
-                        obj.insert("run_duration_ms".to_string(), v.clone());
-                    }
-                }
-            }
-        }
-
-        // Attach this run's output tokens + wall-clock duration to the final
-        // assistant entry (the reply just made). It sits beyond the preserved
-        // prefix, so earlier replies are untouched.
-        if let Some(last_assistant) = entries
-            .iter_mut()
-            .rev()
-            .find(|e| e.entry_type == crate::session::ENTRY_TYPE_ASSISTANT)
-        {
-            if let Some(ref mut content) = last_assistant.content {
-                if let Some(obj) = content.as_object_mut() {
-                    obj.insert(
-                        "run_tokens".to_string(),
-                        serde_json::json!(run_output_tokens),
-                    );
-                    obj.insert(
-                        "run_duration_ms".to_string(),
-                        serde_json::json!(run_duration_ms),
-                    );
-                }
-            }
+            // NOTE: run output tokens + duration live in the run_terminal
+            // marker's content (see the markers section below), not in an
+            // assistant entry's block-array content — so there is nothing to
+            // preserve/attach here (the old object-content arms were dead).
         }
 
         // If the first user message is a compaction marker, replace it with a
