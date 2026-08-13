@@ -88,6 +88,14 @@ struct MockAgentState {
     /// consistently and the caller doesn't recreate the session).
     session_cwds: HashMap<String, String>,
     session_counter: u64,
+    /// Persistent per-command canned answers installed wholesale by the
+    /// `commands::agent_mock` facade (success payload / error message).
+    /// Checked after one-shot scripts, before `default_answer`.
+    persistent_data: HashMap<String, String>,
+    persistent_errors: HashMap<String, String>,
+    /// When true, every command except the connect-time health check
+    /// (`list_streaming_sessions`) fails with `Code::Unavailable`.
+    down: bool,
 }
 
 /// Handle to the process-global mock agent.
@@ -139,6 +147,22 @@ impl MockAgent {
         self.state.lock().unwrap().requests.clone()
     }
 
+    /// Install the persistent script used by the `commands::agent_mock`
+    /// facade: canned per-command success payloads / error messages plus a
+    /// `down` flag that makes every non-health-check command fail with
+    /// `Code::Unavailable`. Replaces the previous persistent script.
+    pub(crate) fn set_persistent_script(
+        &self,
+        data: HashMap<String, String>,
+        errors: HashMap<String, String>,
+        down: bool,
+    ) {
+        let mut state = self.state.lock().unwrap();
+        state.persistent_data = data;
+        state.persistent_errors = errors;
+        state.down = down;
+    }
+
     /// True when the mock served at least one `command` for `session_id`.
     pub(crate) fn served(&self, command: &str, session_id: &str) -> bool {
         self.requests()
@@ -171,7 +195,17 @@ impl AgentService {
                 });
             match scripted {
                 Some(response) => (response.success, response.data, response.error),
-                None => default_answer(&cmd, &mut state),
+                // The persistent facade (commands tests) — one-shot scripts
+                // take precedence over it.
+                None => {
+                    if let Some(error) = state.persistent_errors.get(cmd.r#type.as_str()) {
+                        (false, String::new(), error.clone())
+                    } else if let Some(data) = state.persistent_data.get(cmd.r#type.as_str()) {
+                        (true, data.clone(), String::new())
+                    } else {
+                        default_answer(&cmd, &mut state)
+                    }
+                }
             }
         };
         crate::agent_proto::RpcResponse {
@@ -265,7 +299,16 @@ impl crate::agent_proto::future_agent_server::FutureAgent for AgentService {
         &self,
         request: tonic::Request<crate::agent_proto::RpcCommand>,
     ) -> Result<tonic::Response<crate::agent_proto::RpcResponse>, tonic::Status> {
-        Ok(tonic::Response::new(self.answer(request.into_inner())))
+        let cmd = request.into_inner();
+        // Down mode: everything but the connect-time health check fails like
+        // a dead agent — except it still lets clients latch their channel.
+        if self.state.lock().unwrap().down && cmd.r#type != "list_streaming_sessions" {
+            return Err(tonic::Status::new(
+                tonic::Code::Unavailable,
+                "mock agent is down",
+            ));
+        }
+        Ok(tonic::Response::new(self.answer(cmd)))
     }
 
     type StreamEventsStream =
@@ -304,50 +347,60 @@ impl futures::Stream for Incoming {
 /// Start (once per process) the mock agent and point the GUI at it.
 pub(crate) fn ensure_mock_agent() -> MockAgent {
     static MOCK: OnceLock<MockAgent> = OnceLock::new();
-    MOCK.get_or_init(|| {
-        let state = Arc::new(Mutex::new(MockAgentState::default()));
-        let (port_tx, port_rx) = std::sync::mpsc::channel();
-        let service_state = state.clone();
-        std::thread::Builder::new()
-            .name("mock-agent".to_string())
-            .spawn(move || {
-                let runtime = tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(1)
-                    .enable_all()
-                    .build()
-                    .expect("mock agent runtime");
-                runtime.spawn(async move {
-                    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-                        .await
-                        .expect("bind mock agent");
-                    port_tx
-                        .send(listener.local_addr().expect("mock agent addr").port())
-                        .expect("report mock agent port");
-                    let server = tonic::transport::Server::builder()
-                        .add_service(
-                            crate::agent_proto::future_agent_server::FutureAgentServer::new(
-                                AgentService {
-                                    state: service_state,
-                                },
-                            ),
-                        )
-                        .serve_with_incoming(Incoming { listener });
-                    // Serves until the test process exits; the outcome never
-                    // materializes. `map` discards it without a block whose
-                    // closing brace would count as an unreached line. Spawn on
-                    // the ambient runtime so the outer `runtime` stays borrowable
-                    // below (parking it keeps the server task alive).
-                    tokio::spawn(futures::FutureExt::map(server, |_| ()));
-                });
-                // Park forever: dropping the runtime would kill the server task.
-                runtime.block_on(std::future::pending::<()>());
-            })
-            .expect("spawn mock agent thread");
-        let port = port_rx.recv().expect("mock agent port");
-        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", format!("127.0.0.1:{port}"));
-        MockAgent { state }
-    })
-    .clone()
+    static MOCK_ADDR: OnceLock<String> = OnceLock::new();
+    let agent = MOCK
+        .get_or_init(|| {
+            let state = Arc::new(Mutex::new(MockAgentState::default()));
+            let (port_tx, port_rx) = std::sync::mpsc::channel();
+            let service_state = state.clone();
+            std::thread::Builder::new()
+                .name("mock-agent".to_string())
+                .spawn(move || {
+                    let runtime = tokio::runtime::Builder::new_multi_thread()
+                        .worker_threads(1)
+                        .enable_all()
+                        .build()
+                        .expect("mock agent runtime");
+                    runtime.spawn(async move {
+                        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                            .await
+                            .expect("bind mock agent");
+                        port_tx
+                            .send(listener.local_addr().expect("mock agent addr").port())
+                            .expect("report mock agent port");
+                        let server = tonic::transport::Server::builder()
+                            .add_service(
+                                crate::agent_proto::future_agent_server::FutureAgentServer::new(
+                                    AgentService {
+                                        state: service_state,
+                                    },
+                                ),
+                            )
+                            .serve_with_incoming(Incoming { listener });
+                        // Serves until the test process exits; the outcome never
+                        // materializes. `map` discards it without a block whose
+                        // closing brace would count as an unreached line. Spawn on
+                        // the ambient runtime so the outer `runtime` stays borrowable
+                        // below (parking it keeps the server task alive).
+                        tokio::spawn(futures::FutureExt::map(server, |_| ()));
+                    });
+                    // Park forever: dropping the runtime would kill the server task.
+                    runtime.block_on(std::future::pending::<()>());
+                })
+                .expect("spawn mock agent thread");
+            let port = port_rx.recv().expect("mock agent port");
+            let addr = format!("127.0.0.1:{port}");
+            let _ = MOCK_ADDR.set(addr);
+            MockAgent { state }
+        })
+        .clone();
+    // Re-assert the env var on every call so a test that briefly redirected
+    // it (e.g. `commands::agent_mock::with_broken_endpoint`) is restored to
+    // the live mock.
+    if let Some(addr) = MOCK_ADDR.get() {
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", addr);
+    }
+    agent
 }
 
 // ── Fake NATS (core line protocol) ──────────────────────────────────────────

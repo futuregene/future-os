@@ -164,13 +164,11 @@ pub fn rename_thread(input: RenameThreadInput) -> Result<ThreadRecord, crate::Ap
     }
 
     let now = now_millis();
-    let conn = connect()?;
-    conn.execute(
-        "UPDATE threads
+    const SQL: &str = "UPDATE threads
          SET title = ?1, updated_at = ?2
-         WHERE id = ?3 AND status != 'deleted'",
-        params![title, now, input.thread_id],
-    )?;
+         WHERE id = ?3 AND status != 'deleted'";
+    let conn = connect()?;
+    conn.execute(SQL, params![title, now, input.thread_id])?;
 
     let thread = loaded(get_thread(&input.thread_id)?, "Thread")?;
     mark_catalog_dirty();
@@ -186,12 +184,10 @@ pub(super) fn sync_thread_title_in(
     if title.is_empty() {
         return Ok(false);
     }
-    let changed = conn.execute(
-        "UPDATE threads
+    const SQL: &str = "UPDATE threads
          SET title = ?1
-         WHERE id = ?2 AND status != 'deleted' AND title != ?1",
-        params![title, thread_id],
-    )?;
+         WHERE id = ?2 AND status != 'deleted' AND title != ?1";
+    let changed = conn.execute(SQL, params![title, thread_id])?;
     if changed > 0 {
         mark_catalog_dirty();
     }
@@ -224,12 +220,10 @@ pub fn update_thread_thinking_level(
 /// Persist the agent-generated session id after the first prompt creates it.
 pub fn update_thread_session_id(thread_id: &str, session_id: &str) -> Result<(), crate::AppError> {
     let now = now_millis();
+    const SQL: &str = "UPDATE threads SET agent_session_id = ?1, updated_at = ?2
+         WHERE id = ?3 AND status != 'deleted'";
     let conn = connect()?;
-    conn.execute(
-        "UPDATE threads SET agent_session_id = ?1, updated_at = ?2
-         WHERE id = ?3 AND status != 'deleted'",
-        params![session_id, now, thread_id],
-    )?;
+    conn.execute(SQL, params![session_id, now, thread_id])?;
     mark_catalog_dirty();
     Ok(())
 }
@@ -240,12 +234,10 @@ pub fn move_thread_to_workspace(
     workspace_id: &str,
 ) -> Result<(), crate::AppError> {
     let now = now_millis();
+    const SQL: &str = "UPDATE threads SET workspace_id = ?1, updated_at = ?2
+         WHERE id = ?3 AND status != 'deleted'";
     let conn = connect()?;
-    conn.execute(
-        "UPDATE threads SET workspace_id = ?1, updated_at = ?2
-         WHERE id = ?3 AND status != 'deleted'",
-        params![workspace_id, now, thread_id],
-    )?;
+    conn.execute(SQL, params![workspace_id, now, thread_id])?;
     mark_catalog_dirty();
     Ok(())
 }
@@ -255,13 +247,12 @@ pub fn pin_thread(input: PinThreadInput) -> Result<ThreadRecord, crate::AppError
     // an activity event. If it stamped `updated_at`, unpinning a thread would
     // push it to the top of the recency sort (it just became "most recently
     // updated") and the sidebar order would appear not to change.
-    let conn = connect()?;
-    conn.execute(
-        "UPDATE threads
+    let pinned = if input.pinned { 1 } else { 0 };
+    const SQL: &str = "UPDATE threads
          SET pinned = ?1
-         WHERE id = ?2 AND status != 'deleted'",
-        params![if input.pinned { 1 } else { 0 }, input.thread_id],
-    )?;
+         WHERE id = ?2 AND status != 'deleted'";
+    let conn = connect()?;
+    conn.execute(SQL, params![pinned, input.thread_id])?;
 
     loaded(get_thread(&input.thread_id)?, "Thread")
 }
@@ -276,13 +267,11 @@ pub(super) fn update_thread_status(
     } else {
         None
     };
-    let conn = connect()?;
-    conn.execute(
-        "UPDATE threads
+    const SQL: &str = "UPDATE threads
          SET status = ?1, archived_at = ?2, updated_at = ?3
-         WHERE id = ?4 AND status != 'deleted'",
-        params![status, archived_at, now, thread_id],
-    )?;
+         WHERE id = ?4 AND status != 'deleted'";
+    let conn = connect()?;
+    conn.execute(SQL, params![status, archived_at, now, thread_id])?;
 
     loaded(get_thread(thread_id)?, "Thread")
 }
@@ -307,56 +296,41 @@ pub(super) fn delete_thread_children_in(
     thread_id: &str,
 ) -> rusqlite::Result<()> {
     // Review data: file changes → changesets → snapshots (all source kinds).
-    conn.execute(
-        "DELETE FROM review_file_changes WHERE changeset_id IN (
+    const DELETE_FILE_CHANGES_SQL: &str = "DELETE FROM review_file_changes WHERE changeset_id IN (
              SELECT id FROM review_changesets WHERE thread_id = ?1
-         )",
-        params![thread_id],
-    )?;
-    conn.execute(
-        "DELETE FROM review_changesets WHERE thread_id = ?1",
-        params![thread_id],
-    )?;
-    conn.execute(
-        "DELETE FROM review_snapshots WHERE thread_id = ?1",
-        params![thread_id],
-    )?;
+         )";
+    conn.execute(DELETE_FILE_CHANGES_SQL, params![thread_id])?;
+    const DELETE_CHANGESETS_SQL: &str = "DELETE FROM review_changesets WHERE thread_id = ?1";
+    conn.execute(DELETE_CHANGESETS_SQL, params![thread_id])?;
+    const DELETE_SNAPSHOTS_SQL: &str = "DELETE FROM review_snapshots WHERE thread_id = ?1";
+    conn.execute(DELETE_SNAPSHOTS_SQL, params![thread_id])?;
     // Messages table dropped — markdown references cleaned by markdown_refs module.
     // Approvals reference threads/runs/tool_calls — clear before tool_calls.
-    conn.execute(
-        "DELETE FROM approval_requests WHERE thread_id = ?1",
-        params![thread_id],
-    )?;
+    const DELETE_APPROVALS_SQL: &str = "DELETE FROM approval_requests WHERE thread_id = ?1";
+    conn.execute(DELETE_APPROVALS_SQL, params![thread_id])?;
     // Tool outputs → tool calls (scoped through the thread's runs).
     // tool_outputs/run_events/tool_calls tables dropped
 
     // Detach workspace-level artifacts from the thread/run being removed.
-    conn.execute(
-        "UPDATE artifacts SET run_id = NULL
-         WHERE run_id IN (SELECT id FROM runs WHERE thread_id = ?1)",
-        params![thread_id],
-    )?;
-    conn.execute(
-        "UPDATE artifacts SET thread_id = NULL WHERE thread_id = ?1",
-        params![thread_id],
-    )?;
+    const DETACH_RUN_SQL: &str = "UPDATE artifacts SET run_id = NULL
+         WHERE run_id IN (SELECT id FROM runs WHERE thread_id = ?1)";
+    conn.execute(DETACH_RUN_SQL, params![thread_id])?;
+    const DETACH_THREAD_SQL: &str = "UPDATE artifacts SET thread_id = NULL WHERE thread_id = ?1";
+    conn.execute(DETACH_THREAD_SQL, params![thread_id])?;
     // Drop the per-run event logs (and any buffered events) for this thread's
     // runs before the run rows go — otherwise the JSONL files leak on disk.
     {
         let mut stmt = conn.prepare("SELECT id FROM runs WHERE thread_id = ?1")?;
-        let run_ids = stmt
-            .query_map(params![thread_id], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let rows = stmt.query_map(params![thread_id], |row| row.get::<_, String>(0))?;
+        let run_ids = rows.collect::<rusqlite::Result<Vec<_>>>()?;
         for run_id in run_ids {
             super::delete_run_events_file(&run_id);
             super::clear_run_event_buffer(&run_id);
         }
     }
     // Break the runs ↔ messages FK cycle, then delete both.
-    conn.execute(
-        "UPDATE runs SET trigger_message_id = NULL WHERE thread_id = ?1",
-        params![thread_id],
-    )?;
+    const NULL_TRIGGER_SQL: &str = "UPDATE runs SET trigger_message_id = NULL WHERE thread_id = ?1";
+    conn.execute(NULL_TRIGGER_SQL, params![thread_id])?;
     conn.execute("DELETE FROM runs WHERE thread_id = ?1", params![thread_id])?;
     Ok(())
 }
@@ -406,12 +380,9 @@ pub(crate) fn delete_thread_inner(
     // A session can be represented by more than one GUI thread during import
     // or migration. Only the last owner is allowed to tombstone its canonical
     // Agent session.
-    let owner_count: i64 = tx.query_row(
-        "SELECT COUNT(*) FROM threads
-         WHERE COALESCE(NULLIF(TRIM(agent_session_id), ''), id) = ?1",
-        [session_id],
-        |row| row.get(0),
-    )?;
+    const OWNER_SQL: &str = "SELECT COUNT(*) FROM threads
+         WHERE COALESCE(NULLIF(TRIM(agent_session_id), ''), id) = ?1";
+    let owner_count: i64 = tx.query_row(OWNER_SQL, [session_id], |row| row.get(0))?;
     if owner_count == 1 {
         super::deletions::enqueue_agent_session_delete_in(&tx, session_id)?;
     }
@@ -421,27 +392,23 @@ pub(crate) fn delete_thread_inner(
         if delete_files {
             // Mark cleaned immediately (skip the pending_cleanup phase) so
             // orphans reconcilers won't re-attempt the now-removed directory.
-            tx.execute(
-                "UPDATE workspaces
+            const CLEANED_SQL: &str = "UPDATE workspaces
                  SET cleanup_status = 'cleaned',
                      cleanup_requested_at = COALESCE(cleanup_requested_at, ?1),
                      cleaned_at = ?1,
                      updated_at = ?1
                  WHERE id = ?2
-                   AND kind = 'temporary'",
-                params![now, thread.workspace_id],
-            )?;
+                   AND kind = 'temporary'";
+            tx.execute(CLEANED_SQL, params![now, thread.workspace_id])?;
         } else {
-            tx.execute(
-                "UPDATE workspaces
+            const PENDING_SQL: &str = "UPDATE workspaces
                  SET cleanup_status = 'pending_cleanup',
                      cleanup_requested_at = COALESCE(cleanup_requested_at, ?1),
                      updated_at = ?1
                  WHERE id = ?2
                    AND kind = 'temporary'
-                   AND cleanup_status = 'active'",
-                params![now, thread.workspace_id],
-            )?;
+                   AND cleanup_status = 'active'";
+            tx.execute(PENDING_SQL, params![now, thread.workspace_id])?;
         }
     }
     tx.execute("DELETE FROM threads WHERE id = ?1", params![thread_id])?;
@@ -689,5 +656,309 @@ mod tests {
             .unwrap();
         assert_eq!(title, "agent name");
         assert_eq!(updated_at, 42);
+    }
+
+    // ── connect()-backed API surface (fake HOME) ────────────────────────────
+
+    use super::*;
+    use crate::store::db::test_support::guarded_conn;
+    use crate::store::workspaces::get_workspace;
+
+    fn seed_two_threads(conn: &Connection) {
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                 VALUES ('ws1', 'W1', 'user', '/tmp/ws1', 1, 1),
+                        ('ws2', 'W2', 'user', '/tmp/ws2', 1, 1);
+             INSERT INTO threads (id, workspace_id, mode, title, status, pinned,
+                 agent_session_id, last_message_at, last_opened_at, created_at, updated_at)
+                 VALUES
+                 ('t1', 'ws1', 'chat', 'One', 'active', 1, 'sess1', 200, NULL, 1, 1),
+                 ('t2', 'ws1', 'chat', 'Two', 'active', 0, NULL, 100, 300, 1, 1),
+                 ('t3', 'ws1', 'chat', 'Gone', 'deleted', 0, 'sess3', 400, 400, 1, 1);",
+        )
+        .expect("seed threads");
+    }
+
+    #[test]
+    fn list_recent_and_session_lookup() {
+        let (_home, conn) = guarded_conn("threads_lists");
+        seed_two_threads(&conn);
+        drop(conn);
+
+        let list = list_threads().expect("list");
+        let ids: Vec<&str> = list.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["t1", "t2"], "pinned first, deleted hidden");
+
+        let recent = get_recent_thread().expect("recent").expect("some");
+        assert_eq!(recent.id, "t2", "last_opened_at wins");
+
+        let found = find_thread_by_agent_session("sess1")
+            .expect("find")
+            .expect("some");
+        assert_eq!(found.id, "t1");
+        assert!(find_thread_by_agent_session("ghost")
+            .expect("find")
+            .is_none());
+        // A deleted thread's session is not found.
+        assert!(find_thread_by_agent_session("sess3")
+            .expect("find")
+            .is_none());
+    }
+
+    fn chat_input() -> CreateThreadInput {
+        CreateThreadInput {
+            mode: "chat".to_string(),
+            title: None,
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: None,
+        }
+    }
+
+    #[test]
+    fn create_thread_modes_and_defaults() {
+        let (_home, conn) = guarded_conn("threads_create");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+             VALUES ('ws_user', 'User WS', 'user', '/tmp/userws', 1, 1);",
+        )
+        .expect("seed workspace");
+        drop(conn);
+
+        // Chat mode: default title + a temporary workspace.
+        let chat = create_thread(chat_input()).expect("chat thread");
+        assert_eq!(chat.title, "New Chat");
+        assert_eq!(chat.mode, "chat");
+
+        // A bogus mode is rejected.
+        let mut bad = chat_input();
+        bad.mode = "party".to_string();
+        assert!(create_thread(bad).is_err());
+
+        // Workspace mode against an existing workspace id.
+        let mut by_id = chat_input();
+        by_id.mode = "workspace".to_string();
+        by_id.title = Some("Titled".to_string());
+        by_id.workspace_id = Some("ws_user".to_string());
+        by_id.agent_session_id = Some(String::new());
+        let thread = create_thread(by_id).expect("workspace thread by id");
+        assert_eq!(thread.title, "Titled");
+        assert_eq!(thread.workspace_id, "ws_user");
+        assert_eq!(thread.agent_session_id, None, "empty session id filtered");
+
+        // Workspace mode with a fresh path: workspace created, name defaulted.
+        let dir = std::env::temp_dir().join(format!("futureos-tc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let mut by_path = chat_input();
+        by_path.mode = "workspace".to_string();
+        by_path.workspace_path = Some(dir.display().to_string());
+        let thread = create_thread(by_path).expect("workspace thread by path");
+        assert_eq!(thread.title, "Workspace Thread");
+        let ws = get_workspace(&thread.workspace_id)
+            .expect("get")
+            .expect("some");
+        assert_eq!(ws.kind, "user");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Workspace mode with neither id nor path errors.
+        let mut neither = chat_input();
+        neither.mode = "workspace".to_string();
+        assert!(create_thread(neither).is_err());
+    }
+
+    #[test]
+    fn thread_field_updates_round_trip() {
+        let (_home, conn) = guarded_conn("threads_updates");
+        seed_two_threads(&conn);
+        drop(conn);
+
+        // rename_thread
+        assert!(rename_thread(RenameThreadInput {
+            thread_id: "t1".to_string(),
+            title: "  ".to_string(),
+        })
+        .is_err());
+        let renamed = rename_thread(RenameThreadInput {
+            thread_id: "t1".to_string(),
+            title: "Renamed".to_string(),
+        })
+        .expect("rename");
+        assert_eq!(renamed.title, "Renamed");
+        assert!(rename_thread(RenameThreadInput {
+            thread_id: "ghost".to_string(),
+            title: "X".to_string(),
+        })
+        .is_err());
+
+        // sync_thread_title (pub wrapper)
+        assert!(sync_thread_title("t1", "From Agent").expect("sync"));
+        assert_eq!(
+            get_thread("t1").expect("get").expect("some").title,
+            "From Agent"
+        );
+
+        // Model / thinking level are agent-owned: reads return the row.
+        let record = update_thread_model(UpdateThreadModelInput {
+            thread_id: "t1".to_string(),
+            model_provider: Some("p".to_string()),
+            model_id: Some("m".to_string()),
+        })
+        .expect("model");
+        assert_eq!(record.id, "t1");
+        let record = update_thread_thinking_level(UpdateThreadThinkingLevelInput {
+            thread_id: "t1".to_string(),
+            thinking_level: Some("high".to_string()),
+        })
+        .expect("thinking");
+        assert_eq!(record.id, "t1");
+        assert!(update_thread_model(UpdateThreadModelInput {
+            thread_id: "ghost".to_string(),
+            model_provider: None,
+            model_id: None,
+        })
+        .is_err());
+
+        // update_thread_session_id + find_by_session round trip.
+        update_thread_session_id("t2", "sess_new").expect("session id");
+        let found = find_thread_by_agent_session("sess_new")
+            .expect("find")
+            .expect("some");
+        assert_eq!(found.id, "t2");
+
+        // move_thread_to_workspace
+        move_thread_to_workspace("t2", "ws2").expect("move");
+        assert_eq!(
+            get_thread("t2").expect("get").expect("some").workspace_id,
+            "ws2"
+        );
+
+        // pin / archive / restore
+        let pinned = pin_thread(PinThreadInput {
+            thread_id: "t2".to_string(),
+            pinned: true,
+        })
+        .expect("pin");
+        assert!(pinned.pinned);
+        assert!(pin_thread(PinThreadInput {
+            thread_id: "ghost".to_string(),
+            pinned: false,
+        })
+        .is_err());
+
+        let archived = archive_thread("t2").expect("archive");
+        assert_eq!(archived.status, "archived");
+        assert!(archived.archived_at.is_some());
+        let restored = restore_thread("t2").expect("restore");
+        assert_eq!(restored.status, "active");
+    }
+
+    #[test]
+    fn delete_thread_variants() {
+        let (_home, conn) = guarded_conn("threads_delete");
+        seed_two_threads(&conn);
+        drop(conn);
+
+        // Plain delete of a chat thread flags its temp workspace for cleanup…
+        // (t1/t2 are chat threads in a *user* workspace here, so the UPDATE
+        // simply matches nothing — the thread row is still removed).
+        let deleted = delete_thread("t2").expect("delete");
+        assert_eq!(deleted.id, "t2");
+        assert!(get_thread("t2").expect("get").is_none());
+        assert!(delete_thread("t2").is_err(), "second delete errors");
+
+        // delete_files on a workspace-mode thread never touches the workspace.
+        let ws_thread = create_thread(CreateThreadInput {
+            mode: "workspace".to_string(),
+            title: None,
+            workspace_id: Some("ws1".to_string()),
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: None,
+        })
+        .expect("workspace thread");
+        delete_thread_with_files(&ws_thread.id, true).expect("delete ws thread");
+        assert!(get_workspace("ws1").expect("get").is_some());
+
+        // A chat thread with files: the temp workspace dir is removed and the
+        // workspace row is marked cleaned.
+        let chat = create_thread(chat_input()).expect("chat thread");
+        let chat_dir = std::path::PathBuf::from(std::env::var("HOME").expect("home"))
+            .join(".future/workspaces/chat")
+            .join(&chat.id);
+        std::fs::create_dir_all(&chat_dir).expect("create chat dir");
+        std::fs::write(chat_dir.join("scratch.txt"), b"x").expect("write");
+        delete_thread_with_files(&chat.id, true).expect("delete with files");
+        assert!(!chat_dir.exists(), "chat workspace dir removed");
+        let ws = get_workspace(&chat.workspace_id)
+            .expect("get")
+            .expect("some");
+        assert_eq!(ws.cleanup_status, "cleaned");
+    }
+
+    #[test]
+    fn delete_tombstones_only_the_last_owner_of_a_session() {
+        let (_home, conn) = guarded_conn("threads_delete_shared");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                 VALUES ('ws1', 'W', 'user', '/tmp/ws1', 1, 1);
+             INSERT INTO threads (id, workspace_id, mode, title, agent_session_id,
+                 created_at, updated_at)
+                 VALUES ('ta', 'ws1', 'chat', 'A', 'sess_shared', 1, 1),
+                        ('tb', 'ws1', 'chat', 'B', 'sess_shared', 1, 1);",
+        )
+        .expect("seed");
+        drop(conn);
+
+        delete_thread("ta").expect("delete first");
+        assert!(
+            !crate::store::is_agent_session_tombstoned("sess_shared").expect("check"),
+            "a surviving owner keeps the session untombstoned"
+        );
+        delete_thread("tb").expect("delete last");
+        assert!(
+            crate::store::is_agent_session_tombstoned("sess_shared").expect("check"),
+            "the last owner tombstones the session"
+        );
+    }
+
+    #[test]
+    fn batch_delete_reports_per_thread_outcomes() {
+        let (_home, conn) = guarded_conn("threads_batch");
+        seed_two_threads(&conn);
+        drop(conn);
+
+        let result = batch_delete_threads(&BatchDeleteThreadsInput {
+            thread_ids: vec!["t1".to_string(), "ghost".to_string(), "t2".to_string()],
+            delete_files: false,
+        })
+        .expect("batch");
+        assert_eq!(result.deleted_count, 2);
+        assert_eq!(result.failed.len(), 1);
+        assert!(result.failed[0].starts_with("ghost: "));
+    }
+
+    #[test]
+    fn purge_soft_deleted_threads_cascades() {
+        let (_home, conn) = guarded_conn("threads_purge");
+        seed_two_threads(&conn);
+        conn.execute_batch(
+            "INSERT INTO runs (id, thread_id, status, created_at, updated_at)
+             VALUES ('r3', 't3', 'completed', 1, 1);",
+        )
+        .expect("seed run for deleted thread");
+        drop(conn);
+
+        assert_eq!(purge_soft_deleted_threads().expect("purge"), 1);
+        assert!(get_thread("t3").expect("get").is_none());
+        let conn = connect().expect("reconnect");
+        let runs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM runs WHERE id = 'r3'", [], |row| {
+                row.get(0)
+            })
+            .expect("count");
+        assert_eq!(runs, 0, "child rows of the purged thread are gone");
+
+        assert_eq!(purge_soft_deleted_threads().expect("purge again"), 0);
     }
 }

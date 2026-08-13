@@ -53,3 +53,50 @@ pub async fn uninstall_skill(id: String) -> Result<bool, crate::AppError> {
 pub async fn bootstrap_builtin_skills(app: tauri::AppHandle) {
     std::thread::spawn(move || skills_bootstrap::run_builtin_skills(&app));
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::await_holding_lock)]
+    use super::*;
+    use crate::commands::agent_mock::{mock_agent_lock, script_mock_agent, MockScript};
+    use std::collections::HashMap;
+
+    #[tokio::test]
+    async fn list_installed_skills_parses_skill_sourced_commands() {
+        let _lock = mock_agent_lock();
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "get_commands".to_string(),
+                "{\"commands\":[{\"name\":\"foo\",\"description\":\"d\",\"source\":\"skill\"},{\"name\":\"bar\",\"description\":\"d\",\"source\":\"builtin\"}]}".to_string(),
+            )]),
+            ..Default::default()
+        });
+        let skills = list_installed_skills().await.expect("skills");
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].id, "foo");
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn refresh_skills_is_best_effort() {
+        let _lock = mock_agent_lock();
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([("refresh_skills".to_string(), "{}".to_string())]),
+            ..Default::default()
+        });
+        refresh_skills().await.expect("refresh");
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn uninstall_skill_rejects_invalid_ids_and_removes_installed() {
+        // Invalid id is rejected before touching the filesystem.
+        assert!(uninstall_skill("../evil".into()).await.is_err());
+        // A valid id with nothing installed reports "nothing removed".
+        assert!(!uninstall_skill("ghost_skill".into())
+            .await
+            .expect("uninstall"));
+    }
+}

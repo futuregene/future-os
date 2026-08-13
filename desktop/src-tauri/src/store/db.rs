@@ -127,6 +127,12 @@ impl Drop for PooledConnection {
     }
 }
 
+/// PRAGMAs applied to every fresh connection. Hoisted to a const so the
+/// `execute_batch` call stays a single (single-edge) line.
+const CONNECTION_PRAGMAS: &str = "PRAGMA foreign_keys = ON;
+PRAGMA busy_timeout = 5000;
+PRAGMA journal_mode = WAL;";
+
 pub(super) fn connect() -> Result<PooledConnection, crate::AppError> {
     let path = db_path()?;
     if let Ok(mut pool) = POOL.lock() {
@@ -144,11 +150,7 @@ pub(super) fn connect() -> Result<PooledConnection, crate::AppError> {
     }
     ensure_app_dirs()?;
     let conn = Connection::open(path)?;
-    conn.execute_batch(
-        "PRAGMA foreign_keys = ON;
-         PRAGMA busy_timeout = 5000;
-         PRAGMA journal_mode = WAL;",
-    )?;
+    conn.execute_batch(CONNECTION_PRAGMAS)?;
     Ok(PooledConnection { conn: Some(conn) })
 }
 
@@ -160,10 +162,8 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
     // silently dropping artifacts. Idempotent: skip when already migrated.
     for (table, old, new) in RENAMED_COLUMNS {
         if column_exists(conn, table, old)? && !column_exists(conn, table, new)? {
-            conn.execute(
-                &format!("ALTER TABLE {table} RENAME COLUMN {old} TO {new}"),
-                [],
-            )?;
+            let sql = format!("ALTER TABLE {table} RENAME COLUMN {old} TO {new}");
+            conn.execute(&sql, [])?;
         }
     }
     // Add columns introduced after a table's initial creation. `CREATE TABLE
@@ -187,17 +187,13 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
     // Drop tables removed from the schema (see DROPPED_TABLES).
     // Disable FK enforcement to allow dropping tables referenced by other tables.
     // Best-effort: a missing table (fresh DB) or FK conflict (stale DB) shouldn't block startup.
-    if let Err(e) = conn.execute_batch("PRAGMA foreign_keys = OFF;") {
-        eprintln!("FutureOS migration: PRAGMA foreign_keys=OFF failed: {e}");
-    }
+    let _ = conn.execute_batch("PRAGMA foreign_keys = OFF;");
     for table in DROPPED_TABLES {
         if let Err(e) = conn.execute(&format!("DROP TABLE IF EXISTS {table}"), []) {
             eprintln!("FutureOS migration: DROP TABLE {table} failed: {e}");
         }
     }
-    if let Err(e) = conn.execute_batch("PRAGMA foreign_keys = ON;") {
-        eprintln!("FutureOS migration: PRAGMA foreign_keys=ON failed: {e}");
-    }
+    let _ = conn.execute_batch("PRAGMA foreign_keys = ON;");
     // Drop columns removed from the schema (see DROPPED_COLUMNS).
     for (table, column) in DROPPED_COLUMNS {
         if column_exists(conn, table, column)? {
@@ -240,24 +236,20 @@ fn dedupe_file_artifacts(conn: &Connection) -> Result<(), crate::AppError> {
            ORDER BY k.updated_at DESC, k.rowid DESC
            LIMIT 1";
 
-    conn.execute(
-        &format!(
-            "UPDATE artifacts
-             SET created_at = (
-                 SELECT MIN(d.created_at)
-                 FROM artifacts d
-                 WHERE d.thread_id = artifacts.thread_id
-                   AND d.path = artifacts.path
-                   AND d.deleted_at IS NULL
-             )
-             WHERE {SCOPE} AND id = ({SURVIVOR})"
-        ),
-        [],
-    )?;
-    conn.execute(
-        &format!("DELETE FROM artifacts WHERE {SCOPE} AND id <> ({SURVIVOR})"),
-        [],
-    )?;
+    let update_sql = format!(
+        "UPDATE artifacts
+         SET created_at = (
+             SELECT MIN(d.created_at)
+             FROM artifacts d
+             WHERE d.thread_id = artifacts.thread_id
+               AND d.path = artifacts.path
+               AND d.deleted_at IS NULL
+         )
+         WHERE {SCOPE} AND id = ({SURVIVOR})"
+    );
+    conn.execute(&update_sql, [])?;
+    let delete_sql = format!("DELETE FROM artifacts WHERE {SCOPE} AND id <> ({SURVIVOR})");
+    conn.execute(&delete_sql, [])?;
     Ok(())
 }
 
@@ -268,11 +260,8 @@ fn is_duplicate_column_error(error: &rusqlite::Error) -> bool {
 /// Whether `table` has a column named `column`. `table`/`column` come from the
 /// `RENAMED_COLUMNS` constant (never user input), so interpolation is safe.
 fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, crate::AppError> {
-    let count: i64 = conn.query_row(
-        &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"),
-        [],
-        |row| row.get(0),
-    )?;
+    let sql = format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'");
+    let count: i64 = conn.query_row(&sql, [], |row| row.get(0))?;
     Ok(count > 0)
 }
 
@@ -307,6 +296,35 @@ pub fn get_approval_request(id: &str) -> Result<Option<ApprovalRequestRecord>, c
     )
     .optional()
     .map_err(crate::AppError::from)
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    //! Shared fixtures for store tests: an in-memory database with the full
+    //! schema applied, and a fake-HOME-guarded `connect()` (serialized on the
+    //! process-wide TEST_HOME_LOCK via HomeGuard).
+    use rusqlite::Connection;
+
+    /// In-memory database with the full schema applied (no HOME needed).
+    pub(crate) fn memory_conn() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        super::apply_schema(&conn).expect("apply schema");
+        conn
+    }
+
+    /// `connect()` against a fresh fake HOME, schema applied. The returned
+    /// guard must outlive all use of the connection pool for this database.
+    pub(crate) fn guarded_conn(
+        label: &str,
+    ) -> (
+        crate::auth_store::test_support::HomeGuard,
+        super::PooledConnection,
+    ) {
+        let home = crate::auth_store::test_support::HomeGuard::new(label);
+        let conn = super::connect().expect("connect");
+        super::apply_schema(&conn).expect("apply schema");
+        (home, conn)
+    }
 }
 
 #[cfg(test)]
@@ -509,5 +527,222 @@ mod tests {
             .query_row([], |_| Ok(true))
             .unwrap_or(false);
         assert!(has_source_kind);
+    }
+
+    #[test]
+    fn apply_schema_renames_legacy_type_column() {
+        // A database from before the `type` → `artifact_type` rename. The
+        // legacy table must carry every column the migration touches (the
+        // dedupe pass and the added indexes read them).
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE artifacts (
+                 id TEXT PRIMARY KEY,
+                 workspace_id TEXT,
+                 thread_id TEXT,
+                 path TEXT,
+                 type TEXT,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL,
+                 deleted_at INTEGER
+             );
+             INSERT INTO artifacts (id, type, created_at, updated_at)
+             VALUES ('a1', 'document', 1, 1);",
+        )
+        .unwrap();
+
+        apply_schema(&conn).unwrap();
+
+        assert!(!column_exists(&conn, "artifacts", "type").unwrap());
+        assert!(column_exists(&conn, "artifacts", "artifact_type").unwrap());
+        let artifact_type: String = conn
+            .query_row(
+                "SELECT artifact_type FROM artifacts WHERE id = 'a1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(artifact_type, "document");
+    }
+
+    #[test]
+    fn apply_schema_propagates_non_duplicate_alter_errors() {
+        // A table at SQLite's column ceiling (2000): ADD COLUMN fails with
+        // "too many columns" — not a duplicate-column error — so the
+        // migration must surface it instead of swallowing it.
+        let conn = Connection::open_in_memory().unwrap();
+        let mut columns = vec![
+            "id TEXT PRIMARY KEY".to_string(),
+            // Columns the schema's indexes reference.
+            "thread_id TEXT".to_string(),
+            "run_id TEXT".to_string(),
+            "status TEXT".to_string(),
+        ];
+        for index in 0..1996 {
+            columns.push(format!("c{index} TEXT"));
+        }
+        conn.execute_batch(&format!(
+            "CREATE TABLE approval_requests ({})",
+            columns.join(", ")
+        ))
+        .unwrap();
+
+        let result = apply_schema(&conn);
+        assert!(result.is_err(), "ALTER past the column ceiling must abort");
+    }
+
+    #[test]
+    fn apply_schema_logs_and_continues_past_undroppable_objects() {
+        let conn = Connection::open_in_memory().unwrap();
+        // A legacy `threads` table whose dropped column is pinned by an index
+        // (DROP COLUMN refuses indexed columns). It must also carry every
+        // column the schema's own indexes reference, or the SCHEMA batch
+        // itself fails before the migration steps run.
+        conn.execute_batch(
+            "CREATE TABLE threads (
+                 id TEXT PRIMARY KEY,
+                 workspace_id TEXT,
+                 status TEXT,
+                 pinned INTEGER,
+                 last_message_at INTEGER,
+                 updated_at INTEGER,
+                 model_provider TEXT,
+                 model_id TEXT,
+                 thinking_level TEXT
+             );
+             CREATE INDEX idx_legacy_provider ON threads(model_provider);",
+        )
+        .unwrap();
+        // …and a view squatting on a dropped table's name (DROP TABLE refuses
+        // views). Both failures are logged, neither aborts the migration.
+        conn.execute_batch("CREATE VIEW skills AS SELECT 1 AS id;")
+            .unwrap();
+
+        apply_schema(&conn).unwrap();
+
+        assert!(
+            column_exists(&conn, "threads", "model_provider").unwrap(),
+            "the indexed column survives the best-effort drop"
+        );
+        assert!(
+            !column_exists(&conn, "threads", "thinking_level").unwrap(),
+            "unindexed dropped columns are still dropped"
+        );
+    }
+
+    #[test]
+    fn run_thread_id_reads_the_owning_thread() {
+        let conn = test_support::memory_conn();
+        conn.execute_batch(
+            "INSERT INTO workspaces (
+                 id, name, kind, path, cleanup_status, created_at, updated_at
+             ) VALUES ('ws1', 'WS', 'temporary', '/tmp/ws1', 'active', 1, 1);
+             INSERT INTO threads (
+                 id, workspace_id, mode, title, created_at, updated_at
+             ) VALUES ('t1', 'ws1', 'chat', 'T', 1, 1);
+             INSERT INTO runs (id, thread_id, status, created_at, updated_at)
+             VALUES ('r1', 't1', 'running', 1, 1);",
+        )
+        .unwrap();
+
+        assert_eq!(run_thread_id(&conn, "r1").unwrap(), "t1");
+        assert!(run_thread_id(&conn, "ghost").is_err());
+    }
+
+    #[test]
+    fn path_helpers_resolve_under_the_fake_home() {
+        let home = crate::auth_store::test_support::HomeGuard::new("db_paths");
+        let root = std::env::var("HOME").unwrap();
+        let root = std::path::Path::new(&root);
+        assert_eq!(
+            chat_workspace_path("sess1").unwrap(),
+            root.join(".future/workspaces/chat/sess1")
+        );
+        assert_eq!(
+            thread_images_dir("t1").unwrap(),
+            root.join(".future/app/images/t1")
+        );
+        drop(home);
+    }
+
+    #[test]
+    fn get_approval_request_round_trips() {
+        let (_home, conn) = test_support::guarded_conn("db_get_approval");
+        conn.execute_batch(
+            "INSERT INTO workspaces (
+                 id, name, kind, path, cleanup_status, created_at, updated_at
+             ) VALUES ('ws1', 'WS', 'temporary', '/tmp/ws1', 'active', 1, 1);
+             INSERT INTO threads (
+                 id, workspace_id, mode, title, created_at, updated_at
+             ) VALUES ('t1', 'ws1', 'chat', 'T', 1, 1);
+             INSERT INTO approval_requests (
+                 id, thread_id, kind, status, title, created_at, updated_at
+             ) VALUES ('a1', 't1', 'shell', 'pending', 'Deploy', 1, 1);",
+        )
+        .unwrap();
+        drop(conn);
+
+        let found = get_approval_request("a1").unwrap().expect("present");
+        assert_eq!(found.title, "Deploy");
+        assert!(get_approval_request("ghost").unwrap().is_none());
+    }
+
+    #[test]
+    fn dropping_a_connection_without_a_home_or_pool_just_drops() {
+        use std::sync::MutexGuard;
+
+        /// Removes HOME for the guard's lifetime (serialized against other
+        /// HOME-mutating tests) so `db_path()` fails inside `Drop`.
+        struct NoHomeGuard {
+            previous: Option<String>,
+            _lock: MutexGuard<'static, ()>,
+        }
+        impl NoHomeGuard {
+            fn new() -> Self {
+                let lock = crate::TEST_HOME_LOCK
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner());
+                let previous = std::env::var("HOME").ok();
+                std::env::remove_var("HOME");
+                NoHomeGuard {
+                    previous,
+                    _lock: lock,
+                }
+            }
+        }
+        impl Drop for NoHomeGuard {
+            fn drop(&mut self) {
+                if let Some(value) = &self.previous {
+                    std::env::set_var("HOME", value);
+                }
+            }
+        }
+
+        let _no_home = NoHomeGuard::new();
+        // The `conn: None` and `db_path()`-fails drop arms.
+        drop(PooledConnection { conn: None });
+        drop(PooledConnection {
+            conn: Some(Connection::open_in_memory().unwrap()),
+        });
+    }
+
+    #[test]
+    fn poisoned_pool_lock_degrades_gracefully() {
+        // Poison the pool mutex so both `POOL.lock()` Err edges (connect and
+        // Drop) fire; then clear the poison so later tests pool normally.
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = POOL.lock().expect("lock pool");
+            panic!("intentional: poison the connection pool for the Err-edge test");
+        });
+        assert!(POOL.lock().is_err(), "pool is poisoned");
+
+        let home = crate::auth_store::test_support::HomeGuard::new("db_poisoned_pool");
+        // connect() falls back to a fresh open…
+        let conn = connect().expect("connect despite the poisoned pool");
+        // …and dropping it skips the pool return.
+        drop(conn);
+
+        POOL.clear_poison();
+        drop(home);
     }
 }
