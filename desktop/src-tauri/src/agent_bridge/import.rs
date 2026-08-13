@@ -528,10 +528,10 @@ pub(crate) async fn import_streaming_session(session_id: &str) -> Result<(), cra
 ///
 /// Concurrency is bounded by a semaphore (4 parallel imports). Each import may
 /// fetch session entries (one extra RPC) to create per-reply run records.
-pub async fn import_missing_sessions() -> Result<(), crate::AppError> {
+pub async fn import_missing_sessions() {
     let sessions = list_agent_sessions().await;
     if sessions.is_empty() {
-        return Ok(());
+        return;
     }
 
     let total = sessions.len();
@@ -574,8 +574,6 @@ pub async fn import_missing_sessions() -> Result<(), crate::AppError> {
             "FutureOS: imported {imported} session(s) ({total_runs} runs) out of {total} agent session(s)"
         );
     }
-
-    Ok(())
 }
 
 // ─── tests ──────────────────────────────────────────────────────────────────
@@ -1001,7 +999,7 @@ mod tests {
         // agent) so import_one fails on its first store call → the Ok(Err)
         // arm logs and the pass still returns Ok.
         let prev = super::super::test_support::break_home();
-        import_missing_sessions().await.expect("ok");
+        import_missing_sessions().await;
         super::super::test_support::restore_home(prev);
     }
 
@@ -1083,7 +1081,7 @@ mod tests {
             ]}),
         );
         // The panicking import is caught and logged; the pass still returns Ok.
-        import_missing_sessions().await.expect("ok");
+        import_missing_sessions().await;
         settle_spawns().await;
     }
 
@@ -1233,7 +1231,7 @@ mod tests {
 
         // Empty list → silent Ok.
         mock.push_data("list_sessions", serde_json::json!({}));
-        import_missing_sessions().await.expect("empty");
+        import_missing_sessions().await;
 
         // Two sessions, each with one assistant reply.
         mock.push_data(
@@ -1249,7 +1247,7 @@ mod tests {
                 serde_json::json!({"entries": [{"role": "assistant"}]}),
             );
         }
-        import_missing_sessions().await.expect("import");
+        import_missing_sessions().await;
         settle_spawns().await;
         assert!(
             crate::store::find_thread_by_agent_session("sess-m1")

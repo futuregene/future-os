@@ -525,9 +525,7 @@ pub fn run() {
                     .build()
                     .expect("tokio runtime");
                 rt.block_on(async {
-                    if let Err(error) = agent_bridge::import_missing_sessions().await {
-                        eprintln!("FutureOS session import failed: {error}");
-                    }
+                    agent_bridge::import_missing_sessions().await;
                 });
             });
             // Pin the FutureGene environment for this build channel before the

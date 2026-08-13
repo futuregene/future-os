@@ -232,20 +232,44 @@ pub fn seed_observers_from_store() {
 /// sidebar within ~1s — and a 60s full import for idle sessions plus
 /// observer import. Idle observers are not re-touched here: opening a thread,
 /// a prompt, or a newly streaming session wakes it instead.
+#[cfg(test)]
+static TEST_DISCOVERY_STOP: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 pub fn spawn_session_discovery() {
     tauri::async_runtime::spawn(async move {
         let mut ticks = 0u64;
         loop {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            ticks += 1;
-            discover_streaming_sessions().await;
-            if ticks.is_multiple_of(60) {
-                if let Err(error) = super::import::import_missing_sessions().await {
-                    eprintln!("FutureOS periodic session import failed: {error}");
-                }
+            tokio::time::sleep(discovery_interval()).await;
+            #[cfg(test)]
+            if TEST_DISCOVERY_STOP.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                return;
             }
+            ticks += 1;
+            discovery_tick(ticks).await;
         }
     });
+}
+
+/// Discovery tick interval; tests shrink it via env (a cfg(test)-only seam).
+fn discovery_interval() -> std::time::Duration {
+    #[cfg(test)]
+    if let Some(ms) = std::env::var("FUTURE_TEST_DISCOVERY_INTERVAL_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        return std::time::Duration::from_millis(ms);
+    }
+    std::time::Duration::from_secs(1)
+}
+
+/// One discovery tick: the fast streaming-session pass, plus the full
+/// idle-session import every 60 ticks.
+async fn discovery_tick(ticks: u64) {
+    discover_streaming_sessions().await;
+    if ticks.is_multiple_of(60) {
+        super::import::import_missing_sessions().await;
+    }
 }
 
 /// The fast discovery pass: sessions the agent reports as streaming that have
@@ -1292,9 +1316,13 @@ mod tests {
 
     #[test]
     fn seed_observers_handles_empty_and_broken_store() {
-        let _home = TestHome::new("observer-seed-empty");
+        let home = TestHome::new("observer-seed-empty");
         let _mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        // A thread with no agent session → the `if let Some` else path.
+        seed_thread(&workspace.id, None);
         seed_observers_from_store();
+        // Broken store → silent return.
         let prev = break_home();
         seed_observers_from_store();
         restore_home(prev);
@@ -1755,5 +1783,199 @@ mod tests {
             "a projection snapshot is applied"
         );
         assert_eq!(state.cursors.get("run-snap"), Some(&5));
+    }
+
+    /// Session-level replay overlap and a negative session index both keep
+    /// the session cursor stable.
+    #[tokio::test]
+    async fn handle_event_session_replay_and_negative_idx() {
+        let shared = Arc::new(ObserverShared::new("thread-order"));
+        let mut state = ObserverState::default();
+        // Negative session_idx → no cursor bookkeeping.
+        assert!(
+            handle_event(
+                "sess-order",
+                &shared,
+                &mut state,
+                session_event("model_changed", -1)
+            )
+            .await
+        );
+        assert!(
+            handle_event(
+                "sess-order",
+                &shared,
+                &mut state,
+                session_event("model_changed", 0)
+            )
+            .await
+        );
+        assert_eq!(state.session_cursor, 0);
+        // Replay overlap (idx <= cursor) → accepted, no change.
+        assert!(
+            handle_event(
+                "sess-order",
+                &shared,
+                &mut state,
+                session_event("model_changed", 0)
+            )
+            .await
+        );
+        assert_eq!(state.session_cursor, 0);
+    }
+
+    /// A projection snapshot whose folded events include a terminal `agent_end`
+    /// settles the run (incomplete → failed, clean → completed).
+    #[tokio::test]
+    async fn handle_event_snapshot_with_terminal_agent_end() {
+        let home = TestHome::new("observer-snap-terminal");
+        let _mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-snap-term"));
+        let shared = Arc::new(ObserverShared::new(thread.id.clone()));
+        let mut state = ObserverState::default();
+
+        let incomplete = crate::agent_proto::StreamEvent {
+            r#type: "projection_snapshot".to_string(),
+            data: "{}".to_string(),
+            run_id: "run-snap-inc".to_string(),
+            idx: -1,
+            projection_snapshot: true,
+            snapshot_cursor: 3,
+            snapshot_events: vec![crate::agent_proto::ProjectedRunEvent {
+                r#type: "agent_end".to_string(),
+                data: r#"{"reason":"incomplete"}"#.to_string(),
+                idx: 3,
+                ..Default::default()
+            }],
+            session_id: "sess-snap-term".to_string(),
+            epoch: 1,
+            event_id: String::new(),
+            timestamp: String::new(),
+            session_idx: -1,
+            run_sequence: 1,
+            payload: None,
+        };
+        assert!(handle_event("sess-snap-term", &shared, &mut state, incomplete).await);
+        assert_eq!(
+            crate::store::get_run("run-snap-inc")
+                .expect("get")
+                .expect("some")
+                .status,
+            "failed"
+        );
+
+        let complete = crate::agent_proto::StreamEvent {
+            r#type: "projection_snapshot".to_string(),
+            data: "{}".to_string(),
+            run_id: "run-snap-ok".to_string(),
+            idx: -1,
+            projection_snapshot: true,
+            snapshot_cursor: 4,
+            snapshot_events: vec![crate::agent_proto::ProjectedRunEvent {
+                r#type: "agent_end".to_string(),
+                data: r#"{"reason":"complete"}"#.to_string(),
+                idx: 4,
+                ..Default::default()
+            }],
+            session_id: "sess-snap-term".to_string(),
+            epoch: 1,
+            event_id: String::new(),
+            timestamp: String::new(),
+            session_idx: -1,
+            run_sequence: 1,
+            payload: None,
+        };
+        assert!(handle_event("sess-snap-term", &shared, &mut state, complete).await);
+        assert_eq!(
+            crate::store::get_run("run-snap-ok")
+                .expect("get")
+                .expect("some")
+                .status,
+            "completed"
+        );
+    }
+
+    /// A pipeline-owned terminal event settles without store bookkeeping.
+    #[tokio::test]
+    async fn handle_event_pipeline_owned_terminal_settles() {
+        let _lease = lease_run("run-owned-term");
+        let shared = Arc::new(ObserverShared::new("thread-order"));
+        let mut state = ObserverState::default();
+        assert!(
+            handle_event(
+                "sess-order",
+                &shared,
+                &mut state,
+                stream_event("agent_end", "run-owned-term", 0)
+            )
+            .await
+        );
+        assert_eq!(state.last_settled_run.as_deref(), Some("run-owned-term"));
+    }
+
+    /// Discovery logs import and observe failures without surfacing them.
+    #[tokio::test]
+    async fn discover_streaming_sessions_logs_import_and_observe_errors() {
+        let home = TestHome::new("observer-discover-err");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-conflict"));
+
+        // Unknown session whose import fails (get_state reject).
+        mock.push_data(
+            "list_streaming_sessions",
+            serde_json::json!({"sessionIds": ["sess-bad"]}),
+        );
+        mock.push("get_state", Reply::Reject("gone".to_string()));
+        discover_streaming_sessions().await;
+
+        // Known session already observed by a phantom thread → owner conflict.
+        let (cancel, _rx) = oneshot::channel();
+        let shared = Arc::new(ObserverShared::new("ghost-thread"));
+        OBSERVERS.lock().unwrap().insert(
+            "sess-conflict".to_string(),
+            ObserverHandle { cancel, shared },
+        );
+        mock.push_data(
+            "list_streaming_sessions",
+            serde_json::json!({"sessionIds": ["sess-conflict"]}),
+        );
+        discover_streaming_sessions().await;
+        OBSERVERS.lock().unwrap().remove("sess-conflict");
+        let _ = thread;
+    }
+
+    /// The discovery loop ticks, then stops on the test seam; the default
+    /// (unseamed) interval is 1s.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn discovery_loop_ticks_and_stops() {
+        let _home = TestHome::new("observer-discovery-loop");
+        let mock = mock_agent();
+        std::env::set_var("FUTURE_TEST_DISCOVERY_INTERVAL_MS", "10");
+        spawn_session_discovery();
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        TEST_DISCOVERY_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        std::env::remove_var("FUTURE_TEST_DISCOVERY_INTERVAL_MS");
+        assert_eq!(discovery_interval(), Duration::from_secs(1));
+        let _ = mock;
+    }
+
+    /// The 60th discovery tick runs the full import; other ticks do not.
+    #[tokio::test]
+    async fn discovery_tick_imports_on_the_60th_tick() {
+        let _home = TestHome::new("observer-discovery-tick");
+        let mock = mock_agent();
+        mock.push_data(
+            "list_streaming_sessions",
+            serde_json::json!({"sessionIds": []}),
+        );
+        discovery_tick(1).await;
+        mock.push_data(
+            "list_streaming_sessions",
+            serde_json::json!({"sessionIds": []}),
+        );
+        discovery_tick(60).await;
     }
 }
