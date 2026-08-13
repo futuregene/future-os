@@ -408,4 +408,66 @@ view: timeline
         assert_eq!(local_file_path("poem2.txt"), None);
         assert_eq!(local_file_path("https://example.com"), None);
     }
+
+    #[test]
+    fn futureos_link_without_target_type_stops_the_scan() {
+        // No `/` after the scheme: nothing parseable, and scanning stops.
+        assert_eq!(extract_markdown_references("futureos://"), vec![]);
+    }
+
+    #[test]
+    fn futureos_link_with_unknown_type_is_skipped_and_scan_continues() {
+        let references = extract_markdown_references(
+            "[x](futureos://widget/w_1) then [y](futureos://run/run_9)",
+        );
+        assert_eq!(
+            references,
+            vec![MarkdownObjectReference {
+                target_id: "run_9".to_string(),
+                target_type: "run".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn unclosed_bracket_stops_file_link_scan() {
+        assert_eq!(extract_markdown_references("see [unclosed"), vec![]);
+    }
+
+    #[test]
+    fn local_file_path_edge_forms() {
+        // Empty / whitespace-only destinations are not paths.
+        assert_eq!(local_file_path(""), None);
+        assert_eq!(local_file_path("   "), None);
+        // `file://` URIs decode to their plain path…
+        assert_eq!(
+            local_file_path("file:///Users/tao/a%20b.txt"),
+            Some("/Users/tao/a b.txt".to_string())
+        );
+        // …with an authority component stripped…
+        assert_eq!(
+            local_file_path("file://localhost/etc/hosts"),
+            Some("/etc/hosts".to_string())
+        );
+        // …and a bare `file://` yields no path at all.
+        assert_eq!(local_file_path("file://"), None);
+        // Schemes with `+`/`.`/`-` are still schemes, not local paths.
+        assert_eq!(local_file_path("git+ssh://example.com/repo"), None);
+        assert_eq!(local_file_path("a.b-c://x"), None);
+        // Parent-relative forms survive verbatim.
+        assert_eq!(
+            local_file_path("../poem.txt"),
+            Some("../poem.txt".to_string())
+        );
+        assert_eq!(
+            local_file_path("..\\poem.txt"),
+            Some("..\\poem.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn target_type_len_spans_past_the_separator() {
+        assert_eq!(target_type_len("artifact/x"), 9);
+        assert_eq!(target_type_len("noseparator"), 12);
+    }
 }

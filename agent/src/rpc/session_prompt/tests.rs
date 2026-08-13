@@ -1267,3 +1267,257 @@ async fn prompt_workspace_permission_routes_through_approval_gate() {
     assert!(outside.exists());
     let _ = std::fs::remove_file(&outside);
 }
+
+// ── coverage batch 24: per-line residuals ─────────────────────────────────
+
+#[tokio::test(flavor = "current_thread")]
+async fn enqueue_prompt_defers_when_control_idle_but_task_slot_held() {
+    let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("x")]), "hold-slot");
+    let mut session = fixture.session;
+    // Forge the transient "control finalized but task monitor still holds the
+    // slot" window: no control snapshot, but the task slot is occupied.
+    session.runtime.test_hold_task_slot();
+    let ack = session
+        .enqueue_prompt(
+            "hi",
+            &[],
+            &[],
+            None,
+            "req-hold",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    assert_eq!(ack.accepted_state, crate::runtime::RunAcceptedState::Queued);
+    // Deferred: the run stays queued until the ghost slot is released.
+    assert_eq!(session.scheduler.queued().len(), 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn enqueue_prompt_releases_active_when_scheduled_start_fails() {
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("x")]),
+        "post-start-fail",
+    );
+    let mut session = fixture.session;
+    *super::POST_START_FAIL_RUN.lock() = Some("run-known".to_string());
+    let result = session.enqueue_prompt(
+        "hi",
+        &[],
+        &[],
+        Some("run-known"),
+        "req-known",
+        crate::runtime::BusyPolicy::EnqueueIfBusy,
+    );
+    assert!(result.is_err());
+    // The active run was released by the error arm's finish_active branch.
+    assert!(session.scheduler.active().is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn scheduled_run_fifo_mismatch_reports_error() {
+    let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("x")]), "fifo-mismatch");
+    let mut session = fixture.session;
+    *super::SCHEDULED_DEQUEUE_HOOK.lock() = Some((
+        "run-a".to_string(),
+        Box::new(|sess: &mut crate::rpc::ServerSession| {
+            // Queue a foreign run and move run-a to the back, so start_next
+            // pops the foreign run instead of the one just peeked.
+            sess.scheduler
+                .accept(
+                    "req-foreign",
+                    Some("run-foreign"),
+                    crate::runtime::BusyPolicy::EnqueueIfBusy,
+                    serde_json::json!({"message": "foreign"}),
+                )
+                .unwrap();
+            sess.scheduler.test_move_front_to_back();
+        }),
+    ));
+    let result = session.enqueue_prompt(
+        "hi",
+        &[],
+        &[],
+        Some("run-a"),
+        "req-a",
+        crate::runtime::BusyPolicy::EnqueueIfBusy,
+    );
+    assert!(result.is_err());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn scheduled_run_empty_dequeue_reports_error() {
+    let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("x")]), "empty-dequeue");
+    let mut session = fixture.session;
+    *super::SCHEDULED_DEQUEUE_HOOK.lock() = Some((
+        "run-a".to_string(),
+        Box::new(|sess: &mut crate::rpc::ServerSession| {
+            // Drain the queue after the peek, so start_next finds nothing.
+            sess.scheduler
+                .cancel_all_queued(crate::runtime::QueuedCancellationReason::Cancelled);
+        }),
+    ));
+    let result = session.enqueue_prompt(
+        "hi",
+        &[],
+        &[],
+        Some("run-a"),
+        "req-a",
+        crate::runtime::BusyPolicy::EnqueueIfBusy,
+    );
+    assert!(result.is_err());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_append_failure_logs_session_entry_error() {
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("hello")]),
+        "append-fail",
+    );
+    let mut session = fixture.session;
+    // Both worker-spawn attempts fail, so the mid-run save_closure append
+    // observes an unavailable worker and logs (rather than failing the run).
+    session.persistence.fail_spawns_for_test(2);
+    session.prompt("hi", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_stale_epoch_begin_finalizing_returns_early() {
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("done")]),
+        "stale-finalize",
+    );
+    let mut session = fixture.session;
+    session.runtime.fail_next_begin_finalizing();
+    session.prompt("hi", &[], &[], None, None).unwrap();
+    // The run task returns early from the stale begin_finalizing, so the
+    // monitor marks it stuck ("run task exited without finalizing").
+    for _ in 0..500 {
+        if session
+            .runtime
+            .snapshot()
+            .is_some_and(|s| s.phase == crate::runtime::RunPhase::CancellationStuck)
+            && !session.runtime.has_owned_task()
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(session
+        .runtime
+        .snapshot()
+        .is_some_and(|s| s.phase == crate::runtime::RunPhase::CancellationStuck));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_persistence_commit_panic_marks_degraded() {
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("doomed")]),
+        "commit-panic",
+    );
+    let mut session = fixture.session;
+    session.persistence.panic_next_commit();
+    session.prompt("hi", &[], &[], None, None).unwrap();
+
+    let mut degraded = false;
+    for _ in 0..300 {
+        if session
+            .runtime
+            .snapshot()
+            .is_some_and(|snap| snap.phase == crate::runtime::RunPhase::PersistenceDegraded)
+        {
+            degraded = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(degraded, "run ended in persistence_degraded phase");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_spawn_double_occupancy_reports_error() {
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("x")]),
+        "spawn-occupied",
+    );
+    let mut session = fixture.session;
+    *super::RUN_SPAWN_HOOK.lock() = Some((
+        "run-a".to_string(),
+        Box::new(|sess: &mut crate::rpc::ServerSession| {
+            sess.runtime.test_hold_task_slot();
+        }),
+    ));
+    let result = session.enqueue_prompt(
+        "hi",
+        &[],
+        &[],
+        Some("run-a"),
+        "req-a",
+        crate::runtime::BusyPolicy::EnqueueIfBusy,
+    );
+    assert!(result.is_err());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_empty_message_hits_empty_context_early_return() {
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("done")]),
+        "empty-context",
+    );
+    let mut session = fixture.session;
+    session.model = "glm-4.5v".to_string();
+    // An empty first message estimates to zero context tokens, hitting the
+    // "truly empty — nothing to compact" early return inside the transform.
+    session.prompt("", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+}
+
+#[test]
+fn wire_auto_compaction_flags_failure_when_needed_but_no_cut_point() {
+    use std::sync::atomic::Ordering;
+    let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("x")]), "compact-fail");
+    let session = fixture.session;
+    // Report a huge API token count so compaction is "needed", but hand the
+    // transform a history with no valid cut point > 0 (a lone user message),
+    // so compact() returns None → the "needed but failed" arm.
+    session.last_prompt_tokens.store(50_000, Ordering::Relaxed);
+    let agent_loop = session.agent_loop.clone();
+    let mut loop_ = agent_loop.try_write().unwrap();
+    session.wire_auto_compaction(&mut loop_, true, "glm-4.5v");
+    let transform = loop_.config.transform_context.clone().unwrap();
+    let messages = vec![crate::types::Message {
+        role: "user".to_string(),
+        content: Some(serde_json::json!([{"type": "text", "text": "hi"}])),
+        tool_calls: None,
+        ..Default::default()
+    }];
+    let _ = transform(messages, String::new());
+    assert!(loop_.compaction_failed.load(Ordering::SeqCst));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_with_auto_compaction_disabled_completes() {
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("done")]),
+        "compaction-off",
+    );
+    let mut session = fixture.session;
+    session.set_auto_compaction(false);
+    session.prompt("hi", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+}
+
+#[test]
+fn persist_user_message_with_empty_history_takes_slow_path() {
+    let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("x")]), "persist-empty");
+    let session = fixture.session;
+    // No user message pushed → msgs.last() is None, so the fast path is
+    // skipped and the brand-new-session slow path runs.
+    let lease = session
+        .runtime
+        .begin(Some("run-empty"), Some("req-empty"))
+        .unwrap();
+    session.persist_user_message(&lease).unwrap();
+    let loaded = session.session_manager.load("s1").unwrap();
+    assert!(!loaded.entries.is_empty());
+}

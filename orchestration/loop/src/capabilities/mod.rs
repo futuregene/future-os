@@ -10,7 +10,11 @@
 //! deterministic rule versions: agent_turn_recall, auto_research,
 //! change_quality, content_ops, context_providers, decision_context,
 //! explore, integration_branch, issue_fix, material_lifecycle,
-//! periodic_report, reward_memory, semantic_preference, value_connectors.
+//! periodic_report, reward_memory, semantic_preference, value_connectors —
+//! plus the 15th (pr_review_queue, P2-3): the queue observation + review
+//! contract rule version. `explore` shipped its Wave 2 deepening:
+//! hypothesis modeling + verification tracking + the explore graph
+//! (node/edge/status events folded into a bounded projection).
 
 pub mod agent_turn_recall;
 pub mod auto_research;
@@ -25,6 +29,7 @@ pub mod issue_fix;
 pub mod lifecycle;
 pub mod material_lifecycle;
 pub mod periodic_report;
+pub mod pr_review_queue;
 pub mod resolver;
 pub mod reward_memory;
 pub mod semantic_preference;
@@ -162,6 +167,9 @@ impl CapabilityRegistry {
         ));
         r.register(Box::new(
             crate::capabilities::periodic_report::PeriodicReportCapability,
+        ));
+        r.register(Box::new(
+            crate::capabilities::pr_review_queue::PrReviewQueueCapability,
         ));
         r.register(Box::new(
             crate::capabilities::reward_memory::RewardMemoryCapability,

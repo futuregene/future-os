@@ -39,6 +39,10 @@ if [[ ! -d "$MOBILE_DIR/node_modules" ]]; then
   (cd "$MOBILE_DIR" && npm ci)
 fi
 
+# The mobile Metro bundle resolves thread-projection via a `file:` dep; rebuild
+# it (if stale) before compiling the APK.
+"$ROOT_DIR/scripts/build-thread-projection.sh"
+
 # ── version ─────────────────────────────────────────────────────────────────
 
 echo "Generating version..."

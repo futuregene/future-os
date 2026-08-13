@@ -1268,10 +1268,16 @@ fn apply(goal: &mut Goal, event: Event) {
             no_follow_up,
             successor_ids,
             evidence,
+            ts,
             ..
         } => {
             if let Some(t) = goal.todo_mut(&todo_id) {
                 t.complete(no_follow_up, successor_ids);
+                // The event ts is authoritative for the completion stamp
+                // (wall-clock replay is second-granular; GateResolved already
+                // applies the same rule).
+                t.completed_at = Some(ts);
+                t.updated_at = ts;
                 if let Some(e) = evidence {
                     t.evidence = Some(e);
                 }

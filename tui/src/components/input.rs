@@ -12,6 +12,12 @@
 //! the private `u16` helpers. For ASCII this equals a byte offset; for
 //! astral characters (emoji, CJK ext) the two diverge and UTF-16 is the
 //! faithful choice.
+//!
+//! Undo / yank: every text edit (insert, delete, paste, set_value) pushes a
+//! `(value, cursor)` snapshot onto a bounded undo stack; ctrl+z / ctrl+- /
+//! ctrl+/ / ctrl+_ restore the most recent snapshot. Kills (ctrl+u, ctrl+k,
+//! ctrl+w, alt+d) record the deleted text in a single-entry kill ring that
+//! ctrl+y yanks back at the cursor. Submitting clears the undo stack.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -141,7 +147,11 @@ fn grapheme_u16_len(g: &str) -> usize {
     })
 }
 
-// ─── Input ─────────────────────────────────────────────────────────────────
+// ─── Input ──────────────────────────────────────────────────────────────────
+
+/// Maximum number of undo snapshots retained. Older states are dropped as
+/// new edits push beyond the bound.
+const MAX_UNDO_STACK: usize = 200;
 
 // Field names mirror the TS class (`onSubmit`/`onEscape`/`onChange` are the
 // exact property names in `input.ts`).
@@ -163,6 +173,13 @@ pub struct Input {
     // Bracketed paste mode buffering
     paste_buffer: String,
     is_in_paste: bool,
+
+    // Undo stack — (value, cursor) snapshots taken before each edit.
+    // Cleared on submit; bounded at MAX_UNDO_STACK entries.
+    undo_stack: Vec<(String, usize)>,
+    // Kill ring — text deleted by ctrl+u / ctrl+k / ctrl+w / alt+d,
+    // restored by ctrl+y (yank).
+    kill_text: String,
 
     // ─── Cached visual layout (invalidated on edit / size change) ────
     cached_visual_width: i64, // -1 = invalid
@@ -191,6 +208,8 @@ impl Input {
             focused: false,
             paste_buffer: String::new(),
             is_in_paste: false,
+            undo_stack: Vec::new(),
+            kill_text: String::new(),
             cached_visual_width: -1,
             cached_visual_lines: Vec::new(),
             cached_line_map: Vec::new(),
@@ -207,6 +226,7 @@ impl Input {
     }
 
     pub fn set_value(&mut self, value: &str, cursor_pos: Option<usize>) {
+        self.push_undo();
         self.value = value.to_string();
         let vlen = u16_len(&self.value);
         self.cursor = match cursor_pos {
@@ -247,6 +267,8 @@ impl Input {
             }
             self.history_index = -1;
             self.history_draft.clear();
+            // A submitted line starts a fresh edit session.
+            self.undo_stack.clear();
             if let Some(on_submit) = self.onSubmit.as_mut() {
                 on_submit(&v);
             }
@@ -319,11 +341,13 @@ impl Input {
             return true;
         }
 
-        // Yank / Undo (no-op stubs)
+        // Yank / Undo
         if key == "ctrl+y" {
+            self.yank();
             return true;
         }
         if key == "ctrl+-" || key == "ctrl+/" || key == "ctrl+_" || key == "ctrl+z" {
+            self.undo();
             return true;
         }
 
@@ -657,7 +681,40 @@ impl Input {
 
     // ── Text manipulation ─────────────────────────────────────────────
 
+    /// Snapshot the current (value, cursor) so an edit can be undone.
+    fn push_undo(&mut self) {
+        if self.undo_stack.len() >= MAX_UNDO_STACK {
+            self.undo_stack.remove(0);
+        }
+        self.undo_stack.push((self.value.clone(), self.cursor));
+    }
+
+    /// Restore the most recent pre-edit state. Returns true when a snapshot
+    /// was restored (false = nothing to undo).
+    fn undo(&mut self) -> bool {
+        let Some((value, cursor)) = self.undo_stack.pop() else {
+            return false;
+        };
+        self.value = value;
+        self.cursor = cursor;
+        self.cached_visual_width = -1;
+        if let Some(on_change) = self.onChange.as_mut() {
+            on_change(&self.value);
+        }
+        true
+    }
+
+    /// Insert the last killed text at the cursor (ctrl+y).
+    fn yank(&mut self) {
+        if self.kill_text.is_empty() {
+            return;
+        }
+        let text = self.kill_text.clone();
+        self.insert_at_cursor(&text);
+    }
+
     fn insert_at_cursor(&mut self, text: &str) {
+        self.push_undo();
         let before = slice_u16(&self.value, 0, self.cursor);
         let after = slice_u16(&self.value, self.cursor, u16_len(&self.value));
         self.value = format!("{before}{text}{after}");
@@ -675,6 +732,7 @@ impl Input {
             let grapheme_length = gs.last().map(|g| grapheme_u16_len(g)).unwrap_or(1);
             let keep = self.cursor.saturating_sub(grapheme_length);
             let tail = slice_u16(&self.value, self.cursor, u16_len(&self.value));
+            self.push_undo();
             self.value = format!("{}{tail}", slice_u16(&self.value, 0, keep));
             self.cursor = keep;
             self.cached_visual_width = -1;
@@ -692,6 +750,7 @@ impl Input {
             let grapheme_length = gs.first().map(|g| grapheme_u16_len(g)).unwrap_or(1);
             let before = slice_u16(&self.value, 0, self.cursor);
             let tail = slice_u16(&self.value, self.cursor + grapheme_length, vlen);
+            self.push_undo();
             self.value = format!("{before}{tail}");
             self.cached_visual_width = -1;
             if let Some(on_change) = self.onChange.as_mut() {
@@ -707,6 +766,8 @@ impl Input {
                 let before_newline = start - 1;
                 let head = slice_u16(&self.value, 0, before_newline);
                 let tail = slice_u16(&self.value, self.cursor, u16_len(&self.value));
+                self.push_undo();
+                self.kill_text = "\n".to_string();
                 self.value = format!("{head}{tail}");
                 self.cursor = before_newline;
                 self.cached_visual_width = -1;
@@ -718,6 +779,8 @@ impl Input {
         }
         let head = slice_u16(&self.value, 0, start);
         let tail = slice_u16(&self.value, self.cursor, u16_len(&self.value));
+        self.push_undo();
+        self.kill_text = slice_u16(&self.value, start, self.cursor);
         self.value = format!("{head}{tail}");
         self.cursor = start;
         self.cached_visual_width = -1;
@@ -733,6 +796,8 @@ impl Input {
         }
         let head = slice_u16(&self.value, 0, self.cursor);
         let tail = slice_u16(&self.value, end, u16_len(&self.value));
+        self.push_undo();
+        self.kill_text = slice_u16(&self.value, self.cursor, end);
         self.value = format!("{head}{tail}");
         self.cached_visual_width = -1;
         if let Some(on_change) = self.onChange.as_mut() {
@@ -750,6 +815,8 @@ impl Input {
         self.cursor = old_cursor;
         let head = slice_u16(&self.value, 0, delete_from);
         let tail = slice_u16(&self.value, self.cursor, u16_len(&self.value));
+        self.push_undo();
+        self.kill_text = slice_u16(&self.value, delete_from, self.cursor);
         self.value = format!("{head}{tail}");
         self.cursor = delete_from;
         self.cached_visual_width = -1;
@@ -769,6 +836,8 @@ impl Input {
         self.cursor = old_cursor;
         let head = slice_u16(&self.value, 0, self.cursor);
         let tail = slice_u16(&self.value, delete_to, vlen);
+        self.push_undo();
+        self.kill_text = slice_u16(&self.value, self.cursor, delete_to);
         self.value = format!("{head}{tail}");
         self.cached_visual_width = -1;
         if let Some(on_change) = self.onChange.as_mut() {
@@ -1612,13 +1681,229 @@ mod tests {
     }
 
     #[test]
-    fn noop_stub_keys_are_consumed() {
+    fn yank_undo_keys_consumed_when_nothing_to_do() {
+        // Fresh input: no kill text, empty undo stack — keys are still
+        // consumed (they must not fall through to printable handling).
         let mut input = make_input();
         assert!(input.handle_key("ctrl+y"));
         assert!(input.handle_key("ctrl+z"));
         assert!(input.handle_key("ctrl+-"));
         assert!(input.handle_key("ctrl+/"));
         assert!(input.handle_key("ctrl+_"));
+        assert_eq!(input.value, "");
+    }
+
+    // ─── yank / undo ────────────────────────────────────────────────
+
+    #[test]
+    fn yank_pastes_last_kill_after_ctrl_w() {
+        let mut input = make_input();
+        input.set_value("hello world", None);
+        input.handle_key("ctrl+w");
+        assert_eq!(input.value, "hello ");
+        input.handle_key("ctrl+y");
+        assert_eq!(input.value, "hello world");
+        assert_eq!(input.cursor, 11);
+    }
+
+    #[test]
+    fn yank_pastes_ctrl_u_kill_at_cursor() {
+        let mut input = make_input();
+        input.set_value("hello", Some(3));
+        input.handle_key("ctrl+u");
+        assert_eq!(input.value, "lo");
+        input.handle_key("ctrl+y");
+        assert_eq!(input.value, "hello");
+        assert_eq!(input.cursor, 3);
+    }
+
+    #[test]
+    fn yank_pastes_ctrl_k_kill() {
+        let mut input = make_input();
+        input.set_value("hello", Some(2));
+        input.handle_key("ctrl+k");
+        assert_eq!(input.value, "he");
+        input.handle_key("ctrl+y");
+        assert_eq!(input.value, "hello");
+        assert_eq!(input.cursor, 5);
+    }
+
+    #[test]
+    fn yank_pastes_alt_d_kill() {
+        let mut input = make_input();
+        input.set_value("hello world", Some(0));
+        input.handle_key("alt+d");
+        assert_eq!(input.value, " world");
+        input.handle_key("ctrl+y");
+        assert_eq!(input.value, "hello world");
+    }
+
+    #[test]
+    fn ctrl_u_line_join_kills_newline_for_yank() {
+        let mut input = make_input();
+        input.set_value("abc\ndef", Some(4));
+        input.handle_key("ctrl+u"); // joins lines, kills "\n"
+        assert_eq!(input.value, "abcdef");
+        input.handle_key("ctrl+y");
+        assert_eq!(input.value, "abc\ndef");
+    }
+
+    #[test]
+    fn successive_kills_overwrite_the_kill_ring() {
+        let mut input = make_input();
+        input.set_value("foo bar baz", None);
+        input.handle_key("ctrl+w"); // kills "baz"
+        input.handle_key("ctrl+w"); // kills "bar " (replaces the ring)
+        input.handle_key("ctrl+y");
+        assert_eq!(input.value, "foo bar ");
+        assert_eq!(input.cursor, 8);
+    }
+
+    #[test]
+    fn yank_handles_astral_and_multiline_text() {
+        let mut input = make_input();
+        input.set_value("a😀b\ncd", None);
+        input.handle_key("ctrl+u"); // kills "cd" (cursor on last line)
+        assert_eq!(input.value, "a😀b\n");
+        input.handle_key("ctrl+y");
+        assert_eq!(input.value, "a😀b\ncd");
+        assert_eq!(input.cursor, 7);
+    }
+
+    #[test]
+    fn yank_with_empty_kill_ring_is_consumed_noop() {
+        let mut input = make_input();
+        input.set_value("abc", None);
+        assert!(input.handle_key("ctrl+y"));
+        assert_eq!(input.value, "abc");
+    }
+
+    #[test]
+    fn undo_restores_value_and_cursor() {
+        let mut input = make_input();
+        input.set_value("hello", Some(3));
+        input.handle_key("ctrl+u");
+        assert_eq!(input.value, "lo");
+        assert!(input.handle_key("ctrl+z"));
+        assert_eq!(input.value, "hello");
+        assert_eq!(input.cursor, 3);
+    }
+
+    #[test]
+    fn undo_restores_value_replaced_by_set_value() {
+        let mut input = make_input();
+        input.set_value("typed", Some(5));
+        // e.g. tab completion replaces the draft
+        input.set_value("completed", Some(9));
+        input.handle_key("ctrl+z");
+        assert_eq!(input.value, "typed");
+        assert_eq!(input.cursor, 5);
+    }
+
+    #[test]
+    fn undo_key_variants_all_trigger_undo() {
+        for key in ["ctrl+-", "ctrl+/", "ctrl+_", "ctrl+z"] {
+            let mut input = make_input();
+            input.set_value("ab", Some(2));
+            input.handle_key("backspace");
+            assert_eq!(input.value, "a");
+            assert!(input.handle_key(key));
+            assert_eq!(input.value, "ab");
+        }
+    }
+
+    #[test]
+    fn undo_multi_step_walks_edit_history() {
+        let mut input = make_input();
+        input.insert_text("a");
+        input.insert_text("b");
+        input.insert_text("c");
+        assert_eq!(input.value, "abc");
+        assert!(input.handle_key("ctrl+z"));
+        assert_eq!(input.value, "ab");
+        assert!(input.handle_key("ctrl+z"));
+        assert_eq!(input.value, "a");
+        assert!(input.handle_key("ctrl+z"));
+        assert_eq!(input.value, "");
+    }
+
+    #[test]
+    fn undo_of_yank_restores_pre_yank_state() {
+        let mut input = make_input();
+        input.set_value("foo bar", None);
+        input.handle_key("ctrl+w");
+        input.handle_key("ctrl+y");
+        assert_eq!(input.value, "foo bar");
+        input.handle_key("ctrl+z");
+        assert_eq!(input.value, "foo ");
+        assert_eq!(input.cursor, 4);
+    }
+
+    #[test]
+    fn undo_with_empty_stack_is_consumed_noop() {
+        let mut input = make_input();
+        assert!(input.handle_key("ctrl+z"));
+        assert_eq!(input.value, "");
+    }
+
+    #[test]
+    fn undo_stack_is_cleared_on_submit() {
+        let mut input = make_input();
+        input.set_value("done", None);
+        input.handle_key("enter");
+        // The pre-submit snapshot was dropped: undo is now a no-op.
+        input.handle_key("ctrl+z");
+        assert_eq!(input.value, "done");
+    }
+
+    #[test]
+    fn undo_stack_is_bounded() {
+        let mut input = make_input();
+        for i in 0..(MAX_UNDO_STACK + 5) {
+            input.set_value(&format!("v{i}"), None);
+        }
+        for _ in 0..(MAX_UNDO_STACK + 5) {
+            input.handle_key("ctrl+z");
+        }
+        // Oldest snapshots were dropped; undo stops at the oldest retained
+        // state instead of the initial "".
+        assert!(!input.value.is_empty());
+        let before = input.value.clone();
+        input.handle_key("ctrl+z"); // stack exhausted — consumed no-op
+        assert_eq!(input.value, before);
+    }
+
+    #[test]
+    fn undo_and_yank_fire_on_change() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let cb = Rc::clone(&seen);
+        let mut input = make_input();
+        input.onChange = Some(Box::new(move |v| cb.borrow_mut().push(v.to_string())));
+        input.set_value("abc", None);
+        seen.borrow_mut().clear();
+        input.handle_key("ctrl+u");
+        input.handle_key("ctrl+y");
+        input.handle_key("ctrl+z");
+        input.handle_key("ctrl+z");
+        assert_eq!(seen.borrow().as_slice(), &["", "abc", "", "abc"]);
+    }
+
+    #[test]
+    fn undo_restores_pre_edit_state_after_mixed_edits() {
+        let mut input = make_input();
+        input.insert_text("hello ");
+        input.insert_text("world");
+        input.handle_key("ctrl+w");
+        assert_eq!(input.value, "hello ");
+        input.handle_key("delete"); // cursor at end — no-op
+        input.handle_key("ctrl+z");
+        assert_eq!(input.value, "hello world");
+        input.handle_key("ctrl+z");
+        assert_eq!(input.value, "hello ");
+        input.handle_key("ctrl+z");
+        assert_eq!(input.value, "");
     }
 
     #[test]

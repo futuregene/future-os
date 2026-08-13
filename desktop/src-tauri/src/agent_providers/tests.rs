@@ -5,8 +5,8 @@
 
 use super::catalog::{future_models_cache_path, models_json_path, CatalogProviderSummary};
 use super::write::{
-    set_builtin_provider_base_url_with_catalog, update_builtin_provider_key_with_catalog,
-    upsert_custom_provider_with_catalog,
+    delete_custom_provider_with_catalog, set_builtin_provider_base_url_with_catalog,
+    update_builtin_provider_key_with_catalog, upsert_custom_provider_with_catalog,
 };
 use super::*;
 use crate::auth_store::test_support::HomeGuard;
@@ -469,4 +469,645 @@ fn set_builtin_base_url_rejects_placeholder_and_bad_url() {
         &catalog,
     );
     assert!(bad.is_err());
+}
+
+// ── validate.rs field-rule coverage ─────────────────────────────────────────
+
+use super::validate::{model_json_values, validate_custom_provider};
+use crate::remote::test_support::ensure_mock_agent;
+
+fn valid_input() -> UpsertCustomProviderInput {
+    input("prov", "Prov", true)
+}
+
+#[test]
+fn validate_rejects_missing_and_reserved_ids() {
+    let _home = HomeGuard::new("val-ids");
+    let mut empty = valid_input();
+    empty.id = "  ".to_string();
+    let error = validate_custom_provider(empty).unwrap_err();
+    assert!(error.to_string().contains("required"));
+
+    let mut reserved = valid_input();
+    reserved.id = "Future".to_string();
+    let error = validate_custom_provider(reserved).unwrap_err();
+    assert!(error.to_string().contains("reserved"));
+
+    let mut long = valid_input();
+    long.id = "a".repeat(41);
+    assert!(validate_custom_provider(long).is_err());
+}
+
+#[test]
+fn validate_base_url_rules() {
+    let _home = HomeGuard::new("val-url");
+    let mut empty = valid_input();
+    empty.base_url = " ".to_string();
+    assert!(validate_custom_provider(empty)
+        .unwrap_err()
+        .to_string()
+        .contains("required"));
+
+    let mut long = valid_input();
+    long.base_url = format!("https://{}.com", "a".repeat(2048));
+    assert!(validate_custom_provider(long)
+        .unwrap_err()
+        .to_string()
+        .contains("too long"));
+
+    let mut scheme = valid_input();
+    scheme.base_url = "ftp://example.com".to_string();
+    assert!(validate_custom_provider(scheme).is_err());
+
+    let mut garbage = valid_input();
+    garbage.base_url = "not a url".to_string();
+    assert!(validate_custom_provider(garbage).is_err());
+}
+
+#[test]
+fn validate_api_and_name_rules() {
+    let _home = HomeGuard::new("val-api-name");
+    let mut bad_api = valid_input();
+    bad_api.api = "grpc".to_string();
+    assert!(validate_custom_provider(bad_api)
+        .unwrap_err()
+        .to_string()
+        .contains("Unsupported API type"));
+
+    // An empty api defaults to openai-completions.
+    let mut default_api = valid_input();
+    default_api.api = String::new();
+    let validated = validate_custom_provider(default_api).unwrap();
+    assert_eq!(validated.api, "openai-completions");
+
+    let mut long_name = valid_input();
+    long_name.name = "n".repeat(41);
+    assert!(validate_custom_provider(long_name)
+        .unwrap_err()
+        .to_string()
+        .contains("cannot exceed"));
+
+    let mut control_name = valid_input();
+    control_name.name = "bad\tname".to_string();
+    assert!(validate_custom_provider(control_name).is_err());
+}
+
+#[test]
+fn validate_api_key_rules() {
+    let _home = HomeGuard::new("val-key");
+    let mut long_key = valid_input();
+    long_key.api_key = Some("k".repeat(513));
+    assert!(validate_custom_provider(long_key)
+        .unwrap_err()
+        .to_string()
+        .contains("maximum length"));
+
+    let mut control_key = valid_input();
+    control_key.api_key = Some("key\nwith\nnewlines".to_string());
+    assert!(validate_custom_provider(control_key)
+        .unwrap_err()
+        .to_string()
+        .contains("illegal characters"));
+
+    // A whitespace-only key is treated as absent (existing key untouched).
+    let mut blank_key = valid_input();
+    blank_key.api_key = Some("   ".to_string());
+    assert!(validate_custom_provider(blank_key)
+        .unwrap()
+        .api_key
+        .is_none());
+}
+
+#[test]
+fn validate_model_rules() {
+    let _home = HomeGuard::new("val-models");
+    let model = |id: &str, name: &str| CustomProviderModel {
+        id: id.to_string(),
+        name: name.to_string(),
+        supports_images: false,
+    };
+
+    // Empty model ids are skipped, not rejected.
+    let mut skipped = valid_input();
+    skipped.models = vec![model("  ", "")];
+    assert!(validate_custom_provider(skipped).unwrap().models.is_empty());
+
+    let mut long_id = valid_input();
+    long_id.models = vec![model(&"m".repeat(101), "")];
+    assert!(validate_custom_provider(long_id)
+        .unwrap_err()
+        .to_string()
+        .contains("too long"));
+
+    let mut bad_id = valid_input();
+    bad_id.models = vec![model("bad id", "")];
+    assert!(validate_custom_provider(bad_id)
+        .unwrap_err()
+        .to_string()
+        .contains("illegal characters"));
+
+    let mut long_name = valid_input();
+    long_name.models = vec![model("m1", &"n".repeat(61))];
+    assert!(validate_custom_provider(long_name)
+        .unwrap_err()
+        .to_string()
+        .contains("cannot exceed"));
+
+    let mut control_name = valid_input();
+    control_name.models = vec![model("m1", "bad\nname")];
+    assert!(validate_custom_provider(control_name).is_err());
+
+    let mut too_many = valid_input();
+    too_many.models = (0..101)
+        .map(|index| model(&format!("m{index}"), ""))
+        .collect();
+    assert!(validate_custom_provider(too_many)
+        .unwrap_err()
+        .to_string()
+        .contains("cannot exceed"));
+
+    // Image support maps to the modalities pair.
+    let mut vision = valid_input();
+    vision.models = vec![CustomProviderModel {
+        id: "v1".to_string(),
+        name: "Vision".to_string(),
+        supports_images: true,
+    }];
+    let validated = validate_custom_provider(vision).unwrap();
+    assert_eq!(validated.models[0].modalities, ["text", "image"]);
+    let values = model_json_values(&validated.models);
+    assert_eq!(values[0]["modalities"], json!(["text", "image"]));
+    assert_eq!(values[0]["name"], json!("Vision"));
+}
+
+// ── catalog.rs ──────────────────────────────────────────────────────────────
+
+#[test]
+fn catalog_unavailable_logs_and_returns_empty() {
+    let _home = HomeGuard::new("cat-down");
+    let map = super::catalog::catalog_unavailable(crate::AppError::Message("down".to_string()));
+    assert!(map.is_empty());
+}
+
+#[tokio::test]
+async fn builtin_catalog_providers_fetches_from_the_agent() {
+    let _home = HomeGuard::new("cat-fetch");
+    ensure_mock_agent();
+    let catalog = super::catalog::builtin_catalog_providers().await;
+    assert!(catalog.contains_key("deepseek"));
+    assert!(catalog.contains_key("azure-openai-responses"));
+    // FutureGene and the empty id are filtered out of the GUI catalog.
+    assert!(!catalog.contains_key("future"));
+    assert!(!catalog.contains_key(""));
+    // Second call hits the process cache.
+    let again = super::catalog::builtin_catalog_providers().await;
+    assert_eq!(again.len(), catalog.len());
+}
+
+#[tokio::test]
+async fn list_agent_providers_builds_the_view() {
+    let _home = HomeGuard::new("cat-list");
+    ensure_mock_agent();
+    let view = list_agent_providers().await.unwrap();
+    assert_eq!(view.builtin.first().map(|p| p.id.as_str()), Some("future"));
+    assert!(view.builtin.iter().any(|p| p.id == "deepseek"));
+}
+
+// ── write.rs async command paths (mock agent) ───────────────────────────────
+
+fn key_input(id: &str, api_key: Option<&str>) -> UpdateBuiltinProviderKeyInput {
+    UpdateBuiltinProviderKeyInput {
+        id: id.to_string(),
+        api_key: api_key.map(str::to_string),
+    }
+}
+
+#[tokio::test]
+async fn builtin_key_update_applied_by_agent_and_validated() {
+    let _home = HomeGuard::new("wr-key-rpc");
+    let agent = ensure_mock_agent();
+
+    // Agent applies the change: the view comes straight back, no local write.
+    let view = update_builtin_provider_key(key_input("deepseek", Some("sk-live")))
+        .await
+        .unwrap();
+    assert!(view.builtin.iter().any(|p| p.id == "deepseek"));
+    assert!(agent.served("set_auth", ""));
+    assert!(crate::auth_store::read().unwrap().get("deepseek").is_none());
+
+    // Clearing a key takes the clear path.
+    update_builtin_provider_key(key_input("deepseek", None))
+        .await
+        .unwrap();
+
+    // Request-local validation runs before the RPC.
+    assert!(update_builtin_provider_key(key_input("", Some("k")))
+        .await
+        .is_err());
+    assert!(update_builtin_provider_key(key_input("future", Some("k")))
+        .await
+        .is_err());
+    assert!(update_builtin_provider_key(key_input("unknown", Some("k")))
+        .await
+        .is_err());
+    assert!(
+        update_builtin_provider_key(key_input("deepseek", Some(&"k".repeat(513))))
+            .await
+            .is_err()
+    );
+    assert!(
+        update_builtin_provider_key(key_input("deepseek", Some("bad\nkey")))
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn builtin_key_update_falls_back_to_local_writes() {
+    let _home = HomeGuard::new("wr-key-local");
+    let agent = ensure_mock_agent();
+    // A pre-item-2 agent answers "unknown command" → local fallback + reload.
+    agent.script("set_auth", false, json!(null), "unknown command: set_auth");
+    let view = update_builtin_provider_key(key_input("deepseek", Some("sk-local")))
+        .await
+        .unwrap();
+    assert!(
+        view.builtin
+            .iter()
+            .find(|p| p.id == "deepseek")
+            .unwrap()
+            .has_api_key
+    );
+    assert_eq!(
+        crate::auth_store::read()
+            .unwrap()
+            .get("deepseek")
+            .and_then(|entry| entry.get("key"))
+            .and_then(Value::as_str),
+        Some("sk-local")
+    );
+    assert!(agent.served("reload_auth", ""));
+
+    // An explicit rejection (NOT "unknown command") surfaces as an error.
+    agent.script("set_auth", false, json!(null), "key rejected by policy");
+    let error = update_builtin_provider_key(key_input("deepseek", Some("sk-no")))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("key rejected"));
+}
+
+#[tokio::test]
+async fn builtin_base_url_update_paths() {
+    let _home = HomeGuard::new("wr-url-rpc");
+    let agent = ensure_mock_agent();
+    let base_url_input = |id: &str, base_url: &str| SetBuiltinProviderBaseUrlInput {
+        id: id.to_string(),
+        base_url: base_url.to_string(),
+    };
+
+    // Agent-applied.
+    let view = set_builtin_provider_base_url(base_url_input(
+        "azure-openai-responses",
+        "https://my.openai.azure.com/openai",
+    ))
+    .await
+    .unwrap();
+    assert!(view
+        .builtin
+        .iter()
+        .any(|p| p.id == "azure-openai-responses"));
+    assert!(agent.served("upsert_provider", ""));
+
+    // Validation before the RPC.
+    assert!(
+        set_builtin_provider_base_url(base_url_input("", "https://x.com"))
+            .await
+            .is_err()
+    );
+    assert!(
+        set_builtin_provider_base_url(base_url_input("future", "https://x.com"))
+            .await
+            .is_err()
+    );
+    assert!(
+        set_builtin_provider_base_url(base_url_input("unknown", "https://x.com"))
+            .await
+            .is_err()
+    );
+    let long = format!("https://{}.com", "a".repeat(2048));
+    assert!(
+        set_builtin_provider_base_url(base_url_input("deepseek", &long))
+            .await
+            .is_err()
+    );
+    assert!(
+        set_builtin_provider_base_url(base_url_input("deepseek", "ftp://x.com"))
+            .await
+            .is_err()
+    );
+    assert!(set_builtin_provider_base_url(base_url_input(
+        "deepseek",
+        "https://YOUR_RESOURCE.x.com"
+    ))
+    .await
+    .is_err());
+
+    // Fallback: unknown command → local models.json override + reload.
+    agent.script(
+        "upsert_provider",
+        false,
+        json!(null),
+        "unknown command: upsert_provider",
+    );
+    let view =
+        set_builtin_provider_base_url(base_url_input("deepseek", "https://local.example.com/v1"))
+            .await
+            .unwrap();
+    let deepseek = view.builtin.iter().find(|p| p.id == "deepseek").unwrap();
+    assert_eq!(deepseek.base_url, "https://local.example.com/v1");
+
+    // Explicit rejection surfaces.
+    agent.script("upsert_provider", false, json!(null), "bad base url");
+    assert!(
+        set_builtin_provider_base_url(base_url_input("deepseek", "https://y.com"))
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn custom_provider_upsert_paths() {
+    let _home = HomeGuard::new("wr-upsert-rpc");
+    let agent = ensure_mock_agent();
+
+    // Agent-applied create: the RPC carries the validated provider; the mock
+    // does not persist files, so the view simply re-reads the (empty) locals.
+    let mut create = valid_input();
+    create.api_key = Some("sk-new".to_string());
+    create.models = vec![CustomProviderModel {
+        id: "m1".to_string(),
+        name: String::new(),
+        supports_images: true,
+    }];
+    upsert_custom_provider(create).await.unwrap();
+    assert!(agent.served("upsert_provider", ""));
+
+    // Fallback writes models.json + auth.json locally.
+    agent.script(
+        "upsert_provider",
+        false,
+        json!(null),
+        "unknown command: upsert_provider",
+    );
+    let mut local = input("localp", "LocalP", true);
+    local.api_key = Some("sk-local".to_string());
+    let view = upsert_custom_provider(local).await.unwrap();
+    assert!(view.custom.iter().any(|p| p.id == "localp"));
+    let doc = config_io::read_json_lenient(&models_json_path().unwrap());
+    assert_eq!(doc["providers"]["localp"]["name"], json!("LocalP"));
+    assert_eq!(
+        crate::auth_store::read()
+            .unwrap()
+            .get("localp")
+            .and_then(|entry| entry.get("key"))
+            .and_then(Value::as_str),
+        Some("sk-local")
+    );
+
+    // Explicit rejection surfaces.
+    agent.script(
+        "upsert_provider",
+        false,
+        json!(null),
+        "duplicate provider id",
+    );
+    assert!(upsert_custom_provider(input("another", "Another", true))
+        .await
+        .is_err());
+}
+
+#[test]
+fn upsert_refuses_to_create_against_an_unavailable_catalog() {
+    let _home = HomeGuard::new("wr-upsert-nocat");
+    let error = upsert_custom_provider_with_catalog(valid_input(), &BTreeMap::new()).unwrap_err();
+    assert!(error.to_string().contains("catalog is unavailable"));
+}
+
+#[test]
+fn upsert_local_rejects_a_non_object_providers_root() {
+    let _home = HomeGuard::new("wr-upsert-badroot");
+    let path = models_json_path().unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, json!({ "providers": [1, 2, 3] }).to_string()).unwrap();
+    let error = upsert_custom_provider_with_catalog(valid_input(), &fixture_catalog()).unwrap_err();
+    assert!(error.to_string().contains("not an object"));
+}
+
+#[cfg(unix)]
+#[test]
+fn upsert_local_rolls_back_when_the_key_write_fails() {
+    let _home = HomeGuard::new("wr-upsert-rollback");
+    // models.json write succeeds but the key write is injected-failed → the
+    // models file is restored to its exact pre-call bytes.
+    let path = models_json_path().unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "{}\n").unwrap();
+    super::write::INJECT_AUTH_WRITE_FAILURE.store(true, std::sync::atomic::Ordering::Relaxed);
+    let mut create = valid_input();
+    create.api_key = Some("sk-x".to_string());
+    assert!(upsert_custom_provider_with_catalog(create, &fixture_catalog()).is_err());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn upsert_local_rolls_back_when_models_write_fails() {
+    use std::os::unix::fs::PermissionsExt;
+    let _home = HomeGuard::new("wr-upsert-readonly");
+    let path = models_json_path().unwrap();
+    let dir = path.parent().unwrap().to_path_buf();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(&path, "{}\n").unwrap();
+    let permissions = std::fs::metadata(&dir).unwrap().permissions();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let result = upsert_custom_provider_with_catalog(valid_input(), &fixture_catalog());
+    std::fs::set_permissions(&dir, permissions).unwrap();
+    assert!(result.is_err());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}\n");
+}
+
+#[tokio::test]
+async fn custom_provider_delete_paths() {
+    let _home = HomeGuard::new("wr-delete-rpc");
+    let agent = ensure_mock_agent();
+
+    // Seed a provider locally (models.json + auth.json).
+    upsert_custom_provider_with_catalog(input("gone", "Gone", true), &fixture_catalog()).unwrap();
+
+    // Agent-applied delete (the mock does not persist; the RPC is the proof).
+    delete_custom_provider("gone".to_string()).await.unwrap();
+    assert!(agent.served("delete_provider", ""));
+
+    // Validation guards.
+    assert!(delete_custom_provider("  ".to_string()).await.is_err());
+    assert!(delete_custom_provider("future".to_string()).await.is_err());
+    assert!(delete_custom_provider("deepseek".to_string())
+        .await
+        .is_err());
+
+    // Fallback deletes both local entries.
+    upsert_custom_provider_with_catalog(input("gone2", "Gone2", true), &fixture_catalog()).unwrap();
+    crate::auth_store::set_provider_key("gone2", "sk-g").unwrap();
+    agent.script(
+        "delete_provider",
+        false,
+        json!(null),
+        "unknown command: delete_provider",
+    );
+    let view = delete_custom_provider("gone2".to_string()).await.unwrap();
+    assert!(view.custom.iter().all(|p| p.id != "gone2"));
+    assert!(crate::auth_store::read().unwrap().get("gone2").is_none());
+
+    // Explicit rejection surfaces.
+    agent.script(
+        "delete_provider",
+        false,
+        json!(null),
+        "cannot delete in use",
+    );
+    assert!(delete_custom_provider("whatever".to_string())
+        .await
+        .is_err());
+}
+
+#[test]
+fn delete_local_is_a_noop_for_unknown_ids() {
+    let _home = HomeGuard::new("wr-delete-noop");
+    let catalog = fixture_catalog();
+    // Nothing in either file → Ok, no files created.
+    delete_custom_provider_with_catalog("ghost".to_string(), &catalog).unwrap();
+    assert!(!models_json_path().unwrap().exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn delete_local_rolls_back_when_the_auth_write_fails() {
+    let _home = HomeGuard::new("wr-delete-rollback");
+    upsert_custom_provider_with_catalog(input("rb", "RB", true), &fixture_catalog()).unwrap();
+    crate::auth_store::set_provider_key("rb", "sk-rb").unwrap();
+    let path = models_json_path().unwrap();
+    let before = std::fs::read_to_string(&path).unwrap();
+    super::write::INJECT_AUTH_WRITE_FAILURE.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(delete_custom_provider_with_catalog("rb".to_string(), &fixture_catalog()).is_err());
+    // models.json is restored to its exact pre-call bytes.
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+}
+
+#[cfg(unix)]
+#[test]
+fn delete_local_rolls_back_when_models_write_fails() {
+    use std::os::unix::fs::PermissionsExt;
+    let _home = HomeGuard::new("wr-delete-readonly");
+    upsert_custom_provider_with_catalog(input("ro", "RO", true), &fixture_catalog()).unwrap();
+    let path = models_json_path().unwrap();
+    let before = std::fs::read_to_string(&path).unwrap();
+    let dir = path.parent().unwrap().to_path_buf();
+    let permissions = std::fs::metadata(&dir).unwrap().permissions();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let result = delete_custom_provider_with_catalog("ro".to_string(), &fixture_catalog());
+    std::fs::set_permissions(&dir, permissions).unwrap();
+    assert!(result.is_err());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+}
+
+#[test]
+fn override_only_detection_and_base_url_override_lookup() {
+    let _home = HomeGuard::new("wr-override-only");
+    use super::write::{is_override_only, provider_base_url_override};
+    assert!(is_override_only(&json!({})));
+    assert!(is_override_only(&json!({ "baseUrl": "https://x.com" })));
+    assert!(is_override_only(&json!({ "name": "  " })));
+    assert!(!is_override_only(&json!({ "name": "N" })));
+    assert!(!is_override_only(&json!({ "api": "anthropic" })));
+    assert!(!is_override_only(&json!({ "models": [{ "id": "m" }] })));
+
+    let models = json!({
+        "providers": {
+            "with": { "baseUrl": "https://override.example.com" },
+            "blank": { "baseUrl": "  " },
+            "none": { "name": "N" },
+        }
+    });
+    assert_eq!(
+        provider_base_url_override(&models, "with").as_deref(),
+        Some("https://override.example.com")
+    );
+    assert_eq!(provider_base_url_override(&models, "blank"), None);
+    assert_eq!(provider_base_url_override(&models, "none"), None);
+    assert_eq!(provider_base_url_override(&models, "missing"), None);
+    assert_eq!(provider_base_url_override(&json!({}), "with"), None);
+}
+
+#[test]
+fn clear_base_url_keeps_entries_with_other_fields() {
+    let _home = HomeGuard::new("wr-clear-keep");
+    let catalog = fixture_catalog();
+    let path = models_json_path().unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        json!({ "providers": { "deepseek": { "baseUrl": "https://x.com", "compat": { "a": 1 } } } })
+            .to_string(),
+    )
+    .unwrap();
+    set_builtin_provider_base_url_with_catalog(
+        SetBuiltinProviderBaseUrlInput {
+            id: "deepseek".to_string(),
+            base_url: String::new(),
+        },
+        &catalog,
+    )
+    .unwrap();
+    // The entry survives (it still carries `compat`), minus the override.
+    let doc = config_io::read_json_lenient(&path);
+    assert!(doc["providers"]["deepseek"].get("baseUrl").is_none());
+    assert_eq!(doc["providers"]["deepseek"]["compat"]["a"], json!(1));
+}
+
+#[test]
+fn clear_base_url_is_a_noop_without_a_providers_object() {
+    let _home = HomeGuard::new("wr-clear-no-providers");
+    let catalog = fixture_catalog();
+    let path = models_json_path().unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, json!({}).to_string()).unwrap();
+    set_builtin_provider_base_url_with_catalog(
+        SetBuiltinProviderBaseUrlInput {
+            id: "deepseek".to_string(),
+            base_url: String::new(),
+        },
+        &catalog,
+    )
+    .unwrap();
+}
+
+#[test]
+fn clear_base_url_is_a_noop_when_the_entry_is_not_an_object() {
+    let _home = HomeGuard::new("wr-clear-no-entry");
+    let catalog = fixture_catalog();
+    let path = models_json_path().unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        json!({ "providers": { "deepseek": "not-an-object" } }).to_string(),
+    )
+    .unwrap();
+    set_builtin_provider_base_url_with_catalog(
+        SetBuiltinProviderBaseUrlInput {
+            id: "deepseek".to_string(),
+            base_url: String::new(),
+        },
+        &catalog,
+    )
+    .unwrap();
 }

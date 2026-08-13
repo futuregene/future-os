@@ -154,6 +154,10 @@ if [[ "$CLEAN_STALE_APP_TASKS" == "1" ]]; then
   cancel_stale_app_tasks
 fi
 
+# The desktop's vite build/typecheck resolve thread-projection via a `file:` dep;
+# rebuild it (if stale) before anything that compiles the frontend.
+"$ROOT_DIR/scripts/build-thread-projection.sh"
+
 if [[ "${RUN_CHECKS:-0}" == "1" ]]; then
   echo "Running desktop checks..."
   (cd "$DESKTOP_DIR" && npm run lint)

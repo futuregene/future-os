@@ -385,4 +385,27 @@ mod tests {
         assert!(load_settings(&path).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn serde_default_fns_produce_documented_values() {
+        assert_eq!(default_max_retry_delay_ms(), Some(60000));
+        assert_eq!(default_true(), Some(true));
+    }
+
+    #[test]
+    fn empty_objects_pick_up_serde_defaults() {
+        // Deserializing empty objects exercises every serde(default) fn.
+        let p: ProviderRetrySettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(p.max_retry_delay_ms, Some(60000));
+        let c: CompactionSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(c.enabled, Some(true));
+    }
+
+    #[test]
+    fn save_to_parentless_path_attempts_write_directly() {
+        // A path with no parent component skips create_dir_all and goes
+        // straight to fs::write (which fails for the empty path).
+        let s = Settings::default();
+        assert!(s.save(Path::new("")).is_err());
+    }
 }

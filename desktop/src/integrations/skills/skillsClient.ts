@@ -18,6 +18,7 @@ export interface AvailableSkill {
   nameZh: string;
   descriptionZh: string;
   category: string;
+  categoryZh: string;
   latestVersion: string | null;
 }
 

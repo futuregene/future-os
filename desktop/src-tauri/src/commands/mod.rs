@@ -5,6 +5,8 @@
 //! list bare command names in `generate_handler!`.
 
 mod agent;
+#[cfg(test)]
+pub(crate) mod agent_mock;
 mod app;
 mod approvals;
 mod artifacts;

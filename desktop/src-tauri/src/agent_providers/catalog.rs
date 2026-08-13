@@ -41,36 +41,45 @@ pub(crate) struct CatalogProviderSummary {
 pub(super) async fn builtin_catalog_providers() -> BTreeMap<String, CatalogProviderSummary> {
     static CACHE: tokio::sync::OnceCell<BTreeMap<String, CatalogProviderSummary>> =
         tokio::sync::OnceCell::const_new();
-    match CACHE
-        .get_or_try_init(|| async {
-            let catalog = crate::agent_bridge::list_builtin_providers().await?;
-            Ok::<_, crate::AppError>(
-                catalog
-                    .into_iter()
-                    .filter(|(id, _)| !id.is_empty() && id != FUTURE_PROVIDER_ID)
-                    .map(|(id, entry)| {
-                        let summary = CatalogProviderSummary {
-                            name: if entry.name.is_empty() {
-                                id.clone()
-                            } else {
-                                entry.name
-                            },
-                            base_url: entry.base_url,
-                            model_count: entry.model_count,
-                        };
-                        (id, summary)
-                    })
-                    .collect(),
-            )
-        })
+    CACHE
+        .get_or_try_init(fetch_builtin_catalog)
         .await
-    {
-        Ok(catalog) => catalog.clone(),
-        Err(error) => {
-            eprintln!("FutureOS: built-in provider catalog unavailable from the agent: {error}");
-            BTreeMap::new()
-        }
-    }
+        .map_or_else(catalog_unavailable, Clone::clone)
+}
+
+/// One catalog fetch: the `list_models` RPC (with `include_builtin_providers`)
+/// summarized into the GUI's shape, FutureGene excluded (it is presented
+/// separately as the built-in "Future" provider).
+async fn fetch_builtin_catalog() -> Result<BTreeMap<String, CatalogProviderSummary>, crate::AppError>
+{
+    let catalog = crate::agent_bridge::list_builtin_providers().await?;
+    Ok(catalog
+        .into_iter()
+        .filter(|(id, _)| !id.is_empty() && id != FUTURE_PROVIDER_ID)
+        .map(|(id, entry)| {
+            let summary = CatalogProviderSummary {
+                name: if entry.name.is_empty() {
+                    id.clone()
+                } else {
+                    entry.name
+                },
+                base_url: entry.base_url,
+                model_count: entry.model_count,
+            };
+            (id, summary)
+        })
+        .collect())
+}
+
+/// An unobtainable catalog (agent unreachable) is not an error for the display
+/// path: log once per attempt and return an empty map, so the Providers page
+/// still shows FutureGene and custom providers, and write-command validation
+/// refuses what it cannot check rather than trusting an empty set.
+pub(super) fn catalog_unavailable(
+    error: crate::AppError,
+) -> BTreeMap<String, CatalogProviderSummary> {
+    eprintln!("FutureOS: built-in provider catalog unavailable from the agent: {error}");
+    BTreeMap::new()
 }
 
 pub(super) fn models_json_path() -> Result<PathBuf, crate::AppError> {
