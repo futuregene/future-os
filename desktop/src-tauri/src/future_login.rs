@@ -111,7 +111,7 @@ const CREDIT_UNIT: f64 = 10_000_000_000.0;
 pub async fn fetch_balance() -> Result<FutureBalance, AppError> {
     let key = future_api_key()?;
     let platform = crate::future_platform::current_platform_url();
-    let response = client()?
+    let response = client()
         .get(format!("{platform}/client/v1/account/balance"))
         .bearer_auth(&key)
         .header(reqwest::header::ACCEPT, "application/json")
@@ -138,11 +138,13 @@ pub async fn fetch_balance() -> Result<FutureBalance, AppError> {
     })
 }
 
-fn client() -> Result<reqwest::Client, AppError> {
+fn client() -> reqwest::Client {
+    // `Client::builder().timeout().build()` only fails for an invalid config;
+    // the default config here is constant, so a failure is an invariant break.
     reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .build()
-        .map_err(|error| AppError::Message(format!("Failed to create HTTP client: {error}")))
+        .expect("default reqwest client config cannot fail to build")
 }
 
 /// Begin device authorization: fetch a device/user code and open the
@@ -152,7 +154,7 @@ fn client() -> Result<reqwest::Client, AppError> {
 /// not the model API base — mirror the CLI (`cli/src/commands/auth.ts`).
 pub async fn start() -> Result<FutureLoginStart, AppError> {
     let platform = crate::future_platform::current_platform_url();
-    let response = client()?
+    let response = client()
         .post(format!("{platform}/client/v1/oauth/device/code"))
         .json(&json!({ "client_name": CLIENT_NAME }))
         .send()
@@ -219,7 +221,7 @@ pub async fn start() -> Result<FutureLoginStart, AppError> {
 /// to `auth.json`; the returned status drives the frontend poll loop.
 pub async fn poll(device_code: &str) -> Result<FutureLoginPoll, AppError> {
     let platform = crate::future_platform::current_platform_url();
-    let response = client()?
+    let response = client()
         .post(format!("{platform}/client/v1/oauth/device/token"))
         .json(&json!({ "device_code": device_code }))
         .send()
@@ -323,7 +325,7 @@ pub(crate) fn future_api_key() -> Result<String, AppError> {
 pub async fn fetch_profile() -> Result<FutureProfile, AppError> {
     let key = future_api_key()?;
     let platform = crate::future_platform::current_platform_url();
-    let response = client()?
+    let response = client()
         .get(format!("{platform}/client/v1/account/profile"))
         .bearer_auth(&key)
         .header(reqwest::header::ACCEPT, "application/json")
@@ -368,7 +370,13 @@ fn validate_browser_url(target: &str) -> Result<(), AppError> {
 /// which re-parses the URL so a `&` truncates it and `&cmd`-style payloads
 /// from a hostile platform host would execute.
 fn open_browser(url: &str) {
+    // Best-effort launch of the default browser. In tests this is a no-op so a
+    // `start()` success test doesn't spawn the real browser; the side effect is
+    // irrelevant to the code paths under test.
+    #[cfg(not(test))]
     let _ = open::that_detached(url);
+    #[cfg(test)]
+    let _ = url;
 }
 
 /// Map the compile target to the platform label the authorization page expects
@@ -458,5 +466,317 @@ mod tests {
             pairs.get("platform").map(String::as_str),
             Some(login_platform())
         );
+    }
+
+    #[test]
+    fn append_login_platform_returns_unparseable_url_unchanged() {
+        assert_eq!(
+            append_login_platform("not a url".to_string()),
+            "not a url"
+        );
+    }
+
+    #[test]
+    fn poll_constructors_set_status_and_message() {
+        let pending = FutureLoginPoll::of("pending");
+        assert_eq!(pending.status, "pending");
+        assert!(pending.message.is_none());
+
+        let denied = FutureLoginPoll::with_message("denied", "nope");
+        assert_eq!(denied.status, "denied");
+        assert_eq!(denied.message.as_deref(), Some("nope"));
+    }
+
+    #[test]
+    fn future_api_key_errors_when_signed_out() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-key-signedout");
+        assert!(future_api_key().is_err());
+    }
+
+    #[test]
+    fn future_api_key_reads_stored_key() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-key-signedin");
+        crate::auth_store::set_future_login("sekret", "https://future-os.cn/api").unwrap();
+        assert_eq!(future_api_key().unwrap(), "sekret");
+    }
+
+    // ─── async OAuth + account calls against a mock HTTP server ───────────
+
+    fn mock_http_server(responses: Vec<(u16, &'static str, Vec<u8>)>) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            for (status, content_type, body) in responses {
+                let (mut stream, _) = listener.accept().expect("mock accept");
+                let mut sink = [0u8; 8192];
+                let _ = stream.read(&mut sink);
+                let header = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(&body);
+                let _ = stream.flush();
+            }
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    fn point_auth(url: &str) {
+        crate::auth_store::set_future_base_url(&format!("{url}/api")).unwrap();
+    }
+
+    fn point_auth_with_key(url: &str) {
+        crate::auth_store::set_future_login("sekret", &format!("{url}/api")).unwrap();
+    }
+
+    #[tokio::test]
+    async fn fetch_balance_parses_credits() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-balance");
+        let url = mock_http_server(vec![(200, "application/json", b"{\"balance_credits\":10000000000}".to_vec())]);
+        point_auth_with_key(&url);
+        let balance = fetch_balance().await.unwrap();
+        assert_eq!(balance.credits, 1.0);
+    }
+
+    #[tokio::test]
+    async fn fetch_balance_http_error_uses_body_message() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-balance-err");
+        let url = mock_http_server(vec![(500, "application/json", b"{\"message\":\"boom\"}".to_vec())]);
+        point_auth_with_key(&url);
+        assert!(fetch_balance().await.unwrap_err().to_string().contains("boom"));
+    }
+
+    #[tokio::test]
+    async fn fetch_balance_parse_error() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-balance-bad");
+        let url = mock_http_server(vec![(200, "application/json", b"not json".to_vec())]);
+        point_auth_with_key(&url);
+        assert!(fetch_balance().await.unwrap_err().to_string().contains("parse"));
+    }
+
+    #[tokio::test]
+    async fn fetch_balance_requires_key() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-balance-out");
+        assert!(fetch_balance().await.unwrap_err().to_string().contains("Not signed in"));
+    }
+
+    #[tokio::test]
+    async fn fetch_profile_parses_account() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-profile");
+        let url = mock_http_server(vec![(200, "application/json", b"{\"email\":\"a@b.c\",\"user_id\":\"u1\"}".to_vec())]);
+        point_auth_with_key(&url);
+        let profile = fetch_profile().await.unwrap();
+        assert_eq!(profile.email, "a@b.c");
+        assert_eq!(profile.user_id, "u1");
+    }
+
+    #[tokio::test]
+    async fn fetch_profile_http_error() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-profile-err");
+        let url = mock_http_server(vec![(500, "application/json", b"{\"message\":\"nope\"}".to_vec())]);
+        point_auth_with_key(&url);
+        assert!(fetch_profile().await.unwrap_err().to_string().contains("nope"));
+    }
+
+    #[tokio::test]
+    async fn fetch_profile_parse_error() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-profile-bad");
+        let url = mock_http_server(vec![(200, "application/json", b"not json".to_vec())]);
+        point_auth_with_key(&url);
+        assert!(fetch_profile().await.unwrap_err().to_string().contains("parse"));
+    }
+
+    #[tokio::test]
+    async fn fetch_profile_requires_key() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-profile-out");
+        assert!(fetch_profile().await.unwrap_err().to_string().contains("Not signed in"));
+    }
+
+    #[tokio::test]
+    async fn start_returns_device_codes() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-start");
+        let body = r#"{"device_code":"dc-123","user_code":"uc-456","verification_uri":"https://example.com/device","verification_uri_complete":"https://example.com/device?code=uc-456","expires_in":300,"interval":5}"#;
+        let url = mock_http_server(vec![(200, "application/json", body.as_bytes().to_vec())]);
+        point_auth(&url);
+        let out = start().await.unwrap();
+        assert_eq!(out.device_code, "dc-123");
+        assert_eq!(out.user_code, "uc-456");
+        assert_eq!(out.interval, 5);
+        assert_eq!(out.expires_in, 300);
+    }
+
+    #[tokio::test]
+    async fn start_http_error() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-start-err");
+        let url = mock_http_server(vec![(500, "application/json", b"{\"message\":\"down\"}".to_vec())]);
+        point_auth(&url);
+        assert!(start().await.unwrap_err().to_string().contains("down"));
+    }
+
+    #[tokio::test]
+    async fn start_parse_error() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-start-bad");
+        let url = mock_http_server(vec![(200, "application/json", b"not json".to_vec())]);
+        point_auth(&url);
+        assert!(start().await.unwrap_err().to_string().contains("parse"));
+    }
+
+    #[tokio::test]
+    async fn start_missing_required_fields() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-start-missing");
+        let body = r#"{"device_code":"","user_code":"uc","verification_uri":"https://e.com","verification_uri_complete":"https://e.com/c","expires_in":300,"interval":5}"#;
+        let url = mock_http_server(vec![(200, "application/json", body.as_bytes().to_vec())]);
+        point_auth(&url);
+        assert!(start().await.unwrap_err().to_string().contains("missing required"));
+    }
+
+    #[tokio::test]
+    async fn start_invalid_expiry() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-start-expiry");
+        let body = r#"{"device_code":"dc","user_code":"uc","verification_uri":"https://e.com","verification_uri_complete":"https://e.com/c","expires_in":0,"interval":5}"#;
+        let url = mock_http_server(vec![(200, "application/json", body.as_bytes().to_vec())]);
+        point_auth(&url);
+        assert!(start().await.unwrap_err().to_string().contains("invalid expiry"));
+    }
+
+    #[tokio::test]
+    async fn start_missing_authorization_url() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-start-nourl");
+        let body = r#"{"device_code":"dc","user_code":"uc","expires_in":300,"interval":5}"#;
+        let url = mock_http_server(vec![(200, "application/json", body.as_bytes().to_vec())]);
+        point_auth(&url);
+        assert!(start().await.unwrap_err().to_string().contains("authorization URL"));
+    }
+
+    #[tokio::test]
+    async fn start_rejects_non_web_url_scheme() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-start-scheme");
+        let body = r#"{"device_code":"dc","user_code":"uc","verification_uri":"javascript:alert(1)","verification_uri_complete":"javascript:alert(1)","expires_in":300,"interval":5}"#;
+        let url = mock_http_server(vec![(200, "application/json", body.as_bytes().to_vec())]);
+        point_auth(&url);
+        assert!(start().await.unwrap_err().to_string().contains("scheme"));
+    }
+
+    #[tokio::test]
+    async fn start_network_error() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-start-net");
+        crate::auth_store::set_future_base_url("http://127.0.0.1:1/api").unwrap();
+        assert!(start().await.unwrap_err().to_string().contains("Failed to request device code"));
+    }
+
+    #[tokio::test]
+    async fn poll_error_statuses() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-poll-errors");
+        let cases = [
+            ("authorization_pending", "pending"),
+            ("slow_down", "slow_down"),
+            ("access_denied", "denied"),
+            ("expired_token", "expired"),
+            ("weird", "error"),
+        ];
+        for (code, expected) in cases {
+            let body = format!(r#"{{"error":"{code}","message":"msg"}}"#);
+            let url = mock_http_server(vec![(400, "application/json", body.into_bytes())]);
+            point_auth(&url);
+            let poll = poll("dc").await.unwrap();
+            assert_eq!(poll.status, expected, "code {code}");
+        }
+    }
+
+    #[tokio::test]
+    async fn poll_parse_error() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-poll-bad");
+        let url = mock_http_server(vec![(200, "application/json", b"not json".to_vec())]);
+        point_auth(&url);
+        assert!(poll("dc").await.unwrap_err().to_string().contains("parse"));
+    }
+
+    #[tokio::test]
+    async fn poll_network_error() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-poll-net");
+        crate::auth_store::set_future_base_url("http://127.0.0.1:1/api").unwrap();
+        assert!(poll("dc").await.unwrap_err().to_string().contains("Failed to poll"));
+    }
+
+    #[tokio::test]
+    async fn fetch_balance_http_error_without_message() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-balance-err2");
+        let url = mock_http_server(vec![(500, "application/json", b"{}".to_vec())]);
+        point_auth_with_key(&url);
+        assert!(fetch_balance().await.unwrap_err().to_string().contains("HTTP 500"));
+    }
+
+    #[tokio::test]
+    async fn fetch_profile_http_error_without_message() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-profile-err2");
+        let url = mock_http_server(vec![(500, "application/json", b"{}".to_vec())]);
+        point_auth_with_key(&url);
+        assert!(fetch_profile().await.unwrap_err().to_string().contains("HTTP 500"));
+    }
+
+    #[tokio::test]
+    async fn poll_missing_api_key() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-poll-nokey");
+        let url = mock_http_server(vec![(
+            200,
+            "application/json",
+            b"{\"api_key\":\"\",\"token_type\":\"api_key\"}".to_vec(),
+        )]);
+        point_auth(&url);
+        let out = poll("dc").await.unwrap();
+        assert_eq!(out.status, "error");
+        assert!(out.message.unwrap().contains("did not contain an API key"));
+    }
+
+    #[tokio::test]
+    async fn poll_unsupported_token_type() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-poll-badtype");
+        let url = mock_http_server(vec![(
+            200,
+            "application/json",
+            b"{\"api_key\":\"k\",\"token_type\":\"bearer\"}".to_vec(),
+        )]);
+        point_auth(&url);
+        let out = poll("dc").await.unwrap();
+        assert_eq!(out.status, "error");
+        assert!(out.message.unwrap().contains("not supported"));
+    }
+
+    #[tokio::test]
+    async fn poll_malformed_token_body() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-poll-malformed");
+        let url = mock_http_server(vec![(
+            200,
+            "application/json",
+            b"{\"api_key\":123}".to_vec(),
+        )]);
+        point_auth(&url);
+        assert!(poll("dc").await.unwrap_err().to_string().contains("parse authorization"));
+    }
+
+    #[tokio::test]
+    async fn poll_authorized_writes_key_via_local_fallback() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-poll-ok");
+        // Point the agent at a dead port so the RPC-first write reports
+        // "unreachable" and poll falls back to the local auth.json write.
+        let previous = std::env::var("FUTURE_AGENT_GRPC_ADDR").ok();
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "127.0.0.1:1");
+        let url = mock_http_server(vec![(
+            200,
+            "application/json",
+            b"{\"api_key\":\"sekret\",\"token_type\":\"api_key\"}".to_vec(),
+        )]);
+        point_auth(&url);
+
+        let out = poll("dc").await.unwrap();
+        assert_eq!(out.status, "authorized");
+        assert_eq!(crate::auth_store::read().unwrap()["future"]["key"], "sekret");
+
+        match previous {
+            Some(value) => std::env::set_var("FUTURE_AGENT_GRPC_ADDR", value),
+            None => std::env::remove_var("FUTURE_AGENT_GRPC_ADDR"),
+        }
     }
 }
