@@ -144,9 +144,10 @@ fn now_iso() -> String {
 fn contains_windows_abs_path(text: &str) -> bool {
     let bytes = text.as_bytes();
     for (index, _) in text.char_indices() {
-        let Some(drive) = text[index..].chars().next() else {
-            continue;
-        };
+        let drive = text[index..]
+            .chars()
+            .next()
+            .expect("char_indices yields a char boundary");
         if !drive.is_ascii_alphabetic() {
             continue;
         }
@@ -728,28 +729,27 @@ fn fold_by_result_id(events: &[Value], event_kind: &str) -> Vec<Value> {
             .unwrap_or_default();
         let prior = folded.get(result_id);
         let mut view = event.clone();
-        if let Some(map) = view.as_object_mut() {
-            map.insert(
-                "first_recorded_at".to_string(),
-                Value::String(
-                    prior
-                        .and_then(|p| p.get("first_recorded_at"))
-                        .and_then(Value::as_str)
-                        .unwrap_or(recorded_at)
-                        .to_string(),
-                ),
-            );
-            map.insert(
-                "last_updated_at".to_string(),
-                Value::String(recorded_at.to_string()),
-            );
-            let update_count = prior
-                .and_then(|p| p.get("update_count"))
-                .and_then(Value::as_u64)
-                .unwrap_or(0)
-                + 1;
-            map.insert("update_count".to_string(), Value::from(update_count));
-        }
+        let map = view.as_object_mut().expect("folded event is an object");
+        map.insert(
+            "first_recorded_at".to_string(),
+            Value::String(
+                prior
+                    .and_then(|p| p.get("first_recorded_at"))
+                    .and_then(Value::as_str)
+                    .unwrap_or(recorded_at)
+                    .to_string(),
+            ),
+        );
+        map.insert(
+            "last_updated_at".to_string(),
+            Value::String(recorded_at.to_string()),
+        );
+        let update_count = prior
+            .and_then(|p| p.get("update_count"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            + 1;
+        map.insert("update_count".to_string(), Value::from(update_count));
         folded.insert(result_id.to_string(), view);
     }
     folded.into_values().collect()
@@ -2836,5 +2836,270 @@ mod tests {
         let input = serde_json::json!({"goal_id": "g", "events": [forged]}).to_string();
         let proposals = cap.propose(&input);
         assert_eq!(proposals[0].kind, ProposalKind::Gate);
+    }
+
+    // ── residual-branch coverage (cov100) ──────────────────────────────────
+
+    #[test]
+    fn windows_abs_path_edge_cases() {
+        assert!(contains_windows_abs_path(r"C:\Users\me"));
+        assert!(contains_windows_abs_path(r"C:/Users/me"));
+        // colon without a separator (nth(2) is None) → not a drive path
+        assert!(!contains_windows_abs_path("a:"));
+        // double separator → not a drive path
+        assert!(!contains_windows_abs_path("a://x"));
+        // non-separator after the colon → not a drive path
+        assert!(!contains_windows_abs_path("a:x"));
+        assert!(!contains_windows_abs_path("plain words"));
+    }
+
+    #[test]
+    fn safe_refs_reject_empty_and_path_like_values() {
+        assert!(safe_public_ref("", "ref").is_err());
+        assert!(safe_public_ref("/abs/path", "ref").is_err());
+        assert!(safe_public_ref("~/home", "ref").is_err());
+        assert!(safe_public_ref("..", "ref").is_err());
+        assert!(safe_public_ref("file:///x", "ref").is_err());
+        assert!(safe_result_id("", "id").is_err());
+        assert!(safe_public_refs(&["".to_string()], "refs", 10).is_err());
+    }
+
+    #[test]
+    fn node_event_optional_fields_and_errors() {
+        let event = build_explore_node_event(
+            "g",
+            "title",
+            Some("h_1"),
+            Some("hypothesis"),
+            Some("open"),
+            Some("summary text"),
+            Some("blocked reason"),
+            Some("parent_1"),
+            Some("agent-1"),
+            Some("run-1"),
+            &["ref_1".to_string()],
+            &["tag_1".to_string()],
+            Some("old_id"),
+            Some("2026-08-01T00:00:00Z"),
+        )
+        .unwrap();
+        assert_eq!(event["summary"], "summary text");
+        assert_eq!(event["agent_id"], "agent-1");
+        assert_eq!(event["run_id"], "run-1");
+        assert_eq!(event["evidence_refs"], serde_json::json!(["ref_1"]));
+        assert_eq!(event["tags"], serde_json::json!(["tag_1"]));
+        assert_eq!(event["supersedes"], "old_id");
+        assert_eq!(event["parent_id"], "parent_1");
+        assert_eq!(event["blocked_reason"], "blocked reason");
+        // empty title
+        assert!(build_explore_node_event(
+            "g", "   ", None, None, None, None, None, None, None, None, &[], &[], None, None,
+        )
+        .is_err());
+        // blocked_reason carrying private material
+        assert!(build_explore_node_event(
+            "g", "t", None, None, Some("open"), None, Some("api_key: x"), None, None, None,
+            &[], &[], None, None,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn edge_event_optional_fields() {
+        let event = build_explore_edge_event(
+            "g", "h_1", "h_2", "supports", Some("summary"), Some(0.8),
+            Some("agent-1"), Some("run-1"), Some("2026-08-01T00:00:00Z"),
+        )
+        .unwrap();
+        assert_eq!(event["summary"], "summary");
+        assert_eq!(event["agent_id"], "agent-1");
+        assert_eq!(event["run_id"], "run-1");
+        assert_eq!(event["confidence"], 0.8);
+    }
+
+    #[test]
+    fn finding_event_optional_fields_and_errors() {
+        let event = build_explore_finding_event(
+            "g", "finding title", Some("f_1"), Some("h_1"), Some(FINDING_STATUS_CONFIRMED),
+            Some("summary"), Some(0.9), Some("agent-1"), Some("run-1"),
+            &["ref_1".to_string()], &["tag_1".to_string()], Some("old_id"),
+            Some("2026-08-01T00:00:00Z"),
+        )
+        .unwrap();
+        assert_eq!(event["summary"], "summary");
+        assert_eq!(event["agent_id"], "agent-1");
+        assert_eq!(event["run_id"], "run-1");
+        assert_eq!(event["evidence_refs"], serde_json::json!(["ref_1"]));
+        assert_eq!(event["tags"], serde_json::json!(["tag_1"]));
+        assert_eq!(event["supersedes"], "old_id");
+        assert_eq!(event["node_id"], "h_1");
+        // node_id omitted → the field is absent
+        let no_node = build_explore_finding_event(
+            "g", "t", None, None, None, None, None, None, None, &[], &[], None, None,
+        )
+        .unwrap();
+        assert!(no_node.get("node_id").is_none());
+        // empty title
+        assert!(build_explore_finding_event(
+            "g", "   ", None, None, None, None, None, None, None, &[], &[], None, None,
+        )
+        .is_err());
+        // unknown status
+        assert!(build_explore_finding_event(
+            "g", "t", None, None, Some("ghost"), None, None, None, None, &[], &[], None, None,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn validation_covers_edge_finding_and_goal_errors() {
+        let edge = build_explore_edge_event(
+            "g", "h_1", "h_2", "supports", None, Some(0.8), None, None,
+            Some("2026-08-01T00:00:00Z"),
+        )
+        .unwrap();
+        assert_eq!(validate_explore_result_event(&edge, Some("g")).unwrap(), edge);
+        let finding = build_explore_finding_event(
+            "g", "t", Some("f_1"), Some("h_1"), Some(FINDING_STATUS_CONFIRMED), None, None, None, None,
+            &["r".to_string()], &["tag".to_string()], None, Some("2026-08-01T00:00:00Z"),
+        )
+        .unwrap();
+        assert_eq!(validate_explore_result_event(&finding, Some("g")).unwrap(), finding);
+        let n = node(
+            "h_1", NODE_KIND_HYPOTHESIS, NODE_STATUS_OPEN, "claim", "2026-08-01T00:00:00Z", None,
+        );
+        // expected_goal_id None → the goal check is skipped
+        assert_eq!(validate_explore_result_event(&n, None).unwrap(), n);
+        // invalid goal_id in the event
+        let mut bad = n.clone();
+        bad["goal_id"] = Value::String("a/b".into());
+        assert!(validate_explore_result_event(&bad, None).is_err());
+        // a node whose result_id fails to rebuild
+        let mut bad_id = n.clone();
+        bad_id["result_id"] = Value::String("1bad".into());
+        assert!(validate_explore_result_event(&bad_id, None).is_err());
+    }
+
+    #[test]
+    fn fold_skips_missing_result_id() {
+        let events = vec![serde_json::json!({"event_kind": EVENT_KIND_NODE, "title": "no id"})];
+        assert!(fold_by_result_id(&events, EVENT_KIND_NODE).is_empty());
+    }
+
+    #[test]
+    fn node_and_finding_views_surface_lists() {
+        let mut n = node(
+            "h_1", NODE_KIND_HYPOTHESIS, NODE_STATUS_OPEN, "claim", "2026-08-01T00:00:00Z", None,
+        );
+        n["evidence_refs"] = serde_json::json!(["r1"]);
+        n["tags"] = serde_json::json!(["t1"]);
+        let view = node_view(&n, 2);
+        assert_eq!(view["evidence_refs"], serde_json::json!(["r1"]));
+        assert_eq!(view["tags"], serde_json::json!(["t1"]));
+        let mut f = finding(
+            "f_1", "h_1", FINDING_STATUS_TENTATIVE, "probe", Some(0.5), "2026-08-01T00:00:00Z",
+        );
+        f["evidence_refs"] = serde_json::json!(["r2"]);
+        f["tags"] = serde_json::json!(["t2"]);
+        let fv = finding_view(&f);
+        assert_eq!(fv["evidence_refs"], serde_json::json!(["r2"]));
+        assert_eq!(fv["tags"], serde_json::json!(["t2"]));
+    }
+
+    #[test]
+    fn mermaid_and_tree_edge_cases() {
+        assert_eq!(mermaid_label(""), "untitled");
+        assert_eq!(mermaid_id("h-1"), "h_1");
+        assert_eq!(mermaid_id("a.b:c"), "a_b_c");
+        let two = vec![
+            node("h_1", NODE_KIND_HYPOTHESIS, NODE_STATUS_OPEN, "a", "2026-08-01T00:00:00Z", None),
+            node("h_2", NODE_KIND_HYPOTHESIS, NODE_STATUS_OPEN, "b", "2026-08-01T00:00:00Z", None),
+        ];
+        let mermaid = build_explore_mermaid(&two, &[], 1);
+        assert!(mermaid.contains("1 more nodes omitted"));
+        // a tree deeper than the depth limit prunes children
+        let mut h1 = node(
+            "h_1", NODE_KIND_HYPOTHESIS, NODE_STATUS_OPEN, "claim", "2026-08-01T00:00:00Z", None,
+        );
+        h1["parent_id"] = Value::String("area_1".into());
+        let mut area = node(
+            "area_1", NODE_KIND_AREA, NODE_STATUS_OPEN, "area", "2026-08-01T00:00:00Z", None,
+        );
+        area["parent_id"] = Value::String("root_1".into());
+        let root = node(
+            "root_1", NODE_KIND_AREA, NODE_STATUS_OPEN, "root", "2026-08-01T00:00:00Z", None,
+        );
+        let (nodes, _, _) = views(vec![root, area, h1]);
+        let parents = parent_map(&nodes, &[]);
+        let tree = build_tree(&nodes, &parents, 1);
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0]["node_id"], "root_1");
+        assert!(tree[0]["children"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn graph_view_tag_filter_and_ancestor_cycle_break() {
+        let events = vec![
+            node("area_1", NODE_KIND_AREA, NODE_STATUS_OPEN, "root area", &at(1), None),
+            node("h_1", NODE_KIND_HYPOTHESIS, NODE_STATUS_RESOLVED, "supported", &at(1), None),
+        ];
+        let (nodes, _, edges) = views(events);
+        // tags-only filter (no statuses) → status block skipped
+        let view = build_explore_graph_view(&nodes, &edges, &[], &["ghost"], true, 60).unwrap();
+        assert_eq!(view["graph_counts"]["node_count"], 0);
+        // no filter at all → every node selected
+        let view = build_explore_graph_view(&nodes, &edges, &[], &[], true, 60).unwrap();
+        assert_eq!(view["graph_counts"]["node_count"], 2);
+        // an ancestor cycle breaks the walk instead of looping forever
+        let mut a = node(
+            "a", NODE_KIND_HYPOTHESIS, NODE_STATUS_OPEN, "A", &at(1), None,
+        );
+        a["parent_id"] = Value::String("b".into());
+        let mut b = node(
+            "b", NODE_KIND_HYPOTHESIS, NODE_STATUS_OPEN, "B", &at(1), None,
+        );
+        b["parent_id"] = Value::String("a".into());
+        let (nodes, _, edges) = views(vec![a, b]);
+        let view = build_explore_graph_view(&nodes, &edges, &[NODE_STATUS_OPEN], &[], true, 60).unwrap();
+        assert!(view["graph_counts"]["node_count"].as_u64().unwrap() >= 2);
+    }
+
+    #[test]
+    fn verification_skips_unrelated_and_activity_edges() {
+        let (nodes, findings, edges) = views(vec![
+            node("h_1", NODE_KIND_HYPOTHESIS, NODE_STATUS_OPEN, "claim", &at(1), None),
+            finding("f_other", "h_other", FINDING_STATUS_CONFIRMED, "other", None, &at(2)),
+            {
+                let mut f = finding("f_ghost", "h_1", FINDING_STATUS_TENTATIVE, "ghost", None, &at(2));
+                f["status"] = Value::String("ghost-status".into());
+                f
+            },
+            edge("e_a", "answers", "e_b", None, &at(2)),
+            edge("h_1", "leads_to", "e_x", None, &at(2)),
+        ]);
+        let record = verify(nodes.iter().find(|n| n["node_id"] == "h_1").unwrap(), &findings, &edges);
+        // the incident `leads_to` edge counts as activity → testing
+        assert_eq!(record["verification_state"], VERIFICATION_TESTING);
+    }
+
+    #[test]
+    fn strip_claim_prefix_is_case_insensitive() {
+        assert_eq!(ExploreCapability::strip_claim_prefix("Hypothesis: bigger"), "bigger");
+        assert_eq!(ExploreCapability::strip_claim_prefix("HYPOTHESIS: bigger"), "bigger");
+        assert_eq!(ExploreCapability::strip_claim_prefix("hypothesis:bigger"), "bigger");
+    }
+
+    #[test]
+    fn propose_testing_hypothesis_advances_experiment() {
+        let cap = ExploreCapability;
+        let testing_h = node(
+            "h_1", NODE_KIND_HYPOTHESIS, NODE_STATUS_EXPLORING, "claim", &at(1), None,
+        );
+        let input = serde_json::json!({"goal_id": "g", "events": [testing_h]}).to_string();
+        let proposals = cap.propose(&input);
+        assert_eq!(
+            proposals[0].todo.as_ref().unwrap().action_kind.as_deref(),
+            Some("advance_exploration_experiment")
+        );
     }
 }
