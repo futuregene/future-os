@@ -115,4 +115,29 @@ mod tests {
         assert_eq!(v["rules"][0]["action"], "deny"); // existing kept
         assert_eq!(v["rules"][1]["path"], "out/*"); // new appended
     }
+
+    #[test]
+    fn rejects_invalid_access_scope() {
+        let ws = temp_ws("badaccess");
+        let err = append_workspace_allow_rule(ws.to_string_lossy().as_ref(), "x/*", "execute")
+            .unwrap_err();
+        assert!(err.to_string().contains("approval access"));
+        // Nothing was written for an invalid scope.
+        assert!(!ws.join(".future/approval_rule.json").exists());
+    }
+
+    #[test]
+    fn non_array_rules_field_is_rebuilt() {
+        let ws = temp_ws("nonarray");
+        std::fs::create_dir_all(ws.join(".future")).unwrap();
+        std::fs::write(
+            ws.join(".future/approval_rule.json"),
+            r#"{"version":1,"rules":"not-an-array"}"#,
+        )
+        .unwrap();
+        append_workspace_allow_rule(ws.to_string_lossy().as_ref(), "out/*", "write").unwrap();
+        let v = read(&ws);
+        assert!(v["rules"].is_array());
+        assert_eq!(v["rules"][0]["path"], "out/*");
+    }
 }

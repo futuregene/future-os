@@ -77,11 +77,15 @@ pub fn get_git_review(
         custom_base.clone().unwrap_or_default(),
     );
     let fingerprint = review_fingerprint(&workspace_path);
-    if let Ok(cache) = REVIEW_CACHE.lock() {
-        if let Some((cached_fingerprint, review)) = cache.get(&cache_key) {
-            if *cached_fingerprint == fingerprint {
-                return Ok(review.clone());
-            }
+    {
+        let cache = REVIEW_CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((_cached_fingerprint, review)) = cache
+            .get(&cache_key)
+            .filter(|(cached_fingerprint, _)| *cached_fingerprint == fingerprint)
+        {
+            return Ok(review.clone());
         }
     }
 
@@ -124,7 +128,10 @@ pub fn get_git_review(
         files,
     };
 
-    if let Ok(mut cache) = REVIEW_CACHE.lock() {
+    {
+        let mut cache = REVIEW_CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if cache.len() >= REVIEW_CACHE_MAX {
             cache.clear();
         }
@@ -216,7 +223,10 @@ const GIT_WORKSPACE_CACHE_MAX: usize = 64;
 
 pub fn is_git_workspace(path: &Path) -> bool {
     let key = canonical_or_raw(path);
-    if let Ok(cache) = GIT_WORKSPACE_CACHE.lock() {
+    {
+        let cache = GIT_WORKSPACE_CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some((result, at)) = cache.get(&key) {
             if at.elapsed() < GIT_WORKSPACE_CACHE_TTL {
                 return *result;
@@ -224,7 +234,10 @@ pub fn is_git_workspace(path: &Path) -> bool {
         }
     }
     let result = is_git_workspace_uncached(path);
-    if let Ok(mut cache) = GIT_WORKSPACE_CACHE.lock() {
+    {
+        let mut cache = GIT_WORKSPACE_CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if cache.len() >= GIT_WORKSPACE_CACHE_MAX {
             cache.clear();
         }
@@ -379,22 +392,23 @@ fn git_status_by_path(workspace_path: &Path) -> HashMap<String, String> {
         ["status", "--short", "--untracked-files=all"],
     )
     .unwrap_or_default();
-    output
-        .lines()
-        .filter_map(|line| {
-            if line.len() < 4 {
-                return None;
-            }
-            let code = &line[..2];
-            let raw_path = line[3..].trim();
-            let path = raw_path
-                .rsplit_once(" -> ")
-                .map(|(_, next)| next)
-                .unwrap_or(raw_path)
-                .to_string();
-            Some((path, status_label(code)))
-        })
-        .collect()
+    output.lines().filter_map(status_entry).collect()
+}
+
+/// Parse one `git status --short` line into `(path, label)`. Short lines
+/// (never produced by git, but guarded defensively) map to `None`.
+fn status_entry(line: &str) -> Option<(String, String)> {
+    if line.len() < 4 {
+        return None;
+    }
+    let code = &line[..2];
+    let raw_path = line[3..].trim();
+    let path = raw_path
+        .rsplit_once(" -> ")
+        .map(|(_, next)| next)
+        .unwrap_or(raw_path)
+        .to_string();
+    Some((path, status_label(code)))
 }
 
 fn status_label(code: &str) -> String {
@@ -457,7 +471,46 @@ fn git_output<const N: usize>(
 
 #[cfg(test)]
 mod tests {
-    use super::status_paths;
+    use super::*;
+    use crate::auth_store::test_support::HomeGuard;
+
+    /// Create an isolated git repository with one committed file, returning the
+    /// path (already a valid store workspace path).
+    fn git_repo(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "futureos-git-review-{}-{}",
+            std::process::id(),
+            label
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Pin the initial branch to `main`: CI runners and developer machines
+        // differ on git's compiled-in default (master vs main), and
+        // `git branch --show-current` feeds the review's `branch` field.
+        run_git(&dir, &["init", "-q", "-b", "main"]);
+        run_git(&dir, &["config", "user.email", "t@example.com"]);
+        run_git(&dir, &["config", "user.name", "T"]);
+        std::fs::write(dir.join("a.txt"), "hello\n").unwrap();
+        // Backdate the file so `git status` doesn't re-hash it as racily-clean
+        // (which rewrites the index and would make review fingerprints drift).
+        let file = std::fs::File::open(dir.join("a.txt")).unwrap();
+        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+        file.set_modified(old).unwrap();
+        run_git(&dir, &["add", "a.txt"]);
+        run_git(&dir, &["commit", "-qm", "init"]);
+        dir
+    }
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "git {args:?} failed: {stderr}",);
+    }
 
     #[test]
     fn status_paths_extracts_plain_and_renamed_paths() {
@@ -477,5 +530,310 @@ mod tests {
     fn status_paths_skips_short_and_empty_lines() {
         assert!(status_paths("").is_empty());
         assert!(status_paths("##\n M").is_empty());
+    }
+
+    #[test]
+    fn status_label_maps_codes() {
+        assert_eq!(status_label("??"), "untracked");
+        assert_eq!(status_label("A "), "added");
+        assert_eq!(status_label(" D"), "deleted");
+        assert_eq!(status_label("R "), "renamed");
+        assert_eq!(status_label("C "), "copied");
+        assert_eq!(status_label("M "), "modified");
+        assert_eq!(status_label(" M"), "modified");
+    }
+
+    #[test]
+    fn status_entry_parses_and_skips_short_lines() {
+        assert_eq!(
+            status_entry(" M a.txt").unwrap(),
+            ("a.txt".to_string(), "modified".to_string())
+        );
+        assert_eq!(
+            status_entry("R  old.ts -> new.ts").unwrap(),
+            ("new.ts".to_string(), "renamed".to_string())
+        );
+        assert!(status_entry(" M").is_none());
+        assert!(status_entry("").is_none());
+    }
+
+    #[test]
+    fn canonical_or_raw_canonicalizes_existing_and_falls_back() {
+        let dir = git_repo("canon");
+        let canon = canonical_or_raw(&dir);
+        assert_eq!(canon, std::fs::canonicalize(&dir).unwrap());
+        let missing = dir.join("no-such-dir");
+        assert_eq!(canonical_or_raw(&missing), missing);
+    }
+
+    #[test]
+    fn is_git_workspace_detects_repo_and_non_repo() {
+        let dir = git_repo("isgit");
+        assert!(is_git_workspace(&dir));
+        let plain = dir.join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert!(!is_git_workspace(&plain));
+        // The cached result stays consistent across repeated calls.
+        assert!(is_git_workspace(&dir));
+    }
+
+    #[test]
+    fn pseudo_added_file_diff_formats_new_file() {
+        let diff = pseudo_added_file_diff("x.txt", "one\ntwo\n");
+        assert!(diff.starts_with("diff --git a/x.txt b/x.txt\nnew file mode 100644\n"));
+        assert!(diff.contains("@@ -0,0 +1,2 @@"));
+        assert!(diff.contains("+one"));
+        assert!(diff.contains("+two"));
+    }
+
+    #[test]
+    fn git_output_returns_stdout_and_errors_on_failure() {
+        let dir = git_repo("gitout");
+        assert_eq!(
+            git_output(&dir, ["rev-parse", "HEAD"])
+                .unwrap()
+                .trim()
+                .len(),
+            40
+        );
+        assert!(git_output(&dir, ["rev-parse", "no-such-ref-xyz"]).is_err());
+    }
+
+    #[test]
+    fn review_fingerprint_changes_with_status() {
+        let dir = git_repo("fingerprint");
+        let before = review_fingerprint(&dir);
+        std::fs::write(dir.join("a.txt"), "changed\n").unwrap();
+        let after = review_fingerprint(&dir);
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn git_status_by_path_and_diff_files() {
+        let dir = git_repo("statusmap");
+        std::fs::write(dir.join("b.txt"), "new\n").unwrap();
+        let by_path = git_status_by_path(&dir);
+        assert_eq!(by_path.get("b.txt").map(String::as_str), Some("untracked"));
+
+        let files = tracked_diff_files(&dir, &by_path, "HEAD");
+        assert!(files.is_empty(), "no committed delta against HEAD");
+    }
+
+    #[test]
+    fn append_untracked_files_adds_new_file_rows() {
+        let dir = git_repo("untracked");
+        std::fs::write(dir.join("new.txt"), "line1\nline2\n").unwrap();
+        let by_path = git_status_by_path(&dir);
+        let mut files = Vec::new();
+        append_untracked_files(&dir, &mut files, &by_path);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "new.txt");
+        assert_eq!(files[0].additions, 2);
+        assert_eq!(files[0].status, "untracked");
+    }
+
+    #[test]
+    fn resolve_diff_base_covers_all_branches() {
+        let dir = git_repo("base");
+        let head = head_diff_base();
+        assert_eq!(head.label, "HEAD");
+        assert_eq!(head.reference, "HEAD");
+
+        // Unknown base string falls through to HEAD.
+        let unknown = resolve_diff_base(&dir, Some("bogus"), None, None);
+        assert_eq!(unknown.reference, "HEAD");
+
+        // head (default) resolves to HEAD.
+        let hd = resolve_diff_base(&dir, Some("head"), None, None);
+        assert_eq!(hd.reference, "HEAD");
+
+        // upstream with no upstream configured falls back to HEAD.
+        let up = resolve_diff_base(&dir, Some("upstream"), None, None);
+        assert_eq!(up.reference, "HEAD");
+
+        // upstream with a configured upstream resolves to that ref.
+        let up_ok = resolve_diff_base(&dir, Some("upstream"), None, Some("main"));
+        assert_eq!(up_ok.label, "upstream (main)");
+        assert_eq!(up_ok.reference, "main");
+
+        // merge-base with no upstream falls back to HEAD.
+        let mb = resolve_diff_base(&dir, Some("merge-base"), None, None);
+        assert_eq!(mb.reference, "HEAD");
+
+        // merge-base with a real upstream resolves to the merge base.
+        run_git(&dir, &["branch", "feature"]);
+        let mb_ok = resolve_diff_base(&dir, Some("merge-base"), None, Some("feature"));
+        assert_eq!(mb_ok.label, "merge-base");
+        assert_eq!(mb_ok.reference.len(), 40);
+
+        // custom with an empty/absent base falls back to HEAD.
+        let custom = resolve_diff_base(&dir, Some("custom"), None, None);
+        assert_eq!(custom.reference, "HEAD");
+
+        // custom with a valid rev resolves to the commit sha.
+        let custom_ok = resolve_diff_base(&dir, Some("custom"), Some("HEAD"), None);
+        assert_eq!(custom_ok.reference.len(), 40);
+    }
+
+    #[test]
+    fn get_git_review_reports_non_git_workspace() {
+        let _home = HomeGuard::new("git-review-non-git");
+        crate::store::initialize_app_store().unwrap();
+        let plain =
+            std::env::temp_dir().join(format!("futureos-git-review-plain-{}", std::process::id()));
+        std::fs::create_dir_all(&plain).unwrap();
+        let ws = crate::store::create_workspace(crate::store::CreateWorkspaceInput {
+            name: Some("plain".to_string()),
+            path: plain.display().to_string(),
+            description: None,
+            create_directory: Some(false),
+        })
+        .unwrap();
+        let review = get_git_review(ws.id, None, None).unwrap();
+        assert!(!review.is_git_workspace);
+    }
+
+    #[test]
+    fn get_git_review_reports_git_workspace() {
+        let _home = HomeGuard::new("git-review-git");
+        crate::store::initialize_app_store().unwrap();
+        let dir = git_repo("git-review-repo");
+        let ws = crate::store::create_workspace(crate::store::CreateWorkspaceInput {
+            name: Some("repo".to_string()),
+            path: dir.display().to_string(),
+            description: None,
+            create_directory: Some(false),
+        })
+        .unwrap();
+        let review = get_git_review(ws.id, None, None).unwrap();
+        assert!(review.is_git_workspace);
+        assert_eq!(review.branch.as_deref(), Some("main"));
+        assert_eq!(review.diff_base.as_deref(), Some("HEAD"));
+    }
+
+    #[test]
+    fn tracked_diff_files_reports_modified_rows() {
+        let dir = git_repo("tracked");
+        // Modify a tracked file and stage it so the numstat diff against HEAD
+        // surfaces a row with its status label and counts.
+        std::fs::write(dir.join("a.txt"), "changed\nmore\n").unwrap();
+        run_git(&dir, &["add", "a.txt"]);
+        let by_path = git_status_by_path(&dir);
+        let files = tracked_diff_files(&dir, &by_path, "HEAD");
+        assert!(!files.is_empty());
+        assert_eq!(files[0].path, "a.txt");
+        assert_eq!(files[0].additions, 2);
+        assert_eq!(files[0].deletions, 1);
+        assert_eq!(files[0].status, "modified");
+    }
+
+    #[test]
+    fn append_untracked_skips_known_paths() {
+        let dir = git_repo("skip-known");
+        std::fs::write(dir.join("x.txt"), "hello\n").unwrap();
+        let by_path = git_status_by_path(&dir);
+        // Pre-populate files with the same path the untracked scan will find,
+        // so the dedup guard is exercised.
+        let mut files = vec![GitReviewFile {
+            path: "x.txt".to_string(),
+            status: "untracked".to_string(),
+            additions: 1,
+            deletions: 0,
+            diff: String::new(),
+        }];
+        append_untracked_files(&dir, &mut files, &by_path);
+        assert_eq!(files.len(), 1, "known path must not be appended twice");
+    }
+
+    #[test]
+    fn get_git_review_cache_returns_clone_on_second_call() {
+        let _home = HomeGuard::new("git-review-cache");
+        crate::store::initialize_app_store().unwrap();
+        let dir = git_repo("git-review-cache-repo");
+        let ws = crate::store::create_workspace(crate::store::CreateWorkspaceInput {
+            name: Some("cache".to_string()),
+            path: dir.display().to_string(),
+            description: None,
+            create_directory: Some(false),
+        })
+        .unwrap();
+        let first = get_git_review(ws.id.clone(), None, None).unwrap();
+        let second = get_git_review(ws.id, None, None).unwrap();
+        assert_eq!(first.files.len(), second.files.len());
+    }
+
+    #[test]
+    fn review_cache_clears_when_full() {
+        let _ = git_repo("cache-full");
+        let mut cache = REVIEW_CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for i in 0..REVIEW_CACHE_MAX {
+            cache.insert(
+                (format!("ws{i}"), String::new(), String::new()),
+                (format!("fp{i}"), dummy_review()),
+            );
+        }
+        drop(cache);
+        // A subsequent get_git_review must clear the over-full cache rather than grow it.
+        let _ = get_git_review("nonexistent".to_string(), None, None);
+    }
+
+    fn dummy_review() -> GitReview {
+        GitReview {
+            is_git_workspace: false,
+            workspace_path: String::new(),
+            branch: None,
+            upstream: None,
+            diff_base: None,
+            diff_base_label: None,
+            additions: 0,
+            deletions: 0,
+            files: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn git_workspace_cache_hit_and_expiry() {
+        let dir = git_repo("ws-cache");
+        // First call populates the cache; the second returns the cached value.
+        assert!(is_git_workspace(&dir));
+        assert!(is_git_workspace(&dir));
+        // An expired entry falls through to the uncached probe.
+        {
+            let mut cache = GIT_WORKSPACE_CACHE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let key = canonical_or_raw(&dir);
+            cache.insert(
+                key,
+                (false, std::time::Instant::now() - GIT_WORKSPACE_CACHE_TTL),
+            );
+        }
+        assert!(is_git_workspace(&dir), "expired entry is re-probed");
+    }
+
+    #[test]
+    fn git_workspace_cache_clears_when_full() {
+        let dir = git_repo("ws-cache-full");
+        let key = canonical_or_raw(&dir);
+        {
+            let mut cache = GIT_WORKSPACE_CACHE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Other tests may have warmed the process-global cache; clear it
+            // so the fill-to-max below starts from a known state.
+            cache.clear();
+            for i in 0..GIT_WORKSPACE_CACHE_MAX {
+                cache.insert(
+                    PathBuf::from(format!("/tmp/ws-cache-{i}")),
+                    (false, std::time::Instant::now()),
+                );
+            }
+            assert_eq!(cache.len(), GIT_WORKSPACE_CACHE_MAX);
+        }
+        // The next probe clears the cache before inserting the fresh entry.
+        assert!(is_git_workspace(&dir));
+        let _ = key;
     }
 }

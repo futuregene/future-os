@@ -152,6 +152,15 @@ mod tests {
     }
 
     #[test]
+    fn normalize_numstat_path_brace_without_arrow_falls_back() {
+        // A `{...}` that contains no `=>` is not a rename brace form; the arrow
+        // outside it still resolves via the plain `rsplit_once` fallback.
+        assert_eq!(normalize_numstat_path("old => new/{x}"), "new/{x}",);
+        // A `{` with no closing `}` also falls through to the plain fallback.
+        assert_eq!(normalize_numstat_path("old => new/{x"), "new/{x",);
+    }
+
+    #[test]
     fn split_maps_by_new_path() {
         let patch = "diff --git a/src/a.rs b/src/a.rs\n\
                      index 111..222 100644\n\

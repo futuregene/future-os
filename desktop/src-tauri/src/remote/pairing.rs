@@ -468,7 +468,12 @@ mod http_tests {
         assert!(creds.desktop_id.starts_with("desktop_"));
         assert_eq!(creds.nats_url, "nats://127.0.0.1:4222");
         assert!(creds.jwt_expires_at > now_secs());
-        assert_eq!(code_expires_at, Some(now_secs() + 600));
+        // The mock stamps `exp = now + 600` when it builds the pair-code
+        // response; a second boundary can pass before this assertion runs, so
+        // allow the one-second skew instead of an exact `now + 600`.
+        let expires_at = code_expires_at.expect("code expiry");
+        let delta = expires_at - now_secs();
+        assert!((599..=600).contains(&delta), "expiry delta {delta}");
 
         let requests = platform.requests();
         assert_eq!(requests.len(), 1);
