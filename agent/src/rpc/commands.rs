@@ -4425,6 +4425,14 @@ mod tests {
             "default",
             "mock",
             vec![
+                // A session_info entry with a model makes the forked model
+                // non-empty, so clone also syncs it into the new session's
+                // agent loop.
+                crate::session::SessionEntry::session_info(
+                    serde_json::json!({"cwd": "/tmp", "model": "mock"}),
+                    "mock".to_string(),
+                    "high".to_string(),
+                ),
                 crate::session::SessionEntry::new_user("user", serde_json::json!("clone me")),
                 crate::session::SessionEntry::new_assistant(serde_json::json!("reply"), vec![]),
             ],
