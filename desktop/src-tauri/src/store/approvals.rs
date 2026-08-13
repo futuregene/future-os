@@ -184,3 +184,155 @@ pub fn list_review_file_changes(
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(crate::AppError::from)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::db::test_support::guarded_conn;
+
+    /// ws1/t1/r1 plus a pending approval fixture scaffold.
+    fn seed_run(conn: &rusqlite::Connection) {
+        conn.execute_batch(
+            "INSERT INTO workspaces (
+                 id, name, kind, path, cleanup_status, created_at, updated_at
+             ) VALUES ('ws1', 'WS', 'temporary', '/tmp/ws1', 'active', 1, 1);
+             INSERT INTO threads (
+                 id, workspace_id, mode, title, created_at, updated_at
+             ) VALUES ('t1', 'ws1', 'chat', 'T', 1, 1);
+             INSERT INTO runs (id, thread_id, status, created_at, updated_at)
+             VALUES ('r1', 't1', 'running', 1, 1);",
+        )
+        .expect("seed run");
+    }
+
+    fn ensure_input() -> EnsureApprovalRequestInput {
+        EnsureApprovalRequestInput {
+            approval_request_id: Some("ap1".to_string()),
+            run_id: "r1".to_string(),
+            tool_call_id: Some("tc1".to_string()),
+            kind: "shell".to_string(),
+            title: "Deploy".to_string(),
+            summary: Some("Ship it".to_string()),
+            risk_level: Some("high".to_string()),
+            requested_action: Some("deploy --prod".to_string()),
+            action_category: Some("command".to_string()),
+            action_payload: Some("{}".to_string()),
+            sandbox_boundary: Some("workspace".to_string()),
+            save_suggestion: None,
+            reviewer: None,
+        }
+    }
+
+    #[test]
+    fn ensure_inserts_once_and_dedupes_by_id_or_tool_call() {
+        let (_home, conn) = guarded_conn("approvals_ensure");
+        seed_run(&conn);
+        drop(conn);
+
+        ensure_approval_request(ensure_input()).expect("first insert");
+        // Same explicit id → dedup…
+        ensure_approval_request(ensure_input()).expect("dedup by id");
+        // …and the tool_call+kind path dedups a request without an id.
+        let mut anon = ensure_input();
+        anon.approval_request_id = None;
+        ensure_approval_request(anon).expect("dedup by tool call");
+
+        let pending = list_pending_approval_requests().expect("pending");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, "ap1");
+        assert_eq!(pending[0].reviewer, "user", "default reviewer");
+
+        let for_thread = list_approval_requests("t1").expect("list");
+        assert_eq!(for_thread.len(), 1);
+        assert_eq!(for_thread[0].summary.as_deref(), Some("Ship it"));
+        assert!(list_approval_requests("t_other").expect("list").is_empty());
+    }
+
+    #[test]
+    fn ensure_fails_when_the_run_is_missing() {
+        let (_home, conn) = guarded_conn("approvals_ensure_missing");
+        drop(conn);
+        assert!(ensure_approval_request(ensure_input()).is_err());
+    }
+
+    #[test]
+    fn decide_flips_pending_once_and_rejects_bad_status() {
+        let (_home, conn) = guarded_conn("approvals_decide");
+        seed_run(&conn);
+        drop(conn);
+        ensure_approval_request(ensure_input()).expect("insert");
+
+        let bad = decide_approval_request(DecideApprovalRequestInput {
+            approval_request_id: "ap1".to_string(),
+            status: "maybe".to_string(),
+            decision_note: None,
+        });
+        assert!(bad.is_err(), "unknown status rejected");
+
+        let decided = decide_approval_request(DecideApprovalRequestInput {
+            approval_request_id: "ap1".to_string(),
+            status: "approved".to_string(),
+            decision_note: Some("lgtm".to_string()),
+        })
+        .expect("decide");
+        assert_eq!(decided.status, "approved");
+        assert_eq!(decided.decision_note.as_deref(), Some("lgtm"));
+        assert!(decided.decided_at.is_some());
+
+        // A late duplicate decision doesn't rewrite the record.
+        let again = decide_approval_request(DecideApprovalRequestInput {
+            approval_request_id: "ap1".to_string(),
+            status: "rejected".to_string(),
+            decision_note: None,
+        })
+        .expect("late decide returns the record");
+        assert_eq!(again.status, "approved", "CAS kept the first decision");
+
+        assert!(list_pending_approval_requests()
+            .expect("pending")
+            .is_empty());
+    }
+
+    #[test]
+    fn decide_missing_request_errors() {
+        let (_home, conn) = guarded_conn("approvals_decide_missing");
+        drop(conn);
+        let result = decide_approval_request(DecideApprovalRequestInput {
+            approval_request_id: "ghost".to_string(),
+            status: "approved".to_string(),
+            decision_note: None,
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn list_review_file_changes_orders_by_creation() {
+        let (_home, conn) = guarded_conn("approvals_file_changes");
+        conn.execute_batch(
+            "INSERT INTO workspaces (
+                 id, name, kind, path, cleanup_status, created_at, updated_at
+             ) VALUES ('ws1', 'WS', 'temporary', '/tmp/ws1', 'active', 1, 1);
+             INSERT INTO threads (
+                 id, workspace_id, mode, title, created_at, updated_at
+             ) VALUES ('t1', 'ws1', 'chat', 'T', 1, 1);
+             INSERT INTO review_changesets (
+                 id, thread_id, title, status, created_at, updated_at
+             ) VALUES ('cs1', 't1', 'Changes', 'ready', 1, 1);
+             INSERT INTO review_file_changes (
+                 id, changeset_id, target_type, change_type, path, created_at, updated_at
+             ) VALUES
+                 ('fc2', 'cs1', 'file', 'edit', 'b.md', 2, 2),
+                 ('fc1', 'cs1', 'file', 'add', 'a.md', 1, 1);",
+        )
+        .expect("seed file changes");
+        drop(conn);
+
+        let changes = list_review_file_changes("cs1").expect("list");
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0].id, "fc1");
+        assert_eq!(changes[1].id, "fc2");
+        assert!(list_review_file_changes("cs_ghost")
+            .expect("list")
+            .is_empty());
+    }
+}
