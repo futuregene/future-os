@@ -144,8 +144,30 @@ jest.mock("expo-crypto", () => ({
   digest: jest.fn(),
 }));
 
+// Only `Image.getSize` needs stubbing, but a bare `{ Image }` mock strips the
+// `Platform`/`TurboModuleRegistry`/`NativeEventEmitter` exports that
+// `expo-modules-core` reads from react-native. Expo installs a lazy global
+// `fetch` polyfill (jest-expo setup); its first access loads `expo-modules-core`,
+// whose `Platform.ts` evaluates `ReactNativePlatform.select` at module scope and
+// crashes with "Cannot read properties of undefined (reading 'select')" when the
+// real surface is stripped. `jest.requireActual("react-native")` can't be spread
+// here because that eagerly evaluates the whole index (including the `DevMenu`
+// getter -> `TurboModuleRegistry.getEnforcing('DevMenu')` -> invariant), so
+// provide only the exports expo-modules-core actually touches at load time.
 jest.mock("react-native", () => ({
   __esModule: true,
+  Platform: {
+    OS: "ios",
+    select: (specifics: Record<string, unknown>) =>
+      specifics?.ios ?? specifics?.native ?? specifics?.default,
+  },
+  TurboModuleRegistry: {
+    get: () => null,
+    getEnforcing: () => {
+      throw new Error("native module not found");
+    },
+  },
+  NativeEventEmitter: class {},
   Image: { getSize: jest.fn() },
 }));
 
