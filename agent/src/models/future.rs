@@ -456,20 +456,23 @@ fn load_future_models_cache() -> Option<FutureModelsCache> {
 
 /// Save future models cache to disk (internal helper).
 fn save_future_models_cache_inner(cache: &FutureModelsCache) {
-    if let Ok(json) = serde_json::to_string_pretty(cache) {
-        let path = std::path::PathBuf::from(future_models_cache_path());
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        // Atomic replace: write a sibling temp file and rename it over the
-        // target. A plain truncate+write lets a concurrent reader (the GUI
-        // polls models every 10s; a test reading right after a background
-        // refresh) observe an empty/partial file. Rename swaps the contents
-        // atomically within the same directory on all supported platforms.
-        let tmp = path.with_extension("tmp");
-        if std::fs::write(&tmp, json).is_ok() {
-            let _ = std::fs::rename(&tmp, &path);
-        }
+    // `FutureModelsCache` is a flat serializable struct (string-keyed maps,
+    // integer/bool/string fields); serde_json cannot fail here, so an
+    // `if let Ok` guard would leave an unreachable Err arm.
+    let json =
+        serde_json::to_string_pretty(cache).expect("FutureModelsCache serialization cannot fail");
+    let path = std::path::PathBuf::from(future_models_cache_path());
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    // Atomic replace: write a sibling temp file and rename it over the
+    // target. A plain truncate+write lets a concurrent reader (the GUI
+    // polls models every 10s; a test reading right after a background
+    // refresh) observe an empty/partial file. Rename swaps the contents
+    // atomically within the same directory on all supported platforms.
+    let tmp = path.with_extension("tmp");
+    if std::fs::write(&tmp, json).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
     }
 }
 
@@ -1198,5 +1201,21 @@ mod tests {
         )
         .unwrap();
         assert!(!sync_future_models_cache());
+    }
+
+    #[test]
+    fn save_cache_inner_ignores_write_failure() {
+        let _guard = future_test_lock();
+        let home = crate::test_support::TestHome::new();
+        reset_future_cache_state();
+        // Make the cache's parent directory a plain file so both the
+        // create_dir_all and the temp write fail (no panic; rename skipped).
+        let agent_dir = home.path().join(".future/agent");
+        std::fs::create_dir_all(home.path().join(".future")).unwrap();
+        std::fs::write(&agent_dir, "not a dir").unwrap();
+        save_future_models_cache_inner(&FutureModelsCache {
+            fetched_at: 1,
+            models: vec![],
+        });
     }
 }

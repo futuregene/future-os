@@ -275,9 +275,12 @@ fn classify_entry(line: &str) -> EntryKind<'_> {
         return EntryKind::Malformed;
     };
     let after_open = &rest[open + 2..];
-    let Some(close) = after_open.find(')') else {
-        return EntryKind::Malformed;
-    };
+    // The date suffix guarantees a closing paren: `after_open` is a suffix of
+    // a line ending in `(YYYY-MM-DD)`, so it always contains that `)`. A
+    // let-else here would leave an unreachable `Malformed` arm.
+    let close = after_open
+        .find(')')
+        .expect("date suffix guarantees a closing paren");
     let target = &after_open[..close];
     if target.is_empty() || !after_open[close + 1..].contains(" — ") {
         return EntryKind::Malformed;
@@ -755,6 +758,16 @@ mod tests {
         // No date suffix.
         assert!(matches!(
             classify_entry("- [user] prefers pnpm"),
+            EntryKind::Malformed
+        ));
+        // Not a list item at all (missing the `- [` prefix).
+        assert!(matches!(
+            classify_entry("not a list item (2026-08-12)"),
+            EntryKind::Malformed
+        ));
+        // A list item with no `](` link delimiter after the bracket.
+        assert!(matches!(
+            classify_entry("- [foo bar (2026-08-12)"),
             EntryKind::Malformed
         ));
     }
