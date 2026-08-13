@@ -7,13 +7,13 @@
 mod agent;
 #[cfg(test)]
 pub(crate) mod agent_mock;
-#[cfg(test)]
-pub(crate) mod ipc_harness;
 mod app;
 mod approvals;
 mod artifacts;
 mod debug;
 mod files;
+#[cfg(test)]
+pub(crate) mod ipc_harness;
 mod login;
 mod providers;
 mod references;
