@@ -169,7 +169,8 @@ export function ChatScreen() {
   const [approvalError, setApprovalError] = useState<string | null>(null);
   // History load is in flight (selectSession holds busy until it lands) — show
   // a spinner instead of flashing the "no history" empty state.
-  const loadingHistory = !remote.draft && remote.busy && timelineItems.length === 0;
+  const loadingHistory =
+    !remote.draft && (remote.busy || remote.timelinePending) && timelineItems.length === 0;
   // The first content render snaps to the end without animation; only later
   // appends (streaming, new messages) scroll animated.
   const landedRef = useRef(false);
@@ -548,7 +549,10 @@ export function ChatScreen() {
             keyExtractor={item => item.id}
             ListEmptyComponent={
               loadingHistory ? (
-                <ActivityIndicator color={colors.accent} />
+                <View style={styles.loadingState}>
+                  <ActivityIndicator color={colors.accent} />
+                  <Text style={styles.empty}>{t("chat.loadingHistory")}</Text>
+                </View>
               ) : (
                 <Text style={styles.empty}>{t("chat.noHistory")}</Text>
               )
@@ -1005,6 +1009,7 @@ const styles = StyleSheet.create({
   timeline: { padding: spacing.lg },
   emptyTimeline: { flexGrow: 1, alignItems: "center", justifyContent: "center" },
   empty: { color: colors.inkMuted, fontSize: 14 },
+  loadingState: { alignItems: "center", gap: spacing.sm, paddingVertical: spacing.xl },
   itemGap: { height: spacing.md },
   offlineComposer: {
     marginHorizontal: spacing.md,

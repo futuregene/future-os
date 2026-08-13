@@ -203,6 +203,7 @@ interface RemoteContextValue {
   selectedTitle: string;
   draft: boolean;
   timeline: TimelineState;
+  timelinePending: boolean;
   modelId: string;
   thinkingLevel: ThinkingLevel;
   approvalTier: string;
@@ -1239,6 +1240,13 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     () => timelines[selectedSessionId || ""] ?? emptyTimeline(),
     [selectedSessionId, timelines],
   );
+  // True while the selected session's timeline has been requested but not yet
+  // committed (its first reconcile still in flight). Distinguishes "loading"
+  // from "genuinely empty" in the transcript.
+  const timelinePending = useMemo(
+    () => selectedSessionId !== "" && !draft && timelines[selectedSessionId] === undefined,
+    [selectedSessionId, draft, timelines],
+  );
   const selectedTitle =
     sessions.find(session => session.sessionId === selectedSessionId)?.title ?? "";
 
@@ -1259,6 +1267,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       selectedTitle,
       draft,
       timeline,
+      timelinePending,
       modelId,
       thinkingLevel,
       approvalTier,
@@ -1323,6 +1332,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       downloadAttachment,
       sessions,
       timeline,
+      timelinePending,
       unreadSessions,
       workspaces,
       setModel,
