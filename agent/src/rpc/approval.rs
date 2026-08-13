@@ -924,7 +924,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
 
     #[test]
     fn escalation_suggests_parent_for_nonsecret_but_not_secret() {
-        let _home_guard = crate::HOME_ENV_LOCK.lock().unwrap();
+        let _home_guard = crate::test_support::home_env_lock();
         let ws = temp_ws("escalation-sug");
         let sandbox = ResolvedSandbox::resolve(
             &SandboxPolicy {
@@ -1104,7 +1104,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
     fn shape_for_secret_read_suppresses_suggestion() {
         // $HOME must stay stable between sandbox resolution and the assertion
         // path build (TestHome in rpc::commands redirects it process-wide).
-        let _home_guard = crate::HOME_ENV_LOCK.lock().unwrap();
+        let _home_guard = crate::test_support::home_env_lock();
         // A secret file (~/.ssh) has no "allow in this workspace" — allow-once only.
         let ws = temp_ws("shape-secret");
         let sandbox = enabled(&ws);
@@ -1284,7 +1284,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
 
     #[test]
     fn shorten_home_replaces_home() {
-        let _home_guard = crate::HOME_ENV_LOCK.lock().unwrap();
+        let _home_guard = crate::test_support::home_env_lock();
         let home = dirs::home_dir().unwrap().to_string_lossy().to_string();
         let path = format!("{}/some/file.txt", home);
         assert_eq!(shorten_home(&path), "~/some/file.txt");
@@ -1501,7 +1501,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
 
     #[test]
     fn escalation_save_suggestion_secret_returns_none() {
-        let _home_guard = crate::HOME_ENV_LOCK.lock().unwrap();
+        let _home_guard = crate::test_support::home_env_lock();
         let ws = temp_ws("esc-secret");
         let sandbox = enabled(&ws);
         let home = dirs::home_dir().unwrap().to_string_lossy().to_string();
@@ -1677,7 +1677,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn request_write_outside_workspace_ask_approved() {
-        let _home_guard = crate::HOME_ENV_LOCK.lock().unwrap();
+        let _home_guard = crate::test_support::home_env_lock();
         let ws = temp_ws("write-approve");
         let sandbox = enabled(&ws);
         let gate = ApprovalGate::default();
@@ -1701,7 +1701,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn request_write_outside_workspace_rejected() {
-        let _home_guard = crate::HOME_ENV_LOCK.lock().unwrap();
+        let _home_guard = crate::test_support::home_env_lock();
         let ws = temp_ws("write-reject");
         let sandbox = enabled(&ws);
         let gate = ApprovalGate::default();
@@ -1735,7 +1735,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn request_read_of_secret_asks_and_is_rejected() {
-        let _home_guard = crate::HOME_ENV_LOCK.lock().unwrap();
+        let _home_guard = crate::test_support::home_env_lock();
         let ws = temp_ws("read-secret");
         let sandbox = enabled(&ws);
         let gate = ApprovalGate::default();

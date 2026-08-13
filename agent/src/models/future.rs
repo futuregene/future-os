@@ -436,8 +436,19 @@ fn load_future_models_cache() -> Option<FutureModelsCache> {
 /// Save future models cache to disk (internal helper).
 fn save_future_models_cache_inner(cache: &FutureModelsCache) {
     if let Ok(json) = serde_json::to_string_pretty(cache) {
-        let path = future_models_cache_path();
-        let _ = std::fs::write(&path, json);
+        let path = std::path::PathBuf::from(future_models_cache_path());
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        // Atomic replace: write a sibling temp file and rename it over the
+        // target. A plain truncate+write lets a concurrent reader (the GUI
+        // polls models every 10s; a test reading right after a background
+        // refresh) observe an empty/partial file. Rename swaps the contents
+        // atomically within the same directory on all supported platforms.
+        let tmp = path.with_extension("tmp");
+        if std::fs::write(&tmp, json).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
+        }
     }
 }
 
@@ -953,6 +964,64 @@ mod tests {
     }
 
     #[test]
+    fn cache_save_and_concurrent_load_never_torn() {
+        let _guard = future_test_lock();
+        let home = crate::test_support::TestHome::new();
+        reset_future_cache_state();
+        std::fs::create_dir_all(home.path().join(".future/agent")).unwrap();
+
+        // A large payload stretches the truncate→write window of a non-atomic
+        // save, so a reader racing the writer observes torn (empty/partial)
+        // files unless the save goes through tmp+rename.
+        let models: Vec<Model> = (0..800)
+            .map(|i| {
+                convert_future_model(
+                    serde_json::from_str(&format!(
+                        r#"{{"id":"big-model-{i}","name":"Big {i}","context_length":64000}}"#
+                    ))
+                    .unwrap(),
+                    "http://x/v1",
+                )
+            })
+            .collect();
+        let expected_len = models.len();
+
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let first_write_done = std::sync::Arc::new(AtomicBool::new(false));
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let writer = std::thread::spawn({
+            let first_write_done = first_write_done.clone();
+            let stop = stop.clone();
+            move || {
+                let mut i = 0u64;
+                while !stop.load(Ordering::Relaxed) {
+                    save_future_models_cache_inner(&FutureModelsCache {
+                        fetched_at: i,
+                        models: models.clone(),
+                    });
+                    first_write_done.store(true, Ordering::Relaxed);
+                    i += 1;
+                }
+            }
+        });
+
+        while !first_write_done.load(Ordering::Relaxed) {
+            std::hint::spin_loop();
+        }
+        let mut torn = 0u64;
+        for _ in 0..500 {
+            // After the first completed save, the file must always exist and
+            // parse to complete content — None/short content = torn read.
+            torn += u64::from(
+                load_future_models_cache().is_none_or(|c| c.models.len() != expected_len),
+            );
+        }
+        stop.store(true, Ordering::Relaxed);
+        writer.join().unwrap();
+        assert_eq!(torn, 0, "torn/partial cache reads observed");
+    }
+
+    #[test]
     fn get_future_models_with_cache_prefers_memory_then_disk() {
         let _guard = future_test_lock();
         let home = crate::test_support::TestHome::new();
@@ -972,7 +1041,6 @@ mod tests {
 
         // Clear memory; seed only the disk cache → disk arm re-seeds memory.
         reset_future_cache_state();
-        // save_future_models_cache_inner does not create parent dirs.
         std::fs::create_dir_all(home.path().join(".future/agent")).unwrap();
         let disk_model = convert_future_model(
             serde_json::from_str(r#"{"id":"disk-model"}"#).unwrap(),
