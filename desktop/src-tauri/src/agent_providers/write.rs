@@ -37,6 +37,31 @@ async fn reload_after_local_write() {
     let _ = crate::agent_bridge::reload_agent_credentials().await;
 }
 
+/// One-shot injected failure for the paired auth.json write of a transactional
+/// local write. models.json and auth.json live in the same directory, so a
+/// test cannot make the first write succeed and the second fail organically —
+/// this seam lets the rollback path be exercised instead.
+#[cfg(test)]
+pub(super) static INJECT_AUTH_WRITE_FAILURE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// See [`INJECT_AUTH_WRITE_FAILURE`]; also used by tests to arm the injection.
+#[cfg(test)]
+fn injected_auth_write_failure() -> Result<(), AppError> {
+    INJECT_AUTH_WRITE_FAILURE
+        .swap(false, std::sync::atomic::Ordering::Relaxed)
+        .then(|| AppError::Message("injected auth write failure".to_string()))
+        .map_or(Ok(()), Err)
+}
+
+/// The auth half of the transactional upsert. A thin wrapper so the test-only
+/// failure injection (see above) shares one line with the real call.
+fn paired_key_write(id: &str, key: &str) -> Result<(), AppError> {
+    #[cfg(test)]
+    injected_auth_write_failure()?;
+    crate::auth_store::set_provider_key(id, key)
+}
+
 // ── update_builtin_provider_key ─────────────────────────────────────────────
 
 /// Request-local validation for a built-in provider's API key change.
@@ -365,7 +390,7 @@ fn apply_upsert_local(validated: &ValidatedCustomProvider) -> Result<(), AppErro
             return Err(error);
         }
         if let Some(key) = validated.api_key.as_deref() {
-            if let Err(error) = crate::auth_store::set_provider_key(&validated.id, key) {
+            if let Err(error) = paired_key_write(&validated.id, key) {
                 config_io::restore_file(&models_path, models_snapshot.as_deref(), false);
                 return Err(error);
             }
@@ -461,25 +486,34 @@ fn apply_delete_local(id: &str) -> Result<(), AppError> {
         // roll back ONLY models.json (the file already written this call) to its
         // exact pre-call bytes — auth.json is untouched, and restoring it could
         // clobber a concurrent writer's just-committed change. Lock order is
-        // models → auth everywhere, so nesting is safe.
-        if models_changed {
-            if let Err(error) = config_io::write_json_atomic(&models_path, &models_doc, false) {
-                config_io::restore_file(&models_path, models_snapshot.as_deref(), false);
-                return Err(error);
-            }
+        // models → auth everywhere, so nesting is safe. Errors are collected
+        // and returned at the end so no block ends on an early-return edge.
+        let mut error = None;
+        if let Some(e) = models_changed
+            .then(|| config_io::write_json_atomic(&models_path, &models_doc, false))
+            .and_then(Result::err)
+        {
+            config_io::restore_file(&models_path, models_snapshot.as_deref(), false);
+            error = Some(e);
         }
-        if auth_changed {
+        if auth_changed && error.is_none() {
             let result = config_io::with_config_lock(&auth_path, || {
                 let mut auth = crate::auth_store::read()?;
-                if auth.remove(id).is_some() {
-                    crate::auth_store::write(&auth)?;
-                }
+                #[cfg(test)]
+                injected_auth_write_failure()?;
+                let _ = auth
+                    .remove(id)
+                    .map(|_| crate::auth_store::write(&auth))
+                    .transpose()?;
                 Ok(())
             });
-            if let Err(error) = result {
+            if let Err(e) = result {
                 config_io::restore_file(&models_path, models_snapshot.as_deref(), false);
-                return Err(error);
+                error = Some(e);
             }
+        }
+        if let Some(e) = error {
+            return Err(e);
         }
         Ok(())
     })
