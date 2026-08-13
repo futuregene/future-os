@@ -174,3 +174,163 @@ pub(crate) async fn delete_provider(id: &str) -> Result<bool, AppError> {
     )
     .await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_support::{mock_agent, Reply};
+    use super::*;
+
+    /// Run one closure with a deliberately unparseable agent endpoint so
+    /// `connect_agent` fails, then restore the mock's address.
+    async fn with_broken_endpoint<F: std::future::Future<Output = Result<bool, AppError>>>(
+        call: impl FnOnce() -> F,
+    ) -> Result<bool, AppError> {
+        let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").ok();
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
+        let result = call().await;
+        if let Some(prev) = prev {
+            std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
+        }
+        result
+    }
+
+    #[tokio::test]
+    async fn applied_rejected_and_fallback_outcomes() {
+        let mock = mock_agent();
+
+        // Agent applies the change.
+        mock.push("set_auth", Reply::Data("{}".to_string()));
+        assert!(set_provider_key("future", "sk-1").await.expect("ok"));
+        let request = &mock.requests_of("set_auth")[0];
+        let update = request.auth_update.as_ref().expect("auth update");
+        assert_eq!(update.provider, "future");
+        assert_eq!(update.key, "sk-1");
+        assert!(!update.clear_key);
+
+        // Agent knows the command but rejects it (validation failure).
+        mock.push(
+            "set_auth",
+            Reply::Reject("duplicate provider id".to_string()),
+        );
+        let error = set_provider_key("future", "sk-1")
+            .await
+            .expect_err("rejected");
+        assert_eq!(error.to_string(), "duplicate provider id");
+
+        // Rejection without a message gets a synthesized one.
+        mock.push("set_auth", Reply::Reject(String::new()));
+        let error = set_provider_key("future", "sk-1")
+            .await
+            .expect_err("rejected");
+        assert_eq!(error.to_string(), "Future Agent rejected set_auth.");
+
+        // Legacy agent: "unknown command" → caller falls back (Ok(false)).
+        mock.push(
+            "set_auth",
+            Reply::Reject("unknown command: set_auth".to_string()),
+        );
+        assert!(!set_provider_key("future", "sk-1").await.expect("fallback"));
+
+        // Transport-level failure → fall back too.
+        mock.push(
+            "set_auth",
+            Reply::Status(tonic::Code::Unavailable, "connection reset"),
+        );
+        assert!(!set_provider_key("future", "sk-1").await.expect("fallback"));
+
+        // Agent unreachable at connect time → fall back.
+        let applied = with_broken_endpoint(|| set_provider_key("future", "sk-1"))
+            .await
+            .expect("fallback");
+        assert!(!applied);
+    }
+
+    #[tokio::test]
+    async fn auth_update_variants() {
+        let mock = mock_agent();
+
+        mock.push("set_auth", Reply::Data("{}".to_string()));
+        assert!(clear_provider_key("future").await.expect("ok"));
+        let update = mock.requests_of("set_auth")[0]
+            .auth_update
+            .clone()
+            .expect("auth update");
+        assert!(update.clear_key);
+        assert_eq!(update.key, "");
+
+        mock.push("set_auth", Reply::Data("{}".to_string()));
+        assert!(future_login("fg-key", "https://api.example")
+            .await
+            .expect("ok"));
+        let update = mock.requests_of("set_auth")[1]
+            .auth_update
+            .clone()
+            .expect("auth update");
+        assert_eq!(update.provider, crate::auth_store::FUTURE_PROVIDER_ID);
+        assert_eq!(update.key, "fg-key");
+        assert_eq!(update.base_url, "https://api.example");
+
+        mock.push("set_auth", Reply::Data("{}".to_string()));
+        assert!(future_logout().await.expect("ok"));
+        let update = mock.requests_of("set_auth")[2]
+            .auth_update
+            .clone()
+            .expect("auth update");
+        assert!(update.clear_key);
+        assert_eq!(update.provider, crate::auth_store::FUTURE_PROVIDER_ID);
+    }
+
+    #[tokio::test]
+    async fn provider_config_commands() {
+        let mock = mock_agent();
+
+        // Base URL override set.
+        mock.push("upsert_provider", Reply::Data("{}".to_string()));
+        assert!(
+            set_builtin_provider_base_url("future", "https://alt.example")
+                .await
+                .expect("ok")
+        );
+        let config = mock.requests_of("upsert_provider")[0]
+            .provider_config
+            .clone()
+            .expect("provider config");
+        assert_eq!(config.id, "future");
+        assert_eq!(config.base_url, "https://alt.example");
+        assert!(!config.clear_base_url);
+
+        // Empty base URL clears the override.
+        mock.push("upsert_provider", Reply::Data("{}".to_string()));
+        assert!(set_builtin_provider_base_url("future", "")
+            .await
+            .expect("ok"));
+        let config = mock.requests_of("upsert_provider")[1]
+            .provider_config
+            .clone()
+            .expect("provider config");
+        assert!(config.clear_base_url);
+
+        // Full upsert.
+        mock.push("upsert_provider", Reply::Data("{}".to_string()));
+        let upsert = crate::agent_proto::ProviderUpsert {
+            id: "custom".to_string(),
+            name: "Custom".to_string(),
+            ..Default::default()
+        };
+        assert!(upsert_provider(upsert).await.expect("ok"));
+        let config = mock.requests_of("upsert_provider")[2]
+            .provider_config
+            .clone()
+            .expect("provider config");
+        assert_eq!(config.name, "Custom");
+
+        // Delete.
+        mock.push("delete_provider", Reply::Data("{}".to_string()));
+        assert!(delete_provider("custom").await.expect("ok"));
+        let config = mock.requests_of("delete_provider")[0]
+            .provider_config
+            .clone()
+            .expect("provider config");
+        assert_eq!(config.id, "custom");
+    }
+}

@@ -67,3 +67,27 @@ impl serde::Serialize for AppError {
         serializer.serialize_str(&self.to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serializes_as_plain_string() {
+        let serialized = serde_json::to_string(&AppError::Message("boom".to_string())).unwrap();
+        assert_eq!(serialized, "\"boom\"");
+
+        let from_string: AppError = "plain".to_string().into();
+        assert_eq!(serde_json::to_string(&from_string).unwrap(), "\"plain\"");
+
+        let remote = AppError::Remote {
+            status: 502,
+            code: Some("bad_gateway".to_string()),
+            message: "upstream failed".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_string(&remote).unwrap(),
+            "\"upstream failed\""
+        );
+    }
+}

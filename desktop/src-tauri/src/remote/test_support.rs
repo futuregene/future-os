@@ -17,7 +17,7 @@
 //! `TEST_HOME_LOCK` (via `HomeGuard`), which serializes them.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::{json, Value};
@@ -68,6 +68,19 @@ pub(crate) fn now_secs() -> i64 {
 }
 
 // ── Mock gRPC FutureAgent ───────────────────────────────────────────────────
+
+/// Serialize every test (across families) that scripts or drives the
+/// process-global mock agent. The mock's one-shot script queue and the
+/// persistent facade maps are process-global, so tests that mutate them must
+/// never interleave — a remote test's leftover one-shot response would
+/// otherwise be consumed by a concurrently running `commands` test (and vice
+/// versa). The `commands::agent_mock` facade re-exports this same lock, so both
+/// families agree on a single serialization point.
+static MOCK_SER: Mutex<()> = Mutex::new(());
+
+pub(crate) fn mock_agent_lock() -> MutexGuard<'static, ()> {
+    MOCK_SER.lock().unwrap_or_else(|poison| poison.into_inner())
+}
 
 #[derive(Clone)]
 struct ScriptedResponse {
@@ -161,6 +174,13 @@ impl MockAgent {
         state.persistent_data = data;
         state.persistent_errors = errors;
         state.down = down;
+    }
+
+    /// Drop every queued one-shot script. Callers holding [`mock_agent_lock`]
+    /// clear stale scripts before scripting their own responses so a previous
+    /// test family's leftovers can never leak in.
+    pub(crate) fn clear_scripts(&self) {
+        self.state.lock().unwrap().scripts.clear();
     }
 
     /// True when the mock served at least one `command` for `session_id`.

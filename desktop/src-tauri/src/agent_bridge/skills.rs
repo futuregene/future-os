@@ -84,3 +84,100 @@ pub async fn refresh_skills() {
             .await;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_support::{mock_agent, Reply, TestHome};
+    use super::*;
+
+    fn commands_payload() -> serde_json::Value {
+        serde_json::json!({
+            "commands": [
+                {"name": "my-skill", "description": "does things", "source": "skill",
+                 "nameZh": "我的技能", "descriptionZh": "做事"},
+                {"name": "plain-skill", "description": "no zh", "source": "skill"},
+                {"name": "not-a-skill", "description": "command", "source": "command"}
+            ]
+        })
+    }
+
+    #[tokio::test]
+    async fn list_installed_skills_filters_and_enriches_versions() {
+        let home = TestHome::new("skills-list");
+        let mock = mock_agent();
+        // Plant a versioned skill in the global scope ($HOME/.agents/skills).
+        let skill_dir = home.path().join(".agents/skills/my-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: my-skill\nversion: 1.2.3\n---\n# my-skill\n",
+        )
+        .unwrap();
+
+        mock.push_data("get_commands", commands_payload());
+        let skills = list_installed_skills().await.expect("skills");
+        assert_eq!(skills.len(), 2, "non-skill commands filtered out");
+        let mine = skills
+            .iter()
+            .find(|s| s.id == "my-skill")
+            .expect("my-skill");
+        assert_eq!(mine.name_zh.as_deref(), Some("我的技能"));
+        assert_eq!(mine.description_zh.as_deref(), Some("做事"));
+        assert_eq!(mine.version.as_deref(), Some("1.2.3"), "version enriched");
+        let plain = skills
+            .iter()
+            .find(|s| s.id == "plain-skill")
+            .expect("plain-skill");
+        assert_eq!(plain.version, None, "no local install → no version");
+        assert_eq!(plain.name_zh, None);
+    }
+
+    #[tokio::test]
+    async fn list_installed_skills_error_paths() {
+        let _home = TestHome::new("skills-errors");
+        let mock = mock_agent();
+
+        mock.push("get_commands", Reply::Status(tonic::Code::Internal, "boom"));
+        let error = list_installed_skills().await.expect_err("transport");
+        assert!(
+            error
+                .to_string()
+                .contains("Unable to load installed skills"),
+            "{error}"
+        );
+
+        mock.push("get_commands", Reply::Reject(String::new()));
+        let error = list_installed_skills().await.expect_err("rejected");
+        assert_eq!(
+            error.to_string(),
+            "Future Agent rejected the skills request."
+        );
+
+        mock.push_data("get_commands", serde_json::json!({"commands": "nope"}));
+        let error = list_installed_skills().await.expect_err("invalid");
+        assert!(error.to_string().contains("invalid skills data"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn refresh_skills_is_best_effort() {
+        let mock = mock_agent();
+        // Agent reachable: the command goes out.
+        refresh_skills().await;
+        assert_eq!(mock.requests_of("refresh_skills").len(), 1);
+
+        // Agent unreachable (unparseable endpoint): still returns ().
+        let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").ok();
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
+        refresh_skills().await;
+        if let Some(prev) = prev {
+            std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
+        }
+
+        // Command fails at transport level: still returns ().
+        mock.push(
+            "refresh_skills",
+            Reply::Status(tonic::Code::Unavailable, "down"),
+        );
+        refresh_skills().await;
+    }
+}

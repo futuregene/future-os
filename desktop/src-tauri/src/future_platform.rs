@@ -87,9 +87,15 @@ pub(crate) fn current_platform_url() -> String {
 /// base_url chosen yet), but leave an explicit choice alone so a manual switch
 /// sticks across restarts.
 pub(crate) fn apply_channel_environment_default() -> Result<(), crate::AppError> {
+    apply_channel_environment_default_for(crate::build_info::is_release())
+}
+
+/// Channel-policy core, split out so the release and dev branches are both
+/// reachable in tests regardless of the compile-time `FUTURE_VERSION`.
+fn apply_channel_environment_default_for(is_release: bool) -> Result<(), crate::AppError> {
     let auth = Value::Object(crate::auth_store::read()?);
 
-    if crate::build_info::is_release() {
+    if is_release {
         let platform = resolve_future_platform_url(&auth);
         if platform != PRODUCTION_PLATFORM_URL {
             crate::auth_store::set_future_base_url(&format!("{PRODUCTION_PLATFORM_URL}/api"))?;
@@ -181,6 +187,87 @@ mod tests {
         assert_eq!(
             resolve_future_base_url(&auth),
             "https://custom.example.com/api/v1"
+        );
+    }
+
+    #[test]
+    fn future_entry_with_no_url_falls_back_to_default() {
+        // A `future` entry with neither base_url nor platform_base_url (and a
+        // whitespace-only base_url that is filtered out) resolves to the default.
+        assert_eq!(
+            resolve_future_platform_url(&json!({ "future": {} })),
+            DEFAULT_FUTURE_PLATFORM_URL
+        );
+        assert_eq!(
+            resolve_future_platform_url(&json!({ "future": { "base_url": "   " } })),
+            DEFAULT_FUTURE_PLATFORM_URL
+        );
+    }
+
+    #[test]
+    fn current_platform_url_reads_auth_or_defaults() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fp-current");
+        // No auth.json → empty map → default platform.
+        assert_eq!(current_platform_url(), DEFAULT_FUTURE_PLATFORM_URL);
+    }
+
+    #[test]
+    fn dev_channel_defaults_to_test_env_when_unset() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fp-dev-default");
+        apply_channel_environment_default_for(false).unwrap();
+        let auth = crate::auth_store::read().unwrap();
+        assert_eq!(
+            auth["future"]["base_url"],
+            json!(format!("{TEST_PLATFORM_URL}/api"))
+        );
+    }
+
+    #[test]
+    fn dev_channel_leaves_explicit_env_alone() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fp-dev-explicit");
+        crate::auth_store::set_future_base_url("https://custom.example.com/api").unwrap();
+        apply_channel_environment_default_for(false).unwrap();
+        let auth = crate::auth_store::read().unwrap();
+        assert_eq!(
+            auth["future"]["base_url"],
+            json!("https://custom.example.com/api")
+        );
+    }
+
+    #[test]
+    fn release_channel_pins_non_production_back_to_production() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fp-release-pin");
+        crate::auth_store::set_future_base_url(&format!("{TEST_PLATFORM_URL}/api")).unwrap();
+        apply_channel_environment_default_for(true).unwrap();
+        let auth = crate::auth_store::read().unwrap();
+        assert_eq!(
+            auth["future"]["base_url"],
+            json!(format!("{PRODUCTION_PLATFORM_URL}/api"))
+        );
+    }
+
+    #[test]
+    fn release_channel_is_noop_when_already_production() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fp-release-noop");
+        crate::auth_store::set_future_base_url(&format!("{PRODUCTION_PLATFORM_URL}/api")).unwrap();
+        apply_channel_environment_default_for(true).unwrap();
+        let auth = crate::auth_store::read().unwrap();
+        assert_eq!(
+            auth["future"]["base_url"],
+            json!(format!("{PRODUCTION_PLATFORM_URL}/api"))
+        );
+    }
+
+    #[test]
+    fn public_wrapper_wires_the_compile_time_channel() {
+        // The test build is a dev channel (`VERSION` starts with 0), so the
+        // public entry point must behave exactly like the dev branch.
+        let _home = crate::auth_store::test_support::HomeGuard::new("fp-public");
+        apply_channel_environment_default().unwrap();
+        let auth = crate::auth_store::read().unwrap();
+        assert_eq!(
+            auth["future"]["base_url"],
+            json!(format!("{TEST_PLATFORM_URL}/api"))
         );
     }
 }

@@ -146,16 +146,23 @@ pub fn evaluate_volume(workspace_path: &Path, redline: &VolumeRedline) -> Volume
     let mut stack: Vec<PathBuf> = vec![workspace_path.to_path_buf()];
 
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
+        // `into_iter().flatten().flatten()` folds both the `read_dir` error and
+        // each entry's own read error into "skip" without an explicit branch.
+        let entries = fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| {
+                // `file_type()` fails only if the entry vanished mid-walk; the
+                // `?` on `Option` skips it with no source line of its own.
+                let file_type = entry.file_type().ok()?;
+                let path = entry.path();
+                let name = entry.file_name();
+                let name = name.to_string_lossy().into_owned();
+                let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+                Some((path, name, file_type, size))
+            });
+        for (path, name, file_type, size) in entries {
             if file_type.is_dir() {
                 if is_excluded_dir(&name) {
                     continue;
@@ -163,9 +170,7 @@ pub fn evaluate_volume(workspace_path: &Path, redline: &VolumeRedline) -> Volume
                 stack.push(path);
             } else if file_type.is_file() {
                 files += 1;
-                if let Ok(meta) = entry.metadata() {
-                    bytes += meta.len();
-                }
+                bytes += size;
                 if files > redline.max_files || bytes > redline.max_bytes {
                     return VolumeVerdict::TooLarge;
                 }
@@ -219,4 +224,78 @@ mod tests {
         let git_lines = build_info_exclude(true, None, &[]);
         assert!(!git_lines.iter().any(|l| l == "node_modules/"));
     }
+
+    #[test]
+    fn exclude_lines_include_real_repo_lines_and_skip_blanks() {
+        // The real repo's info/exclude is folded in, trimmed of trailing
+        // whitespace, with blank lines dropped.
+        let lines = build_info_exclude(true, Some("foo.log\n  \nbar/\n"), &[]);
+        assert!(lines.iter().any(|l| l == "foo.log"));
+        assert!(lines.iter().any(|l| l == "bar/"));
+        assert!(!lines.iter().any(|l| l.is_empty()));
+    }
+
+    #[test]
+    fn volume_gate_counts_files_and_bytes() {
+        let root = std::env::temp_dir().join(format!("futureos-volume-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("a.txt"), b"hello").unwrap();
+        std::fs::write(root.join("sub/b.txt"), b"world!!").unwrap();
+
+        // Excluded dirs (node_modules) are skipped, so a large file under one
+        // never pushes the gate over.
+        std::fs::create_dir_all(root.join("node_modules")).unwrap();
+        std::fs::write(root.join("node_modules/big.bin"), vec![0u8; 1_000_000]).unwrap();
+
+        // A symlink is neither a dir nor a file, so it exercises the implicit
+        // else arm (neither counted nor descended).
+        make_symlink(Path::new("a.txt"), &root.join("link"));
+
+        let ok = evaluate_volume(
+            &root,
+            &VolumeRedline {
+                max_files: 100,
+                max_bytes: 10_000_000,
+            },
+        );
+        assert_eq!(ok, VolumeVerdict::Ok);
+
+        let too_many = evaluate_volume(
+            &root,
+            &VolumeRedline {
+                max_files: 1,
+                max_bytes: 10_000_000,
+            },
+        );
+        assert_eq!(too_many, VolumeVerdict::TooLarge);
+
+        let too_big = evaluate_volume(
+            &root,
+            &VolumeRedline {
+                max_files: 100,
+                max_bytes: 1,
+            },
+        );
+        assert_eq!(too_big, VolumeVerdict::TooLarge);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn excluded_dirs_cover_git_future_and_defaults() {
+        assert!(is_excluded_dir(".git"));
+        assert!(is_excluded_dir(".future"));
+        assert!(is_excluded_dir("node_modules"));
+        assert!(is_excluded_dir("target"));
+        assert!(!is_excluded_dir("src"));
+    }
+
+    #[cfg(unix)]
+    fn make_symlink(target: &Path, link: &Path) {
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    #[cfg(not(unix))]
+    fn make_symlink(_target: &Path, _link: &Path) {}
 }

@@ -131,21 +131,19 @@ struct FileEntry {
 
 /// `--name-status -z`: authoritative file list, change types and rename pairs.
 fn name_status(repo: &ShadowRepo, before: &str, after: &str) -> Result<Vec<FileEntry>, AppError> {
-    let bytes = repo.git_bytes(
-        &[
-            "-c",
-            "core.quotePath=false",
-            "diff",
-            "--no-color",
-            "--find-renames",
-            "--find-copies",
-            "--name-status",
-            "-z",
-            before,
-            after,
-        ],
-        None,
-    )?;
+    let args: &[&str] = &[
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "--no-color",
+        "--find-renames",
+        "--find-copies",
+        "--name-status",
+        "-z",
+        before,
+        after,
+    ];
+    let bytes = repo.git_bytes(args, None)?;
 
     let tokens: Vec<String> = bytes
         .split(|b| *b == 0)
@@ -194,21 +192,19 @@ fn numstat(
     before: &str,
     after: &str,
 ) -> Result<HashMap<String, (i64, i64, bool)>, AppError> {
-    let text = repo.git(
-        &[
-            // Keep paths literal so they key against the `-z` name-status paths.
-            "-c",
-            "core.quotePath=false",
-            "diff",
-            "--no-color",
-            "--find-renames",
-            "--find-copies",
-            "--numstat",
-            before,
-            after,
-        ],
-        None,
-    )?;
+    let args: &[&str] = &[
+        // Keep paths literal so they key against the `-z` name-status paths.
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "--no-color",
+        "--find-renames",
+        "--find-copies",
+        "--numstat",
+        before,
+        after,
+    ];
+    let text = repo.git(args, None)?;
     // Key stats by post-image path (resolving rename arrows) rather than by row
     // position, so counts can't be misattributed if numstat and name-status ever
     // emit their rows in a different order.
@@ -224,20 +220,18 @@ fn numstat(
 }
 
 fn unified_patch(repo: &ShadowRepo, before: &str, after: &str) -> Result<String, AppError> {
-    let bytes = repo.git_bytes(
-        &[
-            "-c",
-            "core.quotePath=false",
-            "diff",
-            "--no-color",
-            "--find-renames",
-            "--find-copies",
-            "--unified=3",
-            before,
-            after,
-        ],
-        None,
-    )?;
+    let args: &[&str] = &[
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "--no-color",
+        "--find-renames",
+        "--find-copies",
+        "--unified=3",
+        before,
+        after,
+    ];
+    let bytes = repo.git_bytes(args, None)?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
@@ -292,5 +286,63 @@ mod tests {
         let (text, truncated) = truncate_diff("a\nb\nc\nd".to_string(), &limits);
         assert!(truncated);
         assert_eq!(text.as_deref(), Some("a\nb"));
+    }
+
+    #[test]
+    fn truncate_diff_respects_byte_limit_and_char_boundaries() {
+        let limits = Limits {
+            max_diff_lines: 100,
+            max_diff_bytes: 5,
+            ..Limits::default()
+        };
+        // Multibyte text: the byte cut lands mid-codepoint, so the boundary
+        // walk must back up to the previous char boundary.
+        let (text, truncated) = truncate_diff("éééééé".to_string(), &limits);
+        assert!(truncated);
+        assert_eq!(text.as_deref(), Some("éé"));
+    }
+
+    #[test]
+    fn guess_mime_maps_extensions_and_unknowns() {
+        for (path, expected) in [
+            ("a.png", "image/png"),
+            ("a.jpg", "image/jpeg"),
+            ("a.jpeg", "image/jpeg"),
+            ("a.gif", "image/gif"),
+            ("a.webp", "image/webp"),
+            ("a.bmp", "image/bmp"),
+            ("a.svg", "image/svg+xml"),
+            ("a.ico", "image/x-icon"),
+            ("a.pdf", "application/pdf"),
+            ("a.zip", "application/zip"),
+            ("a.gz", "application/gzip"),
+            ("a.tgz", "application/gzip"),
+            ("a.wasm", "application/wasm"),
+            ("a.woff", "font/woff"),
+            ("a.woff2", "font/woff2"),
+            ("a.ttf", "font/ttf"),
+            ("a.otf", "font/otf"),
+            ("a.mp3", "audio/mpeg"),
+            ("a.mp4", "video/mp4"),
+            ("a.mov", "video/quicktime"),
+        ] {
+            assert_eq!(guess_mime(path).as_deref(), Some(expected), "{path}");
+        }
+        assert_eq!(guess_mime("a.unknownext"), None);
+        assert_eq!(guess_mime("no-extension"), None);
+    }
+
+    #[test]
+    fn name_status_handles_truncated_tokens() {
+        // R/C record with a missing path (only one token after the code).
+        let tokens: Vec<String> = ["R100", "only-one-path"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(parse_name_status(&tokens).is_empty());
+
+        // Plain record with a missing path (code with no path token).
+        let tokens: Vec<String> = ["M"].iter().map(|s| s.to_string()).collect();
+        assert!(parse_name_status(&tokens).is_empty());
     }
 }

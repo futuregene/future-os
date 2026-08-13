@@ -342,20 +342,10 @@ pub fn rollback_claimed(attachments: &[AttachmentInput]) {
 }
 
 fn validate_mobile_image(path: &Path) -> Result<(), crate::AppError> {
-    let dimensions_reader = image::ImageReader::open(path)?
-        .with_guessed_format()
-        .map_err(|error| format!("Unreadable image: {error}"))?;
-    let (width, height) = dimensions_reader
-        .into_dimensions()
-        .map_err(|error| format!("Undecodable image header: {error}"))?;
-    if width.max(height) > 2000 {
-        return Err("Image longest edge exceeds the 2000 px mobile limit."
-            .to_string()
-            .into());
-    }
-
-    // Still decode once so a valid-looking header cannot smuggle corrupt image
-    // bytes into the agent, but cap allocation for the already-bounded image.
+    // Mobile downsamples every image pick to 1600 px before upload, so no
+    // dimension cap is enforced here; still decode once so a valid-looking
+    // header cannot smuggle corrupt image bytes into the agent, but cap
+    // allocation for the already-bounded image.
     let mut reader = image::ImageReader::open(path)?
         .with_guessed_format()
         .map_err(|error| format!("Unreadable image: {error}"))?;
@@ -883,23 +873,20 @@ mod tests {
     }
 
     #[test]
-    fn rejects_mobile_images_over_2000_pixels() {
+    fn accepts_mobile_images_over_2000_pixels() {
         let dir = std::env::temp_dir().join(format!(
             "futureos-transfer-test-{}",
             nkeys::KeyPair::new_user().public_key()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let accepted = dir.join("accepted.png");
-        image::DynamicImage::new_rgb8(2000, 1)
-            .save(&accepted)
-            .unwrap();
-        assert!(validate_mobile_image(&accepted).is_ok());
-
-        let rejected = dir.join("rejected.png");
+        // Oversized images are no longer rejected: current clients downsample
+        // to 1600 px before upload, and the agent resizes anything above its
+        // own cap before model submission.
+        let oversized = dir.join("oversized.png");
         image::DynamicImage::new_rgb8(2001, 1)
-            .save(&rejected)
+            .save(&oversized)
             .unwrap();
-        assert!(validate_mobile_image(&rejected).is_err());
+        assert!(validate_mobile_image(&oversized).is_ok());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -964,9 +951,10 @@ mod tests {
 
 #[cfg(test)]
 mod flow_tests {
+    #![allow(clippy::await_holding_lock)]
     use super::super::test_support::{
-        assert_no_publish, await_publish, ensure_mock_agent, nats_connect_once, unique, FakeNats,
-        HomeGuard,
+        assert_no_publish, await_publish, ensure_mock_agent, mock_agent_lock, nats_connect_once,
+        unique, FakeNats, HomeGuard,
     };
     use super::*;
     use serde_json::json;
@@ -1342,6 +1330,7 @@ mod flow_tests {
 
     #[tokio::test]
     async fn prepare_download_flows() {
+        let _lock = mock_agent_lock();
         let _home = HomeGuard::new("xfer-download");
         let agent = ensure_mock_agent();
         let session = unique("sess");

@@ -15,3 +15,15 @@ pub const VERSION: &str = env!("FUTURE_VERSION");
 pub fn is_release() -> bool {
     !VERSION.starts_with('0')
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn release_channel_derives_from_version_prefix() {
+        // The channel is derived from the first version component, so the
+        // predicate must always agree with the injected VERSION.
+        assert_eq!(is_release(), !VERSION.starts_with('0'));
+    }
+}

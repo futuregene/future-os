@@ -12,6 +12,7 @@ import {
   deleteTemporaryAttachment,
   downloadPrepared,
   pickAttachments,
+  pickFromAlbum,
   prepareDownload,
   rememberPreparedPreview,
   takePhoto,
@@ -136,6 +137,8 @@ jest.mock("expo-image-picker", () => ({
   __esModule: true,
   requestCameraPermissionsAsync: jest.fn(),
   launchCameraAsync: jest.fn(),
+  requestMediaLibraryPermissionsAsync: jest.fn(),
+  launchImageLibraryAsync: jest.fn(),
 }));
 
 jest.mock("expo-crypto", () => ({
@@ -184,6 +187,8 @@ const mockFS = FS as unknown as {
 const mockedManipulate = ImageManipulator.manipulateAsync as jest.Mock;
 const mockedRequestCamera = ImagePicker.requestCameraPermissionsAsync as jest.Mock;
 const mockedLaunchCamera = ImagePicker.launchCameraAsync as jest.Mock;
+const mockedRequestLibrary = ImagePicker.requestMediaLibraryPermissionsAsync as jest.Mock;
+const mockedLaunchLibrary = ImagePicker.launchImageLibraryAsync as jest.Mock;
 const mockedDigest = Crypto.digest as jest.Mock;
 const mockedGetSize = Image.getSize as jest.Mock;
 
@@ -537,6 +542,37 @@ describe("takePhoto", () => {
       mimeType: "image/jpeg",
       name: expect.stringMatching(/\.jpg$/),
       temporary: true,
+    });
+  });
+});
+
+describe("pickFromAlbum", () => {
+  test("rejects when media library permission is denied", async () => {
+    mockedRequestLibrary.mockResolvedValue({ granted: false });
+    await expect(pickFromAlbum([])).rejects.toThrow("attachment_album_permission");
+  });
+
+  test("returns existing attachments when the library is cancelled", async () => {
+    mockedRequestLibrary.mockResolvedValue({ granted: true });
+    mockedLaunchLibrary.mockResolvedValue({ canceled: true, assets: [] });
+    const existing = [attachment()];
+    expect(await pickFromAlbum(existing)).toBe(existing);
+  });
+
+  test("prepares a selected image without forcing jpeg", async () => {
+    mockedRequestLibrary.mockResolvedValue({ granted: true });
+    mockedLaunchLibrary.mockResolvedValue({
+      canceled: false,
+      assets: [{ uri: "file:///album/photo.png", mimeType: "image/png" }],
+    });
+    mockFS.__set("file:///album/photo.png", { bytes: new Uint8Array(10), type: "image/png" });
+
+    const result = await pickFromAlbum([]);
+    expect(mockedManipulate).not.toHaveBeenCalled();
+    expect(result[0]).toMatchObject({
+      kind: "image",
+      mimeType: "image/png",
+      name: "photo.png",
     });
   });
 });
