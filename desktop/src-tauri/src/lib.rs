@@ -834,7 +834,8 @@ mod runtime_update_tests {
     use super::{
         coalesce_runtime_updates, emit_approvals_updated_on, emit_remote_activity_on,
         emit_review_updated_on, emit_runtime_updates_on, main_window_geometry,
-        sample_thread_streaming_with, size_main_window_to_screen, ThreadRuntimeUpdate,
+        sample_thread_streaming, sample_thread_streaming_with, size_main_window_to_screen,
+        ThreadRuntimeUpdate,
     };
 
     fn update(run_id: &str, revision: i64, status: &str, reset: bool) -> ThreadRuntimeUpdate {
@@ -969,5 +970,27 @@ mod runtime_update_tests {
         })
         .await;
         assert_eq!(previous, Some(vec!["c".to_string()]));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn sample_thread_streaming_wrapper_delegates_to_real_id_source() {
+        // The thin wrapper feeds the real `list_streaming_thread_ids` (which
+        // hits the agent) into `sample_thread_streaming_with`. With the mock
+        // agent down (health check still up, streaming list empty) it records
+        // an empty sample without panicking — exercising the wrapper's own
+        // delegation line rather than the injectable core.
+        let _lock = crate::commands::agent_mock::mock_agent_lock();
+        crate::commands::agent_mock::ensure_mock_agent();
+        crate::commands::agent_mock::script_mock_agent(crate::commands::agent_mock::MockScript {
+            down: true,
+            ..Default::default()
+        });
+        let app = tauri::test::mock_app();
+        let handle = app.handle();
+        let mut previous: Option<Vec<String>> = None;
+        sample_thread_streaming(handle, &mut previous).await;
+        assert_eq!(previous, Some(Vec::new()));
+        crate::commands::agent_mock::script_mock_agent(Default::default());
     }
 }
