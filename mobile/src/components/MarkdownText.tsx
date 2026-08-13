@@ -1,8 +1,11 @@
 import { Linking, StyleSheet, Text, View } from "react-native";
+import { basename, localFilePath } from "../remote/localPath";
 import { colors, radius, spacing } from "../theme/tokens";
 
 interface MarkdownTextProps {
   text: string;
+  /** Route local-file markdown links/images to the caller's preview flow. */
+  onOpenFile?(path: string): void;
 }
 
 type Align = "left" | "center" | "right" | null;
@@ -168,8 +171,16 @@ export function blocksFromMarkdown(text: string): Block[] {
   return blocks;
 }
 
-function InlineMarkdown({ text }: { text: string }) {
-  const parts = text.split(/(\*\*[^*]+\*\*|~~[^~]+~~|`[^`]+`|\*[^*]+\*|\[[^\]]+\]\([^\s)]+\))/g);
+function InlineMarkdown({
+  text,
+  onOpenFile,
+}: {
+  text: string;
+  onOpenFile?: (path: string) => void;
+}) {
+  const parts = text.split(
+    /(!\[[^\]]+\]\([^\s)]+\)|\*\*[^*]+\*\*|~~[^~]+~~|`[^`]+`|\*[^*]+\*|\[[^\]]+\]\([^\s)]+\))/g,
+  );
   return (
     <>
       {parts.map((part, index) => {
@@ -201,12 +212,34 @@ function InlineMarkdown({ text }: { text: string }) {
             </Text>
           );
         }
+        const image = part.match(/^!\[([^\]]+)\]\(([^)\s]+)\)$/);
+        if (image) {
+          const alt = image[1] ?? "";
+          const target = image[2] ?? "";
+          const path = localFilePath(target);
+          if (path && onOpenFile) {
+            return (
+              <Text key={index} onPress={() => onOpenFile(path)} style={styles.link}>
+                {alt || basename(path)}
+              </Text>
+            );
+          }
+          // Remote image (or no preview handler): open in the browser like any
+          // other external link — there is no inline remote-image rendering.
+          return (
+            <Text key={index} onPress={() => void Linking.openURL(target)} style={styles.link}>
+              {alt || target}
+            </Text>
+          );
+        }
         const link = part.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/);
         if (link) {
+          const target = link[2] ?? "";
+          const path = localFilePath(target);
           return (
             <Text
               key={index}
-              onPress={() => void Linking.openURL(link[2] ?? "")}
+              onPress={() => (path && onOpenFile ? onOpenFile(path) : void Linking.openURL(target))}
               style={styles.link}
             >
               {link[1] ?? ""}
@@ -219,7 +252,12 @@ function InlineMarkdown({ text }: { text: string }) {
   );
 }
 
-function renderBlock(block: Block, index: number, isLast = false) {
+function renderBlock(
+  block: Block,
+  index: number,
+  isLast = false,
+  onOpenFile?: (path: string) => void,
+) {
   if (block.kind === "rule")
     return <View key={index} style={[styles.rule, isLast && styles.noBottom]} />;
   if (block.kind === "code") {
@@ -240,7 +278,7 @@ function renderBlock(block: Block, index: number, isLast = false) {
           isLast && styles.noBottom,
         ]}
       >
-        <InlineMarkdown text={block.text} />
+        <InlineMarkdown text={block.text} onOpenFile={onOpenFile} />
       </Text>
     );
   }
@@ -248,7 +286,7 @@ function renderBlock(block: Block, index: number, isLast = false) {
     return (
       <View key={index} style={[styles.quote, isLast && styles.noBottom]}>
         {blocksFromMarkdown(block.text).map((child, childIndex, all) =>
-          renderBlock(child, childIndex, childIndex === all.length - 1),
+          renderBlock(child, childIndex, childIndex === all.length - 1, onOpenFile),
         )}
       </View>
     );
@@ -267,7 +305,7 @@ function renderBlock(block: Block, index: number, isLast = false) {
                 { textAlign: block.aligns[columnIndex] ?? "left" },
               ]}
             >
-              <InlineMarkdown text={header} />
+              <InlineMarkdown text={header} onOpenFile={onOpenFile} />
             </Text>
           ))}
         </View>
@@ -290,7 +328,7 @@ function renderBlock(block: Block, index: number, isLast = false) {
                   { textAlign: block.aligns[columnIndex] ?? "left" },
                 ]}
               >
-                <InlineMarkdown text={cell} />
+                <InlineMarkdown text={cell} onOpenFile={onOpenFile} />
               </Text>
             ))}
           </View>
@@ -311,7 +349,7 @@ function renderBlock(block: Block, index: number, isLast = false) {
               </View>
             )}
             <Text selectable style={styles.listItemText}>
-              <InlineMarkdown text={item.text} />
+              <InlineMarkdown text={item.text} onOpenFile={onOpenFile} />
             </Text>
           </View>
         ))}
@@ -320,16 +358,16 @@ function renderBlock(block: Block, index: number, isLast = false) {
   }
   return (
     <Text key={index} selectable style={[styles.paragraph, isLast && styles.noBottom]}>
-      <InlineMarkdown text={block.text} />
+      <InlineMarkdown text={block.text} onOpenFile={onOpenFile} />
     </Text>
   );
 }
 
-export function MarkdownText({ text }: MarkdownTextProps) {
+export function MarkdownText({ text, onOpenFile }: MarkdownTextProps) {
   return (
     <View>
       {blocksFromMarkdown(text).map((block, index, all) =>
-        renderBlock(block, index, index === all.length - 1),
+        renderBlock(block, index, index === all.length - 1, onOpenFile),
       )}
     </View>
   );

@@ -5,6 +5,7 @@ import {
   Check,
   ChevronDown,
   CircleAlert,
+  Download,
   FileText,
   Paperclip,
   Pencil,
@@ -34,6 +35,7 @@ import {
   View,
 } from "react-native";
 import * as Network from "expo-network";
+import * as Sharing from "expo-sharing";
 import { File } from "expo-file-system";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
@@ -43,7 +45,13 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { MarkdownText } from "../components/MarkdownText";
 import { useRemote } from "../remote/RemoteContext";
 import { loadSessionDraft, saveSessionDraft } from "../remote/draftStorage";
-import { deleteTemporaryAttachment, pickAttachments, takePhoto } from "../remote/files";
+import {
+  deleteTemporaryAttachment,
+  MAX_FILE_BYTES,
+  pickAttachments,
+  takePhoto,
+} from "../remote/files";
+import { basename } from "../remote/localPath";
 import {
   modelReference,
   type DownloadInfo,
@@ -121,6 +129,12 @@ export function ChatScreen() {
     markdown?: string;
     text?: string;
     truncated?: boolean;
+  } | null>(null);
+  // Prepared non-previewable download awaiting an "open"/"save" choice (Android
+  // bottom sheet; iOS drives the same choice through the native action sheet).
+  const [fileAction, setFileAction] = useState<{
+    info: DownloadInfo;
+    cachedFile: File | null;
   } | null>(null);
   const [selector, setSelector] = useState<"model" | "thinking" | null>(null);
   const [renameOpen, setRenameOpen] = useState(false);
@@ -326,7 +340,9 @@ export function ChatScreen() {
       // swallowing the input — always restore the draft so nothing vanishes.
       setMessage(value);
       const key = error instanceof Error ? error.message : "";
-      setAttachmentError(key === "prompt_too_large" ? t("chat.promptTooLarge") : t("chat.sendFailed"));
+      setAttachmentError(
+        key === "prompt_too_large" ? t("chat.promptTooLarge") : t("chat.sendFailed"),
+      );
     } finally {
       setTransferProgress(null);
     }
@@ -472,6 +488,122 @@ export function ChatScreen() {
     [remote, t],
   );
 
+  // Download `info` to a cached File, prompting on cellular. Returns the file,
+  // or null when the user declines the cellular download.
+  const fetchDownload = useCallback(
+    async (info: DownloadInfo, cachedFile: File | null): Promise<File | null> => {
+      if (cachedFile) return cachedFile;
+      const network = await Network.getNetworkStateAsync();
+      if (
+        network.type === Network.NetworkStateType.CELLULAR ||
+        network.type === Network.NetworkStateType.UNKNOWN
+      ) {
+        const accepted = await confirmDownload(
+          t("attachment.downloadTitle"),
+          t("attachment.cellularWarning", { size: formatBytes(info.size) }),
+          t("chat.cancel"),
+          t("attachment.download"),
+        );
+        if (!accepted) return null;
+      }
+      return remote.downloadAttachment(info, (done, total) =>
+        setTransferProgress(total > 0 ? done / total : null),
+      );
+    },
+    [remote, t],
+  );
+
+  // Non-previewable file: download then hand it to the OS share sheet, which is
+  // the cross-platform "open with external app / save to files" surface.
+  const openOrShare = useCallback(
+    async (info: DownloadInfo, cachedFile: File | null, save: boolean) => {
+      setTransferProgress(0);
+      try {
+        const file = await fetchDownload(info, cachedFile);
+        if (!file) return;
+        if (!(await Sharing.isAvailableAsync())) {
+          Alert.alert(t("attachment.title"), t("attachment.shareUnavailable"));
+          return;
+        }
+        await Sharing.shareAsync(file.uri, {
+          mimeType: info.mimeType,
+          dialogTitle: save ? t("attachment.save") : t("attachment.open"),
+        });
+      } catch {
+        Alert.alert(t("attachment.title"), t("attachment.downloadFailed"));
+      } finally {
+        setTransferProgress(null);
+      }
+    },
+    [fetchDownload, t],
+  );
+
+  // A local-file markdown link/image target: prepare, then dispatch by size and
+  // preview kind. Over 10 MB → desktop; image/markdown/text → in-app preview;
+  // anything else → open/save action sheet.
+  const openFileLink = useCallback(
+    async (path: string) => {
+      setAttachmentError(null);
+      const attachment: HistoryAttachment = { path, name: basename(path) };
+      try {
+        const cachedPreview = remote.cachedAttachment(attachment);
+        const info = cachedPreview?.info ?? (await remote.prepareAttachment(attachment));
+        if (info.size > MAX_FILE_BYTES) {
+          Alert.alert(t("attachment.title"), t("attachment.tooLarge"));
+          return;
+        }
+        const previewable =
+          info.previewKind === "image" ||
+          info.previewKind === "markdown" ||
+          info.previewKind === "text";
+        if (!previewable) {
+          if (Platform.OS === "ios") {
+            ActionSheetIOS.showActionSheetWithOptions(
+              {
+                options: [t("attachment.open"), t("attachment.save"), t("chat.cancel")],
+                cancelButtonIndex: 2,
+              },
+              index => {
+                if (index === 0 || index === 1)
+                  void openOrShare(info, cachedPreview?.file ?? null, index === 1);
+              },
+            );
+          } else {
+            setFileAction({ info, cachedFile: cachedPreview?.file ?? null });
+          }
+          return;
+        }
+        const file = await fetchDownload(info, cachedPreview?.file ?? null);
+        if (!file) return;
+        if (info.previewKind === "image") {
+          setPreview({ info, uri: file.uri });
+        } else {
+          const bytes = await file.bytes();
+          const visible = bytes.slice(0, MARKDOWN_RENDER_BYTES);
+          const previewText = new TextDecoder().decode(visible);
+          setPreview({
+            info,
+            uri: file.uri,
+            ...(info.previewKind === "markdown"
+              ? { markdown: previewText }
+              : { text: previewText }),
+            truncated: bytes.byteLength > visible.byteLength,
+          });
+        }
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "";
+        const message =
+          detail.includes("view it on desktop") || detail.includes("GIF preview")
+            ? t("attachment.previewOnDesktop")
+            : t("attachment.downloadFailed");
+        Alert.alert(t("attachment.title"), message);
+      } finally {
+        setTransferProgress(null);
+      }
+    },
+    [fetchDownload, openOrShare, remote, t],
+  );
+
   // The bottom-most scroll offset: full content height minus the viewport,
   // never negative. Recomputed from measured sizes so it stays correct as the
   // composer (bottom padding) and content grow.
@@ -582,6 +714,7 @@ export function ChatScreen() {
               <TimelineCard
                 item={item}
                 onOpenAttachment={attachment => void openAttachment(attachment)}
+                onOpenFile={path => void openFileLink(path)}
                 onRetry={retryMessage}
                 onContinue={continueMessage}
               />
@@ -625,8 +758,8 @@ export function ChatScreen() {
               remote.desktopOnline &&
               remote.models.length === 0 &&
               !remote.modelId && (
-              <Text style={styles.offlineComposer}>{t("connection.noModelsHint")}</Text>
-            )}
+                <Text style={styles.offlineComposer}>{t("connection.noModelsHint")}</Text>
+              )}
             {pendingApprovals.map(item => (
               <View key={item.id} style={styles.dockedApproval}>
                 <PendingApprovalCard
@@ -817,6 +950,44 @@ export function ChatScreen() {
                   >
                     <Camera color={colors.ink} size={20} />
                     <Text style={styles.attachmentMenuText}>{t("attachment.takePhoto")}</Text>
+                  </Pressable>
+                </View>
+              </TouchableWithoutFeedback>
+            </View>
+          </TouchableWithoutFeedback>
+        </Modal>
+
+        <Modal
+          animationType="fade"
+          onRequestClose={() => setFileAction(null)}
+          transparent
+          visible={fileAction !== null}
+        >
+          <TouchableWithoutFeedback onPress={() => setFileAction(null)}>
+            <View style={styles.attachmentOverlay}>
+              <TouchableWithoutFeedback>
+                <View style={styles.attachmentMenu}>
+                  <Pressable
+                    onPress={() => {
+                      const action = fileAction;
+                      setFileAction(null);
+                      if (action) void openOrShare(action.info, action.cachedFile, false);
+                    }}
+                    style={styles.attachmentMenuOption}
+                  >
+                    <FileText color={colors.ink} size={20} />
+                    <Text style={styles.attachmentMenuText}>{t("attachment.open")}</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => {
+                      const action = fileAction;
+                      setFileAction(null);
+                      if (action) void openOrShare(action.info, action.cachedFile, true);
+                    }}
+                    style={styles.attachmentMenuOption}
+                  >
+                    <Download color={colors.ink} size={20} />
+                    <Text style={styles.attachmentMenuText}>{t("attachment.save")}</Text>
                   </Pressable>
                 </View>
               </TouchableWithoutFeedback>
