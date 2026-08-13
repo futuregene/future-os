@@ -87,8 +87,17 @@ fn init_goal(root: &str, objective: &str) -> String {
 fn worker_bridge_worker_finishes_on_eof_and_done() {
     let root = tmp_root("bridge-eof");
     let gid = init_goal(&root, "bridge eof");
+    // Register the agent so `--agent-id` passes the coordination gate.
+    run(
+        &root,
+        &["agent", "register", "--goal", &gid, "--agent-id", "a1"],
+    );
     // EOF on stdin → "worker finished".
-    let (out, _, code) = run_stdin(&root, &["worker-bridge", "--goal", &gid], "");
+    let (out, _, code) = run_stdin(
+        &root,
+        &["worker-bridge", "--goal", &gid, "--agent-id", "a1"],
+        "",
+    );
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("BRIDGE packet:"), "{out}");
     assert!(out.contains("worker finished"), "{out}");

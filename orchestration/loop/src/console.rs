@@ -647,10 +647,12 @@ fn cmd_capability_hook(
     let mut input = None;
     let mut goal_id = None;
     reject_unknown_flags(args, &["--input", "--goal"])?;
-    parse_pairs(args, |k, v| match k {
-        "--input" => input = Some(v),
-        "--goal" => goal_id = Some(v),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--input" {
+            input = Some(v);
+        } else if k == "--goal" {
+            goal_id = Some(v);
+        }
     });
     let input = input.unwrap_or_default();
     let Some(cap) = registry.get(capability_id) else {
@@ -743,12 +745,16 @@ fn cmd_goal(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut goal_doc = None;
     reject_unknown_flags(args, &["--cwd", "--goal-doc", "--goal-id", "--objective"])?;
-    parse_pairs(args, |k, v| match k {
-        "--objective" => objective = Some(v),
-        "--cwd" => cwd = Some(v),
-        "--goal-id" => goal_id = Some(v),
-        "--goal-doc" => goal_doc = Some(v),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--objective" {
+            objective = Some(v);
+        } else if k == "--cwd" {
+            cwd = Some(v);
+        } else if k == "--goal-id" {
+            goal_id = Some(v);
+        } else if k == "--goal-doc" {
+            goal_doc = Some(v);
+        }
     });
     let objective = objective.ok_or_else(|| anyhow::anyhow!("goal init requires --objective"))?;
     let goal_id = goal_id.unwrap_or_else(|| gen_id("goal"));
@@ -797,10 +803,12 @@ fn cmd_goal_cancel(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut reason = "cancelled by user".to_string();
     reject_unknown_flags(args, &["--goal", "--reason"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--reason" => reason = v,
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--reason" {
+            reason = v;
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     store
@@ -826,10 +834,12 @@ fn cmd_goal_delete(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut force = false;
     reject_unknown_flags(args, &["--force", "--goal"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--force" => force = true,
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--force" {
+            force = true;
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     if !force {
@@ -914,34 +924,56 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
             "--verify",
         ],
     )?;
-    parse_pairs(args, |k, v| match k {
-        "--goal-bound" => goal_bound = true,
-        "--global-gate" => global_gate = true,
-        "--resume-when" => resume_when_cond = Some(v),
-        "--note" => note = Some(v),
-        "--monitor-target" => monitor_target = Some(v),
-        "--monitor-policy" => monitor_policy = Some(v),
-        "--cadence" => cadence = Some(v),
-        "--verify" => verify = Some(v),
-        "--max-validation-attempts" => max_validation_attempts = v.parse().ok(),
-        "--goal" => goal_id = Some(v),
-        "--role" => role = v,
-        "--class" => class = v,
-        "--text" => text = Some(v),
-        "--gate-question" => gate_question = Some(v),
-        "--blocks" => blocks = v.split(',').map(|s| s.to_string()).collect(),
-        "--priority" => priority = Some(v),
-        "--action-kind" => action_kind = Some(v),
-        "--required-capability" => required_capability = Some(v),
-        "--defer-secs" => deferred_secs = v.parse().unwrap_or(0),
-        "--title" => title = Some(v),
-        "--task-repository" => task_repository = Some(v),
-        "--continuation-policy" => continuation_policy = Some(v),
-        "--required-write-scope" => {
-            write_scopes = v.split(',').map(|s| s.trim().to_string()).collect()
+    parse_pairs(args, |k, v| {
+        if k == "--goal-bound" {
+            goal_bound = true;
+        } else if k == "--global-gate" {
+            global_gate = true;
+        } else if k == "--resume-when" {
+            resume_when_cond = Some(v);
+        } else if k == "--note" {
+            note = Some(v);
+        } else if k == "--monitor-target" {
+            monitor_target = Some(v);
+        } else if k == "--monitor-policy" {
+            monitor_policy = Some(v);
+        } else if k == "--cadence" {
+            cadence = Some(v);
+        } else if k == "--verify" {
+            verify = Some(v);
+        } else if k == "--max-validation-attempts" {
+            max_validation_attempts = v.parse().ok();
+        } else if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--role" {
+            role = v;
+        } else if k == "--class" {
+            class = v;
+        } else if k == "--text" {
+            text = Some(v);
+        } else if k == "--gate-question" {
+            gate_question = Some(v);
+        } else if k == "--blocks" {
+            blocks = v.split(',').map(|s| s.to_string()).collect();
+        } else if k == "--priority" {
+            priority = Some(v);
+        } else if k == "--action-kind" {
+            action_kind = Some(v);
+        } else if k == "--required-capability" {
+            required_capability = Some(v);
+        } else if k == "--defer-secs" {
+            deferred_secs = v.parse().unwrap_or(0);
+        } else if k == "--title" {
+            title = Some(v);
+        } else if k == "--task-repository" {
+            task_repository = Some(v);
+        } else if k == "--continuation-policy" {
+            continuation_policy = Some(v);
+        } else if k == "--required-write-scope" {
+            write_scopes = v.split(',').map(|s| s.trim().to_string()).collect();
+        } else if k == "--capability-binding-ref" {
+            capability_binding = Some(v);
         }
-        "--capability-binding-ref" => capability_binding = Some(v),
-        _ => {}
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let text = text.ok_or_else(|| anyhow::anyhow!("--text required"))?;
@@ -1093,13 +1125,18 @@ fn todo_claim(store: &mut Store, args: &[String]) -> Result<()> {
             "--todo-id",
         ],
     )?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--todo-id" => todo_id = Some(v),
-        "--agent-id" => agent_id = Some(v),
-        "--lease-secs" => lease_secs = v.parse().unwrap_or(3600),
-        "--force" => force = true,
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--todo-id" {
+            todo_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        } else if k == "--lease-secs" {
+            lease_secs = v.parse().unwrap_or(3600);
+        } else if k == "--force" {
+            force = true;
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
@@ -1194,11 +1231,14 @@ fn cmd_agent(store: &mut Store, args: &[String]) -> Result<()> {
     let mut agent_id = None;
     let mut workspaces = vec![];
     reject_unknown_flags(args, &["--agent-id", "--goal", "--workspace"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--agent-id" => agent_id = Some(v),
-        "--workspace" => workspaces = parse_workspaces(&v),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        } else if k == "--workspace" {
+            workspaces = parse_workspaces(&v);
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let agent_id = agent_id.ok_or_else(|| anyhow::anyhow!("--agent-id required"))?;
@@ -1238,14 +1278,16 @@ fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
             "--workspace",
         ],
     )?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--agent-id" => agent_id = Some(v),
-        "--capability" | "--capabilities" => {
-            capabilities = v.split(',').map(|s| s.trim().to_string()).collect()
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        } else if k == "--capability" || k == "--capabilities" {
+            capabilities = v.split(',').map(|s| s.trim().to_string()).collect();
+        } else if k == "--workspace" {
+            workspaces = parse_workspaces(&v);
         }
-        "--workspace" => workspaces = parse_workspaces(&v),
-        _ => {}
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let agent_id = agent_id.ok_or_else(|| anyhow::anyhow!("--agent-id required"))?;
@@ -1490,13 +1532,18 @@ fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
             "--todo-id",
         ],
     )?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--todo-id" => todo_id = Some(v),
-        "--no-follow-up" => no_follow_up = true,
-        "--successor" => successor = Some(v),
-        "--evidence" => evidence = Some(v),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--todo-id" {
+            todo_id = Some(v);
+        } else if k == "--no-follow-up" {
+            no_follow_up = true;
+        } else if k == "--successor" {
+            successor = Some(v);
+        } else if k == "--evidence" {
+            evidence = Some(v);
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
@@ -1579,12 +1626,16 @@ fn cmd_gate(store: &mut Store, args: &[String]) -> Result<()> {
     let mut decision = None;
     let mut note = None;
     reject_unknown_flags(args, &["--decision", "--goal", "--note", "--todo-id"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--todo-id" => todo_id = Some(v),
-        "--decision" => decision = Some(v),
-        "--note" => note = Some(v),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--todo-id" {
+            todo_id = Some(v);
+        } else if k == "--decision" {
+            decision = Some(v);
+        } else if k == "--note" {
+            note = Some(v);
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
@@ -1619,11 +1670,14 @@ fn cmd_backup(store: &Store, args: &[String]) -> Result<()> {
     let mut list = false;
     let mut restore = None;
     reject_unknown_flags(args, &["--goal", "--list", "--restore"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--list" => list = true,
-        "--restore" => restore = Some(v),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--list" {
+            list = true;
+        } else if k == "--restore" {
+            restore = Some(v);
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     if list {
@@ -1649,11 +1703,14 @@ fn cmd_authority(store: &mut Store, args: &[String]) -> Result<()> {
     let mut write_scope = None;
     let mut require = None;
     reject_unknown_flags(args, &["--goal", "--require-approval", "--write-scope"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--write-scope" => write_scope = Some(v),
-        "--require-approval" => require = Some(v),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--write-scope" {
+            write_scope = Some(v);
+        } else if k == "--require-approval" {
+            require = Some(v);
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let mut goal = store
@@ -1721,10 +1778,12 @@ fn cmd_replan(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut delta_kinds: Vec<String> = vec![];
     reject_unknown_flags(args, &["--delta-kind", "--format", "--goal", "--json"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--delta-kind" => delta_kinds.push(v),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--delta-kind" {
+            delta_kinds.push(v);
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     store
@@ -1759,10 +1818,12 @@ fn cmd_profile(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut outcome_floor = None;
     reject_unknown_flags(&args[1..], &["--goal", "--outcome-floor"])?;
-    parse_pairs(&args[1..], |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--outcome-floor" => outcome_floor = Some(v),
-        _ => {}
+    parse_pairs(&args[1..], |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--outcome-floor" {
+            outcome_floor = Some(v);
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let mut goal = store
@@ -1962,11 +2023,14 @@ fn quota_decisions(store: &Store, args: &[String]) -> Result<()> {
     let mut format_json = false;
     let mut limit = 10usize;
     reject_unknown_flags(args, &["--format", "--goal", "--limit"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--format" => format_json = v == "json",
-        "--limit" => limit = v.parse().unwrap_or(10),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--format" {
+            format_json = v == "json";
+        } else if k == "--limit" {
+            limit = v.parse().unwrap_or(10);
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let events = store.events(&goal_id)?;
@@ -2004,11 +2068,14 @@ fn quota_should_run(store: &Store, args: &[String]) -> Result<()> {
     let mut format_json = false;
     let mut agent_id = None;
     reject_unknown_flags(args, &["--agent-id", "--format", "--goal"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--format" => format_json = v == "json",
-        "--agent-id" => agent_id = Some(v),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--format" {
+            format_json = v == "json";
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let goal = store
@@ -2039,11 +2106,14 @@ fn quota_usage(store: &Store, args: &[String]) -> Result<()> {
     let mut format_json = false;
     let mut all = false;
     reject_unknown_flags(args, &["--all", "--format", "--goal"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--format" => format_json = v == "json",
-        "--all" => all = true,
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--format" {
+            format_json = v == "json";
+        } else if k == "--all" {
+            all = true;
+        }
     });
     let now = now_epoch();
     if let Some(g) = goal_id {
@@ -2119,10 +2189,12 @@ fn quota_tools(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut format_json = false;
     reject_unknown_flags(args, &["--goal", "--format"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--format" => format_json = v == "json",
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--format" {
+            format_json = v == "json";
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let goal = store
@@ -2201,14 +2273,20 @@ fn scheduler_ack(store: &mut Store, args: &[String]) -> Result<()> {
             "--source",
         ],
     )?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--agent-id" => agent_id = Some(v),
-        "--action" => action = Some(v),
-        "--cadence-class" => cadence_class = v,
-        "--rrule" => rrule = Some(v),
-        "--source" => source = v,
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        } else if k == "--action" {
+            action = Some(v);
+        } else if k == "--cadence-class" {
+            cadence_class = v;
+        } else if k == "--rrule" {
+            rrule = Some(v);
+        } else if k == "--source" {
+            source = v;
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let action = action.ok_or_else(|| anyhow::anyhow!("--action required"))?;
@@ -2239,10 +2317,12 @@ fn scheduler_scope(
 ) -> Result<(String, String)> {
     let mut goal_id = None;
     let mut agent_id = None;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--agent-id" => agent_id = Some(v),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     store
@@ -2272,17 +2352,18 @@ fn scheduler_tick(store: &mut Store, args: &[String]) -> Result<()> {
             "--progression",
         ],
     )?;
-    parse_pairs(args, |k, v| match k {
-        "--cadence-class" => cadence_class = v,
-        "--progression" => {
+    parse_pairs(args, |k, v| {
+        if k == "--cadence-class" {
+            cadence_class = v;
+        } else if k == "--progression" {
             progression = v
                 .split(',')
                 .filter_map(|s| s.trim().parse::<i64>().ok())
                 .filter(|m| *m > 0)
-                .collect()
+                .collect();
+        } else if k == "--action" {
+            action = v;
         }
-        "--action" => action = v,
-        _ => {}
     });
     let (goal_id, agent) = scheduler_scope(store, args, "codex-app")?;
     let goal_dir = store.goal_dir(&goal_id);
@@ -2590,12 +2671,16 @@ fn scheduler_record_failure(store: &Store, args: &[String]) -> Result<()> {
             "--target-rrule",
         ],
     )?;
-    parse_pairs(args, |k, v| match k {
-        "--target-rrule" => target_rrule = Some(v),
-        "--observed-rrule" => observed_rrule = Some(v),
-        "--failure-kind" => failure_kind = Some(v),
-        "--failure-count" => count = v.parse().unwrap_or(1),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--target-rrule" {
+            target_rrule = Some(v);
+        } else if k == "--observed-rrule" {
+            observed_rrule = Some(v);
+        } else if k == "--failure-kind" {
+            failure_kind = Some(v);
+        } else if k == "--failure-count" {
+            count = v.parse().unwrap_or(1);
+        }
     });
     let (goal_id, agent) = scheduler_scope(store, args, "codex-app")?;
     let target_rrule = target_rrule.ok_or_else(|| anyhow::anyhow!("--target-rrule required"))?;
@@ -2797,17 +2882,26 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
             "--thinking-level",
         ],
     )?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--model" => model = Some(v),
-        "--thinking-level" => thinking = Some(v),
-        "--max-turns" => max_turns = v.parse().unwrap_or(6),
-        "--max-turn-secs" => max_turn_secs = v.parse().unwrap_or(0),
-        "--agent-id" => agent_id = Some(v),
-        "--lease-secs" => lease_secs = v.parse().unwrap_or(DEFAULT_RUN_LEASE_SECS),
-        "--anonymous" => anonymous = true,
-        "--force-workspace" => force_workspace = true,
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--model" {
+            model = Some(v);
+        } else if k == "--thinking-level" {
+            thinking = Some(v);
+        } else if k == "--max-turns" {
+            max_turns = v.parse().unwrap_or(6);
+        } else if k == "--max-turn-secs" {
+            max_turn_secs = v.parse().unwrap_or(0);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        } else if k == "--lease-secs" {
+            lease_secs = v.parse().unwrap_or(DEFAULT_RUN_LEASE_SECS);
+        } else if k == "--anonymous" {
+            anonymous = true;
+        } else if k == "--force-workspace" {
+            force_workspace = true;
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
 
@@ -3395,10 +3489,12 @@ fn cmd_store(store: &mut Store, args: &[String]) -> Result<()> {
             let mut goal_id = None;
             let mut repair = false;
             reject_unknown_flags(args, &["--format", "--goal", "--json", "--repair"])?;
-            parse_pairs(args, |k, v| match k {
-                "--goal" => goal_id = Some(v),
-                "--repair" => repair = true,
-                _ => {}
+            parse_pairs(args, |k, v| {
+                if k == "--goal" {
+                    goal_id = Some(v);
+                } else if k == "--repair" {
+                    repair = true;
+                }
             });
             let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
             let report = store.verify(&goal_id)?;
@@ -3515,12 +3611,16 @@ fn cmd_backfill(store: &mut Store, args: &[String]) -> Result<()> {
     let mut privacy = "local_private".to_string();
     let mut dry_run = false;
     reject_unknown_flags(args, &["--dry-run", "--from", "--goal", "--privacy"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--from" => from = Some(v),
-        "--privacy" => privacy = v,
-        "--dry-run" => dry_run = true,
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--from" {
+            from = Some(v);
+        } else if k == "--privacy" {
+            privacy = v;
+        } else if k == "--dry-run" {
+            dry_run = true;
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let goal = store
@@ -3586,11 +3686,14 @@ fn cmd_privacy(store: &Store, args: &[String]) -> Result<()> {
     let mut level = "public_safe".to_string();
     let mut format_json = false;
     reject_unknown_flags(args, &["--format", "--goal", "--level"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--level" => level = v,
-        "--format" => format_json = v == "json",
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--level" {
+            level = v;
+        } else if k == "--format" {
+            format_json = v == "json";
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let goal = store
@@ -3676,13 +3779,18 @@ fn cmd_lease(store: &mut Store, args: &[String]) -> Result<()> {
             "--todo-id",
         ],
     )?;
-    parse_pairs(&args[1..], |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--todo-id" => todo_id = Some(v),
-        "--agent-id" => agent_id = Some(v),
-        "--lease-secs" => lease_secs = v.parse().unwrap_or(0),
-        "--force" => force = true,
-        _ => {}
+    parse_pairs(&args[1..], |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--todo-id" {
+            todo_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        } else if k == "--lease-secs" {
+            lease_secs = v.parse().unwrap_or(0);
+        } else if k == "--force" {
+            force = true;
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
@@ -3854,14 +3962,20 @@ fn pr_review_queue(store: &mut Store, args: &[String]) -> Result<()> {
             "--repo",
         ],
     )?;
-    parse_pairs(args, |k, v| match k {
-        "--repo" => repo = Some(v),
-        "--fixture" => fixture = Some(v),
-        "--input" => input = Some(v),
-        "--previous-observation-json" => previous_json = Some(v),
-        "--handled-exact-head" => handled.push(v),
-        "--goal" => goal_id = Some(v),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--repo" {
+            repo = Some(v);
+        } else if k == "--fixture" {
+            fixture = Some(v);
+        } else if k == "--input" {
+            input = Some(v);
+        } else if k == "--previous-observation-json" {
+            previous_json = Some(v);
+        } else if k == "--handled-exact-head" {
+            handled.push(v);
+        } else if k == "--goal" {
+            goal_id = Some(v);
+        }
     });
     if let Some(g) = goal_id.as_deref() {
         enforce_capability_quota(store, g, "pr_review_queue", "pr-review queue")?;
@@ -4024,15 +4138,22 @@ fn pr_review_verdict(store: &mut Store, args: &[String]) -> Result<()> {
             "--verdict",
         ],
     )?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--number" => number = Some(v),
-        "--head" => head = Some(v),
-        "--repo" => repo = Some(v),
-        "--reviewer" => reviewer = Some(v),
-        "--verdict" => verdict = Some(v),
-        "--comment" => comment = Some(v),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--number" {
+            number = Some(v);
+        } else if k == "--head" {
+            head = Some(v);
+        } else if k == "--repo" {
+            repo = Some(v);
+        } else if k == "--reviewer" {
+            reviewer = Some(v);
+        } else if k == "--verdict" {
+            verdict = Some(v);
+        } else if k == "--comment" {
+            comment = Some(v);
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let number: u64 = number
@@ -4070,9 +4191,10 @@ fn pr_review_verdict(store: &mut Store, args: &[String]) -> Result<()> {
     let mut superseded = false;
     let new_item = match goal.todo(&id) {
         Some(existing) => {
-            match ReviewItem::from_todo(existing) {
-                Some(parsed) if parsed.head_oid != item.head_oid => superseded = true,
-                _ => {}
+            if let Some(parsed) = ReviewItem::from_todo(existing) {
+                if parsed.head_oid != item.head_oid {
+                    superseded = true;
+                }
             }
             false
         }
@@ -4160,12 +4282,16 @@ fn pr_review_claim(store: &mut Store, args: &[String]) -> Result<()> {
     let mut reviewer = None;
     let mut lease_secs = 0u64;
     reject_unknown_flags(args, &["--goal", "--lease-secs", "--number", "--reviewer"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--number" => number = Some(v),
-        "--reviewer" => reviewer = Some(v),
-        "--lease-secs" => lease_secs = v.parse().unwrap_or(0),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--number" {
+            number = Some(v);
+        } else if k == "--reviewer" {
+            reviewer = Some(v);
+        } else if k == "--lease-secs" {
+            lease_secs = v.parse().unwrap_or(0);
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let number: u64 = number
@@ -4242,17 +4368,22 @@ fn pr_review_recommend(args: &[String]) -> Result<()> {
             "--since-days",
         ],
     )?;
-    parse_pairs(args, |k, v| match k {
-        "--path" => paths.extend(
-            v.split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty()),
-        ),
-        "--codeowners" => codeowners_path = Some(v),
-        "--owners-root" => owners_root = Some(v),
-        "--repo-dir" => repo_dir = Some(v),
-        "--since-days" => since_days = v.parse().unwrap_or(30),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--path" {
+            paths.extend(
+                v.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty()),
+            );
+        } else if k == "--codeowners" {
+            codeowners_path = Some(v);
+        } else if k == "--owners-root" {
+            owners_root = Some(v);
+        } else if k == "--repo-dir" {
+            repo_dir = Some(v);
+        } else if k == "--since-days" {
+            since_days = v.parse().unwrap_or(30);
+        }
     });
     if paths.is_empty() {
         bail!("pr-review recommend requires at least one --path (comma-separated or repeatable)");
@@ -4366,13 +4497,18 @@ fn cmd_runs(store: &Store, args: &[String]) -> Result<()> {
         &args[1..],
         &["--cutoff", "--format", "--goal", "--keep", "--rebuild"],
     )?;
-    parse_pairs(&args[1..], |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--keep" => keep = v.parse().unwrap_or(50),
-        "--cutoff" => cutoff = Some(v),
-        "--rebuild" => rebuild = true,
-        "--format" => format_json = v == "json",
-        _ => {}
+    parse_pairs(&args[1..], |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--keep" {
+            keep = v.parse().unwrap_or(50);
+        } else if k == "--cutoff" {
+            cutoff = Some(v);
+        } else if k == "--rebuild" {
+            rebuild = true;
+        } else if k == "--format" {
+            format_json = v == "json";
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     store
@@ -4574,6 +4710,7 @@ fn wants_json(args: &[String]) -> bool {
 
 /// P0-3④: classify a `--resume-when` value — numeric N means "defer N
 /// seconds from now" (a real deadline); anything else is a text-only hint.
+#[derive(Debug, PartialEq)]
 enum ResumeWhen {
     Defer(u64),
     TextHint(String),
@@ -4623,10 +4760,12 @@ fn cmd_heartbeat(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut agent_id = None;
     reject_unknown_flags(args, &["--agent-id", "--goal"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--agent-id" => agent_id = Some(v),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let goal = store
@@ -4647,11 +4786,14 @@ async fn cmd_worker_bridge(store: &mut Store, args: &[String]) -> Result<()> {
     let mut agent_id = None;
     let mut max_turns = 6u32;
     reject_unknown_flags(args, &["--agent-id", "--goal", "--max-turns"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--agent-id" => agent_id = Some(v),
-        "--max-turns" => max_turns = v.parse().unwrap_or(6),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        } else if k == "--max-turns" {
+            max_turns = v.parse().unwrap_or(6);
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     crate::worker_bridge::run_bridge(
@@ -4672,7 +4814,7 @@ fn cmd_serve_status(store: &Store, args: &[String]) -> Result<()> {
     reject_unknown_flags(args, &["--port"])?;
     parse_pairs(args, |k, v| {
         if k == "--port" {
-            port = v.parse().unwrap_or(8791)
+            port = v.parse().unwrap_or(8791);
         }
     });
     crate::status_server::serve(store, &format!("127.0.0.1:{port}"))
@@ -4750,11 +4892,14 @@ fn cmd_capability(store: &mut Store, args: &[String]) -> Result<()> {
     let mut input = None;
     let mut goal_id = None;
     reject_unknown_flags(&args[1..], &["--input", "--name", "--goal"])?;
-    parse_pairs(&args[1..], |k, v| match k {
-        "--name" => name = Some(v),
-        "--input" => input = Some(v),
-        "--goal" => goal_id = Some(v),
-        _ => {}
+    parse_pairs(&args[1..], |k, v| {
+        if k == "--name" {
+            name = Some(v);
+        } else if k == "--input" {
+            input = Some(v);
+        } else if k == "--goal" {
+            goal_id = Some(v);
+        }
     });
     let name = name.ok_or_else(|| anyhow::anyhow!("--name required"))?;
     let input = input.unwrap_or_default();
@@ -4810,10 +4955,12 @@ fn cmd_extension(store: &Store, args: &[String]) -> Result<()> {
             let mut manifest_path = None;
             let mut execute = false;
             reject_unknown_flags(&args[1..], &["--execute", "--id", "--manifest"])?;
-            parse_pairs(&args[1..], |k, v| match k {
-                "--manifest" => manifest_path = Some(v),
-                "--execute" => execute = true,
-                _ => {}
+            parse_pairs(&args[1..], |k, v| {
+                if k == "--manifest" {
+                    manifest_path = Some(v);
+                } else if k == "--execute" {
+                    execute = true;
+                }
             });
             let manifest_path =
                 manifest_path.ok_or_else(|| anyhow::anyhow!("--manifest required"))?;
@@ -4841,10 +4988,12 @@ fn cmd_extension(store: &Store, args: &[String]) -> Result<()> {
             let mut id = None;
             let mut execute = false;
             reject_unknown_flags(&args[1..], &["--execute", "--id", "--manifest"])?;
-            parse_pairs(&args[1..], |k, v| match k {
-                "--id" => id = Some(v),
-                "--execute" => execute = true,
-                _ => {}
+            parse_pairs(&args[1..], |k, v| {
+                if k == "--id" {
+                    id = Some(v);
+                } else if k == "--execute" {
+                    execute = true;
+                }
             });
             let id = id.ok_or_else(|| anyhow::anyhow!("--id required"))?;
             let op = match sub {
@@ -4867,7 +5016,7 @@ fn cmd_extension(store: &Store, args: &[String]) -> Result<()> {
             reject_unknown_flags(&args[1..], &["--execute", "--id", "--manifest"])?;
             parse_pairs(&args[1..], |k, v| {
                 if k == "--id" {
-                    id = Some(v)
+                    id = Some(v);
                 }
             });
             let rows = crate::extensions::runtime::extension_status(&state_file, id.as_deref())
@@ -4918,11 +5067,14 @@ fn cmd_catalog(store: &Store, args: &[String]) -> Result<()> {
     let mut name = None;
     let mut json = false;
     reject_unknown_flags(args, &["--format", "--json", "--name"])?;
-    parse_pairs(args, |k, v| match k {
-        "--name" => name = Some(v),
-        "--format" => json = v == "json",
-        "--json" => json = true,
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--name" {
+            name = Some(v);
+        } else if k == "--format" {
+            json = v == "json";
+        } else if k == "--json" {
+            json = true;
+        }
     });
     match name {
         Some(n) => {
@@ -4982,11 +5134,14 @@ fn cmd_scope(store: &Store, args: &[String]) -> Result<()> {
     let mut agent_id = None;
     let mut exclude: Vec<String> = vec![];
     reject_unknown_flags(args, &["--agent-id", "--exclude", "--goal"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--agent-id" => agent_id = Some(v),
-        "--exclude" => exclude = v.split(',').map(|s| s.to_string()).collect(),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        } else if k == "--exclude" {
+            exclude = v.split(',').map(|s| s.to_string()).collect();
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let agent_id = agent_id.ok_or_else(|| anyhow::anyhow!("--agent-id required"))?;
@@ -5026,10 +5181,12 @@ fn cmd_lane(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut agent_id = None;
     reject_unknown_flags(args, &["--agent-id", "--goal"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--agent-id" => agent_id = Some(v),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let agent_id = agent_id.ok_or_else(|| anyhow::anyhow!("--agent-id required"))?;
@@ -5081,15 +5238,22 @@ fn cmd_supervisor(store: &mut Store, args: &[String]) -> Result<()> {
                     "--target-agent-id",
                 ],
             )?;
-            parse_pairs(&args[1..], |k, v| match k {
-                "--goal" => goal_id = Some(v),
-                "--agent-id" => supervisor_id = Some(v),
-                "--decision-id" => decision_id = Some(v),
-                "--target-agent-id" => target_agent_id = Some(v),
-                "--kind" => kind = v,
-                "--capabilities" => capabilities = v.split(',').map(|s| s.to_string()).collect(),
-                "--summary" => summary = Some(v),
-                _ => {}
+            parse_pairs(&args[1..], |k, v| {
+                if k == "--goal" {
+                    goal_id = Some(v);
+                } else if k == "--agent-id" {
+                    supervisor_id = Some(v);
+                } else if k == "--decision-id" {
+                    decision_id = Some(v);
+                } else if k == "--target-agent-id" {
+                    target_agent_id = Some(v);
+                } else if k == "--kind" {
+                    kind = v;
+                } else if k == "--capabilities" {
+                    capabilities = v.split(',').map(|s| s.to_string()).collect();
+                } else if k == "--summary" {
+                    summary = Some(v);
+                }
             });
             let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
             let supervisor_id =
@@ -5146,17 +5310,22 @@ fn cmd_supervisor(store: &mut Store, args: &[String]) -> Result<()> {
                     "--target-agent-id",
                 ],
             )?;
-            parse_pairs(&args[1..], |k, v| match k {
-                "--goal" => goal_id = Some(v),
-                "--decision-id" => decision_id = Some(v),
-                "--receipt-id" => receipt_id = Some(v),
-                "--adapter-id" => adapter_id = Some(v),
-                "--outcome" => outcome = v,
-                "--authority-ref" => authority_ref = Some(v),
-                "--host-capabilities" => {
-                    host_capabilities = v.split(',').map(|s| s.to_string()).collect()
+            parse_pairs(&args[1..], |k, v| {
+                if k == "--goal" {
+                    goal_id = Some(v);
+                } else if k == "--decision-id" {
+                    decision_id = Some(v);
+                } else if k == "--receipt-id" {
+                    receipt_id = Some(v);
+                } else if k == "--adapter-id" {
+                    adapter_id = Some(v);
+                } else if k == "--outcome" {
+                    outcome = v;
+                } else if k == "--authority-ref" {
+                    authority_ref = Some(v);
+                } else if k == "--host-capabilities" {
+                    host_capabilities = v.split(',').map(|s| s.to_string()).collect();
                 }
-                _ => {}
             });
             let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
             let decision_id =
@@ -5207,7 +5376,7 @@ fn cmd_supervisor(store: &mut Store, args: &[String]) -> Result<()> {
             )?;
             parse_pairs(&args[1..], |k, v| {
                 if k == "--goal" {
-                    goal_id = Some(v)
+                    goal_id = Some(v);
                 }
             });
             let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
@@ -5228,10 +5397,12 @@ fn cmd_handoff(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut write = false;
     reject_unknown_flags(args, &["--goal", "--write"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--write" => write = true,
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--write" {
+            write = true;
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let goal = store
@@ -5316,10 +5487,12 @@ fn cmd_attention(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut all = false;
     reject_unknown_flags(args, &["--all", "--format", "--goal", "--json"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--all" => all = true,
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--all" {
+            all = true;
+        }
     });
     let mut items = vec![];
     if let Some(g) = goal_id {
@@ -5375,11 +5548,14 @@ fn cmd_inbox(store: &Store, args: &[String]) -> Result<()> {
         args,
         &["--format", "--json", "--name", "--project", "--scope"],
     )?;
-    parse_pairs(args, |k, v| match k {
-        "--project" => project = v,
-        "--scope" => scope = v,
-        "--name" => name = v,
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--project" {
+            project = v;
+        } else if k == "--scope" {
+            scope = v;
+        } else if k == "--name" {
+            name = v;
+        }
     });
     let config = crate::work_items::operator_inbox::OperatorInboxConfig {
         enabled: true,
@@ -5507,12 +5683,16 @@ fn delivery_record(store: &mut Store, args: &[String]) -> Result<()> {
     let mut outcome_raw = None;
     let mut note = None;
     reject_unknown_flags(args, &["--goal", "--note", "--outcome", "--todo-id"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--todo-id" => todo_id = Some(v),
-        "--outcome" => outcome_raw = Some(v),
-        "--note" => note = Some(v),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--todo-id" {
+            todo_id = Some(v);
+        } else if k == "--outcome" {
+            outcome_raw = Some(v);
+        } else if k == "--note" {
+            note = Some(v);
+        }
     });
     use crate::work_items::delivery_outcome as dov;
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
@@ -5563,10 +5743,12 @@ fn delivery_followthrough(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut turns = crate::work_items::delivery_outcome::DEFAULT_FOLLOWTHROUGH_TURNS;
     reject_unknown_flags(args, &["--goal", "--turns"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--turns" => turns = v.parse().unwrap_or(turns),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--turns" {
+            turns = v.parse().unwrap_or(turns);
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let created = run_followthrough_check(store, &goal_id, turns)?;
@@ -5720,12 +5902,16 @@ fn reward_memory_query(store: &Store, args: &[String]) -> Result<()> {
     let mut agent_id = None;
     let mut todo_id = None;
     let mut source_raw = None;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--agent-id" => agent_id = Some(v),
-        "--todo-id" => todo_id = Some(v),
-        "--source" => source_raw = Some(v),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        } else if k == "--todo-id" {
+            todo_id = Some(v);
+        } else if k == "--source" {
+            source_raw = Some(v);
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let source = match source_raw.as_deref() {
@@ -5829,14 +6015,20 @@ fn reward_memory_record(store: &mut Store, args: &[String]) -> Result<()> {
     let mut source_raw = None;
     let mut note = None;
     let mut agent_id = None;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--todo-id" => todo_id = Some(v),
-        "--score" => score_raw = Some(v),
-        "--source" => source_raw = Some(v),
-        "--note" => note = Some(v),
-        "--agent-id" => agent_id = Some(v),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--todo-id" {
+            todo_id = Some(v);
+        } else if k == "--score" {
+            score_raw = Some(v);
+        } else if k == "--source" {
+            source_raw = Some(v);
+        } else if k == "--note" {
+            note = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
@@ -5957,7 +6149,7 @@ fn decision_context_outcomes(store: &Store, args: &[String]) -> Result<()> {
     reject_unknown_flags(args, &["--format", "--goal", "--json"])?;
     parse_pairs(args, |k, v| {
         if k == "--goal" {
-            goal_id = Some(v)
+            goal_id = Some(v);
         }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
@@ -6015,14 +6207,20 @@ fn decision_context_feedback(store: &mut Store, args: &[String]) -> Result<()> {
             "--turn",
         ],
     )?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--turn" => turn_raw = Some(v),
-        "--status" => status = Some(v),
-        "--note" => note = Some(v),
-        "--agent-id" => agent_id = Some(v),
-        "--context-digest" => context_digest = Some(v),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--turn" {
+            turn_raw = Some(v);
+        } else if k == "--status" {
+            status = Some(v);
+        } else if k == "--note" {
+            note = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        } else if k == "--context-digest" {
+            context_digest = Some(v);
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let turn: u32 = turn_raw
@@ -6146,11 +6344,14 @@ fn cmd_benchmark_protocol(store: &Store, args: &[String]) -> Result<()> {
     let mut max_rounds = None;
     let mut json = false;
     reject_unknown_flags(args, &["--json", "--max-rounds", "--route"])?;
-    parse_pairs(args, |k, v| match k {
-        "--route" => route = Some(v),
-        "--max-rounds" => max_rounds = v.parse::<u32>().ok(),
-        "--json" => json = true,
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--route" {
+            route = Some(v);
+        } else if k == "--max-rounds" {
+            max_rounds = v.parse::<u32>().ok();
+        } else if k == "--json" {
+            json = true;
+        }
     });
     let route = route.ok_or_else(|| anyhow::anyhow!("--route required"))?;
     let contract =
@@ -6197,12 +6398,16 @@ fn cmd_benchmark_ledger(store: &Store, args: &[String]) -> Result<()> {
     let mut json = false;
     let mut dir = None;
     reject_unknown_flags(args, &["--benchmark-id", "--case-id", "--dir", "--json"])?;
-    parse_pairs(args, |k, v| match k {
-        "--benchmark-id" => benchmark_id = Some(v),
-        "--case-id" => case_id = Some(v),
-        "--json" => json = true,
-        "--dir" => dir = Some(v),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--benchmark-id" {
+            benchmark_id = Some(v);
+        } else if k == "--case-id" {
+            case_id = Some(v);
+        } else if k == "--json" {
+            json = true;
+        } else if k == "--dir" {
+            dir = Some(v);
+        }
     });
     let dir = dir.unwrap_or_else(|| format!("{}/benchmarks", store.root_path()));
     let dir = std::path::PathBuf::from(&dir);
@@ -6275,18 +6480,28 @@ async fn cmd_benchmark_run(store: &Store, args: &[String]) -> Result<()> {
             "--task",
         ],
     )?;
-    parse_pairs(args, |k, v| match k {
-        "--benchmark-id" => benchmark_id = Some(v),
-        "--case-id" => case_id = Some(v),
-        "--task" => task = Some(v),
-        "--route" => route = Some(v),
-        "--arm-id" => arm_id = Some(v),
-        "--max-rounds" => max_rounds = v.parse::<u32>().unwrap_or(5),
-        "--expected-evidence" => expected_evidence = Some(v),
-        "--agent-addr" => agent_addr = Some(v),
-        "--ledger-dir" => ledger_dir = Some(v),
-        "--stub" => stub = true,
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--benchmark-id" {
+            benchmark_id = Some(v);
+        } else if k == "--case-id" {
+            case_id = Some(v);
+        } else if k == "--task" {
+            task = Some(v);
+        } else if k == "--route" {
+            route = Some(v);
+        } else if k == "--arm-id" {
+            arm_id = Some(v);
+        } else if k == "--max-rounds" {
+            max_rounds = v.parse::<u32>().unwrap_or(5);
+        } else if k == "--expected-evidence" {
+            expected_evidence = Some(v);
+        } else if k == "--agent-addr" {
+            agent_addr = Some(v);
+        } else if k == "--ledger-dir" {
+            ledger_dir = Some(v);
+        } else if k == "--stub" {
+            stub = true;
+        }
     });
     let benchmark_id = benchmark_id.ok_or_else(|| anyhow::anyhow!("--benchmark-id required"))?;
     let case_id = case_id.ok_or_else(|| anyhow::anyhow!("--case-id required"))?;
@@ -6389,12 +6604,16 @@ fn cmd_replay_record(store: &Store, args: &[String]) -> Result<()> {
     let mut agent_id = None;
     let mut out = None;
     reject_unknown_flags(args, &["--agent-id", "--case-id", "--goal", "--out"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--case-id" => case_id = Some(v),
-        "--agent-id" => agent_id = Some(v),
-        "--out" => out = Some(v),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--case-id" {
+            case_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        } else if k == "--out" {
+            out = Some(v);
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let goal = store
@@ -6431,10 +6650,12 @@ fn cmd_replay_run(store: &Store, args: &[String]) -> Result<()> {
     let mut path = None;
     let mut json = false;
     reject_unknown_flags(args, &["--case", "--json"])?;
-    parse_pairs(args, |k, v| match k {
-        "--case" => path = Some(v),
-        "--json" => json = true,
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--case" {
+            path = Some(v);
+        } else if k == "--json" {
+            json = true;
+        }
     });
     let path = path.ok_or_else(|| anyhow::anyhow!("--case required"))?;
     let replay = DecisionReplay::load(std::path::Path::new(&path))?;
@@ -6486,37 +6707,30 @@ fn cmd_replay_corpus_build(store: &Store, args: &[String]) -> Result<()> {
     let mut i = 0;
     let argv: Vec<String> = args.to_vec();
     while i < argv.len() {
-        match argv[i].as_str() {
-            "--goal" => {
-                i += 1;
-                goal_id = argv.get(i).cloned();
+        if argv[i].as_str() == "--goal" {
+            i += 1;
+            goal_id = argv.get(i).cloned();
+        } else if argv[i].as_str() == "--out" {
+            i += 1;
+            out = argv.get(i).cloned();
+        } else if argv[i].as_str() == "--ablate" {
+            i += 1;
+            if let Some(p) = argv.get(i) {
+                ablations.push(p.clone());
             }
-            "--out" => {
-                i += 1;
-                out = argv.get(i).cloned();
+        } else if argv[i].as_str() == "--patch-name" {
+            i += 1;
+            if let Some(n) = argv.get(i) {
+                patch_name = n.clone();
             }
-            "--ablate" => {
-                i += 1;
-                if let Some(p) = argv.get(i) {
-                    ablations.push(p.clone());
-                }
+        } else if argv[i].as_str() == "--patch" {
+            i += 1;
+            if let Some(raw) = argv.get(i) {
+                let value: serde_json::Value = serde_json::from_str(raw)
+                    .map_err(|e| anyhow::anyhow!("--patch must be a JSON object: {e}"))?;
+                patches.push(PatchCase::new(&format!("{patch_name}{patch_index}"), value));
+                patch_index += 1;
             }
-            "--patch-name" => {
-                i += 1;
-                if let Some(n) = argv.get(i) {
-                    patch_name = n.clone();
-                }
-            }
-            "--patch" => {
-                i += 1;
-                if let Some(raw) = argv.get(i) {
-                    let value: serde_json::Value = serde_json::from_str(raw)
-                        .map_err(|e| anyhow::anyhow!("--patch must be a JSON object: {e}"))?;
-                    patches.push(PatchCase::new(&format!("{patch_name}{patch_index}"), value));
-                    patch_index += 1;
-                }
-            }
-            _ => {}
         }
         i += 1;
     }
@@ -6551,12 +6765,16 @@ fn cmd_replay_corpus_run(store: &Store, args: &[String]) -> Result<()> {
     let mut seed = 0u64;
     let mut json = false;
     reject_unknown_flags(args, &["--corpus", "--json", "--repeats", "--seed"])?;
-    parse_pairs(args, |k, v| match k {
-        "--corpus" => corpus_path = Some(v),
-        "--repeats" => repeats = v.parse::<u32>().unwrap_or(3),
-        "--seed" => seed = v.parse::<u64>().unwrap_or(0),
-        "--json" => json = true,
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--corpus" {
+            corpus_path = Some(v);
+        } else if k == "--repeats" {
+            repeats = v.parse::<u32>().unwrap_or(3);
+        } else if k == "--seed" {
+            seed = v.parse::<u64>().unwrap_or(0);
+        } else if k == "--json" {
+            json = true;
+        }
     });
     let corpus_path = corpus_path.ok_or_else(|| anyhow::anyhow!("--corpus required"))?;
     let corpus = ModelBehaviorCorpus::load(std::path::Path::new(&corpus_path))?;
@@ -6629,10 +6847,12 @@ fn cmd_canary_smoke(store: &Store, args: &[String]) -> Result<()> {
     let mut profile = None;
     let mut json = false;
     reject_unknown_flags(args, &["--json", "--profile"])?;
-    parse_pairs(args, |k, v| match k {
-        "--profile" => profile = Some(v),
-        "--json" => json = true,
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--profile" {
+            profile = Some(v);
+        } else if k == "--json" {
+            json = true;
+        }
     });
     let profile = profile.unwrap_or_else(|| "release-gate".to_string());
     let result = crate::canary::run_smoke(store, &profile)?;
@@ -6736,10 +6956,12 @@ fn cmd_diagnose(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut format_json = false;
     reject_unknown_flags(args, &["--format", "--goal"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--format" => format_json = v == "json",
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--format" {
+            format_json = v == "json";
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let goal = store
@@ -6810,10 +7032,12 @@ async fn cmd_doctor(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_filter = None;
     let mut agent_addr = None;
     reject_unknown_flags(args, &["--agent-addr", "--goal"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_filter = Some(v),
-        "--agent-addr" => agent_addr = Some(v),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_filter = Some(v);
+        } else if k == "--agent-addr" {
+            agent_addr = Some(v);
+        }
     });
     println!("doctor: state root {}", store.root_path());
     let mut failures: Vec<String> = vec![];
@@ -6954,11 +7178,14 @@ fn cmd_turn(store: &Store, args: &[String]) -> Result<()> {
     let mut todo_id = None;
     let mut agent_id = None;
     reject_unknown_flags(args, &["--agent-id", "--goal", "--todo-id"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--todo-id" => todo_id = Some(v),
-        "--agent-id" => agent_id = Some(v),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--todo-id" {
+            todo_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
@@ -6981,10 +7208,12 @@ fn cmd_todo_event(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut todo_id = None;
     reject_unknown_flags(args, &["--format", "--goal", "--json", "--todo-id"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--todo-id" => todo_id = Some(v),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--todo-id" {
+            todo_id = Some(v);
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
@@ -7301,10 +7530,12 @@ fn cmd_evidence_log(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut todo_id = None;
     reject_unknown_flags(args, &["--format", "--goal", "--json", "--todo-id"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--todo-id" => todo_id = Some(v),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--todo-id" {
+            todo_id = Some(v);
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let events = store.events(&goal_id)?;
@@ -7402,10 +7633,12 @@ fn todo_archive(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut todo_id = None;
     reject_unknown_flags(args, &["--goal", "--todo-id"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--todo-id" => todo_id = Some(v),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--todo-id" {
+            todo_id = Some(v);
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
@@ -7433,11 +7666,14 @@ fn todo_supersede(store: &mut Store, args: &[String]) -> Result<()> {
     let mut todo_id = None;
     let mut reason = None;
     reject_unknown_flags(args, &["--goal", "--reason", "--todo-id"])?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--todo-id" => todo_id = Some(v),
-        "--reason" => reason = Some(v),
-        _ => {}
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--todo-id" {
+            todo_id = Some(v);
+        } else if k == "--reason" {
+            reason = Some(v);
+        }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
@@ -7496,16 +7732,24 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
             "--todo-id",
         ],
     )?;
-    parse_pairs(args, |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--todo-id" => todo_id = Some(v),
-        "--text" => text = Some(v),
-        "--status" => status = Some(v),
-        "--evidence" => evidence = Some(v),
-        "--note" => note = Some(v),
-        "--priority" => priority = Some(v),
-        "--resume-when" => resume_when = Some(v),
-        "--blocks" => {
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--todo-id" {
+            todo_id = Some(v);
+        } else if k == "--text" {
+            text = Some(v);
+        } else if k == "--status" {
+            status = Some(v);
+        } else if k == "--evidence" {
+            evidence = Some(v);
+        } else if k == "--note" {
+            note = Some(v);
+        } else if k == "--priority" {
+            priority = Some(v);
+        } else if k == "--resume-when" {
+            resume_when = Some(v);
+        } else if k == "--blocks" {
             // `--blocks a,b` replaces the blocking set; `--blocks ""` clears
             // it (empty string → Some(vec![])); absent → leave untouched.
             let trimmed = v.trim();
@@ -7519,7 +7763,6 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
                     .collect()
             });
         }
-        _ => {}
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
@@ -7765,6 +8008,90 @@ mod coverage_tests {
                 command: "propose".into(),
                 outcome: "accepted".into(),
                 invocation_id: "inv-1".into(),
+                ts: 1,
+            },
+            Event::FollowthroughCreated {
+                goal_id: "g".into(),
+                source_todo_id: todo_id.into(),
+                followup_todo_id: "fu".into(),
+                turns_overdue: 2,
+                ts: 1,
+            },
+            Event::DecisionSummaryRecorded {
+                goal_id: "g".into(),
+                summary: crate::quota::decision_summary::DecisionSummary {
+                    schema_version: "quota_decision_summary_v0".into(),
+                    goal_id: "g".into(),
+                    agent_id: None,
+                    decision: "run".into(),
+                    should_run: true,
+                    effective_action: "bounded_delivery".into(),
+                    reason_code: "runnable".into(),
+                    mode: "bounded_delivery".into(),
+                    state: "active".into(),
+                    selected_todo: Some(todo_id.into()),
+                    spent_slots: 1,
+                    allowed_slots: 10,
+                    normal_delivery_allowed: true,
+                    recovery_delivery_allowed: false,
+                    self_repair_allowed: false,
+                    safe_bypass_allowed: false,
+                    safe_bypass_kind: None,
+                    blocked_action_scope: None,
+                    turn: 1,
+                },
+                ts: 1,
+            },
+            Event::HeartbeatReceiptRecorded {
+                goal_id: "g".into(),
+                agent_id: Some("a".into()),
+                turn_instance_id: "turn-1".into(),
+                todo_id: Some(todo_id.into()),
+                decision: "run".into(),
+                reason_code: "runnable".into(),
+                ts: 1,
+            },
+            Event::SchedulerAcked {
+                goal_id: "g".into(),
+                agent_id: "a".into(),
+                action: "tick_next".into(),
+                cadence_class: "monitor_backoff".into(),
+                rrule: Some("FREQ=MINUTELY;INTERVAL=15".into()),
+                source: "scheduler_cli".into(),
+                ts: 1,
+            },
+            Event::SchedulerTicked {
+                goal_id: "g".into(),
+                agent_id: "a".into(),
+                action: "tick_next".into(),
+                rrule: Some("FREQ=MINUTELY;INTERVAL=15".into()),
+                ts: 1,
+            },
+            Event::AutomationLivenessAlert {
+                goal_id: "g".into(),
+                agent_id: "a".into(),
+                elapsed_secs: 3600,
+                threshold_secs: 900,
+                consecutive: 1,
+                ts: 1,
+            },
+            Event::DecisionOutcomeRecorded {
+                goal_id: "g".into(),
+                receipt: crate::capabilities::decision_context::packets::DecisionOutcomeReceipt {
+                    schema_version: "decision_outcome_receipt_v0".into(),
+                    receipt_id: "r1".into(),
+                    goal_id: "g".into(),
+                    decision_id: "turn-1".into(),
+                    agent_id: None,
+                    accepted_decision: "bounded_delivery".into(),
+                    reason_code: "runnable".into(),
+                    context_digest: "".into(),
+                    verification_status: "verified".into(),
+                    note: None,
+                    seq: 1,
+                    recorded_at: 1,
+                    settled_at: None,
+                },
                 ts: 1,
             },
         ]
@@ -8284,6 +8611,33 @@ mod cli_quirks_tests {
         assert!(help.contains("unknown command"), "got: {help}");
     }
 
+    #[test]
+    fn render_command_help_marks_experimental_and_capability_hooks() {
+        let registry = build_cli_registry();
+        let catalog = crate::capabilities::catalog::CapabilityCatalog::with_builtin();
+        // An experimental capability command renders the "(experimental)" suffix.
+        let name = catalog
+            .records(true)
+            .iter()
+            .filter(|r| r.is_experimental())
+            .find_map(|r| r.commands.first().map(|c| c.name.clone()))
+            .expect("catalog carries an experimental command");
+        let help = render_command_help(&registry, &name, true);
+        assert!(help.contains("(experimental)"), "got: {help}");
+        // With include_experimental=false the hook is hidden from the
+        // registry, so render_command_help falls back to the hook form.
+        let help2 = render_command_help(&registry, &name, false);
+        assert!(help2.contains("capability command hook"), "got: {help2}");
+    }
+
+    #[test]
+    fn shorten_home_contracts_the_home_prefix() {
+        let home = std::env::var("HOME").expect("HOME is set in the test environment");
+        assert_eq!(shorten_home(&format!("{home}/sub/dir")), "~/sub/dir");
+        // A path outside HOME is returned unchanged.
+        assert_eq!(shorten_home("/definitely/not/home"), "/definitely/not/home");
+    }
+
     // P1-9: journey metadata + grouped command reference ──────────────────
 
     #[test]
@@ -8681,6 +9035,8 @@ mod cli_quirks_tests {
                 "6".to_string(),
                 "--reviewer".to_string(),
                 "bob".to_string(),
+                "--lease-secs".to_string(),
+                "60".to_string(),
             ],
         )
         .unwrap();
@@ -8767,6 +9123,10 @@ mod cli_quirks_tests {
             event,
         };
         let events = vec![
+            mk(Event::GoalStarted {
+                goal_id: "g1".into(),
+                ts: 0,
+            }),
             mk(Event::EvidenceAttached {
                 goal_id: "g1".into(),
                 todo_id: "t1".into(),
@@ -8903,18 +9263,12 @@ mod cli_quirks_tests {
 
     #[test]
     fn parse_resume_when_classifies_numeric_vs_text() {
-        match parse_resume_when("300") {
-            ResumeWhen::Defer(secs) => assert_eq!(secs, 300),
-            _ => panic!("numeric must classify as Defer"),
-        }
-        match parse_resume_when("  60  ") {
-            ResumeWhen::Defer(secs) => assert_eq!(secs, 60),
-            _ => panic!("padded numeric must classify as Defer"),
-        }
-        match parse_resume_when("when the build is green") {
-            ResumeWhen::TextHint(text) => assert_eq!(text, "when the build is green"),
-            _ => panic!("text must classify as TextHint"),
-        }
+        assert_eq!(parse_resume_when("300"), ResumeWhen::Defer(300));
+        assert_eq!(parse_resume_when("  60  "), ResumeWhen::Defer(60));
+        assert_eq!(
+            parse_resume_when("when the build is green"),
+            ResumeWhen::TextHint("when the build is green".to_string())
+        );
     }
 
     #[test]
@@ -9092,10 +9446,13 @@ mod workspace_guard_cli_tests {
         // Old ledger line (pre-P0-1) — no `workspaces` field.
         let json = r#"{"kind":"agent_registered","goal_id":"g1","agent_id":"old","ts":1}"#;
         let event: Event = serde_json::from_str(json).unwrap();
-        match event {
-            Event::AgentRegistered { workspaces, .. } => assert!(workspaces.is_empty()),
-            other => panic!("wrong variant: {other:?}"),
-        }
+        assert!(
+            matches!(
+                &event,
+                Event::AgentRegistered { workspaces, .. } if workspaces.is_empty()
+            ),
+            "wrong variant or non-empty workspaces: {event:?}"
+        );
     }
 
     #[test]
