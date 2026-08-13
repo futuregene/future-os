@@ -89,22 +89,30 @@ pub fn ensure_agent_running(app: &AppHandle) {
             // surfaces in logs and the pipe never backs up.
             std::thread::spawn(move || {
                 while let Some(event) = rx.blocking_recv() {
-                    match event {
-                        CommandEvent::Stdout(bytes) | CommandEvent::Stderr(bytes) => {
-                            eprint!("[agent] {}", String::from_utf8_lossy(&bytes));
-                        }
-                        CommandEvent::Error(error) => {
-                            eprintln!("FutureOS: bundled agent error: {error}");
-                        }
-                        CommandEvent::Terminated(payload) => {
-                            eprintln!("FutureOS: bundled agent exited: {payload:?}");
-                        }
-                        _ => {}
-                    }
+                    handle_agent_event(event);
                 }
             });
         }
         Err(error) => eprintln!("FutureOS: failed to start bundled agent: {error}"),
+    }
+}
+
+/// Route a single sidecar event to the logs. Extracted so the match arms are
+/// testable without a real `AppHandle`/sidecar child.
+fn handle_agent_event(event: CommandEvent) {
+    match event {
+        CommandEvent::Stdout(bytes) | CommandEvent::Stderr(bytes) => {
+            eprint!("[agent] {}", String::from_utf8_lossy(&bytes));
+        }
+        CommandEvent::Error(error) => {
+            eprintln!("FutureOS: bundled agent error: {error}");
+        }
+        CommandEvent::Terminated(payload) => {
+            eprintln!("FutureOS: bundled agent exited: {payload:?}");
+        }
+        // `CommandEvent` is `#[non_exhaustive]` — the wildcard arm is required
+        // for compilation and covers any future variants (currently none).
+        _ => {}
     }
 }
 
@@ -257,5 +265,105 @@ fn quit_prompt_message(count: usize) -> String {
         format!(
             "{count} conversations are still running. Quitting now will interrupt them. Quit anyway?"
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tauri_plugin_shell::process::TerminatedPayload;
+
+    #[test]
+    fn bare_addr_strips_url_scheme() {
+        let addr = bare_addr();
+        assert!(!addr.is_empty());
+        assert!(!addr.starts_with("http://"));
+        assert!(!addr.starts_with("https://"));
+    }
+
+    #[test]
+    fn agent_reachable_detects_listener_and_dead_port() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(agent_reachable(&format!("127.0.0.1:{port}")));
+        drop(listener);
+        assert!(!agent_reachable(&format!("127.0.0.1:{port}")));
+    }
+
+    #[test]
+    fn agent_reachable_rejects_unparseable_addr() {
+        assert!(!agent_reachable("not-a-socket-addr"));
+    }
+
+    #[test]
+    fn quit_prompt_message_singular_and_plural() {
+        assert!(quit_prompt_message(1).contains("A conversation is still running"));
+        assert!(quit_prompt_message(3).contains("3 conversations are still running"));
+    }
+
+    #[test]
+    fn handle_agent_event_routes_all_variants() {
+        handle_agent_event(CommandEvent::Stdout(b"hello\n".to_vec()));
+        handle_agent_event(CommandEvent::Stderr(b"warn\n".to_vec()));
+        handle_agent_event(CommandEvent::Error("boom".to_string()));
+        handle_agent_event(CommandEvent::Terminated(TerminatedPayload {
+            code: Some(0),
+            signal: None,
+        }));
+    }
+
+    #[test]
+    fn on_close_requested_respects_quit_flags() {
+        // These two flags are process-global and no other test touches them.
+        QUIT_CONFIRMED.store(true, Ordering::SeqCst);
+        assert!(matches!(on_close_requested(), QuitDecision::Proceed));
+        QUIT_CONFIRMED.store(false, Ordering::SeqCst);
+
+        QUIT_DIALOG_OPEN.store(true, Ordering::SeqCst);
+        assert!(matches!(
+            on_close_requested(),
+            QuitDecision::Confirm { open_dialog: false }
+        ));
+        QUIT_DIALOG_OPEN.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn on_close_requested_proceeds_without_running_sessions() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("agent-supervisor-quit");
+        crate::store::initialize_app_store().unwrap();
+        QUIT_CONFIRMED.store(false, Ordering::SeqCst);
+        QUIT_DIALOG_OPEN.store(false, Ordering::SeqCst);
+        assert!(matches!(on_close_requested(), QuitDecision::Proceed));
+    }
+
+    #[test]
+    fn on_close_requested_confirms_with_running_sessions() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("agent-supervisor-quit-run");
+        crate::store::initialize_app_store().unwrap();
+        QUIT_CONFIRMED.store(false, Ordering::SeqCst);
+        QUIT_DIALOG_OPEN.store(false, Ordering::SeqCst);
+
+        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: None,
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: None,
+        })
+        .unwrap();
+        crate::store::create_run(crate::store::CreateRunInput {
+            id: None,
+            thread_id: thread.id,
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .unwrap();
+
+        assert!(matches!(
+            on_close_requested(),
+            QuitDecision::Confirm { open_dialog: true }
+        ));
     }
 }
