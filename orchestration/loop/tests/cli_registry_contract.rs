@@ -69,7 +69,7 @@ fn help_lists_all_pre_existing_commands_in_groups() {
         "── handoff ──",
         "handoff --goal G",
         "── cli ──",
-        "registry [--json]",
+        "registry [--format json|--json]",
     ] {
         assert!(
             out.contains(expected),
@@ -843,6 +843,29 @@ fn p4_canary_smoke_via_cli() {
     let (_, err, code) = run(&root, &["canary", "smoke", "--profile", "nope"]);
     assert_ne!(code, 0);
     assert!(err.contains("unknown smoke profile"));
+}
+
+/// ── P1-6: canary premerge gate through the CLI ───────────────────────────
+#[test]
+fn p1_6_canary_premerge_via_cli() {
+    let root = tmp_root("p16premerge");
+    // The premerge gate runs on an isolated root (the operator root is
+    // irrelevant); it must pass and be non-vacuous.
+    let (out, err, code) = run(&root, &["canary", "premerge"]);
+    assert_eq!(code, 0, "canary premerge: {err}");
+    assert!(out.contains("gate: PASS"), "premerge: {out}");
+    // --json renders the machine-readable gate report.
+    let (out, _, code) = run(&root, &["canary", "premerge", "--json"]);
+    assert_eq!(code, 0);
+    assert!(
+        out.contains("\"schema_version\": \"canary_premerge_gate_v0\""),
+        "{out}"
+    );
+    assert!(out.contains("\"passed\": true"), "{out}");
+    // Unknown subcommands fail closed (P0-3 hard-error rule).
+    let (_, err, code) = run(&root, &["canary", "bogus"]);
+    assert_ne!(code, 0);
+    assert!(err.contains("unknown canary subcommand"), "{err}");
 }
 
 /// ── P4: help surface lists the new groups ────────────────────────────────

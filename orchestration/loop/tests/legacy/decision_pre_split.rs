@@ -423,6 +423,10 @@ fn legacy_packet(
         should_run,
         effective_action: effective_action.to_string(),
         reason: reason.to_string(),
+        // P1-1: the pre-split baseline predates machine-readable reason
+        // codes; the split-regression harness asserts the current packet
+        // carries one, then excludes it from the parity diff.
+        reason_code: String::new(),
         state: if should_run { "eligible".to_string() } else { "waiting".to_string() },
         waiting_on: "codex".to_string(),
         status: match mode {
@@ -627,6 +631,8 @@ fn legacy_packet(
                 .count(),
         },
         terminal_closure: None,
+        // P1-2②: hand-built pre-split goals have no replay stamp.
+        decision_freshness: None,
         // G-2/G-11 delta (the ONLY struct change since the pre-split baseline):
         // the arbitration record is added post-hoc by `apply_arbitration`.
         scheduler_arbitration: None,

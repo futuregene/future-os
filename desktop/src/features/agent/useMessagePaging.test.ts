@@ -1,4 +1,4 @@
-import type { AgentMessage } from "./agentThreadTypes";
+import type { AgentMessage } from "@future-os/thread-projection";
 import { describe, expect, it } from "vitest";
 import { computePageStart } from "./useMessagePaging";
 

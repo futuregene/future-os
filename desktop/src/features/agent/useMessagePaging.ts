@@ -1,5 +1,5 @@
+import type { AgentMessage } from "@future-os/thread-projection";
 import type { RefObject } from "react";
-import type { AgentMessage } from "./agentThreadTypes";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 /**
@@ -240,6 +240,7 @@ function captureAnchor(container: HTMLElement | null, attribute: string): Anchor
     if (rect.bottom <= viewTop)
       continue;
     const id = element.getAttribute(attribute);
+    /* v8 ignore next 2 -- the selector only matches elements carrying the attribute */
     if (!id)
       continue;
     if (rect.top < bestTop) {

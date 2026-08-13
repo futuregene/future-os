@@ -1,11 +1,10 @@
+import type { AgentMessage, AssistantRunProjection, MessageSegment, RunProjector } from "@future-os/thread-projection";
 import type { Dispatch, SetStateAction } from "react";
 import type { StoredRun, StoredRunEvent } from "../../integrations/storage/threadStore";
-import type { AssistantRunProjection, RunProjector } from "./agentActivity";
-import type { AgentMessage, MessageSegment } from "./agentThreadTypes";
+import { buildAssistantRunProjection, createRunProjector, matchesSettledRun } from "@future-os/thread-projection";
 import { getRun, listRunEvents, listRunEventsBulk, listRunEventsSince, storedTimeToIso } from "../../integrations/storage/threadStore";
 import { emitFutureEvent } from "../../lib/futureEvents";
-import { buildAssistantRunProjection, createRunProjector } from "./agentActivity";
-import { buildAgentFailureContent, matchesSettledRun } from "./agentMessageFormatters";
+import { buildAgentFailureContent } from "./agentMessageFormatters";
 
 /** Apply a patch to the single message with `id`, leaving the rest untouched. */
 export function patchMessage(
@@ -84,6 +83,7 @@ async function projectRunForLivePreview(
   liveProjectionCache.set(runId, entry);
   while (liveProjectionCache.size > LIVE_PROJECTION_CACHE_MAX) {
     const oldest = liveProjectionCache.keys().next().value;
+    /* v8 ignore next 2 -- size > MAX (>= 1) guarantees a first key exists */
     if (oldest === undefined)
       break;
     liveProjectionCache.delete(oldest);
@@ -263,6 +263,8 @@ export async function buildStreamingPreview(
   runStartedAt: number | null = null,
 ): Promise<AgentMessage | null> {
   const projection = await projectRunForLivePreview(runId, () => true);
+  /* v8 ignore next 2 -- shouldApply is always true here, so the projection
+     only fails to materialize via a throw (which propagates) */
   if (!projection)
     return null;
   if (

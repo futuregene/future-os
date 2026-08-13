@@ -1,7 +1,6 @@
-import type { StoredRunEvent } from "../../integrations/storage/threadStore";
-import type { AgentActivityItem, AgentActivityKind, MessageSegment } from "./agentThreadTypes";
-import { isRecord, singleLine } from "../../lib/objects";
-import { pathBasename } from "../../lib/workspacePath";
+import type { RunEvent } from "./events";
+import type { AgentActivityItem, AgentActivityKind, MessageSegment } from "./model";
+import { isRecord, pathBasename, singleLine } from "./utils";
 import {
   COLLAPSIBLE_KINDS,
   dedupeByTarget,
@@ -9,7 +8,7 @@ import {
   isToolKind,
   normalizeArgs,
   targetFromArgs,
-} from "./toolActivityModel";
+} from "./group";
 
 export interface AssistantRunProjection {
   activityItems: AgentActivityItem[];
@@ -33,6 +32,20 @@ export interface AssistantRunProjection {
    * setting is off; not rendered as a top-of-message line.
    */
   thinkingActive: boolean;
+  /**
+   * The stream ended before the model finished: the agent's `agent_end` carried
+   * reason "incomplete", so `content` is a truncated prefix. Mirrors desktop's
+   * stream `complete` flag (responseInterrupted) — both ends must treat a
+   * cut-off reply as failed, never as a clean completion.
+   */
+  truncated: boolean;
+  /**
+   * The user cancelled the run: the agent's `agent_end` carried `state:
+   * "cancelled"` (distinct from a truncated stream, which is `reason:
+   * "incomplete"`). The reply is a partial prefix and must not render as a
+   * clean completion, but it is not a failure either.
+   */
+  stopped: boolean;
 }
 
 /**
@@ -70,10 +83,10 @@ export interface RunProjector {
    * Batches are sorted by sequence internally; events already ingested
    * (sequence <= lastSequence) are skipped, so overlapping batches are safe.
    */
-  ingest: (events: StoredRunEvent[]) => AssistantRunProjection;
+  ingest: (events: RunEvent[]) => AssistantRunProjection;
 }
 
-export function createRunProjector(): RunProjector {
+export function createRunProjector(options?: { preferEndTokens?: boolean }): RunProjector {
   const toolActivities = new Map<string, ToolActivity>();
   // Ordered timeline of the exchange. Text accumulates into the open text slot;
   // each tool call pins a slot at the point it started.
@@ -92,9 +105,16 @@ export function createRunProjector(): RunProjector {
   let usageOutputSum = 0;
   let sawUsageEvent = false;
   let agentEndOutput = 0;
+  // Set when the agent's `agent_end` carries reason "incomplete" — the stream
+  // was truncated before a genuine finish (mirrors the Rust bridge's
+  // `agent_end_incomplete`).
+  let truncated = false;
+  // Set when the agent's `agent_end` carried `state: "cancelled"` — the user
+  // stopped the run (distinct from a truncated stream).
+  let stopped = false;
   let lastSequence = -1;
 
-  function processEvent(event: StoredRunEvent) {
+  function processEvent(event: RunEvent) {
     const payload = parseEventPayload(event.payload);
 
     if (event.eventType === "usage") {
@@ -105,6 +125,13 @@ export function createRunProjector(): RunProjector {
 
     if (event.eventType === "agent_end") {
       agentEndOutput = usageOutputTokens(payload);
+      if (isRecord(payload)) {
+        if (payload.reason === "incomplete")
+          truncated = true;
+        // The user cancelled the run (distinct from an incomplete stream).
+        if (payload.state === "cancelled")
+          stopped = true;
+      }
       return;
     }
 
@@ -217,11 +244,29 @@ export function createRunProjector(): RunProjector {
 
     if (event.eventType === "tool_end" || event.eventType === "tool_result") {
       const tool = toolFromPayload(payload, event.sequence);
-      if (!tool)
+      const explicitId = explicitToolId(payload);
+      // A result may omit the tool name (some serializers drop it); resolve it
+      // by the explicit id against an already-tracked tool so the row still
+      // completes instead of reading "running" forever.
+      const toolId = explicitId
+        ?? (tool ? latestRunningToolId(toolActivities, tool.kind) : undefined)
+        ?? tool?.id;
+      if (!toolId)
         return;
-
-      const toolId = explicitToolId(payload) ?? latestRunningToolId(toolActivities, tool.kind) ?? tool.id;
       const existing = toolActivities.get(toolId);
+      if (!tool) {
+        if (!existing)
+          return;
+        if (activeToolCallId === toolId)
+          activeToolCallId = null;
+        toolActivities.set(toolId, {
+          ...existing,
+          status: hasToolError(payload, existing.detail) ? "failed" : "completed",
+        });
+        sawVisibleWork = true;
+        return;
+      }
+
       if (activeToolCallId === toolId)
         activeToolCallId = null;
       toolActivities.set(toolId, {
@@ -266,9 +311,16 @@ export function createRunProjector(): RunProjector {
       activityItems: items,
       content,
       segments,
-      outputTokens: sawUsageEvent ? usageOutputSum : agentEndOutput,
+      // Desktop prefers summing per-call usage. A late-joining mobile client
+      // only saw the run's tail, so its sum understates the total — it prefers
+      // the authoritative agent_end total instead (opt-in via the option).
+      outputTokens: options?.preferEndTokens
+        ? (agentEndOutput || usageOutputSum)
+        : (sawUsageEvent ? usageOutputSum : agentEndOutput),
       thinking: thinkingText,
       thinkingActive,
+      truncated,
+      stopped,
     };
   }
 
@@ -295,7 +347,7 @@ export function createRunProjector(): RunProjector {
 }
 
 /** One-shot full projection (settle path, tests): project the entire log. */
-export function buildAssistantRunProjection(events: StoredRunEvent[]): AssistantRunProjection {
+export function buildAssistantRunProjection(events: RunEvent[]): AssistantRunProjection {
   return createRunProjector().ingest(events);
 }
 

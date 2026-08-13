@@ -1,5 +1,5 @@
+import type { AgentMessage } from "@future-os/thread-projection";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
-import type { AgentMessage } from "./agentThreadTypes";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef } from "react";
 import { resetRunProjection, upsertStreamingPreview } from "./threadRunProjection";

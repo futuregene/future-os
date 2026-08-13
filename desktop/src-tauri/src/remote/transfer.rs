@@ -90,6 +90,26 @@ fn transfer_root() -> PathBuf {
         .join("mobile")
 }
 
+/// Create a staging directory with owner-only permissions (0700 on unix).
+/// Attachment bytes (uploaded `.part` files and downloaded previews) sit here
+/// until claimed or TTL'd — on a multi-user machine the default `/tmp` mode
+/// would expose them to any local user. Windows has no 0700 equivalent; the
+/// per-user profile directory is relied on there, matching `config_io`.
+fn ensure_private_dir(path: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let permissions = std::fs::Permissions::from_mode(0o700);
+        std::fs::set_permissions(path, permissions)?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
+
 fn new_transfer_id(prefix: &str) -> String {
     format!("{prefix}_{}", nkeys::KeyPair::new_user().public_key())
 }
@@ -164,7 +184,7 @@ pub fn init_upload(
     }
     let upload_id = new_transfer_id("upload");
     let dir = transfer_root().join("upload");
-    std::fs::create_dir_all(&dir)?;
+    ensure_private_dir(&dir)?;
     let path = dir.join(format!("{upload_id}.part"));
     File::create(&path)?;
     UPLOADS.lock().unwrap().insert(
@@ -496,7 +516,7 @@ fn prepare_preview(
         .to_ascii_lowercase();
     let original_name = display_name(requested_display_name, "attachment");
     let dir = transfer_root().join("download");
-    std::fs::create_dir_all(&dir)?;
+    ensure_private_dir(&dir)?;
     let stamp = new_transfer_id("preview");
 
     if is_animated_image(source)? {
@@ -782,8 +802,8 @@ fn publish_download_chunk(
 #[cfg(test)]
 mod tests {
     use super::{
-        attachment_is_in_session, display_name, is_animated_image, prepare_preview, safe_disk_name,
-        validate_mobile_image, MAX_FILE_BYTES,
+        attachment_is_in_session, display_name, ensure_private_dir, is_animated_image,
+        prepare_preview, safe_disk_name, validate_mobile_image, MAX_FILE_BYTES,
     };
     use serde_json::json;
 
@@ -818,6 +838,21 @@ mod tests {
     #[test]
     fn limits_match_remote_contract() {
         assert_eq!(MAX_FILE_BYTES, 10 * 1024 * 1024);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staging_dir_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "futureos-transfer-mode-test-{}",
+            nkeys::KeyPair::new_user().public_key()
+        ));
+        ensure_private_dir(&dir).unwrap();
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+        // Group/other bits must be cleared; owner rwx may be stricter.
+        assert_eq!(mode & 0o077, 0, "group/other access not cleared: {mode:o}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

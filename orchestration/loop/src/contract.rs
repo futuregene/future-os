@@ -201,6 +201,10 @@ pub struct ShouldRunPacket {
     pub should_run: bool,
     pub effective_action: String,
     pub reason: String,
+    /// P1-1①: machine-readable decision reason code (typed-RPC oneof style;
+    /// wire values of `quota::error_codes::DecisionReasonCode`). The prose
+    /// `reason` stays human-facing; this is the stable machine contract.
+    pub reason_code: String,
     pub state: String,
     pub waiting_on: String,
     pub status: String,
@@ -264,4 +268,9 @@ pub struct ShouldRunPacket {
     pub scheduler_arbitration: Option<SchedulerArbitration>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal_closure: Option<TerminalClosure>,
+    /// P1-2②: freshness of the event ledger this decision was compiled
+    /// from (max seq / newest event ts / replay time — LoopX
+    /// `decision_freshness`). `None` for decisions over hand-built state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision_freshness: Option<crate::state::DecisionFreshness>,
 }

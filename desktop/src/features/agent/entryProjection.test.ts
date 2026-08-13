@@ -1,6 +1,6 @@
-import type { SessionEntry } from "./entryProjection";
+import type { SessionEntry } from "@future-os/thread-projection";
+import { entriesToMessages } from "@future-os/thread-projection";
 import { describe, expect, it } from "vitest";
-import { entriesToMessages } from "./entryProjection";
 
 describe("entriesToMessages", () => {
   it("carries per-entry timestamps onto user and assistant messages", () => {
@@ -253,5 +253,79 @@ describe("entriesToMessages", () => {
     expect(second.map(m => m.segments?.map(s => s.id))).toEqual(first.map(m => m.segments?.map(s => s.id)));
     // Ids are derived from the entry ids, not timestamps/sequences.
     expect(first.map(m => m.id)).toEqual(["m_c1", "m_u1", "m_a2"]);
+  });
+});
+
+describe("entriesToMessages edge cases", () => {
+  it("rebuilds attachment chips from user entry meta", () => {
+    const messages = entriesToMessages([{
+      id: "u1",
+      role: "user",
+      content: "see this",
+      meta: { attachments: [{ path: "/a.png", name: "a.png", kind: "image", thumbnail: "/t.png" }, { path: "/b.pdf", name: "b.pdf" }] },
+    }]);
+    expect(messages[0]?.attachments).toEqual([
+      { path: "/a.png", name: "a.png", kind: "image", thumbnail: "/t.png" },
+      { path: "/b.pdf", name: "b.pdf", kind: "file", thumbnail: null },
+    ]);
+  });
+
+  it("treats an empty tool result as completed and an Error: result as failed", () => {
+    const entries: SessionEntry[] = [
+      { id: "u1", role: "user", content: "run it" },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          { id: "c1", function: { name: "shell", arguments: "{}" } },
+          { id: "c2", function: { name: "shell", arguments: "{}" } },
+        ],
+      },
+      { id: "t1", role: "tool", content: "" },
+      { id: "t2", role: "tool", content: "Error: boom" },
+    ];
+    const messages = entriesToMessages(entries);
+    const segments = messages[1]?.segments ?? [];
+    const activities = segments.flatMap(s => (s.kind === "activity" ? [s.item] : []));
+    expect(activities.map(a => a.status)).toEqual(["completed", "failed"]);
+    // No text segments: content falls back to the (empty) joined text.
+    expect(messages[1]?.content).toBe("");
+  });
+
+  it("synthesizes an id for tool calls without one", () => {
+    const messages = entriesToMessages([
+      { id: "u1", role: "user", content: "go" },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "",
+        tool_calls: [{ id: "", function: { name: "read", arguments: "{}" } }],
+      },
+    ]);
+    const segments = messages[1]?.segments ?? [];
+    const activity = segments.find(s => s.kind === "activity");
+    expect(activity && "item" in activity && activity.item.id).toMatch(/^ep_/);
+  });
+
+  it("drops an assistant-only exchange (no user message) on flush", () => {
+    const messages = entriesToMessages([
+      { id: "a1", role: "assistant", content: "orphan reply" },
+    ]);
+    // The orphan exchange opens an accumulator but has no user message, so
+    // nothing is emitted for it.
+    expect(messages.some(m => m.content === "orphan reply")).toBe(false);
+  });
+
+  it("flushes an open exchange when a compaction divider arrives", () => {
+    const messages = entriesToMessages([
+      { id: "u1", role: "user", content: "before" },
+      { id: "a1", role: "assistant", content: "reply" },
+      { id: "c1", role: "user", content: "[Context compaction: summary]" },
+      { id: "u2", role: "user", content: "after" },
+    ]);
+    expect(messages.map(m => m.content)).toContain("before");
+    expect(messages.some(m => m.segments?.some(s => s.kind === "compaction"))).toBe(true);
+    expect(messages.map(m => m.content)).toContain("after");
   });
 });

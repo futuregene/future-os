@@ -1,6 +1,6 @@
 import type { StoredRunEvent } from "../../integrations/storage/threadStore";
+import { buildAssistantRunProjection, createRunProjector, isSoftExit, nonZeroExitCode } from "@future-os/thread-projection";
 import { describe, expect, it } from "vitest";
-import { buildAssistantRunProjection, createRunProjector, isSoftExit, nonZeroExitCode } from "./agentActivity";
 
 function events(list: Array<[string, Record<string, unknown>]>): StoredRunEvent[] {
   return list.map(([eventType, payload], index) => ({
@@ -276,6 +276,64 @@ describe("buildAssistantRunProjection output tokens", () => {
   });
 });
 
+// The agent marks a stream that ended before the model finished by setting
+// `agent_end` reason "incomplete" (agent/src/rpc/session_prompt.rs). Both ends
+// must treat the resulting prefix as failed, never as a clean completion.
+describe("buildAssistantRunProjection truncated", () => {
+  it("flags a run whose agent_end carried reason incomplete", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["text_chunk", { text: "partial answer" }],
+        ["agent_end", { type: "agent_end", reason: "incomplete" }],
+      ]),
+    );
+
+    expect(projection.truncated).toBe(true);
+  });
+
+  it("stays untruncated for a clean agent_end", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["text_chunk", { text: "full answer" }],
+        ["agent_end", { type: "agent_end" }],
+      ]),
+    );
+
+    expect(projection.truncated).toBe(false);
+  });
+
+  it("stays untruncated when no agent_end was seen (in-flight)", () => {
+    const projection = buildAssistantRunProjection(
+      events([["text_chunk", { text: "still streaming" }]]),
+    );
+
+    expect(projection.truncated).toBe(false);
+  });
+});
+
+describe("buildAssistantRunProjection stopped", () => {
+  it("flags a run the user cancelled (agent_end state cancelled)", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["text_chunk", { text: "partial answer" }],
+        ["agent_end", { type: "agent_end", state: "cancelled" }],
+      ]),
+    );
+
+    expect(projection.stopped).toBe(true);
+    expect(projection.truncated).toBe(false);
+  });
+
+  it("stays unstopped for a clean or truncated end", () => {
+    expect(buildAssistantRunProjection(
+      events([["text_chunk", { text: "full" }], ["agent_end", { type: "agent_end" }]]),
+    ).stopped).toBe(false);
+    expect(buildAssistantRunProjection(
+      events([["text_chunk", { text: "cut" }], ["agent_end", { type: "agent_end", reason: "incomplete" }]]),
+    ).stopped).toBe(false);
+  });
+});
+
 // The agent appends the exit code as a "[exit: N]" footer on the LAST line, not
 // a "[exit code: N]" prefix. Parsing the wrong shape silently dropped every
 // failure to exit 0 → a failed shell command rendered as "completed".
@@ -372,5 +430,128 @@ describe("createRunProjector incremental ingestion", () => {
     expect(projection.content).toBe("");
     expect(projection.segments).toHaveLength(0);
     expect(projector.lastSequence).toBe(-1);
+  });
+});
+
+describe("buildAssistantRunProjection edge branches", () => {
+  it("opens a thinking block lazily for a delta without a start", () => {
+    const projection = buildAssistantRunProjection(
+      events([["thinking_delta", { text: "musing" }]]),
+    );
+    expect(projection.thinking).toBe("musing");
+    expect(projection.segments[0]).toMatchObject({ kind: "thinking" });
+  });
+
+  it("ignores a tool delta with no active tool call", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["tool_delta", { text: "{\"path\":" }],
+        ["text_chunk", { text: "done" }],
+      ]),
+    );
+    expect(projection.content).toBe("done");
+  });
+
+  it("ignores a tool end whose payload names no known tool", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["tool_end", { tool_name: "mystery" }],
+        ["text_chunk", { text: "done" }],
+      ]),
+    );
+    expect(projection.activityItems).toHaveLength(0);
+  });
+
+  it("slots a tool result that arrives without a start", () => {
+    const projection = buildAssistantRunProjection(
+      events([["tool_end", { tool_name: "read", tool_id: "orphan", tool_args: { path: "/a.ts" } }]]),
+    );
+    expect(projection.activityItems[0]).toMatchObject({ id: "orphan", status: "completed" });
+  });
+
+  it("matches an id-less tool end to the latest running tool of its kind", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["tool_start", { tool_name: "read", tool_id: "r1", tool_args: { path: "/a.ts" } }],
+        ["tool_start", { tool_name: "read", tool_id: "r2", tool_args: { path: "/b.ts" } }],
+        ["tool_end", { tool_name: "read" }],
+      ]),
+    );
+    // The later (higher-order) running tool settles first.
+    const byId = Object.fromEntries(projection.activityItems.map(i => [i.id, i.status]));
+    expect(byId).toEqual({ r1: "running", r2: "completed" });
+  });
+
+  it("surfaces the streaming args target from partial JSON", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["tool_start", { tool_name: "edit", tool_id: "e1", tool_args: {} }],
+        ["toolcall_delta", { text: "{\"file_path\": \"/partial.ts\"" }],
+        ["tool_end", { tool_name: "edit", tool_id: "e1" }],
+      ]),
+    );
+    expect(projection.activityItems[0]).toMatchObject({ target: "/partial.ts" });
+  });
+
+  it("tolerates an invalid JSON string field in partial args", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["tool_start", { tool_name: "edit", tool_id: "e1", tool_args: {} }],
+        ["toolcall_delta", { text: "{\"path\": \"/bad\\q.ts\"" }],
+        ["tool_end", { tool_name: "edit", tool_id: "e1" }],
+      ]),
+    );
+    expect(projection.activityItems[0]?.status).toBe("completed");
+  });
+
+  it("breaks a collapsible tool run at a compaction marker", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["tool_start", edit("t1", "/a.ts")[0]],
+        ["tool_end", edit("t1", "/a.ts")[0]],
+        ["tool_start", edit("t2", "/b.ts")[0]],
+        ["tool_end", edit("t2", "/b.ts")[0]],
+        ["compaction_end", { tokens_before: 100, aborted: false }],
+        ["tool_start", edit("t3", "/c.ts")[0]],
+        ["tool_end", edit("t3", "/c.ts")[0]],
+      ]),
+    );
+    // The first pair collapses; the post-compaction tool stays separate.
+    const kinds = projection.segments.map(s => s.kind);
+    expect(kinds).toEqual(["activity", "compaction", "activity"]);
+  });
+
+  it("handles non-record and malformed event payloads", () => {
+    const raw: StoredRunEvent[] = [
+      { id: "e0", runId: "r1", eventType: "usage", payload: "5", sequence: 0, createdAt: 0 },
+      { id: "e1", runId: "r1", eventType: "compaction_end", payload: "\"x\"", sequence: 1, createdAt: 1 },
+      { id: "e2", runId: "r1", eventType: "tool_start", payload: "5", sequence: 2, createdAt: 2 },
+      { id: "e3", runId: "r1", eventType: "text_chunk", payload: "5", sequence: 3, createdAt: 3 },
+      { id: "e4", runId: "r1", eventType: "text_chunk", payload: null, sequence: 4, createdAt: 4 },
+      { id: "e5", runId: "r1", eventType: "text_chunk", payload: "not json", sequence: 5, createdAt: 5 },
+      { id: "e6", runId: "r1", eventType: "text_chunk", payload: "{\"text\": \"ok\"}", sequence: 6, createdAt: 6 },
+    ];
+    const projection = buildAssistantRunProjection(raw);
+    expect(projection.content).toBe("ok");
+  });
+
+  it("marks a tool failed by its error field", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["tool_start", { tool_name: "read", tool_id: "r1", tool_args: { path: "/a" } }],
+        ["tool_end", { tool_name: "read", tool_id: "r1", error: "permission denied" }],
+      ]),
+    );
+    expect(projection.activityItems[0]?.status).toBe("failed");
+  });
+
+  it("marks a shell tool failed by a non-zero exit footer", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["tool_start", { tool_name: "shell", tool_id: "s1", tool_args: { command: "make" } }],
+        ["tool_end", { tool_name: "shell", tool_id: "s1", text: "boom\n[exit: 2]" }],
+      ]),
+    );
+    expect(projection.activityItems[0]?.status).toBe("failed");
   });
 });

@@ -3,7 +3,7 @@ import { Platform } from "react-native";
 import { createUser, fromSeed } from "nkeys.js";
 import { isExpectedClaimUrl, natsWsUrlScheme } from "../config/environment";
 import { decodePairingCode, jwtExpiry, parsePairingInvitation, randomId } from "./codec";
-import { clearCredentials, loadDeviceId, saveDeviceId } from "./storage";
+import { loadDeviceId, saveDeviceId } from "./storage";
 import type { RemoteCredentials } from "./types";
 
 interface ClaimResponse {
@@ -34,6 +34,14 @@ async function responseJson<T>(response: Response): Promise<T> {
   const body = (await response.json().catch(() => ({}))) as { message?: string } & T;
   if (!response.ok) throw new Error(body.message ?? `HTTP ${response.status}`);
   return body;
+}
+
+// The desktop rejects a server-issued JWT that carries no readable `exp`
+// (pairing.rs `jwt_expiry` errors on a missing expiry). Mirror that here so a
+// malformed token never reaches the credential store, where a client-side
+// `jwtExpiry` that silently returned 0 would otherwise drive a 5s refresh storm.
+function assertValidJwt(userJwt: string): void {
+  if (jwtExpiry(userJwt) === null) throw new Error("invalid_jwt");
 }
 
 async function deviceId(): Promise<string> {
@@ -71,6 +79,7 @@ export async function claimPairingCode(code: string): Promise<RemoteCredentials>
     }),
   );
   assertSecureNatsUrl(body.nats_ws_url);
+  assertValidJwt(body.user_jwt);
   const credentials: RemoteCredentials = {
     pairId: body.pair_id,
     deviceId: id,
@@ -108,18 +117,31 @@ export async function refreshCredentials(
     natsWsUrl: body.nats_ws_url,
   };
   assertSecureNatsUrl(body.nats_ws_url);
+  assertValidJwt(body.user_jwt);
   return refreshed;
 }
 
 export async function ensureFreshCredentials(
   credentials: RemoteCredentials,
 ): Promise<RemoteCredentials> {
-  return jwtExpiry(credentials.userJwt) * 1000 < Date.now() + 60_000
+  const expiry = jwtExpiry(credentials.userJwt);
+  // A JWT we can't read expiry from is corrupt, not expired. The desktop
+  // rejects such a token outright; looping a refresh here would hammer the
+  // token endpoint on every (re)connect. Fail loudly instead.
+  if (expiry === null) throw new Error("invalid_jwt");
+  return expiry * 1000 < Date.now() + 60_000
     ? refreshCredentials(credentials)
     : credentials;
 }
 
-export async function revokeCredentials(credentials: RemoteCredentials): Promise<void> {
+/**
+ * Server-side pair revocation (M7). Always best-effort: a device that is
+ * offline (or whose token endpoint is unreachable) must still be able to
+ * deregister locally. The caller persists the minimal fields and retries on a
+ * later launch; revoking is idempotent on the server (a 404 means "already
+ * gone"), so a queued revoke that re-fires after a success is harmless.
+ */
+export async function serverRevoke(credentials: RemoteCredentials): Promise<void> {
   const keyPair = fromSeed(new TextEncoder().encode(credentials.seed));
   const revokeUrl = credentials.tokenUrl.replace(/\/auth\/token$/, "/pair/revoke");
   const response = await fetch(revokeUrl, {
@@ -132,8 +154,9 @@ export async function revokeCredentials(credentials: RemoteCredentials): Promise
       refresh_token: credentials.refreshToken,
     }),
   });
+  // 401/404 are terminal outcomes (unknown pair / already revoked) — treat
+  // them as success so the retry queue drains instead of looping.
   if (!response.ok && response.status !== 401 && response.status !== 404) {
     await responseJson(response);
   }
-  await clearCredentials();
 }

@@ -152,11 +152,14 @@ pub fn writeback(
                 goal.history.push(record.clone());
             } else {
                 m.consecutive_no_change += 1;
+                // P1-3②: cadence-aware reschedule, the same derivation
+                // replay applies to the MonitorPolled event.
+                let next_due = crate::scheduler::monitor_poll::next_poll_due_epoch(
+                    now_epoch(),
+                    m.monitor_cadence.as_deref(),
+                );
                 m.resume_when = Some(
-                    std::time::SystemTime::now()
-                        + std::time::Duration::from_secs(
-                            crate::decision::monitor::MONITOR_NO_CHANGE_BACKOFF_SECS,
-                        ),
+                    std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(next_due),
                 );
             }
         }

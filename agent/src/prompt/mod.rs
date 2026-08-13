@@ -45,32 +45,42 @@ pub fn build_prompt(opts: &PromptOptions) -> String {
     }
 
     // 4. Workspace memory (FUTURE.md) — always present so the model knows about
-    //    the feature even before the file exists. Operational rules live here
-    //    instead of duplicating them in the guidelines section.
+    //    the feature even before the file exists. FUTURE.md is an INDEX, not a
+    //    log: details live in topic files under .future/memory/ and are read on
+    //    demand. The loader enforces the caps below (lint_memory_index); the
+    //    advertised numbers are the same constants, so text and enforcement
+    //    cannot drift apart.
     {
-        let mut part = String::from(
+        let mut part = format!(
             "# Workspace Memory\n\n\
-             You maintain a workspace memory file named FUTURE.md in the working \
-             directory. Its content is loaded here — treat it as authoritative: \
-             preferences, conventions, commands, and facts worth remembering \
-             across sessions.\n\n\
-             Record a memory when the user explicitly asks you to remember something.\n\n\
-             Also record proactively when these events happen:\n\
-             - The user corrects your approach (\"no, not that\", \"don't do X\", \
-             \"use Y instead\"). Save what you learned and why.\n\
-             - The user confirms a non-obvious choice you made was correct (\"yes \
-             exactly\", \"that's right\", \"perfect\"). Corrections are easy to \
-             notice; confirmations are quieter — watch for them.\n\
-             - You learn a durable, high-value fact: a research question the user \
-             is investigating, a data source location, an output format preference \
-             (citation style, language, file format), or a preferred skill/tool \
-             for a recurring task.\n\n\
-             Do not record: one-off tasks, transient state, secrets, or anything \
-             that can be re-derived by reading the project files. Use the write or \
-             edit tool; keep entries concise; update stale entries instead of \
-             duplicating; aim under ~200 lines. When you write to memory, tell the \
-             user in one line what you recorded. Memory may only be written to \
-             FUTURE.md — never to CLAUDE.md, AGENTS.md, or GEMINI.md.",
+             FUTURE.md in the working directory is your memory INDEX, loaded here. \
+             Details live in topic files under `.future/memory/` — read one when an \
+             index line looks relevant. The index is capped ({MEMORY_INDEX_MAX_ENTRIES} \
+             entries / {MEMORY_INDEX_MAX_LINES} lines / {MEMORY_INDEX_MAX_KB}KB) and \
+             linted at load time; overflow and malformed lines get truncated with a \
+             warning.\n\n\
+             Entry format — every entry ends with its last-confirmed date:\n\
+             - [Title](.future/memory/<topic>.md) — one-line hook, ≤100 chars (2026-08-12)\n\
+             - [user] short fact the user explicitly asked remembered (2026-08-12)\n\n\
+             To save: write detail to `.future/memory/<topic>.md` (title + \
+             self-contained), then add ONE index line. A short user-requested fact \
+             may go inline as a [user] entry. Prefer updating an existing \
+             entry/topic file over adding new ones.\n\n\
+             Record only when — the user asks you to remember; the user corrects or \
+             confirms a non-obvious approach; you find a durable preference, \
+             convention, or toolchain gotcha — AND both gates pass: (1) future-me \
+             could NOT re-derive it from the repo in under a minute; (2) I can say \
+             why it still matters in 3 months. Never record in-progress work, \
+             goal/task status, PR/activity lists, or fix narratives — even if \
+             asked; save only the surprising, non-derivable part. Closing a goal \
+             or PR is NOT a memory event.\n\n\
+             Freshness: verify any entry older than ~7 days before relying on it; \
+             refresh its date if still valid. When a memory turns stale, exit it: \
+             delete BOTH the index line and its topic file (unless another entry \
+             links to it), and tell the user in one line what you removed. If the \
+             index is full, evict oldest-date first. Memory writes go only to \
+             FUTURE.md / .future/memory/ — never to CLAUDE.md, AGENTS.md, or \
+             GEMINI.md.",
         );
         if !opts.memory_content.is_empty() {
             part.push_str("\n\n");
@@ -132,6 +142,168 @@ pub fn build_prompt(opts: &PromptOptions) -> String {
     sections.join("\n\n")
 }
 
+// ─── Memory index lint ──────────────────────────────────────────────────────
+
+/// Hard caps for the FUTURE.md memory index. The workspace-memory prompt
+/// section advertises these exact constants via format! captures, so the
+/// documented caps and the enforced caps cannot drift apart.
+pub const MEMORY_INDEX_MAX_ENTRIES: usize = 30;
+pub const MEMORY_INDEX_MAX_LINES: usize = 100;
+pub const MEMORY_INDEX_MAX_KB: usize = 12;
+pub const MEMORY_INDEX_MAX_BYTES: usize = MEMORY_INDEX_MAX_KB * 1024;
+
+/// Validate and bound the FUTURE.md memory index before injection into the
+/// system prompt. Returns the (possibly truncated) content; when any issue is
+/// found, a `> WARNING:` block is appended so the model sees it on every load
+/// and can repair the file. Checks, in order:
+///   - size: truncate to MEMORY_INDEX_MAX_LINES / MEMORY_INDEX_MAX_BYTES
+///     (line-truncate first, then byte-truncate at the last newline so we
+///     never cut mid-line — long single lines are a real failure mode);
+///   - format: content lines must be `- [Title](path) — hook (YYYY-MM-DD)` or
+///     `- [user] fact (YYYY-MM-DD)` (blank lines and `#`/`>` lines are
+///     structural and pass);
+///   - links: link targets must exist under `base_dir`;
+///   - count: more than MEMORY_INDEX_MAX_ENTRIES entries.
+pub fn lint_memory_index(raw: &str, base_dir: &std::path::Path) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let mut warnings: Vec<String> = Vec::new();
+
+    let line_count = trimmed.lines().count();
+    let byte_count = trimmed.len();
+    let mut content = trimmed.to_string();
+    if line_count > MEMORY_INDEX_MAX_LINES || byte_count > MEMORY_INDEX_MAX_BYTES {
+        let mut cut = trimmed
+            .lines()
+            .take(MEMORY_INDEX_MAX_LINES)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if cut.len() > MEMORY_INDEX_MAX_BYTES {
+            let mut end = MEMORY_INDEX_MAX_BYTES;
+            while !cut.is_char_boundary(end) {
+                end -= 1;
+            }
+            match cut[..end].rfind('\n') {
+                Some(nl) => cut.truncate(nl),
+                None => cut.truncate(end),
+            }
+        }
+        warnings.push(format!(
+            "truncated to {MEMORY_INDEX_MAX_LINES} lines / {MEMORY_INDEX_MAX_BYTES} bytes \
+             (was {line_count} lines / {byte_count} bytes) — keep entries to one line; \
+             move detail into .future/memory/ topic files"
+        ));
+        content = cut;
+    }
+
+    let mut entries = 0usize;
+    let mut malformed: Vec<usize> = Vec::new();
+    let mut dead: Vec<String> = Vec::new();
+    for (idx, line) in content.lines().enumerate() {
+        let line = line.trim_end();
+        if line.is_empty() || line.starts_with('#') || line.starts_with('>') {
+            continue;
+        }
+        entries += 1;
+        match classify_entry(line) {
+            EntryKind::Link(target) => {
+                if !base_dir.join(target).exists() {
+                    dead.push(target.to_string());
+                }
+            }
+            EntryKind::Inline => {}
+            EntryKind::Malformed => malformed.push(idx + 1),
+        }
+    }
+    if !malformed.is_empty() {
+        let at: Vec<String> = malformed.iter().map(|n| n.to_string()).collect();
+        warnings.push(format!(
+            "{} malformed line(s) at {} — expected `- [Title](.future/memory/<file>.md) — hook (YYYY-MM-DD)` or `- [user] fact (YYYY-MM-DD)`",
+            malformed.len(),
+            at.join(", ")
+        ));
+    }
+    if !dead.is_empty() {
+        warnings.push(format!(
+            "dead link(s): {} — repair the target or exit the entry (delete the line and its topic file)",
+            dead.join(", ")
+        ));
+    }
+    if entries > MEMORY_INDEX_MAX_ENTRIES {
+        warnings.push(format!(
+            "{entries} entries exceed the {MEMORY_INDEX_MAX_ENTRIES}-entry cap — the index is a map, not a ledger; evict oldest-date first"
+        ));
+    }
+
+    if warnings.is_empty() {
+        return content;
+    }
+    let mut out = content;
+    out.push_str("\n\n> WARNING: FUTURE.md index issues detected at load — please repair:\n");
+    for w in &warnings {
+        out.push_str("> - ");
+        out.push_str(w);
+        out.push('\n');
+    }
+    out
+}
+
+enum EntryKind<'a> {
+    Link(&'a str),
+    Inline,
+    Malformed,
+}
+
+/// Classify one content line as a link entry (yielding its link target), an
+/// inline `[user]` entry, or malformed. Every valid entry ends with its
+/// last-confirmed date `(YYYY-MM-DD)`. `- [user] ` (space after the bracket)
+/// cannot collide with a link entry titled "user" — that would be `[user](`.
+fn classify_entry(line: &str) -> EntryKind<'_> {
+    if !ends_with_date(line) {
+        return EntryKind::Malformed;
+    }
+    if line.starts_with("- [user] ") {
+        return EntryKind::Inline;
+    }
+    let Some(rest) = line.strip_prefix("- [") else {
+        return EntryKind::Malformed;
+    };
+    let Some(open) = rest.find("](") else {
+        return EntryKind::Malformed;
+    };
+    let after_open = &rest[open + 2..];
+    let Some(close) = after_open.find(')') else {
+        return EntryKind::Malformed;
+    };
+    let target = &after_open[..close];
+    if target.is_empty() || !after_open[close + 1..].contains(" — ") {
+        return EntryKind::Malformed;
+    }
+    EntryKind::Link(target)
+}
+
+/// `(YYYY-MM-DD)` at end of line — shape check only (digits and dashes in
+/// the right positions), not a calendar validation.
+fn ends_with_date(line: &str) -> bool {
+    let b = line.as_bytes();
+    let n = b.len();
+    // "(YYYY-MM-DD)" is exactly 12 bytes.
+    if n < 12 || b[n - 12] != b'(' || b[n - 1] != b')' {
+        return false;
+    }
+    let d = &b[n - 11..n - 1];
+    d.iter().enumerate().all(|(i, c)| {
+        if i == 4 || i == 7 {
+            *c == b'-'
+        } else {
+            c.is_ascii_digit()
+        }
+    })
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct PromptOptions {
     pub custom_prompt: String,
@@ -142,7 +314,9 @@ pub struct PromptOptions {
     pub agent_content: String,
     /// Workspace memory (FUTURE.md). Injected as its own section, separate from
     /// `agent_content` (project context), so memory and human-authored project
-    /// instructions never shadow each other.
+    /// instructions never shadow each other. Expected to be an index (details
+    /// live in `.future/memory/`) — pass it through [`lint_memory_index`]
+    /// first so bloat and malformed entries surface as a visible warning.
     pub memory_content: String,
     pub append_prompt: String,
     pub prompt_guidelines: Vec<String>,
@@ -426,6 +600,165 @@ mod tests {
         assert!(prompt.contains("# Project Context"));
         assert!(prompt.contains("# Workspace Memory"));
         assert!(prompt.contains("FUTURE.md"));
+    }
+
+    #[test]
+    fn memory_section_advertises_the_enforced_caps() {
+        // The prompt text must quote the same constants the loader enforces,
+        // or the model would be told limits that differ from reality.
+        let prompt = build_prompt(&PromptOptions::default());
+        let expected = format!(
+            "{} entries / {} lines / {}KB",
+            MEMORY_INDEX_MAX_ENTRIES, MEMORY_INDEX_MAX_LINES, MEMORY_INDEX_MAX_KB
+        );
+        assert!(prompt.contains(&expected));
+    }
+
+    // ─── lint_memory_index ──────────────────────────────────────────────
+
+    #[test]
+    fn lint_empty_index_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(lint_memory_index("", dir.path()), "");
+        assert_eq!(lint_memory_index("  \n \n", dir.path()), "");
+    }
+
+    #[test]
+    fn lint_clean_index_passes_through_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let mem = dir.path().join(".future/memory");
+        std::fs::create_dir_all(&mem).unwrap();
+        std::fs::write(mem.join("a.md"), "# A\n").unwrap();
+        let index = "# FUTURE.md — Index\n\n\
+                     - [A](.future/memory/a.md) — read when doing a (2026-08-12)\n\
+                     - [user] prefers pnpm over npm (2026-08-01)\n";
+        let out = lint_memory_index(index, dir.path());
+        assert_eq!(out, index.trim());
+        assert!(!out.contains("WARNING"));
+    }
+
+    #[test]
+    fn lint_flags_malformed_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = "- [A](.future/memory/a.md) — missing date\n\
+                     prose that is not an entry\n\
+                     - [user] also missing a date\n";
+        let out = lint_memory_index(index, dir.path());
+        assert!(out.contains("WARNING"));
+        assert!(out.contains("3 malformed line(s) at 1, 2, 3"));
+    }
+
+    #[test]
+    fn lint_flags_dead_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = "- [Gone](.future/memory/gone.md) — was deleted (2026-08-12)\n";
+        let out = lint_memory_index(index, dir.path());
+        assert!(out.contains("dead link(s): .future/memory/gone.md"));
+    }
+
+    #[test]
+    fn lint_warns_when_over_entry_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut index = String::new();
+        for i in 0..=MEMORY_INDEX_MAX_ENTRIES {
+            index.push_str(&format!("- [user] fact number {i} (2026-08-12)\n"));
+        }
+        let out = lint_memory_index(&index, dir.path());
+        assert!(out.contains("exceed the 30-entry cap"));
+        assert!(out.contains("evict oldest-date first"));
+    }
+
+    #[test]
+    fn lint_truncates_overlong_index_at_line_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut index = String::new();
+        for i in 0..(MEMORY_INDEX_MAX_LINES + 20) {
+            index.push_str(&format!("- [user] fact {i} (2026-08-12)\n"));
+        }
+        let out = lint_memory_index(&index, dir.path());
+        assert!(out.contains("truncated to 100 lines"));
+        // Only the cap's worth of lines survive (plus the warning block).
+        assert!(!out.contains("fact 119"));
+        assert!(out.contains("fact 99"));
+    }
+
+    #[test]
+    fn lint_truncates_oversize_index_at_byte_cap_on_line_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        // CJK hooks: 3 bytes each, so the byte cap lands mid-codepoint and the
+        // char-boundary backoff runs; truncation still ends on a line boundary.
+        let hook = "界".repeat(46);
+        let mut index = String::new();
+        for _ in 0..95 {
+            index.push_str(&format!("- [user] {hook} (2026-08-12)\n"));
+        }
+        assert!(index.len() > MEMORY_INDEX_MAX_BYTES);
+        assert!(index.lines().count() <= MEMORY_INDEX_MAX_LINES);
+        let out = lint_memory_index(&index, dir.path());
+        assert!(out.contains("truncated to 100 lines / 12288 bytes"));
+        // Byte-truncated at a newline: the content portion ends with a full line.
+        let content = out.split("\n\n> WARNING").next().unwrap();
+        assert!(content.ends_with("(2026-08-12)"));
+    }
+
+    #[test]
+    fn lint_structural_lines_are_not_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let mem = dir.path().join(".future/memory");
+        std::fs::create_dir_all(&mem).unwrap();
+        std::fs::write(mem.join("a.md"), "# A\n").unwrap();
+        let index = "# Title\n\n## Section\n\n> a quote line\n\n\
+                     - [A](.future/memory/a.md) — only real entry (2026-08-12)\n";
+        let out = lint_memory_index(index, dir.path());
+        assert!(!out.contains("WARNING"));
+    }
+
+    #[test]
+    fn lint_byte_truncates_single_huge_line_without_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        // No newline before the byte cap → fall back to a raw byte cut.
+        let index = "x".repeat(MEMORY_INDEX_MAX_BYTES + 500);
+        let out = lint_memory_index(&index, dir.path());
+        assert!(out.contains("truncated to 100 lines / 12288 bytes"));
+        let content = out.split("\n\n> WARNING").next().unwrap();
+        assert_eq!(content.len(), MEMORY_INDEX_MAX_BYTES);
+    }
+
+    #[test]
+    fn classify_entry_distinguishes_user_inline_from_user_titled_link() {
+        assert!(matches!(
+            classify_entry("- [user] prefers pnpm (2026-08-12)"),
+            EntryKind::Inline
+        ));
+        assert!(matches!(
+            classify_entry("- [user](.future/memory/u.md) — hook (2026-08-12)"),
+            EntryKind::Link(".future/memory/u.md")
+        ));
+        // Missing the hook separator after the link target.
+        assert!(matches!(
+            classify_entry("- [A](.future/memory/a.md) (2026-08-12)"),
+            EntryKind::Malformed
+        ));
+        // Empty link target.
+        assert!(matches!(
+            classify_entry("- [A]() — hook (2026-08-12)"),
+            EntryKind::Malformed
+        ));
+        // No date suffix.
+        assert!(matches!(
+            classify_entry("- [user] prefers pnpm"),
+            EntryKind::Malformed
+        ));
+    }
+
+    #[test]
+    fn ends_with_date_checks_shape_not_calendar() {
+        assert!(ends_with_date("x (2026-08-12)"));
+        assert!(ends_with_date("x (9999-99-99)")); // shape only
+        assert!(!ends_with_date("x (2026-8-12)"));
+        assert!(!ends_with_date("x (2026-08-12) trailing"));
+        assert!(!ends_with_date("x (2026/08/12)"));
+        assert!(!ends_with_date("(2026-08-1")); // too short overall
     }
 
     #[test]

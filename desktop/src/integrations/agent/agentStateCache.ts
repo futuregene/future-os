@@ -180,9 +180,8 @@ function touchCache(threadId: string, entry: CacheEntry) {
 
 function pruneCache() {
   while (cache.size > CACHE_MAX) {
-    const oldest = cache.keys().next().value;
-    if (!oldest)
-      return;
+    // size > CACHE_MAX (>= 1) guarantees a first key exists.
+    const oldest = cache.keys().next().value!;
     cache.delete(oldest);
     versions.delete(oldest);
     inFlight.delete(oldest);

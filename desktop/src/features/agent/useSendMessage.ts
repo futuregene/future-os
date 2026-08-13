@@ -1,6 +1,6 @@
+import type { AgentMessage } from "@future-os/thread-projection";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import type { StoredRun, StoredThread } from "../../integrations/storage/threadStore";
-import type { AgentMessage } from "./agentThreadTypes";
 import type { ComposerSendPayload } from "./Composer";
 import { useCallback, useEffect, useRef } from "react";
 import i18n from "../../i18n";

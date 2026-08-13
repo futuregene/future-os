@@ -8,55 +8,53 @@ mod common;
 use common::{cli, cli_err, cli_ok, cli_root, init_goal, open_store, todo_id_by_text};
 
 #[test]
-fn parse_catch_all_arms_ignore_unknown_flags() {
+fn parse_catch_all_arms_reject_unknown_flags() {
     let cr = cli_root();
     let gid = init_goal(&cr, "parse catch-alls");
 
-    // capability hook (issue-fix) unknown flag.
-    cli_ok(&["issue-fix", "--input", "it broke", "--bogus", "x"]);
-    // agent register unknown flag.
-    cli_ok(&[
-        "agent",
-        "register",
-        "--goal",
-        &gid,
-        "--agent-id",
-        "a1",
-        "--bogus",
-        "x",
-    ]);
-    // authority with only --require-approval (no --write-scope) + unknown flag.
+    // P0-3①: unknown flags are a hard error everywhere (never swallowed).
+    for args in [
+        vec!["issue-fix", "--input", "it broke", "--bogus", "x"],
+        vec![
+            "agent",
+            "register",
+            "--goal",
+            &gid,
+            "--agent-id",
+            "a1",
+            "--bogus",
+            "x",
+        ],
+        vec!["quota", "tools", "--goal", &gid, "--bogus", "x"],
+        vec![
+            "replay",
+            "run",
+            "--case",
+            "/nonexistent.json",
+            "--bogus",
+            "y",
+        ],
+        vec![
+            "replay",
+            "corpus",
+            "run",
+            "--corpus",
+            "/nonexistent.json",
+            "--bogus",
+            "y",
+        ],
+        vec!["extension", "enable", "--id", "ghost", "--bogus", "y"],
+    ] {
+        let err = cli_err(&args);
+        assert!(err.contains("unknown flag `--bogus`"), "{args:?}: {err}");
+    }
+    // Known-flags-only invocations still work.
     cli_ok(&["authority", "--goal", &gid, "--require-approval", "publish"]);
-    // profile set without --outcome-floor.
     cli_ok(&["profile", "set", "--goal", &gid]);
-    // quota tools unknown flag.
-    cli_ok(&["quota", "tools", "--goal", &gid, "--bogus", "x"]);
-    // replay run / corpus run unknown flags (load fails after parsing).
-    assert!(!cli_err(&[
-        "replay",
-        "run",
-        "--case",
-        "/nonexistent.json",
-        "--bogus",
-        "y"
-    ])
-    .is_empty());
-    assert!(!cli_err(&[
-        "replay",
-        "corpus",
-        "run",
-        "--corpus",
-        "/nonexistent.json",
-        "--bogus",
-        "y"
-    ])
-    .is_empty());
-    // extension enable unknown flag (id missing fails after parsing).
-    assert!(!cli_err(&["extension", "enable", "--id", "ghost", "--bogus", "y"]).is_empty());
 }
 
 #[test]
-fn extension_install_unknown_flag_is_ignored() {
+fn extension_install_rejects_unknown_flag() {
     let cr = cli_root();
     let manifest = std::path::Path::new(&cr.cwd).join("m.json");
     std::fs::write(
@@ -81,14 +79,22 @@ fn extension_install_unknown_flag_is_ignored() {
         .unwrap(),
     )
     .unwrap();
-    // Dry-run install with an unknown flag (parse catch-all, then success).
-    cli_ok(&[
+    // Dry-run install with an unknown flag → hard error (P0-3①).
+    let err = cli_err(&[
         "extension",
         "install",
         "--manifest",
         manifest.to_str().unwrap(),
         "--bogus",
         "x",
+    ]);
+    assert!(err.contains("unknown flag `--bogus`"), "{err}");
+    // Without the bogus flag the dry-run install succeeds.
+    cli_ok(&[
+        "extension",
+        "install",
+        "--manifest",
+        manifest.to_str().unwrap(),
     ]);
 }
 
@@ -113,10 +119,10 @@ fn serve_status_on_a_busy_port_errors() {
 }
 
 #[test]
-fn benchmark_run_unknown_flag_and_adapter_failure() {
+fn benchmark_run_rejects_unknown_flag_and_adapter_failure() {
     let _cr = cli_root();
-    // Unknown flag is ignored; the run proceeds against the stub adapter.
-    cli_ok(&[
+    // P0-3①: unknown flag is a hard error before the run starts.
+    let err = cli_err(&[
         "benchmark",
         "run",
         "--benchmark-id",
@@ -128,6 +134,7 @@ fn benchmark_run_unknown_flag_and_adapter_failure() {
         "--bogus",
         "x",
     ]);
+    assert!(err.contains("unknown flag `--bogus`"), "{err}");
     // A dead agent address makes the gRPC adapter fail → the run errors.
     let err = cli_err(&[
         "benchmark",
