@@ -221,16 +221,9 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                     "agent is shutting down; no new prompts accepted",
                 );
             }
-            let Some(session) = state.get_session(&cmd.session_id) else {
-                return RpcResponse::build_fail(
-                    id,
-                    "prompt",
-                    &format!(
-                        "session `{}` does not exist; create it before sending a prompt",
-                        cmd.session_id
-                    ),
-                );
-            };
+            // NOTE: `session` was already resolved by the session-scoped
+            // guard above — re-fetching it here can never fail, so the old
+            // "session does not exist" arm was unreachable dead code.
             let mut sess = wlock!(session, id);
             let busy_policy = match crate::runtime::BusyPolicy::parse(&cmd.busy_policy) {
                 Ok(policy) => policy,
@@ -696,19 +689,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         }
         "fork" => cmd_fork(state, &session, &cmd, id),
         "get_session_entries" => {
-            // Must not fall back to a different session when the requested id
-            // is unrecognised — that leaks another conversation's entries
-            // into the wrong caller (e.g. a GUI thread with no agent session
-            // yet would see whichever session got resolved instead).
-            if let Some(sess) = state.get_session(&cmd.session_id) {
-                cmd_get_session_entries(&sess, id)
-            } else {
-                RpcResponse::ok(
-                    id,
-                    "get_session_entries",
-                    serde_json::json!({"entries": []}),
-                )
-            }
+            // `session` was already resolved by the session-scoped guard above,
+            // so the old re-lookup and its "unknown id -> empty entries" arm
+            // were unreachable dead code (the guard returns "session not found"
+            // for unrecognised ids instead).
+            cmd_get_session_entries(&session, id)
         }
         "get_last_assistant_text" => {
             let text = rlock!(session, id).get_last_assistant_text();
@@ -5065,6 +5050,15 @@ mod tests {
             "---\nname: cov-skill\ndescription: coverage fixture\n---\n# body\n",
         )
         .unwrap();
+        // A second skill guarantees the sort_by comparator runs (it is
+        // skipped for a 0/1-element list).
+        let skill_dir_b = home.path().join(".future/agent/skills/aaa-skill");
+        std::fs::create_dir_all(&skill_dir_b).unwrap();
+        std::fs::write(
+            skill_dir_b.join("SKILL.md"),
+            "---\nname: aaa-skill\ndescription: sorts before cov-skill\n---\n# body\n",
+        )
+        .unwrap();
         crate::skills::invalidate_skills_cache();
 
         let state = make_app_state();
@@ -5072,6 +5066,16 @@ mod tests {
         assert_eq!(resp["success"], true);
         let commands = resp["data"]["commands"].as_array().unwrap();
         assert!(commands.iter().any(|c| c["name"] == "cov-skill"));
+        // aaa-skill sorts before cov-skill, proving the comparator ran.
+        let names: Vec<&str> = commands
+            .iter()
+            .filter_map(|c| c["name"].as_str())
+            .filter(|n| n.ends_with("-skill"))
+            .collect();
+        assert!(
+            names.windows(2).all(|w| w[0] <= w[1]),
+            "{names:?} not sorted"
+        );
         crate::skills::invalidate_skills_cache();
     }
 
