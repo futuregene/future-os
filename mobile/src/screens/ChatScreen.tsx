@@ -6,6 +6,7 @@ import {
   ChevronDown,
   CircleAlert,
   FileText,
+  Images,
   Paperclip,
   Pencil,
   Send,
@@ -30,6 +31,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  ToastAndroid,
   TouchableWithoutFeedback,
   View,
 } from "react-native";
@@ -43,7 +45,12 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { MarkdownText } from "../components/MarkdownText";
 import { useRemote } from "../remote/RemoteContext";
 import { loadSessionDraft, saveSessionDraft } from "../remote/draftStorage";
-import { deleteTemporaryAttachment, pickAttachments, takePhoto } from "../remote/files";
+import {
+  deleteTemporaryAttachment,
+  pickAttachments,
+  pickFromAlbum,
+  takePhoto,
+} from "../remote/files";
 import {
   modelReference,
   type DownloadInfo,
@@ -55,6 +62,17 @@ import {
 import { colors, radius, spacing } from "../theme/tokens";
 
 const thinkingLevels: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+
+// Transient failures (attachment pick, send) surface as a platform-native
+// toast instead of pinned red text above the composer. iOS has no native
+// toast, so it falls back to a plain Alert like the rest of the app's errors.
+function showToast(message: string): void {
+  if (Platform.OS === "android") {
+    ToastAndroid.show(message, ToastAndroid.SHORT);
+  } else {
+    Alert.alert(message);
+  }
+}
 
 // How close to the bottom counts as "at latest" (px). Shared by the atLatest
 // detection and the scroll target so the two never disagree.
@@ -113,7 +131,6 @@ export function ChatScreen() {
   const [message, setMessage] = useState("");
   const [attachments, setAttachments] = useState<MobileAttachment[]>([]);
   const [attachmentMenu, setAttachmentMenu] = useState(false);
-  const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [transferProgress, setTransferProgress] = useState<number | null>(null);
   const [preview, setPreview] = useState<{
     info: DownloadInfo;
@@ -266,7 +283,6 @@ export function ChatScreen() {
 
   const chooseFiles = async () => {
     setAttachmentMenu(false);
-    setAttachmentError(null);
     try {
       // Android's fallback sheet must finish dismissing before UIKit/Android
       // presents another native controller. Otherwise the picker can be
@@ -275,19 +291,29 @@ export function ChatScreen() {
       setAttachments(await pickAttachments(attachments));
     } catch (error) {
       const key = error instanceof Error ? error.message : "attachment_failed";
-      setAttachmentError(t(`attachment.errors.${key}`));
+      showToast(t(`attachment.errors.${key}`));
     }
   };
 
   const capturePhoto = async () => {
     setAttachmentMenu(false);
-    setAttachmentError(null);
     try {
       if (attachmentMenu) await new Promise(resolve => setTimeout(resolve, 200));
       setAttachments(await takePhoto(attachments));
     } catch (error) {
       const key = error instanceof Error ? error.message : "attachment_failed";
-      setAttachmentError(t(`attachment.errors.${key}`));
+      showToast(t(`attachment.errors.${key}`));
+    }
+  };
+
+  const chooseFromAlbum = async () => {
+    setAttachmentMenu(false);
+    try {
+      if (attachmentMenu) await new Promise(resolve => setTimeout(resolve, 200));
+      setAttachments(await pickFromAlbum(attachments));
+    } catch (error) {
+      const key = error instanceof Error ? error.message : "attachment_failed";
+      showToast(t(`attachment.errors.${key}`));
     }
   };
 
@@ -295,14 +321,20 @@ export function ChatScreen() {
     if (Platform.OS === "ios") {
       ActionSheetIOS.showActionSheetWithOptions(
         {
-          options: [t("attachment.chooseFiles"), t("attachment.takePhoto"), t("chat.cancel")],
-          cancelButtonIndex: 2,
+          options: [
+            t("attachment.takePhoto"),
+            t("attachment.chooseFromAlbum"),
+            t("attachment.chooseFiles"),
+            t("chat.cancel"),
+          ],
+          cancelButtonIndex: 3,
         },
         index => {
           // Schedule after the action sheet's dismissal animation, so the
           // document/camera controller always gets a presentable view host.
-          if (index === 0) setTimeout(() => void chooseFiles(), 0);
-          if (index === 1) setTimeout(() => void capturePhoto(), 0);
+          if (index === 0) setTimeout(() => void capturePhoto(), 0);
+          if (index === 1) setTimeout(() => void chooseFromAlbum(), 0);
+          if (index === 2) setTimeout(() => void chooseFiles(), 0);
         },
       );
       return;
@@ -326,7 +358,7 @@ export function ChatScreen() {
       // swallowing the input — always restore the draft so nothing vanishes.
       setMessage(value);
       const key = error instanceof Error ? error.message : "";
-      setAttachmentError(key === "prompt_too_large" ? t("chat.promptTooLarge") : t("chat.sendFailed"));
+      showToast(key === "prompt_too_large" ? t("chat.promptTooLarge") : t("chat.sendFailed"));
     } finally {
       setTransferProgress(null);
     }
@@ -340,7 +372,7 @@ export function ChatScreen() {
       for (let i = index - 1; i >= 0; i -= 1) {
         const prev = items[i];
         if (prev?.kind === "message" && prev.role === "user") {
-          void remote.sendMessage(prev.text).catch(() => setAttachmentError(t("chat.sendFailed")));
+          void remote.sendMessage(prev.text).catch(() => showToast(t("chat.sendFailed")));
           return;
         }
       }
@@ -353,14 +385,13 @@ export function ChatScreen() {
       if (item.kind !== "message" || item.role !== "assistant" || !item.runId) return;
       void remote
         .continueRun(remote.selectedSessionId, item.runId)
-        .catch(() => setAttachmentError(t("chat.sendFailed")));
+        .catch(() => showToast(t("chat.sendFailed")));
     },
     [remote, t],
   );
 
   const openAttachment = useCallback(
     async (attachment: HistoryAttachment) => {
-      setAttachmentError(null);
       setTransferProgress(0);
       try {
         // The just-sent optimistic bubble still points at this phone's local
@@ -625,8 +656,8 @@ export function ChatScreen() {
               remote.desktopOnline &&
               remote.models.length === 0 &&
               !remote.modelId && (
-              <Text style={styles.offlineComposer}>{t("connection.noModelsHint")}</Text>
-            )}
+                <Text style={styles.offlineComposer}>{t("connection.noModelsHint")}</Text>
+              )}
             {pendingApprovals.map(item => (
               <View key={item.id} style={styles.dockedApproval}>
                 <PendingApprovalCard
@@ -689,7 +720,6 @@ export function ChatScreen() {
                 {attachments.some(a => a.kind === "image") && !supportsImages && (
                   <Text style={styles.attachmentWarning}>{t("attachment.imagesUnsupported")}</Text>
                 )}
-                {!!attachmentError && <Text style={styles.attachmentError}>{attachmentError}</Text>}
                 <TextInput
                   accessibilityLabel={t("chat.placeholder")}
                   editable={remote.desktopOnline && !remote.timeline.streaming && !remote.busy}
@@ -807,16 +837,23 @@ export function ChatScreen() {
             <View style={styles.attachmentOverlay}>
               <TouchableWithoutFeedback>
                 <View style={styles.attachmentMenu}>
-                  <Pressable onPress={() => void chooseFiles()} style={styles.attachmentMenuOption}>
-                    <FileText color={colors.ink} size={20} />
-                    <Text style={styles.attachmentMenuText}>{t("attachment.chooseFiles")}</Text>
-                  </Pressable>
                   <Pressable
                     onPress={() => void capturePhoto()}
                     style={styles.attachmentMenuOption}
                   >
                     <Camera color={colors.ink} size={20} />
                     <Text style={styles.attachmentMenuText}>{t("attachment.takePhoto")}</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => void chooseFromAlbum()}
+                    style={styles.attachmentMenuOption}
+                  >
+                    <Images color={colors.ink} size={20} />
+                    <Text style={styles.attachmentMenuText}>{t("attachment.chooseFromAlbum")}</Text>
+                  </Pressable>
+                  <Pressable onPress={() => void chooseFiles()} style={styles.attachmentMenuOption}>
+                    <FileText color={colors.ink} size={20} />
+                    <Text style={styles.attachmentMenuText}>{t("attachment.chooseFiles")}</Text>
                   </Pressable>
                 </View>
               </TouchableWithoutFeedback>
@@ -1078,12 +1115,6 @@ const styles = StyleSheet.create({
   pendingAttachmentCopy: { maxWidth: 155 },
   pendingAttachmentName: { color: colors.ink, fontSize: 12, fontWeight: "600" },
   pendingAttachmentSize: { color: colors.inkMuted, fontSize: 10 },
-  attachmentError: {
-    paddingHorizontal: spacing.md,
-    paddingTop: spacing.xs,
-    color: colors.danger,
-    fontSize: 11,
-  },
   attachmentWarning: {
     paddingHorizontal: spacing.md,
     paddingTop: spacing.xs,
