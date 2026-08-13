@@ -2295,4 +2295,147 @@ mod tests {
         assert_eq!(proposals[0].kind, ProposalKind::NoFollowUp);
         assert!(proposals[0].reason.contains("quiet"));
     }
+
+    #[test]
+    fn verdict_keys_cover_all_variants() {
+        assert_eq!(ReviewVerdict::Approve.key(), "approve");
+        assert_eq!(ReviewVerdict::RequestChanges.key(), "request_changes");
+        assert_eq!(ReviewVerdict::Rework.key(), "rework");
+    }
+
+    #[test]
+    fn upper_defaults_when_absent_empty_or_non_string() {
+        assert_eq!(upper(None, "OPEN"), "OPEN");
+        assert_eq!(upper(Some(&Value::String(String::new())), "OPEN"), "OPEN");
+        assert_eq!(upper(Some(&Value::Bool(true)), "OPEN"), "OPEN");
+        assert_eq!(upper(Some(&Value::String("open".into())), "OPEN"), "OPEN");
+    }
+
+    #[test]
+    fn string_list_handles_absent_non_array_and_non_string_items() {
+        assert_eq!(string_list(None), Vec::<String>::new());
+        assert_eq!(string_list(Some(&Value::Bool(true))), Vec::<String>::new());
+        assert_eq!(
+            string_list(Some(&serde_json::json!([" b ", "a", true, "a"]))),
+            vec!["a".to_string(), "b".to_string()]
+        );
+    }
+
+    #[test]
+    fn check_snapshot_defaults_when_absent_or_without_counts() {
+        assert_eq!(check_snapshot(None), CheckSnapshot::default());
+        let snap = check_snapshot(Some(&serde_json::json!({"failures": ["x"]})));
+        assert_eq!(snap.failures, vec!["x".to_string()]);
+        assert_eq!(snap.counts, CheckCounts::default());
+    }
+
+    #[test]
+    fn invalid_exact_head_and_missing_number_skip_candidate_selection() {
+        let mut short = pr(1, None, "REVIEW_REQUIRED", false, "CLEAN", &[]);
+        short["head_oid"] = serde_json::json!("short");
+        let mut nonum = pr(2, None, "REVIEW_REQUIRED", false, "CLEAN", &[]);
+        nonum["number"] = serde_json::Value::Null;
+        let result = observe(&[short, nonum], true, None, &[]).unwrap();
+        assert_eq!(result.candidate_count, 0);
+        assert!(result.candidate.is_none());
+    }
+
+    #[test]
+    fn empty_repository_yields_no_repository_or_task_repository() {
+        let result = build_pull_request_review_queue_observation(
+            None,
+            &[pr(1, None, "REVIEW_REQUIRED", false, "CLEAN", &[])],
+            &serde_json::json!({"complete": true}),
+            None,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(result.repository, None);
+        let candidate = result.candidate.as_ref().unwrap();
+        assert_eq!(candidate.repository, None);
+        assert_eq!(candidate.todo_preview.task_repository, None);
+    }
+
+    #[test]
+    fn non_open_prs_are_skipped_in_ranking() {
+        let mut merged = pr(1, None, "REVIEW_REQUIRED", false, "CLEAN", &[]);
+        merged["state"] = serde_json::json!("MERGED");
+        let result = observe(&[merged], true, None, &[]).unwrap();
+        assert_eq!(result.queue_size, Some(0));
+        assert!(result.candidate.is_none());
+    }
+
+    #[test]
+    fn extract_previous_handles_missing_at_and_unusable_state() {
+        let p = extract_previous(Some(&serde_json::json!({
+            "pending_candidate_exact_head": "noatsign"
+        })))
+        .unwrap();
+        assert!(p.candidate_exact_head.is_none());
+        let p = extract_previous(Some(&serde_json::json!({
+            "observation_state": "observed_unchanged"
+        })))
+        .unwrap();
+        assert!(p.items.is_empty());
+        let p = extract_previous(Some(&serde_json::json!({
+            "observation_state": "not_observed"
+        })))
+        .unwrap();
+        assert!(p.items.is_empty());
+    }
+
+    #[test]
+    fn review_plan_target_is_null_without_number_or_head() {
+        let plan = build_review_plan(&serde_json::json!({"areas": {"src": 1}}));
+        assert!(plan["target"]["exact_head_key"].is_null());
+        assert!(plan["target"]["number"].is_null());
+    }
+
+    #[test]
+    fn propose_rejects_unexpected_handled_head() {
+        let cap = PrReviewQueueCapability;
+        let input = serde_json::json!({
+            "repository": "owner/repo",
+            "pull_requests": [pr(1, None, "REVIEW_REQUIRED", false, "CLEAN", &[])],
+            "result_completeness": {"complete": true},
+            "handled_exact_heads": [format!("9@{:040}", 9)],
+        })
+        .to_string();
+        let proposals = cap.propose(&input);
+        assert_eq!(proposals[0].kind, ProposalKind::Gate);
+    }
+
+    #[test]
+    fn propose_monitors_an_incomplete_read_with_baseline() {
+        let cap = PrReviewQueueCapability;
+        let baseline = observe(
+            &[pr(1, None, "REVIEW_REQUIRED", false, "CLEAN", &[])],
+            true,
+            None,
+            &[],
+        )
+        .unwrap();
+        let input = serde_json::json!({
+            "repository": "owner/repo",
+            "pull_requests": [pr(1, None, "REVIEW_REQUIRED", false, "CLEAN", &[])],
+            "result_completeness": {"complete": false},
+            "previous_observation": baseline,
+        })
+        .to_string();
+        let proposals = cap.propose(&input);
+        assert_eq!(proposals[0].kind, ProposalKind::Monitor);
+    }
+
+    #[test]
+    fn propose_successor_for_incomplete_read_without_baseline() {
+        let cap = PrReviewQueueCapability;
+        let input = serde_json::json!({
+            "repository": "owner/repo",
+            "pull_requests": [pr(1, None, "REVIEW_REQUIRED", false, "CLEAN", &[])],
+            "result_completeness": {"complete": false},
+        })
+        .to_string();
+        let proposals = cap.propose(&input);
+        assert_eq!(proposals[0].kind, ProposalKind::SuccessorTodo);
+    }
 }
