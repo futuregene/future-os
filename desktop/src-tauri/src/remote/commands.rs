@@ -2203,6 +2203,15 @@ mod bridge_tests {
             .call(json!({ "id": unique("cmd"), "type": "list_workspaces" }))
             .await;
         assert_eq!(reply["success"], json!(false));
+        // Settings handlers report the same store failure.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "get_settings" }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "set_approval_tier", "tier": "sandbox" }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
         bridge.stop();
     }
 
@@ -2211,6 +2220,7 @@ mod bridge_tests {
         let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-history").await;
         let agent = ensure_mock_agent();
+        agent.clear_scripts();
         let session = unique("sess");
 
         let reply = bridge
@@ -2304,6 +2314,7 @@ mod bridge_tests {
         let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-transfer").await;
         let agent = ensure_mock_agent();
+        agent.clear_scripts();
 
         // upload_init validation + success.
         let reply = bridge
@@ -2436,6 +2447,7 @@ mod bridge_tests {
         let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-prompt-ws").await;
         let agent = ensure_mock_agent();
+        agent.clear_scripts();
 
         // Workspace mode with a real workspace id → thread bound to it.
         let workspace_dir = std::env::temp_dir().join(unique("futureos-ws-prompt"));
@@ -2524,6 +2536,7 @@ mod bridge_tests {
         let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-session-ctl").await;
         let agent = ensure_mock_agent();
+        agent.clear_scripts();
         let session = unique("sess");
 
         // abort: success and agent failure.
@@ -2663,10 +2676,209 @@ mod bridge_tests {
     }
 
     #[tokio::test]
+    async fn settings_commands_read_and_update() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-settings").await;
+
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "get_settings" }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["approvalTier"], json!("off"));
+        assert_eq!(
+            reply["data"]["sandboxAvailable"],
+            json!(cfg!(target_os = "macos"))
+        );
+
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "set_approval_tier", "tier": "sandbox" }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["approvalTier"], json!("sandbox"));
+
+        bridge.stop();
+    }
+
+    #[tokio::test]
+    async fn continue_run_resumes_a_failed_run_and_rejects_busy_sessions() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-continue").await;
+        let session = unique("sess");
+
+        // A thread bound to the session + a failed run with terminal events.
+        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some("Continue".to_string()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some(session.clone()),
+        })
+        .unwrap();
+        let run = crate::store::create_run(crate::store::CreateRunInput {
+            id: Some("run-failed".to_string()),
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .unwrap();
+        crate::store::append_run_event(crate::store::AppendRunEventInput {
+            run_id: run.id.clone(),
+            event_type: "tool_result".to_string(),
+            payload: Some(r#"{"text":"did the thing"}"#.to_string()),
+            sequence: 1,
+        })
+        .unwrap();
+        crate::store::flush_run_event_log_for_test(&run.id);
+        crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
+            run_id: run.id.clone(),
+            status: "failed".to_string(),
+            error_message: None,
+            error_type: None,
+        })
+        .unwrap();
+
+        // Break the agent endpoint so the Ok arm's spawned `run_prepared_prompt`
+        // fails at `connect_agent` BEFORE it can spawn a session observer — the
+        // ack path (prepare_remote_prompt) is store-only and unaffected. This
+        // keeps the shared mock script clean for later tests (no zombie).
+        let prev_addr = std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock addr");
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
+
+        // Ok arm: continue the failed run → ack carries the fresh run ids.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "continue_run", "sessionId": session, "runId": run.id }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["sessionId"], json!(session));
+        assert_eq!(reply["data"]["threadId"], json!(thread.id));
+
+        // The spawned pipeline settles the new run as failed (its connect_agent
+        // fails) — poll until the run leaves the running state.
+        let continued_run = reply["data"]["runId"].as_str().unwrap().to_string();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let row = crate::store::get_run(&continued_run)
+                .unwrap()
+                .expect("continued run");
+            if row.status != "running" {
+                assert_eq!(row.status, "failed");
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "continued run never settled"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev_addr);
+        bridge.stop();
+    }
+
+    #[tokio::test]
+    async fn continue_run_rejects_a_busy_session() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-continue-busy").await;
+        let session = unique("sess");
+
+        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some("Busy".to_string()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some(session.clone()),
+        })
+        .unwrap();
+        // An active run on the session → the busy guard fires before anything
+        // is persisted or spawned.
+        crate::store::create_run(crate::store::CreateRunInput {
+            id: Some("run-active".to_string()),
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .unwrap();
+
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "continue_run", "sessionId": session, "runId": "run-active" }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        assert!(reply["error"].as_str().unwrap().contains("still running"));
+
+        bridge.stop();
+    }
+
+    #[tokio::test]
+    async fn build_continue_prompt_folds_recent_terminal_events() {
+        let _lock = mock_agent_lock();
+        let _home = HomeGuard::new("cmd-continue-prompt");
+        init_store();
+        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some("Prompt".to_string()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: None,
+        })
+        .unwrap();
+        let run = crate::store::create_run(crate::store::CreateRunInput {
+            id: None,
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .unwrap();
+        // A non-terminal event is ignored; terminal events are folded newest-first.
+        crate::store::append_run_event(crate::store::AppendRunEventInput {
+            run_id: run.id.clone(),
+            event_type: "text_chunk".to_string(),
+            payload: Some("ignored".to_string()),
+            sequence: 1,
+        })
+        .unwrap();
+        crate::store::append_run_event(crate::store::AppendRunEventInput {
+            run_id: run.id.clone(),
+            event_type: "tool_result".to_string(),
+            payload: Some("tool output".to_string()),
+            sequence: 2,
+        })
+        .unwrap();
+        crate::store::append_run_event(crate::store::AppendRunEventInput {
+            run_id: run.id.clone(),
+            event_type: "error".to_string(),
+            payload: Some("boom".to_string()),
+            sequence: 3,
+        })
+        .unwrap();
+        crate::store::flush_run_event_log_for_test(&run.id);
+
+        let prompt = build_continue_prompt(&run.id);
+        assert!(prompt.contains("继续上一个任务。"), "{prompt}");
+        assert!(prompt.contains("已执行内容摘要:"), "{prompt}");
+        assert!(prompt.contains("error"), "{prompt}");
+        assert!(prompt.contains("tool_result"), "{prompt}");
+        assert!(
+            !prompt.contains("text_chunk"),
+            "non-terminal ignored: {prompt}"
+        );
+
+        // An unknown run (no events) still yields the default continue prompt.
+        let empty = build_continue_prompt("no-such-run");
+        assert_eq!(empty, "继续上一个任务。");
+    }
+
+    #[tokio::test]
     async fn approval_decision_ownership_and_outcomes() {
         let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-approval").await;
         let agent = ensure_mock_agent();
+        agent.clear_scripts();
         let session = unique("sess");
 
         // Unknown approval request.
@@ -2795,6 +3007,7 @@ mod bridge_tests {
         let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-singleflight").await;
         let agent = ensure_mock_agent();
+        agent.clear_scripts();
         let session = unique("sess");
 
         let command_id = unique("cmdid");

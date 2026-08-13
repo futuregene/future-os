@@ -754,6 +754,26 @@ mod tests {
     }
 
     #[test]
+    fn ensure_path_allowed_is_a_noop_without_a_home_dir() {
+        let lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        // The test harness always has HOME set; `USERPROFILE` is a Windows-only
+        // fallback absent on macOS/Linux, so removing both and restoring HOME
+        // verbatim leaves the process-global state unchanged.
+        let old_home = std::env::var("HOME").unwrap();
+        std::env::remove_var("HOME");
+        std::env::remove_var("USERPROFILE");
+
+        let file = write_under(&future_root("no_home"), "ok.txt");
+        assert!(ensure_path_allowed(&file).is_ok());
+
+        std::env::set_var("HOME", old_home);
+        std::env::remove_var("USERPROFILE");
+        drop(lock);
+    }
+
+    #[test]
     fn inspect_attachment_classifies_dir_text_and_binary() {
         let root = future_root("inspect");
         assert!(inspect_attachment("   ".into()).is_err());
