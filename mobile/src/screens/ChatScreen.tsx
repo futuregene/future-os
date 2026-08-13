@@ -4,6 +4,7 @@ import {
   Camera,
   Check,
   ChevronDown,
+  CircleAlert,
   FileText,
   Paperclip,
   Pencil,
@@ -38,6 +39,7 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { PendingApprovalCard, TimelineCard } from "../components/TimelineCard";
 import { Button } from "../components/Button";
+import { ErrorBanner } from "../components/ErrorBanner";
 import { MarkdownText } from "../components/MarkdownText";
 import { useRemote } from "../remote/RemoteContext";
 import { loadSessionDraft, saveSessionDraft } from "../remote/draftStorage";
@@ -146,6 +148,7 @@ export function ChatScreen() {
   const activeModel = remote.models.find(model => modelReference(model) === remote.modelId);
   const activeModelLabel =
     activeModel?.label || activeModel?.id || remote.modelId || t("chat.model");
+  const supportsImages = activeModel ? activeModel.supportsImages !== false : true;
 
   // Approvals live docked above the composer (not inline in the transcript), and
   // only while undecided — once a decision lands the card disappears.
@@ -328,6 +331,32 @@ export function ChatScreen() {
     }
   };
 
+  const retryMessage = useCallback(
+    (item: TimelineItem) => {
+      if (item.kind !== "message" || item.role !== "assistant") return;
+      const items = remote.timeline.items;
+      const index = items.findIndex(entry => entry.id === item.id);
+      for (let i = index - 1; i >= 0; i -= 1) {
+        const prev = items[i];
+        if (prev?.kind === "message" && prev.role === "user") {
+          void remote.sendMessage(prev.text).catch(() => setAttachmentError(t("chat.sendFailed")));
+          return;
+        }
+      }
+    },
+    [remote, t],
+  );
+
+  const continueMessage = useCallback(
+    (item: TimelineItem) => {
+      if (item.kind !== "message" || item.role !== "assistant" || !item.runId) return;
+      void remote
+        .continueRun(remote.selectedSessionId, item.runId)
+        .catch(() => setAttachmentError(t("chat.sendFailed")));
+    },
+    [remote, t],
+  );
+
   const openAttachment = useCallback(
     async (attachment: HistoryAttachment) => {
       setAttachmentError(null);
@@ -504,6 +533,8 @@ export function ChatScreen() {
           {remote.draft && <View style={styles.iconButton} />}
         </View>
 
+        {remote.error && <ErrorBanner message={remote.error} onDismiss={remote.clearError} />}
+
         <View style={styles.chatContent}>
           <FlatList
             contentContainerStyle={[
@@ -547,6 +578,8 @@ export function ChatScreen() {
               <TimelineCard
                 item={item}
                 onOpenAttachment={attachment => void openAttachment(attachment)}
+                onRetry={retryMessage}
+                onContinue={continueMessage}
               />
             )}
             scrollEventThrottle={16}
@@ -618,7 +651,9 @@ export function ChatScreen() {
                         key={`${attachment.localUri}:${index}`}
                         style={styles.pendingAttachment}
                       >
-                        {attachment.kind === "image" ? (
+                        {attachment.kind === "image" && !supportsImages ? (
+                          <CircleAlert color={colors.warning} size={13} />
+                        ) : attachment.kind === "image" ? (
                           <Paperclip color={colors.inkSoft} size={13} />
                         ) : (
                           <FileText color={colors.inkSoft} size={13} />
@@ -646,6 +681,9 @@ export function ChatScreen() {
                       </View>
                     ))}
                   </ScrollView>
+                )}
+                {attachments.some(a => a.kind === "image") && !supportsImages && (
+                  <Text style={styles.attachmentWarning}>{t("attachment.imagesUnsupported")}</Text>
                 )}
                 {!!attachmentError && <Text style={styles.attachmentError}>{attachmentError}</Text>}
                 <TextInput
@@ -1039,6 +1077,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingTop: spacing.xs,
     color: colors.danger,
+    fontSize: 11,
+  },
+  attachmentWarning: {
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.xs,
+    color: colors.warning,
     fontSize: 11,
   },
   transferTrack: {

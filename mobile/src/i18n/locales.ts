@@ -24,6 +24,7 @@ export const resources = {
         connected: "Connected",
         reconnecting: "Reconnecting",
         offline: "Desktop offline",
+        revoked: "Device revoked — scan a new pairing code",
         offlineHint:
           "The desktop may be sleeping or disconnected. Wake the computer and keep FutureOS running.",
         noModels: "No models available",
@@ -87,6 +88,8 @@ export const resources = {
         backToLatest: "Back to latest",
         runStopped: "Stopped",
         responseInterrupted: "The response was interrupted before it finished.",
+        retry: "Retry",
+        continue: "Continue",
         compacted: "Context compacted",
         compactedTokens: "Context compacted · {{formattedCount}} tokens",
       },
@@ -131,6 +134,8 @@ export const resources = {
         downloaded: '"{{name}}" was downloaded to the phone cache.',
         downloadFailed: "The preview could not be downloaded.",
         previewOnDesktop: "This file type can only be viewed in the desktop app.",
+        imagesUnsupported:
+          "The current model doesn't support images and may not read this image correctly.",
         markdownTruncated:
           "Only the first 2 MB is rendered. Open the desktop app to view the rest.",
         textTruncated: "Only the first 2 MB is shown. Open the desktop app to view the rest.",
@@ -145,6 +150,12 @@ export const resources = {
           attachment_camera_permission: "Camera access is required to take a photo.",
           attachment_failed: "The attachment could not be added.",
         },
+      },
+      approvalTier: {
+        title: "Approval mode",
+        manual: "Manual",
+        sandbox: "Sandboxed",
+        off: "Unrestricted",
       },
       common: {
         error: "Something went wrong.",
@@ -186,6 +197,7 @@ export const resources = {
         connected: "已连接",
         reconnecting: "正在重连",
         offline: "桌面离线",
+        revoked: "设备已被撤销，请重新扫码配对",
         offlineHint: "桌面可能正在睡眠或断网。请唤醒电脑并保持 FutureOS 运行。",
         noModels: "没有可用模型",
         noModelsHint: "已连接桌面端，但还没有配置模型。请在 FutureOS 桌面端配置模型后再回来。",
@@ -246,6 +258,8 @@ export const resources = {
         backToLatest: "回到最新",
         runStopped: "已停止",
         responseInterrupted: "回复在完成前被中断。",
+        retry: "重试",
+        continue: "继续",
         compacted: "上下文已压缩",
         compactedTokens: "上下文已压缩 · {{formattedCount}} tokens",
       },
@@ -289,6 +303,7 @@ export const resources = {
         downloaded: "「{{name}}」已下载到手机缓存。",
         downloadFailed: "无法下载预览。",
         previewOnDesktop: "这种文件类型请在桌面端查看。",
+        imagesUnsupported: "当前模型不支持图片，可能无法正确理解图片内容。",
         markdownTruncated: "仅渲染前 2 MB 内容，完整文件请在桌面端查看。",
         textTruncated: "仅显示前 2 MB 内容，完整文件请在桌面端查看。",
         errors: {
@@ -302,6 +317,12 @@ export const resources = {
           attachment_camera_permission: "拍照需要相机权限。",
           attachment_failed: "无法添加附件。",
         },
+      },
+      approvalTier: {
+        title: "审批模式",
+        manual: "手动审批",
+        sandbox: "沙箱保护",
+        off: "完全放开",
       },
       common: {
         error: "操作失败，请重试。",

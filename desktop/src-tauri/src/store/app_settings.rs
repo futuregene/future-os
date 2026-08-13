@@ -25,7 +25,7 @@ pub struct AppSettings {
     pub auto_connect_remote: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateAppSettingsInput {
     pub approval_tier: Option<String>,

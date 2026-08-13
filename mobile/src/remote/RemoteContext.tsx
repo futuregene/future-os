@@ -200,8 +200,11 @@ interface RemoteContextValue {
   timeline: TimelineState;
   modelId: string;
   thinkingLevel: ThinkingLevel;
+  approvalTier: string;
+  sandboxAvailable: boolean;
   busy: boolean;
   fileTransferSupported: boolean;
+  capabilities: Set<string>;
   pair(code: string): Promise<void>;
   reconnect(): Promise<void>;
   unpair(): Promise<void>;
@@ -224,10 +227,13 @@ interface RemoteContextValue {
   abort(): Promise<void>;
   setModel(modelId: string): Promise<void>;
   setThinkingLevel(level: ThinkingLevel): Promise<void>;
+  setApprovalTier(tier: string): Promise<void>;
   rename(sessionId: string, name: string): Promise<void>;
   deleteSession(sessionId: string, threadId: string): Promise<void>;
   setSessionPinned(sessionId: string, threadId: string, pinned: boolean): Promise<void>;
   decideApproval(id: string, decision: "approved" | "rejected"): Promise<void>;
+  clearError(): void;
+  continueRun(sessionId: string, runId: string): Promise<void>;
 }
 
 const RemoteContext = createContext<RemoteContextValue | null>(null);
@@ -247,6 +253,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const lastStatusRef = useRef<Record<string, string | undefined>>({});
   const [workspaces, setWorkspaces] = useState<RemoteWorkspace[]>([]);
   const [models, setModels] = useState<RemoteModel[]>([]);
+  const [approvalTier, setApprovalTierState] = useState("off");
+  const [sandboxAvailable, setSandboxAvailable] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [draft, setDraft] = useState(false);
   const [draftMode, setDraftMode] = useState<"chat" | "workspace">("chat");
@@ -254,7 +262,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const [modelId, setModelId] = useState("");
   const [thinkingLevel, setThinkingLevelState] = useState<ThinkingLevel>("off");
   const [busy, setBusy] = useState(false);
-  const [fileTransferSupported, setFileTransferSupported] = useState(false);
+  const [capabilities, setCapabilities] = useState<Set<string>>(() => new Set());
+  const fileTransferSupported = capabilities.has("file_transfer_v1");
   const [clock, setClock] = useState(Date.now());
   // Relative-heartbeat state (L7): the desktop-presence check judges staleness
   // by clock-offset drift, so the running baseline survives recomputes. Reset
@@ -370,6 +379,21 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       if (attempt === 0) await new Promise(resolve => setTimeout(resolve, 1200));
     }
     setModels(models);
+  }, []);
+
+  const refreshSettings = useCallback(async () => {
+    const client = clientRef.current;
+    if (!client) return;
+    try {
+      const data = await client.request<{ approvalTier: string; sandboxAvailable: boolean }>(
+        { type: "get_settings" },
+        "list",
+      );
+      setApprovalTierState(data.data.approvalTier);
+      setSandboxAvailable(data.data.sandboxAvailable);
+    } catch {
+      // Keep the previous tier on a failed read.
+    }
   }, []);
 
   const refreshWorkspaces = useCallback(async () => {
@@ -558,7 +582,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       credentialsRef.current = fresh;
       setCredentials(fresh);
       setError(null);
-      setFileTransferSupported(false);
+      setCapabilities(new Set());
       const client = new RemoteClient(fresh, {
         onCredentials: next => {
           setCredentials(next);
@@ -595,7 +619,12 @@ export function RemoteProvider({ children }: PropsWithChildren) {
             });
           }
           const currentId = selectedRef.current;
-          if (currentId && !list.some(item => item.sessionId === currentId)) {
+          // An empty session list is a transient store failure, not a deletion
+          // signal (audit 05 L8): a single deleted session leaves the others in
+          // the list, so a wholly-empty list can only mean the desktop read
+          // failed or everything was cleared. Keep the conversation open rather
+          // than close it on a possibly-stale snapshot.
+          if (currentId && list.length > 0 && !list.some(item => item.sessionId === currentId)) {
             closeConversation();
           } else if (currentId) {
             const streaming =
@@ -627,7 +656,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
           setWorkspaces(workspaceList);
         },
         onFeatures: features => {
-          setFileTransferSupported(features.includes("file_transfer_v1"));
+          setCapabilities(new Set(features));
         },
         onConnectionState: (state: ConnectionState) => {
           // The FSM states map onto the UI phases. A transport disconnect
@@ -670,9 +699,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       // reconcileAll (reconnect recovery) must keep working across a client
       // replacement. Its deps read the live clientRef on every call.
       await client.open();
-      await Promise.all([refreshModels(), refreshSessions(), refreshWorkspaces()]);
+      await Promise.all([refreshModels(), refreshSessions(), refreshWorkspaces(), refreshSettings()]);
     },
-    [closeConversation, handleEvent, reconcileSession, refreshModels, refreshSessions, refreshWorkspaces],
+    [closeConversation, handleEvent, reconcileSession, refreshModels, refreshSessions, refreshWorkspaces, refreshSettings],
   );
 
   useEffect(() => {
@@ -836,10 +865,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
 
   useEffect(() => {
     recoverRef.current = async (sessionId?: string) => {
-      await Promise.all([refreshModels(), refreshSessions(), refreshWorkspaces()]);
+      await Promise.all([refreshModels(), refreshSessions(), refreshWorkspaces(), refreshSettings()]);
       reconcileSession(sessionId, "reconnect");
     };
-  }, [reconcileSession, refreshModels, refreshSessions, refreshWorkspaces]);
+  }, [reconcileSession, refreshModels, refreshSessions, refreshWorkspaces, refreshSettings]);
 
   const selectSession = useCallback(
     async (sessionId: string) => {
@@ -1103,6 +1132,22 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     }
   }, []);
 
+  const setApprovalTier = useCallback(async (tier: string) => {
+    const client = clientRef.current;
+    if (!client) throw new Error("not_connected");
+    const data = await client.request<{ approvalTier: string }>(
+      { type: "set_approval_tier", tier },
+      "list",
+    );
+    setApprovalTierState(data.data.approvalTier);
+  }, []);
+
+  const continueRun = useCallback(async (sessionId: string, runId: string) => {
+    const client = clientRef.current;
+    if (!client) throw new Error("not_connected");
+    await client.request({ type: "continue_run", sessionId, runId }, sessionId);
+  }, []);
+
   const rename = useCallback(async (sessionId: string, name: string) => {
     const client = clientRef.current;
     if (!client || !sessionId || !name.trim()) return;
@@ -1179,6 +1224,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const selectedTitle =
     sessions.find(session => session.sessionId === selectedSessionId)?.title ?? "";
 
+  const clearError = useCallback(() => setError(null), []);
+
   const value = useMemo<RemoteContextValue>(
     () => ({
       phase,
@@ -1196,8 +1243,11 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       timeline,
       modelId,
       thinkingLevel,
+      approvalTier,
+      sandboxAvailable,
       busy,
       fileTransferSupported,
+      capabilities,
       pair,
       reconnect,
       unpair,
@@ -1213,17 +1263,23 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       abort,
       setModel,
       setThinkingLevel,
+      setApprovalTier,
       rename,
       deleteSession,
       setSessionPinned,
       decideApproval,
+      clearError,
+      continueRun,
     }),
     [
       abort,
       busy,
+      capabilities,
       fileTransferSupported,
       credentials,
       closeConversation,
+      clearError,
+      continueRun,
       decideApproval,
       desktopOnline,
       deleteSession,
@@ -1253,7 +1309,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       workspaces,
       setModel,
       setThinkingLevel,
+      setApprovalTier,
       thinkingLevel,
+      approvalTier,
+      sandboxAvailable,
       unpair,
     ],
   );
