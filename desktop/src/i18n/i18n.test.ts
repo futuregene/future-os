@@ -22,6 +22,19 @@ describe("i18n language helpers", () => {
     expect(mod.getLanguage()).toBe("en");
   });
 
+  it("falls back to English when navigator.language throws", async () => {
+    vi.resetModules();
+    // A hostile/absent navigator makes the systemLanguage try-arm fail and
+    // the catch arm decide: English.
+    vi.stubGlobal("navigator", {
+      get language() {
+        throw new Error("no navigator.language");
+      },
+    });
+    const mod = await import("./index");
+    expect(mod.getLanguage()).toBe("zh"); // DEFAULT_LANGUAGE
+  });
+
   it("detects a Chinese OS and picks zh on first run", async () => {
     vi.resetModules();
     vi.stubGlobal("navigator", { language: "zh-CN" });
