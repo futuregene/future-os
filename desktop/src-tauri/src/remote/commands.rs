@@ -1743,9 +1743,10 @@ mod tests {
 
 #[cfg(test)]
 mod bridge_tests {
+    #![allow(clippy::await_holding_lock)]
     use super::super::test_support::{
-        await_publish, ensure_mock_agent, init_store, jwt, nats_connect, nats_connect_once,
-        now_secs, unique, FakeNats, HomeGuard,
+        await_publish, ensure_mock_agent, init_store, jwt, mock_agent_lock, nats_connect,
+        nats_connect_once, now_secs, unique, FakeNats, HomeGuard,
     };
     use super::super::transfer;
     use super::*;
@@ -2131,6 +2132,7 @@ mod bridge_tests {
 
     #[tokio::test]
     async fn presence_and_catalog_commands() {
+        let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-presence").await;
 
         let reply = bridge
@@ -2186,6 +2188,7 @@ mod bridge_tests {
 
     #[tokio::test]
     async fn catalog_commands_report_store_failures() {
+        let _lock = mock_agent_lock();
         // No init_store and no .future dir → the DB connect fails.
         let _home = HomeGuard::new("cmd-store-down");
         ensure_mock_agent();
@@ -2205,6 +2208,7 @@ mod bridge_tests {
 
     #[tokio::test]
     async fn history_commands_page_and_fail() {
+        let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-history").await;
         let agent = ensure_mock_agent();
         let session = unique("sess");
@@ -2297,6 +2301,7 @@ mod bridge_tests {
 
     #[tokio::test]
     async fn transfer_control_commands() {
+        let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-transfer").await;
         let agent = ensure_mock_agent();
 
@@ -2366,6 +2371,7 @@ mod bridge_tests {
 
     #[tokio::test]
     async fn prompt_creates_threads_and_rejects_busy_sessions() {
+        let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-prompt").await;
 
         // Workspace mode without a workspace id → validation error.
@@ -2427,6 +2433,7 @@ mod bridge_tests {
 
     #[tokio::test]
     async fn prompt_workspace_mode_and_prepare_failures() {
+        let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-prompt-ws").await;
         let agent = ensure_mock_agent();
 
@@ -2514,6 +2521,7 @@ mod bridge_tests {
 
     #[tokio::test]
     async fn session_control_commands() {
+        let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-session-ctl").await;
         let agent = ensure_mock_agent();
         let session = unique("sess");
@@ -2656,6 +2664,7 @@ mod bridge_tests {
 
     #[tokio::test]
     async fn approval_decision_ownership_and_outcomes() {
+        let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-approval").await;
         let agent = ensure_mock_agent();
         let session = unique("sess");
@@ -2783,6 +2792,7 @@ mod bridge_tests {
 
     #[tokio::test]
     async fn duplicate_command_ids_get_one_execution_and_cached_replies() {
+        let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-singleflight").await;
         let agent = ensure_mock_agent();
         let session = unique("sess");

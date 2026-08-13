@@ -86,12 +86,29 @@ pub fn map_rpc_error(context: &str, status: tonic::Status) -> crate::AppError {
     }
 }
 
+/// Channel cache keyed by endpoint. The GUI talks to a single agent in
+/// production, but the test binary hosts more than one in-process mock agent;
+/// keying by address lets a changed `FUTURE_AGENT_GRPC_ADDR` reconnect instead
+/// of reusing a stale connection to the previous mock.
+static AGENT_CHANNEL: tokio::sync::Mutex<Option<(String, Channel)>> =
+    tokio::sync::Mutex::const_new(None);
+
 /// Resolve the agent endpoint and open a gRPC client. A connection failure maps
 /// to `AppError::AgentUnavailable` so callers can tolerate a down agent (e.g.
 /// `abort_run` still cancels the run locally).
 pub async fn connect_agent() -> Result<FutureAgentClient<Channel>, crate::AppError> {
-    static AGENT_CHANNEL: tokio::sync::OnceCell<Channel> = tokio::sync::OnceCell::const_new();
     let endpoint_str = agent_endpoint();
+    // A cached channel already targeting this endpoint is reused as-is.
+    {
+        let cached = AGENT_CHANNEL.lock().await;
+        if let Some((addr, channel)) = cached.as_ref() {
+            if addr == &endpoint_str {
+                return Ok(FutureAgentClient::new(channel.clone())
+                    .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
+                    .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE));
+            }
+        }
+    }
     let unavailable = |error: tonic::transport::Error| {
         crate::AppError::AgentUnavailable(format!(
             "Unable to connect to Future Agent at {endpoint_str}: {error}"
@@ -100,6 +117,7 @@ pub async fn connect_agent() -> Result<FutureAgentClient<Channel>, crate::AppErr
     let endpoint = Endpoint::from_shared(endpoint_str.clone())
         .map_err(unavailable)?
         .connect_timeout(CONNECT_TIMEOUT);
+    let health_endpoint = endpoint_str.clone();
     // Shared, lazily-established HTTP/2 channel. Previously every command
     // opened a fresh TCP connection (incl. the per-second status polls), so a
     // fully idle GUI burnt ~0.25 core in backend just on connect/teardown.
@@ -110,37 +128,43 @@ pub async fn connect_agent() -> Result<FutureAgentClient<Channel>, crate::AppErr
     // reachability on first init so callers see a friendly error.
     let channel = agent_channel_runtime()
         .spawn(async move {
-            AGENT_CHANNEL
-                .get_or_try_init(|| async {
-                    let ch = endpoint.connect_lazy();
-                    // Validate the lazy channel with a cheap, no-side-effect RPC
-                    // so a down agent surfaces the familiar AgentUnavailable
-                    // message rather than a raw tonic transport error on the
-                    // next real command.
-                    let mut client = FutureAgentClient::new(ch.clone())
-                        .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
-                        .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE);
-                    client
-                        .execute_command(list_streaming_sessions_command())
-                        .await
-                        .map_err(|status| {
-                            crate::AppError::AgentUnavailable(format!(
-                                "Unable to connect to Future Agent at {endpoint_str}: {}",
-                                status.message()
-                            ))
-                        })?;
-                    Ok::<Channel, crate::AppError>(ch)
-                })
-                .await
-                .cloned()
+            let ch = endpoint.connect_lazy();
+            let mut client = FutureAgentClient::new(ch.clone())
+                .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
+                .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE);
+            health_check(&mut client, &health_endpoint).await?;
+            Ok::<Channel, crate::AppError>(ch)
         })
         .await
-        .map_err(|join_error| {
-            crate::AppError::AgentUnavailable(format!("Agent channel task failed: {join_error}"))
-        })??;
+        // The pinned runtime is process-lifetime (parked forever) and the
+        // task body returns every failure as a value — no panic/abort path.
+        .expect("agent channel task: pinned runtime outlives the process")?;
+    // Remember the freshly connected channel for this endpoint; a later call
+    // to a different endpoint overwrites it (and drops the old connection).
+    *AGENT_CHANNEL.lock().await = Some((endpoint_str, channel.clone()));
     Ok(FutureAgentClient::new(channel)
         .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
         .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE))
+}
+
+/// One-shot reachability check run when the shared channel is first
+/// established: validates the lazy channel with a cheap, no-side-effect RPC
+/// so a down agent surfaces the familiar AgentUnavailable message rather
+/// than a raw tonic transport error on the next real command.
+async fn health_check(
+    client: &mut FutureAgentClient<Channel>,
+    endpoint_str: &str,
+) -> Result<(), crate::AppError> {
+    client
+        .execute_command(list_streaming_sessions_command())
+        .await
+        .map_err(|status| {
+            crate::AppError::AgentUnavailable(format!(
+                "Unable to connect to Future Agent at {endpoint_str}: {}",
+                status.message()
+            ))
+        })?;
+    Ok(())
 }
 
 /// Turn a gRPC `RpcResponse` into a `Result`, surfacing the agent's own error
@@ -330,7 +354,7 @@ pub(super) fn prompt_command(
     session_id: String,
     attachments: Vec<AttachmentInput>,
     requested_run_id: Option<String>,
-) -> Result<RpcCommand, crate::AppError> {
+) -> RpcCommand {
     // Only paths cross the wire; the agent reads + encodes image bytes itself.
     let attachments = attachments
         .into_iter()
@@ -341,13 +365,13 @@ pub(super) fn prompt_command(
             thumbnail: item.thumbnail.unwrap_or_default(),
         })
         .collect();
-    Ok(RpcCommand {
+    RpcCommand {
         message,
         attachments,
         requested_run_id: requested_run_id.unwrap_or_default(),
         client_request_id: command_id(),
         ..base_command("prompt", session_id)
-    })
+    }
 }
 
 pub(super) fn approval_decision_command(
@@ -437,18 +461,19 @@ fn command_id() -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_support::{mock_agent, Reply};
+    use super::*;
+
     /// Regression test for the startup channel-poisoning bug: the first
     /// `connect_agent` caller of the process runs on a throwaway per-thread
     /// runtime (mirrors lib.rs's session-import startup thread), which is
     /// dropped as soon as the thread returns. The shared channel must stay
     /// usable afterwards — before the fix, every later call failed with
     /// `Service was not ready: transport error` (surfaced as the run
-    /// reanimation failure at startup).
-    ///
-    /// Requires a live agent on 127.0.0.1:50051: `cargo test -- --ignored`.
+    /// reanimation failure at startup). Runs against the in-process mock.
     #[test]
-    #[ignore = "requires a running agent on 127.0.0.1:50051 (future agent)"]
     fn shared_channel_survives_caller_runtime_drop() {
+        let _mock = mock_agent();
         // First caller on a throwaway runtime, dropped on thread exit.
         std::thread::spawn(|| {
             let rt = tokio::runtime::Runtime::new().expect("runtime 1");
@@ -472,12 +497,303 @@ mod tests {
             let mut client = super::connect_agent()
                 .await
                 .expect("connect after caller runtime drop");
-            // Transport-level success is what matters here — an app-level
-            // error (unknown session) still proves the connection works.
             client
                 .execute_command(super::get_state_command(String::new()))
                 .await
                 .expect("RPC after caller runtime drop");
         });
+    }
+
+    #[test]
+    fn raw_agent_addr_defaults_and_endpoint_adds_scheme() {
+        let _mock = mock_agent();
+        // The mock sets FUTURE_AGENT_GRPC_ADDR to a bare host:port.
+        let raw = raw_agent_addr();
+        assert!(!raw.is_empty());
+        assert_eq!(agent_endpoint(), format!("http://{raw}"));
+    }
+
+    #[test]
+    fn agent_endpoint_keeps_an_explicit_scheme() {
+        let _mock = mock_agent();
+        let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock sets the addr");
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "https://agent.example:9443");
+        assert_eq!(agent_endpoint(), "https://agent.example:9443");
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
+    }
+
+    #[tokio::test]
+    async fn connect_agent_rejects_an_unparseable_endpoint() {
+        let _mock = mock_agent();
+        let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock sets the addr");
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
+        let result = connect_agent().await;
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
+        let error = result.expect_err("invalid endpoint must fail");
+        assert!(
+            matches!(error, crate::AppError::AgentUnavailable(_)),
+            "endpoint parse failure maps to AgentUnavailable: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn health_check_maps_transport_failure_to_unavailable() {
+        let mock = mock_agent();
+        // Connect first (the OnceCell init health check consumes the default
+        // reply), then script the failure for the explicit health_check call.
+        let mut client = connect_agent().await.expect("connect to mock");
+        mock.push(
+            "list_streaming_sessions",
+            Reply::Status(tonic::Code::Unavailable, "mock agent down"),
+        );
+        let error = health_check(&mut client, "http://mock")
+            .await
+            .expect_err("health check surfaces the transport failure");
+        assert!(matches!(error, crate::AppError::AgentUnavailable(_)));
+        let message = error.to_string();
+        assert!(message.contains("http://mock"), "message: {message}");
+        assert!(message.contains("mock agent down"), "message: {message}");
+    }
+
+    #[test]
+    fn map_rpc_error_distinguishes_unavailable_from_app_failures() {
+        let unavailable = map_rpc_error("ctx", tonic::Status::unavailable("connection refused"));
+        assert!(matches!(unavailable, crate::AppError::AgentUnavailable(_)));
+        assert_eq!(unavailable.to_string(), "ctx: connection refused");
+        let internal = map_rpc_error("ctx", tonic::Status::internal("boom"));
+        assert!(matches!(internal, crate::AppError::Message(_)));
+        assert!(internal.to_string().starts_with("ctx: "));
+    }
+
+    #[test]
+    fn ok_or_rpc_error_variants() {
+        let ok = RpcResponse {
+            success: true,
+            ..Default::default()
+        };
+        assert!(ok.ok_or_rpc_error("fallback").is_ok());
+
+        let with_error = RpcResponse {
+            success: false,
+            error: "agent said no".to_string(),
+            ..Default::default()
+        };
+        let error = with_error.ok_or_rpc_error("fallback").unwrap_err();
+        assert_eq!(error.to_string(), "agent said no");
+
+        let without_error = RpcResponse {
+            success: false,
+            ..Default::default()
+        };
+        let error = without_error.ok_or_rpc_error("fallback").unwrap_err();
+        assert_eq!(error.to_string(), "fallback");
+    }
+
+    #[test]
+    fn command_builders_set_type_session_and_ids() {
+        let cmd = get_state_command("sess".to_string());
+        assert_eq!(cmd.r#type, "get_state");
+        assert_eq!(cmd.session_id, "sess");
+        assert!(!cmd.id.is_empty(), "command id assigned");
+
+        let cmd = get_run_state_command("sess".to_string(), "run-1".to_string());
+        assert_eq!(cmd.r#type, "get_state");
+        assert_eq!(cmd.run_id, "run-1");
+
+        assert_eq!(get_available_models_command().r#type, "list_models");
+        assert_eq!(get_available_models_command().session_id, "");
+
+        let cmd = fork_command(
+            "sess".to_string(),
+            "entry-1".to_string(),
+            "parent".to_string(),
+        );
+        assert_eq!(cmd.r#type, "fork");
+        assert_eq!(cmd.entry_id, "entry-1");
+        assert_eq!(cmd.parent_session, "parent");
+
+        assert_eq!(
+            delete_session_command("sess".to_string()).r#type,
+            "delete_session"
+        );
+
+        let cmd = prune_run_events_command("sess".to_string(), "run-1".to_string());
+        assert_eq!(cmd.r#type, "prune_run_events");
+        assert_eq!(cmd.run_id, "run-1");
+
+        assert_eq!(list_sessions_command().r#type, "list_sessions");
+        assert_eq!(list_session_ids_command().r#type, "list_session_ids");
+        assert_eq!(
+            list_streaming_sessions_command().r#type,
+            "list_streaming_sessions"
+        );
+        assert_eq!(
+            get_session_entries_command("sess".to_string()).r#type,
+            "get_session_entries"
+        );
+    }
+
+    #[test]
+    fn new_session_command_carries_provenance_and_model() {
+        let cmd = new_session_command(
+            "sess".to_string(),
+            "/tmp/ws".to_string(),
+            "desktop",
+            serde_json::json!({"source": "test"}),
+            Some("future/k3".to_string()),
+            Some("high".to_string()),
+        );
+        assert_eq!(cmd.r#type, "new_session");
+        assert_eq!(cmd.cwd, "/tmp/ws");
+        assert_eq!(cmd.created_by, "desktop");
+        assert_eq!(cmd.source_meta, r#"{"source":"test"}"#);
+        assert_eq!(cmd.model_id, "future/k3");
+        assert_eq!(cmd.level, "high");
+
+        let bare = new_session_command(
+            String::new(),
+            String::new(),
+            "desktop",
+            serde_json::Value::Null,
+            None,
+            None,
+        );
+        assert_eq!(bare.model_id, "");
+        assert_eq!(bare.level, "");
+    }
+
+    #[test]
+    fn setter_commands_carry_their_payloads() {
+        let cmd = set_model_command("m".to_string(), "sess".to_string());
+        assert_eq!(
+            (cmd.r#type.as_str(), cmd.model_id.as_str()),
+            ("set_model", "m")
+        );
+
+        let cmd = set_default_model_command("m".to_string());
+        assert_eq!(
+            (
+                cmd.r#type.as_str(),
+                cmd.model_id.as_str(),
+                cmd.session_id.as_str()
+            ),
+            ("set_default_model", "m", "")
+        );
+
+        let cmd = set_cwd_command("/tmp".to_string(), "sess".to_string());
+        assert_eq!((cmd.r#type.as_str(), cmd.cwd.as_str()), ("set_cwd", "/tmp"));
+
+        let cmd = set_thinking_level_command("high".to_string(), "sess".to_string());
+        assert_eq!(
+            (cmd.r#type.as_str(), cmd.level.as_str()),
+            ("set_thinking_level", "high")
+        );
+
+        let cmd = set_session_name_command("name".to_string(), "sess".to_string());
+        assert_eq!(
+            (cmd.r#type.as_str(), cmd.name.as_str()),
+            ("set_session_name", "name")
+        );
+
+        let cmd = set_permission_level_command("workspace".to_string(), "sess".to_string());
+        assert_eq!(
+            (cmd.r#type.as_str(), cmd.level.as_str()),
+            ("set_permission_level", "workspace")
+        );
+
+        let policy = crate::agent_proto::SandboxPolicy {
+            tier: "sandbox".to_string(),
+        };
+        let cmd = set_sandbox_policy_command(policy, "sess".to_string());
+        assert_eq!(cmd.r#type, "set_sandbox_policy");
+        assert_eq!(cmd.sandbox_policy.expect("policy").tier, "sandbox");
+
+        let cmd = add_session_rule_command(
+            "/tmp/**".to_string(),
+            "allow".to_string(),
+            "sess".to_string(),
+        );
+        assert_eq!(
+            (cmd.r#type.as_str(), cmd.message.as_str(), cmd.mode.as_str()),
+            ("add_session_rule", "/tmp/**", "allow")
+        );
+
+        let cmd = approval_decision_command(
+            "appr-1".to_string(),
+            "approved".to_string(),
+            "note".to_string(),
+            "sess".to_string(),
+        );
+        assert_eq!(
+            (
+                cmd.r#type.as_str(),
+                cmd.entry_id.as_str(),
+                cmd.mode.as_str(),
+                cmd.message.as_str()
+            ),
+            ("approval_decision", "appr-1", "approved", "note")
+        );
+    }
+
+    #[test]
+    fn prompt_command_maps_attachments_and_run_identity() {
+        let cmd = prompt_command(
+            "hello".to_string(),
+            "sess".to_string(),
+            vec![
+                AttachmentInput {
+                    path: "/tmp/a.png".to_string(),
+                    kind: "image".to_string(),
+                    name: "a.png".to_string(),
+                    thumbnail: Some("/tmp/thumb.png".to_string()),
+                },
+                AttachmentInput {
+                    path: "/tmp/b.txt".to_string(),
+                    kind: "file".to_string(),
+                    name: "b.txt".to_string(),
+                    thumbnail: None,
+                },
+            ],
+            Some("run-1".to_string()),
+        );
+        assert_eq!(cmd.r#type, "prompt");
+        assert_eq!(cmd.message, "hello");
+        assert_eq!(cmd.requested_run_id, "run-1");
+        assert!(cmd.client_request_id.starts_with("desktop_"));
+        assert_eq!(cmd.attachments.len(), 2);
+        assert_eq!(cmd.attachments[0].thumbnail, "/tmp/thumb.png");
+        assert_eq!(
+            cmd.attachments[1].thumbnail, "",
+            "absent thumbnail defaults"
+        );
+
+        let bare = prompt_command("m".to_string(), "s".to_string(), vec![], None);
+        assert_eq!(bare.requested_run_id, "");
+    }
+
+    #[test]
+    fn list_builtin_providers_command_sets_the_flag() {
+        let cmd = list_builtin_providers_command();
+        assert_eq!(cmd.r#type, "list_models");
+        assert!(cmd.include_builtin_providers);
+    }
+
+    #[test]
+    fn run_control_command_carries_optional_run_id() {
+        let cmd = run_control_command("abort", "sess".to_string(), Some("run-1".to_string()));
+        assert_eq!(
+            (cmd.r#type.as_str(), cmd.run_id.as_str()),
+            ("abort", "run-1")
+        );
+        let bare = run_control_command("abort", "sess".to_string(), None);
+        assert_eq!(bare.run_id, "");
+    }
+
+    #[test]
+    fn command_ids_are_unique_within_a_millisecond() {
+        let first = command_id();
+        let second = command_id();
+        assert_ne!(first, second, "monotonic sequence separates same-ms ids");
+        assert!(first.starts_with("desktop_"));
     }
 }

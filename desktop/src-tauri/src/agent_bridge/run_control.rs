@@ -176,3 +176,277 @@ pub(crate) async fn wait_for_agent_idle(session_id: &str) {
 fn is_agent_unavailable_error(error: &crate::AppError) -> bool {
     matches!(error, crate::AppError::AgentUnavailable(_))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::replica::AGENT_REPLICAS;
+    use super::super::test_support::{
+        mock_agent, seed_run, seed_thread, seed_workspace, Reply, TestHome,
+    };
+    use super::*;
+
+    #[tokio::test]
+    async fn abort_session_resolves_active_run_and_aborts() {
+        let _home = TestHome::new("rc-abort-session");
+        let mock = mock_agent();
+
+        mock.push_data(
+            "get_state",
+            serde_json::json!({"activeRun": {"runId": "run-canonical"}}),
+        );
+        mock.push("abort", Reply::Data("{}".to_string()));
+        abort_session("sess-1").await.expect("abort");
+        let abort = &mock.requests_of("abort")[0];
+        assert_eq!(abort.run_id, "run-canonical");
+        assert_eq!(abort.session_id, "sess-1");
+    }
+
+    #[tokio::test]
+    async fn abort_session_without_active_run_aborts_with_empty_run_id() {
+        let _home = TestHome::new("rc-abort-no-run");
+        let mock = mock_agent();
+
+        mock.push_data("get_state", serde_json::json!({"isStreaming": false}));
+        mock.push("abort", Reply::Data("{}".to_string()));
+        abort_session("sess-1").await.expect("abort");
+        assert_eq!(mock.requests_of("abort")[0].run_id, "");
+    }
+
+    #[tokio::test]
+    async fn abort_session_error_paths() {
+        let _home = TestHome::new("rc-abort-errors");
+        let mock = mock_agent();
+
+        // get_state rejected at app level.
+        mock.push("get_state", Reply::Reject("no session".to_string()));
+        let error = abort_session("sess-1").await.expect_err("state reject");
+        assert_eq!(error.to_string(), "no session");
+
+        // get_state transport failure.
+        mock.push("get_state", Reply::Status(tonic::Code::Unavailable, "gone"));
+        let error = abort_session("sess-1").await.expect_err("state transport");
+        assert!(
+            error
+                .to_string()
+                .contains("Unable to read Future Agent run state"),
+            "{error}"
+        );
+
+        // abort transport failure.
+        mock.push_data("get_state", serde_json::json!({}));
+        mock.push("abort", Reply::Status(tonic::Code::Internal, "boom"));
+        let error = abort_session("sess-1").await.expect_err("abort transport");
+        assert!(
+            error
+                .to_string()
+                .contains("Unable to abort Future Agent session"),
+            "{error}"
+        );
+
+        // abort rejected at app level.
+        mock.push_data("get_state", serde_json::json!({}));
+        mock.push("abort", Reply::Reject("not running".to_string()));
+        let error = abort_session("sess-1").await.expect_err("abort reject");
+        assert_eq!(error.to_string(), "not running");
+    }
+
+    #[tokio::test]
+    async fn abort_agent_thread_uses_local_run_id_fallback_and_replica_mapping() {
+        let home = TestHome::new("rc-abort-thread");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-1"));
+
+        // No replica mapping: the local run id doubles as the canonical id.
+        mock.push("abort", Reply::Data("{}".to_string()));
+        abort_agent_thread(&thread.id, Some("run-local"))
+            .await
+            .expect("abort");
+        assert_eq!(mock.requests_of("abort")[0].run_id, "run-local");
+
+        // A replica binding redirects the abort to the canonical run id.
+        let lease = AGENT_REPLICAS
+            .acquire("run-canonical-2")
+            .expect("lease")
+            .bind_local(Some("run-local-2"))
+            .expect("bind");
+        mock.push("abort", Reply::Data("{}".to_string()));
+        abort_agent_thread(&thread.id, Some("run-local-2"))
+            .await
+            .expect("abort");
+        assert_eq!(mock.requests_of("abort")[1].run_id, "run-canonical-2");
+        drop(lease);
+
+        // An empty local run id falls back to the canonical active-run probe.
+        mock.push_data(
+            "get_state",
+            serde_json::json!({"activeRun": {"runId": "run-probed"}}),
+        );
+        mock.push("abort", Reply::Data("{}".to_string()));
+        abort_agent_thread(&thread.id, Some(""))
+            .await
+            .expect("abort");
+        assert_eq!(mock.requests_of("abort")[2].run_id, "run-probed");
+
+        // Thread without a session id: the thread id doubles as the session.
+        let no_session = seed_thread(&workspace.id, None);
+        mock.push_data("get_state", serde_json::json!({}));
+        mock.push("abort", Reply::Data("{}".to_string()));
+        abort_agent_thread(&no_session.id, None)
+            .await
+            .expect("abort");
+        assert_eq!(mock.requests_of("abort")[3].session_id, no_session.id);
+
+        // Unknown thread.
+        let error = abort_agent_thread("no-such-thread", None)
+            .await
+            .expect_err("missing thread");
+        assert_eq!(error.to_string(), "Thread could not be loaded.");
+
+        // Abort rejection propagates.
+        mock.push("abort", Reply::Reject("nope".to_string()));
+        let error = abort_agent_thread(&thread.id, Some("run-local"))
+            .await
+            .expect_err("abort reject");
+        assert_eq!(error.to_string(), "nope");
+    }
+
+    #[tokio::test]
+    async fn abort_run_cancels_locally_and_tolerates_a_down_agent() {
+        let home = TestHome::new("rc-abort-run");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-1"));
+        let run = seed_run(&thread.id);
+
+        // Healthy abort: the run is cancelled and returned.
+        mock.push("abort", Reply::Data("{}".to_string()));
+        let record = abort_run(thread.id.clone(), run.id.clone())
+            .await
+            .expect("abort run");
+        assert_eq!(record.status, "cancelled");
+        assert_eq!(record.error_type.as_deref(), Some("abort_requested"));
+
+        // Agent down (Unavailable transport): still cancelled locally.
+        let run2 = seed_run(&thread.id);
+        mock.push(
+            "abort",
+            Reply::Status(tonic::Code::Unavailable, "agent dead"),
+        );
+        let record = abort_run(thread.id.clone(), run2.id.clone())
+            .await
+            .expect("abort tolerated");
+        assert_eq!(record.status, "cancelled");
+
+        // A non-Unavailable failure propagates and the run stays untouched.
+        let run3 = seed_run(&thread.id);
+        mock.push("abort", Reply::Status(tonic::Code::Internal, "boom"));
+        let error = abort_run(thread.id.clone(), run3.id.clone())
+            .await
+            .expect_err("internal error propagates");
+        assert!(error
+            .to_string()
+            .contains("Unable to abort Future Agent run"));
+        assert_eq!(
+            store::get_run(&run3.id).expect("run").expect("some").status,
+            "running",
+            "a failed abort leaves the run active"
+        );
+    }
+
+    #[tokio::test]
+    async fn abort_run_preserves_a_terminal_run_state() {
+        let home = TestHome::new("rc-abort-terminal");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-1"));
+        let run = seed_run(&thread.id);
+        store::update_run_status_if_active(store::UpdateRunStatusInput {
+            run_id: run.id.clone(),
+            status: "completed".to_string(),
+            error_message: None,
+            error_type: None,
+        })
+        .expect("complete");
+
+        mock.push("abort", Reply::Data("{}".to_string()));
+        let record = abort_run(thread.id.clone(), run.id.clone())
+            .await
+            .expect("abort returns current state");
+        assert_eq!(
+            record.status, "completed",
+            "the CAS writer never rewrites a terminal state"
+        );
+    }
+
+    #[test]
+    fn mark_run_status_helpers_noop_on_none_and_report_store_errors() {
+        let home = TestHome::new("rc-mark");
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-1"));
+        let run = seed_run(&thread.id);
+
+        mark_run_failed_if_active(None, "ignored");
+        mark_run_completed_if_active(None);
+
+        mark_run_failed_if_active(Some(&run.id), "boom");
+        let record = store::get_run(&run.id).expect("run").expect("some");
+        assert_eq!(record.status, "failed");
+        assert_eq!(record.error_message.as_deref(), Some("boom"));
+
+        let run2 = seed_run(&thread.id);
+        mark_run_completed_if_active(Some(&run2.id));
+        let record = store::get_run(&run2.id).expect("run").expect("some");
+        assert_eq!(record.status, "completed");
+
+        // Store failures are logged, never propagated.
+        let prev = super::super::test_support::break_home();
+        mark_run_failed_if_active(Some(&run.id), "boom again");
+        mark_run_completed_if_active(Some(&run.id));
+        super::super::test_support::restore_home(prev);
+        assert_eq!(
+            store::get_run(&run.id).expect("run").expect("some").status,
+            "failed",
+            "the broken-home writes changed nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_for_agent_idle_returns_when_not_streaming() {
+        let _home = TestHome::new("rc-idle");
+        let mock = mock_agent();
+
+        mock.push_data("get_state", serde_json::json!({"isStreaming": false}));
+        wait_for_agent_idle("sess-1").await;
+        assert_eq!(mock.requests_of("get_state").len(), 1);
+
+        // Streaming twice, then idle: polls until the agent confirms quiet.
+        mock.push_data("get_state", serde_json::json!({"isStreaming": true}));
+        mock.push_data("get_state", serde_json::json!({"isStreaming": true}));
+        mock.push_data("get_state", serde_json::json!({"isStreaming": false}));
+        wait_for_agent_idle("sess-1").await;
+        assert_eq!(mock.requests_of("get_state").len(), 4);
+
+        // Transport failure mid-poll → treated as idle.
+        mock.push("get_state", Reply::Status(tonic::Code::Unavailable, "gone"));
+        wait_for_agent_idle("sess-1").await;
+        assert_eq!(mock.requests_of("get_state").len(), 5);
+
+        // Unparseable state payload → treated as not streaming.
+        mock.push("get_state", Reply::Data("not json".to_string()));
+        wait_for_agent_idle("sess-1").await;
+        assert_eq!(mock.requests_of("get_state").len(), 6);
+    }
+
+    #[tokio::test]
+    async fn wait_for_agent_idle_returns_immediately_when_agent_unreachable() {
+        let _home = TestHome::new("rc-idle-down");
+        let _mock = mock_agent();
+        let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").ok();
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
+        wait_for_agent_idle("sess-1").await;
+        if let Some(prev) = prev {
+            std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
+        }
+    }
+}
