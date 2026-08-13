@@ -1,7 +1,6 @@
 import {
   CircleAlert,
   Folder,
-  Link2,
   LogOut,
   MessageCircle,
   Pencil,
@@ -30,6 +29,8 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Button } from "../components/Button";
+import { ConnectionBadge } from "../components/ConnectionBadge";
+import { ErrorBanner } from "../components/ErrorBanner";
 import { useRemote } from "../remote/RemoteContext";
 import { effectiveRunStatus } from "../remote/sessionStatus";
 import type { RemoteSession, RemoteWorkspace } from "../remote/types";
@@ -309,14 +310,7 @@ export function SessionsScreen() {
             </Pressable>
           </View>
           <View style={styles.topActions}>
-            <View
-              accessibilityLabel={
-                connected ? t("connection.connected") : t("connection.reconnecting")
-              }
-              style={[styles.linkIndicator, connected ? styles.linkOnline : styles.linkPending]}
-            >
-              <Link2 color={connected ? colors.success : colors.warning} size={17} />
-            </View>
+            <ConnectionBadge phase={remote.phase} desktopOnline={remote.desktopOnline} />
             <Pressable
               accessibilityLabel={t("sessions.settings")}
               accessibilityRole="button"
@@ -327,6 +321,8 @@ export function SessionsScreen() {
             </Pressable>
           </View>
         </View>
+
+        {remote.error && <ErrorBanner message={remote.error} onDismiss={remote.clearError} />}
 
         {tab === "workspace" ? (
           <FlatList
@@ -458,7 +454,28 @@ export function SessionsScreen() {
                   <X color={colors.inkMuted} size={20} />
                 </Pressable>
               </View>
-              <Text style={styles.settingsPlaceholder}>{t("sessions.settingsPlaceholder")}</Text>
+              <Text style={styles.settingsLabel}>{t("approvalTier.title")}</Text>
+              {(["manual", "sandbox", "off"] as const)
+                .filter(tier => tier !== "sandbox" || remote.sandboxAvailable)
+                .map(tier => {
+                  const active = remote.approvalTier === tier;
+                  return (
+                    <Pressable
+                      accessibilityRole="button"
+                      key={tier}
+                      onPress={() =>
+                        void remote
+                          .setApprovalTier(tier)
+                          .catch(() => Alert.alert(t("common.error")))
+                      }
+                      style={[styles.tierOption, active && styles.tierOptionActive]}
+                    >
+                      <Text style={[styles.tierOptionText, active && styles.tierOptionTextActive]}>
+                        {t(`approvalTier.${tier}`)}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
               <Button
                 icon={<LogOut color={colors.danger} size={16} />}
                 label={t("sessions.unpair")}
@@ -615,15 +632,6 @@ const styles = StyleSheet.create({
   tabText: { color: colors.inkMuted, fontSize: 13, fontWeight: "600" },
   tabTextActive: { color: colors.ink, fontWeight: "700" },
   topActions: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
-  linkIndicator: {
-    width: 36,
-    height: 36,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: radius.md,
-  },
-  linkOnline: { backgroundColor: colors.successSoft },
-  linkPending: { backgroundColor: colors.warningSoft },
   settingsButton: {
     width: 40,
     height: 40,
@@ -768,7 +776,22 @@ const styles = StyleSheet.create({
   },
   workspaceOptionActive: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
   workspaceOptionName: { flex: 1, color: colors.ink, fontSize: 14, fontWeight: "600" },
-  settingsPlaceholder: { color: colors.inkSoft, fontSize: 14, lineHeight: 20 },
+  settingsLabel: {
+    color: colors.inkMuted,
+    fontSize: 12,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  tierOption: {
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.line,
+    borderRadius: radius.md,
+  },
+  tierOptionActive: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
+  tierOptionText: { color: colors.ink, fontSize: 14, fontWeight: "600" },
+  tierOptionTextActive: { color: colors.accent },
   menuOverlay: {
     flex: 1,
     justifyContent: "flex-end",

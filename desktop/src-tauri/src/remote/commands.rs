@@ -116,6 +116,8 @@ struct IncomingCmd {
     model_id: String,
     provider_id: String,
     level: String,
+    // set_approval_tier
+    tier: String,
     // set_session_name
     name: String,
     transfer_name: String,
@@ -160,6 +162,7 @@ impl Default for IncomingCmd {
             model_id: String::new(),
             provider_id: String::new(),
             level: String::new(),
+            tier: String::new(),
             name: String::new(),
             transfer_name: String::new(),
             thread_id: String::new(),
@@ -614,6 +617,40 @@ async fn handle_command(
             )
             .await
         }
+        "continue_run" => {
+            // Resume a failed run: synthesize a continue prompt from the run's
+            // recent terminal events and push it through the normal prompt
+            // pipeline (model/thinking default to the session's current values).
+            let prompt = build_continue_prompt(&cmd.run_id);
+            match prepare_remote_prompt(
+                &cmd.session_id,
+                prompt,
+                None,
+                None,
+                "chat".to_string(),
+                String::new(),
+                Vec::new(),
+            )
+            .await
+            {
+                Ok(prepared) => {
+                    let ack = json!({
+                        "sessionId": prepared.session_id,
+                        "threadId": prepared.thread_id,
+                        "runId": prepared.run_id,
+                    });
+                    tokio::spawn(async move {
+                        let thread_id = prepared.thread_id.clone();
+                        if let Err(e) = crate::agent_bridge::run_prepared_prompt(prepared).await {
+                            eprintln!("remote: continue_run failed: {e}");
+                        }
+                        crate::emit_remote_activity(&thread_id);
+                    });
+                    reply(client, &msg, true, ack, None).await;
+                }
+                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
+            }
+        }
         "approval_decision" => {
             let ownership = (|| -> Result<(), crate::AppError> {
                 let approval = crate::store::get_approval_request(&cmd.entry_id)?
@@ -679,6 +716,50 @@ async fn handle_command(
                 .await,
             )
             .await;
+        }
+        "get_settings" => {
+            match crate::store::get_app_settings() {
+                Ok(settings) => {
+                    reply(
+                        client,
+                        &msg,
+                        true,
+                        json!({
+                            "approvalTier": settings.approval_tier,
+                            // The macOS Seatbelt sandbox tier only exists on macOS;
+                            // the phone gates its "sandbox" option on this flag so a
+                            // Windows/Linux user never picks a tier that silently
+                            // provides no isolation.
+                            "sandboxAvailable": cfg!(target_os = "macos"),
+                        }),
+                        None,
+                    )
+                    .await
+                }
+                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
+            }
+        }
+        "set_approval_tier" => {
+            // The tier is a global app preference (not per-session): writing it
+            // here is the same as flipping it in the desktop Settings. It takes
+            // effect on the next session establishment, where the bridge pushes
+            // it to the agent via `set_agent_sandbox_policy`.
+            match crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
+                approval_tier: Some(cmd.tier.clone()),
+                ..Default::default()
+            }) {
+                Ok(settings) => {
+                    reply(
+                        client,
+                        &msg,
+                        true,
+                        json!({ "approvalTier": settings.approval_tier }),
+                        None,
+                    )
+                    .await
+                }
+                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
+            }
         }
         "set_session_name" => {
             match crate::agent_bridge::rename_session(cmd.session_id.clone(), cmd.name.clone())
@@ -928,7 +1009,7 @@ async fn handle_pair_handshake_confirm(
             "bridgeInstanceId": state.bridge_instance_id,
             "deviceId": cmd.device_id,
             "desktopNonce": cmd.desktop_nonce,
-            "features": ["file_transfer_v1"],
+            "features": ["file_transfer_v1", "approval_tier_v1", "continue_run_v1"],
             "presence": super::build_presence_payload(
                 &state.creds.pair_id,
                 &state.bridge_instance_id,
@@ -981,6 +1062,35 @@ fn injected_prepare_failure() -> Result<(), crate::AppError> {
         .swap(false, std::sync::atomic::Ordering::Relaxed)
         .then(|| crate::AppError::Message("injected prepare failure".to_string()))
         .map_or(Ok(()), Err)
+}
+
+/// Build the "continue the previous task" prompt for a failed run. Mirrors the
+/// desktop `buildContinuePrompt`/`loadRunResumeSummary` shape, but folds only
+/// the run's recent terminal events (tool output detail lives in the GUI-side
+/// summary; the store exposes the events, which is enough to resume). Sent to
+/// the LLM, so the text is intentionally not localized.
+fn build_continue_prompt(run_id: &str) -> String {
+    let events = crate::store::list_run_events(run_id).unwrap_or_default();
+    let mut lines = vec!["继续上一个任务。".to_string()];
+    let terminal: Vec<_> = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.event_type.as_str(),
+                "error" | "agent_error" | "agent_end" | "tool_end" | "tool_result"
+            )
+        })
+        .collect();
+    if !terminal.is_empty() {
+        lines.push(String::new());
+        lines.push("已执行内容摘要:".to_string());
+        for event in terminal.iter().rev().take(6).rev() {
+            let payload = event.payload.as_deref().unwrap_or("");
+            let truncated: String = payload.chars().take(360).collect();
+            lines.push(format!("- {}: {}", event.event_type, truncated));
+        }
+    }
+    lines.join("\n")
 }
 
 /// Find the thread for `session_id` (create a new chat thread when unknown —
@@ -1909,7 +2019,10 @@ mod bridge_tests {
             .await;
         assert_eq!(reply["success"], json!(true), "got: {reply}");
         assert_eq!(reply["data"]["confirmed"], json!(true));
-        assert_eq!(reply["data"]["features"], json!(["file_transfer_v1"]));
+        assert_eq!(
+            reply["data"]["features"],
+            json!(["file_transfer_v1", "approval_tier_v1", "continue_run_v1"])
+        );
         assert!(bridge.handshake.active_flag().load(Ordering::Acquire));
         assert!(crate::remote::pairing::load_creds().is_some());
 

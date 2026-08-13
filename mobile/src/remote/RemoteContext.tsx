@@ -25,7 +25,12 @@ import {
   ensureFreshCredentials,
   serverRevoke,
 } from "./pairing";
-import { INITIAL_PRESENCE_STATE, isDesktopOnline, type PresenceState } from "./presence";
+import {
+  INITIAL_PRESENCE_STATE,
+  isDesktopOnline,
+  PRESENCE_RECEIPT_STALE_MS,
+  type PresenceState,
+} from "./presence";
 import { detectFinished } from "./sessionStatus";
 import { type RunCursor } from "./runCursor";
 import { SyncEngine, type ReconcileReason } from "./syncEngine";
@@ -198,10 +203,14 @@ interface RemoteContextValue {
   selectedTitle: string;
   draft: boolean;
   timeline: TimelineState;
+  timelinePending: boolean;
   modelId: string;
   thinkingLevel: ThinkingLevel;
+  approvalTier: string;
+  sandboxAvailable: boolean;
   busy: boolean;
   fileTransferSupported: boolean;
+  capabilities: Set<string>;
   pair(code: string): Promise<void>;
   reconnect(): Promise<void>;
   unpair(): Promise<void>;
@@ -224,10 +233,13 @@ interface RemoteContextValue {
   abort(): Promise<void>;
   setModel(modelId: string): Promise<void>;
   setThinkingLevel(level: ThinkingLevel): Promise<void>;
+  setApprovalTier(tier: string): Promise<void>;
   rename(sessionId: string, name: string): Promise<void>;
   deleteSession(sessionId: string, threadId: string): Promise<void>;
   setSessionPinned(sessionId: string, threadId: string, pinned: boolean): Promise<void>;
   decideApproval(id: string, decision: "approved" | "rejected"): Promise<void>;
+  clearError(): void;
+  continueRun(sessionId: string, runId: string): Promise<void>;
 }
 
 const RemoteContext = createContext<RemoteContextValue | null>(null);
@@ -247,6 +259,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const lastStatusRef = useRef<Record<string, string | undefined>>({});
   const [workspaces, setWorkspaces] = useState<RemoteWorkspace[]>([]);
   const [models, setModels] = useState<RemoteModel[]>([]);
+  const [approvalTier, setApprovalTierState] = useState("off");
+  const [sandboxAvailable, setSandboxAvailable] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [draft, setDraft] = useState(false);
   const [draftMode, setDraftMode] = useState<"chat" | "workspace">("chat");
@@ -254,12 +268,16 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const [modelId, setModelId] = useState("");
   const [thinkingLevel, setThinkingLevelState] = useState<ThinkingLevel>("off");
   const [busy, setBusy] = useState(false);
-  const [fileTransferSupported, setFileTransferSupported] = useState(false);
+  const [capabilities, setCapabilities] = useState<Set<string>>(() => new Set());
+  const fileTransferSupported = capabilities.has("file_transfer_v1");
   const [clock, setClock] = useState(Date.now());
   // Relative-heartbeat state (L7): the desktop-presence check judges staleness
   // by clock-offset drift, so the running baseline survives recomputes. Reset
   // on every reconnect so a clock that jumped while offline re-baselines.
   const presenceStateRef = useRef<PresenceState>(INITIAL_PRESENCE_STATE);
+  // Local receipt time of the last presence packet — the fast desktop-death
+  // signal (beats arrive every 1s; a gap means the bridge stopped).
+  const lastPresenceReceiptRef = useRef(0);
   // Per-session timelines: events for EVERY session are consumed (the desktop
   // observer mirrors all of them), so a background run keeps advancing and
   // switching to it renders its live state without a fresh history load. The
@@ -370,6 +388,21 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       if (attempt === 0) await new Promise(resolve => setTimeout(resolve, 1200));
     }
     setModels(models);
+  }, []);
+
+  const refreshSettings = useCallback(async () => {
+    const client = clientRef.current;
+    if (!client) return;
+    try {
+      const data = await client.request<{ approvalTier: string; sandboxAvailable: boolean }>(
+        { type: "get_settings" },
+        "list",
+      );
+      setApprovalTierState(data.data.approvalTier);
+      setSandboxAvailable(data.data.sandboxAvailable);
+    } catch {
+      // Keep the previous tier on a failed read.
+    }
   }, []);
 
   const refreshWorkspaces = useCallback(async () => {
@@ -558,7 +591,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       credentialsRef.current = fresh;
       setCredentials(fresh);
       setError(null);
-      setFileTransferSupported(false);
+      setCapabilities(new Set());
       const client = new RemoteClient(fresh, {
         onCredentials: next => {
           setCredentials(next);
@@ -566,6 +599,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         },
         onEvent: handleEvent,
         onPresence: nextPresence => {
+          lastPresenceReceiptRef.current = Date.now();
           setPresence(nextPresence);
         },
         onSessions: sessionList => {
@@ -595,7 +629,12 @@ export function RemoteProvider({ children }: PropsWithChildren) {
             });
           }
           const currentId = selectedRef.current;
-          if (currentId && !list.some(item => item.sessionId === currentId)) {
+          // An empty session list is a transient store failure, not a deletion
+          // signal (audit 05 L8): a single deleted session leaves the others in
+          // the list, so a wholly-empty list can only mean the desktop read
+          // failed or everything was cleared. Keep the conversation open rather
+          // than close it on a possibly-stale snapshot.
+          if (currentId && list.length > 0 && !list.some(item => item.sessionId === currentId)) {
             closeConversation();
           } else if (currentId) {
             const streaming =
@@ -627,7 +666,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
           setWorkspaces(workspaceList);
         },
         onFeatures: features => {
-          setFileTransferSupported(features.includes("file_transfer_v1"));
+          setCapabilities(new Set(features));
         },
         onConnectionState: (state: ConnectionState) => {
           // The FSM states map onto the UI phases. A transport disconnect
@@ -670,9 +709,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       // reconcileAll (reconnect recovery) must keep working across a client
       // replacement. Its deps read the live clientRef on every call.
       await client.open();
-      await Promise.all([refreshModels(), refreshSessions(), refreshWorkspaces()]);
+      await Promise.all([refreshModels(), refreshSessions(), refreshWorkspaces(), refreshSettings()]);
     },
-    [closeConversation, handleEvent, reconcileSession, refreshModels, refreshSessions, refreshWorkspaces],
+    [closeConversation, handleEvent, reconcileSession, refreshModels, refreshSessions, refreshWorkspaces, refreshSettings],
   );
 
   useEffect(() => {
@@ -836,10 +875,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
 
   useEffect(() => {
     recoverRef.current = async (sessionId?: string) => {
-      await Promise.all([refreshModels(), refreshSessions(), refreshWorkspaces()]);
+      await Promise.all([refreshModels(), refreshSessions(), refreshWorkspaces(), refreshSettings()]);
       reconcileSession(sessionId, "reconnect");
     };
-  }, [reconcileSession, refreshModels, refreshSessions, refreshWorkspaces]);
+  }, [reconcileSession, refreshModels, refreshSessions, refreshWorkspaces, refreshSettings]);
 
   const selectSession = useCallback(
     async (sessionId: string) => {
@@ -868,15 +907,19 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         const matchingModel = models.find(model => modelReference(model) === currentModel);
         setModelId(matchingModel ? modelReference(matchingModel) : currentModel);
         setThinkingLevelState(state.data.thinkingLevel ?? "off");
-        syncEngineRef.current?.reconcile(sessionId, "open");
-        // A cached timeline may have been assembled from real-time events,
-        // whose user_message payload deliberately omits attachments.
-        void hydrateAttachmentsRef.current(sessionId);
       } catch (nextError) {
         setError(nextError instanceof Error ? nextError.message : String(nextError));
       } finally {
         setBusy(false);
       }
+      // Reconcile regardless of the state read: a desktop still warming after a
+      // restart fails get_state, but the history rebuild must not be skipped —
+      // the lane's own reconcile re-reads the state and self-heals once the
+      // backend recovers (reconnect recovery re-triggers established lanes).
+      syncEngineRef.current?.reconcile(sessionId, "open");
+      // A cached timeline may have been assembled from real-time events,
+      // whose user_message payload deliberately omits attachments.
+      void hydrateAttachmentsRef.current(sessionId);
     },
     [hydrateAttachmentsRef, models],
   );
@@ -1103,6 +1146,22 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     }
   }, []);
 
+  const setApprovalTier = useCallback(async (tier: string) => {
+    const client = clientRef.current;
+    if (!client) throw new Error("not_connected");
+    const data = await client.request<{ approvalTier: string }>(
+      { type: "set_approval_tier", tier },
+      "list",
+    );
+    setApprovalTierState(data.data.approvalTier);
+  }, []);
+
+  const continueRun = useCallback(async (sessionId: string, runId: string) => {
+    const client = clientRef.current;
+    if (!client) throw new Error("not_connected");
+    await client.request({ type: "continue_run", sessionId, runId }, sessionId);
+  }, []);
+
   const rename = useCallback(async (sessionId: string, name: string) => {
     const client = clientRef.current;
     if (!client || !sessionId || !name.trim()) return;
@@ -1167,7 +1226,12 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     if (phase !== "connected") return false;
     const next = isDesktopOnline(presence, clock, presenceStateRef.current);
     presenceStateRef.current = next;
-    return next.online;
+    // Fast death detection: the bridge beats once per second, so a local
+    // receipt gap flags a dead desktop within ~25s — well before the
+    // skew-tolerant 60s staleness window would flip the badge.
+    return (
+      next.online && clock - lastPresenceReceiptRef.current < PRESENCE_RECEIPT_STALE_MS
+    );
   }, [clock, phase, presence]);
   // The selected conversation's timeline — derived from the per-session cache
   // so ChatScreen reads it exactly as before. An empty draft (no session yet)
@@ -1176,8 +1240,17 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     () => timelines[selectedSessionId || ""] ?? emptyTimeline(),
     [selectedSessionId, timelines],
   );
+  // True while the selected session's timeline has been requested but not yet
+  // committed (its first reconcile still in flight). Distinguishes "loading"
+  // from "genuinely empty" in the transcript.
+  const timelinePending = useMemo(
+    () => selectedSessionId !== "" && !draft && timelines[selectedSessionId] === undefined,
+    [selectedSessionId, draft, timelines],
+  );
   const selectedTitle =
     sessions.find(session => session.sessionId === selectedSessionId)?.title ?? "";
+
+  const clearError = useCallback(() => setError(null), []);
 
   const value = useMemo<RemoteContextValue>(
     () => ({
@@ -1194,10 +1267,14 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       selectedTitle,
       draft,
       timeline,
+      timelinePending,
       modelId,
       thinkingLevel,
+      approvalTier,
+      sandboxAvailable,
       busy,
       fileTransferSupported,
+      capabilities,
       pair,
       reconnect,
       unpair,
@@ -1213,17 +1290,23 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       abort,
       setModel,
       setThinkingLevel,
+      setApprovalTier,
       rename,
       deleteSession,
       setSessionPinned,
       decideApproval,
+      clearError,
+      continueRun,
     }),
     [
       abort,
       busy,
+      capabilities,
       fileTransferSupported,
       credentials,
       closeConversation,
+      clearError,
+      continueRun,
       decideApproval,
       desktopOnline,
       deleteSession,
@@ -1249,11 +1332,15 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       downloadAttachment,
       sessions,
       timeline,
+      timelinePending,
       unreadSessions,
       workspaces,
       setModel,
       setThinkingLevel,
+      setApprovalTier,
       thinkingLevel,
+      approvalTier,
+      sandboxAvailable,
       unpair,
     ],
   );

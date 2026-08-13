@@ -757,18 +757,19 @@ fn spawn_presence_heartbeat(
             let dirty = crate::store::take_catalog_dirty();
             secs_since_sessions += 1;
             secs_since_workspaces += 1;
-            let (sessions_payload, sessions_sig) = build_sessions_snapshot(&pair_id);
-            if sessions_sig != last_sessions_sig || secs_since_sessions >= 20 {
-                let bytes = serde_json::to_vec(&sessions_payload)
-                    .expect("a sessions Value always serializes");
-                if let Err(e) = client
-                    .publish(format!("p.{pair_id}.state.sessions"), bytes.into())
-                    .await
-                {
-                    eprintln!("remote: state.sessions publish failed: {e}");
+            if let Some((sessions_payload, sessions_sig)) = build_sessions_snapshot(&pair_id) {
+                if sessions_sig != last_sessions_sig || secs_since_sessions >= 20 {
+                    let bytes = serde_json::to_vec(&sessions_payload)
+                        .expect("a sessions Value always serializes");
+                    if let Err(e) = client
+                        .publish(format!("p.{pair_id}.state.sessions"), bytes.into())
+                        .await
+                    {
+                        eprintln!("remote: state.sessions publish failed: {e}");
+                    }
+                    last_sessions_sig = sessions_sig;
+                    secs_since_sessions = 0;
                 }
-                last_sessions_sig = sessions_sig;
-                secs_since_sessions = 0;
             }
 
             // 3. Workspaces snapshot (dirty flag or 20s self-heal).
@@ -1004,12 +1005,18 @@ fn build_presence_payload(pair_id: &str, bridge_instance_id: &str) -> serde_json
 }
 
 /// Sessions-only snapshot for `p.{pair}.state.sessions`.
-fn build_sessions_snapshot(pair_id: &str) -> (serde_json::Value, String) {
-    let active_sessions: Vec<String> = crate::store::active_run_sessions().unwrap_or_default();
-    let threads = crate::store::list_threads().unwrap_or_default();
+///
+/// Returns `None` when any backing store read fails. A transient SQLite error
+/// must not surface as an *empty* session list — publishing `{"sessions":[]}`
+/// makes the phone's "selected session vanished" heuristic fire and close a
+/// conversation the user is reading (audit 05 L8). On failure the publisher
+/// skips this tick and the phone keeps the previous snapshot.
+fn build_sessions_snapshot(pair_id: &str) -> Option<(serde_json::Value, String)> {
+    let active_sessions = crate::store::active_run_sessions().ok()?;
+    let threads = crate::store::list_threads().ok()?;
 
     let thread_ids: Vec<String> = threads.iter().map(|t| t.id.clone()).collect();
-    let run_infos = crate::store::latest_run_infos(&thread_ids).unwrap_or_default();
+    let run_infos = crate::store::latest_run_infos(&thread_ids).ok()?;
     let run_status_by_thread: std::collections::HashMap<&str, &str> = run_infos
         .iter()
         .map(|info| (info.thread_id.as_str(), info.status.as_str()))
@@ -1052,7 +1059,7 @@ fn build_sessions_snapshot(pair_id: &str) -> (serde_json::Value, String) {
         "pairId": pair_id,
         "sessions": sessions,
     });
-    (payload, signature)
+    Some((payload, signature))
 }
 
 /// Workspaces-only snapshot for `p.{pair}.state.workspaces`.
@@ -2524,13 +2531,15 @@ mod runtime_tests {
             agent_session_id: None,
         })
         .unwrap();
-        let (payload, sig_without_session) = build_sessions_snapshot("pair_x");
+        let (payload, sig_without_session) =
+            build_sessions_snapshot("pair_x").expect("store readable");
         assert_eq!(payload["sessions"], json!([]));
         // The full presence snapshot skips session-less threads the same way.
         let (payload, _) = build_presence_snapshot("pair_x", "bridge_x");
         assert_eq!(payload["sessions"], json!([]));
         crate::store::update_thread_session_id(&thread.id, "sess-snap").unwrap();
-        let (payload, sig_with_session) = build_sessions_snapshot("pair_x");
+        let (payload, sig_with_session) =
+            build_sessions_snapshot("pair_x").expect("store readable");
         assert_eq!(payload["sessions"].as_array().unwrap().len(), 1);
         assert_ne!(sig_without_session, sig_with_session);
 
