@@ -4007,14 +4007,26 @@ mod tests {
 
     #[test]
     fn lenient_timestamp_space_separated_variants() {
-        // Space separator + fractional seconds + colon offset.
+        // Space separator + fractional seconds + colon offset. Compare in UTC
+        // so the assertion is independent of the runner's local timezone
+        // (CI runs UTC; a local-time assertion would read +08:00's date).
         let dt = parse_lenient_ts("2024-01-02 03:04:05.123+08:00");
-        assert_eq!(dt.format("%Y-%m-%d").to_string(), "2024-01-02");
+        assert_eq!(
+            dt.with_timezone(&chrono::Utc)
+                .format("%Y-%m-%d")
+                .to_string(),
+            "2024-01-01"
+        );
         // chrono's `%.f` consumes the fraction only when present, so the
         // fraction-less spelling parses through the SAME variant — this is
         // why no separate fraction-less branch exists below.
         let dt = parse_lenient_ts("2024-01-02 03:04:05+08:00");
-        assert_eq!(dt.format("%H:%M:%S").to_string(), "03:04:05");
+        assert_eq!(
+            dt.with_timezone(&chrono::Utc)
+                .format("%H:%M:%S")
+                .to_string(),
+            "19:04:05"
+        );
     }
 
     #[cfg(unix)]
