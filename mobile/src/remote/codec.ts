@@ -1,5 +1,20 @@
 import type { HistoryMessage, PairingCode } from "./types";
 
+/**
+ * Client-side cap for a `prompt` message. The desktop caps relayed event data
+ * at 900KB and pages history at 512KB; a prompt bigger than the NATS user-JWT
+ * payload limit never reaches the desktop, so without a local guard the send
+ * degrades into an opaque 10s x3 timeout. Stay well under the 1MB wire budget —
+ * the rest of the envelope (session, model, attachments) shares it.
+ */
+export const MAX_PROMPT_MESSAGE_BYTES = 512 * 1024;
+
+/** Serialized UTF-8 byte length of a string (JS `.length` counts UTF-16 code
+ * units, which over/under-counts for CJK and surrogate pairs). */
+export function utf8Bytes(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
 export interface PairingInvitation {
   code: string;
   desktopId: string;
@@ -56,10 +71,18 @@ export function parsePairingInvitation(value: string): PairingInvitation | null 
   }
 }
 
-export function jwtExpiry(jwt: string): number {
+/**
+ * The JWT's `exp` (unix seconds), or `null` when it can't be read (missing
+ * payload segment, undecodable, or absent `exp`). The desktop treats such a
+ * token as invalid outright; callers must treat `null` as a terminal
+ * credential failure rather than an "already expired" that would drive a
+ * refresh storm.
+ */
+export function jwtExpiry(jwt: string): number | null {
   const payload = jwt.split(".")[1];
-  if (!payload) return 0;
-  return decodeBase64UrlJson<{ exp?: number }>(payload)?.exp ?? 0;
+  if (!payload) return null;
+  const exp = decodeBase64UrlJson<{ exp?: unknown }>(payload)?.exp;
+  return typeof exp === "number" && Number.isFinite(exp) && exp > 0 ? exp : null;
 }
 
 export function messageText(content: HistoryMessage["content"]): string {

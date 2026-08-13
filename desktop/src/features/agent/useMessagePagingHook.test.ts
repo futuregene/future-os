@@ -1,4 +1,4 @@
-import type { AgentMessage } from "./agentThreadTypes";
+import type { AgentMessage } from "@future-os/thread-projection";
 import { act } from "react";
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

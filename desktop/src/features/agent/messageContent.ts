@@ -1,5 +1,5 @@
+import type { MessageAttachment } from "@future-os/thread-projection";
 import type { AttachmentInput } from "../../integrations/agent/agentClient";
-import type { MessageAttachment } from "./agentThreadTypes";
 
 export function stringifyMessageContent(text: string, attachments: MessageAttachment[]) {
   return JSON.stringify({ type: "user_message", text, attachments });

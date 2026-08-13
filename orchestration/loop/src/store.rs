@@ -523,6 +523,18 @@ pub enum Event {
         backup_path: String,
         ts: u64,
     },
+    /// P1-4: decision_context outcome feedback — one settled outcome
+    /// receipt against an anchored decision (LoopX
+    /// `capabilities/decision_context/outcome_feedback.py`). Recorded via
+    /// `decision-context feedback`; the receipt's `seq` is the G-3 dedupe
+    /// anchor for same-second repeat settles. Projection-only: replay
+    /// ignores it; the read model (`decision-context outcomes`) and the
+    /// reward-memory `decision_outcome` source read the ledger.
+    DecisionOutcomeRecorded {
+        goal_id: String,
+        receipt: crate::capabilities::decision_context::packets::DecisionOutcomeReceipt,
+        ts: u64,
+    },
 }
 
 impl Event {
@@ -562,7 +574,8 @@ impl Event {
             | Event::AutomationLivenessAlert { goal_id, .. }
             | Event::SupervisorProposed { goal_id, .. }
             | Event::SupervisorReceiptRecorded { goal_id, .. }
-            | Event::ProjectionRepaired { goal_id, .. } => goal_id,
+            | Event::ProjectionRepaired { goal_id, .. }
+            | Event::DecisionOutcomeRecorded { goal_id, .. } => goal_id,
         }
     }
 }
@@ -1560,15 +1573,16 @@ fn apply(goal: &mut Goal, event: Event) {
             consecutive,
             ts,
         }),
-        // P1-5 + P1-1 + G-16 projection-only events: read from the event log
-        // by their read models; goal state is unchanged on replay.
+        // P1-5 + P1-1 + P1-4 + G-16 projection-only events: read from the
+        // event log by their read models; goal state is unchanged on replay.
         Event::RewardSignalRecorded { .. }
         | Event::DecisionSummaryRecorded { .. }
         | Event::HeartbeatReceiptRecorded { .. }
         | Event::SchedulerAcked { .. }
         | Event::SupervisorProposed { .. }
         | Event::SupervisorReceiptRecorded { .. }
-        | Event::ProjectionRepaired { .. } => {}
+        | Event::ProjectionRepaired { .. }
+        | Event::DecisionOutcomeRecorded { .. } => {}
     }
 }
 

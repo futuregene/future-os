@@ -1,3 +1,8 @@
+/**
+ * Platform-agnostic thread display model: the typed surface both the desktop
+ * and mobile renderers consume. Pure data — no DOM/RN/React dependencies.
+ */
+
 export type MessageRole = "user" | "assistant" | "system";
 
 export type AgentActivityKind = "thinking" | "read" | "shell" | "edit" | "write";
@@ -77,6 +82,12 @@ export interface AgentMessage {
   outputTokens?: number | null;
   /** The reply was interrupted by the user (its run was cancelled mid-stream). */
   stopped?: boolean;
+  /**
+   * The stream ended before the model finished (`agent_end` reason
+   * "incomplete"): the text is a truncated prefix, not a finished answer, and
+   * must not render as a clean completion.
+   */
+  truncated?: boolean;
   /**
    * The model is mid-reasoning with nothing visible yet. Drives the footer
    * "thinking…" hint (only while streaming and the show-thinking setting is off).

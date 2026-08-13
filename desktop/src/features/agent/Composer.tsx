@@ -1,7 +1,7 @@
+import type { MessageAttachment } from "@future-os/thread-projection";
 import type { FormEvent } from "react";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
-import type { MessageAttachment } from "./agentThreadTypes";
 import type { MentionEditorHandle, SkillMentionOption } from "./MentionEditor";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";

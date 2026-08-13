@@ -29,10 +29,18 @@ pub const SOURCE_VALIDATOR: &str = "validator";
 pub const SOURCE_DELIVERY_OUTCOME: &str = "delivery_outcome";
 /// Signal source: a manual evidence score (`reward-memory record`).
 pub const SOURCE_EVIDENCE: &str = "evidence";
+/// Signal source: a P1-4 decision-outcome feedback settle
+/// (`decision-context feedback` — verified/refuted/inconclusive against an
+/// anchored decision).
+pub const SOURCE_DECISION_OUTCOME: &str = "decision_outcome";
 
 /// All ingestion sources (CLI `--source` choices).
-pub const REWARD_SOURCE_CHOICES: [&str; 3] =
-    [SOURCE_VALIDATOR, SOURCE_DELIVERY_OUTCOME, SOURCE_EVIDENCE];
+pub const REWARD_SOURCE_CHOICES: [&str; 4] = [
+    SOURCE_VALIDATOR,
+    SOURCE_DELIVERY_OUTCOME,
+    SOURCE_EVIDENCE,
+    SOURCE_DECISION_OUTCOME,
+];
 
 /// Normalize a source token (case/whitespace-insensitive) to its canonical
 /// value; `None` for unknown values.
@@ -41,6 +49,7 @@ pub fn normalize_source(value: &str) -> Option<&'static str> {
         SOURCE_VALIDATOR => Some(SOURCE_VALIDATOR),
         SOURCE_DELIVERY_OUTCOME => Some(SOURCE_DELIVERY_OUTCOME),
         SOURCE_EVIDENCE => Some(SOURCE_EVIDENCE),
+        SOURCE_DECISION_OUTCOME => Some(SOURCE_DECISION_OUTCOME),
         _ => None,
     }
 }

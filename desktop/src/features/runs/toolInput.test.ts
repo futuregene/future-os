@@ -82,7 +82,7 @@ describe("stringField", () => {
 
 describe("normalizeArgs / dedupe model helpers", () => {
   it("normalizeArgs rejects non-string non-record values", async () => {
-    const { normalizeArgs } = await import("../agent/toolActivityModel");
+    const { normalizeArgs } = await import("@future-os/thread-projection");
     expect(normalizeArgs(42)).toBeNull();
     expect(normalizeArgs({ a: 1 })).toEqual({ a: 1 });
     expect(normalizeArgs("{\"a\":1}")).toEqual({ a: 1 });
@@ -90,7 +90,7 @@ describe("normalizeArgs / dedupe model helpers", () => {
   });
 
   it("dedupeByTarget skips repeats", async () => {
-    const { dedupeByTarget } = await import("../agent/toolActivityModel");
+    const { dedupeByTarget } = await import("@future-os/thread-projection");
     const out = dedupeByTarget([
       { id: "1", target: "a" },
       { id: "2", target: "a" },

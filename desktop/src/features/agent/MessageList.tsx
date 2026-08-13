@@ -1,6 +1,6 @@
-import type { AgentMessage } from "./agentThreadTypes";
+import type { AgentMessage } from "@future-os/thread-projection";
+import { previousUserMessageBefore } from "@future-os/thread-projection";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { previousUserMessageBefore } from "./agentMessageFormatters";
 import { MessageBlock } from "./MessageBlock";
 
 /**

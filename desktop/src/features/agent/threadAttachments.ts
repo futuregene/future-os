@@ -1,4 +1,4 @@
-import type { MessageAttachment } from "./agentThreadTypes";
+import type { MessageAttachment } from "@future-os/thread-projection";
 import i18n from "../../i18n";
 import { deleteTempAttachment, generateImageThumbnail, importEphemeralImage, validateImageAttachment } from "../../integrations/storage/files";
 
