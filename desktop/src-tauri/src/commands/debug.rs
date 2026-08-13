@@ -96,3 +96,28 @@ pub fn set_future_environment(app: tauri::AppHandle, environment: String) -> Res
     agent_supervisor::shutdown_agent();
     app.restart()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth_store::test_support::HomeGuard;
+
+    #[test]
+    fn get_future_environment_classifies_the_resolved_platform() {
+        let _home = HomeGuard::new("cmd-env");
+        // No auth.json yet: resolves to the default (production) platform.
+        let env = get_future_environment().expect("default env");
+        assert_eq!(env.environment, "production");
+        assert_eq!(env.platform_url, "https://future-os.cn");
+
+        crate::auth_store::set_future_base_url("https://test.future-os.cn/api").unwrap();
+        let env = get_future_environment().expect("test env");
+        assert_eq!(env.environment, "test");
+        assert_eq!(env.platform_url, "https://test.future-os.cn");
+
+        crate::auth_store::set_future_base_url("https://custom.example.com/api").unwrap();
+        let env = get_future_environment().expect("custom env");
+        assert_eq!(env.environment, "custom");
+        assert_eq!(env.platform_url, "https://custom.example.com");
+    }
+}
