@@ -958,23 +958,36 @@ fn forward_settings_event(session_id: &str, thread_id: &str, event_type: &str, d
     let Some(app_handle) = crate::APP_HANDLE.get() else {
         return;
     };
-    if let Ok(mut payload) = serde_json::from_str::<serde_json::Value>(data) {
-        if let serde_json::Value::Object(ref mut map) = payload {
-            map.insert(
-                "sessionId".to_string(),
-                serde_json::Value::String(session_id.to_string()),
-            );
-            map.insert(
-                "threadId".to_string(),
-                serde_json::Value::String(thread_id.to_string()),
-            );
-            map.insert(
-                "_eventType".to_string(),
-                serde_json::Value::String(event_type.to_string()),
-            );
-        }
+    if let Some(payload) = settings_event_payload(session_id, thread_id, event_type, data) {
         let _ = app_handle.emit("agent-event", &payload);
     }
+}
+
+/// Build the enriched webview payload for a forwarded settings event, or None
+/// when `data` is not a JSON object. Pure so it can be unit-tested without a
+/// live Tauri AppHandle.
+fn settings_event_payload(
+    session_id: &str,
+    thread_id: &str,
+    event_type: &str,
+    data: &str,
+) -> Option<serde_json::Value> {
+    let mut payload = serde_json::from_str::<serde_json::Value>(data).ok()?;
+    if let serde_json::Value::Object(ref mut map) = payload {
+        map.insert(
+            "sessionId".to_string(),
+            serde_json::Value::String(session_id.to_string()),
+        );
+        map.insert(
+            "threadId".to_string(),
+            serde_json::Value::String(thread_id.to_string()),
+        );
+        map.insert(
+            "_eventType".to_string(),
+            serde_json::Value::String(event_type.to_string()),
+        );
+    }
+    Some(payload)
 }
 
 #[cfg(test)]
@@ -1257,7 +1270,8 @@ mod tests {
     // ── manager + task helpers ────────────────────────────────────────
 
     use super::super::test_support::{
-        break_home, mock_agent, restore_home, seed_thread, seed_workspace, Reply, TestHome,
+        break_home, mock_agent, restore_home, seed_thread, seed_workspace, Reply, StreamScript,
+        TestHome,
     };
 
     #[tokio::test]
@@ -1553,6 +1567,23 @@ mod tests {
         forward_settings_event("sess", "thread", "model_changed", "not json");
     }
 
+    #[test]
+    fn settings_event_payload_enriches_objects_and_rejects_malformed() {
+        let payload = settings_event_payload("sess", "thread", "model_changed", r#"{"model":"k3"}"#)
+            .expect("object payload");
+        assert_eq!(payload["sessionId"], "sess");
+        assert_eq!(payload["threadId"], "thread");
+        assert_eq!(payload["_eventType"], "model_changed");
+        assert_eq!(payload["model"], "k3");
+
+        // Non-object JSON → the map-insert is skipped but Some is returned.
+        let array = settings_event_payload("s", "t", "e", "[1,2]").expect("array payload");
+        assert!(array.is_array());
+
+        // Malformed JSON → None.
+        assert!(settings_event_payload("s", "t", "e", "not json").is_none());
+    }
+
     #[tokio::test]
     async fn discover_streaming_sessions_paths() {
         let home = TestHome::new("observer-discover");
@@ -1783,6 +1814,186 @@ mod tests {
             "a projection snapshot is applied"
         );
         assert_eq!(state.cursors.get("run-snap"), Some(&5));
+    }
+
+    /// A projection snapshot for a pipeline-owned run (lease held) skips the
+    /// local replace but still mirrors and records the cursor.
+    #[tokio::test]
+    async fn handle_event_snapshot_for_a_pipeline_owned_run() {
+        let _lease = lease_run("run-snap-owned");
+        let shared = Arc::new(ObserverShared::new("thread-order"));
+        let mut state = ObserverState::default();
+        let snapshot = crate::agent_proto::StreamEvent {
+            r#type: "projection_snapshot".to_string(),
+            data: "{}".to_string(),
+            run_id: "run-snap-owned".to_string(),
+            idx: -1,
+            projection_snapshot: true,
+            snapshot_cursor: 9,
+            snapshot_events: vec![crate::agent_proto::ProjectedRunEvent {
+                r#type: "text_chunk".to_string(),
+                data: "hi".to_string(),
+                idx: 0,
+                ..Default::default()
+            }],
+            session_id: "sess-order".to_string(),
+            epoch: 1,
+            event_id: String::new(),
+            timestamp: String::new(),
+            session_idx: -1,
+            run_sequence: 1,
+            payload: None,
+        };
+        assert!(handle_event("sess-order", &shared, &mut state, snapshot).await);
+        assert_eq!(state.cursors.get("run-snap-owned"), Some(&9));
+    }
+
+    // ── run_observer loop ───────────────────────────────────────────
+
+    /// Happy path: attach an active run, project its events, settle on close,
+    /// then stop on cancel.
+    #[tokio::test]
+    async fn run_observer_attaches_processes_and_settles() {
+        let home = TestHome::new("observer-run-loop");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-loop"));
+        let shared = Arc::new(ObserverShared::new(thread.id.clone()));
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+
+        mock.push_data("get_session_events_since", serde_json::json!({"events": []}));
+        mock.push_data("get_state", serde_json::json!({"activeRun": {"runId": "run-loop"}}));
+        mock.push_stream(StreamScript::Events(
+            vec![
+                stream_event("agent_start", "run-loop", 0),
+                stream_event("agent_end", "run-loop", 1),
+            ],
+            None,
+        ));
+
+        let sid = "sess-loop".to_string();
+        let handle = tokio::spawn(async move {
+            run_observer(&sid, &shared, cancel_rx).await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        cancel_tx.send(()).unwrap();
+        handle.await.expect("observer ends");
+
+        assert_eq!(
+            crate::store::get_run("run-loop")
+                .expect("get")
+                .expect("some")
+                .status,
+            "completed"
+        );
+    }
+
+    /// An unreachable agent drives the backoff/retry path until cancel.
+    #[tokio::test]
+    async fn run_observer_retries_connect_failures() {
+        let home = TestHome::new("observer-connect-retry");
+        let _mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-cr"));
+        let shared = Arc::new(ObserverShared::new(thread.id.clone()));
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+
+        let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock addr");
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
+
+        let sid = "sess-cr".to_string();
+        let handle = tokio::spawn(async move {
+            run_observer(&sid, &shared, cancel_rx).await;
+        });
+
+        // Long enough to complete one 500ms backoff and enter the next retry.
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        cancel_tx.send(()).unwrap();
+        handle.await.expect("observer ends");
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
+    }
+
+    /// A replay that never succeeds drives the replay-retry path until cancel.
+    #[tokio::test]
+    async fn run_observer_retries_replay_failures() {
+        let home = TestHome::new("observer-replay-retry");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-rr"));
+        let shared = Arc::new(ObserverShared::new(thread.id.clone()));
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+
+        mock.push(
+            "get_session_events_since",
+            Reply::Reject("nope".to_string()),
+        );
+        mock.push(
+            "get_session_events_since",
+            Reply::Reject("nope".to_string()),
+        );
+
+        let sid = "sess-rr".to_string();
+        let handle = tokio::spawn(async move {
+            run_observer(&sid, &shared, cancel_rx).await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        cancel_tx.send(()).unwrap();
+        handle.await.expect("observer ends");
+    }
+
+    /// A probe→attach race (`FailedPrecondition`) falls back to a plain
+    /// subscription and continues streaming.
+    #[tokio::test]
+    async fn run_observer_attach_error_falls_back_to_plain_subscribe() {
+        let home = TestHome::new("observer-attach-fallback");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-af"));
+        let shared = Arc::new(ObserverShared::new(thread.id.clone()));
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+
+        mock.push_data("get_session_events_since", serde_json::json!({"events": []}));
+        mock.push_data("get_state", serde_json::json!({"activeRun": {"runId": "run-af"}}));
+        mock.push_stream(StreamScript::AttachError(Code::FailedPrecondition, "run ended"));
+        mock.push_plain_stream(StreamScript::Events(
+            vec![stream_event("agent_start", "run-af", 0)],
+            None,
+        ));
+
+        let sid = "sess-af".to_string();
+        let handle = tokio::spawn(async move {
+            run_observer(&sid, &shared, cancel_rx).await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        cancel_tx.send(()).unwrap();
+        handle.await.expect("observer ends");
+    }
+
+    /// Any other attach error settles the probe's active run and retries.
+    #[tokio::test]
+    async fn run_observer_other_attach_error_retries() {
+        let home = TestHome::new("observer-attach-other");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-ao"));
+        let shared = Arc::new(ObserverShared::new(thread.id.clone()));
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+
+        mock.push_data("get_session_events_since", serde_json::json!({"events": []}));
+        mock.push_data("get_state", serde_json::json!({"activeRun": {"runId": "run-ao"}}));
+        mock.push_stream(StreamScript::AttachError(Code::Internal, "boom"));
+
+        let sid = "sess-ao".to_string();
+        let handle = tokio::spawn(async move {
+            run_observer(&sid, &shared, cancel_rx).await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        cancel_tx.send(()).unwrap();
+        handle.await.expect("observer ends");
     }
 
     /// Session-level replay overlap and a negative session index both keep
