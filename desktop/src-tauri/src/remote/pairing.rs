@@ -56,7 +56,20 @@ pub fn load_creds() -> Option<PairingCreds> {
     serde_json::from_value(value).ok()
 }
 
+/// One-shot injected failure for `save_creds` (tests only): the credential
+/// file lives in the test HOME, which tests fully control, but the
+/// credential-refresh loop saves under the global STATE lock mid-iteration —
+/// no interleaving point exists to break the filesystem at exactly that
+/// moment, so the log-and-continue arm is exercised through this seam.
+#[cfg(test)]
+pub(crate) static INJECT_SAVE_FAILURE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 pub fn save_creds(creds: &PairingCreds) -> Result<(), crate::AppError> {
+    #[cfg(test)]
+    if INJECT_SAVE_FAILURE.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        return Err(crate::AppError::Message("injected save failure".to_string()));
+    }
     let path = pairing_path()?;
     let value = serde_json::to_value(creds)
         .map_err(|error| crate::AppError::Message(format!("encode pairing creds: {error}")))?;
@@ -362,5 +375,353 @@ mod tests {
             error_code(&crate::AppError::Message("disk full".to_string())),
             None,
         );
+    }
+}
+
+#[cfg(test)]
+mod http_tests {
+    use super::super::test_support::{
+        jwt, now_secs, pairing_code, sign_in, HomeGuard, MockPlatform,
+    };
+    use super::*;
+    use serde_json::json;
+
+    fn fixture_creds() -> PairingCreds {
+        let key_pair = nkeys::KeyPair::new_user();
+        PairingCreds {
+            handshake_version: 1,
+            pair_id: "pair_test".to_string(),
+            desktop_id: "desktop_test".to_string(),
+            nkey_seed: key_pair.seed().unwrap().to_string(),
+            user_jwt: jwt(now_secs() + 3600),
+            nats_url: "nats://127.0.0.1:1".to_string(),
+            nats_ws_url: "ws://127.0.0.1:1".to_string(),
+            jwt_expires_at: now_secs() + 3600,
+        }
+    }
+
+    #[test]
+    fn creds_save_load_clear_roundtrip() {
+        let _home = HomeGuard::new("pairing-roundtrip");
+        assert!(load_creds().is_none(), "no file → no creds");
+
+        let creds = fixture_creds();
+        save_creds(&creds).unwrap();
+        let loaded = load_creds().expect("saved creds load back");
+        assert_eq!(loaded.pair_id, "pair_test");
+        assert_eq!(loaded.handshake_version, 1);
+        assert_eq!(public_key(&loaded).unwrap(), {
+            nkeys::KeyPair::from_seed(&creds.nkey_seed)
+                .unwrap()
+                .public_key()
+        });
+
+        clear_creds().unwrap();
+        assert!(load_creds().is_none());
+        // Clearing with no file present is a no-op success.
+        clear_creds().unwrap();
+    }
+
+    #[test]
+    fn load_creds_returns_none_on_corrupt_file() {
+        let _home = HomeGuard::new("pairing-corrupt");
+        let path = pairing_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{not json").unwrap();
+        assert!(load_creds().is_none());
+        // A valid JSON file that does not match the creds shape also → None.
+        std::fs::write(&path, json!({ "unrelated": true }).to_string()).unwrap();
+        assert!(load_creds().is_none());
+    }
+
+    #[test]
+    fn public_key_rejects_a_bad_seed() {
+        let _home = HomeGuard::new("pairing-bad-seed");
+        let mut creds = fixture_creds();
+        creds.nkey_seed = "not-a-seed".to_string();
+        assert!(public_key(&creds).is_err());
+    }
+
+    #[test]
+    fn pairing_path_requires_a_home() {
+        let _home = HomeGuard::new("pairing-no-home");
+        std::env::remove_var("HOME");
+        std::env::remove_var("USERPROFILE");
+        assert!(pairing_path().is_err());
+        assert!(load_creds().is_none());
+        assert!(clear_creds().is_err());
+        assert!(save_creds(&fixture_creds()).is_err());
+    }
+
+    #[tokio::test]
+    async fn create_pairing_success() {
+        let _home = HomeGuard::new("pairing-create");
+        let platform = MockPlatform::start().await;
+        sign_in(platform.url());
+        let code = platform.respond_pair_code("nats://127.0.0.1:4222");
+
+        let (creds, returned_code, code_expires_at) = create_pairing().await.unwrap();
+        assert_eq!(returned_code, code);
+        assert!(creds.pair_id.starts_with("pair_mock-"));
+        assert!(creds.desktop_id.starts_with("desktop_"));
+        assert_eq!(creds.nats_url, "nats://127.0.0.1:4222");
+        assert!(creds.jwt_expires_at > now_secs());
+        assert_eq!(code_expires_at, Some(now_secs() + 600));
+
+        let requests = platform.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].1, "/client/v1/remote/pair/code");
+        let body: Value = serde_json::from_str(&requests[0].2).unwrap();
+        assert_eq!(body["desktop_id"], json!(creds.desktop_id));
+        assert_eq!(body["desktop_name"], json!("FutureOS GUI"));
+    }
+
+    #[tokio::test]
+    async fn create_pairing_reuses_the_persisted_desktop_id() {
+        let _home = HomeGuard::new("pairing-create-reuse");
+        let platform = MockPlatform::start().await;
+        sign_in(platform.url());
+        save_creds(&fixture_creds()).unwrap();
+        platform.respond_pair_code("nats://127.0.0.1:4222");
+
+        let (creds, _, _) = create_pairing().await.unwrap();
+        assert_eq!(creds.desktop_id, "desktop_test");
+    }
+
+    #[tokio::test]
+    async fn create_pairing_maps_network_and_server_failures() {
+        let _home = HomeGuard::new("pairing-create-errors");
+        // Nothing listening → transport failure.
+        sign_in("http://127.0.0.1:9");
+        let error = create_pairing().await.unwrap_err();
+        assert!(matches!(error, crate::AppError::RemoteTransport(_)));
+        assert_eq!(error_code(&error), Some("network"));
+
+        // HTTP 500 with a platform error body → categorized remote error.
+        let platform = MockPlatform::start().await;
+        sign_in(platform.url());
+        platform.push(
+            "/client/v1/remote/pair/code",
+            500,
+            json!({ "error": "boom", "message": "server exploded" }),
+        );
+        let error = create_pairing().await.unwrap_err();
+        assert_eq!(error_code(&error), Some("server"));
+        match error {
+            crate::AppError::Remote {
+                status,
+                code,
+                message,
+            } => {
+                assert_eq!(status, 500);
+                assert_eq!(code.as_deref(), Some("boom"));
+                assert_eq!(message, "server exploded");
+            }
+            other => panic!("expected Remote, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn create_pairing_rejects_an_invalid_jwt() {
+        let _home = HomeGuard::new("pairing-create-bad-jwt");
+        let platform = MockPlatform::start().await;
+        sign_in(platform.url());
+        platform.push(
+            "/client/v1/remote/pair/code",
+            200,
+            json!({
+                "pair_id": "pair_x",
+                "pairing_code": pairing_code(now_secs() + 60),
+                "user_jwt": "not-a-jwt",
+                "nats_url": "nats://127.0.0.1:4222",
+                "nats_ws_url": "ws://127.0.0.1:4222",
+            }),
+        );
+        let error = create_pairing().await.unwrap_err();
+        assert!(error.to_string().contains("invalid JWT"));
+    }
+
+    #[tokio::test]
+    async fn create_pairing_rejects_an_undecodable_response() {
+        let _home = HomeGuard::new("pairing-create-bad-body");
+        let platform = MockPlatform::start().await;
+        sign_in(platform.url());
+        platform.push("/client/v1/remote/pair/code", 200, json!({ "unexpected": 1 }));
+        let error = create_pairing().await.unwrap_err();
+        assert!(error.to_string().contains("Failed to parse create pairing code"));
+    }
+
+    #[tokio::test]
+    async fn refresh_bridge_jwt_success_and_failures() {
+        let _home = HomeGuard::new("pairing-refresh");
+        let platform = MockPlatform::start().await;
+        sign_in(platform.url());
+        let creds = fixture_creds();
+
+        platform.respond_refresh("nats://127.0.0.1:4223");
+        let refreshed = refresh_bridge_jwt(creds.clone()).await.unwrap();
+        assert_eq!(refreshed.nats_url, "nats://127.0.0.1:4223");
+        assert!(refreshed.jwt_expires_at > now_secs());
+
+        // Revocation is recognized via the machine code.
+        platform.respond_refresh_revoked();
+        let error = refresh_bridge_jwt(creds.clone()).await.unwrap_err();
+        assert!(is_invalid_or_revoked_error(&error));
+        assert_eq!(error_code(&error), Some("revoked"));
+
+        // A server error without the code is NOT a revocation.
+        platform.push(
+            "/client/v1/remote/auth/token",
+            500,
+            json!({ "message": "kaput" }),
+        );
+        let error = refresh_bridge_jwt(creds.clone()).await.unwrap_err();
+        assert!(!is_invalid_or_revoked_error(&error));
+
+        // Transport failure keeps the pairing retryable.
+        sign_in("http://127.0.0.1:9");
+        let error = refresh_bridge_jwt(creds).await.unwrap_err();
+        assert!(matches!(error, crate::AppError::RemoteTransport(_)));
+        assert!(!is_invalid_or_revoked_error(&error));
+    }
+
+    #[tokio::test]
+    async fn revoke_pairing_success_not_found_and_error() {
+        let _home = HomeGuard::new("pairing-revoke");
+        let platform = MockPlatform::start().await;
+        sign_in(platform.url());
+        let creds = fixture_creds();
+
+        platform.push("/client/v1/remote/pair/revoke", 200, json!({}));
+        revoke_pairing(&creds).await.unwrap();
+
+        // An already-unknown pairing is a successful unpair.
+        platform.push("/client/v1/remote/pair/revoke", 404, json!({}));
+        revoke_pairing(&creds).await.unwrap();
+
+        platform.push(
+            "/client/v1/remote/pair/revoke",
+            500,
+            json!({ "error": "boom", "message": "no" }),
+        );
+        assert!(revoke_pairing(&creds).await.is_err());
+    }
+
+    #[test]
+    fn pairing_code_expiry_decodes_only_valid_codes() {
+        assert_eq!(
+            pairing_code_expiry(&pairing_code(1234)),
+            Some(1234)
+        );
+        assert_eq!(pairing_code_expiry("!!! not base64 !!!"), None);
+        assert_eq!(
+            pairing_code_expiry(&URL_SAFE_NO_PAD.encode(json!({ "nope": 1 }).to_string())),
+            None
+        );
+    }
+
+    #[test]
+    fn refresh_delay_clamps_between_floor_and_expiry() {
+        let mut creds = fixture_creds();
+        creds.jwt_expires_at = now_secs() + 3600;
+        let delay = refresh_delay(&creds);
+        assert!(delay.as_secs() > 3500 && delay.as_secs() <= 3540);
+        // Already expired → the 5s floor.
+        creds.jwt_expires_at = now_secs() - 10;
+        assert_eq!(refresh_delay(&creds).as_secs(), 5);
+    }
+
+    #[test]
+    fn new_device_id_format() {
+        let id = new_device_id();
+        assert!(id.starts_with("desktop_"));
+        assert_eq!(id.len(), "desktop_".len() + 16);
+    }
+
+    #[test]
+    fn jwt_expiry_rejects_malformed_tokens() {
+        assert!(jwt_expiry("one-segment").is_err());
+        assert!(jwt_expiry("two.segments").is_err()); // decodes, but not JSON
+        assert!(jwt_expiry("a.!!!.b").is_err()); // invalid base64 payload → decode failure
+        let no_exp = URL_SAFE_NO_PAD.encode(json!({ "sub": 1 }).to_string());
+        assert!(jwt_expiry(&format!("h.{no_exp}.s")).is_err());
+        assert_eq!(jwt_expiry(&jwt(42)).unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn transport_or_message_distinguishes_failure_kinds() {
+        let _home = HomeGuard::new("pairing-transport-class");
+        // A connection-refused send error is a transport failure.
+        let error = reqwest::Client::new()
+            .get("http://127.0.0.1:9/")
+            .send()
+            .await
+            .unwrap_err();
+        assert!(is_transport_error(&error));
+        assert!(matches!(
+            transport_or_message("probe", error),
+            crate::AppError::RemoteTransport(_)
+        ));
+
+        // A body-decode error DID reach the server → plain message.
+        let platform = MockPlatform::start().await;
+        platform.push("/anything", 200, json!("not the expected shape"));
+        #[derive(Debug, serde::Deserialize)]
+        struct Strict {
+            #[allow(dead_code)]
+            definitely_missing: String,
+        }
+        let error = reqwest::Client::new()
+            .get(format!("{}/anything", platform.url()))
+            .send()
+            .await
+            .unwrap()
+            .json::<Strict>()
+            .await
+            .unwrap_err();
+        assert!(!is_transport_error(&error));
+        assert!(matches!(
+            transport_or_message("probe", error),
+            crate::AppError::Message(_)
+        ));
+    }
+
+    /// Destructure a remote error; panics (with the actual variant) otherwise.
+    fn remote_error_parts(error: crate::AppError) -> (u16, Option<String>, String) {
+        match error {
+            crate::AppError::Remote { status, code, message } => (status, code, message),
+            other => panic!("expected Remote, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn response_error_defaults_and_filters() {
+        let _home = HomeGuard::new("pairing-response-error");
+        let platform = MockPlatform::start().await;
+        sign_in(platform.url());
+
+        // No error/message fields → synthesized message, no code.
+        platform.push("/client/v1/remote/pair/code", 500, json!({}));
+        let (status, code, message) = remote_error_parts(create_pairing().await.unwrap_err());
+        assert_eq!(status, 500);
+        assert!(code.is_none());
+        assert!(message.contains("HTTP 500"));
+
+        // Whitespace-only fields are filtered out.
+        platform.push(
+            "/client/v1/remote/pair/code",
+            500,
+            json!({ "error": "  ", "message": " " }),
+        );
+        let (status, code, message) = remote_error_parts(create_pairing().await.unwrap_err());
+        assert_eq!(status, 500);
+        assert!(code.is_none());
+        assert!(message.contains("HTTP 500"));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected Remote")]
+    fn remote_error_parts_panics_on_non_remote() {
+        let _ = remote_error_parts(crate::AppError::Message("x".to_string()));
     }
 }

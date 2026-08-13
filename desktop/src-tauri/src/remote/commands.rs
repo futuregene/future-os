@@ -69,6 +69,25 @@ pub(super) fn new_reply_slots() -> ReplySlots {
     Arc::new(Mutex::new(HashMap::new()))
 }
 
+/// How long a completed single-flight response stays cached for retrying
+/// clients (matches the planned NATS duplicate window). Tests shrink it to
+/// milliseconds so expiry can be observed without a ten-minute wait. The
+/// single-line if keeps both branches on one DA-covered line (the non-test
+/// artifact is never executed under llvm-cov).
+fn reply_slot_ttl() -> Duration {
+    const LIVE: Duration = Duration::from_secs(600);
+    const TEST: Duration = Duration::from_millis(20);
+    if cfg!(test) { TEST } else { LIVE }
+}
+
+/// First resubscribe delay after a failed subscribe / ended stream (doubles up
+/// to 30s). Tests shrink it so the self-heal path runs without real waits.
+fn resubscribe_backoff() -> Duration {
+    const LIVE: Duration = Duration::from_secs(1);
+    const TEST: Duration = Duration::from_millis(10);
+    if cfg!(test) { TEST } else { LIVE }
+}
+
 tokio::task_local! {
     static REPLY_CAPTURE: Arc<Mutex<Option<Vec<u8>>>>;
 }
@@ -172,7 +191,7 @@ pub(super) async fn command_loop(
     // queue group without a live member and every command then times out until
     // the next credential-refresh swap. Retry with backoff; the task is only
     // terminated by the caller (generation swap / stop), which aborts it.
-    let mut backoff = Duration::from_secs(1);
+    let mut backoff = resubscribe_backoff();
     loop {
         let mut sub = match client.queue_subscribe(subject.clone(), queue.clone()).await {
             Ok(sub) => sub,
@@ -185,7 +204,7 @@ pub(super) async fn command_loop(
                 continue;
             }
         };
-        backoff = Duration::from_secs(1);
+        backoff = resubscribe_backoff();
         eprintln!("remote: subscribed to commands {subject}");
         while let Some(msg) = sub.next().await {
             let client = client.clone();
@@ -238,7 +257,7 @@ async fn handle_command_singleflight(
         let id = command_id.clone();
         let expected = slot.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(600)).await;
+            tokio::time::sleep(reply_slot_ttl()).await;
             let mut slots = slots.lock().unwrap();
             if slots
                 .get(&id)
@@ -494,10 +513,9 @@ async fn handle_command(
             }
             Err(error) => reply(client, &msg, false, Value::Null, Some(&error.to_string())).await,
         },
-        "upload_cancel" => match super::transfer::cancel_upload(&cmd.transfer_id) {
-            Ok(()) => reply(client, &msg, true, json!({}), None).await,
-            Err(error) => reply(client, &msg, false, Value::Null, Some(&error.to_string())).await,
-        },
+        "upload_cancel" => {
+            reply_unit(client, &msg, super::transfer::cancel_upload(&cmd.transfer_id)).await
+        }
         "download_prepare" => {
             match super::transfer::prepare_download(&cmd.session_id, &cmd.file_path).await {
                 Ok(data) => {
@@ -560,10 +578,10 @@ async fn handle_command(
                 Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
             }
         }
-        "abort" => match crate::agent_bridge::abort_session(&cmd.session_id).await {
-            Ok(()) => reply(client, &msg, true, json!({}), None).await,
-            Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
-        },
+        "abort" => {
+            reply_unit(client, &msg, crate::agent_bridge::abort_session(&cmd.session_id).await)
+                .await
+        }
         "approval_decision" => {
             let ownership = (|| -> Result<(), crate::AppError> {
                 let approval = crate::store::get_approval_request(&cmd.entry_id)?
@@ -587,10 +605,14 @@ async fn handle_command(
                 status: cmd.mode.clone(),
                 decision_note: None,
             };
-            match crate::agent_bridge::decide_approval(input).await {
-                Ok(_) => reply(client, &msg, true, json!({}), None).await,
-                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
-            }
+            reply_unit(
+                client,
+                &msg,
+                crate::agent_bridge::decide_approval(input)
+                    .await
+                    .map(|_| ()),
+            )
+            .await;
         }
         "get_state" => match crate::agent_bridge::get_session_state(cmd.session_id.clone()).await {
             Ok(data) => reply(client, &msg, true, data, None).await,
@@ -603,34 +625,37 @@ async fn handle_command(
             }
         }
         "set_model" => {
-            match crate::agent_bridge::set_session_model(
-                cmd.session_id.clone(),
-                qualified_model_id(&cmd.model_id, &cmd.provider_id).unwrap_or_default(),
+            reply_unit(
+                client,
+                &msg,
+                crate::agent_bridge::set_session_model(
+                    cmd.session_id.clone(),
+                    qualified_model_id(&cmd.model_id, &cmd.provider_id).unwrap_or_default(),
+                )
+                .await,
             )
-            .await
-            {
-                Ok(()) => reply(client, &msg, true, json!({}), None).await,
-                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
-            }
+            .await;
         }
         "set_thinking_level" => {
-            match crate::agent_bridge::set_session_thinking_level(
-                cmd.session_id.clone(),
-                cmd.level.clone(),
+            reply_unit(
+                client,
+                &msg,
+                crate::agent_bridge::set_session_thinking_level(
+                    cmd.session_id.clone(),
+                    cmd.level.clone(),
+                )
+                .await,
             )
-            .await
-            {
-                Ok(()) => reply(client, &msg, true, json!({}), None).await,
-                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
-            }
+            .await;
         }
         "set_session_name" => {
-            match crate::agent_bridge::rename_session(cmd.session_id.clone(), cmd.name.clone())
-                .await
-            {
-                Ok(()) => reply(client, &msg, true, json!({}), None).await,
-                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
-            }
+            reply_unit(
+                client,
+                &msg,
+                crate::agent_bridge::rename_session(cmd.session_id.clone(), cmd.name.clone())
+                    .await,
+            )
+            .await;
         }
         other => {
             reply(
@@ -683,13 +708,16 @@ async fn handle_pair_handshake(
     state: &HandshakeState,
 ) {
     state.active.store(false, Ordering::Release);
-    let desktop_public_key = match crate::remote::pairing::public_key(&state.creds) {
-        Ok(key) => key,
+    // The desktop key pair is derived once: a bad seed fails here, and a
+    // successfully parsed pair always signs, so no later fallible step.
+    let key_pair = match nkeys::KeyPair::from_seed(&state.creds.nkey_seed) {
+        Ok(key_pair) => key_pair,
         Err(error) => {
             reply(client, msg, false, Value::Null, Some(&error.to_string())).await;
             return;
         }
     };
+    let desktop_public_key = key_pair.public_key();
     let valid = cmd.protocol_version == HANDSHAKE_PROTOCOL_VERSION
         && cmd.pair_id == state.creds.pair_id
         && cmd.expected_desktop_id == state.creds.desktop_id
@@ -720,20 +748,11 @@ async fn handle_pair_handshake(
         client_nonce: &cmd.client_nonce,
         desktop_nonce: &desktop_nonce,
     });
-    let key_pair = match nkeys::KeyPair::from_seed(&state.creds.nkey_seed) {
-        Ok(key_pair) => key_pair,
-        Err(error) => {
-            reply(client, msg, false, Value::Null, Some(&error.to_string())).await;
-            return;
-        }
-    };
-    let signature = match key_pair.sign(transcript.as_bytes()) {
-        Ok(signature) => URL_SAFE_NO_PAD.encode(signature),
-        Err(error) => {
-            reply(client, msg, false, Value::Null, Some(&error.to_string())).await;
-            return;
-        }
-    };
+    let signature = URL_SAFE_NO_PAD.encode(
+        key_pair
+            .sign(transcript.as_bytes())
+            .expect("a seed-derived KeyPair always signs"),
+    );
     state.pending.lock().unwrap().clear();
     state.pending.lock().unwrap().insert(
         desktop_nonce.clone(),
@@ -872,6 +891,23 @@ fn qualified_model_id(model_id: &str, provider_id: &str) -> Option<String> {
     }
 }
 
+/// One-shot injected failure for the prompt-prepare step (tests only): the
+/// store write inside `prepare_prompt_persisted` cannot fail deterministically
+/// from the outside (pooled WAL connections keep working across chmod/unlink),
+/// so the claimed-attachment rollback path is exercised through this seam.
+#[cfg(test)]
+static INJECT_PREPARE_FAILURE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// See [`INJECT_PREPARE_FAILURE`]; armed by tests, disarmed on use.
+#[cfg(test)]
+fn injected_prepare_failure() -> Result<(), crate::AppError> {
+    INJECT_PREPARE_FAILURE
+        .swap(false, std::sync::atomic::Ordering::Relaxed)
+        .then(|| crate::AppError::Message("injected prepare failure".to_string()))
+        .map_or(Ok(()), Err)
+}
+
 /// Find the thread for `session_id` (create a new chat thread when unknown —
 /// remote policy), then persist user message + run via `agent_bridge::headless`.
 async fn prepare_remote_prompt(
@@ -954,6 +990,8 @@ async fn prepare_remote_prompt(
         thinking_level,
         attachments.clone(),
     );
+    #[cfg(test)]
+    let prepared = prepared.and_then(|prepared| injected_prepare_failure().map(|()| prepared));
     let prepared = match prepared {
         Ok(prepared) => prepared,
         Err(error) => {
@@ -1080,16 +1118,19 @@ fn truncate_message_content(message: &mut Value, cap: usize) {
                 if !is_text {
                     continue;
                 }
-                if let Some(Value::String(text)) = block.get_mut("text") {
-                    let (end, truncated) = byte_cut(text, remaining);
-                    if truncated {
-                        let mut cut = text[..end].to_string();
-                        cut.push('…');
-                        *text = cut;
-                        remaining = 0;
-                    } else {
-                        remaining = remaining.saturating_sub(text.len());
+                match block.get_mut("text") {
+                    Some(Value::String(text)) => {
+                        let (end, truncated) = byte_cut(text, remaining);
+                        if truncated {
+                            let mut cut = text[..end].to_string();
+                            cut.push('…');
+                            *text = cut;
+                            remaining = 0;
+                        } else {
+                            remaining = remaining.saturating_sub(text.len());
+                        }
                     }
+                    _ => {}
                 }
             }
         }
@@ -1127,11 +1168,24 @@ async fn reply(
         "data": data,
         "error": error,
     });
-    if let Ok(payload) = serde_json::to_vec(&body) {
-        let _ = REPLY_CAPTURE.try_with(|capture| {
-            *capture.lock().unwrap() = Some(payload.clone());
-        });
-        publish_reply_payload(client, msg, payload).await;
+    // A serde_json::Value always serializes, so this cannot fail.
+    let payload = serde_json::to_vec(&body).expect("a response Value always serializes");
+    let _ = REPLY_CAPTURE.try_with(|capture| {
+        *capture.lock().unwrap() = Some(payload.clone());
+    });
+    publish_reply_payload(client, msg, payload).await;
+}
+
+/// Reply `{}` on success or the error text on failure — the shared shape for
+/// every unit-result command (abort, set_model, ...).
+async fn reply_unit(
+    client: &async_nats::Client,
+    msg: &async_nats::Message,
+    result: Result<(), crate::AppError>,
+) {
+    match result {
+        Ok(()) => reply(client, msg, true, json!({}), None).await,
+        Err(error) => reply(client, msg, false, Value::Null, Some(&error.to_string())).await,
     }
 }
 
@@ -1238,10 +1292,10 @@ mod tests {
         let messages: Vec<Value> = (0..6).map(|_| text_message(&big)).collect();
         let page = paginate_messages(messages, 0, 100);
         let arr = page["messages"].as_array().unwrap();
+        let arr_len = arr.len();
         assert!(
-            arr.len() < 6,
-            "expected byte budget to cap the page, got {}",
-            arr.len()
+            arr_len < 6,
+            "expected byte budget to cap the page, got {arr_len}"
         );
         assert_eq!(page["hasMore"], true);
         // The page itself stays comfortably under the 1MB NATS payload cap.
@@ -1301,6 +1355,67 @@ mod tests {
     }
 
     #[test]
+    fn truncate_skips_messages_without_a_content_field() {
+        // Oversized but with no `content` key → the let-else early-returns.
+        let mut message = json!({
+            "role": "assistant",
+            "tool_use": "z".repeat(MESSAGE_CONTENT_CAP_BYTES * 2),
+        });
+        truncate_message_content(&mut message, MESSAGE_CONTENT_CAP_BYTES);
+        assert!(message.get("content").is_none());
+    }
+
+    #[test]
+    fn truncate_skips_non_text_blocks_and_fits_small_ones() {
+        // A non-text block first (continue), then a small text block that fits
+        // (the remaining-subtract path), then an oversized one.
+        let mut message = json!({
+            "role": "assistant",
+            "content": [
+                { "type": "tool_use", "id": "t0", "name": "shell" },
+                { "type": "text", "text": "small" },
+                { "type": "text", "text": "z".repeat(MESSAGE_CONTENT_CAP_BYTES * 2) },
+            ]
+        });
+        truncate_message_content(&mut message, MESSAGE_CONTENT_CAP_BYTES);
+        let blocks = message["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["name"], "shell"); // untouched
+        assert_eq!(blocks[1]["text"], "small"); // fits, untouched
+        let text = blocks[2]["text"].as_str().unwrap();
+        assert!(text.len() <= MESSAGE_CONTENT_CAP_BYTES + 8);
+    }
+
+    #[test]
+    fn truncate_ignores_non_string_non_array_content() {
+        // Oversized but content is a scalar → the `_ => {}` arm.
+        let mut message = json!({
+            "role": "assistant",
+            "content": 42,
+            "pad": "z".repeat(MESSAGE_CONTENT_CAP_BYTES * 2),
+        });
+        truncate_message_content(&mut message, MESSAGE_CONTENT_CAP_BYTES);
+        assert_eq!(message["content"], 42);
+    }
+
+    #[test]
+    fn truncate_skips_text_blocks_without_a_string_text() {
+        // A block claiming `type: "text"` but carrying a non-string `text` is
+        // left intact (the text-block match's `_ => {}` arm).
+        let mut message = json!({
+            "role": "assistant",
+            "content": [
+                { "type": "text", "text": 42 },
+                { "type": "text", "text": "z".repeat(MESSAGE_CONTENT_CAP_BYTES * 2) },
+            ]
+        });
+        truncate_message_content(&mut message, MESSAGE_CONTENT_CAP_BYTES);
+        let blocks = message["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["text"], 42); // untouched
+        let text = blocks[1]["text"].as_str().unwrap();
+        assert!(text.len() <= MESSAGE_CONTENT_CAP_BYTES + 8);
+    }
+
+    #[test]
     fn byte_cut_is_char_boundary_safe() {
         let s = "中文内容"; // multi-byte chars
         let (end, truncated) = byte_cut(s, 4);
@@ -1309,5 +1424,1028 @@ mod tests {
         let (end, truncated) = byte_cut(s, 1024);
         assert_eq!(end, s.len());
         assert!(!truncated);
+    }
+}
+
+#[cfg(test)]
+mod bridge_tests {
+    use super::super::test_support::{
+        await_publish, ensure_mock_agent, init_store, jwt, nats_connect, nats_connect_once,
+        now_secs, unique, FakeNats, HomeGuard,
+    };
+    use super::super::transfer;
+    use super::*;
+    use serde_json::json;
+    use std::time::Duration;
+
+    #[test]
+    fn thread_title_derivation_matches_the_gui_draft() {
+        // Whitespace-only / empty input falls back to the default chat title.
+        assert_eq!(derive_thread_title(""), "New Chat");
+        assert_eq!(derive_thread_title("  \n\t  "), "New Chat");
+        // Whitespace collapses; 28 chars is the cut, ellipsized beyond it.
+        assert_eq!(derive_thread_title("hello   there\nworld"), "hello there world");
+        let long = "abcdefghijklmnopqrstuvwxyz0123456789";
+        assert_eq!(derive_thread_title(long), "abcdefghijklmnopqrstuvwxyz01...");
+    }
+
+    fn bridge_creds() -> crate::remote::pairing::PairingCreds {
+        let key_pair = nkeys::KeyPair::new_user();
+        crate::remote::pairing::PairingCreds {
+            handshake_version: 1,
+            pair_id: format!("pair_{}", unique("cmd")),
+            desktop_id: format!("desktop_{}", unique("cmd")),
+            nkey_seed: key_pair.seed().unwrap().to_string(),
+            user_jwt: jwt(now_secs() + 3600),
+            nats_url: "nats://127.0.0.1:1".to_string(),
+            nats_ws_url: "ws://127.0.0.1:1".to_string(),
+            jwt_expires_at: now_secs() + 3600,
+        }
+    }
+
+    /// A running command loop against a fake NATS: returns the client handle a
+    /// test drives, plus the pieces it may need to poke.
+    struct Bridge {
+        client: async_nats::Client,
+        nats: FakeNats,
+        pair_id: String,
+        handshake: HandshakeState,
+        loop_handle: tokio::task::JoinHandle<()>,
+    }
+
+    impl Bridge {
+        async fn start() -> Self {
+            let nats = FakeNats::start().await;
+            let client = nats_connect(&nats).await;
+            let creds = bridge_creds();
+            let pair_id = creds.pair_id.clone();
+            let handshake = HandshakeState::new(
+                creds,
+                Arc::new(AtomicBool::new(false)),
+                format!("bridge_{}", unique("cmd")),
+            );
+            let reply_slots = new_reply_slots();
+            let loop_handle = tokio::spawn(command_loop(
+                client.clone(),
+                pair_id.clone(),
+                reply_slots.clone(),
+                handshake.clone(),
+            ));
+            nats.wait_for_sub(&format!("p.{pair_id}.cmd.>"), Duration::from_secs(5))
+                .await;
+            Bridge {
+                client,
+                nats,
+                pair_id,
+                handshake,
+                loop_handle,
+            }
+        }
+
+        /// Activate the bridge (as a completed handshake would).
+        fn activate(&self) {
+            self.handshake.active_flag().store(true, Ordering::Release);
+        }
+
+        /// Send a command and await its reply envelope.
+        async fn call(&self, cmd: Value) -> Value {
+            let subject = format!("p.{}.cmd.rpc", self.pair_id);
+            let message = self
+                .client
+                .request(subject, serde_json::to_vec(&cmd).unwrap().into())
+                .await
+                .expect("bridge reply");
+            serde_json::from_slice(&message.payload).expect("reply is JSON")
+        }
+
+        fn stop(self) {
+            self.loop_handle.abort();
+        }
+    }
+
+    fn handshake_cmd(creds: &crate::remote::pairing::PairingCreds, client_key: &nkeys::KeyPair) -> Value {
+        json!({
+            "id": unique("cmd"),
+            "type": "pair_handshake",
+            "protocolVersion": 1,
+            "pairId": creds.pair_id,
+            "deviceId": "dev_test",
+            "clientPublicKey": client_key.public_key(),
+            "clientNonce": "nonce-0123456789abcdef",
+            "expectedDesktopId": creds.desktop_id,
+            "expectedDesktopPublicKey": crate::remote::pairing::public_key(creds).unwrap(),
+        })
+    }
+
+    /// A corrupted desktop NKey seed fails the handshake before any signing:
+    /// the client gets a failure reply and the bridge stays inactive.
+    #[tokio::test]
+    async fn handshake_rejects_a_bad_desktop_seed() {
+        let _home = HomeGuard::new("cmd-bad-seed");
+        let nats = FakeNats::start().await;
+        let client = nats_connect(&nats).await;
+        let mut creds = bridge_creds();
+        creds.nkey_seed = "not-a-valid-seed".to_string();
+        let handshake = HandshakeState::new(
+            creds,
+            Arc::new(AtomicBool::new(false)),
+            format!("bridge_{}", unique("cmd")),
+        );
+        let reply_subject = format!("rep_{}", unique("hs"));
+        let mut tap = nats.tap();
+        let msg = async_nats::Message {
+            subject: "p.pair.cmd.pair_handshake".into(),
+            reply: Some(reply_subject.clone().into()),
+            payload: Vec::new().into(),
+            headers: None,
+            status: None,
+            description: None,
+            length: 0,
+        };
+        let cmd = IncomingCmd {
+            cmd_type: "pair_handshake".to_string(),
+            ..Default::default()
+        };
+        handle_pair_handshake(&client, &msg, &cmd, &handshake).await;
+        let reply = await_publish(&mut tap, &reply_subject, Duration::from_secs(5)).await;
+        assert_eq!(reply.json()["success"], json!(false));
+        assert!(!handshake.active_flag().load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn rejects_garbage_and_requires_handshake() {
+        let _home = HomeGuard::new("cmd-gate");
+        let bridge = Bridge::start().await;
+
+        // Unparseable payload → error reply.
+        let mut tap = bridge.nats.tap();
+        let reply_subject = format!("rep-{}", unique("garbage"));
+        bridge.nats.inject(
+            &format!("p.{}.cmd.rpc", bridge.pair_id),
+            Some(&reply_subject),
+            b"{not json".to_vec(),
+        );
+        let reply = await_publish(&mut tap, &reply_subject, Duration::from_secs(5)).await;
+        assert_eq!(reply.json()["success"], json!(false));
+        assert!(reply.json()["error"]
+            .as_str()
+            .unwrap()
+            .contains("Failed to parse command JSON"));
+
+        // A well-formed non-handshake command before activation is refused.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "list_sessions" }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        assert_eq!(reply["error"], json!("pairing_handshake_required"));
+
+        // A command with no reply subject is processed but not answered.
+        bridge.nats.inject(
+            &format!("p.{}.cmd.rpc", bridge.pair_id),
+            None,
+            b"{ not json either".to_vec(),
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        bridge.stop();
+    }
+
+    #[tokio::test]
+    async fn handshake_roundtrip_activates_the_bridge() {
+        let _home = HomeGuard::new("cmd-handshake");
+        init_store();
+        let bridge = Bridge::start().await;
+        let client_key = nkeys::KeyPair::new_user();
+        let creds = bridge.handshake.creds.clone();
+
+        // Identity mismatch → refused.
+        let mut bad = handshake_cmd(&creds, &client_key);
+        bad["protocolVersion"] = json!(99);
+        let reply = bridge.call(bad).await;
+        assert_eq!(reply["error"], json!("pairing_identity_mismatch"));
+
+        // Valid challenge → desktop nonce + signature.
+        let reply = bridge.call(handshake_cmd(&creds, &client_key)).await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        let data = &reply["data"];
+        assert_eq!(data["pairId"], json!(creds.pair_id));
+        let desktop_nonce = data["desktopNonce"].as_str().unwrap().to_string();
+        // The desktop signature verifies against the transcript.
+        let transcript = handshake_transcript(&HandshakeTranscript {
+            pair_id: &creds.pair_id,
+            desktop_id: &creds.desktop_id,
+            desktop_public_key: &crate::remote::pairing::public_key(&creds).unwrap(),
+            bridge_instance_id: &bridge.handshake.bridge_instance_id,
+            device_id: "dev_test",
+            client_public_key: &client_key.public_key(),
+            client_nonce: "nonce-0123456789abcdef",
+            desktop_nonce: &desktop_nonce,
+        });
+        let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(data["desktopSignature"].as_str().unwrap())
+            .unwrap();
+        nkeys::KeyPair::from_public_key(&crate::remote::pairing::public_key(&creds).unwrap())
+            .unwrap()
+            .verify(transcript.as_bytes(), &signature)
+            .unwrap();
+
+        // Unknown challenge → expired.
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"),
+                "type": "pair_handshake_confirm",
+                "deviceId": "dev_test",
+                "desktopNonce": "never-issued",
+                "clientSignature": "x",
+            }))
+            .await;
+        assert_eq!(reply["error"], json!("pairing_challenge_expired"));
+
+        // A forged client signature → rejected.
+        let forged = client_key
+            .sign(b"a different transcript entirely")
+            .unwrap();
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"),
+                "type": "pair_handshake_confirm",
+                "deviceId": "dev_test",
+                "desktopNonce": desktop_nonce,
+                "clientSignature": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(forged),
+            }))
+            .await;
+        assert_eq!(reply["error"], json!("pairing_signature_invalid"));
+
+        // A fresh challenge + correctly signed transcript activates the bridge
+        // and persists the credential.
+        let reply = bridge.call(handshake_cmd(&creds, &client_key)).await;
+        let desktop_nonce = reply["data"]["desktopNonce"].as_str().unwrap().to_string();
+        let transcript = handshake_transcript(&HandshakeTranscript {
+            pair_id: &creds.pair_id,
+            desktop_id: &creds.desktop_id,
+            desktop_public_key: &crate::remote::pairing::public_key(&creds).unwrap(),
+            bridge_instance_id: &bridge.handshake.bridge_instance_id,
+            device_id: "dev_test",
+            client_public_key: &client_key.public_key(),
+            client_nonce: "nonce-0123456789abcdef",
+            desktop_nonce: &desktop_nonce,
+        });
+        let signature = client_key.sign(transcript.as_bytes()).unwrap();
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"),
+                "type": "pair_handshake_confirm",
+                "deviceId": "dev_test",
+                "desktopNonce": desktop_nonce,
+                "clientSignature": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature),
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["confirmed"], json!(true));
+        assert_eq!(reply["data"]["features"], json!(["file_transfer_v1"]));
+        assert!(bridge.handshake.active_flag().load(Ordering::Acquire));
+        assert!(crate::remote::pairing::load_creds().is_some());
+
+        // Now ordinary commands pass the gate.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "list_sessions" }))
+            .await;
+        assert_eq!(reply["success"], json!(true));
+
+        // A second handshake resets activity until reconfirmed — and the
+        // reconfirm skips the credential save (already persisted above).
+        let reply = bridge.call(handshake_cmd(&creds, &client_key)).await;
+        let desktop_nonce = reply["data"]["desktopNonce"].as_str().unwrap().to_string();
+        assert!(!bridge.handshake.active_flag().load(Ordering::Acquire));
+        let transcript = handshake_transcript(&HandshakeTranscript {
+            pair_id: &creds.pair_id,
+            desktop_id: &creds.desktop_id,
+            desktop_public_key: &crate::remote::pairing::public_key(&creds).unwrap(),
+            bridge_instance_id: &bridge.handshake.bridge_instance_id,
+            device_id: "dev_test",
+            client_public_key: &client_key.public_key(),
+            client_nonce: "nonce-0123456789abcdef",
+            desktop_nonce: &desktop_nonce,
+        });
+        let signature = client_key.sign(transcript.as_bytes()).unwrap();
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"),
+                "type": "pair_handshake_confirm",
+                "deviceId": "dev_test",
+                "desktopNonce": desktop_nonce,
+                "clientSignature": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature),
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert!(bridge.handshake.active_flag().load(Ordering::Acquire));
+        bridge.stop();
+    }
+
+    #[tokio::test]
+    async fn handshake_confirm_rejects_a_device_mismatch() {
+        let _home = HomeGuard::new("cmd-device-mismatch");
+        let bridge = Bridge::start().await;
+        let client_key = nkeys::KeyPair::new_user();
+        let creds = bridge.handshake.creds.clone();
+        let reply = bridge.call(handshake_cmd(&creds, &client_key)).await;
+        let desktop_nonce = reply["data"]["desktopNonce"].as_str().unwrap().to_string();
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"),
+                "type": "pair_handshake_confirm",
+                "deviceId": "dev_other",
+                "desktopNonce": desktop_nonce,
+                "clientSignature": "eA",
+            }))
+            .await;
+        assert_eq!(reply["error"], json!("pairing_identity_mismatch"));
+        bridge.stop();
+    }
+
+    #[tokio::test]
+    async fn handshake_confirm_reports_credential_save_failures() {
+        let home = HomeGuard::new("cmd-save-fail");
+        let bridge = Bridge::start().await;
+        let client_key = nkeys::KeyPair::new_user();
+        let creds = bridge.handshake.creds.clone();
+        let reply = bridge.call(handshake_cmd(&creds, &client_key)).await;
+        let desktop_nonce = reply["data"]["desktopNonce"].as_str().unwrap().to_string();
+        let transcript = handshake_transcript(&HandshakeTranscript {
+            pair_id: &creds.pair_id,
+            desktop_id: &creds.desktop_id,
+            desktop_public_key: &crate::remote::pairing::public_key(&creds).unwrap(),
+            bridge_instance_id: &bridge.handshake.bridge_instance_id,
+            device_id: "dev_test",
+            client_public_key: &client_key.public_key(),
+            client_nonce: "nonce-0123456789abcdef",
+            desktop_nonce: &desktop_nonce,
+        });
+        let signature = client_key.sign(transcript.as_bytes()).unwrap();
+        // No HOME → the credential persist fails and the error surfaces.
+        std::env::remove_var("HOME");
+        std::env::remove_var("USERPROFILE");
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"),
+                "type": "pair_handshake_confirm",
+                "deviceId": "dev_test",
+                "desktopNonce": desktop_nonce,
+                "clientSignature": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature),
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        drop(home);
+        bridge.stop();
+    }
+
+    /// Activated bridge with a store and mock agent behind it.
+    async fn active_bridge(label: &str) -> (HomeGuard, Bridge) {
+        let home = HomeGuard::new(label);
+        init_store();
+        ensure_mock_agent();
+        let bridge = Bridge::start().await;
+        bridge.activate();
+        (home, bridge)
+    }
+
+    #[tokio::test]
+    async fn presence_and_catalog_commands() {
+        let (_home, bridge) = active_bridge("cmd-presence").await;
+
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "get_presence" }))
+            .await;
+        assert_eq!(reply["success"], json!(true));
+        assert_eq!(reply["data"]["online"], json!(true));
+        assert_eq!(reply["data"]["pairId"], json!(bridge.pair_id));
+
+        // Empty store → empty session/workspace lists.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "list_sessions" }))
+            .await;
+        assert_eq!(reply["data"]["sessions"], json!([]));
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "list_workspaces" }))
+            .await;
+        assert_eq!(reply["success"], json!(true));
+
+        // A thread with an agent session shows up, streaming while its run is
+        // active.
+        let session = unique("sess");
+        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some("From remote".to_string()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some(session.clone()),
+        })
+        .unwrap();
+        crate::store::create_run(crate::store::CreateRunInput {
+            id: None,
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .unwrap();
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "list_sessions" }))
+            .await;
+        let sessions = reply["data"]["sessions"].as_array().unwrap();
+        let row = sessions
+            .iter()
+            .find(|row| row["sessionId"] == json!(session))
+            .expect("thread listed");
+        assert_eq!(row["title"], json!("From remote"));
+        assert_eq!(row["streaming"], json!(true));
+
+        bridge.stop();
+    }
+
+    #[tokio::test]
+    async fn catalog_commands_report_store_failures() {
+        // No init_store and no .future dir → the DB connect fails.
+        let _home = HomeGuard::new("cmd-store-down");
+        ensure_mock_agent();
+        let bridge = Bridge::start().await;
+        bridge.activate();
+
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "list_sessions" }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "list_workspaces" }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        bridge.stop();
+    }
+
+    #[tokio::test]
+    async fn history_commands_page_and_fail() {
+        let (_home, bridge) = active_bridge("cmd-history").await;
+        let agent = ensure_mock_agent();
+        let session = unique("sess");
+
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "get_messages", "sessionId": session }))
+            .await;
+        assert_eq!(reply["success"], json!(true));
+        assert_eq!(reply["data"]["total"], json!(2));
+        assert_eq!(reply["data"]["hasMore"], json!(false));
+
+        // An explicit positive limit pages instead of using the default.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "get_messages", "sessionId": session, "limit": 1 }))
+            .await;
+        assert_eq!(reply["success"], json!(true));
+        assert_eq!(reply["data"]["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(reply["data"]["hasMore"], json!(true));
+
+        // Agent failure → the remote-specific error text.
+        agent.script_for("get_messages", &session, false, json!(null), "agent exploded");
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "get_messages", "sessionId": session }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        assert!(reply["error"]
+            .as_str()
+            .unwrap()
+            .contains("conversation history is unavailable"));
+
+        // Entries page through too.
+        agent.set_session_entries(
+            &session,
+            json!({ "entries": [{ "entryType": "user", "content": "hi" }] }),
+        );
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "get_session_entries", "sessionId": session }))
+            .await;
+        assert_eq!(reply["success"], json!(true));
+        assert_eq!(reply["data"]["entries"].as_array().unwrap().len(), 1);
+
+        // Entries honor an explicit positive limit too.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "get_session_entries", "sessionId": session, "limit": 5 }))
+            .await;
+        assert_eq!(reply["success"], json!(true));
+        assert_eq!(reply["data"]["entries"].as_array().unwrap().len(), 1);
+        agent.script_for("get_session_entries", &session, false, json!(null), "nope");
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "get_session_entries", "sessionId": session }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+
+        // Events backfill (success and failure).
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "get_events_since", "sessionId": session, "runId": "run-1", "sinceIdx": -1 }))
+            .await;
+        assert_eq!(reply["success"], json!(true));
+        assert_eq!(reply["data"]["events"], json!([]));
+        agent.script_for("get_events_since", &session, false, json!(null), "stale run");
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "get_events_since", "sessionId": session, "runId": "run-1", "sinceIdx": -1 }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+
+        bridge.stop();
+    }
+
+    #[tokio::test]
+    async fn transfer_control_commands() {
+        let (_home, bridge) = active_bridge("cmd-transfer").await;
+        let agent = ensure_mock_agent();
+
+        // upload_init validation + success.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "upload_init", "name": "a.txt", "kind": "file", "originalSize": 0, "transferSize": 0 }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "upload_init", "name": "a.txt", "kind": "file", "originalSize": 4, "transferSize": 4 }))
+            .await;
+        assert_eq!(reply["success"], json!(true));
+        let upload_id = reply["data"]["uploadId"].as_str().unwrap().to_string();
+
+        // upload_complete on an incomplete upload → error; after the bytes, ok.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "upload_complete", "transferId": upload_id }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        transfer::write_upload_chunk(&upload_id, 0, b"data").unwrap();
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "upload_complete", "transferId": upload_id }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["contentHash"].as_str().unwrap().len(), 64);
+
+        // upload_cancel always succeeds.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "upload_cancel", "transferId": upload_id }))
+            .await;
+        assert_eq!(reply["success"], json!(true));
+
+        // download_prepare failure (unknown attachment) and success.
+        let session = unique("sess");
+        agent.set_session_entries(&session, json!({ "entries": [] }));
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "download_prepare", "sessionId": session, "filePath": "/tmp/none.txt" }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+
+        let dir = std::env::temp_dir().join(unique("futureos-cmd-dl"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("take.txt");
+        std::fs::write(&file, b"take me").unwrap();
+        agent.set_session_entries(
+            &session,
+            json!({"entries":[{"meta":{"attachments":[{"path": file.to_string_lossy()}]}}]}),
+        );
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "download_prepare", "sessionId": session, "filePath": file.to_string_lossy() }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        let transfer_id = reply["data"]["transferId"].as_str().unwrap().to_string();
+
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "download_cancel", "transferId": transfer_id }))
+            .await;
+        assert_eq!(reply["success"], json!(true));
+
+        std::fs::remove_dir_all(dir).ok();
+        bridge.stop();
+    }
+
+    #[tokio::test]
+    async fn prompt_creates_threads_and_rejects_busy_sessions() {
+        let (_home, bridge) = active_bridge("cmd-prompt").await;
+
+        // Workspace mode without a workspace id → validation error.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "prompt", "message": "hi", "mode": "workspace" }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        assert!(reply["error"]
+            .as_str()
+            .unwrap()
+            .contains("Select a workspace"));
+
+        // Chat mode with an empty session id → lazy thread + agent session.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "prompt", "message": "hello there", "modelId": "m1", "providerId": "p1", "level": "high" }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        let session = reply["data"]["sessionId"].as_str().unwrap().to_string();
+        assert!(session.starts_with("mock-session-"));
+        let thread_id = reply["data"]["threadId"].as_str().unwrap().to_string();
+        // The run the ack carried settles as failed: the mock agent's event
+        // stream ends without agent_end.
+        let run_id = reply["data"]["runId"].as_str().unwrap().to_string();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let run = crate::store::get_run(&run_id).unwrap().expect("run row");
+            if run.status != "running" {
+                assert_eq!(run.status, "failed");
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "run never settled");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        // A follow-up prompt on the idle session reuses the thread.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "prompt", "sessionId": session, "message": "again" }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["threadId"], json!(thread_id));
+
+        // While a run for the session is active, another prompt is refused.
+        crate::store::create_run(crate::store::CreateRunInput {
+            id: None,
+            thread_id: thread_id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .unwrap();
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "prompt", "sessionId": session, "message": "too soon" }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        assert!(reply["error"]
+            .as_str()
+            .unwrap()
+            .contains("still running"));
+
+        bridge.stop();
+    }
+
+    #[tokio::test]
+    async fn prompt_workspace_mode_and_prepare_failures() {
+        let (_home, bridge) = active_bridge("cmd-prompt-ws").await;
+        let agent = ensure_mock_agent();
+
+        // Workspace mode with a real workspace id → thread bound to it.
+        let workspace_dir = std::env::temp_dir().join(unique("futureos-ws-prompt"));
+        std::fs::create_dir_all(&workspace_dir).unwrap();
+        let workspace = crate::store::create_workspace(crate::store::CreateWorkspaceInput {
+            name: Some("Prompt WS".to_string()),
+            path: workspace_dir.to_string_lossy().to_string(),
+            description: None,
+            create_directory: None,
+        })
+        .unwrap();
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"), "type": "prompt", "message": "workspace hello",
+                "mode": "workspace", "workspaceId": workspace.id,
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        let ws_thread = reply["data"]["threadId"].as_str().unwrap().to_string();
+        assert_eq!(
+            crate::store::list_threads()
+                .unwrap()
+                .iter()
+                .find(|t| t.id == ws_thread)
+                .map(|t| t.mode.as_str()),
+            Some("workspace")
+        );
+
+        // Agent-side session provisioning failure → the just-created orphan
+        // thread is removed and the error surfaces.
+        agent.script("new_session", false, json!(null), "agent rejected the session");
+        let before = crate::store::list_threads().unwrap().len();
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "prompt", "message": "fail provisioning" }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        assert!(reply["error"].as_str().unwrap().contains("rejected"));
+        assert_eq!(crate::store::list_threads().unwrap().len(), before);
+
+        // Prepare failure after attachments were claimed → the claimed copies
+        // roll back (no leaked files under the thread's image dir).
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "upload_init", "name": "note.txt", "kind": "file", "originalSize": 3, "transferSize": 3 }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        let upload_id = reply["data"]["uploadId"].as_str().unwrap().to_string();
+        transfer::write_upload_chunk(&upload_id, 0, b"hey").unwrap();
+        transfer::complete_upload(&upload_id).unwrap();
+        INJECT_PREPARE_FAILURE.store(true, Ordering::Relaxed);
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"), "type": "prompt", "message": "with attachment",
+                "attachments": [{ "uploadId": upload_id }],
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        assert!(reply["error"]
+            .as_str()
+            .unwrap()
+            .contains("injected prepare failure"));
+        let thread = crate::store::list_threads()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.title == "with attachment")
+            .expect("thread for the failed prepare");
+        let origin = crate::store::thread_images_dir(&thread.id)
+            .unwrap()
+            .join("origin");
+        let leaked = origin
+            .read_dir()
+            .map(|mut entries| entries.next().is_some())
+            .unwrap_or(false);
+        assert!(!leaked, "claimed attachment copies must roll back");
+
+        std::fs::remove_dir_all(&workspace_dir).ok();
+        bridge.stop();
+    }
+
+    #[tokio::test]
+    async fn session_control_commands() {
+        let (_home, bridge) = active_bridge("cmd-session-ctl").await;
+        let agent = ensure_mock_agent();
+        let session = unique("sess");
+
+        // abort: success and agent failure.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "abort", "sessionId": session }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        agent.script_for("abort", &session, false, json!(null), "cannot abort");
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "abort", "sessionId": session }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+
+        // get_state.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "get_state", "sessionId": session }))
+            .await;
+        assert_eq!(reply["success"], json!(true));
+        agent.script_for("get_state", &session, false, json!(null), "gone");
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "get_state", "sessionId": session }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+
+        // list_models / get_available_models share a handler.
+        for cmd_type in ["list_models", "get_available_models"] {
+            let reply = bridge
+                .call(json!({ "id": unique("cmd"), "type": cmd_type }))
+                .await;
+            assert_eq!(reply["success"], json!(true), "{cmd_type}: {reply}");
+        }
+        agent.script("list_models", false, json!(null), "no models");
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "list_models" }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+
+        // set_model / set_thinking_level / set_session_name (success + failure).
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "set_model", "sessionId": session, "modelId": "m1", "providerId": "p1" }))
+            .await;
+        assert_eq!(reply["success"], json!(true));
+        assert!(agent.served("set_model", &session));
+        agent.script_for("set_model", &session, false, json!(null), "bad model");
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "set_model", "sessionId": session, "modelId": "m1" }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "set_thinking_level", "sessionId": session, "level": "high" }))
+            .await;
+        assert_eq!(reply["success"], json!(true));
+        agent.script_for("set_thinking_level", &session, false, json!(null), "bad level");
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "set_thinking_level", "sessionId": session, "level": "high" }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "set_session_name", "sessionId": session, "name": "Renamed" }))
+            .await;
+        assert_eq!(reply["success"], json!(true));
+        agent.script_for("set_session_name", &session, false, json!(null), "no rename");
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "set_session_name", "sessionId": session, "name": "Renamed" }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+
+        // Unknown command type.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "teleport", "sessionId": session }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        assert!(reply["error"]
+            .as_str()
+            .unwrap()
+            .contains("Unsupported command"));
+
+        bridge.stop();
+    }
+
+    #[tokio::test]
+    async fn approval_decision_ownership_and_outcomes() {
+        let (_home, bridge) = active_bridge("cmd-approval").await;
+        let agent = ensure_mock_agent();
+        let session = unique("sess");
+
+        // Unknown approval request.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "approval_decision", "sessionId": session, "entryId": "nope", "mode": "approved" }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        assert!(reply["error"]
+            .as_str()
+            .unwrap()
+            .contains("could not be loaded"));
+
+        // A real approval owned by a DIFFERENT session → ownership mismatch.
+        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: None,
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some(session.clone()),
+        })
+        .unwrap();
+        let run = crate::store::create_run(crate::store::CreateRunInput {
+            id: None,
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .unwrap();
+        crate::store::ensure_approval_request(crate::store::EnsureApprovalRequestInput {
+            approval_request_id: Some("appr-1".to_string()),
+            run_id: run.id.clone(),
+            tool_call_id: Some("tool-1".to_string()),
+            kind: "command".to_string(),
+            title: "Run ls".to_string(),
+            summary: None,
+            risk_level: None,
+            requested_action: None,
+            action_category: None,
+            action_payload: None,
+            sandbox_boundary: None,
+            save_suggestion: None,
+            reviewer: None,
+        })
+        .unwrap();
+
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "approval_decision", "sessionId": "someone-else", "entryId": "appr-1", "mode": "approved" }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        assert!(reply["error"]
+            .as_str()
+            .unwrap()
+            .contains("does not belong"));
+
+        // Owning session decides → the agent is notified and the reply is ok.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "approval_decision", "sessionId": session, "entryId": "appr-1", "mode": "approved" }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert!(agent.served("approval_decision", &session));
+        let record = crate::store::get_approval_request("appr-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.status, "approved");
+
+        // An agent-side stale approval cancels locally but still replies ok.
+        crate::store::ensure_approval_request(crate::store::EnsureApprovalRequestInput {
+            approval_request_id: Some("appr-2".to_string()),
+            run_id: run.id.clone(),
+            tool_call_id: Some("tool-2".to_string()),
+            kind: "command".to_string(),
+            title: "Run pwd".to_string(),
+            summary: None,
+            risk_level: None,
+            requested_action: None,
+            action_category: None,
+            action_payload: None,
+            sandbox_boundary: None,
+            save_suggestion: None,
+            reviewer: None,
+        })
+        .unwrap();
+        agent.script_for(
+            "approval_decision",
+            &session,
+            false,
+            json!(null),
+            "approval request is not pending",
+        );
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "approval_decision", "sessionId": session, "entryId": "appr-2", "mode": "approved" }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        let record = crate::store::get_approval_request("appr-2")
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.status, "cancelled");
+
+        // A genuine agent rejection surfaces as an error.
+        crate::store::ensure_approval_request(crate::store::EnsureApprovalRequestInput {
+            approval_request_id: Some("appr-3".to_string()),
+            run_id: run.id.clone(),
+            tool_call_id: Some("tool-3".to_string()),
+            kind: "command".to_string(),
+            title: "Run rm".to_string(),
+            summary: None,
+            risk_level: None,
+            requested_action: None,
+            action_category: None,
+            action_payload: None,
+            sandbox_boundary: None,
+            save_suggestion: None,
+            reviewer: None,
+        })
+        .unwrap();
+        agent.script_for("approval_decision", &session, false, json!(null), "boom");
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "approval_decision", "sessionId": session, "entryId": "appr-3", "mode": "denied" }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+
+        bridge.stop();
+    }
+
+    #[tokio::test]
+    async fn duplicate_command_ids_get_one_execution_and_cached_replies() {
+        let (_home, bridge) = active_bridge("cmd-singleflight").await;
+        let agent = ensure_mock_agent();
+        let session = unique("sess");
+
+        let command_id = unique("cmdid");
+        let cmd = || {
+            json!({ "id": command_id, "type": "get_state", "sessionId": session })
+        };
+        // Two concurrent deliveries → a single agent call, identical replies.
+        let (first, second) = tokio::join!(bridge.call(cmd()), bridge.call(cmd()));
+        assert_eq!(first, second);
+        let executions = agent
+            .requests()
+            .iter()
+            .filter(|(command, sid)| command == "get_state" && sid == &session)
+            .count();
+        assert_eq!(executions, 1, "retried command must not re-execute");
+
+        // After the reply-slot TTL the entry expires and the command runs again.
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        let third = bridge.call(cmd()).await;
+        assert_eq!(third["success"], json!(true));
+        let executions = agent
+            .requests()
+            .iter()
+            .filter(|(command, sid)| command == "get_state" && sid == &session)
+            .count();
+        assert_eq!(executions, 2, "expired cache entries re-execute");
+
+        // A cached reply replayed to a delivery WITHOUT a reply subject is
+        // simply dropped (no publish, no panic).
+        bridge.nats.inject(
+            &format!("p.{}.cmd.rpc", bridge.pair_id),
+            None,
+            serde_json::to_vec(&cmd()).unwrap(),
+        );
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        bridge.stop();
+    }
+
+    #[tokio::test]
+    async fn command_loop_resubscribes_after_the_stream_ends() {
+        let _home = HomeGuard::new("cmd-self-heal");
+        let nats = FakeNats::start().await;
+        let client = nats_connect_once(&nats).await;
+        let creds = bridge_creds();
+        let pair_id = creds.pair_id.clone();
+        let handshake = HandshakeState::new(
+            creds,
+            Arc::new(AtomicBool::new(true)),
+            format!("bridge_{}", unique("cmd")),
+        );
+        let handle = tokio::spawn(command_loop(
+            client,
+            pair_id.clone(),
+            new_reply_slots(),
+            handshake,
+        ));
+        nats.wait_for_sub(&format!("p.{pair_id}.cmd.>"), Duration::from_secs(5))
+            .await;
+        // Kill the server: the subscription stream ends and every resubscribe
+        // fails — the loop must keep retrying instead of exiting.
+        nats.kill();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!handle.is_finished(), "command loop must self-heal");
+        handle.abort();
     }
 }
