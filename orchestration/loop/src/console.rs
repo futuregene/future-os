@@ -157,6 +157,7 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         "decision-context" => cmd_decision_context(&mut store, &args[1..]),
         "registry" => cmd_registry(&registry, &args[1..]),
         "commands" => cmd_commands(&registry, &args[1..]),
+        "pr-review" => cmd_pr_review(&mut store, &args[1..]),
         // ── P4 commands (G-18 / G-19 / G-20 / G-27) ───────────────────────
         "benchmark" => cmd_benchmark(&store, &args[1..]).await,
         "replay" => cmd_replay(&store, &args[1..]),
@@ -204,6 +205,7 @@ const JOURNEY_ASSIGNMENTS: &[(&str, Journey)] = &[
     ("delivery", Journey::Daily),
     ("reward-memory", Journey::Daily),
     ("decision-context", Journey::Daily),
+    ("pr-review", Journey::Daily),
     ("diagnose", Journey::Daily),
     ("evidence-log", Journey::Daily),
     ("todo-event", Journey::Daily),
@@ -532,6 +534,14 @@ fn build_cli_registry() -> CommandRegistry {
         "commands",
         "grouped operator command reference (P1-9 journey view)",
         "commands [--format json|--json] [--include-experimental]",
+    );
+
+    let pr_review = r.group("pr-review", "pull-request review queue (P2-3)");
+    r.command(
+        pr_review,
+        "pr-review",
+        "PR review queue observation / verdict / reviewer recommendation",
+        "pr-review queue|review|claim|recommend|contract --goal G [--repo owner/repo] [--format json]",
     );
 
     let benchmark = r.group("benchmark", "benchmark closed loop (G-18)");
@@ -3796,6 +3806,544 @@ fn cmd_lease(store: &mut Store, args: &[String]) -> Result<()> {
         }
         _ => bail!("lease subcommand must be claim|renew|release|expire|status"),
     }
+    Ok(())
+}
+
+// ── pr-review (P2-3) ────────────────────────────────────────────────────
+
+/// `future loop pr-review queue|review|claim|recommend|contract` — the
+/// first-class PR review queue surface: deterministic queue observation
+/// (exact-head candidates + handled cursors), verdict publication through
+/// the review contract (通过/驳回/再修), claim/lease reuse over review work
+/// items, and path-owner reviewer recommendation.
+fn cmd_pr_review(store: &mut Store, args: &[String]) -> Result<()> {
+    let sub = args.first().map(|s| s.as_str()).ok_or_else(|| {
+        anyhow::anyhow!("pr-review requires a subcommand (queue|review|claim|recommend|contract)")
+    })?;
+    match sub {
+        "queue" => pr_review_queue(store, &args[1..]),
+        "review" => pr_review_verdict(store, &args[1..]),
+        "claim" => pr_review_claim(store, &args[1..]),
+        "recommend" => pr_review_recommend(&args[1..]),
+        "contract" => pr_review_contract(&args[1..]),
+        other => bail!("unknown pr-review subcommand `{other}`"),
+    }
+}
+
+/// `pr-review queue` — observe one complete PR queue payload (fixture or
+/// inline JSON) and emit at most one exact-head candidate. Previous
+/// observations and handled `NUMBER@HEAD_OID` cursors drive the rotation.
+fn pr_review_queue(store: &mut Store, args: &[String]) -> Result<()> {
+    let json = wants_json(args);
+    let mut repo = None;
+    let mut fixture = None;
+    let mut input = None;
+    let mut previous_json = None;
+    let mut goal_id = None;
+    let mut handled: Vec<String> = vec![];
+    reject_unknown_flags(
+        args,
+        &[
+            "--fixture",
+            "--format",
+            "--goal",
+            "--handled-exact-head",
+            "--input",
+            "--json",
+            "--previous-observation-json",
+            "--repo",
+        ],
+    )?;
+    parse_pairs(args, |k, v| match k {
+        "--repo" => repo = Some(v),
+        "--fixture" => fixture = Some(v),
+        "--input" => input = Some(v),
+        "--previous-observation-json" => previous_json = Some(v),
+        "--handled-exact-head" => handled.push(v),
+        "--goal" => goal_id = Some(v),
+        _ => {}
+    });
+    if let Some(g) = goal_id.as_deref() {
+        enforce_capability_quota(store, g, "pr_review_queue", "pr-review queue")?;
+    }
+    let payload: serde_json::Value = if let Some(path) = fixture {
+        serde_json::from_str(&std::fs::read_to_string(&path)?)?
+    } else if let Some(text) = input {
+        serde_json::from_str(&text)?
+    } else {
+        bail!("pr-review queue requires --fixture PATH or --input JSON (a payload with pull_requests)");
+    };
+    let repo = repo.or_else(|| {
+        payload
+            .get("repository")
+            .and_then(serde_json::Value::as_str)
+            .map(|s| s.to_string())
+    });
+    let pull_requests = payload
+        .get("pull_requests")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let completeness = payload
+        .get("result_completeness")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({ "complete": true }));
+    let previous: Option<serde_json::Value> = if let Some(path) = previous_json {
+        Some(serde_json::from_str(&std::fs::read_to_string(&path)?)?)
+    } else {
+        payload
+            .get("previous_observation")
+            .or_else(|| payload.get("autonomous_review"))
+            .cloned()
+    };
+    use crate::capabilities::pr_review_queue as queue;
+    let observation = queue::build_pull_request_review_queue_observation(
+        repo.as_deref(),
+        &pull_requests,
+        &completeness,
+        previous.as_ref(),
+        &handled,
+    )
+    .map_err(|err| anyhow::anyhow!("{err}"))?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&observation)?);
+        return Ok(());
+    }
+    let repo_label = observation
+        .repository
+        .as_deref()
+        .unwrap_or("(no repository)");
+    println!(
+        "pr-review queue {repo_label}: {} ({})",
+        observation.observation_state, observation.reason
+    );
+    if let Some(size) = observation.queue_size {
+        println!(
+            "  queue size {size} | fingerprint {}",
+            observation.queue_fingerprint.as_deref().unwrap_or("-")
+        );
+    } else {
+        println!("  queue NOT observed (incomplete read)");
+    }
+    if !observation.changed_pr_numbers.is_empty() {
+        println!(
+            "  changed [{}]",
+            join_ids(
+                &observation
+                    .changed_pr_numbers
+                    .iter()
+                    .map(|n| n.map(|n| n.to_string()).unwrap_or_else(|| "?".into()))
+                    .collect::<Vec<_>>()
+            )
+        );
+    }
+    if !observation.removed_pr_numbers.is_empty() {
+        println!(
+            "  removed [{}]",
+            join_ids(
+                &observation
+                    .removed_pr_numbers
+                    .iter()
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+            )
+        );
+    }
+    if let Some(candidate) = &observation.candidate {
+        println!(
+            "  candidate: PR #{} at exact head {} [{}] {} — {}",
+            candidate
+                .number
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "?".into()),
+            candidate.head_oid,
+            candidate.todo_preview.priority,
+            candidate.todo_preview.action_kind,
+            observation
+                .candidate_selection_reason
+                .as_deref()
+                .unwrap_or("candidate")
+        );
+    } else {
+        println!("  candidate: none");
+    }
+    let backlog = &observation.review_backlog;
+    println!(
+        "  backlog: {} actionable unhandled | poll every {}m ({})",
+        backlog.actionable_unhandled_count,
+        backlog.recommended_poll_interval_minutes,
+        backlog.recommended_cadence
+    );
+    if let Some(pending) = &observation.pending_candidate_exact_head {
+        println!("  pending cursor: {pending}");
+    }
+    println!(
+        "  handled {} | projected {} | write authority NOT granted (read-only)",
+        observation.handled_exact_head_count, observation.projected_candidate_count
+    );
+    Ok(())
+}
+
+/// Strictly monotonic event timestamp for a goal ledger: wall-clock is
+/// second-granular, so a burst of commands in one second would otherwise
+/// produce identical ts values and indistinguishable completion stamps.
+fn next_event_ts(store: &Store, goal_id: &str) -> u64 {
+    let last = store
+        .events(goal_id)
+        .ok()
+        .and_then(|events| events.last().map(|e| crate::store::event_ts(&e.event)))
+        .unwrap_or(0);
+    now_epoch().max(last.saturating_add(1))
+}
+
+/// `pr-review review` — publish a verdict (通过/驳回/再修) on the review
+/// work item at an exact head. The item is a first-class advancement todo
+/// (`pr-review-<number>`); a new exact head supersedes the previous item.
+/// Publishing completes the review with evidence — a re-review is driven by
+/// the next material transition in the queue observation.
+fn pr_review_verdict(store: &mut Store, args: &[String]) -> Result<()> {
+    let json = wants_json(args);
+    let mut goal_id = None;
+    let mut number = None;
+    let mut head = None;
+    let mut repo = None;
+    let mut reviewer = None;
+    let mut verdict = None;
+    let mut comment = None;
+    reject_unknown_flags(
+        args,
+        &[
+            "--comment",
+            "--format",
+            "--goal",
+            "--head",
+            "--json",
+            "--number",
+            "--repo",
+            "--reviewer",
+            "--verdict",
+        ],
+    )?;
+    parse_pairs(args, |k, v| match k {
+        "--goal" => goal_id = Some(v),
+        "--number" => number = Some(v),
+        "--head" => head = Some(v),
+        "--repo" => repo = Some(v),
+        "--reviewer" => reviewer = Some(v),
+        "--verdict" => verdict = Some(v),
+        "--comment" => comment = Some(v),
+        _ => {}
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let number: u64 = number
+        .ok_or_else(|| anyhow::anyhow!("--number required"))?
+        .parse()?;
+    let head = head.ok_or_else(|| anyhow::anyhow!("--head required"))?;
+    use crate::capabilities::pr_review_queue::ReviewVerdict;
+    let verdict_token = verdict
+        .ok_or_else(|| anyhow::anyhow!("--verdict required (approve|request-changes|rework)"))?;
+    let verdict = ReviewVerdict::parse(&verdict_token).ok_or_else(|| {
+        anyhow::anyhow!("--verdict must be approve|request-changes|rework (got `{verdict_token}`)")
+    })?;
+    use crate::work_items::review_queue::{apply_verdict, ReviewItem};
+    let item = ReviewItem {
+        number,
+        head_oid: head.clone(),
+        repository: repo,
+        title: format!("PR {number}"),
+        url: None,
+    };
+    if item.exact_head_key().is_none() {
+        bail!("--head must be a full 40- or 64-hex OID (exact-head review contract)");
+    }
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let id = item.todo_id();
+    // Strictly monotonic event ts: wall-clock is second-granular and a
+    // second verdict in the same second must still yield a distinct
+    // completion stamp (contract-tested).
+    let now = next_event_ts(store, &goal_id);
+    // A new exact head for the same PR supersedes the previous item. The
+    // work item is an upsert by PR number: the existing todo (open or done)
+    // is updated in place — no duplicate `pr-review-<number>` ids.
+    let mut superseded = false;
+    let new_item = match goal.todo(&id) {
+        Some(existing) => {
+            match ReviewItem::from_todo(existing) {
+                Some(parsed) if parsed.head_oid != item.head_oid => superseded = true,
+                _ => {}
+            }
+            false
+        }
+        None => true,
+    };
+    // Apply the verdict contract on a scratch todo to get note + evidence.
+    let mut todo = item.to_todo(&id);
+    apply_verdict(
+        &mut todo,
+        verdict,
+        reviewer.as_deref(),
+        comment.as_deref(),
+        now,
+    )
+    .map_err(anyhow::Error::msg)?;
+    let note = todo.note.clone();
+    let evidence = todo.evidence.clone().unwrap_or_default();
+    if new_item {
+        store.append(Event::TodoAdded {
+            goal_id: goal_id.clone(),
+            todo: item.to_todo(&id),
+            ts: now,
+        })?;
+    }
+    store.append(Event::TodoUpdated {
+        goal_id: goal_id.clone(),
+        todo_id: id.clone(),
+        // A superseding head must refresh the exact-head text the work item
+        // carries (reviews are exact-head addressed).
+        text: if superseded { Some(item.text()) } else { None },
+        status: None,
+        evidence: None,
+        note,
+        priority: None,
+        resume_when: None,
+        blocks: None,
+        ts: now,
+    })?;
+    store.append(Event::TodoCompleted {
+        goal_id: goal_id.clone(),
+        todo_id: id.clone(),
+        no_follow_up: true,
+        successor_ids: vec![],
+        evidence: Some(evidence.clone()),
+        ts: now,
+    })?;
+    refresh_next_action(store, &goal_id)?;
+    let _ = sync_compat(store, &goal_id);
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "goal": goal_id,
+                "todo_id": id,
+                "number": number,
+                "head_oid": head,
+                "verdict": verdict.key(),
+                "label": verdict.label(),
+                "reviewer": reviewer.as_deref().unwrap_or("reviewer"),
+                "evidence": evidence,
+                "superseded": superseded,
+                "new_item": new_item
+            }))?
+        );
+        return Ok(());
+    }
+    println!(
+        "review PR #{number} at exact head {head} in {goal_id}: {} ({}) by {} ✔",
+        verdict.label(),
+        verdict.key(),
+        reviewer.as_deref().unwrap_or("reviewer")
+    );
+    println!("  evidence: {evidence}");
+    if superseded {
+        println!("  (previous exact head superseded)");
+    }
+    Ok(())
+}
+
+/// `pr-review claim` — claim a review work item: the existing task-lease
+/// state machine with the reviewer as lease owner.
+fn pr_review_claim(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut number = None;
+    let mut reviewer = None;
+    let mut lease_secs = 0u64;
+    reject_unknown_flags(args, &["--goal", "--lease-secs", "--number", "--reviewer"])?;
+    parse_pairs(args, |k, v| match k {
+        "--goal" => goal_id = Some(v),
+        "--number" => number = Some(v),
+        "--reviewer" => reviewer = Some(v),
+        "--lease-secs" => lease_secs = v.parse().unwrap_or(0),
+        _ => {}
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let number: u64 = number
+        .ok_or_else(|| anyhow::anyhow!("--number required"))?
+        .parse()?;
+    let reviewer = reviewer.unwrap_or_else(|| "default-agent".to_string());
+    let mut goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let id = format!("pr-review-{number}");
+    let existing = goal.todo(&id).cloned().ok_or_else(|| {
+        anyhow::anyhow!("review work item {id} not found (add it with `pr-review review` first)")
+    })?;
+    let item = crate::work_items::review_queue::ReviewItem::from_todo(&existing)
+        .ok_or_else(|| anyhow::anyhow!("todo {id} is not a PR review work item"))?;
+    use crate::work_items::review_queue::claim_review;
+    let now = now_epoch();
+    let op =
+        claim_review(&mut goal, &item, &reviewer, lease_secs, now).map_err(anyhow::Error::msg)?;
+    if !op.idempotent {
+        if op.steal {
+            store.append(Event::TodoExpired {
+                goal_id: goal_id.clone(),
+                todo_id: id.clone(),
+                ts: now,
+            })?;
+        }
+        let expires = goal
+            .todo(&id)
+            .and_then(|todo| todo.lease_expires_at)
+            .unwrap_or(now);
+        store.append(Event::TodoClaimed {
+            goal_id: goal_id.clone(),
+            todo_id: id.clone(),
+            agent_id: reviewer.clone(),
+            lease_expires_at: expires,
+            ts: now,
+        })?;
+    }
+    let _ = sync_compat(store, &goal_id);
+    let expires = goal
+        .todo(&id)
+        .and_then(|todo| todo.lease_expires_at)
+        .unwrap_or(now);
+    println!(
+        "review work item {id} lease acquired by {reviewer} until {expires} {}",
+        if op.steal {
+            "(steal after expiry) "
+        } else {
+            ""
+        }
+    );
+    Ok(())
+}
+
+/// `pr-review recommend` — reviewer recommendation from CODEOWNERS/OWNERS
+/// owner mapping plus a recent-commit heuristic over the changed paths.
+fn pr_review_recommend(args: &[String]) -> Result<()> {
+    let json = wants_json(args);
+    let mut paths: Vec<String> = vec![];
+    let mut codeowners_path = None;
+    let mut owners_root = None;
+    let mut repo_dir = None;
+    let mut since_days = 30u32;
+    reject_unknown_flags(
+        args,
+        &[
+            "--codeowners",
+            "--format",
+            "--json",
+            "--owners-root",
+            "--path",
+            "--repo-dir",
+            "--since-days",
+        ],
+    )?;
+    parse_pairs(args, |k, v| match k {
+        "--path" => paths.extend(
+            v.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+        ),
+        "--codeowners" => codeowners_path = Some(v),
+        "--owners-root" => owners_root = Some(v),
+        "--repo-dir" => repo_dir = Some(v),
+        "--since-days" => since_days = v.parse().unwrap_or(30),
+        _ => {}
+    });
+    if paths.is_empty() {
+        bail!("pr-review recommend requires at least one --path (comma-separated or repeatable)");
+    }
+    use crate::work_items::reviewer;
+    let rules = match codeowners_path {
+        Some(path) => reviewer::parse_codeowners(&std::fs::read_to_string(&path)?),
+        None => vec![],
+    };
+    let dir_owners = match owners_root {
+        Some(root) => reviewer::scan_owners_files(std::path::Path::new(&root)),
+        None => std::collections::BTreeMap::new(),
+    };
+    let commits = match repo_dir {
+        Some(dir) => reviewer::git_recent_commits(std::path::Path::new(&dir), since_days, 200),
+        None => vec![],
+    };
+    let candidates = reviewer::recommend_reviewers(
+        &paths,
+        (!rules.is_empty()).then_some(rules.as_slice()),
+        &dir_owners,
+        &commits,
+    );
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "paths": paths,
+                "candidates": candidates,
+            }))?
+        );
+        return Ok(());
+    }
+    println!("reviewer recommendations for {} path(s):", paths.len());
+    if candidates.is_empty() {
+        println!("  (no owner mapping or recent commits matched — add a CODEOWNERS/OWNERS file)");
+        return Ok(());
+    }
+    for candidate in &candidates {
+        println!(
+            "  {:<24} score {}  ({})",
+            candidate.reviewer,
+            candidate.score,
+            candidate.sources.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// `pr-review contract` — print the shared review execution contract
+/// (evidence requirements, completion gate, verdict policy 通过/驳回/再修).
+fn pr_review_contract(args: &[String]) -> Result<()> {
+    let json = wants_json(args);
+    reject_unknown_flags(args, &["--format", "--json"])?;
+    use crate::capabilities::pr_review_queue as queue;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&queue::build_agent_response_contract())?
+        );
+        return Ok(());
+    }
+    let contract = queue::build_review_execution_contract();
+    let gate = &contract["completion_gate"];
+    let policy = &contract["verdict_policy"];
+    println!(
+        "PR review execution contract ({})",
+        queue::EXECUTION_CONTRACT_SCHEMA_VERSION
+    );
+    println!("  completion gate:");
+    println!(
+        "    exact-head recheck required: {} | stale-head verdicts allowed: {}",
+        gate["exact_head_recheck_required"], gate["stale_head_verdict_allowed"]
+    );
+    println!(
+        "    code-change symbol minimum: {} | required final sections: {}",
+        gate["code_change_symbol_minimum"],
+        queue::REQUIRED_FINAL_SECTIONS.join(" / ")
+    );
+    println!("  verdict policy:");
+    println!(
+        "    blocking finding  → {}",
+        policy["open_pr_blocking_finding"]
+    );
+    println!(
+        "    non-blocking      → {}",
+        policy["open_pr_non_blocking_finding"]
+    );
+    println!("    no finding        → {}", policy["open_pr_no_finding"]);
+    println!("    merged PR         → {}", policy["merged_pr"]);
+    println!("  CLI verdicts: approve (通过) | request-changes (驳回) | rework (再修)");
     Ok(())
 }
 
@@ -7862,6 +8410,347 @@ mod cli_quirks_tests {
         // rows serialize (the --format json path)
         let json = serde_json::to_string(&rows).unwrap();
         assert!(json.contains("\"status\":\"running\""));
+    }
+
+    // ── pr-review (P2-3) CLI contract tests ─────────────────────────────
+
+    fn pr_fixture(number: u64, head: &str) -> serde_json::Value {
+        serde_json::json!({
+            "number": number,
+            "title": format!("PR {number}"),
+            "url": format!("https://github.com/owner/repo/pull/{number}"),
+            "state": "OPEN",
+            "head_oid": head,
+            "review_decision": "REVIEW_REQUIRED",
+            "is_draft": false,
+            "merge_state": "CLEAN",
+            "checks": {"counts": {"success": 1, "failure": 0, "pending": 0, "unknown": 0}, "failures": [], "pending": []}
+        })
+    }
+
+    fn pr_review_store() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().into_owned();
+        let mut store = Store::open(&root).unwrap();
+        let goal = Goal::new("g", "review PRs", "/tmp");
+        store.register(&goal).unwrap();
+        store
+            .append(Event::GoalStarted {
+                goal_id: "g".into(),
+                ts: 1,
+            })
+            .unwrap();
+        (dir, store)
+    }
+
+    #[test]
+    fn pr_review_queue_projects_the_observation() {
+        let (_dir, mut store) = pr_review_store();
+        let fixture = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            fixture.path(),
+            serde_json::json!({
+                "repository": "owner/repo",
+                "pull_requests": [pr_fixture(1, &"a".repeat(40)), pr_fixture(2, &"b".repeat(40))]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let args = vec![
+            "queue".to_string(),
+            "--fixture".to_string(),
+            fixture.path().to_string_lossy().into_owned(),
+            "--format".to_string(),
+            "json".to_string(),
+        ];
+        // capture stdout is not wired here; assert the observation instead
+        let payload: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(fixture.path()).unwrap()).unwrap();
+        let observation =
+            crate::capabilities::pr_review_queue::build_pull_request_review_queue_observation(
+                Some("owner/repo"),
+                payload["pull_requests"].as_array().unwrap(),
+                &serde_json::json!({"complete": true}),
+                None,
+                &[],
+            )
+            .unwrap();
+        assert_eq!(observation.candidate.as_ref().unwrap().number, Some(1));
+        assert_eq!(observation.queue_size, Some(2));
+        // the CLI path accepts the same flags without panicking
+        pr_review_queue(&mut store, &args).unwrap();
+    }
+
+    #[test]
+    fn pr_review_queue_requires_a_payload_source() {
+        let (_dir, mut store) = pr_review_store();
+        let err = pr_review_queue(&mut store, &["queue".to_string()]).unwrap_err();
+        assert!(format!("{err}").contains("--fixture"), "{err}");
+    }
+
+    #[test]
+    fn pr_review_verdict_creates_and_completes_the_work_item() {
+        let (dir, mut store) = pr_review_store();
+        let args = vec![
+            "review".to_string(),
+            "--goal".to_string(),
+            "g".to_string(),
+            "--number".to_string(),
+            "7".to_string(),
+            "--head".to_string(),
+            "a".repeat(40),
+            "--repo".to_string(),
+            "owner/repo".to_string(),
+            "--reviewer".to_string(),
+            "alice".to_string(),
+            "--verdict".to_string(),
+            "request-changes".to_string(),
+            "--comment".to_string(),
+            "missing regression test".to_string(),
+        ];
+        pr_review_verdict(&mut store, &args).unwrap();
+        let goal = store.replay("g").unwrap().unwrap();
+        let todo = goal.todo("pr-review-7").unwrap();
+        assert_eq!(todo.status, TodoStatus::Done);
+        assert!(todo.no_follow_up);
+        assert_eq!(todo.action_kind.as_deref(), Some("github_pr_review"));
+        assert_eq!(
+            todo.task_repository.as_deref(),
+            Some("git:github.com/owner/repo")
+        );
+        let evidence = todo.evidence.as_deref().unwrap();
+        assert!(evidence.contains("驳回"), "{evidence}");
+        assert!(evidence.contains("alice"));
+        assert!(evidence.contains("missing regression test"));
+        // the active-state projection is in sync
+        let active = std::fs::read_to_string(dir.path().join("goals/g/ACTIVE_GOAL_STATE.md"))
+            .unwrap_or_default();
+        assert!(active.contains("PR #7"), "{active}");
+        // a fresh verdict at the SAME head opens a new item (review completes)
+        pr_review_verdict(&mut store, &args).unwrap();
+        let goal = store.replay("g").unwrap().unwrap();
+        assert_eq!(goal.todo("pr-review-7").unwrap().status, TodoStatus::Done);
+    }
+
+    #[test]
+    fn pr_review_verdict_supersedes_on_a_new_exact_head() {
+        let (_dir, mut store) = pr_review_store();
+        let base = |head: String| {
+            vec![
+                "review".to_string(),
+                "--goal".to_string(),
+                "g".to_string(),
+                "--number".to_string(),
+                "3".to_string(),
+                "--head".to_string(),
+                head,
+                "--verdict".to_string(),
+                "approve".to_string(),
+            ]
+        };
+        pr_review_verdict(&mut store, &base("a".repeat(40))).unwrap();
+        let first_ts = store
+            .replay("g")
+            .unwrap()
+            .unwrap()
+            .todo("pr-review-3")
+            .unwrap()
+            .completed_at;
+        pr_review_verdict(&mut store, &base("b".repeat(40))).unwrap();
+        let goal = store.replay("g").unwrap().unwrap();
+        let todo = goal.todo("pr-review-3").unwrap();
+        assert_eq!(todo.status, TodoStatus::Done);
+        assert!(
+            todo.completed_at > first_ts,
+            "new head completes a fresh item"
+        );
+        let evidence = todo.evidence.as_deref().unwrap();
+        assert!(evidence.contains(&"b".repeat(40)), "{evidence}");
+        assert!(evidence.contains("通过"));
+    }
+
+    #[test]
+    fn pr_review_verdict_rejects_bad_heads_and_verdicts() {
+        let (_dir, mut store) = pr_review_store();
+        let bad_head = pr_review_verdict(
+            &mut store,
+            &[
+                "review".to_string(),
+                "--goal".to_string(),
+                "g".to_string(),
+                "--number".to_string(),
+                "1".to_string(),
+                "--head".to_string(),
+                "short".to_string(),
+                "--verdict".to_string(),
+                "approve".to_string(),
+            ],
+        )
+        .unwrap_err();
+        assert!(format!("{bad_head}").contains("40- or 64-hex"));
+        let bad_verdict = pr_review_verdict(
+            &mut store,
+            &[
+                "review".to_string(),
+                "--goal".to_string(),
+                "g".to_string(),
+                "--number".to_string(),
+                "1".to_string(),
+                "--head".to_string(),
+                "a".repeat(40),
+                "--verdict".to_string(),
+                "meh".to_string(),
+            ],
+        )
+        .unwrap_err();
+        assert!(format!("{bad_verdict}").contains("approve|request-changes|rework"));
+        // no todo materialized on the failed paths
+        let goal = store.replay("g").unwrap().unwrap();
+        assert!(goal.todo("pr-review-1").is_none());
+    }
+
+    #[test]
+    fn pr_review_claim_reuses_the_task_lease_events() {
+        let (_dir, mut store) = pr_review_store();
+        let args = |verdict: &str| {
+            vec![
+                "review".to_string(),
+                "--goal".to_string(),
+                "g".to_string(),
+                "--number".to_string(),
+                "5".to_string(),
+                "--head".to_string(),
+                "c".repeat(40),
+                "--verdict".to_string(),
+                verdict.to_string(),
+            ]
+        };
+        pr_review_verdict(&mut store, &args("approve")).unwrap();
+        // the completed item cannot be claimed (task_lease requires open)
+        let err = pr_review_claim(
+            &mut store,
+            &[
+                "claim".to_string(),
+                "--goal".to_string(),
+                "g".to_string(),
+                "--number".to_string(),
+                "5".to_string(),
+                "--reviewer".to_string(),
+                "bob".to_string(),
+            ],
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("open todo"), "{err:#}");
+        // claim an OPEN review item: lease events land in the ledger
+        let open = vec![
+            "review".to_string(),
+            "--goal".to_string(),
+            "g".to_string(),
+            "--number".to_string(),
+            "6".to_string(),
+            "--head".to_string(),
+            "d".repeat(40),
+            "--verdict".to_string(),
+            "rework".to_string(),
+        ];
+        // add an open review item via the work-item builder directly
+        let goal = store.replay("g").unwrap().unwrap();
+        let item = crate::work_items::review_queue::ReviewItem {
+            number: 6,
+            head_oid: "d".repeat(40),
+            repository: Some("owner/repo".to_string()),
+            title: "PR 6".to_string(),
+            url: None,
+        };
+        let todo = item.to_todo("pr-review-6");
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo,
+                ts: 2,
+            })
+            .unwrap();
+        let _ = goal;
+        pr_review_claim(
+            &mut store,
+            &[
+                "claim".to_string(),
+                "--goal".to_string(),
+                "g".to_string(),
+                "--number".to_string(),
+                "6".to_string(),
+                "--reviewer".to_string(),
+                "bob".to_string(),
+            ],
+        )
+        .unwrap();
+        let goal = store.replay("g").unwrap().unwrap();
+        let claimed = goal.todo("pr-review-6").unwrap();
+        assert_eq!(claimed.claimed_by.as_deref(), Some("bob"));
+        assert!(claimed.lease_expires_at.is_some());
+        let _ = open;
+    }
+
+    #[test]
+    fn pr_review_recommend_ranks_from_codeowners_and_owners_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/deep")).unwrap();
+        std::fs::write(
+            dir.path().join("CODEOWNERS"),
+            "src/** @core\n*.md docs-team\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("src/OWNERS"), "alice\n").unwrap();
+        std::fs::write(dir.path().join("src/deep/OWNERS"), "deep-owner\n").unwrap();
+        let args = vec![
+            "recommend".to_string(),
+            "--path".to_string(),
+            "src/deep/core.rs".to_string(),
+            "--codeowners".to_string(),
+            dir.path().join("CODEOWNERS").to_string_lossy().into_owned(),
+            "--owners-root".to_string(),
+            dir.path().to_string_lossy().into_owned(),
+            "--format".to_string(),
+            "json".to_string(),
+        ];
+        pr_review_recommend(&args).unwrap();
+        // the pure scorer is the contract; assert its deterministic ranking
+        let rules = crate::work_items::reviewer::parse_codeowners("src/** @core\n");
+        let dirs = crate::work_items::reviewer::scan_owners_files(dir.path());
+        let candidates = crate::work_items::reviewer::recommend_reviewers(
+            &["src/deep/core.rs".to_string()],
+            Some(&rules),
+            &dirs,
+            &[],
+        );
+        let names: Vec<&str> = candidates.iter().map(|c| c.reviewer.as_str()).collect();
+        assert_eq!(names, vec!["@core", "deep-owner"]);
+        // no paths → error
+        assert!(pr_review_recommend(&["recommend".to_string()]).is_err());
+    }
+
+    #[test]
+    fn pr_review_contract_prints_the_verdict_policy() {
+        pr_review_contract(&["contract".to_string()]).unwrap();
+        pr_review_contract(&[
+            "contract".to_string(),
+            "--format".to_string(),
+            "json".to_string(),
+        ])
+        .unwrap();
+        let err = pr_review_contract(&["contract".to_string(), "--nope".to_string()]).unwrap_err();
+        assert!(format!("{err}").contains("unknown flag"), "{err}");
+    }
+
+    #[test]
+    fn pr_review_registered_and_journey_assigned() {
+        let registry = build_cli_registry();
+        let (group, def) = registry.find("pr-review", false).unwrap();
+        assert_eq!(group.name, "pr-review");
+        assert_eq!(def.journey, Journey::Daily);
+        assert!(registry
+            .render_help(false)
+            .contains("pr-review queue|review|claim"));
     }
 
     #[test]

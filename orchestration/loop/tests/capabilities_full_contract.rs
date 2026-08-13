@@ -1,11 +1,11 @@
-//! All-14-capabilities contract test: every domain pack in the catalog
+//! All-15-capabilities contract test: every domain pack in the catalog
 //! registers, describes itself, and produces finite typed proposals on
 //! marker inputs. Deterministic.
 
 use future_loop::capabilities::{CapabilityRegistry, ProposalKind};
 
 #[test]
-fn all_14_capabilities_registered() {
+fn all_15_capabilities_registered() {
     let r = CapabilityRegistry::with_builtin();
     let names: Vec<&str> = r.all().iter().map(|c| c.name()).collect();
     for expected in [
@@ -20,6 +20,7 @@ fn all_14_capabilities_registered() {
         "issue_fix",
         "material_lifecycle",
         "periodic_report",
+        "pr_review_queue",
         "reward_memory",
         "semantic_preference",
         "value_connectors",
@@ -27,7 +28,7 @@ fn all_14_capabilities_registered() {
         assert!(names.contains(&expected), "missing capability {expected}");
         assert!(r.get(expected).is_some(), "registry lookup for {expected}");
     }
-    assert_eq!(r.all().len(), 14);
+    assert_eq!(r.all().len(), 15);
 }
 
 #[test]
