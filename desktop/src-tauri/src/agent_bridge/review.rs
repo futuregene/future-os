@@ -295,7 +295,6 @@ mod tests {
         let base = std::env::temp_dir().join(format!("futureos_shadow_{}", std::process::id()));
         let home = base.join("home");
         let workspace_dir = base.join("ws");
-        let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&home).unwrap();
         fs::create_dir_all(&workspace_dir).unwrap();
         std::env::set_var("HOME", &home);
@@ -417,18 +416,34 @@ mod tests {
             "the oldest Run's changeset should be pruned"
         );
 
-        let _ = fs::remove_dir_all(&base);
     }
 
     /// Set up a temp HOME + store; returns cleanup base plus a workspace-mode
     /// thread and run. Caller holds `TEST_HOME_LOCK` for the whole test.
-    fn fixture(tag: &str) -> (std::path::PathBuf, store::ThreadRecord, store::RunRecord) {
+    /// Holds the temp dir + restores HOME on drop (the process-global HOME is
+    /// left pointing at a removed dir otherwise, which poisons later tests).
+    struct Fixture {
+        base: std::path::PathBuf,
+        prev_home: Option<String>,
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.base);
+            match &self.prev_home {
+                Some(prev) => std::env::set_var("HOME", prev),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+
+    fn fixture(tag: &str) -> (Fixture, store::ThreadRecord, store::RunRecord) {
         let base = std::env::temp_dir().join(format!("futureos_{}_{}", tag, std::process::id()));
         let home = base.join("home");
         let ws_dir = base.join("ws");
-        let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&home).unwrap();
         fs::create_dir_all(&ws_dir).unwrap();
+        let prev_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", &home);
         store::initialize_app_store().unwrap();
         let ws = store::create_workspace(CreateWorkspaceInput {
@@ -455,7 +470,14 @@ mod tests {
             model_id: None,
         })
         .unwrap();
-        (base, thread, run)
+        (
+            Fixture {
+                base,
+                prev_home,
+            },
+            thread,
+            run,
+        )
     }
 
     #[test]
@@ -463,7 +485,7 @@ mod tests {
         let _lock = crate::TEST_HOME_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let (base, thread, run) = fixture("resolve");
+        let (_fx, thread, run) = fixture("resolve");
 
         // Missing thread → None.
         assert!(super::resolve("no-such-thread").unwrap().is_none());
@@ -500,7 +522,7 @@ mod tests {
         // Workspace thread whose workspace ROW is gone (raw delete, FK off).
         fs::create_dir_all(&ws_path).unwrap();
         let conn =
-            rusqlite::Connection::open(base.join("home/.future/app/app.db")).expect("open db");
+            rusqlite::Connection::open(_fx.base.join("home/.future/app/app.db")).expect("open db");
         conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
         conn.execute("DELETE FROM workspaces WHERE id = ?1", [&ws])
             .unwrap();
@@ -509,7 +531,6 @@ mod tests {
 
         let _ = run;
         let _ = chat_run;
-        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -517,7 +538,7 @@ mod tests {
         let _lock = crate::TEST_HOME_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let (base, thread, run) = fixture("retry-err");
+        let (_fx, thread, run) = fixture("retry-err");
 
         // Run not found.
         let err = super::retry("no-such-run").unwrap_err();
@@ -586,7 +607,6 @@ mod tests {
         let err = super::retry(&run.id).unwrap_err();
         assert!(err.to_string().contains("no commits"), "{err}");
 
-        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -594,7 +614,7 @@ mod tests {
         let _lock = crate::TEST_HOME_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let (base, thread, run) = fixture("swallow");
+        let (_fx, thread, run) = fixture("swallow");
 
         // Broken HOME → resolve fails → the public wrappers log and swallow.
         let broken = std::env::temp_dir().join(format!("futureos_broken_{}", std::process::id()));
@@ -608,7 +628,6 @@ mod tests {
 
         std::env::set_var("HOME", saved.unwrap_or_default());
         let _ = fs::remove_dir_all(&broken);
-        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -616,7 +635,7 @@ mod tests {
         let _lock = crate::TEST_HOME_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let (base, thread, run) = fixture("retry-ok");
+        let (_fx, thread, run) = fixture("retry-ok");
         let ws_path = store::get_workspace(&store::get_thread(&thread.id).unwrap().unwrap().workspace_id)
             .unwrap()
             .unwrap()
@@ -634,7 +653,6 @@ mod tests {
             .expect("retry materializes a changeset");
         assert_eq!(changeset.source_kind, "run_snapshot");
 
-        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -642,7 +660,7 @@ mod tests {
         let _lock = crate::TEST_HOME_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let (base, thread, run) = fixture("try-skip");
+        let (_fx, thread, run) = fixture("try-skip");
 
         // Chat thread → resolve None → the try_* helpers return Ok/empty.
         let chat = store::create_thread(CreateThreadInput {
@@ -671,7 +689,6 @@ mod tests {
         assert!(super::try_capture_after(&thread.id, &run.id).unwrap().is_empty());
         super::try_materialize_changeset(&thread.id, &run.id, vec![]).unwrap();
 
-        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -679,7 +696,7 @@ mod tests {
         let _lock = crate::TEST_HOME_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let (base, thread, run) = fixture("materialize-paths");
+        let (_fx, thread, run) = fixture("materialize-paths");
         let ws_id = store::get_thread(&thread.id).unwrap().unwrap().workspace_id;
 
         let snap = |phase: &str, status: &str, commit: Option<&str>| {
@@ -711,7 +728,6 @@ mod tests {
         snap("after", "complete", None);
         super::try_materialize_changeset(&thread.id, &run.id, vec![]).unwrap();
 
-        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -719,7 +735,7 @@ mod tests {
         let _lock = crate::TEST_HOME_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let (base, thread, run) = fixture("retry-bad-commits");
+        let (_fx, thread, run) = fixture("retry-bad-commits");
         let ws_id = store::get_thread(&thread.id).unwrap().unwrap().workspace_id;
 
         // Snapshots with commit ids that do not exist in the shadow repo.
@@ -744,6 +760,5 @@ mod tests {
         let err = super::retry(&run.id).unwrap_err();
         assert!(!err.to_string().is_empty());
 
-        let _ = fs::remove_dir_all(&base);
     }
 }
