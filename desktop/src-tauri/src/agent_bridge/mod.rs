@@ -662,7 +662,7 @@ async fn agent_prompt_inner(
             session_id.clone(),
             attachments.unwrap_or_default(),
             Some(run_id.clone()),
-        )?)
+        ))
         .await
         .map_err(|error| format!("Unable to send prompt to Future Agent: {error}"))?
         .into_inner()
@@ -2080,6 +2080,8 @@ mod bridge_tests {
         TEST_OUTBOX_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
         tokio::time::sleep(std::time::Duration::from_millis(60)).await;
         std::env::remove_var("FUTURE_TEST_OUTBOX_INTERVAL_MS");
+        // With the shrink seam removed the default (5s) interval is used.
+        assert_eq!(delete_outbox_interval(), std::time::Duration::from_secs(5));
     }
 
     // ── active run watchdog ───────────────────────────────────────────
@@ -2120,6 +2122,23 @@ mod bridge_tests {
         assert_eq!(record.status, "failed");
         assert_eq!(record.error_type.as_deref(), Some("stream_interrupted"));
 
+        // Reconcile transport error on an aged active run → logged, row
+        // untouched (the watchdog continues instead of propagating).
+        let run2 = seed_run(&thread.id);
+        mock.push(
+            &format!("get_state#{}", run2.id),
+            Reply::Status(tonic::Code::Unavailable, "down"),
+        );
+        active_run_watchdog_pass(orphan_now).await;
+        assert_eq!(
+            crate::store::get_run(&run2.id)
+                .expect("run")
+                .expect("some")
+                .status,
+            "running",
+            "transport error leaves the row untouched"
+        );
+
         // Store unreadable → the pass returns immediately.
         let prev = break_home();
         active_run_watchdog_pass(orphan_now).await;
@@ -2145,6 +2164,11 @@ mod bridge_tests {
         TEST_WATCHDOG_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
         tokio::time::sleep(std::time::Duration::from_millis(60)).await;
         std::env::remove_var("FUTURE_TEST_WATCHDOG_INTERVAL_MS");
+        // With the shrink seam removed the default interval is used.
+        assert_eq!(
+            watchdog_interval(),
+            std::time::Duration::from_secs(WATCHDOG_INTERVAL_SECS)
+        );
         let _ = &mock;
     }
 
@@ -2205,6 +2229,29 @@ mod bridge_tests {
             .await
             .expect_err("transport");
         assert!(error.contains("get_run_state"), "{error}");
+
+        // Interrupted-by-restart marker → the row is cancelled.
+        let run_i = seed_run(&thread.id);
+        let active_i = crate::store::ActiveRun {
+            run_id: run_i.id.clone(),
+            thread_id: thread.id.clone(),
+            session_id: "sess-1".to_string(),
+            created_at: run_i.created_at,
+        };
+        mock.push_run_state(
+            &run_i.id,
+            serde_json::json!({"interruptedRun": {"runId": run_i.id}}),
+        );
+        reconcile_active_run_once(&active_i, &run_i.id, 120)
+            .await
+            .expect("interrupted");
+        assert_eq!(
+            crate::store::get_run(&run_i.id)
+                .expect("run")
+                .expect("some")
+                .status,
+            "cancelled"
+        );
     }
 }
 
@@ -2746,6 +2793,44 @@ mod pipeline_tests {
         );
     }
 
+    /// When the stream fails and the best-effort abort is itself rejected, the
+    /// abort error is logged and the original stream error still surfaces.
+    #[tokio::test]
+    async fn agent_prompt_stream_error_logs_a_failed_abort() {
+        let fixture = pipeline_fixture("pipe-stream-err-abort", "t");
+        let (message, thread_id, run_id) = prompt_args(&fixture);
+        fixture
+            .mock
+            .push_data("new_session", serde_json::json!({"sessionId": "sess-psea"}));
+        fixture.mock.push_stream(StreamScript::Events(
+            vec![stream_event(
+                &run_id,
+                0,
+                "error",
+                r#"{"error":"provider down"}"#,
+            )],
+            None,
+        ));
+        // The best-effort abort is rejected — exercise the abort-failure log.
+        fixture
+            .mock
+            .push("abort", Reply::Reject("abort refused".to_string()));
+
+        let error = agent_prompt(
+            message,
+            None,
+            thread_id,
+            None,
+            Some(run_id.clone()),
+            None,
+            None,
+        )
+        .await
+        .expect_err("stream error");
+        assert_eq!(error.to_string(), "provider down");
+        assert_eq!(fixture.mock.requests_of("abort").len(), 1);
+    }
+
     #[tokio::test]
     async fn agent_prompt_requires_a_real_thread() {
         let _home = TestHome::new("pipe-no-thread");
@@ -2862,6 +2947,39 @@ mod pipeline_tests {
         );
     }
 
+    /// The auto-name fire-and-forget agent rename silently skips the agent
+    /// call when the agent is unreachable (the `if let Ok` else path).
+    #[tokio::test]
+    async fn auto_name_thread_survives_an_unreachable_agent() {
+        let home = TestHome::new("pipe-autoname-down");
+        let _mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-an-down"));
+        crate::store::rename_thread(crate::store::RenameThreadInput {
+            thread_id: thread.id.clone(),
+            title: "New Chat".to_string(),
+        })
+        .expect("rename");
+
+        let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock addr");
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
+
+        auto_name_thread(&thread.id, "hello");
+        // Let the fire-and-forget rename task run against the dead endpoint.
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
+        // The local rename still happened; only the agent propagation was
+        // skipped.
+        assert_eq!(
+            crate::store::get_thread(&thread.id)
+                .expect("thread")
+                .expect("exists")
+                .title,
+            "hello"
+        );
+    }
+
     // ── crash recovery ────────────────────────────────────────────────
 
     fn mark_interrupted(run_id: &str) {
@@ -2887,6 +3005,25 @@ mod pipeline_tests {
         let prev = test_support::break_home();
         reconcile_interrupted_runs().await;
         test_support::restore_home(prev);
+    }
+
+    /// A crash-recovery pass over an interrupted run whose reanimation hits an
+    /// unreachable agent logs the failure (rather than panicking) and keeps
+    /// going.
+    #[tokio::test]
+    async fn reconcile_interrupted_runs_logs_a_reanimation_error() {
+        let home = TestHome::new("pipe-reconcile-err");
+        let _mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-re-err"));
+        let run = seed_run(&thread.id);
+        mark_interrupted(&run.id);
+
+        // Agent unreachable → check_and_reanimate_run returns Err → logged.
+        let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock addr");
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
+        reconcile_interrupted_runs().await;
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
     }
 
     #[tokio::test]

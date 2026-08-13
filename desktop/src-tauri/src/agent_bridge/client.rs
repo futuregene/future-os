@@ -338,7 +338,7 @@ pub(super) fn prompt_command(
     session_id: String,
     attachments: Vec<AttachmentInput>,
     requested_run_id: Option<String>,
-) -> Result<RpcCommand, crate::AppError> {
+) -> RpcCommand {
     // Only paths cross the wire; the agent reads + encodes image bytes itself.
     let attachments = attachments
         .into_iter()
@@ -349,13 +349,13 @@ pub(super) fn prompt_command(
             thumbnail: item.thumbnail.unwrap_or_default(),
         })
         .collect();
-    Ok(RpcCommand {
+    RpcCommand {
         message,
         attachments,
         requested_run_id: requested_run_id.unwrap_or_default(),
         client_request_id: command_id(),
         ..base_command("prompt", session_id)
-    })
+    }
 }
 
 pub(super) fn approval_decision_command(
@@ -739,8 +739,7 @@ mod tests {
                 },
             ],
             Some("run-1".to_string()),
-        )
-        .expect("prompt command");
+        );
         assert_eq!(cmd.r#type, "prompt");
         assert_eq!(cmd.message, "hello");
         assert_eq!(cmd.requested_run_id, "run-1");
@@ -752,8 +751,7 @@ mod tests {
             "absent thumbnail defaults"
         );
 
-        let bare =
-            prompt_command("m".to_string(), "s".to_string(), vec![], None).expect("bare prompt");
+        let bare = prompt_command("m".to_string(), "s".to_string(), vec![], None);
         assert_eq!(bare.requested_run_id, "");
     }
 
