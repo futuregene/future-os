@@ -1044,6 +1044,78 @@ mod tests {
         assert!(!new_thread.workspace_id.is_empty());
     }
 
+    /// A workspace-mode fork whose workspace row has vanished under the
+    /// thread (raw delete, FK off) fails at `create_thread` — the `?` error
+    /// arm must surface rather than silently creating an orphan thread.
+    #[tokio::test]
+    async fn fork_create_thread_fails_when_the_workspace_row_is_gone() {
+        let home = TestHome::new("session-fork-create-fail");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-1"));
+
+        // Delete the workspace row directly (FK off) while leaving the thread
+        // row behind: `get_thread` still resolves the parent, but the forked
+        // `create_thread` can no longer load the workspace.
+        let conn = rusqlite::Connection::open(home.path().join(".future/app/app.db"))
+            .expect("open db");
+        conn.execute_batch("PRAGMA foreign_keys = OFF;")
+            .expect("fk off");
+        conn.execute("DELETE FROM workspaces WHERE id = ?1", [&workspace.id])
+            .expect("delete workspace row");
+        drop(conn);
+
+        mock.push_data(
+            "get_session_entries",
+            entries_payload(conversation_entries()),
+        );
+        mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork-cf"}));
+        mock.push_data(
+            "get_session_entries",
+            entries_payload(forked_entries()),
+        );
+
+        let error = fork_agent_session(&thread.id, "x", 0)
+            .await
+            .expect_err("create thread");
+        assert!(
+            error.to_string().contains("Workspace"),
+            "{error}"
+        );
+    }
+
+    /// When the forked thread's workspace path can no longer be created on
+    /// disk (the directory was replaced by a file), the cwd write-back's
+    /// `create_dir_all` error propagates through `?` rather than being
+    /// swallowed.
+    #[tokio::test]
+    async fn fork_propagates_a_create_dir_failure() {
+        let home = TestHome::new("session-fork-mkdir-fail");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-1"));
+
+        // Replace the workspace directory with a plain file: the row still
+        // resolves, but `create_dir_all` on that path must fail.
+        std::fs::remove_dir_all(&workspace.path).expect("rm workspace dir");
+        std::fs::write(&workspace.path, "not a directory").expect("write file");
+
+        mock.push_data(
+            "get_session_entries",
+            entries_payload(conversation_entries()),
+        );
+        mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork-md"}));
+        mock.push_data(
+            "get_session_entries",
+            entries_payload(forked_entries()),
+        );
+
+        let error = fork_agent_session(&thread.id, "x", 0)
+            .await
+            .expect_err("create_dir_all");
+        assert!(!error.to_string().is_empty());
+    }
+
     // ── synthesize_run_events_from_entries ──────────────────────────────
 
     #[test]
