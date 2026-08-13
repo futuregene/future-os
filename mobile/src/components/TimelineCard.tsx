@@ -15,11 +15,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import {
-  approvalCommand,
-  approvalDeletes,
-  approvalPaths,
-} from "@future-os/thread-projection";
+import { approvalCommand, approvalDeletes, approvalPaths } from "@future-os/thread-projection";
 import { MarkdownText } from "./MarkdownText";
 import type {
   ApprovalPayload,
@@ -34,6 +30,7 @@ import { Button } from "./Button";
 interface TimelineCardProps {
   item: TimelineItem;
   onOpenAttachment?(attachment: HistoryAttachment): void;
+  onOpenFile?(path: string): void;
   onRetry?(item: TimelineItem): void;
   onContinue?(item: TimelineItem): void;
 }
@@ -338,7 +335,10 @@ function ToolRow({ tool }: { tool: TimelineToolRow }) {
       {expanded && children ? (
         <View style={styles.inlineToolChildren}>
           {children.map((child, index) => (
-            <Text key={`${child.name}:${child.detail ?? ""}:${index}`} style={styles.inlineToolChild}>
+            <Text
+              key={`${child.name}:${child.detail ?? ""}:${index}`}
+              style={styles.inlineToolChild}
+            >
               {child.detail ?? toolLabel(t, toolKind(child.name), child.complete)}
             </Text>
           ))}
@@ -381,9 +381,17 @@ function ThinkingRow({ text, streaming }: { text: string; streaming?: boolean })
 }
 
 /** One inline slice of an assistant reply, in stream order (desktop parity). */
-function SegmentBlock({ segment, streaming }: { segment: TimelineSegment; streaming?: boolean }) {
+function SegmentBlock({
+  segment,
+  streaming,
+  onOpenFile,
+}: {
+  segment: TimelineSegment;
+  streaming?: boolean;
+  onOpenFile?(path: string): void;
+}) {
   if (segment.kind === "text") {
-    return <MarkdownText text={segment.text} />;
+    return <MarkdownText text={segment.text} onOpenFile={onOpenFile} />;
   }
   if (segment.kind === "thinking") {
     return <ThinkingRow streaming={streaming} text={segment.text} />;
@@ -395,7 +403,13 @@ function SegmentBlock({ segment, streaming }: { segment: TimelineSegment; stream
   return <CompactionDivider tokensBefore={segment.tokensBefore} />;
 }
 
-export function TimelineCard({ item, onOpenAttachment, onRetry, onContinue }: TimelineCardProps) {
+export function TimelineCard({
+  item,
+  onOpenAttachment,
+  onOpenFile,
+  onRetry,
+  onContinue,
+}: TimelineCardProps) {
   const { t, i18n } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const { copied, copy } = useCopyState();
@@ -418,19 +432,22 @@ export function TimelineCard({ item, onOpenAttachment, onRetry, onContinue }: Ti
       // summarized history with a marker) — render just the hairline rule, no
       // copy footer, mirroring the desktop's MessageBlock special case.
       const dividerOnly =
-        !item.streaming &&
-        item.segments?.length === 1 &&
-        item.segments[0]?.kind === "compaction";
+        !item.streaming && item.segments?.length === 1 && item.segments[0]?.kind === "compaction";
       return (
         <View style={styles.assistantMessage}>
           {item.segments && item.segments.length > 0 ? (
             <View style={styles.segmentList}>
               {item.segments.map(segment => (
-                <SegmentBlock key={segment.id} segment={segment} streaming={item.streaming} />
+                <SegmentBlock
+                  key={segment.id}
+                  segment={segment}
+                  streaming={item.streaming}
+                  onOpenFile={onOpenFile}
+                />
               ))}
             </View>
           ) : item.text.trim().length > 0 ? (
-            <MarkdownText text={item.text} />
+            <MarkdownText text={item.text} onOpenFile={onOpenFile} />
           ) : null}
           {dividerOnly ? null : item.streaming && item.startedAt != null ? (
             // In-flight: the generating indicator occupies the same footer slot

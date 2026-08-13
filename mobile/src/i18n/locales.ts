@@ -145,6 +145,10 @@ export const resources = {
         downloaded: '"{{name}}" was downloaded to the phone cache.',
         downloadFailed: "The preview could not be downloaded.",
         previewOnDesktop: "This file type can only be viewed in the desktop app.",
+        open: "Open",
+        save: "Save",
+        tooLarge: "This file is larger than 10 MB. View it in the desktop app.",
+        shareUnavailable: "Sharing isn't available on this device.",
         imagesUnsupported:
           "The current model doesn't support images and may not read this image correctly.",
         markdownTruncated:
@@ -325,6 +329,10 @@ export const resources = {
         downloaded: "「{{name}}」已下载到手机缓存。",
         downloadFailed: "无法下载预览。",
         previewOnDesktop: "这种文件类型请在桌面端查看。",
+        open: "打开",
+        save: "保存",
+        tooLarge: "文件大于 10 MB，请在桌面端查看。",
+        shareUnavailable: "当前设备无法打开分享面板。",
         imagesUnsupported: "当前模型不支持图片，可能无法正确理解图片内容。",
         markdownTruncated: "仅渲染前 2 MB 内容，完整文件请在桌面端查看。",
         textTruncated: "仅显示前 2 MB 内容，完整文件请在桌面端查看。",

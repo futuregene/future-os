@@ -131,7 +131,7 @@ pub(super) async fn set_agent_sandbox_policy(
     Ok(())
 }
 
-pub(super) fn workspace_path_for_thread(thread_id: &str) -> Result<String, crate::AppError> {
+pub(crate) fn workspace_path_for_thread(thread_id: &str) -> Result<String, crate::AppError> {
     let thread =
         store::get_thread(thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string())?;
     let workspace = store::get_workspace(&thread.workspace_id)?

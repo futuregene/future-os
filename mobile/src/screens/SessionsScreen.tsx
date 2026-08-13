@@ -119,9 +119,14 @@ export function SessionsScreen() {
   );
 
   const openNew = () => {
-    const defaultWorkspace = remote.workspaces[0]?.id ?? "";
-    setNewMode(tab);
-    setWorkspaceId(tab === "workspace" ? defaultWorkspace : "");
+    // The conversations tab has nothing left to pick — create the chat
+    // straight away instead of showing the mode dialog.
+    if (tab === "chat") {
+      void remote.newConversation("chat");
+      return;
+    }
+    setNewMode("workspace");
+    setWorkspaceId(remote.workspaces[0]?.id ?? "");
     setNewOpen(true);
   };
 

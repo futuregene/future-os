@@ -41,10 +41,8 @@ pub use self::client::AttachmentInput;
 use self::client::{base_command, prompt_command};
 use self::replica::AGENT_REPLICAS;
 use self::run_control::{mark_run_completed_if_active, mark_run_failed_if_active};
-use self::session::{
-    ensure_agent_session, set_agent_permission_level, set_agent_sandbox_policy,
-    workspace_path_for_thread,
-};
+pub(crate) use self::session::workspace_path_for_thread;
+use self::session::{ensure_agent_session, set_agent_permission_level, set_agent_sandbox_policy};
 
 /// Deliver locally tombstoned session deletions after the Agent becomes
 /// reachable. A delete is idempotent; `session not found` is success too.
