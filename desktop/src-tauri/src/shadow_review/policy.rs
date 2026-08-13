@@ -219,4 +219,69 @@ mod tests {
         let git_lines = build_info_exclude(true, None, &[]);
         assert!(!git_lines.iter().any(|l| l == "node_modules/"));
     }
+
+    #[test]
+    fn exclude_lines_include_real_repo_lines_and_skip_blanks() {
+        // The real repo's info/exclude is folded in, trimmed of trailing
+        // whitespace, with blank lines dropped.
+        let lines = build_info_exclude(true, Some("foo.log\n  \nbar/\n"), &[]);
+        assert!(lines.iter().any(|l| l == "foo.log"));
+        assert!(lines.iter().any(|l| l == "bar/"));
+        assert!(!lines.iter().any(|l| l.is_empty()));
+    }
+
+    #[test]
+    fn volume_gate_counts_files_and_bytes() {
+        let root = std::env::temp_dir().join(format!(
+            "futureos-volume-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("a.txt"), b"hello").unwrap();
+        std::fs::write(root.join("sub/b.txt"), b"world!!").unwrap();
+
+        // Excluded dirs (node_modules) are skipped, so a large file under one
+        // never pushes the gate over.
+        std::fs::create_dir_all(root.join("node_modules")).unwrap();
+        std::fs::write(root.join("node_modules/big.bin"), vec![0u8; 1_000_000]).unwrap();
+
+        let ok = evaluate_volume(
+            &root,
+            &VolumeRedline {
+                max_files: 100,
+                max_bytes: 10_000_000,
+            },
+        );
+        assert_eq!(ok, VolumeVerdict::Ok);
+
+        let too_many = evaluate_volume(
+            &root,
+            &VolumeRedline {
+                max_files: 1,
+                max_bytes: 10_000_000,
+            },
+        );
+        assert_eq!(too_many, VolumeVerdict::TooLarge);
+
+        let too_big = evaluate_volume(
+            &root,
+            &VolumeRedline {
+                max_files: 100,
+                max_bytes: 1,
+            },
+        );
+        assert_eq!(too_big, VolumeVerdict::TooLarge);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn excluded_dirs_cover_git_future_and_defaults() {
+        assert!(is_excluded_dir(".git"));
+        assert!(is_excluded_dir(".future"));
+        assert!(is_excluded_dir("node_modules"));
+        assert!(is_excluded_dir("target"));
+        assert!(!is_excluded_dir("src"));
+    }
 }

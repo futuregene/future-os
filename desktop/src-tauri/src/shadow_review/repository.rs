@@ -412,3 +412,154 @@ fn restrict_permissions(path: &Path) {
 
 #[cfg(not(unix))]
 fn restrict_permissions(_path: &Path) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth_store::test_support::HomeGuard;
+
+    fn git_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "futureos-shadow-repo-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args(["init", "-q"])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        std::fs::write(dir.join("a.txt"), "hello\n").unwrap();
+        let file = std::fs::File::open(dir.join("a.txt")).unwrap();
+        file.set_modified(
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000),
+        )
+        .unwrap();
+        for args in [
+            &["config", "user.email", "t@e.com"][..],
+            &["config", "user.name", "T"][..],
+            &["add", "a.txt"][..],
+            &["commit", "-qm", "init"][..],
+        ] {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}");
+        }
+        dir
+    }
+
+    #[test]
+    fn workspace_lock_is_reused_and_serialized() {
+        let a = workspace_lock("ws-lock");
+        let b = workspace_lock("ws-lock");
+        assert!(Arc::ptr_eq(&a, &b), "same id reuses the same lock");
+        let other = workspace_lock("ws-lock-2");
+        assert!(!Arc::ptr_eq(&a, &other));
+        with_workspace_lock("ws-lock", || Ok::<_, AppError>(42)).unwrap();
+    }
+
+    #[test]
+    fn open_and_bare_initialize_git_and_non_git() {
+        let _home = HomeGuard::new("shadow-repo-open");
+        crate::store::initialize_app_store().unwrap();
+
+        // Non-git workspace: init + configure, no seeding.
+        let plain = std::env::temp_dir().join(format!(
+            "futureos-shadow-plain-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&plain).unwrap();
+        let repo = ShadowRepo::open("ws-plain", &plain, false).unwrap();
+        assert_eq!(repo.workspace_id, "ws-plain");
+        assert!(!repo.real_repo_info_exclude().is_some());
+
+        // Git workspace: seeds from the real repo.
+        let src = git_dir();
+        let repo = ShadowRepo::open("ws-git", &src, true).unwrap();
+        assert!(repo.real_repo_info_exclude().is_some());
+
+        // Re-open short-circuits on the existing HEAD.
+        let again = ShadowRepo::open("ws-git", &src, true).unwrap();
+        let _ = again;
+
+        // Bare handle for GIT_DIR-only ops.
+        let bare = ShadowRepo::open_bare("ws-git").unwrap();
+        assert!(bare.workspace_path.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn git_ops_commit_ref_and_index() {
+        let _home = HomeGuard::new("shadow-repo-ops");
+        crate::store::initialize_app_store().unwrap();
+        let src = git_dir();
+        let repo = ShadowRepo::open("ws-ops", &src, true).unwrap();
+
+        // write-info-exclude with empty and non-empty line sets.
+        repo.write_info_exclude(&[]).unwrap();
+        repo.write_info_exclude(&["foo.log".to_string()]).unwrap();
+
+        // Snapshot ref name helper.
+        let ref_name = ShadowRepo::snapshot_ref("t1", "r1", "before");
+        assert_eq!(ref_name, "refs/futureos/threads/t1/runs/r1/before");
+
+        // Prepare temp index when none exists yet, then promote it.
+        let temp = repo.prepare_temp_index("r1.before").unwrap();
+        let tree = repo.git(&["write-tree"], Some(&temp)).unwrap();
+        let commit = repo.commit_tree(&tree, "snapshot").unwrap();
+        assert_eq!(commit.len(), 40);
+        repo.update_ref(&ref_name, &commit).unwrap();
+        assert!(repo.commit_exists(&commit));
+        assert!(!repo.commit_exists("0000000000000000000000000000000000000000"));
+        repo.commit_temp_index(&temp).unwrap();
+        // A second prepare now copies the persisted index.
+        let temp2 = repo.prepare_temp_index("r1.after").unwrap();
+        assert!(temp2.exists());
+        repo.commit_temp_index(&temp2).unwrap();
+        // delete-ref tolerates a missing ref and removes an existing one.
+        repo.delete_ref("refs/futureos/nope").unwrap();
+        repo.delete_ref(&ref_name).unwrap();
+        // The commit object itself survives ref deletion (loose object) — the
+        // ref is what's gone.
+        repo.gc_auto();
+        // git_bytes round-trips raw stdout (binary-safe) on a valid query.
+        let _ = repo.git_bytes(&["rev-parse", "--git-dir"], None).unwrap();
+        // run() with stdin piped (pathspec form) round-trips.
+        let out = repo.run(&["rev-parse", "--git-dir"], None, Some(b"")).unwrap();
+        assert!(out.status.success());
+    }
+
+    #[test]
+    fn real_git_error_and_check_status() {
+        let _home = HomeGuard::new("shadow-repo-err");
+        crate::store::initialize_app_store().unwrap();
+        let plain = std::env::temp_dir().join(format!(
+            "futureos-shadow-plain-err-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&plain).unwrap();
+        let repo = ShadowRepo::open("ws-err", &plain, true).unwrap();
+        // real_git against a non-repo fails cleanly.
+        assert!(repo.real_git(&["rev-parse", "--git-common-dir"]).is_err());
+        // check_status passes a successful output and surfaces a failing one.
+        let ok = std::process::Output {
+            status: std::process::ExitStatus::default(),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        };
+        assert!(check_status(&["ok"], &ok).is_ok());
+        let fail = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("exit 3")
+            .output()
+            .unwrap();
+        let err = check_status(&["rev-parse"], &fail).unwrap_err();
+        assert!(err.to_string().contains("shadow git"));
+    }
+}
