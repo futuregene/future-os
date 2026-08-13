@@ -25,7 +25,7 @@ pub fn run_builtin_skills(app: &AppHandle) {
         }
     };
 
-    let (mut rx, _child) = match command.spawn() {
+    let (rx, _child) = match command.spawn() {
         Ok(pair) => pair,
         Err(error) => {
             eprintln!("FutureOS: failed to start skill bootstrap: {error}");
@@ -33,7 +33,13 @@ pub fn run_builtin_skills(app: &AppHandle) {
         }
     };
 
-    // Drain output to logs and wait for exit.
+    drain_skill_events(rx);
+}
+
+/// Drain the sidecar event channel to the logs, wait for exit, and report a
+/// non-zero exit. Extracted so the drain loop + exit check are testable without
+/// a real `AppHandle`/sidecar child.
+fn drain_skill_events(mut rx: tokio::sync::mpsc::Receiver<CommandEvent>) -> Option<i32> {
     let mut exit_code: Option<i32> = None;
     while let Some(event) = rx.blocking_recv() {
         handle_skill_event(event, &mut exit_code);
@@ -42,6 +48,7 @@ pub fn run_builtin_skills(app: &AppHandle) {
     if exit_code != Some(0) {
         eprintln!("FutureOS: skill bootstrap did not complete (exit {exit_code:?})");
     }
+    exit_code
 }
 
 /// Route a single sidecar event to the logs, updating the exit code on
@@ -87,5 +94,29 @@ mod tests {
             &mut exit_code,
         );
         assert_eq!(exit_code, Some(2));
+    }
+
+    #[test]
+    fn drain_skill_events_reports_exit_code() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        tx.blocking_send(CommandEvent::Terminated(TerminatedPayload {
+            code: Some(0),
+            signal: None,
+        }))
+        .unwrap();
+        drop(tx);
+        assert_eq!(drain_skill_events(rx), Some(0));
+    }
+
+    #[test]
+    fn drain_skill_events_reports_nonzero_exit() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        tx.blocking_send(CommandEvent::Terminated(TerminatedPayload {
+            code: Some(2),
+            signal: None,
+        }))
+        .unwrap();
+        drop(tx);
+        assert_eq!(drain_skill_events(rx), Some(2));
     }
 }

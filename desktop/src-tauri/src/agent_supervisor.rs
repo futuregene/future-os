@@ -82,18 +82,22 @@ pub fn ensure_agent_running(app: &AppHandle) {
     };
 
     match command.spawn() {
-        Ok((mut rx, child)) => {
+        Ok((rx, child)) => {
             *AGENT_CHILD.lock().unwrap() = Some(child);
             eprintln!("FutureOS: started bundled agent on {addr}");
             // Drain the event channel on a background thread so agent stdout/stderr
             // surfaces in logs and the pipe never backs up.
-            std::thread::spawn(move || {
-                while let Some(event) = rx.blocking_recv() {
-                    handle_agent_event(event);
-                }
-            });
+            std::thread::spawn(move || drain_agent_events(rx));
         }
         Err(error) => eprintln!("FutureOS: failed to start bundled agent: {error}"),
+    }
+}
+
+/// Drain a sidecar event channel to the logs. Extracted so the drain loop is
+/// testable without a real `AppHandle`/sidecar child.
+fn drain_agent_events(mut rx: tokio::sync::mpsc::Receiver<CommandEvent>) {
+    while let Some(event) = rx.blocking_recv() {
+        handle_agent_event(event);
     }
 }
 
@@ -310,6 +314,18 @@ mod tests {
             code: Some(0),
             signal: None,
         }));
+    }
+
+    #[test]
+    fn drain_agent_events_consumes_channel() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        tx.blocking_send(CommandEvent::Terminated(TerminatedPayload {
+            code: Some(0),
+            signal: None,
+        }))
+        .unwrap();
+        drop(tx);
+        drain_agent_events(rx);
     }
 
     #[test]
