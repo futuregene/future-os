@@ -338,9 +338,7 @@ pub async fn fork_agent_session(
 
     // Write synthetic run events so the right panel (Runs tab) shows tool calls
     // from the forked history immediately — no live stream exists for these runs.
-    if let Err(e) = synthesize_run_events_from_entries(&fork_entries, &run_ids) {
-        eprintln!("FutureOS: fork run-event synthesis failed: {e}");
-    }
+    synthesize_run_events_from_entries(&fork_entries, &run_ids);
 
     Ok(new_thread.id)
 }
@@ -357,7 +355,7 @@ pub async fn fork_agent_session(
 pub(super) fn synthesize_run_events_from_entries(
     entries: &[serde_json::Value],
     run_ids: &[String],
-) -> Result<(), crate::AppError> {
+) {
     // Index tool result entries by tool_call_id.
     let tool_results: HashMap<&str, &serde_json::Value> = entries
         .iter()
@@ -447,7 +445,6 @@ pub(super) fn synthesize_run_events_from_entries(
             }
         }
     }
-    Ok(())
 }
 
 pub(super) fn split_model(model: &str) -> (Option<String>, Option<String>) {
@@ -1010,6 +1007,43 @@ mod tests {
         assert_eq!(new_thread.title, "test thread (fork)");
     }
 
+    #[tokio::test]
+    async fn fork_chat_thread_with_empty_title_defaults_to_untitled() {
+        let _home = TestHome::new("session-fork-chat");
+        let mock = mock_agent();
+        // Chat-mode thread (no workspace) with an empty title: the fork title
+        // falls back to "Untitled (fork)" and the new thread keeps chat mode
+        // with no workspace id.
+        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some(String::new()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some("sess-1".to_string()),
+        })
+        .expect("create chat thread");
+
+        mock.push_data(
+            "get_session_entries",
+            entries_payload(conversation_entries()),
+        );
+        mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork-chat"}));
+        // No session_info entry → title defaults, no model.
+        mock.push_data(
+            "get_session_entries",
+            entries_payload(serde_json::json!([])),
+        );
+
+        let new_thread_id = fork_agent_session(&thread.id, "x", 0).await.expect("fork");
+        let new_thread = crate::store::get_thread(&new_thread_id)
+            .expect("thread")
+            .expect("exists");
+        assert_eq!(new_thread.title, "Untitled (fork)");
+        assert_eq!(new_thread.mode, "chat");
+        assert!(!new_thread.workspace_id.is_empty());
+    }
+
     // ── synthesize_run_events_from_entries ──────────────────────────────
 
     #[test]
@@ -1037,8 +1071,7 @@ mod tests {
         synthesize_run_events_from_entries(
             &entries.as_array().expect("array").to_vec(),
             &[run_a.id.clone(), run_b.id.clone()],
-        )
-        .expect("synthesize");
+        );
 
         // tool_start args are queryable through the projection.
         assert_eq!(

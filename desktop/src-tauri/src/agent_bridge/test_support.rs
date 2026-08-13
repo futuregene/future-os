@@ -97,7 +97,9 @@ impl FutureAgent for MockAgent {
     ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
         let cmd = request.into_inner();
         let reply = {
-            let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+            let mut state = STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.requests.push(cmd.clone());
             // get_run_state (get_state with a run id) has its own queues keyed
             // by run id: spawned session observers fire plain get_state probes
@@ -141,7 +143,9 @@ impl FutureAgent for MockAgent {
         let req = request.into_inner();
         let attach_run_id = req.run_id.clone();
         let script = {
-            let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+            let mut state = STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let atomic = req.atomic_attach;
             state.stream_requests.push(req);
             let queue = if atomic {
@@ -202,11 +206,10 @@ fn ensure_mock_server() {
                             }
                             std::task::Poll::Pending => std::task::Poll::Pending,
                         });
-                    tonic::transport::Server::builder()
+                    let _ = tonic::transport::Server::builder()
                         .add_service(FutureAgentServer::new(MockAgent))
                         .serve_with_incoming(incoming)
-                        .await
-                        .expect("serve mock agent");
+                        .await;
                 });
             })
             .expect("spawn mock agent thread");
@@ -461,5 +464,50 @@ pub(crate) fn break_home() -> Option<String> {
 pub(crate) fn restore_home(prev: Option<String>) {
     if let Some(prev) = prev {
         std::env::set_var("HOME", prev);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent_proto::RpcCommand;
+
+    /// `default_reply` echoes the requested run id when present and falls back
+    /// to `mock-run` when a prompt carries an empty one (headless callers that
+    /// let the pipeline pick the id still get a consistent acknowledgement).
+    #[test]
+    fn default_reply_falls_back_to_mock_run_for_empty_requested_id() {
+        let with_id = RpcCommand {
+            r#type: "prompt".to_string(),
+            requested_run_id: "real-run".to_string(),
+            ..Default::default()
+        };
+        match default_reply(&with_id) {
+            Reply::Data(data) => assert!(data.contains("real-run"), "{data}"),
+            _ => panic!("expected a data reply"),
+        }
+
+        let empty_id = RpcCommand {
+            r#type: "prompt".to_string(),
+            requested_run_id: String::new(),
+            ..Default::default()
+        };
+        match default_reply(&empty_id) {
+            Reply::Data(data) => assert!(data.contains("mock-run"), "{data}"),
+            _ => panic!("expected a data reply"),
+        }
+    }
+
+    /// `TestHome::drop` takes the `None` arm (removes HOME) when no HOME was
+    /// set before the fixture was created.
+    #[test]
+    fn test_home_drop_removes_home_when_unset_before() {
+        let saved = std::env::var("HOME").ok();
+        let mut home = TestHome::new("no-prev-home");
+        home.prev_home = None;
+        drop(home);
+        if let Some(saved) = saved {
+            std::env::set_var("HOME", saved);
+        }
     }
 }
