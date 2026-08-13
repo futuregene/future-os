@@ -146,28 +146,26 @@ pub fn evaluate_volume(workspace_path: &Path, redline: &VolumeRedline) -> Volume
     let mut stack: Vec<PathBuf> = vec![workspace_path.to_path_buf()];
 
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if file_type.is_dir() {
-                if is_excluded_dir(&name) {
-                    continue;
-                }
-                stack.push(path);
-            } else if file_type.is_file() {
-                files += 1;
-                if let Ok(meta) = entry.metadata() {
-                    bytes += meta.len();
-                }
-                if files > redline.max_files || bytes > redline.max_bytes {
-                    return VolumeVerdict::TooLarge;
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Ok(file_type) = entry.file_type() {
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    if file_type.is_dir() {
+                        if is_excluded_dir(&name) {
+                            continue;
+                        }
+                        stack.push(path);
+                    } else if file_type.is_file() {
+                        files += 1;
+                        if let Ok(meta) = entry.metadata() {
+                            bytes += meta.len();
+                        }
+                        if files > redline.max_files || bytes > redline.max_bytes {
+                            return VolumeVerdict::TooLarge;
+                        }
+                    }
                 }
             }
         }
@@ -232,10 +230,7 @@ mod tests {
 
     #[test]
     fn volume_gate_counts_files_and_bytes() {
-        let root = std::env::temp_dir().join(format!(
-            "futureos-volume-{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("futureos-volume-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("sub")).unwrap();
         std::fs::write(root.join("a.txt"), b"hello").unwrap();
@@ -245,6 +240,10 @@ mod tests {
         // never pushes the gate over.
         std::fs::create_dir_all(root.join("node_modules")).unwrap();
         std::fs::write(root.join("node_modules/big.bin"), vec![0u8; 1_000_000]).unwrap();
+
+        // A symlink is neither a dir nor a file, so it exercises the implicit
+        // else arm (neither counted nor descended).
+        make_symlink(Path::new("a.txt"), &root.join("link"));
 
         let ok = evaluate_volume(
             &root,
@@ -285,3 +284,11 @@ mod tests {
         assert!(!is_excluded_dir("src"));
     }
 }
+
+#[cfg(unix)]
+fn make_symlink(target: &Path, link: &Path) {
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+#[cfg(not(unix))]
+fn make_symlink(_target: &Path, _link: &Path) {}

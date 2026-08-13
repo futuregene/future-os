@@ -338,10 +338,6 @@ impl ShadowRepo {
                 Err(_) => return Ok(()),
             };
         let source = PathBuf::from(&common);
-        if !source.exists() {
-            return Ok(());
-        }
-
         let source_objects = source.join("objects");
         let mut alternates: Vec<String> = Vec::new();
         if source_objects.exists() {
@@ -361,10 +357,8 @@ impl ShadowRepo {
 
         let info = self.git_dir.join("objects").join("info");
         fs::create_dir_all(&info)?;
-        fs::write(
-            info.join("alternates"),
-            format!("{}\n", alternates.join("\n")),
-        )?;
+        let body = format!("{}\n", alternates.join("\n"));
+        fs::write(info.join("alternates"), body)?;
 
         // Seed the index so already-hashed entries are reused (pairs with
         // alternates — see §5.2). Best-effort.
@@ -419,10 +413,7 @@ mod tests {
     use crate::auth_store::test_support::HomeGuard;
 
     fn git_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "futureos-shadow-repo-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("futureos-shadow-repo-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let out = std::process::Command::new("git")
@@ -471,10 +462,8 @@ mod tests {
         crate::store::initialize_app_store().unwrap();
 
         // Non-git workspace: init + configure, no seeding.
-        let plain = std::env::temp_dir().join(format!(
-            "futureos-shadow-plain-{}",
-            std::process::id()
-        ));
+        let plain =
+            std::env::temp_dir().join(format!("futureos-shadow-plain-{}", std::process::id()));
         std::fs::create_dir_all(&plain).unwrap();
         let repo = ShadowRepo::open("ws-plain", &plain, false).unwrap();
         assert_eq!(repo.workspace_id, "ws-plain");
@@ -522,6 +511,9 @@ mod tests {
         let temp2 = repo.prepare_temp_index("r1.after").unwrap();
         assert!(temp2.exists());
         repo.commit_temp_index(&temp2).unwrap();
+        // A missing temp index is a no-op (false branch of `temp.exists()`).
+        repo.commit_temp_index(Path::new("definitely-missing-index"))
+            .unwrap();
         // delete-ref tolerates a missing ref and removes an existing one.
         repo.delete_ref("refs/futureos/nope").unwrap();
         repo.delete_ref(&ref_name).unwrap();
@@ -531,7 +523,9 @@ mod tests {
         // git_bytes round-trips raw stdout (binary-safe) on a valid query.
         let _ = repo.git_bytes(&["rev-parse", "--git-dir"], None).unwrap();
         // run() with stdin piped (pathspec form) round-trips.
-        let out = repo.run(&["rev-parse", "--git-dir"], None, Some(b"")).unwrap();
+        let out = repo
+            .run(&["rev-parse", "--git-dir"], None, Some(b""))
+            .unwrap();
         assert!(out.status.success());
     }
 
@@ -539,10 +533,8 @@ mod tests {
     fn real_git_error_and_check_status() {
         let _home = HomeGuard::new("shadow-repo-err");
         crate::store::initialize_app_store().unwrap();
-        let plain = std::env::temp_dir().join(format!(
-            "futureos-shadow-plain-err-{}",
-            std::process::id()
-        ));
+        let plain =
+            std::env::temp_dir().join(format!("futureos-shadow-plain-err-{}", std::process::id()));
         std::fs::create_dir_all(&plain).unwrap();
         let repo = ShadowRepo::open("ws-err", &plain, true).unwrap();
         // real_git against a non-repo fails cleanly.
@@ -561,5 +553,45 @@ mod tests {
             .unwrap();
         let err = check_status(&["rev-parse"], &fail).unwrap_err();
         assert!(err.to_string().contains("shadow git"));
+    }
+
+    #[test]
+    fn empty_excludes_file_is_idempotent() {
+        let _home = HomeGuard::new("shadow-empty-excludes");
+        crate::store::initialize_app_store().unwrap();
+        let plain =
+            std::env::temp_dir().join(format!("futureos-shadow-excl-{}", std::process::id()));
+        std::fs::create_dir_all(&plain).unwrap();
+        let repo = ShadowRepo::open("ws-excl", &plain, false).unwrap();
+        // open() already created the excludes file; the second call must see it
+        // present (false branch of `!path.exists()`).
+        let path = repo.ensure_empty_excludes_file().unwrap();
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn seed_from_real_repo_handles_missing_objects_and_alternates() {
+        let _home = HomeGuard::new("shadow-seed-variants");
+        crate::store::initialize_app_store().unwrap();
+
+        // Variant A: the common dir exists but its objects dir is gone, so the
+        // alternates list stays empty and seeding early-returns.
+        let no_objects = git_dir();
+        std::fs::remove_dir_all(no_objects.join(".git").join("objects")).unwrap();
+        let _repo_a = ShadowRepo::open("ws-seed-no-objects", &no_objects, true).unwrap();
+
+        // Variant B: an alternates file with empty, missing, and valid lines
+        // exercises the parse loop (trim, exists check, push).
+        let with_alternates = git_dir();
+        let info = with_alternates.join(".git").join("objects").join("info");
+        std::fs::create_dir_all(&info).unwrap();
+        let shared = with_alternates.join("shared-objects");
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::write(
+            info.join("alternates"),
+            format!("\n\n/missing/never-exists\n{}\n", shared.display()),
+        )
+        .unwrap();
+        let _repo_b = ShadowRepo::open("ws-seed-alternates", &with_alternates, true).unwrap();
     }
 }

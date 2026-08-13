@@ -89,9 +89,11 @@ fn recover_interrupted_runs() {
 
 fn try_recover_interrupted_runs() -> Result<(), AppError> {
     for (run_id, thread_id, workspace_id) in store::list_unmaterialized_runs()? {
-        if let Err(error) = recover_one(&run_id, &thread_id, &workspace_id) {
-            eprintln!("FutureOS shadow review recovery of run {run_id} failed: {error}");
-        }
+        recover_one(&run_id, &thread_id, &workspace_id)
+            .map_err(|error| {
+                eprintln!("FutureOS shadow review recovery of run {run_id} failed: {error}")
+            })
+            .ok();
     }
     Ok(())
 }
@@ -172,4 +174,249 @@ fn recover_one(run_id: &str, thread_id: &str, workspace_id: &str) -> Result<(), 
         files: diff.files,
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use super::*;
+    use crate::auth_store::test_support::HomeGuard;
+    use crate::store::{
+        CreateReviewSnapshotInput, CreateRunInput, CreateThreadInput, CreateWorkspaceInput,
+        UpsertRunChangesetInput,
+    };
+
+    struct Setup {
+        _home: HomeGuard,
+        workspace_id: String,
+        thread_id: String,
+        run_id: String,
+        dir: PathBuf,
+        repo: ShadowRepo,
+    }
+
+    fn setup(name: &str) -> Setup {
+        let home = HomeGuard::new(name);
+        store::initialize_app_store().unwrap();
+        let dir =
+            std::env::temp_dir().join(format!("futureos-maint-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let ws = store::create_workspace(CreateWorkspaceInput {
+            name: Some(name.into()),
+            path: dir.display().to_string(),
+            description: None,
+            create_directory: Some(false),
+        })
+        .unwrap();
+        let thread = store::create_thread(CreateThreadInput {
+            mode: "workspace".into(),
+            title: Some(name.into()),
+            workspace_id: Some(ws.id.clone()),
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: None,
+        })
+        .unwrap();
+        let run = store::create_run(CreateRunInput {
+            id: None,
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .unwrap();
+
+        let repo = ShadowRepo::open(&ws.id, Path::new(&dir), false).unwrap();
+        Setup {
+            _home: home,
+            workspace_id: ws.id,
+            thread_id: thread.id,
+            run_id: run.id,
+            dir,
+            repo,
+        }
+    }
+
+    #[test]
+    fn wrappers_log_errors_when_store_uninitialized() {
+        let _home = HomeGuard::new("maintenance-uninit");
+        // No initialize_app_store: the empty DB has no tables, so each
+        // best-effort entry point fails and logs instead of panicking.
+        enforce_retention("thread-1");
+        run_startup_maintenance();
+    }
+
+    #[test]
+    fn retention_returns_early_when_nothing_to_prune() {
+        let s = setup("retention-empty");
+        try_enforce_retention(&s.thread_id).unwrap();
+    }
+
+    #[test]
+    fn retention_prunes_and_deletes_refs() {
+        let s = setup("retention-prune");
+        for _ in 0..11 {
+            let run = store::create_run(CreateRunInput {
+                id: None,
+                thread_id: s.thread_id.clone(),
+                trigger_message_id: None,
+                model_provider: None,
+                model_id: None,
+            })
+            .unwrap();
+            store::upsert_run_changeset(UpsertRunChangesetInput {
+                run_id: run.id.clone(),
+                thread_id: s.thread_id.clone(),
+                workspace_id: Some(s.workspace_id.clone()),
+                title: "t".into(),
+                completeness: "complete".into(),
+                confidence: "normal".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        try_enforce_retention(&s.thread_id).unwrap();
+    }
+
+    #[test]
+    fn consistency_marks_missing_commits() {
+        let s = setup("consistency");
+        // A snapshot whose commit never existed in the shadow repo is failed.
+        store::create_review_snapshot(CreateReviewSnapshotInput {
+            workspace_id: s.workspace_id.clone(),
+            thread_id: s.thread_id.clone(),
+            run_id: s.run_id.clone(),
+            phase: "before".into(),
+            commit_id: Some("0000000000000000000000000000000000000000".into()),
+            tree_id: Some("tree".into()),
+            status: "complete".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        // A real commit (via capture) stays untouched.
+        std::fs::write(s.dir.join("a.txt"), "v1\n").unwrap();
+        super::super::snapshot::capture(
+            &s.repo,
+            &s.thread_id,
+            &s.run_id,
+            "after",
+            &Limits::default(),
+        )
+        .unwrap();
+
+        try_verify_consistency().unwrap();
+
+        assert_eq!(
+            store::get_review_snapshot(&s.run_id, "before")
+                .unwrap()
+                .unwrap()
+                .status,
+            "failed"
+        );
+        assert_eq!(
+            store::get_review_snapshot(&s.run_id, "after")
+                .unwrap()
+                .unwrap()
+                .status,
+            "complete"
+        );
+    }
+
+    #[test]
+    fn recover_one_returns_early_without_before() {
+        let s = setup("recover-no-before");
+        recover_one(&s.run_id, &s.thread_id, &s.workspace_id).unwrap();
+        assert!(store::get_run_changeset(&s.run_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn recover_one_returns_early_without_commit_ids() {
+        let s = setup("recover-no-commit");
+        for phase in ["before", "after"] {
+            store::create_review_snapshot(CreateReviewSnapshotInput {
+                workspace_id: s.workspace_id.clone(),
+                thread_id: s.thread_id.clone(),
+                run_id: s.run_id.clone(),
+                phase: phase.into(),
+                status: "complete".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        recover_one(&s.run_id, &s.thread_id, &s.workspace_id).unwrap();
+        assert!(store::get_run_changeset(&s.run_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn recover_one_finished_reuses_after_snapshot() {
+        let s = setup("recover-finished");
+        std::fs::write(s.dir.join("a.txt"), "v1\n").unwrap();
+        super::super::snapshot::capture(
+            &s.repo,
+            &s.thread_id,
+            &s.run_id,
+            "before",
+            &Limits::default(),
+        )
+        .unwrap();
+        std::fs::write(s.dir.join("a.txt"), "v2\n").unwrap();
+        super::super::snapshot::capture(
+            &s.repo,
+            &s.thread_id,
+            &s.run_id,
+            "after",
+            &Limits::default(),
+        )
+        .unwrap();
+
+        recover_one(&s.run_id, &s.thread_id, &s.workspace_id).unwrap();
+        let cs = store::get_run_changeset(&s.run_id).unwrap().unwrap();
+        assert_eq!(cs.confidence, "normal");
+        assert_eq!(cs.files_changed, 1);
+    }
+
+    #[test]
+    fn recover_one_interrupted_captures_after() {
+        let s = setup("recover-interrupted");
+        std::fs::write(s.dir.join("a.txt"), "v1\n").unwrap();
+        super::super::snapshot::capture(
+            &s.repo,
+            &s.thread_id,
+            &s.run_id,
+            "before",
+            &Limits::default(),
+        )
+        .unwrap();
+        // Edit but do not capture the after snapshot — the interruption shape.
+        std::fs::write(s.dir.join("a.txt"), "v2\n").unwrap();
+
+        recover_one(&s.run_id, &s.thread_id, &s.workspace_id).unwrap();
+        let cs = store::get_run_changeset(&s.run_id).unwrap().unwrap();
+        assert_eq!(cs.confidence, "recovered");
+        assert_eq!(
+            store::get_run(&s.run_id).unwrap().unwrap().status,
+            "cancelled"
+        );
+    }
+
+    #[test]
+    fn try_recover_runs_over_a_successful_recovery() {
+        let s = setup("recover-loop");
+        std::fs::write(s.dir.join("a.txt"), "v1\n").unwrap();
+        super::super::snapshot::capture(
+            &s.repo,
+            &s.thread_id,
+            &s.run_id,
+            "before",
+            &Limits::default(),
+        )
+        .unwrap();
+        // list_unmaterialized_runs returns this run; recover_one succeeds and
+        // the loop's Ok path is exercised.
+        try_recover_interrupted_runs().unwrap();
+        assert!(store::get_run_changeset(&s.run_id).unwrap().is_some());
+    }
 }
