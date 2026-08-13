@@ -1828,9 +1828,10 @@ fn cmd_get_session_entries(session: &Arc<parking_lot::RwLock<ServerSession>>, id
 /// built but before its model is synced into the fresh agent loop, keyed on
 /// the parent session id. Lets a test force the model-sync failure warn.
 #[cfg(test)]
-static MODEL_SYNC_FAIL_HOOK: parking_lot::Mutex<
-    Option<(String, Box<dyn Fn(&mut ServerSession) + Send>)>,
-> = parking_lot::Mutex::new(None);
+type ModelSyncHook = Option<(String, Box<dyn Fn(&mut ServerSession) + Send>)>;
+
+#[cfg(test)]
+static MODEL_SYNC_FAIL_HOOK: parking_lot::Mutex<ModelSyncHook> = parking_lot::Mutex::new(None);
 
 fn cmd_fork(
     state: &AppState,

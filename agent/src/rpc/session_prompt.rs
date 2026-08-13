@@ -45,17 +45,16 @@ pub(super) struct AcceptedRunSnapshot {
 /// queue before `prompt_internal` calls `start_next` (FIFO-mismatch / empty
 /// dequeue defensive arms).
 #[cfg(test)]
-static SCHEDULED_DEQUEUE_HOOK: parking_lot::Mutex<
-    Option<(String, Box<dyn Fn(&mut ServerSession) + Send>)>,
-> = parking_lot::Mutex::new(None);
+type SessionHook = Option<(String, Box<dyn Fn(&mut ServerSession) + Send>)>;
+
+#[cfg(test)]
+static SCHEDULED_DEQUEUE_HOOK: parking_lot::Mutex<SessionHook> = parking_lot::Mutex::new(None);
 
 /// Test-only hook fired by `prompt_internal` right before `runtime.spawn`,
 /// keyed on the accepted run id, so a test can occupy the task slot and
 /// reach the spawn double-occupancy error arm.
 #[cfg(test)]
-static RUN_SPAWN_HOOK: parking_lot::Mutex<
-    Option<(String, Box<dyn Fn(&mut ServerSession) + Send>)>,
-> = parking_lot::Mutex::new(None);
+static RUN_SPAWN_HOOK: parking_lot::Mutex<SessionHook> = parking_lot::Mutex::new(None);
 
 /// Test-only flag: when set to a run id, `prompt_internal` fails right after
 /// `start_next` made that run active (without finishing it), so the enqueue
