@@ -187,6 +187,7 @@ impl FutureAgent for MockAgent {
 
 fn ensure_mock_server() {
     static START: OnceLock<()> = OnceLock::new();
+    static MOCK_ADDR: OnceLock<String> = OnceLock::new();
     START.get_or_init(|| {
         let (addr_tx, addr_rx) = std::sync::mpsc::channel();
         std::thread::Builder::new()
@@ -220,7 +221,9 @@ fn ensure_mock_server() {
             })
             .expect("spawn mock agent thread");
         let addr = addr_rx.recv().expect("mock agent address");
-        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", addr.to_string());
+        let addr = addr.to_string();
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", &addr);
+        let _ = MOCK_ADDR.set(addr);
         // Warm the shared-channel OnceCell NOW, while the script is empty and
         // its init health check consumes the default reply. Without this the
         // first test to call connect_agent would lose its first scripted
@@ -240,6 +243,14 @@ fn ensure_mock_server() {
             .join()
             .expect("warmup thread");
     });
+    // Re-assert the env var on every call: the remote/commands mock
+    // (`remote::test_support::ensure_mock_agent`) re-points
+    // `FUTURE_AGENT_GRPC_ADDR` at ITS server on each call, and the shared
+    // channel is keyed by endpoint — so a stale env would make this mock's
+    // tests hit the other server. Mirror that re-assert here.
+    if let Some(addr) = MOCK_ADDR.get() {
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", addr);
+    }
 }
 
 static MOCK_LOCK: Mutex<()> = Mutex::new(());
