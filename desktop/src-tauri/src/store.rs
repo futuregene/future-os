@@ -92,33 +92,54 @@ pub fn initialize_app_store() -> Result<(), crate::AppError> {
     // Hard-delete any threads left in the legacy soft-deleted state (and their
     // orphaned child rows). delete_thread now hard-deletes, so this only clears
     // pre-existing rows. Best-effort — never block startup.
-    match purge_soft_deleted_threads() {
-        Ok(0) => {}
-        Ok(count) => eprintln!("purged {count} soft-deleted thread(s)"),
-        Err(error) => eprintln!("purge_soft_deleted_threads failed: {error}"),
-    }
+    log_purge(
+        purge_soft_deleted_threads(),
+        "soft-deleted thread(s)",
+        "purge_soft_deleted_threads",
+    );
     // Likewise hard-delete any legacy soft-deleted workspaces (and their scoped
     // rows). Runs after the thread purge so both are converged before the dir
     // reconcilers below reclaim the now-orphaned review/image/chat dirs.
-    match purge_soft_deleted_workspaces() {
-        Ok(0) => {}
-        Ok(count) => eprintln!("purged {count} soft-deleted workspace(s)"),
-        Err(error) => eprintln!("purge_soft_deleted_workspaces failed: {error}"),
-    }
+    log_purge(
+        purge_soft_deleted_workspaces(),
+        "soft-deleted workspace(s)",
+        "purge_soft_deleted_workspaces",
+    );
     // Reclaim per-thread image dirs (thumbnails + workspace-mode originals) whose
     // thread is gone — including threads deleted out-of-band via the TUI/CLI.
-    if let Err(error) = cleanup::reconcile_orphan_images() {
-        eprintln!("reconcile_orphan_images failed: {error}");
-    }
+    log_reconcile(
+        cleanup::reconcile_orphan_images(),
+        "reconcile_orphan_images",
+    );
     // Reclaim per-thread temp chat-workspace scratch dirs whose thread is gone.
-    if let Err(error) = cleanup::reconcile_orphan_chat_workspaces() {
-        eprintln!("reconcile_orphan_chat_workspaces failed: {error}");
-    }
+    log_reconcile(
+        cleanup::reconcile_orphan_chat_workspaces(),
+        "reconcile_orphan_chat_workspaces",
+    );
     // Reclaim per-workspace shadow-review repos whose workspace is gone/deleted.
-    if let Err(error) = cleanup::reconcile_orphan_review_repos() {
-        eprintln!("reconcile_orphan_review_repos failed: {error}");
-    }
+    log_reconcile(
+        cleanup::reconcile_orphan_review_repos(),
+        "reconcile_orphan_review_repos",
+    );
     Ok(())
+}
+
+/// Log a best-effort purge result; never propagate (startup must not block on
+/// purge failures). Split out so all three arms are directly testable.
+fn log_purge(result: Result<usize, crate::AppError>, noun: &str, op: &str) {
+    match result {
+        Ok(0) => {}
+        Ok(count) => eprintln!("purged {count} {noun}"),
+        Err(error) => eprintln!("{op} failed: {error}"),
+    }
+}
+
+/// Log a best-effort reconcile result; never propagate (startup must not block
+/// on reclaim failures). Split out so the `Ok`/`Err` arms are directly testable.
+fn log_reconcile(result: Result<usize, crate::AppError>, op: &str) {
+    if let Err(error) = result {
+        eprintln!("{op} failed: {error}");
+    }
 }
 
 /// Wipe all GUI-local data and rebuild a pristine DB from the latest schema:
@@ -164,4 +185,82 @@ pub fn clear_all_data() -> Result<(), crate::AppError> {
     // New chat workspace root (~/.future/workspaces/chat/), outside app_dir.
     let _ = std::fs::remove_dir_all(future_dir()?.join("workspaces").join("chat"));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth_store::test_support::HomeGuard;
+
+    fn err() -> crate::AppError {
+        "boom".to_string().into()
+    }
+
+    #[test]
+    fn log_purge_covers_all_arms() {
+        log_purge(Ok(0), "thing(s)", "op");
+        log_purge(Ok(3), "thing(s)", "op");
+        log_purge(Err(err()), "thing(s)", "op");
+    }
+
+    #[test]
+    fn log_reconcile_covers_ok_and_err() {
+        log_reconcile(Ok(0), "op");
+        log_reconcile(Err(err()), "op");
+    }
+
+    #[test]
+    fn initialize_app_store_purges_soft_deleted_rows() {
+        let _home = HomeGuard::new("store-init-purge");
+        initialize_app_store().unwrap();
+        // Seed a legacy soft-deleted thread and workspace, then re-initialize:
+        // the purge branches (Ok(count)) must run and hard-delete them.
+        {
+            let conn = connect().unwrap();
+            conn.execute(
+                "INSERT INTO workspaces (id, name, kind, path, cleanup_status, created_at, updated_at, deleted_at)
+                 VALUES ('ws-soft', 'w', 'user', '/tmp/w', 'active', 1, 1, 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO threads (id, workspace_id, mode, title, status, created_at, updated_at, deleted_at)
+                 VALUES ('th-soft', 'ws-soft', 'chat', 't', 'deleted', 1, 1, 1)",
+                [],
+            )
+            .unwrap();
+        }
+        initialize_app_store().unwrap();
+        let conn = connect().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM threads WHERE id = 'th-soft'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+        let ws_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM workspaces WHERE id = 'ws-soft'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ws_count, 0);
+    }
+
+    #[test]
+    fn clear_all_data_rebuilds_pristine_schema() {
+        let _home = HomeGuard::new("store-clear");
+        initialize_app_store().unwrap();
+        clear_all_data().unwrap();
+        // The reset re-applies the schema: a fresh query against the core table
+        // must succeed and be empty.
+        let conn = connect().unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM workspaces", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
 }

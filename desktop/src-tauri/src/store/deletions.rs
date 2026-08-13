@@ -67,10 +67,14 @@ pub fn note_agent_session_delete_failure(
 /// cleared, but Agent-owned canonical sessions must still be reclaimed.
 pub(super) fn enqueue_all_agent_session_deletes_in(conn: &Connection) -> rusqlite::Result<()> {
     let now = now_millis();
+    // NOTE: `ON CONFLICT` after `INSERT ... SELECT` requires a `WHERE` clause —
+    // without one SQLite parses `ON CONFLICT` as a table alias and fails with
+    // "near DO: syntax error" (verified on 3.46 and 3.51).
     conn.execute(
         "INSERT INTO agent_delete_outbox(session_id, requested_at, attempts, last_error)
          SELECT DISTINCT COALESCE(NULLIF(TRIM(agent_session_id), ''), id), ?1, 0, NULL
          FROM threads
+         WHERE TRUE
          ON CONFLICT(session_id) DO NOTHING",
         [now],
     )?;
