@@ -2019,7 +2019,10 @@ mod bridge_tests {
             .await;
         assert_eq!(reply["success"], json!(true), "got: {reply}");
         assert_eq!(reply["data"]["confirmed"], json!(true));
-        assert_eq!(reply["data"]["features"], json!(["file_transfer_v1"]));
+        assert_eq!(
+            reply["data"]["features"],
+            json!(["file_transfer_v1", "approval_tier_v1", "continue_run_v1"])
+        );
         assert!(bridge.handshake.active_flag().load(Ordering::Acquire));
         assert!(crate::remote::pairing::load_creds().is_some());
 
