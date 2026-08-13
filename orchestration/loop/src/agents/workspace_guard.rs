@@ -246,14 +246,12 @@ mod tests {
 
     #[test]
     fn normalize_expands_home_tilde() {
-        let home = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .unwrap_or_default();
-        if !home.is_empty() {
-            let got = normalize_workspace_path("~/some-workspace");
-            assert!(!got.contains('~'), "tilde must expand: {got}");
-            assert!(got.ends_with("/some-workspace"), "got: {got}");
-        }
+        // On the measurement hosts (macOS / Linux CI) HOME is always set; the
+        // empty-home fallback is covered deterministically by
+        // `expand_home_handles_tilde_and_empty_home`.
+        let got = normalize_workspace_path("~/some-workspace");
+        assert!(!got.contains('~'), "tilde must expand: {got}");
+        assert!(got.ends_with("/some-workspace"), "got: {got}");
     }
 
     // ── overlap semantics ────────────────────────────────────────────────

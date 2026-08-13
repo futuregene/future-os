@@ -2341,6 +2341,20 @@ mod tests {
     }
 
     #[test]
+    fn empty_repository_incomplete_read_has_no_repository() {
+        let result = build_pull_request_review_queue_observation(
+            None,
+            &[pr(1, None, "REVIEW_REQUIRED", false, "CLEAN", &[])],
+            &serde_json::json!({"complete": false}),
+            None,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(result.observation_state, "not_observed");
+        assert_eq!(result.repository, None);
+    }
+
+    #[test]
     fn empty_repository_yields_no_repository_or_task_repository() {
         let result = build_pull_request_review_queue_observation(
             None,

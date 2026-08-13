@@ -587,12 +587,8 @@ mod tests {
                 .current_dir(repo)
                 .output()
                 .unwrap();
-            assert!(
-                out.status.success(),
-                "git {:?} failed: {}",
-                args,
-                String::from_utf8_lossy(&out.stderr)
-            );
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(out.status.success(), "git {args:?} failed: {stderr}");
         };
         git(&["init", "-q"]);
         git(&["config", "user.email", "a@b.c"]);
