@@ -172,10 +172,7 @@ mod tests {
         assert!(updated.auto_connect_remote);
 
         // Persisted across connections.
-        assert_eq!(
-            get_app_settings().expect("get").approval_tier,
-            "sandbox"
-        );
+        assert_eq!(get_app_settings().expect("get").approval_tier, "sandbox");
     }
 
     #[test]

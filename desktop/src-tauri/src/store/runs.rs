@@ -401,29 +401,7 @@ fn spawn_disk_writer() -> std::sync::mpsc::Sender<WriterMsg> {
             let mut writers: HashMap<String, std::io::BufWriter<std::fs::File>> = HashMap::new();
             while let Ok(msg) = rx.recv() {
                 match msg {
-                    WriterMsg::Event(first) => {
-                        write_event(&mut writers, &first);
-                        // Coalesce a burst into one flush. Close messages are
-                        // handled inline — a try_recv that consumed one must
-                        // not drop it.
-                        loop {
-                            match rx.try_recv() {
-                                Ok(WriterMsg::Event(record)) => {
-                                    write_event(&mut writers, &record);
-                                }
-                                Ok(WriterMsg::Close { run_id, ack }) => {
-                                    if let Some(mut writer) = writers.remove(&run_id) {
-                                        let _ = writer.flush();
-                                    }
-                                    let _ = ack.send(());
-                                }
-                                Err(_) => break,
-                            }
-                        }
-                        for writer in writers.values_mut() {
-                            let _ = writer.flush();
-                        }
-                    }
+                    WriterMsg::Event(record) => write_event(&mut writers, &record),
                     WriterMsg::Close { run_id, ack } => {
                         if let Some(mut writer) = writers.remove(&run_id) {
                             let _ = writer.flush();
@@ -554,7 +532,8 @@ pub fn append_run_event(input: AppendRunEventInput) -> Result<RunEventRecord, cr
     // already-stored record instead of appending a second copy. (The
     // projection-snapshot replace path clears the buffer first, so it
     // re-appends from an empty slate and is unaffected.)
-    if let Ok(buf) = RUN_EVENT_BUFFER.lock() {
+    {
+        let buf = RUN_EVENT_BUFFER.lock().unwrap_or_else(unpoison);
         if let Some(events) = buf.get(&input.run_id) {
             if let Some(last) = events.last() {
                 if input.sequence <= last.sequence {
@@ -727,6 +706,7 @@ pub fn advance_tool_projection(run_id: &str, events: &[RunEventRecord]) -> Vec<T
 /// each tool call from its tool_start / tool_end events (the tool_calls table
 /// was dropped). Both events carry the agent's stable tool id, so pair by id —
 /// a single "current" slot would mispair overlapping (parallel) tool calls.
+#[cfg(test)]
 pub fn project_tool_calls(events: &[RunEventRecord]) -> Vec<ToolCallRecord> {
     let mut state = ToolProjectionState {
         tools: Vec::new(),
@@ -1234,6 +1214,14 @@ mod tests {
     }
 
     #[test]
+    fn tool_projection_empty_advance_on_uncached_run_returns_nothing() {
+        // A read-only advance for a run with no cached projection must not
+        // create an entry — it returns the empty list.
+        let uncached = format!("test_uncached_{}", std::process::id());
+        assert!(advance_tool_projection(&uncached, &[]).is_empty());
+    }
+
+    #[test]
     fn bulk_sweep_cannot_evict_a_run_with_an_open_tool_call() {
         // Regression (review round 2): list_runs is created_at DESC, so the
         // context panel's bulk poll advances the NEWEST (active) run first
@@ -1525,6 +1513,29 @@ mod tests {
         assert_eq!(approval_status, "cancelled");
     }
 
+    /// A cancelled transition whose approval cascade fails must propagate the
+    /// SQL error (the `?` on `cancel_children_of_runs`), not swallow it.
+    #[test]
+    fn if_active_propagates_cancel_cascade_error() {
+        let mut conn = test_conn();
+        insert_run(&conn, "run_live2", "running");
+        let tx = conn.transaction().unwrap();
+        // Break the cascade: dropping the table makes the cancelled cascade's
+        // UPDATE fail deterministically.
+        tx.execute_batch("DROP TABLE approval_requests;").unwrap();
+        let input = UpdateRunStatusInput {
+            run_id: "run_live2".to_string(),
+            status: "cancelled".to_string(),
+            error_message: None,
+            error_type: None,
+        };
+        let err = update_run_status_if_active_tx(&tx, &input, 99).unwrap_err();
+        assert!(
+            err.to_string().contains("approval_requests"),
+            "cascade error must surface: {err}"
+        );
+    }
+
     #[test]
     fn append_run_event_dedups_replayed_sequences() {
         let run_id = format!("test_dedup_{}", std::process::id());
@@ -1737,7 +1748,12 @@ mod tests {
             // No tool_id anywhere: resolves to the event id…
             tool_event("r", "tool_end", r#"{"text":"plain"}"#, 1),
             // …or to `{name}_{seq}` when the payload names a tool…
-            tool_event("r", "tool_end", r#"{"tool_name":"shell","text":"named"}"#, 2),
+            tool_event(
+                "r",
+                "tool_end",
+                r#"{"tool_name":"shell","text":"named"}"#,
+                2,
+            ),
             // …and an empty payload object yields content None.
             tool_event("r", "tool_end", r#"{"tool_id":"t3"}"#, 3),
         ];
@@ -1772,8 +1788,8 @@ mod tests {
         let _home = HomeGuard::new("runs_disk");
         let run_id = format!("disk_{}", std::process::id());
 
-        // Flood the writer so the burst coalescer drains a backlog that ends
-        // in the Close message (the in-loop Close arm).
+        // Flood the writer so the single disk-writer thread drains a backlog
+        // that ends in the Close message (flush + ack), leaving a complete log.
         for sequence in 0..300 {
             append_run_event(text_event(&run_id, sequence)).expect("append");
         }

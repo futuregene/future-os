@@ -325,14 +325,18 @@ mod tests {
             modified: SystemTime::UNIX_EPOCH,
         };
         let files = vec![
-            walked("docs/my-report.md"), // name substring -> bucket 2
+            walked("docs/my-report.md"),    // name substring -> bucket 2
             walked("docs/report-final.md"), // name prefix   -> bucket 1
-            walked("docs/report.md"),    // name prefix (tighter fuzzy score)
+            walked("docs/report.md"),       // name prefix (tighter fuzzy score)
         ];
         let results = rank_files(files, "report", 10);
         assert_eq!(
             paths(&results),
-            vec!["docs/report.md", "docs/report-final.md", "docs/my-report.md"]
+            vec![
+                "docs/report.md",
+                "docs/report-final.md",
+                "docs/my-report.md"
+            ]
         );
 
         // A query equal to the full file name hits the exact-match bucket 0.
@@ -361,7 +365,8 @@ mod tests {
     /// Initialized in-test database with one workspace row pointing at `path`.
     fn workspace_conn(path: &Path) -> (super::super::db::PooledConnection, String) {
         let conn = connect().expect("connect");
-        super::super::db::apply_schema(&conn).expect("apply schema");        conn.execute(
+        super::super::db::apply_schema(&conn).expect("apply schema");
+        conn.execute(
             "INSERT INTO workspaces (
                  id, name, kind, path, cleanup_status, created_at, updated_at
              ) VALUES ('ws_search', 'WS', 'user', ?1, 'active', 1, 1)",
@@ -389,10 +394,8 @@ mod tests {
     #[test]
     fn search_with_non_directory_workspace_path_is_empty() {
         let _home = crate::auth_store::test_support::HomeGuard::new("wf_nondir");
-        let missing = std::env::temp_dir().join(format!(
-            "futureos-wf-nondir-{}",
-            std::process::id()
-        ));
+        let missing =
+            std::env::temp_dir().join(format!("futureos-wf-nondir-{}", std::process::id()));
         let (conn, id) = workspace_conn(&missing);
         drop(conn);
         let results = search_workspace_files(WorkspaceFileSearchInput {

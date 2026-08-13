@@ -340,8 +340,7 @@ pub(super) fn delete_thread_children_in(
         }
     }
     // Break the runs ↔ messages FK cycle, then delete both.
-    const NULL_TRIGGER_SQL: &str =
-        "UPDATE runs SET trigger_message_id = NULL WHERE thread_id = ?1";
+    const NULL_TRIGGER_SQL: &str = "UPDATE runs SET trigger_message_id = NULL WHERE thread_id = ?1";
     conn.execute(NULL_TRIGGER_SQL, params![thread_id])?;
     conn.execute("DELETE FROM runs WHERE thread_id = ?1", params![thread_id])?;
     Ok(())
@@ -704,11 +703,17 @@ mod tests {
         let recent = get_recent_thread().expect("recent").expect("some");
         assert_eq!(recent.id, "t2", "last_opened_at wins");
 
-        let found = find_thread_by_agent_session("sess1").expect("find").expect("some");
+        let found = find_thread_by_agent_session("sess1")
+            .expect("find")
+            .expect("some");
         assert_eq!(found.id, "t1");
-        assert!(find_thread_by_agent_session("ghost").expect("find").is_none());
+        assert!(find_thread_by_agent_session("ghost")
+            .expect("find")
+            .is_none());
         // A deleted thread's session is not found.
-        assert!(find_thread_by_agent_session("sess3").expect("find").is_none());
+        assert!(find_thread_by_agent_session("sess3")
+            .expect("find")
+            .is_none());
     }
 
     fn chat_input() -> CreateThreadInput {
@@ -761,7 +766,9 @@ mod tests {
         by_path.workspace_path = Some(dir.display().to_string());
         let thread = create_thread(by_path).expect("workspace thread by path");
         assert_eq!(thread.title, "Workspace Thread");
-        let ws = get_workspace(&thread.workspace_id).expect("get").expect("some");
+        let ws = get_workspace(&thread.workspace_id)
+            .expect("get")
+            .expect("some");
         assert_eq!(ws.kind, "user");
         let _ = std::fs::remove_dir_all(&dir);
 
@@ -825,7 +832,9 @@ mod tests {
 
         // update_thread_session_id + find_by_session round trip.
         update_thread_session_id("t2", "sess_new").expect("session id");
-        let found = find_thread_by_agent_session("sess_new").expect("find").expect("some");
+        let found = find_thread_by_agent_session("sess_new")
+            .expect("find")
+            .expect("some");
         assert_eq!(found.id, "t2");
 
         // move_thread_to_workspace
@@ -892,7 +901,9 @@ mod tests {
         std::fs::write(chat_dir.join("scratch.txt"), b"x").expect("write");
         delete_thread_with_files(&chat.id, true).expect("delete with files");
         assert!(!chat_dir.exists(), "chat workspace dir removed");
-        let ws = get_workspace(&chat.workspace_id).expect("get").expect("some");
+        let ws = get_workspace(&chat.workspace_id)
+            .expect("get")
+            .expect("some");
         assert_eq!(ws.cleanup_status, "cleaned");
     }
 

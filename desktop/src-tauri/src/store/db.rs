@@ -248,8 +248,7 @@ fn dedupe_file_artifacts(conn: &Connection) -> Result<(), crate::AppError> {
          WHERE {SCOPE} AND id = ({SURVIVOR})"
     );
     conn.execute(&update_sql, [])?;
-    let delete_sql =
-        format!("DELETE FROM artifacts WHERE {SCOPE} AND id <> ({SURVIVOR})");
+    let delete_sql = format!("DELETE FROM artifacts WHERE {SCOPE} AND id <> ({SURVIVOR})");
     conn.execute(&delete_sql, [])?;
     Ok(())
 }
@@ -261,9 +260,7 @@ fn is_duplicate_column_error(error: &rusqlite::Error) -> bool {
 /// Whether `table` has a column named `column`. `table`/`column` come from the
 /// `RENAMED_COLUMNS` constant (never user input), so interpolation is safe.
 fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, crate::AppError> {
-    let sql = format!(
-        "SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"
-    );
+    let sql = format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'");
     let count: i64 = conn.query_row(&sql, [], |row| row.get(0))?;
     Ok(count > 0)
 }
@@ -559,9 +556,11 @@ mod tests {
         assert!(!column_exists(&conn, "artifacts", "type").unwrap());
         assert!(column_exists(&conn, "artifacts", "artifact_type").unwrap());
         let artifact_type: String = conn
-            .query_row("SELECT artifact_type FROM artifacts WHERE id = 'a1'", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT artifact_type FROM artifacts WHERE id = 'a1'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(artifact_type, "document");
     }
@@ -616,7 +615,8 @@ mod tests {
         .unwrap();
         // …and a view squatting on a dropped table's name (DROP TABLE refuses
         // views). Both failures are logged, neither aborts the migration.
-        conn.execute_batch("CREATE VIEW skills AS SELECT 1 AS id;").unwrap();
+        conn.execute_batch("CREATE VIEW skills AS SELECT 1 AS id;")
+            .unwrap();
 
         apply_schema(&conn).unwrap();
 

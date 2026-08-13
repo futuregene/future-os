@@ -108,7 +108,8 @@ pub(super) fn get_or_create_user_workspace_in(
              id, name, kind, path, description, cleanup_status, last_opened_at,
              created_at, updated_at
          ) VALUES (?1, ?2, 'user', ?3, ?4, 'active', ?5, ?5, ?5)";
-    conn.execute(INSERT_SQL, params![workspace_id, name, normalized_path, description, now])?;
+    let args = params![workspace_id, name, normalized_path, description, now];
+    conn.execute(INSERT_SQL, args)?;
 
     loaded(get_workspace_in(conn, &workspace_id)?, "Created workspace")
 }
@@ -174,7 +175,8 @@ pub(super) fn get_or_create_chat_workspace_in(
     const INSERT_SQL: &str = "INSERT INTO workspaces (
              id, name, kind, path, cleanup_status, created_at, updated_at
          ) VALUES (?1, ?2, 'temporary', ?3, 'active', ?4, ?4)";
-    conn.execute(INSERT_SQL, params![workspace_id, name, path.display().to_string(), now])?;
+    let args = params![workspace_id, name, path.display().to_string(), now];
+    conn.execute(INSERT_SQL, args)?;
 
     loaded(get_workspace_in(conn, &workspace_id)?, "Created workspace")
 }
@@ -256,10 +258,12 @@ pub(super) fn delete_workspace_in(conn: &Connection, workspace_id: &str) -> rusq
     for thread_id in &thread_ids {
         super::threads::delete_thread_children_in(conn, thread_id)?;
     }
-    conn.execute("DELETE FROM threads WHERE workspace_id = ?1", params![workspace_id])?;
+    const DELETE_THREADS_SQL: &str = "DELETE FROM threads WHERE workspace_id = ?1";
+    conn.execute(DELETE_THREADS_SQL, params![workspace_id])?;
 
     // 2. Workspace-scoped rows, FK-safe (children before parents).
-    conn.execute("DELETE FROM artifacts WHERE workspace_id = ?1", params![workspace_id])?;
+    const DELETE_ARTIFACTS_SQL: &str = "DELETE FROM artifacts WHERE workspace_id = ?1";
+    conn.execute(DELETE_ARTIFACTS_SQL, params![workspace_id])?;
     const DELETE_LINKS_SQL: &str = "DELETE FROM object_references WHERE reference_target_id IN (
              SELECT id FROM reference_targets WHERE workspace_id = ?1
          )";
@@ -270,7 +274,8 @@ pub(super) fn delete_workspace_in(conn: &Connection, workspace_id: &str) -> rusq
     conn.execute(DELETE_FILES_SQL, params![workspace_id])?;
 
     // 3. The workspace row.
-    conn.execute("DELETE FROM workspaces WHERE id = ?1", params![workspace_id])?;
+    const DELETE_WORKSPACE_SQL: &str = "DELETE FROM workspaces WHERE id = ?1";
+    conn.execute(DELETE_WORKSPACE_SQL, params![workspace_id])?;
     Ok(())
 }
 

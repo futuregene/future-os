@@ -288,7 +288,9 @@ mod tests {
         .expect("late decide returns the record");
         assert_eq!(again.status, "approved", "CAS kept the first decision");
 
-        assert!(list_pending_approval_requests().expect("pending").is_empty());
+        assert!(list_pending_approval_requests()
+            .expect("pending")
+            .is_empty());
     }
 
     #[test]
@@ -329,6 +331,8 @@ mod tests {
         assert_eq!(changes.len(), 2);
         assert_eq!(changes[0].id, "fc1");
         assert_eq!(changes[1].id, "fc2");
-        assert!(list_review_file_changes("cs_ghost").expect("list").is_empty());
+        assert!(list_review_file_changes("cs_ghost")
+            .expect("list")
+            .is_empty());
     }
 }

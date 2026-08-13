@@ -121,10 +121,7 @@ mod tests {
         let meta = run_metadata("run_abcdefgh", "completed".to_string(), None, None);
         assert_eq!(meta.title, "Run run_abcd");
         assert_eq!(meta.subtitle.as_deref(), Some("completed"));
-        assert_eq!(
-            meta.search_text.as_deref(),
-            Some("run_abcdefgh\ncompleted")
-        );
+        assert_eq!(meta.search_text.as_deref(), Some("run_abcdefgh\ncompleted"));
     }
 
     #[test]
@@ -146,14 +143,7 @@ mod tests {
 
     #[test]
     fn review_metadata_summarizes_the_diff() {
-        let meta = review_metadata(
-            "Changes".to_string(),
-            "ready".to_string(),
-            None,
-            3,
-            10,
-            2,
-        );
+        let meta = review_metadata("Changes".to_string(), "ready".to_string(), None, 3, 10, 2);
         assert_eq!(meta.title, "Changes");
         assert_eq!(meta.subtitle.as_deref(), Some("ready · 3 files · +10 -2"));
         assert_eq!(
@@ -166,9 +156,6 @@ mod tests {
     fn compact_search_text_drops_empty_and_absent_fields() {
         assert_eq!(compact_search_text(&["a", " ", "b"], &[None]), "a\nb");
         let present = "x".to_string();
-        assert_eq!(
-            compact_search_text(&[], &[Some(&present)]),
-            "x"
-        );
+        assert_eq!(compact_search_text(&[], &[Some(&present)]), "x");
     }
 }

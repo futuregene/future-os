@@ -602,7 +602,11 @@ mod tests {
         }
     }
 
-    fn snapshot_input(run_id: &str, phase: &str, commit: Option<&str>) -> CreateReviewSnapshotInput {
+    fn snapshot_input(
+        run_id: &str,
+        phase: &str,
+        commit: Option<&str>,
+    ) -> CreateReviewSnapshotInput {
         CreateReviewSnapshotInput {
             workspace_id: "ws1".to_string(),
             thread_id: "t1".to_string(),
@@ -667,7 +671,9 @@ mod tests {
             create_review_snapshot(snapshot_input("r1", "before", Some("c2"))).expect("replace");
         assert_eq!(replaced.commit_id.as_deref(), Some("c2"));
 
-        let loaded = get_review_snapshot("r1", "before").expect("get").expect("some");
+        let loaded = get_review_snapshot("r1", "before")
+            .expect("get")
+            .expect("some");
         assert_eq!(loaded.commit_id.as_deref(), Some("c2"));
         assert!(get_review_snapshot("r1", "after").expect("get").is_none());
     }
@@ -695,7 +701,9 @@ mod tests {
             )
             .expect("count changesets");
         let file_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM review_file_changes", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM review_file_changes", [], |row| {
+                row.get(0)
+            })
             .expect("count files");
         assert_eq!(changeset_count, 1);
         assert_eq!(file_count, 0, "stale file rows were deleted");
@@ -769,7 +777,10 @@ mod tests {
         let pruned = prune_thread_changesets("t1", 1).expect("prune");
         assert_eq!(pruned, vec![("ws1".to_string(), "r1".to_string())]);
 
-        assert!(get_run_changeset("r3").expect("get").is_some(), "newest kept");
+        assert!(
+            get_run_changeset("r3").expect("get").is_some(),
+            "newest kept"
+        );
         assert!(get_run_changeset("r1").expect("get").is_none());
         assert!(get_run_changeset("r2").expect("get").is_none());
         // Snapshots of pruned runs are gone too (delete_run_review_in cascade).

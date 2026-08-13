@@ -42,7 +42,8 @@ pub fn sync_message_markdown_references(
             let reference_target_id =
                 upsert_reference_target(conn, &reference, target, &workspace_id, now)?;
             let link_id = create_id("object_ref");
-            conn.execute(INSERT_LINK_SQL, params![link_id, message_id, reference_target_id, now])?;
+            let args = params![link_id, message_id, reference_target_id, now];
+            conn.execute(INSERT_LINK_SQL, args)?;
         }
     }
 
@@ -193,7 +194,8 @@ fn upsert_reference_target(
             subtitle,
             search_text,
         } = metadata;
-        conn.execute(UPDATE_SQL, params![title, subtitle, search_text, now, existing_id])?;
+        let args = params![title, subtitle, search_text, now, existing_id];
+        conn.execute(UPDATE_SQL, args)?;
         return Ok(existing_id);
     }
 
@@ -208,7 +210,8 @@ fn upsert_reference_target(
         search_text,
     } = metadata;
     let (ty, tid, ws) = (&reference.target_type, &reference.target_id, workspace_id);
-    conn.execute(INSERT_SQL, params![id, ty, tid, ws, title, subtitle, search_text, now])?;
+    let args = params![id, ty, tid, ws, title, subtitle, search_text, now];
+    conn.execute(INSERT_SQL, args)?;
     Ok(id)
 }
 
@@ -259,7 +262,9 @@ mod tests {
         sync_message_markdown_references(&conn, "msg_empty", "t_missing", "plain text")
             .expect("sync empty content");
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM reference_targets", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM reference_targets", [], |row| {
+                row.get(0)
+            })
             .expect("count targets");
         assert_eq!(count, 0);
     }
@@ -269,7 +274,10 @@ mod tests {
         let conn = test_conn();
         let result =
             sync_message_markdown_references(&conn, "msg_x", "t_missing", "[r](futureos://run/r1)");
-        assert!(result.is_err(), "workspace lookup must fail for a missing thread");
+        assert!(
+            result.is_err(),
+            "workspace lookup must fail for a missing thread"
+        );
     }
 
     #[test]
@@ -309,10 +317,18 @@ mod tests {
         .expect("sync mixed references");
 
         assert_eq!(target_title(&conn, "run", "r1").as_deref(), Some("Run r1"));
-        assert_eq!(target_title(&conn, "approval", "a1").as_deref(), Some("Deploy"));
-        assert_eq!(target_title(&conn, "review", "rc1").as_deref(), Some("Changes"));
+        assert_eq!(
+            target_title(&conn, "approval", "a1").as_deref(),
+            Some("Deploy")
+        );
+        assert_eq!(
+            target_title(&conn, "review", "rc1").as_deref(),
+            Some("Changes")
+        );
         let link_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM object_references", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM object_references", [], |row| {
+                row.get(0)
+            })
             .expect("count links");
         assert_eq!(link_count, 3);
     }
@@ -390,8 +406,11 @@ mod tests {
             Some("Old title")
         );
 
-        conn.execute("UPDATE artifacts SET title = 'New title' WHERE id = 'art1'", [])
-            .expect("rename artifact");
+        conn.execute(
+            "UPDATE artifacts SET title = 'New title' WHERE id = 'art1'",
+            [],
+        )
+        .expect("rename artifact");
         sync_message_markdown_references(&conn, "msg_2", "t1", link).expect("second sync");
 
         assert_eq!(
@@ -400,7 +419,9 @@ mod tests {
             "the existing target row is updated, not duplicated"
         );
         let target_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM reference_targets", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM reference_targets", [], |row| {
+                row.get(0)
+            })
             .expect("count targets");
         assert_eq!(target_count, 1);
     }
@@ -412,10 +433,8 @@ mod tests {
             target_id: "x".to_string(),
             target_type: "widget".to_string(),
         };
-        assert!(
-            resolve_reference_target_metadata(&conn, &reference, "ws1")
-                .expect("resolve")
-                .is_none()
-        );
+        assert!(resolve_reference_target_metadata(&conn, &reference, "ws1")
+            .expect("resolve")
+            .is_none());
     }
 }

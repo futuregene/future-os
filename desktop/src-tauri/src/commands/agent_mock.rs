@@ -35,19 +35,24 @@ pub(crate) struct MockScript {
     pub fail_list_session_ids: bool,
     /// The ids a successful `list_session_ids` returns.
     pub session_ids: Vec<String>,
+    /// The sessionIds a successful `list_streaming_sessions` returns.
+    pub streaming_ids: Vec<String>,
+    /// Per-command canned JSON `data` payloads (success = true).
+    pub data: std::collections::HashMap<String, String>,
+    /// Per-command canned rejections (success = false, message as given).
+    pub errors: std::collections::HashMap<String, String>,
 }
 
-static SCRIPT: Mutex<MockScript> = Mutex::new(MockScript {
-    down: false,
-    fail_list_session_ids: false,
-    session_ids: Vec::new(),
-});
+static SCRIPT: std::sync::LazyLock<Mutex<MockScript>> =
+    std::sync::LazyLock::new(|| Mutex::new(MockScript::default()));
 
 static MOCK_LOCK: Mutex<()> = Mutex::new(());
 
 /// Serialize tests that re-script the shared mock.
 pub(crate) fn mock_agent_lock() -> MutexGuard<'static, ()> {
-    MOCK_LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
+    MOCK_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
 }
 
 /// Point the mock at a new script. Caller must hold [`mock_agent_lock`].
@@ -79,10 +84,25 @@ impl FutureAgent for MockAgent {
         if script.down && command.r#type != "list_streaming_sessions" {
             return Err(tonic::Status::new(Code::Unavailable, "mock agent is down"));
         }
+        if let Some(error) = script.errors.get(command.r#type.as_str()) {
+            return Ok(tonic::Response::new(RpcResponse {
+                success: false,
+                error: error.clone(),
+                ..Default::default()
+            }));
+        }
+        if let Some(data) = script.data.get(command.r#type.as_str()) {
+            return Ok(tonic::Response::new(RpcResponse {
+                success: true,
+                data: data.clone(),
+                ..Default::default()
+            }));
+        }
         let response = match command.r#type.as_str() {
             // The connect-time health check: any Ok response passes it.
             "list_streaming_sessions" => RpcResponse {
                 success: true,
+                data: serde_json::json!({ "sessionIds": script.streaming_ids }).to_string(),
                 ..Default::default()
             },
             "list_session_ids" if script.fail_list_session_ids => RpcResponse {
@@ -123,8 +143,8 @@ impl FutureAgent for MockAgent {
 /// environment override stays set so the latched agent channel always targets
 /// the mock.
 pub(crate) fn ensure_mock_agent() {
-    static START: OnceLock<()> = OnceLock::new();
-    START.get_or_init(|| {
+    static START: OnceLock<u16> = OnceLock::new();
+    let port = *START.get_or_init(|| {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock agent");
         let port = listener.local_addr().expect("mock agent addr").port();
         listener
@@ -139,24 +159,42 @@ pub(crate) fn ensure_mock_agent() {
                     .build()
                     .expect("mock agent runtime"),
             ));
-            runtime.spawn(async move {
+            // Park the runtime serving the mock forever (never completes).
+            // `from_std` needs a live reactor, so build the whole server inside
+            // `block_on` rather than before it.
+            let _ = runtime.block_on(async move {
                 let listener =
                     tokio::net::TcpListener::from_std(listener).expect("mock agent listener");
-                let incoming = tonic::codegen::tokio_stream::wrappers::TcpListenerStream::new(
-                    listener,
-                );
+                let incoming =
+                    tonic::codegen::tokio_stream::wrappers::TcpListenerStream::new(listener);
                 let service = FutureAgentServer::new(MockAgent);
                 let server = Server::builder().add_service(service);
-                // Polled once (starts listening), never completes — by design.
-                server.serve_with_incoming(incoming).await.expect("serve mock")
+                server.serve_with_incoming(incoming).await
             });
         });
-        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", format!("127.0.0.1:{port}"));
+        port
     });
+    // Re-assert the env var on every call so a test that briefly redirected it
+    // (see `with_broken_endpoint`) is always restored to the live mock.
+    std::env::set_var("FUTURE_AGENT_GRPC_ADDR", format!("127.0.0.1:{port}"));
+}
+
+/// Run `call` with a deliberately unparseable agent endpoint, then restore
+/// the mock's address. `Endpoint::from_shared` runs before the latched
+/// channel is consulted, so this makes `connect_agent` fail deterministically
+/// regardless of latch state. Caller must hold [`mock_agent_lock`].
+pub(crate) async fn with_broken_endpoint<F: std::future::Future>(
+    call: impl FnOnce() -> F,
+) -> F::Output {
+    std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
+    let result = call().await;
+    ensure_mock_agent();
+    result
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::await_holding_lock)]
     use super::*;
 
     /// Bare command with just a type — all the mock reads.
@@ -175,6 +213,7 @@ mod tests {
             down: false,
             fail_list_session_ids: false,
             session_ids: vec!["sess_a".to_string()],
+            ..Default::default()
         });
 
         let mut client = crate::agent_bridge::connect_agent()
@@ -190,7 +229,10 @@ mod tests {
 
         // Unknown commands surface as Unavailable → AgentUnavailable downstream.
         let unknown = client.execute_command(typed_command("get_state")).await;
-        assert_eq!(unknown.expect_err("unknown command").code(), Code::Unavailable);
+        assert_eq!(
+            unknown.expect_err("unknown command").code(),
+            Code::Unavailable
+        );
 
         // The stream RPC is unimplemented by the mock.
         let stream = client.stream_events(StreamRequest::default()).await;
@@ -217,14 +259,18 @@ mod tests {
             ..Default::default()
         });
 
-        let first = client.execute_command(typed_command("list_session_ids")).await;
+        let first = client
+            .execute_command(typed_command("list_session_ids"))
+            .await;
         assert_eq!(first.expect_err("down mock").code(), Code::Unavailable);
 
         // A fresh connect reuses the latched channel — same failure.
         let mut again = crate::agent_bridge::connect_agent()
             .await
             .expect("latched channel");
-        let second = again.execute_command(typed_command("list_session_ids")).await;
+        let second = again
+            .execute_command(typed_command("list_session_ids"))
+            .await;
         assert_eq!(second.expect_err("down mock").code(), Code::Unavailable);
 
         script_mock_agent(MockScript::default());

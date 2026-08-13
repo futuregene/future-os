@@ -472,6 +472,7 @@ pub fn clear_finished_runs(thread_id: &str) -> Result<usize, crate::AppError> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::await_holding_lock)]
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use rusqlite::Connection;
@@ -898,8 +899,7 @@ mod tests {
 
         // A known terminal state settles the interrupted row, preserving a
         // caller-supplied error message over the default.
-        settle_interrupted_run_from_agent("r_int", "error", Some("agent said no"))
-            .expect("settle");
+        settle_interrupted_run_from_agent("r_int", "error", Some("agent said no")).expect("settle");
         let row = crate::store::get_run("r_int").expect("get").expect("some");
         assert_eq!(row.status, "failed");
         assert_eq!(row.error_type.as_deref(), Some("agent_error"));
@@ -975,10 +975,8 @@ mod tests {
     #[test]
     fn thread_cleanup_summary_counts_artifacts_and_files() {
         // A temporary workspace whose path holds two real files.
-        let files_dir = std::env::temp_dir().join(format!(
-            "futureos-cleanup-summary-{}",
-            std::process::id()
-        ));
+        let files_dir =
+            std::env::temp_dir().join(format!("futureos-cleanup-summary-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&files_dir);
         std::fs::create_dir_all(&files_dir).expect("create files dir");
         std::fs::write(files_dir.join("a.txt"), b"a").expect("write");
@@ -1054,6 +1052,7 @@ mod tests {
             down: false,
             fail_list_session_ids: false,
             session_ids: vec!["sess_live".to_string()],
+            ..Default::default()
         });
 
         let (_home, conn) = guarded_conn("reconcile_ok");
@@ -1078,6 +1077,7 @@ mod tests {
             down: false,
             fail_list_session_ids: true,
             session_ids: vec![],
+            ..Default::default()
         });
 
         let (_home, conn) = guarded_conn("reconcile_fail");

@@ -47,10 +47,12 @@ pub fn list_artifacts(thread_id: &str) -> Result<Vec<ArtifactRecord>, crate::App
                AND (?2 = 'workspace' OR thread_id = ?3)
              ORDER BY updated_at DESC"
     ))?;
-    let rows = stmt.query_map(
-        params![thread.workspace_id, thread.mode, thread.id],
-        artifact_from_row,
-    )?;
+    let rows = stmt
+        .query_map(
+            params![thread.workspace_id, thread.mode, thread.id],
+            artifact_from_row,
+        )
+        .expect("invariant: fixed-arity string/int binding cannot fail");
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(crate::AppError::from)
 }
@@ -347,7 +349,10 @@ mod tests {
 
     #[test]
     fn sanitize_file_name_replaces_unsafe_chars() {
-        assert_eq!(sanitize_file_name("a/b\\c:d*e?f\"g<h>i|j"), "a_b_c_d_e_f_g_h_i_j");
+        assert_eq!(
+            sanitize_file_name("a/b\\c:d*e?f\"g<h>i|j"),
+            "a_b_c_d_e_f_g_h_i_j"
+        );
         assert_eq!(sanitize_file_name("ctrl\u{0007}bell"), "ctrl_bell");
         assert_eq!(sanitize_file_name("  "), "attachment");
         assert_eq!(sanitize_file_name("ok.txt"), "ok.txt");
@@ -451,7 +456,8 @@ mod tests {
         drop(conn);
 
         // Source file to import.
-        let source = std::env::temp_dir().join(format!("futureos-attach-{}.png", std::process::id()));
+        let source =
+            std::env::temp_dir().join(format!("futureos-attach-{}.png", std::process::id()));
         fs::write(&source, b"png-bytes").expect("write source");
 
         // Workspace-mode thread: rejected.

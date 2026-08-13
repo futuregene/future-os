@@ -399,3 +399,407 @@ pub fn reconcile_thread_workspace(session_id: String, cwd: String) -> Result<(),
     crate::agent_bridge::reconcile_thread_workspace(&session_id, &cwd)
         .map_err(crate::AppError::from)
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::await_holding_lock)]
+    use super::*;
+    use crate::auth_store::test_support::HomeGuard;
+    use crate::commands::agent_mock::{mock_agent_lock, script_mock_agent, MockScript};
+    use std::collections::HashMap;
+
+    fn init(label: &str) -> HomeGuard {
+        let home = HomeGuard::new(label);
+        crate::store::initialize_app_store().expect("init store");
+        home
+    }
+
+    fn make_thread(home: &HomeGuard, agent_session_id: Option<&str>) -> store::ThreadRecord {
+        let _ = home;
+        crate::store::create_thread(store::CreateThreadInput {
+            mode: "chat".into(),
+            title: Some("Chat".into()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: agent_session_id.map(str::to_string),
+        })
+        .expect("create thread")
+    }
+
+    #[test]
+    fn thread_read_and_pin_commands_round_trip() {
+        let _home = init("cmd_threads");
+        assert!(list_threads().expect("list empty").is_empty());
+        assert!(get_recent_thread().expect("recent empty").is_none());
+
+        let thread = make_thread(&_home, None);
+        assert_eq!(list_threads().expect("list").len(), 1);
+        assert_eq!(
+            get_thread(thread.id.clone()).expect("get").map(|t| t.id),
+            Some(thread.id.clone())
+        );
+        assert!(get_thread("ghost".into()).expect("ghost").is_none());
+        assert_eq!(
+            get_recent_thread().expect("recent").map(|t| t.id),
+            Some(thread.id.clone())
+        );
+
+        let pinned = pin_thread(store::PinThreadInput {
+            thread_id: thread.id.clone(),
+            pinned: true,
+        })
+        .expect("pin");
+        assert!(pinned.pinned);
+
+        let archived = archive_thread(thread.id.clone()).expect("archive");
+        assert_eq!(archived.status, "archived");
+
+        let restored = restore_thread(thread.id.clone()).expect("restore");
+        assert_eq!(restored.status, "active");
+    }
+
+    #[test]
+    fn get_thread_cleanup_summary_delegates() {
+        let _home = init("cmd_threads_cleanup");
+        let thread = make_thread(&_home, None);
+        let summary = get_thread_cleanup_summary(thread.id.clone()).expect("summary");
+        assert_eq!(summary.thread_id, thread.id);
+    }
+
+    #[test]
+    fn observe_session_requires_both_ids() {
+        let _home = init("cmd_observe");
+        assert!(observe_session("  ".into(), "sess".into()).is_err());
+        assert!(observe_session("thread".into(), "".into()).is_err());
+    }
+
+    #[test]
+    fn reconcile_thread_workspace_handles_missing_and_empty_cwd() {
+        let _home = init("cmd_reconcile_ws");
+        assert!(reconcile_thread_workspace("ghost".into(), "/tmp/x".into()).is_err());
+        // A thread with an agent session, empty cwd → no-op Ok.
+        let thread = make_thread(&_home, Some("sess_1"));
+        assert!(reconcile_thread_workspace("sess_1".into(), "  ".into()).is_ok());
+        let _ = thread;
+    }
+
+    #[tokio::test]
+    async fn list_streaming_thread_ids_is_empty_when_agent_down() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_streaming_down");
+        let thread = make_thread(&_home, Some("sess_stream"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            down: true,
+            ..Default::default()
+        });
+        // Down agent → empty list (not an error).
+        let ids = list_streaming_thread_ids().await.expect("streaming");
+        assert!(ids.is_empty());
+        let _ = thread;
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn list_streaming_thread_ids_maps_streaming_sessions_to_threads() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_streaming");
+        let thread = make_thread(&_home, Some("sess_live"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            streaming_ids: vec!["sess_live".to_string()],
+            ..Default::default()
+        });
+        let ids = list_streaming_thread_ids().await.expect("streaming");
+        assert_eq!(ids, vec![thread.id]);
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn get_thread_agent_state_without_session_returns_null_payload() {
+        let _home = init("cmd_agent_state_no_session");
+        let thread = make_thread(&_home, None);
+        let value = get_thread_agent_state(thread.id.clone())
+            .await
+            .expect("state");
+        assert_eq!(value["model"], serde_json::Value::Null);
+        assert_eq!(value["sessionId"], serde_json::Value::Null);
+        assert_eq!(value["session_name"], serde_json::json!(thread.title));
+    }
+
+    #[tokio::test]
+    async fn get_thread_agent_state_errors_for_unknown_thread() {
+        let _home = init("cmd_agent_state_ghost");
+        assert!(get_thread_agent_state("ghost".into()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn get_session_entries_without_session_returns_empty() {
+        let _home = init("cmd_entries_no_session");
+        let thread = make_thread(&_home, None);
+        let value = get_session_entries(thread.id.clone())
+            .await
+            .expect("entries");
+        assert_eq!(value["entries"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn rename_thread_propagates_to_the_agent_first() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_rename");
+        let thread = make_thread(&_home, Some("sess_rename"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([("set_session_name".to_string(), "{}".to_string())]),
+            ..Default::default()
+        });
+        let renamed = rename_thread(store::RenameThreadInput {
+            thread_id: thread.id.clone(),
+            title: "Renamed".into(),
+        })
+        .await
+        .expect("rename");
+        assert_eq!(renamed.title, "Renamed");
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn rename_thread_rejects_an_empty_title_before_the_agent() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_rename_empty");
+        let thread = make_thread(&_home, None);
+        assert!(rename_thread(store::RenameThreadInput {
+            thread_id: thread.id.clone(),
+            title: "   ".into(),
+        })
+        .await
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn rename_thread_surfaces_agent_rejection() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_rename_reject");
+        let thread = make_thread(&_home, Some("sess_reject"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            errors: HashMap::from([("set_session_name".to_string(), "nope".to_string())]),
+            ..Default::default()
+        });
+        assert!(rename_thread(store::RenameThreadInput {
+            thread_id: thread.id.clone(),
+            title: "Renamed".into(),
+        })
+        .await
+        .is_err());
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn update_thread_model_without_model_skips_the_agent() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_model_none");
+        let thread = make_thread(&_home, None);
+        let updated = update_thread_model(store::UpdateThreadModelInput {
+            thread_id: thread.id.clone(),
+            model_provider: None,
+            model_id: None,
+        })
+        .await
+        .expect("update");
+        assert_eq!(updated.id, thread.id);
+    }
+
+    #[tokio::test]
+    async fn update_thread_thinking_level_without_level_skips_the_agent() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_level_none");
+        let thread = make_thread(&_home, None);
+        let updated = update_thread_thinking_level(store::UpdateThreadThinkingLevelInput {
+            thread_id: thread.id.clone(),
+            thinking_level: None,
+        })
+        .await
+        .expect("update");
+        assert_eq!(updated.id, thread.id);
+    }
+
+    #[tokio::test]
+    async fn clear_finished_runs_without_terminal_runs_skips_the_agent() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_clear_runs");
+        let thread = make_thread(&_home, None);
+        let cleared = clear_finished_runs(thread.id.clone()).await.expect("clear");
+        assert_eq!(cleared, 0);
+    }
+
+    #[tokio::test]
+    async fn rename_thread_tolerates_a_session_not_found_rejection() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_rename_notfound");
+        let thread = make_thread(&_home, Some("sess_nf"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            errors: HashMap::from([(
+                "set_session_name".to_string(),
+                "session not found".to_string(),
+            )]),
+            ..Default::default()
+        });
+        let renamed = rename_thread(store::RenameThreadInput {
+            thread_id: thread.id.clone(),
+            title: "Still renamed".into(),
+        })
+        .await
+        .expect("rename despite session-not-found");
+        assert_eq!(renamed.title, "Still renamed");
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn update_thread_model_propagates_to_the_agent() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_model_set");
+        let thread = make_thread(&_home, Some("sess_model"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript::default());
+        let updated = update_thread_model(store::UpdateThreadModelInput {
+            thread_id: thread.id.clone(),
+            model_provider: None,
+            model_id: Some("future/deepseek".into()),
+        })
+        .await
+        .expect("update model");
+        assert_eq!(updated.id, thread.id);
+    }
+
+    #[tokio::test]
+    async fn update_thread_thinking_level_propagates_to_the_agent() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_level_set");
+        let thread = make_thread(&_home, Some("sess_level"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript::default());
+        let updated = update_thread_thinking_level(store::UpdateThreadThinkingLevelInput {
+            thread_id: thread.id.clone(),
+            thinking_level: Some("high".into()),
+        })
+        .await
+        .expect("update level");
+        assert_eq!(updated.id, thread.id);
+    }
+
+    #[tokio::test]
+    async fn delete_thread_tombstones_and_reconciles() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_delete");
+        let thread = make_thread(&_home, Some("sess_del"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([("delete_session".to_string(), "{}".to_string())]),
+            ..Default::default()
+        });
+        let deleted = delete_thread(store::DeleteThreadInput {
+            thread_id: thread.id.clone(),
+            delete_files: false,
+        })
+        .await
+        .expect("delete");
+        assert_eq!(deleted.id, thread.id);
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn batch_delete_threads_delegates() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_batch_delete");
+        let thread = make_thread(&_home, None);
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript::default());
+        let result = batch_delete_threads(store::BatchDeleteThreadsInput {
+            thread_ids: vec![thread.id.clone(), "ghost".into()],
+            delete_files: false,
+        })
+        .await
+        .expect("batch delete");
+        assert_eq!(result.deleted_count, 1);
+        assert_eq!(result.failed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn get_thread_agent_state_reads_and_syncs_the_agent_title() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_agent_state_ok");
+        let thread = make_thread(&_home, Some("sess_state"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "get_state".to_string(),
+                "{\"session_name\":\"Agent Name\",\"model\":\"m\"}".to_string(),
+            )]),
+            ..Default::default()
+        });
+        let value = get_thread_agent_state(thread.id.clone())
+            .await
+            .expect("state");
+        assert_eq!(value["session_name"], serde_json::json!("Agent Name"));
+        // Title converged toward the agent name.
+        let reloaded = crate::store::get_thread(&thread.id)
+            .expect("get")
+            .expect("thread");
+        assert_eq!(reloaded.title, "Agent Name");
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn get_session_entries_reads_the_agent_history() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_entries_ok");
+        let thread = make_thread(&_home, Some("sess_entries"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "get_session_entries".to_string(),
+                "{\"entries\":[]}".to_string(),
+            )]),
+            ..Default::default()
+        });
+        let value = get_session_entries(thread.id.clone())
+            .await
+            .expect("entries");
+        assert_eq!(value["entries"], serde_json::json!([]));
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn clear_finished_runs_prunes_terminal_runs_via_the_agent() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_clear_runs_terminal");
+        let thread = make_thread(&_home, Some("sess_clear"));
+        crate::store::create_run(store::CreateRunInput {
+            id: Some("run_terminal".into()),
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("create run");
+        crate::store::update_run_status_if_active(store::UpdateRunStatusInput {
+            run_id: "run_terminal".into(),
+            status: "completed".into(),
+            error_message: None,
+            error_type: None,
+        })
+        .expect("terminal");
+
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([("prune_run_events".to_string(), "{}".to_string())]),
+            ..Default::default()
+        });
+        let cleared = clear_finished_runs(thread.id.clone()).await.expect("clear");
+        assert_eq!(cleared, 1);
+        script_mock_agent(MockScript::default());
+    }
+}

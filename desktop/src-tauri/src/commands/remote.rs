@@ -67,3 +67,50 @@ pub fn remote_pairing_status() -> Result<RemotePairingStatus, crate::AppError> {
 pub fn open_url(url: String) -> Result<(), crate::AppError> {
     open::that_detached(&url).map_err(|e| format!("Failed to open URL: {e}").into())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth_store::test_support::HomeGuard;
+
+    #[test]
+    fn remote_status_and_stop_report_no_bridge_when_idle() {
+        let _home = HomeGuard::new("remote_idle");
+        let status = remote_status().expect("status");
+        assert!(!status.connected);
+        let stopped = remote_stop().expect("stop");
+        assert!(!stopped.connected);
+    }
+
+    #[test]
+    fn remote_pairing_status_is_unpaired_without_credentials() {
+        let _home = HomeGuard::new("remote_pairing");
+        let status = remote_pairing_status().expect("pairing status");
+        assert!(!status.paired);
+        assert!(status.pair_id.is_none());
+    }
+
+    #[test]
+    fn remote_pairing_status_reports_a_persisted_pairing() {
+        let home = HomeGuard::new("remote_paired");
+        let root = std::env::var("HOME").unwrap();
+        let path = std::path::Path::new(&root).join(".future/remote_pairing.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"pairId":"p1","desktopId":"d1","nkeySeed":"s","userJwt":"j","natsUrl":"n","natsWsUrl":"w","jwtExpiresAt":0}"#,
+        )
+        .unwrap();
+        let status = remote_pairing_status().expect("pairing status");
+        assert!(status.paired);
+        assert_eq!(status.pair_id.as_deref(), Some("p1"));
+        drop(home);
+    }
+
+    #[tokio::test]
+    async fn remote_unpair_is_a_noop_without_credentials() {
+        let _home = HomeGuard::new("remote_unpair");
+        let status = remote_unpair().await.expect("unpair");
+        assert!(!status.connected);
+    }
+}

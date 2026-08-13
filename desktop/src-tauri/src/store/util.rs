@@ -186,7 +186,10 @@ mod tests {
 
     #[test]
     fn expand_tilde_passes_other_paths_through() {
-        assert_eq!(expand_tilde("/abs/path").unwrap(), PathBuf::from("/abs/path"));
+        assert_eq!(
+            expand_tilde("/abs/path").unwrap(),
+            PathBuf::from("/abs/path")
+        );
         assert_eq!(expand_tilde("rel/path").unwrap(), PathBuf::from("rel/path"));
     }
 
@@ -232,10 +235,8 @@ mod tests {
 
     #[test]
     fn count_workspace_files_missing_path_is_zero() {
-        let missing = std::env::temp_dir().join(format!(
-            "futureos-util-missing-{}",
-            std::process::id()
-        ));
+        let missing =
+            std::env::temp_dir().join(format!("futureos-util-missing-{}", std::process::id()));
         assert_eq!(count_workspace_files(missing.to_str().unwrap()).unwrap(), 0);
     }
 

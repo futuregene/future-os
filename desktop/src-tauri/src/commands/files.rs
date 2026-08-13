@@ -713,4 +713,235 @@ mod tests {
         fs::write(&invalid, b"not an image").unwrap();
         assert!(validate_image_attachment(invalid.display().to_string()).is_err());
     }
+
+    // ---- broader command coverage ----
+
+    /// A sparse 26MB file (over the 25MB attachment cap) without materializing
+    /// the bytes — `set_len` creates a hole that still reports the size.
+    fn sparse_large(root: &Path, name: &str) -> PathBuf {
+        let path = root.join(name);
+        let file = fs::File::create(&path).unwrap();
+        file.set_len(26 * 1024 * 1024).unwrap();
+        path
+    }
+
+    #[test]
+    fn best_effort_canonical_resolves_each_shape() {
+        let root = future_root("canonical");
+        let existing = write_under(&root, "a/b.txt");
+        assert_eq!(best_effort_canonical(&existing), existing);
+
+        // Missing tail re-appends under the canonicalized nearest ancestor.
+        let missing_tail = root.join("a/c/d.txt");
+        let resolved = best_effort_canonical(&missing_tail);
+        assert!(resolved.ends_with("a/c/d.txt"));
+
+        // A path whose ancestor never exists falls back to the input verbatim.
+        let ghost = Path::new("/definitely/not/here/x/y/z.txt");
+        assert_eq!(best_effort_canonical(ghost), ghost);
+    }
+
+    #[test]
+    fn ensure_path_allowed_blocks_credentials_and_allows_others() {
+        let home = crate::auth_store::test_support::HomeGuard::new("files_allowed");
+        let home_dir = std::env::var("HOME").unwrap();
+        let cred = write_under(Path::new(&home_dir), ".future/agent/auth.json");
+        assert!(ensure_path_allowed(&cred).is_err());
+        let ordinary = future_root("allowed_ordinary").join("app.db");
+        fs::write(&ordinary, b"x").unwrap();
+        assert!(ensure_path_allowed(&ordinary).is_ok());
+        drop(home);
+    }
+
+    #[test]
+    fn inspect_attachment_classifies_dir_text_and_binary() {
+        let root = future_root("inspect");
+        assert!(inspect_attachment("   ".into()).is_err());
+
+        let dir = root.join("sub");
+        fs::create_dir_all(&dir).unwrap();
+        let info = inspect_attachment(dir.display().to_string()).unwrap();
+        assert!(info.is_dir);
+
+        let text = root.join("notes.txt");
+        fs::write(&text, b"hello world\n").unwrap();
+        let info = inspect_attachment(text.display().to_string()).unwrap();
+        assert!(!info.is_dir && !info.is_binary);
+
+        let binary = root.join("blob.bin");
+        fs::write(&binary, [0u8, 1, 2, 3]).unwrap();
+        let info = inspect_attachment(binary.display().to_string()).unwrap();
+        assert!(info.is_binary);
+    }
+
+    #[test]
+    fn validate_image_rejects_empty_and_oversized() {
+        let root = future_root("validate_edges");
+        assert!(validate_image_attachment("   ".into()).is_err());
+        let big = sparse_large(&root, "big.png");
+        assert!(validate_image_attachment(big.display().to_string()).is_err());
+    }
+
+    #[test]
+    fn read_file_base64_covers_edges() {
+        let root = future_root("base64");
+        assert!(read_file_base64("   ".into(), None).is_err());
+        let big = sparse_large(&root, "big.bin");
+        assert!(read_file_base64(big.display().to_string(), None).is_err());
+
+        let small = root.join("small.txt");
+        fs::write(&small, b"hello").unwrap();
+        let encoded = read_file_base64(small.display().to_string(), None).unwrap();
+        assert_eq!(encoded, "aGVsbG8=");
+    }
+
+    #[test]
+    fn thumbnail_rejects_bad_thread_and_oversized_source() {
+        let home = crate::auth_store::test_support::HomeGuard::new("files_thumb");
+        assert!(generate_image_thumbnail("!!!".into(), "/x.png".into()).is_err());
+        let root = future_root("thumb_src");
+        let big = sparse_large(&root, "big.png");
+        assert!(generate_image_thumbnail("thread_x".into(), big.display().to_string()).is_err());
+        drop(home);
+    }
+
+    #[test]
+    fn thumbnail_generates_a_jpeg_for_a_real_image() {
+        let home = crate::auth_store::test_support::HomeGuard::new("files_thumb_ok");
+        let root = future_root("thumb_src2");
+        let src = root.join("in.png");
+        image::RgbImage::from_pixel(8, 8, image::Rgb([7, 8, 9]))
+            .save(&src)
+            .unwrap();
+        let thumb = generate_image_thumbnail("thread_x".into(), src.display().to_string()).unwrap();
+        assert!(thumb.ends_with(".jpg"));
+        assert!(Path::new(&thumb).is_file());
+        drop(home);
+    }
+
+    #[test]
+    fn import_ephemeral_image_covers_edges() {
+        let home = crate::auth_store::test_support::HomeGuard::new("files_import");
+        assert!(import_ephemeral_image("!!!".into(), "/x.png".into(), "x.png".into()).is_err());
+        assert!(import_ephemeral_image("t".into(), "   ".into(), "x.png".into()).is_err());
+
+        let root = future_root("import_src");
+        let src = root.join("src.png");
+        image::RgbImage::from_pixel(1, 1, image::Rgb([1, 1, 1]))
+            .save(&src)
+            .unwrap();
+        let dest = import_ephemeral_image(
+            "thread_x".into(),
+            src.display().to_string(),
+            "name.png".into(),
+        )
+        .unwrap();
+        assert!(Path::new(&dest).is_file());
+        drop(home);
+    }
+
+    #[test]
+    fn delete_temp_attachment_refuses_outside_the_attachment_dir() {
+        let root = future_root("delete_temp");
+        let outside = write_under(&root, "keep.txt");
+        assert!(delete_temp_attachment(outside.display().to_string()).is_err());
+    }
+
+    #[test]
+    fn delete_temp_attachment_removes_an_attachment_file() {
+        let base = std::env::temp_dir().join("futureos-attachments");
+        fs::create_dir_all(&base).unwrap();
+        let file = base.join(format!("test-{}.tmp", std::process::id()));
+        fs::write(&file, b"x").unwrap();
+        assert!(delete_temp_attachment(file.display().to_string()).is_ok());
+        assert!(!file.exists());
+    }
+
+    #[test]
+    fn open_path_and_url_validate_before_reaching_the_os() {
+        assert!(open_path("   ".into()).is_err());
+        assert!(open_external_url("file:///etc/passwd".into()).is_err());
+        assert!(open_external_url("ftp://x".into()).is_err());
+    }
+
+    #[test]
+    fn list_directory_rejects_empty_and_lists_entries() {
+        assert!(list_directory("   ".into()).is_err());
+        let root = future_root("list_dir");
+        fs::write(root.join("b.txt"), b"x").unwrap();
+        fs::create_dir_all(root.join("a_dir")).unwrap();
+        let entries = list_directory(root.display().to_string()).unwrap();
+        assert_eq!(entries.len(), 2);
+        // Directories sort first.
+        assert!(entries[0].is_dir);
+    }
+
+    #[test]
+    fn read_text_file_preview_covers_edges() {
+        assert!(read_text_file_preview("   ".into(), None).is_err());
+        let root = future_root("preview");
+        let file = root.join("long.txt");
+        fs::write(&file, b"0123456789abcdef").unwrap();
+        let preview = read_text_file_preview(file.display().to_string(), Some(4)).unwrap();
+        assert!(preview.truncated);
+        assert_eq!(preview.content, "0123");
+    }
+
+    #[test]
+    fn export_artifact_file_covers_all_branches() {
+        let root = future_root("export");
+        assert!(export_artifact_file("   ".into(), None, None).is_err());
+
+        // Content branch.
+        let dest = root.join("out.md");
+        assert!(
+            export_artifact_file(dest.display().to_string(), None, Some("# hi".into())).is_ok()
+        );
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "# hi");
+
+        // Source copy branch.
+        let src = root.join("src.md");
+        fs::write(&src, b"src").unwrap();
+        let dest2 = root.join("out2.md");
+        assert!(export_artifact_file(
+            dest2.display().to_string(),
+            Some(src.display().to_string()),
+            None
+        )
+        .is_ok());
+        assert_eq!(fs::read_to_string(&dest2).unwrap(), "src");
+
+        // Missing both source and content.
+        assert!(export_artifact_file(dest.display().to_string(), None, None).is_err());
+    }
+
+    #[test]
+    fn to_base36_handles_zero_and_positive() {
+        assert_eq!(to_base36(0), "0");
+        assert_eq!(to_base36(35), "z");
+        assert_eq!(to_base36(36), "10");
+    }
+
+    #[test]
+    fn save_pasted_image_covers_edges() {
+        assert!(save_pasted_image(vec![], None).is_err());
+        assert!(save_pasted_image(vec![0u8; 26 * 1024 * 1024], None).is_err());
+        let saved = save_pasted_image(vec![1, 2, 3], Some("PNG".into())).unwrap();
+        assert!(saved.name.ends_with(".png"));
+        assert!(Path::new(&saved.path).is_file());
+    }
+
+    #[test]
+    fn canonical_falls_back_for_a_path_with_no_existing_ancestor() {
+        // A bare relative name that does not exist walks up to an empty path
+        // (which has no parent), so the `_` arm returns the input unchanged.
+        let ghost = Path::new("futureos_definitely_not_a_real_file_xyz");
+        assert_eq!(best_effort_canonical(ghost), ghost);
+    }
+
+    #[test]
+    fn safe_file_name_falls_back_to_image_when_everything_is_filtered() {
+        assert_eq!(safe_file_name("你好"), "image");
+        assert_eq!(safe_file_name("report.md"), "report.md");
+    }
 }
