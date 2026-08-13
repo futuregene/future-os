@@ -1056,8 +1056,8 @@ mod tests {
         // Delete the workspace row directly (FK off) while leaving the thread
         // row behind: `get_thread` still resolves the parent, but the forked
         // `create_thread` can no longer load the workspace.
-        let conn = rusqlite::Connection::open(home.path().join(".future/app/app.db"))
-            .expect("open db");
+        let conn =
+            rusqlite::Connection::open(home.path().join(".future/app/app.db")).expect("open db");
         conn.execute_batch("PRAGMA foreign_keys = OFF;")
             .expect("fk off");
         conn.execute("DELETE FROM workspaces WHERE id = ?1", [&workspace.id])
@@ -1069,18 +1069,12 @@ mod tests {
             entries_payload(conversation_entries()),
         );
         mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork-cf"}));
-        mock.push_data(
-            "get_session_entries",
-            entries_payload(forked_entries()),
-        );
+        mock.push_data("get_session_entries", entries_payload(forked_entries()));
 
         let error = fork_agent_session(&thread.id, "x", 0)
             .await
             .expect_err("create thread");
-        assert!(
-            error.to_string().contains("Workspace"),
-            "{error}"
-        );
+        assert!(error.to_string().contains("Workspace"), "{error}");
     }
 
     /// When the forked thread's workspace path can no longer be created on
@@ -1104,10 +1098,7 @@ mod tests {
             entries_payload(conversation_entries()),
         );
         mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork-md"}));
-        mock.push_data(
-            "get_session_entries",
-            entries_payload(forked_entries()),
-        );
+        mock.push_data("get_session_entries", entries_payload(forked_entries()));
 
         let error = fork_agent_session(&thread.id, "x", 0)
             .await

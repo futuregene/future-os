@@ -162,9 +162,8 @@ mod tests {
         let home = TestHome::new("headless-no-session");
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, None);
-        let prepared =
-            prepare_prompt_persisted(&thread, "hi".to_string(), None, None, vec![])
-                .expect("prepare");
+        let prepared = prepare_prompt_persisted(&thread, "hi".to_string(), None, None, vec![])
+            .expect("prepare");
         assert_eq!(prepared.session_id, thread.id);
     }
 
@@ -174,14 +173,8 @@ mod tests {
         let mock = mock_agent();
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-headless-error"));
-        let prepared = prepare_prompt_persisted(
-            &thread,
-            "hello".to_string(),
-            None,
-            None,
-            vec![],
-        )
-        .expect("prepare");
+        let prepared = prepare_prompt_persisted(&thread, "hello".to_string(), None, None, vec![])
+            .expect("prepare");
         let run_id = prepared.run_id.clone();
 
         mock.push_data(
@@ -214,14 +207,8 @@ mod tests {
         let mock = mock_agent();
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-headless-incomplete"));
-        let prepared = prepare_prompt_persisted(
-            &thread,
-            "hello".to_string(),
-            None,
-            None,
-            vec![],
-        )
-        .expect("prepare");
+        let prepared = prepare_prompt_persisted(&thread, "hello".to_string(), None, None, vec![])
+            .expect("prepare");
         let run_id = prepared.run_id.clone();
 
         mock.push_data(
@@ -251,14 +238,8 @@ mod tests {
         let mock = mock_agent();
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-headless-complete"));
-        let prepared = prepare_prompt_persisted(
-            &thread,
-            "hello".to_string(),
-            None,
-            None,
-            vec![],
-        )
-        .expect("prepare");
+        let prepared = prepare_prompt_persisted(&thread, "hello".to_string(), None, None, vec![])
+            .expect("prepare");
         let run_id = prepared.run_id.clone();
 
         mock.push_data(
@@ -279,6 +260,10 @@ mod tests {
             .expect("get run")
             .expect("some");
         assert_eq!(run.status, "failed");
-        assert!(run.error_message.as_deref().unwrap_or_default().contains("Unable to send prompt"));
+        assert!(run
+            .error_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Unable to send prompt"));
     }
 }

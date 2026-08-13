@@ -840,7 +840,9 @@ mod tests {
         assert!(is_desktop_chat_cwd("~/.future/workspaces/chat/abc"));
         assert!(!is_desktop_chat_cwd("/tmp/.future/workspaces/chat/abc"));
         // Expanded home (forward slashes) matches.
-        assert!(is_desktop_chat_cwd("/Users/fake-home/.future/workspaces/chat/abc"));
+        assert!(is_desktop_chat_cwd(
+            "/Users/fake-home/.future/workspaces/chat/abc"
+        ));
         // Windows separators normalize to the same suffix.
         assert!(is_desktop_chat_cwd(
             r"/Users/fake-home\.future\workspaces\chat\abc"
@@ -936,14 +938,13 @@ mod tests {
             "new_session",
             super::super::test_support::Reply::Reject(String::new()),
         );
-        let err = write_back_cwd("sess", "/cwd").await.expect_err("reject empty");
+        let err = write_back_cwd("sess", "/cwd")
+            .await
+            .expect_err("reject empty");
         assert_eq!(err, "agent rejected");
 
         // Success → Ok.
-        mock.push_data(
-            "new_session",
-            serde_json::json!({ "sessionId": "sess" }),
-        );
+        mock.push_data("new_session", serde_json::json!({ "sessionId": "sess" }));
         write_back_cwd("sess", "/cwd").await.expect("ok");
     }
 
@@ -1041,7 +1042,9 @@ mod tests {
         std::env::remove_var("HOME");
         std::env::remove_var("USERPROFILE");
         // No home → the `if let Some(home)` else path runs, returning false.
-        assert!(!is_desktop_chat_cwd("/Users/who/.future/workspaces/chat/abc"));
+        assert!(!is_desktop_chat_cwd(
+            "/Users/who/.future/workspaces/chat/abc"
+        ));
         super::super::test_support::restore_home(saved_home);
         std::env::set_var("USERPROFILE", saved_profile.unwrap_or_default());
     }
@@ -1221,7 +1224,9 @@ mod tests {
         assert_eq!(thread.title, "Live Session");
 
         // Already-known session → no-op Ok.
-        import_streaming_session("sess-live").await.expect("idempotent");
+        import_streaming_session("sess-live")
+            .await
+            .expect("idempotent");
     }
 
     #[tokio::test]
@@ -1249,15 +1254,11 @@ mod tests {
         }
         import_missing_sessions().await;
         settle_spawns().await;
-        assert!(
-            crate::store::find_thread_by_agent_session("sess-m1")
-                .expect("find")
-                .is_some()
-        );
-        assert!(
-            crate::store::find_thread_by_agent_session("sess-m2")
-                .expect("find")
-                .is_some()
-        );
+        assert!(crate::store::find_thread_by_agent_session("sess-m1")
+            .expect("find")
+            .is_some());
+        assert!(crate::store::find_thread_by_agent_session("sess-m2")
+            .expect("find")
+            .is_some());
     }
 }

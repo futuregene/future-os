@@ -1316,10 +1316,10 @@ mod tests {
 
         let (cancel, _rx) = oneshot::channel();
         let shared = Arc::new(ObserverShared::new(thread.id.clone()));
-        OBSERVERS.lock().unwrap().insert(
-            "sess-touch".to_string(),
-            ObserverHandle { cancel, shared },
-        );
+        OBSERVERS
+            .lock()
+            .unwrap()
+            .insert("sess-touch".to_string(), ObserverHandle { cancel, shared });
 
         ensure_observer_for_thread("sess-touch", &thread.id).expect("existing touch");
         ensure_passive_observer("sess-touch", &thread.id).expect("existing passive");
@@ -1358,10 +1358,10 @@ mod tests {
     async fn drop_observer_cancels_a_registered_observer() {
         let (cancel, rx) = oneshot::channel();
         let shared = Arc::new(ObserverShared::new("thread-drop"));
-        OBSERVERS.lock().unwrap().insert(
-            "sess-drop".to_string(),
-            ObserverHandle { cancel, shared },
-        );
+        OBSERVERS
+            .lock()
+            .unwrap()
+            .insert("sess-drop".to_string(), ObserverHandle { cancel, shared });
         drop_observer("sess-drop");
         assert!(rx.await.is_ok(), "cancel was sent");
         assert!(!OBSERVERS.lock().unwrap().contains_key("sess-drop"));
@@ -1403,10 +1403,10 @@ mod tests {
             .lock()
             .unwrap()
             .insert("run-cached".to_string(), "local-cached".to_string());
-        OBSERVERS.lock().unwrap().insert(
-            "sess-rb".to_string(),
-            ObserverHandle { cancel, shared },
-        );
+        OBSERVERS
+            .lock()
+            .unwrap()
+            .insert("sess-rb".to_string(), ObserverHandle { cancel, shared });
         assert_eq!(
             ensure_run_binding("sess-rb", "run-cached", &thread.id).as_deref(),
             Some("local-cached")
@@ -1462,17 +1462,19 @@ mod tests {
         let thread = seed_thread(&workspace.id, Some("sess-bind"));
         let (cancel, _rx) = oneshot::channel();
         let shared = Arc::new(ObserverShared::new(thread.id.clone()));
-        OBSERVERS.lock().unwrap().insert(
-            "sess-bind".to_string(),
-            ObserverHandle { cancel, shared },
-        );
+        OBSERVERS
+            .lock()
+            .unwrap()
+            .insert("sess-bind".to_string(), ObserverHandle { cancel, shared });
         bind_run("sess-bind", "run-1", "local-1");
         assert_eq!(
-            OBSERVERS
+            OBSERVERS.lock().unwrap().get("sess-bind").and_then(|h| h
+                .shared
+                .run_bindings
                 .lock()
-                .unwrap()
-                .get("sess-bind")
-                .and_then(|h| h.shared.run_bindings.lock().ok()?.get("run-1").cloned()),
+                .ok()?
+                .get("run-1")
+                .cloned()),
             Some("local-1".to_string())
         );
         OBSERVERS.lock().unwrap().remove("sess-bind");
@@ -1481,14 +1483,19 @@ mod tests {
     #[tokio::test]
     async fn probe_active_run_resolves_or_declines() {
         let mock = mock_agent();
-        let mut client = super::super::client::connect_agent().await.expect("connect");
+        let mut client = super::super::client::connect_agent()
+            .await
+            .expect("connect");
 
         // No activeRun → None.
         mock.push_data("get_state", serde_json::json!({"isStreaming": false}));
         assert!(probe_active_run(&mut client, "sess").await.is_none());
 
         // activeRun with a runId → Some.
-        mock.push_data("get_state", serde_json::json!({"activeRun": {"runId": "run-1"}}));
+        mock.push_data(
+            "get_state",
+            serde_json::json!({"activeRun": {"runId": "run-1"}}),
+        );
         assert_eq!(
             probe_active_run(&mut client, "sess").await.as_deref(),
             Some("run-1")
@@ -1520,7 +1527,9 @@ mod tests {
     #[tokio::test]
     async fn replay_session_events_reconstructs_and_detects_gaps() {
         let mock = mock_agent();
-        let mut client = super::super::client::connect_agent().await.expect("connect");
+        let mut client = super::super::client::connect_agent()
+            .await
+            .expect("connect");
         let shared = Arc::new(ObserverShared::new("thread-rp"));
         let mut state = ObserverState::default();
 
@@ -1539,7 +1548,10 @@ mod tests {
         assert!(!replay_session_events(&mut client, "sess-rp", &shared, &mut state).await);
 
         // No events → true.
-        mock.push_data("get_session_events_since", serde_json::json!({"events": []}));
+        mock.push_data(
+            "get_session_events_since",
+            serde_json::json!({"events": []}),
+        );
         assert!(replay_session_events(&mut client, "sess-rp", &shared, &mut state).await);
 
         // One session-level event → true, cursor advanced.
@@ -1568,8 +1580,9 @@ mod tests {
 
     #[test]
     fn settings_event_payload_enriches_objects_and_rejects_malformed() {
-        let payload = settings_event_payload("sess", "thread", "model_changed", r#"{"model":"k3"}"#)
-            .expect("object payload");
+        let payload =
+            settings_event_payload("sess", "thread", "model_changed", r#"{"model":"k3"}"#)
+                .expect("object payload");
         assert_eq!(payload["sessionId"], "sess");
         assert_eq!(payload["threadId"], "thread");
         assert_eq!(payload["_eventType"], "model_changed");
@@ -1620,10 +1633,7 @@ mod tests {
         drop_observer("sess-new");
 
         // Reject (success=false) → return.
-        mock.push(
-            "list_streaming_sessions",
-            Reply::Reject("nope".to_string()),
-        );
+        mock.push("list_streaming_sessions", Reply::Reject("nope".to_string()));
         discover_streaming_sessions().await;
 
         // Transport error → return.

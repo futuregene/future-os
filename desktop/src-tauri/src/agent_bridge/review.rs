@@ -415,7 +415,6 @@ mod tests {
             store::get_run_changeset(&run.id).unwrap().is_none(),
             "the oldest Run's changeset should be pruned"
         );
-
     }
 
     /// Set up a temp HOME + store; returns cleanup base plus a workspace-mode
@@ -470,14 +469,7 @@ mod tests {
             model_id: None,
         })
         .unwrap();
-        (
-            Fixture {
-                base,
-                prev_home,
-            },
-            thread,
-            run,
-        )
+        (Fixture { base, prev_home }, thread, run)
     }
 
     #[test]
@@ -511,10 +503,7 @@ mod tests {
         assert!(super::resolve(&chat.id).unwrap().is_none());
 
         // Workspace thread whose dir vanished → None (non-dir).
-        let ws = store::get_thread(&thread.id)
-            .unwrap()
-            .unwrap()
-            .workspace_id;
+        let ws = store::get_thread(&thread.id).unwrap().unwrap().workspace_id;
         let ws_path = store::get_workspace(&ws).unwrap().unwrap().path;
         fs::remove_dir_all(&ws_path).unwrap();
         assert!(super::resolve(&thread.id).unwrap().is_none());
@@ -606,7 +595,6 @@ mod tests {
         .unwrap();
         let err = super::retry(&run.id).unwrap_err();
         assert!(err.to_string().contains("no commits"), "{err}");
-
     }
 
     #[test]
@@ -636,14 +624,19 @@ mod tests {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let (_fx, thread, run) = fixture("retry-ok");
-        let ws_path = store::get_workspace(&store::get_thread(&thread.id).unwrap().unwrap().workspace_id)
-            .unwrap()
-            .unwrap()
-            .path;
+        let ws_path =
+            store::get_workspace(&store::get_thread(&thread.id).unwrap().unwrap().workspace_id)
+                .unwrap()
+                .unwrap()
+                .path;
 
         fs::write(std::path::Path::new(&ws_path).join("keep.txt"), "before\n").unwrap();
         super::capture_before(&thread.id, &run.id);
-        fs::write(std::path::Path::new(&ws_path).join("keep.txt"), "before\nafter\n").unwrap();
+        fs::write(
+            std::path::Path::new(&ws_path).join("keep.txt"),
+            "before\nafter\n",
+        )
+        .unwrap();
         super::capture_after(&thread.id, &run.id);
 
         // Re-materialize the changeset from the recorded commits.
@@ -652,7 +645,6 @@ mod tests {
             .unwrap()
             .expect("retry materializes a changeset");
         assert_eq!(changeset.source_kind, "run_snapshot");
-
     }
 
     #[test]
@@ -681,14 +673,17 @@ mod tests {
         })
         .unwrap();
         super::try_capture_before(&chat.id, &chat_run.id).unwrap();
-        assert!(super::try_capture_after(&chat.id, &chat_run.id).unwrap().is_empty());
+        assert!(super::try_capture_after(&chat.id, &chat_run.id)
+            .unwrap()
+            .is_empty());
         super::try_materialize_changeset(&chat.id, &chat_run.id, vec![]).unwrap();
 
         // Workspace thread with no before snapshot → after is a no-op and
         // materialize is a no-op.
-        assert!(super::try_capture_after(&thread.id, &run.id).unwrap().is_empty());
+        assert!(super::try_capture_after(&thread.id, &run.id)
+            .unwrap()
+            .is_empty());
         super::try_materialize_changeset(&thread.id, &run.id, vec![]).unwrap();
-
     }
 
     #[test]
@@ -727,7 +722,6 @@ mod tests {
         snap("before", "complete", Some("fake-before-commit"));
         snap("after", "complete", None);
         super::try_materialize_changeset(&thread.id, &run.id, vec![]).unwrap();
-
     }
 
     #[test]
@@ -759,6 +753,5 @@ mod tests {
 
         let err = super::retry(&run.id).unwrap_err();
         assert!(!err.to_string().is_empty());
-
     }
 }
