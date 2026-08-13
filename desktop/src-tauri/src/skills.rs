@@ -57,7 +57,13 @@ fn ensure_skill_id_ok(id: &str) -> Result<(), AppError> {
 /// inside that scope — defence in depth on top of [`ensure_skill_id_ok`].
 fn skill_dir_in_scope(scope: SkillScope, id: &str) -> Result<PathBuf, AppError> {
     ensure_skill_id_ok(id)?;
-    let base = scope.dir()?;
+    join_skill_dir(scope.dir()?, id)
+}
+
+/// Join `id` onto `base`, refusing any result that escapes `base` (defence in
+/// depth: [`ensure_skill_id_ok`] already rejects separators and `..`, so a future
+/// relaxation of that validator must still be unable to traverse out of scope).
+fn join_skill_dir(base: PathBuf, id: &str) -> Result<PathBuf, AppError> {
     let dest = base.join(id);
     if dest.parent() != Some(base.as_path()) {
         return Err(AppError::Message(format!("Invalid skill id: {id:?}")));
@@ -316,6 +322,18 @@ mod tests {
         let dest = skill_dir_in_scope(SkillScope::App, "core").unwrap();
         assert_eq!(dest, base.join("core"));
         assert!(skill_dir_in_scope(SkillScope::App, "../escape").is_err());
+    }
+
+    #[test]
+    fn join_skill_dir_refuses_traversal() {
+        // The defence-in-depth join check fires when the id (bypassing
+        // ensure_skill_id_ok) still escapes the base directory.
+        let base = PathBuf::from("/scope");
+        assert!(join_skill_dir(base.clone(), "../escape").is_err());
+        assert_eq!(
+            join_skill_dir(base.clone(), "core").unwrap(),
+            base.join("core")
+        );
     }
 
     #[test]

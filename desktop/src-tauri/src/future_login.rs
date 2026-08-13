@@ -373,24 +373,30 @@ fn open_browser(url: &str) {
     // Best-effort launch of the default browser. In tests this is a no-op so a
     // `start()` success test doesn't spawn the real browser; the side effect is
     // irrelevant to the code paths under test.
-    #[cfg(not(test))]
-    let _ = open::that_detached(url);
-    #[cfg(test)]
-    let _ = url;
+    launch_browser(url);
 }
+
+#[cfg(not(test))]
+fn launch_browser(url: &str) {
+    let _ = open::that_detached(url);
+}
+
+#[cfg(test)]
+fn launch_browser(_url: &str) {}
+
+#[cfg(target_os = "macos")]
+const LOGIN_PLATFORM: &str = "macOS";
+#[cfg(target_os = "windows")]
+const LOGIN_PLATFORM: &str = "Windows";
+#[cfg(target_os = "linux")]
+const LOGIN_PLATFORM: &str = "Linux";
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+const LOGIN_PLATFORM: &str = "";
 
 /// Map the compile target to the platform label the authorization page expects
 /// (`macOS` / `Windows` / `Linux`); any other target yields an empty value.
 fn login_platform() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "macOS"
-    } else if cfg!(target_os = "windows") {
-        "Windows"
-    } else if cfg!(target_os = "linux") {
-        "Linux"
-    } else {
-        ""
-    }
+    LOGIN_PLATFORM
 }
 
 /// Append `platform=<login_platform>` to the authorization URL so the opened page
@@ -470,10 +476,7 @@ mod tests {
 
     #[test]
     fn append_login_platform_returns_unparseable_url_unchanged() {
-        assert_eq!(
-            append_login_platform("not a url".to_string()),
-            "not a url"
-        );
+        assert_eq!(append_login_platform("not a url".to_string()), "not a url");
     }
 
     #[test]
@@ -534,7 +537,11 @@ mod tests {
     #[tokio::test]
     async fn fetch_balance_parses_credits() {
         let _home = crate::auth_store::test_support::HomeGuard::new("fl-balance");
-        let url = mock_http_server(vec![(200, "application/json", b"{\"balance_credits\":10000000000}".to_vec())]);
+        let url = mock_http_server(vec![(
+            200,
+            "application/json",
+            b"{\"balance_credits\":10000000000}".to_vec(),
+        )]);
         point_auth_with_key(&url);
         let balance = fetch_balance().await.unwrap();
         assert_eq!(balance.credits, 1.0);
@@ -543,9 +550,17 @@ mod tests {
     #[tokio::test]
     async fn fetch_balance_http_error_uses_body_message() {
         let _home = crate::auth_store::test_support::HomeGuard::new("fl-balance-err");
-        let url = mock_http_server(vec![(500, "application/json", b"{\"message\":\"boom\"}".to_vec())]);
+        let url = mock_http_server(vec![(
+            500,
+            "application/json",
+            b"{\"message\":\"boom\"}".to_vec(),
+        )]);
         point_auth_with_key(&url);
-        assert!(fetch_balance().await.unwrap_err().to_string().contains("boom"));
+        assert!(fetch_balance()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("boom"));
     }
 
     #[tokio::test]
@@ -553,19 +568,31 @@ mod tests {
         let _home = crate::auth_store::test_support::HomeGuard::new("fl-balance-bad");
         let url = mock_http_server(vec![(200, "application/json", b"not json".to_vec())]);
         point_auth_with_key(&url);
-        assert!(fetch_balance().await.unwrap_err().to_string().contains("parse"));
+        assert!(fetch_balance()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("parse"));
     }
 
     #[tokio::test]
     async fn fetch_balance_requires_key() {
         let _home = crate::auth_store::test_support::HomeGuard::new("fl-balance-out");
-        assert!(fetch_balance().await.unwrap_err().to_string().contains("Not signed in"));
+        assert!(fetch_balance()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("Not signed in"));
     }
 
     #[tokio::test]
     async fn fetch_profile_parses_account() {
         let _home = crate::auth_store::test_support::HomeGuard::new("fl-profile");
-        let url = mock_http_server(vec![(200, "application/json", b"{\"email\":\"a@b.c\",\"user_id\":\"u1\"}".to_vec())]);
+        let url = mock_http_server(vec![(
+            200,
+            "application/json",
+            b"{\"email\":\"a@b.c\",\"user_id\":\"u1\"}".to_vec(),
+        )]);
         point_auth_with_key(&url);
         let profile = fetch_profile().await.unwrap();
         assert_eq!(profile.email, "a@b.c");
@@ -575,9 +602,17 @@ mod tests {
     #[tokio::test]
     async fn fetch_profile_http_error() {
         let _home = crate::auth_store::test_support::HomeGuard::new("fl-profile-err");
-        let url = mock_http_server(vec![(500, "application/json", b"{\"message\":\"nope\"}".to_vec())]);
+        let url = mock_http_server(vec![(
+            500,
+            "application/json",
+            b"{\"message\":\"nope\"}".to_vec(),
+        )]);
         point_auth_with_key(&url);
-        assert!(fetch_profile().await.unwrap_err().to_string().contains("nope"));
+        assert!(fetch_profile()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("nope"));
     }
 
     #[tokio::test]
@@ -585,13 +620,21 @@ mod tests {
         let _home = crate::auth_store::test_support::HomeGuard::new("fl-profile-bad");
         let url = mock_http_server(vec![(200, "application/json", b"not json".to_vec())]);
         point_auth_with_key(&url);
-        assert!(fetch_profile().await.unwrap_err().to_string().contains("parse"));
+        assert!(fetch_profile()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("parse"));
     }
 
     #[tokio::test]
     async fn fetch_profile_requires_key() {
         let _home = crate::auth_store::test_support::HomeGuard::new("fl-profile-out");
-        assert!(fetch_profile().await.unwrap_err().to_string().contains("Not signed in"));
+        assert!(fetch_profile()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("Not signed in"));
     }
 
     #[tokio::test]
@@ -610,7 +653,11 @@ mod tests {
     #[tokio::test]
     async fn start_http_error() {
         let _home = crate::auth_store::test_support::HomeGuard::new("fl-start-err");
-        let url = mock_http_server(vec![(500, "application/json", b"{\"message\":\"down\"}".to_vec())]);
+        let url = mock_http_server(vec![(
+            500,
+            "application/json",
+            b"{\"message\":\"down\"}".to_vec(),
+        )]);
         point_auth(&url);
         assert!(start().await.unwrap_err().to_string().contains("down"));
     }
@@ -629,7 +676,11 @@ mod tests {
         let body = r#"{"device_code":"","user_code":"uc","verification_uri":"https://e.com","verification_uri_complete":"https://e.com/c","expires_in":300,"interval":5}"#;
         let url = mock_http_server(vec![(200, "application/json", body.as_bytes().to_vec())]);
         point_auth(&url);
-        assert!(start().await.unwrap_err().to_string().contains("missing required"));
+        assert!(start()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("missing required"));
     }
 
     #[tokio::test]
@@ -638,7 +689,11 @@ mod tests {
         let body = r#"{"device_code":"dc","user_code":"uc","verification_uri":"https://e.com","verification_uri_complete":"https://e.com/c","expires_in":0,"interval":5}"#;
         let url = mock_http_server(vec![(200, "application/json", body.as_bytes().to_vec())]);
         point_auth(&url);
-        assert!(start().await.unwrap_err().to_string().contains("invalid expiry"));
+        assert!(start()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("invalid expiry"));
     }
 
     #[tokio::test]
@@ -647,7 +702,11 @@ mod tests {
         let body = r#"{"device_code":"dc","user_code":"uc","expires_in":300,"interval":5}"#;
         let url = mock_http_server(vec![(200, "application/json", body.as_bytes().to_vec())]);
         point_auth(&url);
-        assert!(start().await.unwrap_err().to_string().contains("authorization URL"));
+        assert!(start()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("authorization URL"));
     }
 
     #[tokio::test]
@@ -663,7 +722,11 @@ mod tests {
     async fn start_network_error() {
         let _home = crate::auth_store::test_support::HomeGuard::new("fl-start-net");
         crate::auth_store::set_future_base_url("http://127.0.0.1:1/api").unwrap();
-        assert!(start().await.unwrap_err().to_string().contains("Failed to request device code"));
+        assert!(start()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("Failed to request device code"));
     }
 
     #[tokio::test]
@@ -697,7 +760,11 @@ mod tests {
     async fn poll_network_error() {
         let _home = crate::auth_store::test_support::HomeGuard::new("fl-poll-net");
         crate::auth_store::set_future_base_url("http://127.0.0.1:1/api").unwrap();
-        assert!(poll("dc").await.unwrap_err().to_string().contains("Failed to poll"));
+        assert!(poll("dc")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("Failed to poll"));
     }
 
     #[tokio::test]
@@ -705,7 +772,11 @@ mod tests {
         let _home = crate::auth_store::test_support::HomeGuard::new("fl-balance-err2");
         let url = mock_http_server(vec![(500, "application/json", b"{}".to_vec())]);
         point_auth_with_key(&url);
-        assert!(fetch_balance().await.unwrap_err().to_string().contains("HTTP 500"));
+        assert!(fetch_balance()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("HTTP 500"));
     }
 
     #[tokio::test]
@@ -713,7 +784,11 @@ mod tests {
         let _home = crate::auth_store::test_support::HomeGuard::new("fl-profile-err2");
         let url = mock_http_server(vec![(500, "application/json", b"{}".to_vec())]);
         point_auth_with_key(&url);
-        assert!(fetch_profile().await.unwrap_err().to_string().contains("HTTP 500"));
+        assert!(fetch_profile()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("HTTP 500"));
     }
 
     #[tokio::test]
@@ -753,7 +828,11 @@ mod tests {
             b"{\"api_key\":123}".to_vec(),
         )]);
         point_auth(&url);
-        assert!(poll("dc").await.unwrap_err().to_string().contains("parse authorization"));
+        assert!(poll("dc")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("parse authorization"));
     }
 
     #[tokio::test]
@@ -772,7 +851,10 @@ mod tests {
 
         let out = poll("dc").await.unwrap();
         assert_eq!(out.status, "authorized");
-        assert_eq!(crate::auth_store::read().unwrap()["future"]["key"], "sekret");
+        assert_eq!(
+            crate::auth_store::read().unwrap()["future"]["key"],
+            "sekret"
+        );
 
         match previous {
             Some(value) => std::env::set_var("FUTURE_AGENT_GRPC_ADDR", value),
