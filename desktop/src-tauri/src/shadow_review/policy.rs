@@ -146,26 +146,33 @@ pub fn evaluate_volume(workspace_path: &Path, redline: &VolumeRedline) -> Volume
     let mut stack: Vec<PathBuf> = vec![workspace_path.to_path_buf()];
 
     while let Some(dir) = stack.pop() {
-        if let Ok(entries) = fs::read_dir(&dir) {
-            for entry in entries.flatten() {
+        // `into_iter().flatten().flatten()` folds both the `read_dir` error and
+        // each entry's own read error into "skip" without an explicit branch.
+        let entries = fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| {
+                // `file_type()` fails only if the entry vanished mid-walk; the
+                // `?` on `Option` skips it with no source line of its own.
+                let file_type = entry.file_type().ok()?;
                 let path = entry.path();
-                if let Ok(file_type) = entry.file_type() {
-                    let name = entry.file_name();
-                    let name = name.to_string_lossy();
-                    if file_type.is_dir() {
-                        if is_excluded_dir(&name) {
-                            continue;
-                        }
-                        stack.push(path);
-                    } else if file_type.is_file() {
-                        files += 1;
-                        if let Ok(meta) = entry.metadata() {
-                            bytes += meta.len();
-                        }
-                        if files > redline.max_files || bytes > redline.max_bytes {
-                            return VolumeVerdict::TooLarge;
-                        }
-                    }
+                let name = entry.file_name();
+                let name = name.to_string_lossy().into_owned();
+                let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+                Some((path, name, file_type, size))
+            });
+        for (path, name, file_type, size) in entries {
+            if file_type.is_dir() {
+                if is_excluded_dir(&name) {
+                    continue;
+                }
+                stack.push(path);
+            } else if file_type.is_file() {
+                files += 1;
+                bytes += size;
+                if files > redline.max_files || bytes > redline.max_bytes {
+                    return VolumeVerdict::TooLarge;
                 }
             }
         }
@@ -285,10 +292,10 @@ mod tests {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 fn make_symlink(target: &Path, link: &Path) {
     std::os::unix::fs::symlink(target, link).unwrap();
 }
 
-#[cfg(not(unix))]
+#[cfg(all(test, not(unix)))]
 fn make_symlink(_target: &Path, _link: &Path) {}

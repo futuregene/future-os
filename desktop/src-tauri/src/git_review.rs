@@ -81,7 +81,7 @@ pub fn get_git_review(
         let cache = REVIEW_CACHE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some((cached_fingerprint, review)) = cache
+        if let Some((_cached_fingerprint, review)) = cache
             .get(&cache_key)
             .filter(|(cached_fingerprint, _)| *cached_fingerprint == fingerprint)
         {

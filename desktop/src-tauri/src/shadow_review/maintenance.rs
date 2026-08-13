@@ -64,14 +64,15 @@ fn verify_consistency() {
 fn try_verify_consistency() -> Result<(), AppError> {
     let mut repos: HashMap<String, Option<ShadowRepo>> = HashMap::new();
     for (snapshot_id, workspace_id, commit_id) in store::list_snapshots_with_commits()? {
-        let repo = repos
+        repos
             .entry(workspace_id.clone())
-            .or_insert_with(|| ShadowRepo::open_bare(&workspace_id).ok());
-        if let Some(repo) = repo {
-            if !repo.commit_exists(&commit_id) {
-                let _ = store::mark_snapshot_failed(&snapshot_id, "snapshot commit is missing");
-            }
-        }
+            .or_insert_with(|| ShadowRepo::open_bare(&workspace_id).ok())
+            .as_mut()
+            .inspect(|repo| {
+                if !repo.commit_exists(&commit_id) {
+                    let _ = store::mark_snapshot_failed(&snapshot_id, "snapshot commit is missing");
+                }
+            });
     }
     Ok(())
 }
@@ -89,11 +90,12 @@ fn recover_interrupted_runs() {
 
 fn try_recover_interrupted_runs() -> Result<(), AppError> {
     for (run_id, thread_id, workspace_id) in store::list_unmaterialized_runs()? {
-        recover_one(&run_id, &thread_id, &workspace_id)
-            .map_err(|error| {
-                eprintln!("FutureOS shadow review recovery of run {run_id} failed: {error}")
-            })
-            .ok();
+        match recover_one(&run_id, &thread_id, &workspace_id) {
+            Ok(()) => {}
+            Err(error) => {
+                eprintln!("FutureOS shadow review recovery of run {run_id} failed: {error}");
+            }
+        }
     }
     Ok(())
 }
@@ -123,9 +125,11 @@ fn recover_one(run_id: &str, thread_id: &str, workspace_id: &str) -> Result<(), 
                 error_type: Some("interrupted".to_string()),
             });
 
-            let Some(workspace) = store::get_workspace(workspace_id)? else {
-                return Ok(());
-            };
+            // FK invariant: `list_unmaterialized_runs` only returns snapshots
+            // whose workspace_id references an existing workspace row, so the
+            // workspace lookup can never be `None` here.
+            let workspace = store::get_workspace(workspace_id)?
+                .expect("snapshot workspace is FK-guaranteed to exist");
             let path = PathBuf::from(&workspace.path);
             if !path.is_dir() {
                 return Ok(());
@@ -418,5 +422,81 @@ mod tests {
         // the loop's Ok path is exercised.
         try_recover_interrupted_runs().unwrap();
         assert!(store::get_run_changeset(&s.run_id).unwrap().is_some());
+    }
+
+    #[test]
+    fn try_recover_logs_and_continues_past_a_failed_recovery() {
+        let s = setup("recover-err");
+        // A "before" snapshot (no "after") makes list_unmaterialized_runs return
+        // this run; the interrupted branch then re-opens the workspace to capture
+        // the after snapshot.
+        std::fs::write(s.dir.join("a.txt"), "v1\n").unwrap();
+        super::super::snapshot::capture(
+            &s.repo,
+            &s.thread_id,
+            &s.run_id,
+            "before",
+            &Limits::default(),
+        )
+        .unwrap();
+        // Collide the shadow review root for this workspace with a file so the
+        // interrupted-branch `ShadowRepo::open` fails → the logging error arm.
+        let review_root = crate::store::app_data_path().unwrap().app_dir;
+        let ws_root = PathBuf::from(review_root)
+            .join("review")
+            .join(&s.workspace_id);
+        let _ = std::fs::remove_dir_all(&ws_root);
+        std::fs::write(&ws_root, b"").unwrap();
+
+        // The failure is logged and swallowed; recovery continues and returns Ok.
+        try_recover_interrupted_runs().unwrap();
+        // The run was settled cancelled before the reopen failed.
+        assert_eq!(
+            store::get_run(&s.run_id).unwrap().unwrap().status,
+            "cancelled"
+        );
+    }
+
+    #[test]
+    fn recover_one_skips_workspace_path_that_is_no_longer_a_dir() {
+        let s = setup("recover-no-dir");
+        std::fs::write(s.dir.join("a.txt"), "v1\n").unwrap();
+        super::super::snapshot::capture(
+            &s.repo,
+            &s.thread_id,
+            &s.run_id,
+            "before",
+            &Limits::default(),
+        )
+        .unwrap();
+        // Replace the workspace directory with a regular file: the interrupted
+        // branch must bail (not capture) rather than error.
+        let _ = std::fs::remove_dir_all(&s.dir);
+        std::fs::write(&s.dir, b"not-a-dir").unwrap();
+
+        recover_one(&s.run_id, &s.thread_id, &s.workspace_id).unwrap();
+        assert!(store::get_run_changeset(&s.run_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn recover_one_marks_partial_when_a_snapshot_is_partial() {
+        let s = setup("recover-partial");
+        for (phase, status) in [("before", "partial"), ("after", "complete")] {
+            store::create_review_snapshot(CreateReviewSnapshotInput {
+                workspace_id: s.workspace_id.clone(),
+                thread_id: s.thread_id.clone(),
+                run_id: s.run_id.clone(),
+                phase: phase.into(),
+                commit_id: Some(format!("commit-{phase}")),
+                tree_id: Some(format!("tree-{phase}")),
+                status: status.into(),
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        recover_one(&s.run_id, &s.thread_id, &s.workspace_id).unwrap();
+        let cs = store::get_run_changeset(&s.run_id).unwrap().unwrap();
+        assert_eq!(cs.completeness, "partial");
+        assert_eq!(cs.confidence, "normal");
     }
 }

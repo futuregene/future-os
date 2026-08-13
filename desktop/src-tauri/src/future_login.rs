@@ -266,7 +266,8 @@ pub async fn poll(device_code: &str) -> Result<FutureLoginPoll, AppError> {
         // login during agent startup still lands (the agent reads auth.json at
         // boot anyway).
         let base_url = format!("{platform}/api");
-        if !crate::agent_bridge::config::future_login(key.trim(), &base_url).await? {
+        let registered = crate::agent_bridge::config::future_login(key.trim(), &base_url).await?;
+        if !registered {
             crate::auth_store::set_future_login(key.trim(), &base_url)?;
             let _ = crate::agent_bridge::reload_agent_credentials().await;
         }
@@ -373,16 +374,10 @@ fn open_browser(url: &str) {
     // Best-effort launch of the default browser. In tests this is a no-op so a
     // `start()` success test doesn't spawn the real browser; the side effect is
     // irrelevant to the code paths under test.
-    launch_browser(url);
+    if !cfg!(test) {
+        let _ = open::that_detached(url);
+    }
 }
-
-#[cfg(not(test))]
-fn launch_browser(url: &str) {
-    let _ = open::that_detached(url);
-}
-
-#[cfg(test)]
-fn launch_browser(_url: &str) {}
 
 #[cfg(target_os = "macos")]
 const LOGIN_PLATFORM: &str = "macOS";

@@ -351,10 +351,10 @@ impl ShadowRepo {
                 }
             }
         }
-        if alternates.is_empty() {
-            return Ok(());
-        }
-
+        // `real_git` above only succeeds for a valid repo, and a valid repo
+        // always has an `objects` dir — so `source_objects` exists and
+        // `alternates` is non-empty here. (Deleting the objects dir makes
+        // `real_git` fail, so this function early-returns above instead.)
         let info = self.git_dir.join("objects").join("info");
         fs::create_dir_all(&info)?;
         let body = format!("{}\n", alternates.join("\n"));
