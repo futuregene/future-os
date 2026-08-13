@@ -156,12 +156,14 @@ endif
 # dist/ via a `file:` dep, so any TS change here must rebuild before either app
 # typechecks or runs. Every desktop/mobile build, test, lint and run target
 # below depends on this, so it always reflects the latest source — no manual step.
+# The stale-check lives in helper scripts: make recipes run under cmd.exe on
+# Windows, which cannot parse POSIX shell (`if [ ! -f ... ]`).
 build-thread-projection:
-	$(call npm-install-if-needed,thread-projection)
-	@if [ ! -f thread-projection/dist/index.js ] || find thread-projection/src -newer thread-projection/dist/index.js -print -quit | grep -q .; then \
-		echo "  build thread-projection/"; \
-		cd thread-projection && npm run build; \
-	fi
+ifeq ($(OS),windows)
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-thread-projection.ps1
+else
+	bash scripts/build-thread-projection.sh
+endif
 
 # Self-contained standalone binary (no installer):
 #   desktop/src-tauri/target/release/futureos$(EXE_SUFFIX)

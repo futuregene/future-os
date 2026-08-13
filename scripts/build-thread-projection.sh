@@ -8,9 +8,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TP="$ROOT/thread-projection"
+# thread-projection is a root-workspace member, so npm hoists its node_modules
+# (and the install stamp) to the repo root — not next to the package.
+STAMP="$ROOT/node_modules/.package-lock.json"
 
-if [[ ! -f "$TP/node_modules/.package-lock.json" ]] || \
-   [[ "$TP/package.json" -nt "$TP/node_modules/.package-lock.json" ]]; then
+if [[ ! -f "$STAMP" ]] || [[ "$TP/package.json" -nt "$STAMP" ]]; then
   echo "  npm install thread-projection/"
   (cd "$TP" && npm install)
 fi

@@ -14,7 +14,9 @@ $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $PSScriptRoot
 $tp = Join-Path $Root "thread-projection"
-$stamp = Join-Path $tp "node_modules\.package-lock.json"
+# thread-projection is a root-workspace member, so npm hoists its node_modules
+# (and the install stamp) to the repo root — not next to the package.
+$stamp = Join-Path $Root "node_modules\.package-lock.json"
 $pkg = Join-Path $tp "package.json"
 $dist = Join-Path $tp "dist\index.js"
 
