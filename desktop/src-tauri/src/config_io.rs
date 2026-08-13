@@ -110,9 +110,10 @@ pub fn write_json_atomic(path: &Path, value: &Value, owner_only: bool) -> Result
 /// rollback, which restores the *exact* original bytes rather than a
 /// re-serialization that could reorder or reformat them.
 pub fn write_bytes_atomic(path: &Path, bytes: &[u8], owner_only: bool) -> Result<(), AppError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    // Ensure the parent directory exists; `.transpose()` keeps the early-return
+    // on error without an `if let` whose never-taken else arm would be a
+    // spurious uncovered line (every real path has a parent).
+    path.parent().map(std::fs::create_dir_all).transpose()?;
 
     let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let file_name = path
@@ -253,6 +254,61 @@ mod tests {
         let path = temp_path("write");
         write_json_atomic(&path, &json!({ "a": 1 }), false).unwrap();
         assert_eq!(read_json_object(&path).unwrap(), json!({ "a": 1 }));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn path_lock_reuses_the_same_arc() {
+        // Two live handles for one path must resolve to the same lock (the
+        // Weak-upgrade fast path) so concurrent RMWs serialize on one mutex.
+        let path = Path::new("/tmp/futureos-path-lock-reuse");
+        let first = path_lock(path);
+        let second = path_lock(path);
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn reading_a_directory_is_a_real_io_error() {
+        // `read_to_string` on a directory is neither NotFound nor parseable, so
+        // it must surface the IO error rather than being mistaken for "missing".
+        let dir = std::env::temp_dir().join(format!("futureos-config-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(read_json_object(&dir).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn snapshot_file_treats_directory_as_error() {
+        let dir = std::env::temp_dir().join(format!("futureos-snap-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(snapshot_file(&dir).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn write_over_a_directory_fails_and_cleans_up() {
+        // Renaming the temp file over an existing directory fails; the writer
+        // must remove the abandoned temp file on the error path.
+        let dir = std::env::temp_dir().join(format!("futureos-write-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(write_bytes_atomic(&dir, b"payload", false).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn restore_file_writes_snapshot_and_deletes_on_none() {
+        let path = temp_path("restore");
+        restore_file(&path, Some(b"abc"), false);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "abc");
+
+        restore_file(&path, None, false); // deletes the file
+        assert!(!path.exists());
+
+        // Deleting an already-missing file hits the NotFound logging arm.
+        restore_file(&path, None, false);
         std::fs::remove_file(&path).ok();
     }
 }

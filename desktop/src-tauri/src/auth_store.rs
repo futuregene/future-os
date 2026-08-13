@@ -42,11 +42,12 @@ pub(crate) fn auth_json_path() -> Result<PathBuf, AppError> {
 pub(crate) fn read() -> Result<Map<String, Value>, AppError> {
     // Strictness (missing → empty, corrupt/non-object → error) is owned by the
     // shared config reader so auth.json and the other GUI configs stay identical;
-    // `read_json_object` guarantees an object root, so the else arm is unreachable.
-    match config_io::read_json_object(&auth_json_path()?)? {
-        Value::Object(map) => Ok(map),
-        _ => unreachable!("read_json_object returns an object root or an error"),
-    }
+    // `read_json_object` guarantees an object root.
+    let value = config_io::read_json_object(&auth_json_path()?)?;
+    Ok(value
+        .as_object()
+        .cloned()
+        .expect("read_json_object returns an object root or an error"))
 }
 
 /// Atomically write `auth.json` with `0600` permissions (unix). Delegates the
@@ -316,13 +317,25 @@ mod tests {
             let mut auth = read()?;
             let removed = auth.remove("dashscope").is_some();
             assert!(removed);
-            if removed {
-                write(&auth)?;
-            }
+            write(&auth)?;
             Ok(removed)
         })
         .unwrap();
         assert!(read().unwrap().get("dashscope").is_none());
+    }
+
+    #[test]
+    fn non_object_provider_entry_is_normalized() {
+        let _home = HomeGuard::new("nonobj-entry");
+        let path = auth_json_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"future": "bogus"}"#).unwrap();
+
+        set_provider_key("future", "k").unwrap();
+
+        let auth = read().unwrap();
+        assert_eq!(auth["future"]["key"], "k");
+        assert_eq!(auth["future"]["type"], "api_key");
     }
 
     #[cfg(unix)]
