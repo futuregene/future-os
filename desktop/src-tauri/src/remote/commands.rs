@@ -2220,6 +2220,7 @@ mod bridge_tests {
         let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-history").await;
         let agent = ensure_mock_agent();
+        agent.clear_scripts();
         let session = unique("sess");
 
         let reply = bridge
@@ -2313,6 +2314,7 @@ mod bridge_tests {
         let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-transfer").await;
         let agent = ensure_mock_agent();
+        agent.clear_scripts();
 
         // upload_init validation + success.
         let reply = bridge
@@ -2445,6 +2447,7 @@ mod bridge_tests {
         let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-prompt-ws").await;
         let agent = ensure_mock_agent();
+        agent.clear_scripts();
 
         // Workspace mode with a real workspace id → thread bound to it.
         let workspace_dir = std::env::temp_dir().join(unique("futureos-ws-prompt"));
@@ -2533,6 +2536,7 @@ mod bridge_tests {
         let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-session-ctl").await;
         let agent = ensure_mock_agent();
+        agent.clear_scripts();
         let session = unique("sess");
 
         // abort: success and agent failure.
@@ -2874,6 +2878,7 @@ mod bridge_tests {
         let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-approval").await;
         let agent = ensure_mock_agent();
+        agent.clear_scripts();
         let session = unique("sess");
 
         // Unknown approval request.
@@ -3002,6 +3007,7 @@ mod bridge_tests {
         let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-singleflight").await;
         let agent = ensure_mock_agent();
+        agent.clear_scripts();
         let session = unique("sess");
 
         let command_id = unique("cmdid");
