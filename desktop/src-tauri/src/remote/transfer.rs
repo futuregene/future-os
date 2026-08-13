@@ -927,9 +927,10 @@ mod tests {
 
 #[cfg(test)]
 mod flow_tests {
+    #![allow(clippy::await_holding_lock)]
     use super::super::test_support::{
-        assert_no_publish, await_publish, ensure_mock_agent, nats_connect_once, unique, FakeNats,
-        HomeGuard,
+        assert_no_publish, await_publish, ensure_mock_agent, mock_agent_lock, nats_connect_once,
+        unique, FakeNats, HomeGuard,
     };
     use super::*;
     use serde_json::json;
@@ -1305,6 +1306,7 @@ mod flow_tests {
 
     #[tokio::test]
     async fn prepare_download_flows() {
+        let _lock = mock_agent_lock();
         let _home = HomeGuard::new("xfer-download");
         let agent = ensure_mock_agent();
         let session = unique("sess");

@@ -42,11 +42,12 @@ pub(crate) fn auth_json_path() -> Result<PathBuf, AppError> {
 pub(crate) fn read() -> Result<Map<String, Value>, AppError> {
     // Strictness (missing → empty, corrupt/non-object → error) is owned by the
     // shared config reader so auth.json and the other GUI configs stay identical;
-    // `read_json_object` guarantees an object root, so the else arm is unreachable.
-    match config_io::read_json_object(&auth_json_path()?)? {
-        Value::Object(map) => Ok(map),
-        _ => unreachable!("read_json_object returns an object root or an error"),
-    }
+    // `read_json_object` guarantees an object root.
+    let value = config_io::read_json_object(&auth_json_path()?)?;
+    Ok(value
+        .as_object()
+        .cloned()
+        .expect("read_json_object returns an object root or an error"))
 }
 
 /// Atomically write `auth.json` with `0600` permissions (unix). Delegates the
@@ -174,16 +175,50 @@ pub(crate) mod test_support {
                 _lock: lock,
             }
         }
-    }
 
-    impl Drop for HomeGuard {
-        fn drop(&mut self) {
+        /// Restore the process-global `HOME` to its pre-guard state and remove
+        /// the temp dir. Split from [`Drop`] so the absent-`HOME` arm is
+        /// directly observable without racing the global `TEST_HOME_LOCK`.
+        fn restore(&mut self) {
             match &self.previous {
                 Some(value) => std::env::set_var("HOME", value),
                 None => std::env::remove_var("HOME"),
             }
             let _ = std::fs::remove_dir_all(&self.dir);
         }
+    }
+
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            self.restore();
+        }
+    }
+
+    #[test]
+    fn home_guard_restores_absent_home() {
+        let lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let previous = std::env::var("HOME").ok();
+        let dir =
+            std::env::temp_dir().join(format!("futureos-test-{}-absent-home", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A guard that believes HOME was absent at creation: its restore must
+        // remove HOME rather than overwrite it.
+        let mut guard = HomeGuard {
+            previous: None,
+            dir: dir.clone(),
+            _lock: lock,
+        };
+        guard.restore();
+        assert!(
+            std::env::var("HOME").is_err(),
+            "absent HOME must stay absent"
+        );
+        // Re-arm the guard with the observed previous value so its eventual
+        // Drop restores the process-global HOME to exactly what it found.
+        guard.previous = previous;
     }
 }
 
@@ -316,13 +351,25 @@ mod tests {
             let mut auth = read()?;
             let removed = auth.remove("dashscope").is_some();
             assert!(removed);
-            if removed {
-                write(&auth)?;
-            }
+            write(&auth)?;
             Ok(removed)
         })
         .unwrap();
         assert!(read().unwrap().get("dashscope").is_none());
+    }
+
+    #[test]
+    fn non_object_provider_entry_is_normalized() {
+        let _home = HomeGuard::new("nonobj-entry");
+        let path = auth_json_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"future": "bogus"}"#).unwrap();
+
+        set_provider_key("future", "k").unwrap();
+
+        let auth = read().unwrap();
+        assert_eq!(auth["future"]["key"], "k");
+        assert_eq!(auth["future"]["type"], "api_key");
     }
 
     #[cfg(unix)]

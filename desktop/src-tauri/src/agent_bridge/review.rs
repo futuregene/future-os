@@ -295,7 +295,6 @@ mod tests {
         let base = std::env::temp_dir().join(format!("futureos_shadow_{}", std::process::id()));
         let home = base.join("home");
         let workspace_dir = base.join("ws");
-        let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&home).unwrap();
         fs::create_dir_all(&workspace_dir).unwrap();
         std::env::set_var("HOME", &home);
@@ -416,7 +415,343 @@ mod tests {
             store::get_run_changeset(&run.id).unwrap().is_none(),
             "the oldest Run's changeset should be pruned"
         );
+    }
 
-        let _ = fs::remove_dir_all(&base);
+    /// Set up a temp HOME + store; returns cleanup base plus a workspace-mode
+    /// thread and run. Caller holds `TEST_HOME_LOCK` for the whole test.
+    /// Holds the temp dir + restores HOME on drop (the process-global HOME is
+    /// left pointing at a removed dir otherwise, which poisons later tests).
+    struct Fixture {
+        base: std::path::PathBuf,
+        prev_home: Option<String>,
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.base);
+            match &self.prev_home {
+                Some(prev) => std::env::set_var("HOME", prev),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+
+    fn fixture(tag: &str) -> (Fixture, store::ThreadRecord, store::RunRecord) {
+        let base = std::env::temp_dir().join(format!("futureos_{}_{}", tag, std::process::id()));
+        let home = base.join("home");
+        let ws_dir = base.join("ws");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&ws_dir).unwrap();
+        let prev_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", &home);
+        store::initialize_app_store().unwrap();
+        let ws = store::create_workspace(CreateWorkspaceInput {
+            name: Some(tag.into()),
+            path: ws_dir.display().to_string(),
+            description: None,
+            create_directory: Some(false),
+        })
+        .unwrap();
+        let thread = store::create_thread(CreateThreadInput {
+            mode: "workspace".into(),
+            title: Some(tag.into()),
+            workspace_id: Some(ws.id),
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: None,
+        })
+        .unwrap();
+        let run = store::create_run(CreateRunInput {
+            id: None,
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .unwrap();
+        (Fixture { base, prev_home }, thread, run)
+    }
+
+    #[test]
+    fn resolve_returns_none_for_non_workspace_contexts() {
+        let _lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let (_fx, thread, run) = fixture("resolve");
+
+        // Missing thread → None.
+        assert!(super::resolve("no-such-thread").unwrap().is_none());
+
+        // Chat thread → None.
+        let chat = store::create_thread(CreateThreadInput {
+            mode: "chat".into(),
+            title: Some("chat".into()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: None,
+        })
+        .unwrap();
+        let chat_run = store::create_run(CreateRunInput {
+            id: None,
+            thread_id: chat.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .unwrap();
+        assert!(super::resolve(&chat.id).unwrap().is_none());
+
+        // Workspace thread whose dir vanished → None (non-dir).
+        let ws = store::get_thread(&thread.id).unwrap().unwrap().workspace_id;
+        let ws_path = store::get_workspace(&ws).unwrap().unwrap().path;
+        fs::remove_dir_all(&ws_path).unwrap();
+        assert!(super::resolve(&thread.id).unwrap().is_none());
+
+        // Workspace thread whose workspace ROW is gone (raw delete, FK off).
+        fs::create_dir_all(&ws_path).unwrap();
+        let conn =
+            rusqlite::Connection::open(_fx.base.join("home/.future/app/app.db")).expect("open db");
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        conn.execute("DELETE FROM workspaces WHERE id = ?1", [&ws])
+            .unwrap();
+        drop(conn);
+        assert!(super::resolve(&thread.id).unwrap().is_none());
+
+        let _ = run;
+        let _ = chat_run;
+    }
+
+    #[test]
+    fn retry_error_paths() {
+        let _lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let (_fx, thread, run) = fixture("retry-err");
+
+        // Run not found.
+        let err = super::retry("no-such-run").unwrap_err();
+        assert!(err.to_string().contains("Run could not be loaded"), "{err}");
+
+        // Chat run → review does not apply.
+        let chat = store::create_thread(CreateThreadInput {
+            mode: "chat".into(),
+            title: Some("chat".into()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: None,
+        })
+        .unwrap();
+        let chat_run = store::create_run(CreateRunInput {
+            id: None,
+            thread_id: chat.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .unwrap();
+        let err = super::retry(&chat_run.id).unwrap_err();
+        assert!(err.to_string().contains("does not apply"), "{err}");
+
+        // No before snapshot → missing before.
+        let err = super::retry(&run.id).unwrap_err();
+        assert!(err.to_string().contains("Missing before snapshot"), "{err}");
+
+        // Before exists, no after → missing after.
+        store::create_review_snapshot(store::CreateReviewSnapshotInput {
+            workspace_id: store::get_thread(&thread.id).unwrap().unwrap().workspace_id,
+            thread_id: thread.id.clone(),
+            run_id: run.id.clone(),
+            phase: "before".into(),
+            commit_id: None,
+            tree_id: None,
+            status: "complete".into(),
+            file_count: 1,
+            total_bytes: 1,
+            ignored_count: 0,
+            omitted_count: 0,
+            error_message: None,
+        })
+        .unwrap();
+        let err = super::retry(&run.id).unwrap_err();
+        assert!(err.to_string().contains("Missing after snapshot"), "{err}");
+
+        // Before + after exist, but no commits → cannot retry.
+        store::create_review_snapshot(store::CreateReviewSnapshotInput {
+            workspace_id: store::get_thread(&thread.id).unwrap().unwrap().workspace_id,
+            thread_id: thread.id.clone(),
+            run_id: run.id.clone(),
+            phase: "after".into(),
+            commit_id: None,
+            tree_id: None,
+            status: "complete".into(),
+            file_count: 1,
+            total_bytes: 1,
+            ignored_count: 0,
+            omitted_count: 0,
+            error_message: None,
+        })
+        .unwrap();
+        let err = super::retry(&run.id).unwrap_err();
+        assert!(err.to_string().contains("no commits"), "{err}");
+    }
+
+    #[test]
+    fn capture_and_materialize_swallow_store_failures() {
+        let _lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let (_fx, thread, run) = fixture("swallow");
+
+        // Broken HOME → resolve fails → the public wrappers log and swallow.
+        let broken = std::env::temp_dir().join(format!("futureos_broken_{}", std::process::id()));
+        fs::write(&broken, "not a directory").unwrap();
+        let saved = std::env::var("HOME").ok();
+        std::env::set_var("HOME", &broken);
+
+        super::capture_before(&thread.id, &run.id);
+        assert!(super::capture_after(&thread.id, &run.id).is_empty());
+        super::materialize_changeset(&thread.id, &run.id, vec![]);
+
+        std::env::set_var("HOME", saved.unwrap_or_default());
+        let _ = fs::remove_dir_all(&broken);
+    }
+
+    #[test]
+    fn retry_re_materializes_from_existing_commits() {
+        let _lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let (_fx, thread, run) = fixture("retry-ok");
+        let ws_path =
+            store::get_workspace(&store::get_thread(&thread.id).unwrap().unwrap().workspace_id)
+                .unwrap()
+                .unwrap()
+                .path;
+
+        fs::write(std::path::Path::new(&ws_path).join("keep.txt"), "before\n").unwrap();
+        super::capture_before(&thread.id, &run.id);
+        fs::write(
+            std::path::Path::new(&ws_path).join("keep.txt"),
+            "before\nafter\n",
+        )
+        .unwrap();
+        super::capture_after(&thread.id, &run.id);
+
+        // Re-materialize the changeset from the recorded commits.
+        super::retry(&run.id).unwrap();
+        let changeset = store::get_last_run_changeset(&thread.id)
+            .unwrap()
+            .expect("retry materializes a changeset");
+        assert_eq!(changeset.source_kind, "run_snapshot");
+    }
+
+    #[test]
+    fn try_capture_and_materialize_skip_non_applicable_threads() {
+        let _lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let (_fx, thread, run) = fixture("try-skip");
+
+        // Chat thread → resolve None → the try_* helpers return Ok/empty.
+        let chat = store::create_thread(CreateThreadInput {
+            mode: "chat".into(),
+            title: Some("chat".into()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: None,
+        })
+        .unwrap();
+        let chat_run = store::create_run(CreateRunInput {
+            id: None,
+            thread_id: chat.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .unwrap();
+        super::try_capture_before(&chat.id, &chat_run.id).unwrap();
+        assert!(super::try_capture_after(&chat.id, &chat_run.id)
+            .unwrap()
+            .is_empty());
+        super::try_materialize_changeset(&chat.id, &chat_run.id, vec![]).unwrap();
+
+        // Workspace thread with no before snapshot → after is a no-op and
+        // materialize is a no-op.
+        assert!(super::try_capture_after(&thread.id, &run.id)
+            .unwrap()
+            .is_empty());
+        super::try_materialize_changeset(&thread.id, &run.id, vec![]).unwrap();
+    }
+
+    #[test]
+    fn try_materialize_paths_with_failed_or_commitless_snapshots() {
+        let _lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let (_fx, thread, run) = fixture("materialize-paths");
+        let ws_id = store::get_thread(&thread.id).unwrap().unwrap().workspace_id;
+
+        let snap = |phase: &str, status: &str, commit: Option<&str>| {
+            store::create_review_snapshot(store::CreateReviewSnapshotInput {
+                workspace_id: ws_id.clone(),
+                thread_id: thread.id.clone(),
+                run_id: run.id.clone(),
+                phase: phase.to_string(),
+                commit_id: commit.map(str::to_string),
+                tree_id: None,
+                status: status.to_string(),
+                file_count: 1,
+                total_bytes: 1,
+                ignored_count: 0,
+                omitted_count: 0,
+                error_message: None,
+            })
+            .unwrap()
+        };
+
+        // Failed before snapshot → both_ok false → materialized None.
+        snap("before", "failed", None);
+        snap("after", "complete", None);
+        super::try_materialize_changeset(&thread.id, &run.id, vec![]).unwrap();
+
+        // Complete before with a commit, complete after WITHOUT a commit →
+        // the after-commit match falls to None.
+        snap("before", "complete", Some("fake-before-commit"));
+        snap("after", "complete", None);
+        super::try_materialize_changeset(&thread.id, &run.id, vec![]).unwrap();
+    }
+
+    #[test]
+    fn retry_fails_when_commits_are_missing_from_the_repo() {
+        let _lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let (_fx, thread, run) = fixture("retry-bad-commits");
+        let ws_id = store::get_thread(&thread.id).unwrap().unwrap().workspace_id;
+
+        // Snapshots with commit ids that do not exist in the shadow repo.
+        for (phase, commit) in [("before", "deadbeef"), ("after", "cafebabe")] {
+            store::create_review_snapshot(store::CreateReviewSnapshotInput {
+                workspace_id: ws_id.clone(),
+                thread_id: thread.id.clone(),
+                run_id: run.id.clone(),
+                phase: phase.to_string(),
+                commit_id: Some(commit.to_string()),
+                tree_id: None,
+                status: "complete".to_string(),
+                file_count: 1,
+                total_bytes: 1,
+                ignored_count: 0,
+                omitted_count: 0,
+                error_message: None,
+            })
+            .unwrap();
+        }
+
+        let err = super::retry(&run.id).unwrap_err();
+        assert!(!err.to_string().is_empty());
     }
 }

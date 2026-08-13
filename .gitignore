@@ -73,6 +73,8 @@ agent-profile.svg
 # Frontend coverage output (vitest --coverage / jest --coverage)
 desktop/coverage/
 mobile/coverage/
+# src-tauri llvm-cov artifacts (manual --html/--lcov runs)
+coverage-tauri/
 
 # loop control plane runtime state (never commit)
 .codex/

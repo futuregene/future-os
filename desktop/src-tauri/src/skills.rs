@@ -57,7 +57,13 @@ fn ensure_skill_id_ok(id: &str) -> Result<(), AppError> {
 /// inside that scope — defence in depth on top of [`ensure_skill_id_ok`].
 fn skill_dir_in_scope(scope: SkillScope, id: &str) -> Result<PathBuf, AppError> {
     ensure_skill_id_ok(id)?;
-    let base = scope.dir()?;
+    join_skill_dir(scope.dir()?, id)
+}
+
+/// Join `id` onto `base`, refusing any result that escapes `base` (defence in
+/// depth: [`ensure_skill_id_ok`] already rejects separators and `..`, so a future
+/// relaxation of that validator must still be unable to traverse out of scope).
+fn join_skill_dir(base: PathBuf, id: &str) -> Result<PathBuf, AppError> {
     let dest = base.join(id);
     if dest.parent() != Some(base.as_path()) {
         return Err(AppError::Message(format!("Invalid skill id: {id:?}")));
@@ -103,11 +109,13 @@ pub struct SkillInfo {
     pub latest_version: Option<String>,
 }
 
-fn http_client() -> Result<reqwest::Client, AppError> {
+fn http_client() -> reqwest::Client {
+    // `Client::builder().timeout().build()` only fails for an invalid config;
+    // the default config here is constant, so a failure is an invariant break.
     reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .build()
-        .map_err(|error| AppError::Message(format!("Failed to create HTTP client: {error}")))
+        .expect("default reqwest client config cannot fail to build")
 }
 
 /// The platform skill catalogue (`GET /client/v1/skills`). Unauthenticated, like
@@ -123,7 +131,7 @@ pub async fn list_available_skills() -> Result<Vec<SkillInfo>, AppError> {
         "{}/client/v1/skills",
         crate::future_platform::current_platform_url()
     );
-    let response = http_client()?
+    let response = http_client()
         .get(&url)
         .send()
         .await
@@ -182,7 +190,7 @@ pub async fn install_skill(id: String, version: String) -> Result<(), AppError> 
         id,
         version
     );
-    let response = http_client()?
+    let response = http_client()
         .get(&url)
         .send()
         .await
@@ -311,9 +319,283 @@ mod tests {
 
     #[test]
     fn skill_dir_in_scope_stays_inside_base() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("skills-dir");
         let base = SkillScope::App.dir().unwrap();
         let dest = skill_dir_in_scope(SkillScope::App, "core").unwrap();
         assert_eq!(dest, base.join("core"));
         assert!(skill_dir_in_scope(SkillScope::App, "../escape").is_err());
+    }
+
+    #[test]
+    fn join_skill_dir_refuses_traversal() {
+        // The defence-in-depth join check fires when the id (bypassing
+        // ensure_skill_id_ok) still escapes the base directory.
+        let base = PathBuf::from("/scope");
+        assert!(join_skill_dir(base.clone(), "../escape").is_err());
+        assert_eq!(
+            join_skill_dir(base.clone(), "core").unwrap(),
+            base.join("core")
+        );
+    }
+
+    #[test]
+    fn global_scope_dir_is_home_rooted() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("skills-global");
+        let dir = SkillScope::Global.dir().unwrap();
+        assert!(dir.ends_with(".agents/skills"));
+    }
+
+    fn write_skill(dir: &Path, id: &str, frontmatter: &str) {
+        std::fs::create_dir_all(dir.join(id)).unwrap();
+        std::fs::write(dir.join(id).join("SKILL.md"), frontmatter).unwrap();
+    }
+
+    #[test]
+    fn installed_versions_empty_when_no_scopes_exist() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("skills-empty");
+        // Fresh HOME → neither scope dir exists → read_dir fails → skipped.
+        assert!(installed_versions().is_empty());
+    }
+
+    #[test]
+    fn installed_versions_scans_both_scopes() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("skills-installed");
+        let app = SkillScope::App.dir().unwrap();
+        let global = SkillScope::Global.dir().unwrap();
+        write_skill(&app, "foo", "---\nversion: \"1.2.3\"\n---\n");
+        write_skill(&app, "noversion", "no frontmatter");
+        write_skill(&global, "bar", "---\nversion: '4.5.6'\n---\n");
+        std::fs::write(app.join("notadir"), "x").unwrap();
+
+        let versions = installed_versions();
+        assert_eq!(versions.get("foo").unwrap().as_deref(), Some("1.2.3"));
+        assert_eq!(versions.get("noversion").unwrap().as_deref(), None);
+        assert_eq!(versions.get("bar").unwrap().as_deref(), Some("4.5.6"));
+        assert!(!versions.contains_key("notadir"));
+    }
+
+    #[test]
+    fn uninstall_removes_from_all_scopes() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("skills-uninstall");
+        let app = SkillScope::App.dir().unwrap();
+        write_skill(&app, "foo", "x");
+
+        assert!(uninstall_skill("foo").unwrap());
+        assert!(!app.join("foo").exists());
+        assert!(!uninstall_skill("foo").unwrap()); // not there anymore
+        assert!(uninstall_skill("../evil").is_err());
+    }
+
+    fn make_zip(files: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut cursor);
+            let options = zip::write::SimpleFileOptions::default();
+            for (name, data) in files {
+                writer.start_file(*name, options).unwrap();
+                std::io::Write::write_all(&mut writer, data).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        cursor.into_inner()
+    }
+
+    #[test]
+    fn extract_skill_zip_writes_and_flattens() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("skills-extract");
+        let dest = SkillScope::App.dir().unwrap().join("installed");
+        std::fs::create_dir_all(&dest).unwrap(); // pre-existing → cleared on install
+        let bytes = make_zip(&[
+            ("wrapper/SKILL.md", b"---\nversion: 1.0.0\n---\n"),
+            ("wrapper/lib/util.js", b"// code"),
+        ]);
+        extract_skill_zip(&bytes, &dest).unwrap();
+        assert!(dest.join("SKILL.md").exists());
+        assert!(dest.join("lib/util.js").exists());
+        assert!(!dest.join("wrapper").exists());
+    }
+
+    #[test]
+    fn extract_skill_zip_rejects_non_zip() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("skills-badzip");
+        let dest = SkillScope::App.dir().unwrap().join("bad");
+        assert!(extract_skill_zip(b"not a zip", &dest).is_err());
+    }
+
+    #[test]
+    fn flatten_single_subdir_flattens_one_level() {
+        let dir = std::env::temp_dir().join(format!("futureos-flatten-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("wrapper")).unwrap();
+        std::fs::write(dir.join("wrapper/SKILL.md"), "x").unwrap();
+        flatten_single_subdir(&dir).unwrap();
+        assert!(dir.join("SKILL.md").exists());
+        assert!(!dir.join("wrapper").exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn flatten_single_subdir_noops_when_not_a_single_dir() {
+        let dir = std::env::temp_dir().join(format!("futureos-flatten2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        flatten_single_subdir(&dir).unwrap(); // empty → no-op
+        std::fs::write(dir.join("a.txt"), "x").unwrap();
+        flatten_single_subdir(&dir).unwrap(); // one non-dir entry → no-op
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_skill_md_version_parses_frontmatter() {
+        let dir = std::env::temp_dir().join(format!("futureos-skillmd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("SKILL.md");
+
+        assert_eq!(read_skill_md_version(&dir.join("missing.md")), None);
+
+        std::fs::write(&path, "no frontmatter here").unwrap();
+        assert_eq!(read_skill_md_version(&path), None);
+
+        std::fs::write(&path, "---\nversion: 1.0.0\n").unwrap();
+        assert_eq!(read_skill_md_version(&path), None); // unterminated
+
+        std::fs::write(&path, "---\nversion: \"1.2.3\"\n---\n").unwrap();
+        assert_eq!(read_skill_md_version(&path).as_deref(), Some("1.2.3"));
+
+        std::fs::write(&path, "---\n# comment\nversion: 2.0.0\n---\n").unwrap();
+        assert_eq!(read_skill_md_version(&path).as_deref(), Some("2.0.0"));
+
+        std::fs::write(&path, "---\nversion: \"\"\n---\n").unwrap();
+        assert_eq!(read_skill_md_version(&path), None); // empty version
+
+        std::fs::write(&path, "---\nname: my-skill\n---\n").unwrap();
+        assert_eq!(read_skill_md_version(&path), None); // no version line
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ─── async catalogue + install against a mock HTTP server ─────────────
+
+    /// Thread-based mock HTTP server answering each request with the next
+    /// canned (status, content-type, body) response. Returns the base URL.
+    fn mock_http_server(responses: Vec<(u16, &'static str, Vec<u8>)>) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            for (status, content_type, body) in responses {
+                let (mut stream, _) = listener.accept().expect("mock accept");
+                let mut sink = [0u8; 8192];
+                let _ = stream.read(&mut sink);
+                let header = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(&body);
+                let _ = stream.flush();
+            }
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    fn point_auth_at(url: &str) {
+        crate::auth_store::set_future_base_url(&format!("{url}/api")).unwrap();
+    }
+
+    #[tokio::test]
+    async fn list_available_skills_parses_catalogue() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("skills-list");
+        let url = mock_http_server(vec![(
+            200,
+            "application/json",
+            br#"{"skills":[{"id":"core","name":"Core","latest_version":"1.0.0"}]}"#.to_vec(),
+        )]);
+        point_auth_at(&url);
+        let skills = list_available_skills().await.unwrap();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].id, "core");
+        assert_eq!(skills[0].latest_version.as_deref(), Some("1.0.0"));
+    }
+
+    #[tokio::test]
+    async fn list_available_skills_http_error() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("skills-list-500");
+        let url = mock_http_server(vec![(500, "application/json", b"{}".to_vec())]);
+        point_auth_at(&url);
+        let err = list_available_skills().await.unwrap_err();
+        assert!(err.to_string().contains("HTTP 500"));
+    }
+
+    #[tokio::test]
+    async fn list_available_skills_parse_error() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("skills-list-badjson");
+        let url = mock_http_server(vec![(200, "application/json", b"not json".to_vec())]);
+        point_auth_at(&url);
+        let err = list_available_skills().await.unwrap_err();
+        assert!(err.to_string().contains("Failed to parse"));
+    }
+
+    #[tokio::test]
+    async fn list_available_skills_network_error() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("skills-list-net");
+        crate::auth_store::set_future_base_url("http://127.0.0.1:1/api").unwrap();
+        let err = list_available_skills().await.unwrap_err();
+        assert!(err.to_string().contains("Failed to fetch"));
+    }
+
+    #[tokio::test]
+    async fn install_skill_rejects_bad_version() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("skills-install-badver");
+        let err = install_skill("core".to_string(), "../evil".to_string())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Invalid skill version"));
+    }
+
+    #[tokio::test]
+    async fn install_skill_version_not_found() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("skills-install-404");
+        let url = mock_http_server(vec![(404, "application/json", b"{}".to_vec())]);
+        point_auth_at(&url);
+        let err = install_skill("core".to_string(), "9.9.9".to_string())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn install_skill_http_error() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("skills-install-500");
+        let url = mock_http_server(vec![(500, "application/json", b"{}".to_vec())]);
+        point_auth_at(&url);
+        let err = install_skill("core".to_string(), "1.0.0".to_string())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("download failed"));
+    }
+
+    #[tokio::test]
+    async fn install_skill_downloads_and_extracts() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("skills-install-ok");
+        let zip_bytes = make_zip(&[("skill/SKILL.md", b"---\nversion: 1.0.0\n---\n")]);
+        let url = mock_http_server(vec![(200, "application/zip", zip_bytes)]);
+        point_auth_at(&url);
+        install_skill("core".to_string(), "1.0.0".to_string())
+            .await
+            .unwrap();
+        let dest = SkillScope::App.dir().unwrap().join("core");
+        assert!(dest.join("SKILL.md").exists());
+    }
+
+    #[tokio::test]
+    async fn install_skill_network_error() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("skills-install-net");
+        crate::auth_store::set_future_base_url("http://127.0.0.1:1/api").unwrap();
+        let err = install_skill("core".to_string(), "1.0.0".to_string())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Failed to download"));
     }
 }
