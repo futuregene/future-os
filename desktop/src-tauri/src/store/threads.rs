@@ -243,27 +243,16 @@ pub fn move_thread_to_workspace(
 }
 
 pub fn pin_thread(input: PinThreadInput) -> Result<ThreadRecord, crate::AppError> {
-<<<<<<< HEAD
     // `updated_at` is deliberately untouched: pinning is an ordering flag, not
     // an activity event. If it stamped `updated_at`, unpinning a thread would
     // push it to the top of the recency sort (it just became "most recently
     // updated") and the sidebar order would appear not to change.
-    let conn = connect()?;
-    conn.execute(
-        "UPDATE threads
-         SET pinned = ?1
-         WHERE id = ?2 AND status != 'deleted'",
-        params![if input.pinned { 1 } else { 0 }, input.thread_id],
-    )?;
-=======
-    let now = now_millis();
     let pinned = if input.pinned { 1 } else { 0 };
     const SQL: &str = "UPDATE threads
-         SET pinned = ?1, updated_at = ?2
-         WHERE id = ?3 AND status != 'deleted'";
+         SET pinned = ?1
+         WHERE id = ?2 AND status != 'deleted'";
     let conn = connect()?;
-    conn.execute(SQL, params![pinned, now, input.thread_id])?;
->>>>>>> d5dde07b (test(desktop): store runs/threads/artifacts coverage + fmt-stable single-lining (cov100))
+    conn.execute(SQL, params![pinned, input.thread_id])?;
 
     loaded(get_thread(&input.thread_id)?, "Thread")
 }
