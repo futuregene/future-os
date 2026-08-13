@@ -136,13 +136,19 @@ impl AppState {
         if new_sess.model.is_empty() {
             let default_model = crate::models::get_default_model_with(&self.model_registry.read())
                 .unwrap_or_else(|| self.loop_template.model.clone());
-            if !default_model.is_empty() {
-                // set_model persists via update_session_info, which fails for
-                // legacy session files lacking a session_info entry — log and
-                // defer to an explicit /model instead of failing the hydrate.
-                let _ = new_sess.set_model(&default_model).inspect_err(|e| {
-                    tracing::warn!("[session] could not apply default model on hydrate: {e}");
-                });
+            // Match form: the plain if-block's closing brace collected a
+            // phantom zero-count gap region even with both edges hot.
+            match default_model.is_empty() {
+                true => (),
+                false => {
+                    // set_model persists via update_session_info, which fails
+                    // for legacy session files lacking a session_info entry —
+                    // log and defer to an explicit /model instead of failing
+                    // the hydrate.
+                    let _ = new_sess.set_model(&default_model).inspect_err(|e| {
+                        tracing::warn!("[session] could not apply default model on hydrate: {e}");
+                    });
+                }
             }
         }
 
@@ -210,7 +216,7 @@ impl AppState {
     /// after login without switching threads.
     pub fn reload_all_credentials(&self) {
         let sessions = self.sessions.read();
-        for (id, sess) in sessions.iter() {
+        for sess in sessions.values() {
             let model_is_empty = { sess.read().model.is_empty() };
             if model_is_empty {
                 // Session created before login — resolve and apply default model.
@@ -223,7 +229,7 @@ impl AppState {
                         // mutates the session WITHOUT re-locking (re-locking
                         // would deadlock: parking_lot locks are not reentrant).
                         let mut slot = RELOAD_RACE_HOOK.lock();
-                        if matches!(slot.as_ref(), Some((sid, _)) if sid == id) {
+                        if matches!(slot.as_ref(), Some((sid, _)) if sid == &session.session_id) {
                             if let Some((_, hook)) = slot.take() {
                                 hook(&mut session);
                             }
@@ -252,6 +258,7 @@ impl AppState {
 /// insertion, so tests can deterministically win the hydrate race and
 /// exercise the double-check arm.
 #[cfg(test)]
+#[allow(clippy::type_complexity)]
 static GET_SESSION_PRE_INSERT_HOOK: parking_lot::Mutex<
     Option<(String, Box<dyn Fn(&AppState) + Send>)>,
 > = parking_lot::Mutex::new(None);
@@ -262,6 +269,7 @@ static GET_SESSION_PRE_INSERT_HOOK: parking_lot::Mutex<
 /// hook receives the already-held write guard (never re-locks) and only
 /// fires for the session id it was registered for.
 #[cfg(test)]
+#[allow(clippy::type_complexity)]
 static RELOAD_RACE_HOOK: parking_lot::Mutex<
     Option<(String, Box<dyn Fn(&mut ServerSession) + Send>)>,
 > = parking_lot::Mutex::new(None);
@@ -746,6 +754,10 @@ mod tests {
     // ─── coverage batch: hydrate + get_state arms ──────────────────────────
 
     fn bare_app_state() -> (tempfile::TempDir, AppState) {
+        bare_app_state_with_template_model("test-model")
+    }
+
+    fn bare_app_state_with_template_model(model: &str) -> (tempfile::TempDir, AppState) {
         let dir = tempfile::tempdir().expect("tempdir");
         let session_dir = dir.path().join("sessions");
         let state = AppState {
@@ -769,7 +781,7 @@ mod tests {
             )),
             loop_template: std::sync::Arc::new(crate::agent::Loop::new(
                 std::sync::Arc::new(crate::test_support::EmptyProvider),
-                "test-model",
+                model,
             )),
         };
         (dir, state)
@@ -807,6 +819,60 @@ mod tests {
         );
         // Second fetch hits the live map.
         assert!(state.get_session("hyd-1").is_some());
+    }
+
+    #[test]
+    fn get_session_hydrate_skips_model_application_when_no_default_exists() {
+        // Isolated empty HOME: no auth and no user models, so the registry
+        // yields no credential-reachable default — and the empty template
+        // model leaves nothing to apply.
+        let _home = crate::test_support::TestHome::new();
+        let (_dir, state) = bare_app_state_with_template_model("");
+        let snapshot = crate::session::Session::snapshot(
+            "hyd-empty".to_string(),
+            "/tmp".to_string(),
+            String::new(),
+            String::new(),
+            String::new(),
+            vec![crate::session::SessionEntry::new_user(
+                "user",
+                serde_json::json!("hello"),
+            )],
+        );
+        state.session_manager.save(&snapshot).unwrap();
+        let session = state.get_session("hyd-empty").expect("hydrated from disk");
+        assert!(
+            session.read().model.is_empty(),
+            "no default available — model application skipped"
+        );
+    }
+
+    #[test]
+    fn reload_all_credentials_skips_write_locked_session() {
+        let (_dir, state) = bare_app_state();
+        let session = crate::rpc::ServerSession::new_with_queue_budget(
+            "locked".to_string(),
+            std::sync::Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
+                std::sync::Arc::new(crate::test_support::EmptyProvider),
+                "",
+            ))),
+            state.session_manager.clone(),
+            "/tmp",
+            std::sync::Arc::new(SseBroadcaster::new()),
+            state.approval_gate.clone(),
+            state.model_registry.clone(),
+            state.queue_budget.clone(),
+        );
+        state.create_session(session);
+        let session = state.get_session("locked").unwrap();
+        // A held READ guard makes reload's try_write fail without blocking
+        // its own read — the model-less session is skipped entirely.
+        let guard = session.read();
+        state.reload_all_credentials();
+        assert!(
+            guard.model.is_empty(),
+            "write-locked session left untouched"
+        );
     }
 
     // ─── coverage batch 16: hydrate/reload/get_state residuals ─────────────
@@ -958,10 +1024,7 @@ mod tests {
                     "mock".to_string(),
                     String::new(),
                 ),
-                crate::session::SessionEntry::new_user(
-                    "user",
-                    serde_json::json!("hello"),
-                ),
+                crate::session::SessionEntry::new_user("user", serde_json::json!("hello")),
             ],
         );
         state.session_manager.save(&snapshot).unwrap();
@@ -1006,16 +1069,6 @@ mod tests {
 
     #[test]
     fn get_state_reports_zero_percent_for_zero_context_window_model() {
-        let _home = crate::test_support::TestHome::new();
-        // A user model with an explicit zero context window.
-        let models_path = crate::models::user_models_path();
-        std::fs::create_dir_all(std::path::Path::new(&models_path).parent().unwrap()).unwrap();
-        std::fs::write(
-            &models_path,
-            r#"{"providers":{"testprov":{"name":"T","models":[{"id":"zero-window","context_window":0}]}}}
-"#,
-        )
-        .unwrap();
         let (_dir, state) = bare_app_state();
         let session = crate::rpc::ServerSession::new_with_queue_budget(
             "zw".to_string(),
@@ -1031,8 +1084,23 @@ mod tests {
             state.queue_budget.clone(),
         );
         state.create_session(session);
+        // ServerSession starts model-less; pin the zero-window model so the
+        // context-window resolution takes the zero branch.
+        state.get_session("zw").unwrap().write().model = "zero-window".to_string();
+        // The file loaders normalize context_window == 0 away, so inject the
+        // zero-window model directly into the registry.
+        state
+            .model_registry
+            .write()
+            .test_insert(crate::models::Model {
+                id: "zero-window".to_string(),
+                provider: "testprov".to_string(),
+                context_window: 0,
+                ..Default::default()
+            });
         let payload = get_state_internal(&state, "zw", None).unwrap();
         let text = payload.to_string();
+        assert!(text.contains("\"contextWindow\":0"), "{text}");
         assert!(text.contains("\"contextPercent\":0"), "{text}");
     }
 

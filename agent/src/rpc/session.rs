@@ -815,11 +815,10 @@ impl ServerSession {
                 if let Some(tl) = info.get("thinking_level").and_then(|v| v.as_str()) {
                     self.thinking_level = tl.to_string();
                 }
-                if self.session_name.is_empty() {
-                    if let Some(name) = info.get("session_name").and_then(|v| v.as_str()) {
-                        self.session_name = name.to_string();
-                    }
-                }
+                // NOTE: no session_name fallback here — load_path derives
+                // session.name from this same last session_info entry, so
+                // whenever info carries a name the restore above already
+                // applied it (the old inner fallback arm was unreachable).
                 if let Some(v) = info.get("auto_compaction").and_then(|v| v.as_bool()) {
                     self.auto_compaction = v;
                 }
@@ -1357,6 +1356,60 @@ mod tests {
     }
 
     #[test]
+    fn on_scheduled_run_finished_cancels_unstartable_queued_run() {
+        let _sink = tracing_sink();
+        let mut session = make_test_session("bad-queued");
+        let queue = crate::runtime::InMemoryRunQueue::new("bad-queued", 0);
+        // A queued payload that is NOT a ScheduledPromptPayload fails to
+        // deserialize inside start_next_scheduled.
+        queue
+            .accept(
+                "req-bad",
+                Some("run-bad"),
+                crate::runtime::BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({"bogus": true}),
+            )
+            .unwrap();
+        session.scheduler = Arc::new(queue);
+        session.on_scheduled_run_finished(&crate::runtime::RunLease {
+            run_id: "run-x".to_string(),
+            epoch: 1,
+            run_sequence: None,
+        });
+        // The unstartable run was cancelled out of the queue.
+        assert!(session.scheduler.queued().is_empty());
+    }
+
+    #[test]
+    fn on_scheduled_run_finished_releases_active_matching_unstartable_run() {
+        let _sink = tracing_sink();
+        let mut session = make_test_session("bad-active");
+        let queue = crate::runtime::InMemoryRunQueue::new("bad-active", 0);
+        queue
+            .accept(
+                "req-bad",
+                Some("run-bad"),
+                crate::runtime::BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({"bogus": true}),
+            )
+            .unwrap();
+        queue.start_next(1).unwrap();
+        // Forge the active+queued-same-id inconsistency the error arm
+        // defends against (accept rejects duplicate run ids).
+        queue.test_requeue_active_duplicate();
+        session.scheduler = Arc::new(queue);
+        session.on_scheduled_run_finished(&crate::runtime::RunLease {
+            run_id: "run-foreign".to_string(),
+            epoch: 1,
+            run_sequence: None,
+        });
+        // The matching active lease was released, then the forged queue
+        // twin was cancelled on the next loop pass.
+        assert!(session.scheduler.active().is_none());
+        assert!(session.scheduler.queued().is_empty());
+    }
+
+    #[test]
     fn set_model_applies_thinking_budget_on_rebuild() {
         let mut session = make_test_session("think-budget");
         // A non-default thinking level pins a positive budget on the loop
@@ -1412,10 +1465,8 @@ mod tests {
         // Legacy file: carries a model (via a model_change entry) but NO
         // session_info entry, so set_model's update_session_info persist
         // fails — the switch logs the warning and still applies the model.
-        let mut model_change = crate::session::SessionEntry::new_user(
-            "system",
-            serde_json::json!({"model": "mock"}),
-        );
+        let mut model_change =
+            crate::session::SessionEntry::new_user("system", serde_json::json!({"model": "mock"}));
         model_change.entry_type = crate::session::ENTRY_TYPE_MODEL_CHANGE.to_string();
         let saved = crate::session::Session::snapshot(
             "legacy-no-info".to_string(),
@@ -2399,6 +2450,60 @@ mod tests {
             .unwrap();
         let error = session.recover_persistence_degraded().unwrap_err();
         assert!(error.to_string().contains("not persistence_degraded"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn recover_persistence_degraded_bails_while_task_slot_occupied() {
+        let _sink = tracing_sink();
+        let mut session = make_persistent_test_session("recover-occupied");
+        std::fs::create_dir_all(&session.cwd).unwrap();
+        session
+            .broadcaster
+            .configure_journal(
+                session.session_id.clone(),
+                session.session_manager.run_data_path(&session.session_id),
+            )
+            .unwrap();
+        // A session file on disk so the recovery append has somewhere to
+        // land (recover_with_entries refuses a not-yet-created transcript).
+        let saved = crate::session::Session::snapshot(
+            "recover-occupied".to_string(),
+            session.cwd.clone(),
+            "mock".to_string(),
+            String::new(),
+            String::new(),
+            vec![crate::session::SessionEntry::session_info(
+                serde_json::json!({"cwd": session.cwd, "model": "mock"}),
+                "mock".to_string(),
+                String::new(),
+            )],
+        );
+        session.session_manager.save(&saved).unwrap();
+        // Begin a run whose task slot stays occupied, then degrade it: the
+        // control-plane lease matches, but the runtime refuses recovery
+        // while the task is alive.
+        let lease = session
+            .runtime
+            .begin(Some("run-stuck"), Some("req-stuck"))
+            .unwrap();
+        let hold = std::sync::Arc::new(tokio::sync::Notify::new());
+        let task_hold = hold.clone();
+        session
+            .runtime
+            .spawn(lease.clone(), async move {
+                task_hold.notified().await;
+            })
+            .unwrap();
+        assert!(session
+            .runtime
+            .mark_persistence_degraded(&lease, "disk full"));
+        let error = session.recover_persistence_degraded().unwrap_err();
+        assert!(
+            error.to_string().contains("lost the active run lease"),
+            "{error}"
+        );
+        hold.notify_one();
+        let _ = std::fs::remove_dir_all(&session.cwd);
     }
 
     #[test]

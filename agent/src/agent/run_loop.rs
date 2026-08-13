@@ -1283,6 +1283,13 @@ mod tests {
         ]);
         let mut loop_ = Loop::new(provider, "mock").with_tools(vec![echo_tool()]);
         loop_.verbose = true; // exercise the verbose logging arms
+                              // Sink subscriber so the verbose tracing regions are evaluated.
+        let _sink = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .with_ansi(false)
+                .finish(),
+        );
         let saved = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let tool_events = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let ctx = StreamContext {

@@ -579,6 +579,19 @@ impl InMemoryRunQueue {
         self.state.lock().queued.iter().cloned().collect()
     }
 
+    /// Test-only seam: push a copy of the ACTIVE request back onto the
+    /// queue, forging the active+queued-same-run-id state that `accept`
+    /// makes impossible through the public API (`DuplicateRunId`). The
+    /// session's dequeue error handling defends against that inconsistency;
+    /// this lets tests reach the arm.
+    #[cfg(test)]
+    pub fn test_requeue_active_duplicate(&self) {
+        let mut state = self.state.lock();
+        if let Some(active) = state.active.as_ref().map(|(active, _)| active.clone()) {
+            state.queued.push_front(active);
+        }
+    }
+
     pub fn queued_bytes(&self) -> usize {
         self.state.lock().queued_bytes
     }

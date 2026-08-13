@@ -922,6 +922,16 @@ fn glob_match(pattern: &str, target: &str) -> bool {
 }
 
 #[cfg(test)]
+impl Registry {
+    /// Test-only seam: register a model verbatim, bypassing the loader
+    /// normalization that rewrites `context_window == 0` (the exact edge
+    /// get_state's zero-percent arm handles).
+    pub fn test_insert(&mut self, model: Model) {
+        self.user.push(model);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::{
         derive_thinking_compat, enrich_user_models, find_best_builtin_match, provider_similarity,

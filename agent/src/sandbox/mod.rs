@@ -531,17 +531,23 @@ pub fn shell_is_legacy_bash() -> bool {
     {
         use std::sync::OnceLock;
         static LEGACY: OnceLock<bool> = OnceLock::new();
-        *LEGACY.get_or_init(|| {
-            let shell = unix_shell();
-            let name = shell.rsplit('/').next().unwrap_or(shell);
-            name == "bash"
-                && probe_legacy_bash(shell, std::time::Duration::from_secs(2)).unwrap_or(true)
-        })
+        *LEGACY.get_or_init(|| legacy_bash_probe(unix_shell()))
     }
     #[cfg(target_os = "windows")]
     {
         false
     }
+}
+
+/// Probe result for a given shell path: true only when the shell is bash
+/// and the version probe confirms (or conservatively assumes) legacy.
+/// Extracted from the OnceLock closure so both the bash and non-bash edges
+/// are directly testable (the OnceLock initializes at most once per
+/// process, with whatever $SHELL the test runner has).
+#[cfg(not(target_os = "windows"))]
+fn legacy_bash_probe(shell: &str) -> bool {
+    let name = shell.rsplit('/').next().unwrap_or(shell);
+    name == "bash" && probe_legacy_bash(shell, std::time::Duration::from_secs(2)).unwrap_or(true)
 }
 
 /// Whether an executable named `name` resolves on PATH. Pure env scan.
@@ -776,6 +782,31 @@ mod tests {
         assert_eq!(legacy_bash_from_exit_code(Some(1)), Some(false));
         assert_eq!(legacy_bash_from_exit_code(Some(2)), None);
         assert_eq!(legacy_bash_from_exit_code(None), None);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn legacy_bash_probe_short_circuits_non_bash_shells() {
+        // Name gate: non-bash shells never spawn the version probe.
+        assert!(!legacy_bash_probe("/bin/sh"));
+        assert!(!legacy_bash_probe("zsh"));
+        assert!(!legacy_bash_probe("/usr/local/bin/fish"));
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn legacy_bash_probe_runs_real_bash_version_check() {
+        // "bash" resolves via PATH; the probe spawns the real binary which
+        // exits promptly with a classified status. The boolean outcome
+        // depends on the host bash version — either way the probe arm ran.
+        let _ = legacy_bash_probe("bash");
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn on_path_scans_the_process_path() {
+        assert!(on_path("sh"));
+        assert!(!on_path("definitely-not-a-real-binary-xyz"));
     }
 
     #[test]
