@@ -65,6 +65,9 @@ struct PersistenceInner {
     // `cfg(not(test))` pairs whose production half is uncoverable.
     fail_next_rewrite: std::sync::atomic::AtomicBool,
     fail_next_commit: std::sync::atomic::AtomicBool,
+    fail_next_close: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    panic_next_commit: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     dead_spawns: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
@@ -110,6 +113,9 @@ impl SessionPersistence {
                 idle_timeout,
                 fail_next_rewrite: std::sync::atomic::AtomicBool::new(false),
                 fail_next_commit: std::sync::atomic::AtomicBool::new(false),
+                fail_next_close: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(test)]
+                panic_next_commit: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
                 dead_spawns: std::sync::atomic::AtomicUsize::new(0),
                 #[cfg(test)]
@@ -167,6 +173,14 @@ impl SessionPersistence {
     /// error if any earlier append failed, signaling the caller to heal with a
     /// full rewrite instead of committing an incomplete run.
     pub fn commit_run(&self, entries: Vec<SessionEntry>) -> Result<()> {
+        #[cfg(test)]
+        if self
+            .inner
+            .panic_next_commit
+            .swap(false, Ordering::AcqRel)
+        {
+            panic!("injected persistence commit panic");
+        }
         let (ack_tx, ack_rx) = mpsc::sync_channel(1);
         self.send_boundary(PersistenceCommand::CommitRun {
             entries,
@@ -207,6 +221,9 @@ impl SessionPersistence {
     /// block close: deletion remains an allowed recovery operation while the
     /// session is persistence-degraded.
     pub fn close(&self) -> Result<()> {
+        if self.inner.fail_next_close.swap(false, Ordering::AcqRel) {
+            return Err(anyhow!("session persistence worker stopped before close boundary"));
+        }
         let worker = {
             let worker = self.inner.worker.lock();
             if self.inner.closed.swap(true, Ordering::AcqRel) {
@@ -239,6 +256,16 @@ impl SessionPersistence {
     #[cfg(test)]
     pub(crate) fn fail_next_commit(&self) {
         self.inner.fail_next_commit.store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_close(&self) {
+        self.inner.fail_next_close.store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn panic_next_commit(&self) {
+        self.inner.panic_next_commit.store(true, Ordering::Release);
     }
 
     /// Test-only crash injection: ensure a worker exists, then order it to

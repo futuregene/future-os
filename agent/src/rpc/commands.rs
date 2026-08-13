@@ -60,6 +60,49 @@ fn page_events_tail(events: Vec<SseEvent>, max_events: i64) -> (Vec<SseEvent>, b
     (page, has_more)
 }
 
+/// Base directory for HTML exports. Always `/tmp` in production; overridable
+/// in tests (the setter is `cfg(test)`-only) so the write-failure arm can be
+/// reached deterministically.
+static EXPORT_DIR_OVERRIDE: parking_lot::Mutex<Option<std::path::PathBuf>> =
+    parking_lot::Mutex::new(None);
+
+fn export_output_path(session_id: &str) -> std::path::PathBuf {
+    let base = EXPORT_DIR_OVERRIDE
+        .lock()
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+    base.join(format!(
+        "future_agent_export_{}_{}.html",
+        session_id,
+        chrono::Local::now().format("%Y%m%d%H%M%S")
+    ))
+}
+
+/// RAII guard for the test-only export-dir override. Holds the override for
+/// its lifetime and restores `/tmp` on drop, so a panic can't leak a bad dir
+/// into the parallel success-path export test.
+#[cfg(test)]
+struct ExportDirGuard;
+
+#[cfg(test)]
+impl ExportDirGuard {
+    fn new(dir: std::path::PathBuf) -> Self {
+        *EXPORT_DIR_OVERRIDE.lock() = Some(dir);
+        ExportDirGuard
+    }
+}
+
+#[cfg(test)]
+impl Drop for ExportDirGuard {
+    fn drop(&mut self) {
+        *EXPORT_DIR_OVERRIDE.lock() = None;
+    }
+}
+
+/// Serializes the two export tests, since the override is process-global.
+#[cfg(test)]
+static EXPORT_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
 pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     let id = &cmd.id;
     let cmd_type = &cmd.cmd_type;
@@ -289,10 +332,6 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                             } => (
                                 "attachment_too_large",
                                 serde_json::json!({"actual_bytes": actual, "limit_bytes": limit}),
-                            ),
-                            crate::runtime::RunQueueError::SupersedeRequiresSessionOperation => (
-                                "busy_policy_unavailable",
-                                serde_json::json!({"busy_policy": busy_policy.as_str()}),
                             ),
                             crate::runtime::RunQueueError::Deleting => (
                                 "deleting",
@@ -824,11 +863,8 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             let html = generate_session_html(&session_id, &model, &cwd, &messages);
 
             // Write to a unique temp file to avoid clobbering concurrent exports.
-            let output_path = format!(
-                "/tmp/future_agent_export_{}_{}.html",
-                session_id,
-                chrono::Local::now().format("%Y%m%d%H%M%S")
-            );
+            let output_path = export_output_path(&session_id);
+            let output_path_str = output_path.to_string_lossy().to_string();
             if let Err(e) = std::fs::write(&output_path, html) {
                 return RpcResponse::build_fail(
                     id,
@@ -837,7 +873,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 );
             }
 
-            RpcResponse::ok(id, "export_html", serde_json::json!({"path": output_path}))
+            RpcResponse::ok(
+                id,
+                "export_html",
+                serde_json::json!({"path": output_path_str}),
+            )
         }
         "reload_config" => cmd_reload_config(state, &session, id),
         "set_cwd" => {
@@ -1784,6 +1824,14 @@ fn cmd_get_session_entries(session: &Arc<parking_lot::RwLock<ServerSession>>, id
     )
 }
 
+/// Test-only hook fired inside `fork`/`clone` after the forked session is
+/// built but before its model is synced into the fresh agent loop, keyed on
+/// the parent session id. Lets a test force the model-sync failure warn.
+#[cfg(test)]
+static MODEL_SYNC_FAIL_HOOK: parking_lot::Mutex<
+    Option<(String, Box<dyn Fn(&mut ServerSession) + Send>)>,
+> = parking_lot::Mutex::new(None);
+
 fn cmd_fork(
     state: &AppState,
     session: &Arc<parking_lot::RwLock<ServerSession>>,
@@ -1869,6 +1917,15 @@ fn cmd_fork(
     *new_sess.messages.write() = msgs;
     if !forked.model.is_empty() {
         new_sess.model = forked.model.clone();
+        #[cfg(test)]
+        {
+            let mut slot = MODEL_SYNC_FAIL_HOOK.lock();
+            if matches!(slot.as_ref(), Some((sid, _)) if sid == &parent_id) {
+                if let Some((_, hook)) = slot.take() {
+                    hook(&mut new_sess);
+                }
+            }
+        }
         // Sync the fork's own agent loop so the first prompt uses the
         // forked model, not whatever the template seeded.
         if let Err(e) = new_sess.set_model(&new_sess.model.clone()) {
@@ -1964,6 +2021,15 @@ fn cmd_clone(
     *new_sess.messages.write() = msgs;
     if !forked.model.is_empty() {
         new_sess.model = forked.model.clone();
+        #[cfg(test)]
+        {
+            let mut slot = MODEL_SYNC_FAIL_HOOK.lock();
+            if matches!(slot.as_ref(), Some((sid, _)) if sid == &session_id) {
+                if let Some((_, hook)) = slot.take() {
+                    hook(&mut new_sess);
+                }
+            }
+        }
         if let Err(e) = new_sess.set_model(&new_sess.model.clone()) {
             tracing::warn!("[clone] could not sync agent loop model: {e}");
         }
@@ -2220,6 +2286,13 @@ mod tests {
 
     fn parse_response(json: &str) -> serde_json::Value {
         serde_json::from_str(json).unwrap()
+    }
+
+    fn is_lifecycle_marker(entry_type: &str) -> bool {
+        matches!(
+            entry_type,
+            crate::session::ENTRY_TYPE_RUN_STARTED | crate::session::ENTRY_TYPE_RUN_TERMINAL
+        )
     }
 
     // ── Config-write commands (set_auth / upsert_provider / delete_provider) ──
@@ -2732,12 +2805,17 @@ mod tests {
             .iter()
             .any(|entry| entry.content == Some(serde_json::json!("legacy reply"))));
         assert!(loaded.entries.iter().all(|entry| {
-            !matches!(
-                entry.entry_type.as_str(),
-                crate::session::ENTRY_TYPE_RUN_STARTED | crate::session::ENTRY_TYPE_RUN_TERMINAL
-            )
+            !is_lifecycle_marker(entry.entry_type.as_str())
         }));
         let _ = state.session_manager.delete(session_id);
+    }
+
+    #[test]
+    fn lifecycle_marker_helpers_recognize_markers() {
+        assert!(is_lifecycle_marker(crate::session::ENTRY_TYPE_RUN_STARTED));
+        assert!(is_lifecycle_marker(crate::session::ENTRY_TYPE_RUN_TERMINAL));
+        assert!(!is_lifecycle_marker("user"));
+        assert!(!is_lifecycle_marker("assistant"));
     }
 
     #[test]
@@ -3983,13 +4061,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn export_html_writes_file() {
+        let _gate = EXPORT_TEST_LOCK.lock();
         let state = make_app_state();
         let resp = parse_response(&handle_command_internal(&state, make_cmd("export_html")));
-        if cfg!(windows) {
-            // The export path is a hardcoded /tmp (pre-existing limitation).
-            return;
-        }
         assert_eq!(resp["success"], true);
         let path = resp["data"]["path"].as_str().unwrap();
         assert!(path.contains("future_agent_export_"));
@@ -5302,5 +5378,301 @@ mod tests {
                 .unwrap();
             assert!(stream.next().await.is_none());
         });
+    }
+
+    // ── coverage batch 24: per-line residuals ─────────────────────────────
+
+    #[test]
+    fn prompt_reports_session_queue_bytes_exceeded() {
+        let state = make_app_state();
+        // A tiny per-session queue-byte limit (smaller than the request limit,
+        // so the payload passes RequestTooLarge and trips QueueBytesExceeded).
+        let small = Arc::new(crate::runtime::InMemoryRunQueue::with_limits_and_global(
+            "default",
+            1,
+            crate::runtime::DEFAULT_SESSION_QUEUE_CAPACITY,
+            8,
+            1024,
+            256,
+            Arc::new(crate::runtime::GlobalQueueBudget::defaults()),
+        ));
+        state.get_session("default").unwrap().write().scheduler = small;
+
+        let mut cmd = make_cmd("prompt");
+        cmd.message = "hello there".to_string();
+        cmd.busy_policy = "enqueue_if_busy".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false);
+        assert_eq!(resp["error_code"], "attachment_too_large");
+    }
+
+    #[test]
+    fn prompt_reports_busy_configuration_error() {
+        let state = make_app_state();
+        let agent_loop = state.get_session("default").unwrap().read().agent_loop.clone();
+        let _guard = agent_loop.try_write().unwrap();
+
+        let mut cmd = make_cmd("prompt");
+        cmd.message = "hi".to_string();
+        cmd.busy_policy = "enqueue_if_busy".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("run configuration is busy"));
+    }
+
+    #[test]
+    fn get_events_since_returns_projection_over_truncated_ring() {
+        let state = make_app_state();
+        {
+            let session = state.get_session("default").unwrap();
+            let mut sess = session.write();
+            // No journal configured → a cursor older than the in-memory ring
+            // returns a compressed projection instead of a partial tail.
+            sess.broadcaster = Arc::new(SseBroadcaster::new());
+            sess.broadcaster.start_run("run-ring".to_string(), 1);
+            for i in 0..2100 {
+                sess.broadcaster
+                    .broadcast(SseEvent::new("text_chunk", serde_json::json!({"i": i})));
+            }
+        }
+        let mut cmd = make_cmd("get_events_since");
+        cmd.run_id = "run-ring".to_string();
+        cmd.since_idx = 0;
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert!(!resp["data"]["projection"].is_null());
+    }
+
+    #[test]
+    fn export_html_reports_write_failure() {
+        let _gate = EXPORT_TEST_LOCK.lock();
+        let _guard = ExportDirGuard::new(std::path::PathBuf::from(
+            "/definitely/not/a/real/export/dir",
+        ));
+        let state = make_app_state();
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("export_html")));
+        assert_eq!(resp["success"], false);
+        assert!(resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("failed to write file"));
+    }
+
+    #[test]
+    fn set_cwd_persists_successfully_on_disk_session() {
+        let state = make_app_state();
+        save_via(
+            &state,
+            "default",
+            "mock",
+            vec![crate::session::SessionEntry::session_info(
+                serde_json::json!({"cwd": state.welcome_cwd, "model": "mock"}),
+                "mock".to_string(),
+                "low".to_string(),
+            )],
+        );
+        let mut cmd = make_cmd("set_cwd");
+        cmd.cwd = "/tmp/persisted-cwd".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["cwd"], "/tmp/persisted-cwd");
+    }
+
+    #[test]
+    fn delete_session_reports_close_failure() {
+        let state = make_app_state();
+        state
+            .get_session("default")
+            .unwrap()
+            .read()
+            .persistence
+            .fail_next_close();
+        let resp = parse_response(&handle_command_internal(
+            &state,
+            make_cmd("delete_session"),
+        ));
+        assert_eq!(resp["success"], false);
+        assert_eq!(resp["error_code"], "delete_failed");
+    }
+
+    #[test]
+    fn new_session_legacy_provenance_invalid_json() {
+        let state = make_app_state();
+        let mut cmd = make_cmd_for("new_session", "ns-bad-json");
+        cmd.custom_instructions = "not valid json".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        let session = state.get_session("ns-bad-json").unwrap();
+        assert_eq!(session.read().created_by, "tui");
+    }
+
+    #[test]
+    fn new_session_legacy_provenance_with_typed_source_meta() {
+        let state = make_app_state();
+        let mut cmd = make_cmd_for("new_session", "ns-typed-meta");
+        cmd.source_meta = "{\"chat\":\"c1\"}".to_string();
+        cmd.custom_instructions = "{\"createdBy\":\"legacy\"}".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        let session = state.get_session("ns-typed-meta").unwrap();
+        assert_eq!(session.read().created_by, "legacy");
+    }
+
+    #[test]
+    fn get_session_entries_skips_orphan_terminal_marker() {
+        let state = make_app_state();
+        // A run_terminal with no preceding assistant marker (orphan terminal)
+        // must not fabricate run stats.
+        save_via(
+            &state,
+            "default",
+            "mock",
+            vec![
+                crate::session::SessionEntry::run_terminal(
+                    "run-1",
+                    crate::session::RUN_STATE_COMPLETED,
+                    0,
+                    0,
+                    None,
+                ),
+                crate::session::SessionEntry::new_user("user", serde_json::json!("hi")),
+            ],
+        );
+        let resp = parse_response(&handle_command_internal(
+            &state,
+            make_cmd("get_session_entries"),
+        ));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn fork_warns_when_model_sync_fails() {
+        let state = make_app_state();
+        let user = crate::session::SessionEntry::new_user("user", serde_json::json!("fork here"));
+        let entry_id = user.id.clone();
+        // A unique parent id gates the hook against parallel tests that fork
+        // the "default" session. A session_info entry makes the forked model
+        // non-empty, so the fork reaches the model-sync block (and consumes
+        // the hook).
+        save_via(
+            &state,
+            "fork-warn-parent",
+            "mock",
+            vec![
+                crate::session::SessionEntry::session_info(
+                    serde_json::json!({"cwd": state.welcome_cwd, "model": "mock"}),
+                    "mock".to_string(),
+                    "high".to_string(),
+                ),
+                user,
+            ],
+        );
+        *MODEL_SYNC_FAIL_HOOK.lock() = Some((
+            "fork-warn-parent".to_string(),
+            Box::new(|sess: &mut ServerSession| {
+                // Closing persistence makes the subsequent model-sync
+                // `update_info` fail, exercising the warn arm.
+                let _ = sess.persistence.close();
+            }),
+        ));
+
+        let mut cmd = make_cmd("fork");
+        cmd.entry_id = entry_id;
+        cmd.parent_session = "fork-warn-parent".to_string();
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn clone_warns_when_model_sync_fails() {
+        let state = make_app_state();
+        // A dedicated session id gates the hook against parallel tests that
+        // clone the "default" session.
+        let _ = parse_response(&handle_command_internal(
+            &state,
+            make_cmd_for("new_session", "clone-warn"),
+        ));
+        {
+            let session = state.get_session("clone-warn").unwrap();
+            session
+                .read()
+                .messages
+                .write()
+                .push(crate::types::AgentMessage::new_user(
+                    "user",
+                    serde_json::json!("clone me"),
+                ));
+        }
+        save_via(
+            &state,
+            "clone-warn",
+            "mock",
+            vec![
+                crate::session::SessionEntry::session_info(
+                    serde_json::json!({"cwd": "/tmp", "model": "mock"}),
+                    "mock".to_string(),
+                    "high".to_string(),
+                ),
+                crate::session::SessionEntry::new_user("user", serde_json::json!("clone me")),
+                crate::session::SessionEntry::new_assistant(serde_json::json!("reply"), vec![]),
+            ],
+        );
+        *MODEL_SYNC_FAIL_HOOK.lock() = Some((
+            "clone-warn".to_string(),
+            Box::new(|sess: &mut ServerSession| {
+                let _ = sess.persistence.close();
+            }),
+        ));
+
+        let resp = parse_response(&handle_command_internal(
+            &state,
+            make_cmd_for("clone", "clone-warn"),
+        ));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn clone_with_empty_disk_model_completes() {
+        let state = make_app_state();
+        {
+            let session = state.get_session("default").unwrap();
+            session
+                .read()
+                .messages
+                .write()
+                .push(crate::types::AgentMessage::new_user(
+                    "user",
+                    serde_json::json!("clone me"),
+                ));
+        }
+        // A disk session with messages but no session_info/model_change → the
+        // forked model resolves empty, skipping the model-sync block.
+        save_via(
+            &state,
+            "default",
+            "mock",
+            vec![
+                crate::session::SessionEntry::new_user("user", serde_json::json!("clone me")),
+                crate::session::SessionEntry::new_assistant(serde_json::json!("reply"), vec![]),
+            ],
+        );
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("clone")));
+        assert_eq!(resp["success"], true);
+    }
+
+    #[test]
+    fn new_session_with_invalid_settings_file_uses_defaults() {
+        let home = TestHome::new();
+        let settings_path = home.settings_path();
+        std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        std::fs::write(&settings_path, "not valid json").unwrap();
+
+        let state = make_app_state();
+        let cmd = make_cmd_for("new_session", "ns-bad-settings");
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
     }
 }

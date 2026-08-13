@@ -592,6 +592,17 @@ impl InMemoryRunQueue {
         }
     }
 
+    /// Test-only: move the front queued run to the back, so `start_next`
+    /// pops a different run than the one `start_next_scheduled` just peeked
+    /// — reaching the scheduler FIFO-mismatch defensive arm.
+    #[cfg(test)]
+    pub fn test_move_front_to_back(&self) {
+        let mut state = self.state.lock();
+        if let Some(front) = state.queued.pop_front() {
+            state.queued.push_back(front);
+        }
+    }
+
     pub fn queued_bytes(&self) -> usize {
         self.state.lock().queued_bytes
     }

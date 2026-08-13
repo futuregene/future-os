@@ -40,6 +40,39 @@ pub(super) struct AcceptedRunSnapshot {
     settings: ScheduledSettingsSnapshot,
 }
 
+/// Test-only hook fired by `start_next_scheduled` right after it peeks the
+/// front queued run, keyed on that run id, so a test can reorder/drain the
+/// queue before `prompt_internal` calls `start_next` (FIFO-mismatch / empty
+/// dequeue defensive arms).
+#[cfg(test)]
+static SCHEDULED_DEQUEUE_HOOK: parking_lot::Mutex<
+    Option<(String, Box<dyn Fn(&mut ServerSession) + Send>)>,
+> = parking_lot::Mutex::new(None);
+
+/// Test-only hook fired by `prompt_internal` right before `runtime.spawn`,
+/// keyed on the accepted run id, so a test can occupy the task slot and
+/// reach the spawn double-occupancy error arm.
+#[cfg(test)]
+static RUN_SPAWN_HOOK: parking_lot::Mutex<
+    Option<(String, Box<dyn Fn(&mut ServerSession) + Send>)>,
+> = parking_lot::Mutex::new(None);
+
+/// Test-only flag: when set to a run id, `prompt_internal` fails right after
+/// `start_next` made that run active (without finishing it), so the enqueue
+/// error arm's `finish_active` branch is reachable.
+#[cfg(test)]
+static POST_START_FAIL_RUN: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
+
+#[cfg(test)]
+fn take_post_start_failure(run_id: &str) -> Option<String> {
+    let mut slot = POST_START_FAIL_RUN.lock();
+    if matches!(slot.as_deref(), Some(run) if run == run_id) {
+        slot.take()
+    } else {
+        None
+    }
+}
+
 impl ServerSession {
     #[cfg(test)]
     pub(super) fn scheduled_setting_summary(
@@ -253,6 +286,15 @@ impl ServerSession {
             .remove(&request.run_id)
             .ok_or_else(|| anyhow::anyhow!("accepted run snapshot is unavailable"))?;
         debug_assert_eq!(snapshot.settings.model, payload.settings.model);
+        #[cfg(test)]
+        {
+            let mut slot = SCHEDULED_DEQUEUE_HOOK.lock();
+            if matches!(slot.as_ref(), Some((sid, _)) if sid == &request.run_id) {
+                if let Some((_, hook)) = slot.take() {
+                    hook(self);
+                }
+            }
+        }
         let materialized_attachments =
             self.materialize_queued_attachments(&request.run_id, &payload.attachments)?;
         let lease = self.prompt_internal(
@@ -485,6 +527,12 @@ impl ServerSession {
                 }
             }
             self.scheduler.release_active_payload(&request.run_id);
+            #[cfg(test)]
+            if crate::rpc::session_prompt::take_post_start_failure(&request.run_id).is_some() {
+                let _ = self.runtime.begin_finalizing(&run_lease);
+                let _ = self.runtime.finish(&run_lease);
+                return Err(anyhow::anyhow!("injected post-start failure"));
+            }
         }
         self.broadcaster.start_run_with_sequence(
             run_lease.run_id.clone(),
@@ -1068,6 +1116,15 @@ impl ServerSession {
                 }
             }
         };
+        #[cfg(test)]
+        {
+            let mut slot = RUN_SPAWN_HOOK.lock();
+            if matches!(slot.as_ref(), Some((sid, _)) if sid == &run_lease.run_id) {
+                if let Some((_, hook)) = slot.take() {
+                    hook(self);
+                }
+            }
+        }
         if let Err(error) = self.runtime.spawn(run_lease.clone(), run_task) {
             let _ = self.runtime.begin_finalizing(&run_lease);
             let full_error = format!("Failed to start accepted run task: {error:#}");
@@ -1425,27 +1482,29 @@ impl ServerSession {
                     })
                     .is_some_and(|t| t.starts_with("[Context compaction:"))
         }) {
-            if let Some(marker) = entries.get(idx) {
-                let summary = marker
-                    .content
-                    .as_ref()
-                    .and_then(|c| c.as_array())
-                    .and_then(|arr| arr.first())
-                    .and_then(|b| b.get("text"))
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("");
-                let mut comp_entry = marker.clone();
-                comp_entry.id = crate::utils::generate_id();
-                comp_entry.entry_type = crate::session::ENTRY_TYPE_COMPACTION.to_string();
-                comp_entry.role = "system".to_string();
-                comp_entry.content = Some(serde_json::json!({
-                    "summary": summary,
-                    "tokens_in": tokens_in,
-                    "tokens_out": tokens_out,
-                }));
-                entries.insert(idx + 1, comp_entry);
-                entries.remove(idx);
-            }
+            // `idx` came from `position`, so `entries[idx]` is always in bounds
+            // — indexing (not a phantom `if let Some`) keeps this branch region
+            // single-path.
+            let marker = &entries[idx];
+            let summary = marker
+                .content
+                .as_ref()
+                .and_then(|c| c.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|b| b.get("text"))
+                .and_then(|t| t.as_str())
+                .unwrap_or("");
+            let mut comp_entry = marker.clone();
+            comp_entry.id = crate::utils::generate_id();
+            comp_entry.entry_type = crate::session::ENTRY_TYPE_COMPACTION.to_string();
+            comp_entry.role = "system".to_string();
+            comp_entry.content = Some(serde_json::json!({
+                "summary": summary,
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+            }));
+            entries.insert(idx + 1, comp_entry);
+            entries.remove(idx);
         }
 
         // A rewrite is a journal compaction/repair, not permission to erase run

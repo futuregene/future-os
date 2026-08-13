@@ -26,6 +26,9 @@ pub struct SessionRuntime {
     control: RunControl,
     task: Mutex<Option<RuntimeTask>>,
     completion_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<RunLease>>>,
+    // Test-only observability/failure injection: always compiled (setters are
+    // cfg(test)-only) so the production check stays single-line.
+    fail_next_begin_finalizing: std::sync::atomic::AtomicBool,
 }
 
 impl SessionRuntime {
@@ -34,6 +37,7 @@ impl SessionRuntime {
             control: RunControl::new(is_streaming),
             task: Mutex::new(None),
             completion_tx: Mutex::new(None),
+            fail_next_begin_finalizing: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -134,6 +138,12 @@ impl SessionRuntime {
     }
 
     pub fn begin_finalizing(&self, lease: &RunLease) -> bool {
+        if self
+            .fail_next_begin_finalizing
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            return false;
+        }
         self.control.begin_finalizing(lease)
     }
 
@@ -243,6 +253,31 @@ impl SessionRuntime {
             .lock()
             .as_ref()
             .is_some_and(|active| active.lease == *lease)
+    }
+
+    /// Test-only: occupy the task slot without a control lease, forging the
+    /// transient "control finalized but task monitor still holds the slot"
+    /// window that `enqueue_prompt` defends against.
+    #[cfg(test)]
+    pub(crate) fn test_hold_task_slot(&self) {
+        let task = tokio::spawn(async {});
+        let handle = task.abort_handle();
+        *self.task.lock() = Some(RuntimeTask {
+            lease: RunLease {
+                run_id: "ghost-slot".to_string(),
+                epoch: 0,
+                run_sequence: None,
+            },
+            _abort_handle: handle,
+        });
+    }
+
+    /// Test-only: force the next `begin_finalizing` to report a stale-epoch
+    /// mismatch (returns false), exercising the run task's early-return arm.
+    #[cfg(test)]
+    pub(crate) fn fail_next_begin_finalizing(&self) {
+        self.fail_next_begin_finalizing
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 
     pub(crate) fn active_task_count(&self) -> usize {
