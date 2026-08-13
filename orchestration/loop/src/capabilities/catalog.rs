@@ -310,7 +310,14 @@ fn builtin_records() -> Vec<(
             "Bounded exploration with replay/trace hygiene.",
             "Exercise deterministic exploration guards on a fixture before live exploration.",
             vec![cmd("explore", "Run one bounded exploration probe with trace hygiene.")],
-            vec![packet("explore_v0", "explore")],
+            // Wave 2 deepening: the hypothesis-tracking + explore-graph rule
+            // version ships its event / projection / verification packets.
+            vec![
+                packet("explore_v0", "explore"),
+                packet("loopx_explore_result_event_v0", "explore"),
+                packet("loopx_explore_result_projection_v0", "explore"),
+                packet("loopx_explore_hypothesis_verification_v0", "explore"),
+            ],
         ),
         (
             "integration_branch",

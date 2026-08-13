@@ -12,7 +12,9 @@
 //! explore, integration_branch, issue_fix, material_lifecycle,
 //! periodic_report, reward_memory, semantic_preference, value_connectors —
 //! plus the 15th (pr_review_queue, P2-3): the queue observation + review
-//! contract rule version.
+//! contract rule version. `explore` shipped its Wave 2 deepening:
+//! hypothesis modeling + verification tracking + the explore graph
+//! (node/edge/status events folded into a bounded projection).
 
 pub mod agent_turn_recall;
 pub mod auto_research;
