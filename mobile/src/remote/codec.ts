@@ -21,11 +21,26 @@ export interface PairingInvitation {
   desktopPublicKey: string;
 }
 
-export function decodeBase64UrlJson<T>(value: string): T | null {
+export function encodeBase64Url(value: Uint8Array): string {
+  const binary = Array.from(value, byte => String.fromCharCode(byte)).join("");
+  return globalThis.btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+export function decodeBase64Url(value: string): Uint8Array | null {
   try {
     let base64 = value.trim().replace(/-/g, "+").replace(/_/g, "/");
     while (base64.length % 4 !== 0) base64 += "=";
-    return JSON.parse(globalThis.atob(base64)) as T;
+    return Uint8Array.from(globalThis.atob(base64), char => char.charCodeAt(0));
+  } catch {
+    return null;
+  }
+}
+
+export function decodeBase64UrlJson<T>(value: string): T | null {
+  const bytes = decodeBase64Url(value);
+  if (!bytes) return null;
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes)) as T;
   } catch {
     return null;
   }

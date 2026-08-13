@@ -85,7 +85,7 @@ export function PairingScreen({ revoked = false }: { revoked?: boolean }) {
 
   const handleScan = useCallback(
     async ({ data }: { data: string }) => {
-      if (scanLocked.current || remote.busy) return;
+      if (scanLocked.current || remote.phase === "claiming") return;
       const code = pairingCodeFromQr(data);
       if (!code) {
         showToast(t("pairing.invalid"));
@@ -100,7 +100,7 @@ export function PairingScreen({ revoked = false }: { revoked?: boolean }) {
         }, 1200);
       }
     },
-    [doPair, remote.busy, showToast, t],
+    [doPair, remote.phase, showToast, t],
   );
 
   const handleManualSubmit = useCallback(async () => {
@@ -121,7 +121,7 @@ export function PairingScreen({ revoked = false }: { revoked?: boolean }) {
     }
   }, [doPair, manualCode, showToast, t]);
 
-  const scanning = remote.phase === "claiming" || remote.busy;
+  const scanning = remote.phase === "claiming";
 
   return (
     <SafeAreaView edges={["top", "bottom"]} style={styles.safe}>

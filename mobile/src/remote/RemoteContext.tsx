@@ -14,7 +14,6 @@ import {
   mergeHistoryAttachments,
   timelineFromEntries,
   timelineFromHistory,
-  type ReplayEventWire,
   type TimelineState,
 } from "./eventReducer";
 import { RemoteClient } from "./client";
@@ -22,6 +21,7 @@ import { MAX_PROMPT_MESSAGE_BYTES, utf8Bytes } from "./codec";
 import type { ConnectionState } from "./connectionState";
 import { classifyError } from "./connectionState";
 import {
+  attemptPendingRevoke,
   claimPairingCode,
   ensureFreshCredentials,
   serverRevoke,
@@ -32,9 +32,10 @@ import {
   PRESENCE_RECEIPT_STALE_MS,
   type PresenceState,
 } from "./presence";
-import { detectFinished } from "./sessionStatus";
 import { type RunCursor } from "./runCursor";
 import { SyncEngine, type ReconcileReason } from "./syncEngine";
+import { fetchEventsSince } from "./replay";
+import { useSessionCatalog } from "./useSessionCatalog";
 import {
   clearCredentials,
   clearPendingRevoke,
@@ -46,7 +47,6 @@ import {
   saveLastModel,
   saveLastThinking,
   savePendingRevoke,
-  type PendingRevoke,
 } from "./storage";
 import { modelProviderFromReference, modelReference } from "./types";
 import {
@@ -59,12 +59,15 @@ import {
 import type { File } from "expo-file-system";
 import type {
   ConnectionPhase,
+  DownloadInfo,
+  EntriesData,
+  HistoryAttachment,
+  HistoryData,
   HistoryEntry,
   HistoryMessage,
-  HistoryAttachment,
-  DownloadInfo,
   MobileAttachment,
   Presence,
+  PromptAck,
   RemoteCredentials,
   RemoteModel,
   RemoteSession,
@@ -73,122 +76,6 @@ import type {
   StreamEvent,
   ThinkingLevel,
 } from "./types";
-
-interface SessionsData {
-  sessions: RemoteSession[];
-}
-
-interface ModelsData {
-  models: RemoteModel[];
-}
-
-interface WorkspacesData {
-  workspaces: RemoteWorkspace[];
-}
-
-interface HistoryData {
-  messages: HistoryMessage[];
-  total?: number;
-  hasMore?: boolean;
-  nextOffset?: number;
-}
-
-interface EntriesData {
-  entries: HistoryEntry[];
-  total?: number;
-  hasMore?: boolean;
-  nextOffset?: number;
-}
-
-interface EventsData {
-  /** Raw replay events — the RPC serializes them with snake_case `run_id`. */
-  events?: ReplayEventWire[];
-  truncated?: boolean;
-  /** Coalesced replica of a run whose event ring overflowed — replaces the
-   *  session's timeline wholesale (see `timelineFromProjection`). */
-  projection?: { run_id?: string; cursor?: number; events?: ReplayEventWire[] } | null;
-}
-
-interface EventsPage extends EventsData {
-  hasMore?: boolean;
-  nextOffset?: number;
-}
-
-/**
- * Fetch a run's replay tail via `get_events_since`, looping paginated replies
- * until `hasMore=false`. The desktop pages replay events under the NATS payload
- * cap (a multi-MB journal tail must never ship as one oversized reply), so a
- * single-shot request would silently truncate. The merged envelope carries the
- * first page's `projection` (the whole-run replacement) through unchanged.
- */
-async function fetchEventsSince(
-  client: RemoteClient,
-  sessionId: string,
-  runId: string,
-  sinceIdx: number,
-): Promise<EventsData> {
-  const events: ReplayEventWire[] = [];
-  let projection: EventsData["projection"] = null;
-  let truncated = false;
-  let offset = 0;
-  for (;;) {
-    const page = (
-      await client.request<EventsPage>(
-        { type: "get_events_since", sessionId, runId, sinceIdx, offset },
-        sessionId,
-      )
-    ).data;
-    events.push(...(page.events ?? []));
-    if (page.projection?.events?.length) projection = page.projection;
-    if (page.truncated) truncated = true;
-    if (!page.hasMore) break;
-    const next = page.nextOffset;
-    if (typeof next !== "number" || next <= offset) break;
-    offset = next;
-  }
-  const merged: EventsData = { events };
-  if (projection) merged.projection = projection;
-  if (truncated) merged.truncated = true;
-  return merged;
-}
-
-interface PromptAck {
-  sessionId: string;
-  threadId: string;
-  runId: string;
-}
-
-/**
- * Fire the queued server-side revoke (M7). Best-effort: a failure is dropped —
- * the queue entry stays in storage and retries on the next launch. A success
- * (or a terminal 401/404, which serverRevoke treats as success) drains the
- * queue via the caller's clearPendingRevoke.
- */
-async function attemptPendingRevoke(pending: PendingRevoke): Promise<void> {
-  await serverRevoke({
-    pairId: pending.pairId,
-    deviceId: pending.deviceId,
-    seed: pending.seed,
-    userJwt: "",
-    refreshToken: pending.refreshToken,
-    natsWsUrl: "",
-    tokenUrl: pending.tokenUrl,
-    expectedDesktopId: "",
-    expectedDesktopPublicKey: "",
-  });
-}
-
-/**
- * Stable pinned-first reorder for optimistic pin/unpin. Pinned sessions move
- * to the top in their original relative order; everything else keeps the
- * incoming (desktop-sorted) order. Matches the desktop sidebar's `pinned DESC`
- * grouping, which the pushed snapshot also converges on.
- */
-function sortPinnedFirst(list: RemoteSession[]): RemoteSession[] {
-  const pinned = list.filter(session => session.pinned);
-  const rest = list.filter(session => !session.pinned);
-  return [...pinned, ...rest];
-}
 
 interface RemoteContextValue {
   phase: ConnectionPhase;
@@ -255,20 +142,14 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const [error, setError] = useState<string | null>(null);
   const [credentials, setCredentials] = useState<RemoteCredentials | null>(null);
   const [presence, setPresence] = useState<Presence | null>(null);
-  const [sessions, setSessions] = useState<RemoteSession[]>([]);
-  const [unreadSessions, setUnreadSessions] = useState<Set<string>>(() => new Set());
-  const lastStatusRef = useRef<Record<string, string | undefined>>({});
-  const [workspaces, setWorkspaces] = useState<RemoteWorkspace[]>([]);
-  const [models, setModels] = useState<RemoteModel[]>([]);
-  const [approvalTier, setApprovalTierState] = useState("off");
-  const [sandboxAvailable, setSandboxAvailable] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [draft, setDraft] = useState(false);
   const [draftMode, setDraftMode] = useState<"chat" | "workspace">("chat");
   const [draftWorkspaceId, setDraftWorkspaceId] = useState("");
   const [modelId, setModelId] = useState("");
   const [thinkingLevel, setThinkingLevelState] = useState<ThinkingLevel>("off");
-  const [busy, setBusy] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [openingSession, setOpeningSession] = useState(false);
   const [capabilities, setCapabilities] = useState<Set<string>>(() => new Set());
   const fileTransferSupported = capabilities.has("file_transfer_v1");
   const [clock, setClock] = useState(Date.now());
@@ -286,16 +167,33 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // prompt ack binds it to a real session.
   const [timelines, setTimelines] = useState<Record<string, TimelineState>>({});
   const timelinesRef = useRef<Record<string, TimelineState>>({});
-  // Live agent-side renames (`session_name_changed`, data: {name}) are not
-  // persisted by the desktop store, so the snapshot title would go stale; the
-  // override wins until the next sessions snapshot reflects it. Read via the
-  // ref inside long-lived closures (the NATS callbacks) to avoid a stale
-  // capture or forcing a client re-create on every rename.
-  const [titleOverrides, setTitleOverrides] = useState<Record<string, string>>({});
-  const titleOverridesRef = useRef<Record<string, string>>({});
   const clientRef = useRef<RemoteClient | null>(null);
   const credentialsRef = useRef<RemoteCredentials | null>(null);
   const selectedRef = useRef("");
+  // The control-plane catalogue (sessions/workspaces/models/settings) lives in
+  // its own hook; the provider keeps connection lifecycle + per-session
+  // timeline and forwards the catalogue's state/setters into the context value.
+  const {
+    sessions,
+    unreadSessions,
+    setUnreadSessions,
+    workspaces,
+    setWorkspaces,
+    models,
+    approvalTier,
+    setApprovalTier: setApprovalTierState,
+    sandboxAvailable,
+    setTitleOverrides,
+    applySessionSnapshot,
+    refreshSessions,
+    refreshModels,
+    refreshSettings,
+    refreshWorkspaces,
+    rename,
+    deleteSession: removeSession,
+    setSessionPinned,
+    reset: resetCatalog,
+  } = useSessionCatalog(clientRef, selectedRef);
   // Changes whenever the user navigates between conversations. Long uploads
   // capture the epoch so their eventual ack cannot pull the UI back to a
   // conversation the user has already left.
@@ -324,9 +222,6 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   useEffect(() => {
     timelinesRef.current = timelines;
   }, [timelines]);
-  useEffect(() => {
-    titleOverridesRef.current = titleOverrides;
-  }, [titleOverrides]);
 
   /**
    * Enqueue a reconcile instruction for a session (or all established sessions
@@ -344,78 +239,6 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     },
     [],
   );
-
-  const refreshSessions = useCallback(async () => {
-    const client = clientRef.current;
-    if (!client) return;
-    try {
-      const response = await client.request<SessionsData>({ type: "list_sessions" }, "list");
-      const overrides = titleOverridesRef.current;
-      const list = (response.data.sessions ?? []).map(session => ({
-        ...session,
-        title: overrides[session.sessionId] ?? session.title,
-      }));
-      const { finished, next } = detectFinished(lastStatusRef.current, list, selectedRef.current);
-      lastStatusRef.current = next;
-      setSessions(list);
-      if (finished.length > 0) {
-        setUnreadSessions(prev => {
-          const nextUnread = new Set(prev);
-          for (const id of finished) nextUnread.add(id);
-          return nextUnread;
-        });
-      }
-    } catch {
-      // If the connection has gone (refresh/reconnect cycle), swallow
-      // the error — the reconnect handler will re-fetch.
-    }
-  }, []);
-
-  const refreshModels = useCallback(async () => {
-    const client = clientRef.current;
-    if (!client) return;
-    // The desktop's model catalogue can lag the handshake on a fresh connect (or
-    // the agent may still be warming up and error out), so an empty or failed
-    // first answer is re-asked once before we accept it — otherwise the selector
-    // and the "no models" banner stay stale until a manual refresh.
-    let models: RemoteModel[] = [];
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      try {
-        models = (await client.request<ModelsData>({ type: "list_models" }, "list")).data.models ?? [];
-        if (models.length > 0) break;
-      } catch {
-        models = [];
-      }
-      if (attempt === 0) await new Promise(resolve => setTimeout(resolve, 1200));
-    }
-    setModels(models);
-  }, []);
-
-  const refreshSettings = useCallback(async () => {
-    const client = clientRef.current;
-    if (!client) return;
-    try {
-      const data = await client.request<{ approvalTier: string; sandboxAvailable: boolean }>(
-        { type: "get_settings" },
-        "list",
-      );
-      setApprovalTierState(data.data.approvalTier);
-      setSandboxAvailable(data.data.sandboxAvailable);
-    } catch {
-      // Keep the previous tier on a failed read.
-    }
-  }, []);
-
-  const refreshWorkspaces = useCallback(async () => {
-    const client = clientRef.current;
-    if (!client) return;
-    try {
-      const response = await client.request<WorkspacesData>({ type: "list_workspaces" }, "list");
-      setWorkspaces(response.data.workspaces ?? []);
-    } catch {
-      setWorkspaces([]);
-    }
-  }, []);
 
   const handleEvent = useCallback(
     (event: StreamEvent, sessionId: string) => {
@@ -482,7 +305,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       syncEngineRef.current?.event(sid, event);
       if (event.type === "agent_end") void refreshSessions();
     },
-    [reconcileSession, refreshSessions],
+    [reconcileSession, refreshSessions, setTitleOverrides],
   );
 
   const closeConversation = useCallback(() => {
@@ -613,31 +436,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
           setPresence(nextPresence);
         },
         onSessions: sessionList => {
-          const overrides = titleOverridesRef.current;
-          const list: RemoteSession[] = sessionList.map(s => ({
-            sessionId: s.sessionId,
-            threadId: s.threadId,
-            title: overrides[s.sessionId] ?? s.title,
-            mode: s.mode,
-            workspaceId: s.workspaceId,
-            pinned: s.pinned,
-            streaming: s.streaming,
-            status: s.status,
-          }));
-          const { finished, next } = detectFinished(
-            lastStatusRef.current,
-            list,
-            selectedRef.current,
-          );
-          lastStatusRef.current = next;
-          setSessions(list);
-          if (finished.length > 0) {
-            setUnreadSessions(prev => {
-              const nextUnread = new Set(prev);
-              for (const id of finished) nextUnread.add(id);
-              return nextUnread;
-            });
-          }
+          const list: RemoteSession[] = sessionList.map(s => ({ ...s }));
+          applySessionSnapshot(list);
           const currentId = selectedRef.current;
           // An empty session list is a transient store failure, not a deletion
           // signal (audit 05 L8): a single deleted session leaves the others in
@@ -722,9 +522,25 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       // reconcileAll (reconnect recovery) must keep working across a client
       // replacement. Its deps read the live clientRef on every call.
       await client.open();
-      await Promise.all([refreshModels(), refreshSessions(), refreshWorkspaces(), refreshSettings()]);
+      await Promise.all([
+        refreshModels(),
+        refreshSessions(),
+        refreshWorkspaces(),
+        refreshSettings(),
+      ]);
     },
-    [closeConversation, handleEvent, recordError, reconcileSession, refreshModels, refreshSessions, refreshWorkspaces, refreshSettings],
+    [
+      applySessionSnapshot,
+      closeConversation,
+      handleEvent,
+      recordError,
+      reconcileSession,
+      refreshModels,
+      refreshSessions,
+      refreshWorkspaces,
+      refreshSettings,
+      setWorkspaces,
+    ],
   );
 
   useEffect(() => {
@@ -771,7 +587,6 @@ export function RemoteProvider({ children }: PropsWithChildren) {
 
   const pair = useCallback(
     async (code: string) => {
-      setBusy(true);
       setPhase("claiming");
       setError(null);
       try {
@@ -781,8 +596,6 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         setError(nextError instanceof Error ? nextError.message : String(nextError));
         setPhase("unpaired");
         throw nextError;
-      } finally {
-        setBusy(false);
       }
     },
     [connect],
@@ -794,7 +607,6 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       setPhase("unpaired");
       return;
     }
-    setBusy(true);
     try {
       await connect(stored);
     } catch (nextError) {
@@ -812,57 +624,46 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         // surface the error but let the connection phase keep driving.
         setError(message);
       }
-    } finally {
-      setBusy(false);
     }
   }, [connect, credentials]);
 
   const unpair = useCallback(async () => {
     const current = credentials;
-    setBusy(true);
-    try {
-      // Local deregistration — ALWAYS succeeds (M7). Even an offline unpair
-      // must free the device; only the server-side revoke is best-effort.
-      credentialsRef.current = null;
-      await clientRef.current?.close();
-      clientRef.current = null;
-      engineRefCleanupRef.current?.();
-      engineRefCleanupRef.current = null;
-      syncEngineRef.current?.clear();
-      if (current) {
-        try {
-          await serverRevoke(current);
-        } catch {
-          // Offline / token endpoint unreachable — queue the revoke for the
-          // next launch rather than blocking the local unpair.
-          await savePendingRevoke({
-            pairId: current.pairId,
-            deviceId: current.deviceId,
-            seed: current.seed,
-            refreshToken: current.refreshToken,
-            tokenUrl: current.tokenUrl,
-          });
-        }
+    // Local deregistration — ALWAYS succeeds (M7). Even an offline unpair
+    // must free the device; only the server-side revoke is best-effort.
+    credentialsRef.current = null;
+    await clientRef.current?.close();
+    clientRef.current = null;
+    engineRefCleanupRef.current?.();
+    engineRefCleanupRef.current = null;
+    syncEngineRef.current?.clear();
+    if (current) {
+      try {
+        await serverRevoke(current);
+      } catch {
+        // Offline / token endpoint unreachable — queue the revoke for the
+        // next launch rather than blocking the local unpair.
+        await savePendingRevoke({
+          pairId: current.pairId,
+          deviceId: current.deviceId,
+          seed: current.seed,
+          refreshToken: current.refreshToken,
+          tokenUrl: current.tokenUrl,
+        });
       }
-      await clearCredentials();
-      setCredentials(null);
-      setPresence(null);
-      setSessions([]);
-      setWorkspaces([]);
-      setSelectedSessionId("");
-      setDraft(false);
-      setTimelines({});
-      cursorsRef.current = {};
-      streamingRef.current = {};
-      setTitleOverrides({});
-      titleOverridesRef.current = {};
-      setPhase("unpaired");
-      setError(null);
-    } finally {
-      setBusy(false);
     }
-  }, [credentials]);
-
+    await clearCredentials();
+    setCredentials(null);
+    setPresence(null);
+    resetCatalog();
+    setSelectedSessionId("");
+    setDraft(false);
+    setTimelines({});
+    cursorsRef.current = {};
+    streamingRef.current = {};
+    setPhase("unpaired");
+    setError(null);
+  }, [credentials, resetCatalog]);
 
   useEffect(() => {
     hydrateAttachmentsRef.current = async sessionId => {
@@ -888,7 +689,12 @@ export function RemoteProvider({ children }: PropsWithChildren) {
 
   useEffect(() => {
     recoverRef.current = async (sessionId?: string) => {
-      await Promise.all([refreshModels(), refreshSessions(), refreshWorkspaces(), refreshSettings()]);
+      await Promise.all([
+        refreshModels(),
+        refreshSessions(),
+        refreshWorkspaces(),
+        refreshSettings(),
+      ]);
       reconcileSession(sessionId, "reconnect");
     };
   }, [reconcileSession, refreshModels, refreshSessions, refreshWorkspaces, refreshSettings]);
@@ -897,7 +703,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     async (sessionId: string) => {
       const client = clientRef.current;
       if (!client) return;
-      setBusy(true);
+      setOpeningSession(true);
       conversationEpochRef.current += 1;
       setSelectedSessionId(sessionId);
       selectedRef.current = sessionId;
@@ -926,7 +732,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         // not banner-worthy.
         recordError(nextError);
       } finally {
-        setBusy(false);
+        setOpeningSession(false);
       }
       // Reconcile regardless of the state read: a desktop still warming after a
       // restart fails get_state, but the history rebuild must not be skipped —
@@ -937,7 +743,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       // whose user_message payload deliberately omits attachments.
       void hydrateAttachmentsRef.current(sessionId);
     },
-    [hydrateAttachmentsRef, models, recordError],
+    [hydrateAttachmentsRef, models, recordError, setUnreadSessions],
   );
 
   const newConversation = useCallback(
@@ -973,7 +779,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       // Nothing to send is a no-op, not an error — the composer guards this too.
       if (!text.trim() && attachments.length === 0) return;
       if (!client) throw new Error("not_connected");
-      if (busy) throw new Error("send_busy");
+      if (sending) throw new Error("send_busy");
       if (attachments.length > 0 && !fileTransferSupported) {
         throw new Error("attachment_unsupported_desktop");
       }
@@ -995,7 +801,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       // mirror so the check reflects the latest lane snapshot even before the
       // subscriber re-renders.
       if (streamingRef.current[targetSessionId] ?? false) throw new Error("send_streaming");
-      setBusy(true);
+      setSending(true);
       try {
         const uploaded = await uploadAttachments(client, attachments, onUploadProgress);
         // The optimistic bubble is a lane instruction (append to the current
@@ -1086,11 +892,11 @@ export function RemoteProvider({ children }: PropsWithChildren) {
           }
         }
       } finally {
-        setBusy(false);
+        setSending(false);
       }
     },
     [
-      busy,
+      sending,
       draft,
       draftMode,
       draftWorkspaceId,
@@ -1162,15 +968,18 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     }
   }, []);
 
-  const setApprovalTier = useCallback(async (tier: string) => {
-    const client = clientRef.current;
-    if (!client) throw new Error("not_connected");
-    const data = await client.request<{ approvalTier: string }>(
-      { type: "set_approval_tier", tier },
-      "list",
-    );
-    setApprovalTierState(data.data.approvalTier);
-  }, []);
+  const setApprovalTier = useCallback(
+    async (tier: string) => {
+      const client = clientRef.current;
+      if (!client) throw new Error("not_connected");
+      const data = await client.request<{ approvalTier: string }>(
+        { type: "set_approval_tier", tier },
+        "list",
+      );
+      setApprovalTierState(data.data.approvalTier);
+    },
+    [setApprovalTierState],
+  );
 
   const continueRun = useCallback(async (sessionId: string, runId: string) => {
     const client = clientRef.current;
@@ -1178,48 +987,13 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     await client.request({ type: "continue_run", sessionId, runId }, sessionId);
   }, []);
 
-  const rename = useCallback(async (sessionId: string, name: string) => {
-    const client = clientRef.current;
-    if (!client || !sessionId || !name.trim()) return;
-    const trimmed = name.trim();
-    await client.request({ type: "set_session_name", sessionId, name: trimmed }, sessionId);
-    setTitleOverrides(prev => ({ ...prev, [sessionId]: trimmed }));
-    setSessions(current =>
-      current.map(session =>
-        session.sessionId === sessionId ? { ...session, title: trimmed } : session,
-      ),
-    );
-  }, []);
-
   const deleteSession = useCallback(
     async (sessionId: string, threadId: string) => {
-      const client = clientRef.current;
-      if (!client || !sessionId || !threadId) return;
-      await client.request({ type: "delete_session", sessionId, threadId }, sessionId);
-      setSessions(current => current.filter(session => session.sessionId !== sessionId));
-      if (selectedRef.current === sessionId) closeConversation();
+      if (await removeSession(sessionId, threadId)) {
+        closeConversation();
+      }
     },
-    [closeConversation],
-  );
-
-  const setSessionPinned = useCallback(
-    async (sessionId: string, threadId: string, pinned: boolean) => {
-      const client = clientRef.current;
-      if (!client || !sessionId || !threadId) return;
-      await client.request(
-        { type: "set_session_pinned", sessionId, threadId, pinned },
-        sessionId,
-      );
-      // Optimistic local reorder: pinned sessions stay on top, everything else
-      // keeps the desktop's recency order. The pushed snapshot converges on the
-      // same layout (the desktop sorts by `pinned DESC, last_message_at DESC`).
-      setSessions(current =>
-        sortPinnedFirst(current.map(session =>
-          session.sessionId === sessionId ? { ...session, pinned } : session,
-        )),
-      );
-    },
-    [],
+    [closeConversation, removeSession],
   );
 
   const decideApproval = useCallback(async (id: string, decision: "approved" | "rejected") => {
@@ -1235,7 +1009,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       },
       sessionId,
     );
-    syncEngineRef.current?.mutate(sessionId, timeline => markApprovalDecision(timeline, id, decision));
+    syncEngineRef.current?.mutate(sessionId, timeline =>
+      markApprovalDecision(timeline, id, decision),
+    );
   }, []);
 
   const desktopOnline = useMemo(() => {
@@ -1245,9 +1021,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     // Fast death detection: the bridge beats once per second, so a local
     // receipt gap flags a dead desktop within ~25s — well before the
     // skew-tolerant 60s staleness window would flip the badge.
-    return (
-      next.online && clock - lastPresenceReceiptRef.current < PRESENCE_RECEIPT_STALE_MS
-    );
+    return next.online && clock - lastPresenceReceiptRef.current < PRESENCE_RECEIPT_STALE_MS;
   }, [clock, phase, presence]);
   // The selected conversation's timeline — derived from the per-session cache
   // so ChatScreen reads it exactly as before. An empty draft (no session yet)
@@ -1288,7 +1062,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       thinkingLevel,
       approvalTier,
       sandboxAvailable,
-      busy,
+      busy: sending || openingSession,
       fileTransferSupported,
       capabilities,
       pair,
@@ -1316,7 +1090,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     }),
     [
       abort,
-      busy,
+      openingSession,
+      sending,
       capabilities,
       fileTransferSupported,
       credentials,

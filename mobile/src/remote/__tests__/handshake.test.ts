@@ -1,11 +1,6 @@
 import { createUser } from "nkeys.js";
-import {
-  decodeBase64Url,
-  encodeBase64Url,
-  handshakeTranscript,
-  type HandshakeChallenge,
-  verifyDesktopChallenge,
-} from "../handshake";
+import { handshakeTranscript, type HandshakeChallenge, verifyDesktopChallenge } from "../handshake";
+import { decodeBase64Url, encodeBase64Url } from "../codec";
 
 function signedChallenge(): HandshakeChallenge {
   const desktop = createUser();

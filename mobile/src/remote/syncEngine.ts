@@ -74,13 +74,7 @@ export interface SyncDeps {
 }
 
 export type ReconcileReason =
-  | "gap"
-  | "prefix"
-  | "truncated"
-  | "snapshot-flip"
-  | "open"
-  | "reconnect"
-  | "resend";
+  "gap" | "prefix" | "truncated" | "snapshot-flip" | "open" | "reconnect" | "resend";
 
 /** A committed timeline + its cursor, delivered to subscribers. */
 export interface Commit {
@@ -92,9 +86,7 @@ export interface Commit {
 /** A synchronous timeline mutation (approval decision, optimistic bubble…). */
 type Mutator = (timeline: TimelineState) => TimelineState;
 
-type Op =
-  | { kind: "event"; event: StreamEvent }
-  | { kind: "mutate"; apply: Mutator };
+type Op = { kind: "event"; event: StreamEvent } | { kind: "mutate"; apply: Mutator };
 
 interface ReconcileRequest {
   reason: ReconcileReason;
@@ -238,7 +230,7 @@ export class SyncEngine {
 
       const full = this.isFullReplay(lane, targetRunId, request);
       if (full) {
-        await this.fullReconcile(lane, activeRunId, targetRunId);
+        await this.fullReconcile(lane, targetRunId);
       } else {
         await this.tailReconcile(lane, targetRunId);
       }
@@ -254,13 +246,9 @@ export class SyncEngine {
    * the run's prefix is not provably complete (mid-run join), when the run was
    * replaced (run_snapshot), or on a forced full reason (prefix / resend).
    */
-  private async fullReconcile(
-    lane: SessionLane,
-    activeRunId: string,
-    targetRunId: string,
-  ): Promise<void> {
+  private async fullReconcile(lane: SessionLane, targetRunId: string): Promise<void> {
     const history = await this.deps.requestHistory(lane.sessionId);
-    let base = mergeLiveInto(history, lane.timeline, activeRunId);
+    let base = mergeLiveInto(history, lane.timeline);
     if (targetRunId) {
       base = stripRunItems(base, targetRunId);
       base = await this.replayInto(lane, base, targetRunId, -1);
@@ -305,8 +293,7 @@ export class SyncEngine {
       // permanent run indicator.
       events = events.map(ev => (ev.runId ? ev : { ...ev, runId }));
       const cursorIdx =
-        result.projection.cursor ??
-        events.reduce((max, ev) => Math.max(max, ev.idx ?? -1), -1);
+        result.projection.cursor ?? events.reduce((max, ev) => Math.max(max, ev.idx ?? -1), -1);
       advanceCursor(lane.cursor, runId, cursorIdx, true);
       const stripped = stripRunItems(base, runId);
       const projected = timelineFromProjection(events);
@@ -428,11 +415,7 @@ export class SyncEngine {
  * the active run (optimistic bubbles, notices, approval cards) so they survive
  * the rebuild. Live user messages that duplicate a history prompt are dropped.
  */
-function mergeLiveInto(
-  history: TimelineState,
-  live: TimelineState | null,
-  _activeRunId: string,
-): TimelineState {
+function mergeLiveInto(history: TimelineState, live: TimelineState | null): TimelineState {
   if (!live) return { ...history, streaming: history.streaming };
   const historyIds = new Set(history.items.map(item => item.id));
   const historyUserTexts = new Set(
@@ -446,11 +429,7 @@ function mergeLiveInto(
   // (the replay rebuilds them); user bubbles always survive.
   const folded = live.items.filter(item => {
     if (historyIds.has(item.id)) return false;
-    if (
-      item.kind === "message" &&
-      item.role === "user" &&
-      historyUserTexts.has(item.text)
-    ) {
+    if (item.kind === "message" && item.role === "user" && historyUserTexts.has(item.text)) {
       return false;
     }
     return true;

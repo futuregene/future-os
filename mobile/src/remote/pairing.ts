@@ -3,7 +3,7 @@ import { Platform } from "react-native";
 import { createUser, fromSeed } from "nkeys.js";
 import { isExpectedClaimUrl, natsWsUrlScheme } from "../config/environment";
 import { decodePairingCode, jwtExpiry, parsePairingInvitation, randomId } from "./codec";
-import { loadDeviceId, saveDeviceId } from "./storage";
+import { loadDeviceId, saveDeviceId, type PendingRevoke } from "./storage";
 import type { RemoteCredentials } from "./types";
 
 interface ClaimResponse {
@@ -129,9 +129,7 @@ export async function ensureFreshCredentials(
   // rejects such a token outright; looping a refresh here would hammer the
   // token endpoint on every (re)connect. Fail loudly instead.
   if (expiry === null) throw new Error("invalid_jwt");
-  return expiry * 1000 < Date.now() + 60_000
-    ? refreshCredentials(credentials)
-    : credentials;
+  return expiry * 1000 < Date.now() + 60_000 ? refreshCredentials(credentials) : credentials;
 }
 
 /**
@@ -159,4 +157,24 @@ export async function serverRevoke(credentials: RemoteCredentials): Promise<void
   if (!response.ok && response.status !== 401 && response.status !== 404) {
     await responseJson(response);
   }
+}
+
+/**
+ * Fire the queued server-side revoke (M7). Best-effort: a failure is dropped —
+ * the queue entry stays in storage and retries on the next launch. A success
+ * (or a terminal 401/404, which serverRevoke treats as success) drains the
+ * queue via the caller's clearPendingRevoke.
+ */
+export async function attemptPendingRevoke(pending: PendingRevoke): Promise<void> {
+  await serverRevoke({
+    pairId: pending.pairId,
+    deviceId: pending.deviceId,
+    seed: pending.seed,
+    userJwt: "",
+    refreshToken: pending.refreshToken,
+    natsWsUrl: "",
+    tokenUrl: pending.tokenUrl,
+    expectedDesktopId: "",
+    expectedDesktopPublicKey: "",
+  });
 }
