@@ -14,6 +14,7 @@ function available(overrides: Partial<AvailableSkill> = {}): AvailableSkill {
     nameZh: "",
     descriptionZh: "",
     category: "core",
+    categoryZh: "",
     latestVersion: "1.0.0",
     ...overrides,
   };

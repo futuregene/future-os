@@ -2,6 +2,7 @@ import type { AvailableSkill, InstalledSkill } from "../../integrations/skills/s
 import { describe, expect, it } from "vitest";
 import {
   allCategoriesValue,
+  categoryOptions,
   matchesAvailableSkill,
   matchesInstalledSkill,
   matchesQuery,
@@ -21,6 +22,7 @@ function available(overrides: Partial<AvailableSkill> = {}): AvailableSkill {
     nameZh: "中文名",
     descriptionZh: "中文描述",
     category: "core",
+    categoryZh: "",
     latestVersion: "1.0.0",
     ...overrides,
   };
@@ -80,6 +82,12 @@ describe("matchesInstalledSkill", () => {
     expect(matchesInstalledSkill(skill, { category: allCategoriesValue, query: "文献" }, cat)).toBe(true);
     expect(matchesInstalledSkill(skill, { category: allCategoriesValue, query: "综合" }, cat)).toBe(true);
   });
+
+  it("matches the catalogue's Chinese category", () => {
+    const skill = installed({ id: "lit" });
+    const cat = available({ id: "lit", category: "wet-lab", categoryZh: "湿实验" });
+    expect(matchesInstalledSkill(skill, { category: allCategoriesValue, query: "湿实验" }, cat)).toBe(true);
+  });
 });
 
 describe("matchesAvailableSkill", () => {
@@ -94,5 +102,36 @@ describe("matchesAvailableSkill", () => {
     const skill = available({ nameZh: "深度研究", descriptionZh: "多源信息综合" });
     expect(matchesAvailableSkill(skill, { category: allCategoriesValue, query: "深度" })).toBe(true);
     expect(matchesAvailableSkill(skill, { category: allCategoriesValue, query: "综合" })).toBe(true);
+  });
+
+  it("matches the Chinese category", () => {
+    const skill = available({ category: "wet-lab", categoryZh: "湿实验" });
+    expect(matchesAvailableSkill(skill, { category: allCategoriesValue, query: "湿实验" })).toBe(true);
+  });
+});
+
+describe("categoryOptions", () => {
+  it("dedupes, drops empties, and sorts by value", () => {
+    const skills = [
+      available({ category: "wet-lab", categoryZh: "湿实验" }),
+      available({ id: "b", category: "core" }),
+      available({ id: "c", category: "" }),
+      available({ id: "d", category: "wet-lab", categoryZh: "别的" }),
+    ];
+    expect(categoryOptions(skills, false)).toEqual([
+      { value: "core", label: "core" },
+      { value: "wet-lab", label: "wet-lab" },
+    ]);
+  });
+
+  it("uses the Chinese category as label when requested, falling back to the value", () => {
+    const skills = [
+      available({ category: "wet-lab", categoryZh: "湿实验" }),
+      available({ id: "b", category: "core", categoryZh: "" }),
+    ];
+    expect(categoryOptions(skills, true)).toEqual([
+      { value: "core", label: "core" },
+      { value: "wet-lab", label: "湿实验" },
+    ]);
   });
 });

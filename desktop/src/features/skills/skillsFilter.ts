@@ -28,6 +28,7 @@ export function matchesInstalledSkill(skill: InstalledSkill, filters: SkillFilte
     catalogue?.description,
     catalogue?.descriptionZh,
     catalogue?.category,
+    catalogue?.categoryZh,
   ]);
 }
 
@@ -42,6 +43,7 @@ export function matchesAvailableSkill(skill: AvailableSkill, filters: SkillFilte
     skill.description,
     skill.descriptionZh,
     skill.category,
+    skill.categoryZh,
     skill.latestVersion,
   ]);
 }
@@ -64,4 +66,26 @@ export function normalizeSearchText(value: string | null | undefined) {
 
 export function uniqueSorted(values: Array<string | null | undefined>) {
   return Array.from(new Set(values.filter((value): value is string => Boolean(value)))).sort((a, b) => a.localeCompare(b));
+}
+
+/** A category filter option: canonical `category` value + locale-aware label. */
+export interface CategoryOption {
+  value: string;
+  label: string;
+}
+
+/**
+ * Distinct category options sorted by value, empties excluded. With
+ * `useChinese` the label is the catalogue's Chinese category when present,
+ * falling back to the canonical value.
+ */
+export function categoryOptions(skills: AvailableSkill[], useChinese: boolean): CategoryOption[] {
+  const labels = new Map<string, string>();
+  for (const skill of skills) {
+    if (!skill.category || labels.has(skill.category))
+      continue;
+    labels.set(skill.category, useChinese && skill.categoryZh ? skill.categoryZh : skill.category);
+  }
+  return Array.from(labels, ([value, label]) => ({ value, label }))
+    .sort((a, b) => a.value.localeCompare(b.value));
 }

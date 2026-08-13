@@ -31,10 +31,10 @@ fn builtin_catalog_has_15_records_with_future_loop_statuses() {
         catalog.get("periodic_report").unwrap().status,
         "active-preview"
     );
-    // The 15th capability is registered experimental (P3 plan).
+    // The 15th capability shipped its P2-3 rule version as active-preview.
     let pr = catalog.get("pr_review_queue").unwrap();
-    assert_eq!(pr.status, "experimental");
-    assert!(pr.is_experimental());
+    assert_eq!(pr.status, "active-preview");
+    assert!(!pr.is_experimental());
 }
 
 #[test]
@@ -127,12 +127,13 @@ fn unknown_origin_and_duplicate_provider_fail_closed() {
 fn experimental_capability_commands_are_gated() {
     let catalog = CapabilityCatalog::with_builtin();
     // Hidden by default.
-    assert!(catalog.commands_for("pr_review_queue", false).is_empty());
     assert!(catalog.commands_for("auto_research", false).is_empty());
+    assert!(catalog.commands_for("material_lifecycle", false).is_empty());
     // Visible with the include flag (G-24 gate).
-    assert_eq!(catalog.commands_for("pr_review_queue", true).len(), 1);
+    assert_eq!(catalog.commands_for("material_lifecycle", true).len(), 1);
     assert_eq!(catalog.commands_for("auto_research", true).len(), 1);
-    // Stable capability hidden → active-preview visible.
+    // pr_review_queue shipped its P2-3 rule version → active-preview visible.
+    assert_eq!(catalog.commands_for("pr_review_queue", false).len(), 1);
     assert_eq!(catalog.commands_for("issue_fix", false).len(), 1);
 }
 
