@@ -719,21 +719,23 @@ async fn handle_command(
         }
         "get_settings" => {
             match crate::store::get_app_settings() {
-                Ok(settings) => reply(
-                    client,
-                    &msg,
-                    true,
-                    json!({
-                        "approvalTier": settings.approval_tier,
-                        // The macOS Seatbelt sandbox tier only exists on macOS;
-                        // the phone gates its "sandbox" option on this flag so a
-                        // Windows/Linux user never picks a tier that silently
-                        // provides no isolation.
-                        "sandboxAvailable": cfg!(target_os = "macos"),
-                    }),
-                    None,
-                )
-                .await,
+                Ok(settings) => {
+                    reply(
+                        client,
+                        &msg,
+                        true,
+                        json!({
+                            "approvalTier": settings.approval_tier,
+                            // The macOS Seatbelt sandbox tier only exists on macOS;
+                            // the phone gates its "sandbox" option on this flag so a
+                            // Windows/Linux user never picks a tier that silently
+                            // provides no isolation.
+                            "sandboxAvailable": cfg!(target_os = "macos"),
+                        }),
+                        None,
+                    )
+                    .await
+                }
                 Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
             }
         }
@@ -746,14 +748,16 @@ async fn handle_command(
                 approval_tier: Some(cmd.tier.clone()),
                 ..Default::default()
             }) {
-                Ok(settings) => reply(
-                    client,
-                    &msg,
-                    true,
-                    json!({ "approvalTier": settings.approval_tier }),
-                    None,
-                )
-                .await,
+                Ok(settings) => {
+                    reply(
+                        client,
+                        &msg,
+                        true,
+                        json!({ "approvalTier": settings.approval_tier }),
+                        None,
+                    )
+                    .await
+                }
                 Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
             }
         }
