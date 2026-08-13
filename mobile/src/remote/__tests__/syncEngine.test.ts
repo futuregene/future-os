@@ -32,7 +32,9 @@ class Journal {
     this.events.push(event);
   }
   since(run: string, from: number): StreamEvent[] {
-    return this.events.filter(e => e.runId === run && e.idx != null && from === -1 ? true : (e.idx ?? -1) > from);
+    return this.events.filter(e =>
+      e.runId === run && e.idx != null && from === -1 ? true : (e.idx ?? -1) > from,
+    );
   }
 }
 
@@ -42,6 +44,8 @@ class Harness {
   history: ReturnType<typeof emptyTimeline> = emptyTimeline();
   /** Optional folded projection; when set, fetchReplay returns it instead. */
   projection: StreamEvent[] | null = null;
+  /** Omit the folded projection's explicit cursor (derive it from event idx). */
+  omitProjectionCursor = false;
   /** Emit replay events with snake_case run_id (legacy desktop wire). */
   snakeCaseReplay = false;
   timeline: Record<string, ReturnType<typeof emptyTimeline>> = {};
@@ -67,9 +71,12 @@ class Harness {
           // Folded projections carry NO run_id per event (whole-run coalesced
           // deltas) — exactly the wire shape that reproduced the ghost item.
           const wire = this.projection.map(e => ({ type: e.type, data: e.data, idx: e.idx }));
+          const projection = this.omitProjectionCursor
+            ? { run_id: run, events: wire }
+            : { run_id: run, cursor: wire.length - 1, events: wire };
           const result: ReplayResult = {
             events: [],
-            projection: { run_id: run, cursor: wire.length - 1, events: wire },
+            projection,
           };
           return result;
         }
@@ -242,27 +249,23 @@ describe("SyncEngine", () => {
     await h.settle();
 
     expect(h.textOf("s1")).toContain("streamed");
-    expect(h.timelineOf("s1").items.some(item => item.kind === "notice" && item.text === "sent")).toBe(
-      true,
-    );
+    expect(
+      h.timelineOf("s1").items.some(item => item.kind === "notice" && item.text === "sent"),
+    ).toBe(true);
   });
 
   test("projection replay without run_id does not leave a streaming ghost (regression)", async () => {
     const run = nextRunId();
     const h = new Harness(run);
     // Desktop folds the settled run into a projection whose events omit run_id.
-    h.projection = [
-      agentStart(run, 0),
-      textChunk(run, 1, "folded reply"),
-      agentEnd(run, 2),
-    ];
+    h.projection = [agentStart(run, 0), textChunk(run, 1, "folded reply"), agentEnd(run, 2)];
     h.engine.reconcile("s1", "resend", run);
     await h.settle();
     expect(h.textOf("s1")).toBe("folded reply");
     expect(h.timelineOf("s1").streaming).toBe(false);
-    const assistantItems = h.timelineOf("s1").items.filter(
-      item => item.kind === "message" && item.role === "assistant",
-    );
+    const assistantItems = h
+      .timelineOf("s1")
+      .items.filter(item => item.kind === "message" && item.role === "assistant");
     expect(assistantItems).toHaveLength(1);
     expect(assistantItems[0]).toMatchObject({ runId: run, streaming: false });
   });
@@ -320,10 +323,84 @@ describe("SyncEngine", () => {
     h.engine.event("s1", user);
     await h.settle();
 
-    const userItems = h.timelineOf("s1").items.filter(
-      item => item.kind === "message" && item.role === "user",
-    );
+    const userItems = h
+      .timelineOf("s1")
+      .items.filter(item => item.kind === "message" && item.role === "user");
     expect(userItems).toHaveLength(1);
     expect(userItems[0]).toMatchObject({ text: "hi there" });
+  });
+
+  test("query accessors return empty defaults before a lane establishes", () => {
+    const h = new Harness();
+    expect(h.engine.timelineFor("nope")).toBeNull();
+    expect(h.engine.cursorFor("nope").size).toBe(0);
+    expect(h.engine.streamingFor("nope")).toBe(false);
+    h.engine.clear();
+    expect(h.engine.timelineFor("nope")).toBeNull();
+  });
+
+  test("untracked events (no runId) apply directly", async () => {
+    const h = new Harness();
+    h.engine.event("s1", { type: "user_message", data: JSON.stringify({ text: "hi" }) });
+    await h.settle();
+    expect(h.textOf("s1")).toBe("hi");
+  });
+
+  test("a run settling in a batch triggers an internal snapshot-flip reconcile (M11)", async () => {
+    const run = nextRunId();
+    const h = new Harness(run);
+    h.journal.add(agentStart(run, 0));
+    h.journal.add(textChunk(run, 1, "reply"));
+
+    h.engine.event("s1", agentStart(run, 0));
+    h.engine.event("s1", textChunk(run, 1, "reply"));
+    await h.settle();
+    expect(h.timelineOf("s1").streaming).toBe(true);
+
+    h.journal.add(agentEnd(run, 2));
+    h.engine.event("s1", agentEnd(run, 2));
+    await h.settle();
+    expect(h.timelineOf("s1").streaming).toBe(false);
+    expect(h.textOf("s1")).toBe("reply");
+  });
+
+  test("projection replay without an explicit cursor derives it from event idx", async () => {
+    const run = nextRunId();
+    const h = new Harness(run);
+    h.omitProjectionCursor = true;
+    h.projection = [agentStart(run, 0), textChunk(run, 1, "folded"), agentEnd(run, 2)];
+    h.engine.reconcile("s1", "resend", run);
+    await h.settle();
+    expect(h.textOf("s1")).toBe("folded");
+    expect(h.timelineOf("s1").streaming).toBe(false);
+  });
+
+  test("full reconcile drops a live user mirror duplicating a durable prompt", async () => {
+    const h = new Harness();
+    h.history = {
+      ...emptyTimeline(),
+      items: [
+        { id: "h1", kind: "message", role: "user", text: "Hello" },
+        { id: "h2", kind: "message", role: "assistant", text: "Hi" },
+      ],
+    };
+    h.engine.reconcile("s1", "open");
+    await h.settle();
+    expect(h.timelineOf("s1").items.map(i => i.id)).toEqual(["h1", "h2"]);
+
+    h.engine.mutate("s1", tl => ({
+      ...tl,
+      items: [
+        ...tl.items,
+        { id: "local-dup", kind: "message", role: "user", text: "Hello" },
+        { id: "notice-1", kind: "notice", tone: "neutral", text: "kept" },
+      ],
+    }));
+    await h.settle();
+
+    h.engine.reconcile("s1", "resend");
+    await h.settle();
+
+    expect(h.timelineOf("s1").items.map(i => i.id)).toEqual(["h1", "h2", "notice-1"]);
   });
 });

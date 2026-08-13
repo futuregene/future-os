@@ -14,11 +14,15 @@ jest.mock("expo-file-system", () => {
   // Cache-paths (temporary camera/cache files) read as pruned; keep real
   // picker URIs so attachment round-trips exercise the existence filter.
   const mockCachePrefix = "file:///cache/";
+  // Sentinel that makes the File constructor throw, simulating a native
+  // File API that is unavailable (e.g. some test/platform environments).
+  const mockThrowPrefix = "file:///throws/";
   return {
     __esModule: true,
     File: class {
       uri: string;
       constructor(uri: string) {
+        if (uri.startsWith(mockThrowPrefix)) throw new Error("File API unavailable");
         this.uri = uri;
       }
       get exists() {
@@ -91,6 +95,17 @@ describe("session draft storage", () => {
     );
     const draft = await loadSessionDraft("s1");
     expect(draft?.attachments).toEqual([live]);
+  });
+
+  test("attachments are kept when the File API is unavailable to verify them", async () => {
+    // A native File API that throws must not silently drop a user's pending
+    // work — the attachment is kept rather than becoming a dead tap target.
+    const unverifiable = { ...attachment, localUri: "file:///throws/photo.jpg" };
+    mockedAsync.getItem.mockResolvedValueOnce(
+      JSON.stringify({ version: 1, text: "x", attachments: [unverifiable] }),
+    );
+    const draft = await loadSessionDraft("s1");
+    expect(draft?.attachments).toEqual([unverifiable]);
   });
 
   test("clearSessionDraft removes the stored slot", async () => {
