@@ -636,4 +636,114 @@ mod tests {
 
         let _ = fs::remove_dir_all(&base);
     }
+
+    #[test]
+    fn try_capture_and_materialize_skip_non_applicable_threads() {
+        let _lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let (base, thread, run) = fixture("try-skip");
+
+        // Chat thread → resolve None → the try_* helpers return Ok/empty.
+        let chat = store::create_thread(CreateThreadInput {
+            mode: "chat".into(),
+            title: Some("chat".into()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: None,
+        })
+        .unwrap();
+        let chat_run = store::create_run(CreateRunInput {
+            id: None,
+            thread_id: chat.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .unwrap();
+        super::try_capture_before(&chat.id, &chat_run.id).unwrap();
+        assert!(super::try_capture_after(&chat.id, &chat_run.id).unwrap().is_empty());
+        super::try_materialize_changeset(&chat.id, &chat_run.id, vec![]).unwrap();
+
+        // Workspace thread with no before snapshot → after is a no-op and
+        // materialize is a no-op.
+        assert!(super::try_capture_after(&thread.id, &run.id).unwrap().is_empty());
+        super::try_materialize_changeset(&thread.id, &run.id, vec![]).unwrap();
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn try_materialize_paths_with_failed_or_commitless_snapshots() {
+        let _lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let (base, thread, run) = fixture("materialize-paths");
+        let ws_id = store::get_thread(&thread.id).unwrap().unwrap().workspace_id;
+
+        let snap = |phase: &str, status: &str, commit: Option<&str>| {
+            store::create_review_snapshot(store::CreateReviewSnapshotInput {
+                workspace_id: ws_id.clone(),
+                thread_id: thread.id.clone(),
+                run_id: run.id.clone(),
+                phase: phase.to_string(),
+                commit_id: commit.map(str::to_string),
+                tree_id: None,
+                status: status.to_string(),
+                file_count: 1,
+                total_bytes: 1,
+                ignored_count: 0,
+                omitted_count: 0,
+                error_message: None,
+            })
+            .unwrap()
+        };
+
+        // Failed before snapshot → both_ok false → materialized None.
+        snap("before", "failed", None);
+        snap("after", "complete", None);
+        super::try_materialize_changeset(&thread.id, &run.id, vec![]).unwrap();
+
+        // Complete before with a commit, complete after WITHOUT a commit →
+        // the after-commit match falls to None.
+        snap("before", "complete", Some("fake-before-commit"));
+        snap("after", "complete", None);
+        super::try_materialize_changeset(&thread.id, &run.id, vec![]).unwrap();
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn retry_fails_when_commits_are_missing_from_the_repo() {
+        let _lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let (base, thread, run) = fixture("retry-bad-commits");
+        let ws_id = store::get_thread(&thread.id).unwrap().unwrap().workspace_id;
+
+        // Snapshots with commit ids that do not exist in the shadow repo.
+        for (phase, commit) in [("before", "deadbeef"), ("after", "cafebabe")] {
+            store::create_review_snapshot(store::CreateReviewSnapshotInput {
+                workspace_id: ws_id.clone(),
+                thread_id: thread.id.clone(),
+                run_id: run.id.clone(),
+                phase: phase.to_string(),
+                commit_id: Some(commit.to_string()),
+                tree_id: None,
+                status: "complete".to_string(),
+                file_count: 1,
+                total_bytes: 1,
+                ignored_count: 0,
+                omitted_count: 0,
+                error_message: None,
+            })
+            .unwrap();
+        }
+
+        let err = super::retry(&run.id).unwrap_err();
+        assert!(!err.to_string().is_empty());
+
+        let _ = fs::remove_dir_all(&base);
+    }
 }
