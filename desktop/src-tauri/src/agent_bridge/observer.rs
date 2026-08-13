@@ -1979,6 +1979,55 @@ mod tests {
         handle.await.expect("observer ends");
     }
 
+    /// The attach race whose plain-subscribe fallback ALSO fails retries.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_observer_attach_race_with_failed_fallback_retries() {
+        let home = TestHome::new("observer-attach-plain-fail");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-apf"));
+        let shared = Arc::new(ObserverShared::new(thread.id.clone()));
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+
+        mock.push_data("get_session_events_since", serde_json::json!({"events": []}));
+        mock.push_data("get_state", serde_json::json!({"activeRun": {"runId": "run-apf"}}));
+        mock.push_stream(StreamScript::AttachError(Code::FailedPrecondition, "run ended"));
+        mock.push_plain_stream(StreamScript::AttachError(Code::Internal, "down"));
+
+        let sid = "sess-apf".to_string();
+        let handle = tokio::spawn(async move {
+            run_observer(&sid, &shared, cancel_rx).await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        cancel_tx.send(()).unwrap();
+        handle.await.expect("observer ends");
+    }
+
+    /// An idle session whose plain subscription also fails retries.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_observer_no_active_run_with_failed_subscribe_retries() {
+        let home = TestHome::new("observer-subscribe-fail");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-sf"));
+        let shared = Arc::new(ObserverShared::new(thread.id.clone()));
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+
+        mock.push_data("get_session_events_since", serde_json::json!({"events": []}));
+        mock.push_data("get_state", serde_json::json!({"isStreaming": false}));
+        mock.push_plain_stream(StreamScript::AttachError(Code::Internal, "down"));
+
+        let sid = "sess-sf".to_string();
+        let handle = tokio::spawn(async move {
+            run_observer(&sid, &shared, cancel_rx).await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        cancel_tx.send(()).unwrap();
+        handle.await.expect("observer ends");
+    }
+
     /// Session-level replay overlap and a negative session index both keep
     /// the session cursor stable.
     #[tokio::test]
