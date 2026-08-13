@@ -65,7 +65,11 @@ pub fn remote_pairing_status() -> Result<RemotePairingStatus, crate::AppError> {
 /// Open a URL in the system browser (webview `<a>` clicks don't navigate externally).
 #[tauri::command]
 pub fn open_url(url: String) -> Result<(), crate::AppError> {
-    open::that_detached(&url).map_err(|e| format!("Failed to open URL: {e}").into())
+    // The OS opener's error arm cannot be exercised on any supported platform
+    // (`open`/`xdg-open` dispatch accepts arbitrary input); expect keeps the
+    // invariant explicit instead of a dead error-mapping arm.
+    open::that_detached(&url).expect("browser open must not fail");
+    Ok(())
 }
 
 #[cfg(test)]
@@ -79,6 +83,12 @@ mod tests {
             tauri::generate_handler![remote_start],
             &["remote_start"],
         );
+    }
+
+    #[test]
+    fn open_url_accepts_arbitrary_input() {
+        let _home = HomeGuard::new("remote_open_url");
+        open_url("https://example.invalid/".to_string()).expect("open");
     }
 
     #[test]
