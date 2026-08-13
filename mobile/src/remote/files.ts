@@ -53,22 +53,17 @@ function imageSize(uri: string): Promise<{ width: number; height: number }> {
 }
 
 function mimeFor(name: string, fallback = "application/octet-stream"): string {
+  // Only extensions that can actually reach this helper are mapped. Image
+  // inputs that are re-encoded to JPEG (jpg/jpeg/bmp/heic/heif) always set
+  // their mime to "image/jpeg" directly, so mimeFor is never consulted for
+  // them; those cases are intentionally absent.
   switch (extension(name)) {
-    case "jpg":
-    case "jpeg":
-      return "image/jpeg";
     case "png":
       return "image/png";
     case "gif":
       return "image/gif";
     case "webp":
       return "image/webp";
-    case "bmp":
-      return "image/bmp";
-    case "heic":
-      return "image/heic";
-    case "heif":
-      return "image/heif";
     case "md":
     case "markdown":
       return "text/markdown";
@@ -192,10 +187,9 @@ async function prepareFile(
   mimeType?: string | null,
   forceJpeg = false,
 ): Promise<MobileAttachment> {
+  // Both callers (pickAttachments/takePhoto) run validateRawSelection first,
+  // which rejects empty/oversized files, so no size re-check is needed here.
   const originalSize = file.size;
-  if (originalSize <= 0 || originalSize > MAX_FILE_BYTES) {
-    throw new Error("attachment_file_too_large");
-  }
   const kind = isImage(file, mimeType) ? "image" : "file";
   if (kind === "file") {
     return {
