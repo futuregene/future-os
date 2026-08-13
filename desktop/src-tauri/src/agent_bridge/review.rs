@@ -647,6 +647,38 @@ mod tests {
         assert_eq!(changeset.source_kind, "run_snapshot");
     }
 
+    /// A sensitive file makes the after snapshot `partial`, so retry marks the
+    /// re-materialized changeset `partial` too.
+    #[test]
+    fn retry_marks_partial_completeness() {
+        let _lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let (_fx, thread, run) = fixture("retry-partial");
+        let ws_path =
+            store::get_workspace(&store::get_thread(&thread.id).unwrap().unwrap().workspace_id)
+                .unwrap()
+                .unwrap()
+                .path;
+
+        fs::write(std::path::Path::new(&ws_path).join("keep.txt"), "before\n").unwrap();
+        super::capture_before(&thread.id, &run.id);
+        fs::write(
+            std::path::Path::new(&ws_path).join("keep.txt"),
+            "before\nafter\n",
+        )
+        .unwrap();
+        // A credential file is omitted (sensitive) → after snapshot is `partial`.
+        fs::write(std::path::Path::new(&ws_path).join(".env"), "SECRET=1\n").unwrap();
+        super::capture_after(&thread.id, &run.id);
+
+        super::retry(&run.id).unwrap();
+        let changeset = store::get_run_changeset(&run.id)
+            .unwrap()
+            .expect("changeset");
+        assert_eq!(changeset.completeness, "partial");
+    }
+
     #[test]
     fn try_capture_and_materialize_skip_non_applicable_threads() {
         let _lock = crate::TEST_HOME_LOCK
@@ -753,5 +785,150 @@ mod tests {
 
         let err = super::retry(&run.id).unwrap_err();
         assert!(!err.to_string().is_empty());
+    }
+
+    /// A non-git Workspace whose volume crosses the redline is skipped before
+    /// snapshotting (§6.7): no before row, no shadow repo, no error.
+    #[test]
+    fn capture_before_skips_non_git_workspace_over_volume_redline() {
+        let _lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let (_fx, thread, run) = fixture("too-large");
+        let ws_id = store::get_thread(&thread.id).unwrap().unwrap().workspace_id;
+        let ws_path = store::get_workspace(&ws_id).unwrap().unwrap().path;
+
+        // One sparse file over the byte redline (512 MiB) — instant, no disk
+        // allocation, but `metadata().len()` reports the full logical size.
+        let big = std::path::Path::new(&ws_path).join("huge.bin");
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len(512 * 1024 * 1024 + 1)
+            .unwrap();
+
+        super::try_capture_before(&thread.id, &run.id).unwrap();
+        assert!(
+            store::get_review_snapshot(&run.id, "before")
+                .unwrap()
+                .is_none(),
+            "an over-redline workspace produces no before snapshot"
+        );
+    }
+
+    /// When the Run row disappears (raw cleanup with FK enforcement off),
+    /// capture's snapshot INSERT fails on the `run_id` FK and records a
+    /// `failed` before row.
+    #[test]
+    fn capture_fails_when_run_row_is_gone() {
+        let _lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let (_fx, thread, run) = fixture("run-gone-capture");
+
+        let conn =
+            rusqlite::Connection::open(_fx.base.join("home/.future/app/app.db")).expect("open db");
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        conn.execute("DELETE FROM runs WHERE id = ?1", [&run.id])
+            .unwrap();
+        drop(conn);
+
+        // capture_before: resolve + shadow open succeed, capture's snapshot
+        // INSERT fails on the missing run FK → record_failure + Err.
+        let err = super::try_capture_before(&thread.id, &run.id).unwrap_err();
+        assert!(!err.to_string().is_empty());
+    }
+
+    /// When the Run row disappears, materialize fails at the changeset upsert
+    /// (its INSERT references the missing run).
+    #[test]
+    fn materialize_fails_when_run_row_is_gone() {
+        let _lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let (_fx, thread, run) = fixture("run-gone-materialize");
+        let ws_id = store::get_thread(&thread.id).unwrap().unwrap().workspace_id;
+
+        for (phase, status) in [("before", "complete"), ("after", "complete")] {
+            store::create_review_snapshot(store::CreateReviewSnapshotInput {
+                workspace_id: ws_id.clone(),
+                thread_id: thread.id.clone(),
+                run_id: run.id.clone(),
+                phase: phase.to_string(),
+                commit_id: None,
+                tree_id: None,
+                status: status.to_string(),
+                file_count: 1,
+                total_bytes: 1,
+                ignored_count: 0,
+                omitted_count: 0,
+                error_message: None,
+            })
+            .unwrap();
+        }
+
+        let conn =
+            rusqlite::Connection::open(_fx.base.join("home/.future/app/app.db")).expect("open db");
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        conn.execute("DELETE FROM runs WHERE id = ?1", [&run.id])
+            .unwrap();
+        drop(conn);
+
+        // materialize: resolve + both snapshots + bare open succeed, then the
+        // changeset upsert fails on the missing run FK.
+        let err = super::try_materialize_changeset(&thread.id, &run.id, vec![]).unwrap_err();
+        assert!(!err.to_string().is_empty());
+    }
+
+    /// A `partial` before snapshot makes the changeset completeness `partial`
+    /// (before it is upserted successfully).
+    #[test]
+    fn materialize_marks_partial_completeness() {
+        let _lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let (_fx, thread, run) = fixture("partial");
+        let ws_id = store::get_thread(&thread.id).unwrap().unwrap().workspace_id;
+
+        for (phase, status) in [("before", "partial"), ("after", "complete")] {
+            store::create_review_snapshot(store::CreateReviewSnapshotInput {
+                workspace_id: ws_id.clone(),
+                thread_id: thread.id.clone(),
+                run_id: run.id.clone(),
+                phase: phase.to_string(),
+                commit_id: None,
+                tree_id: None,
+                status: status.to_string(),
+                file_count: 1,
+                total_bytes: 1,
+                ignored_count: 0,
+                omitted_count: 0,
+                error_message: None,
+            })
+            .unwrap();
+        }
+
+        super::try_materialize_changeset(&thread.id, &run.id, vec![]).unwrap();
+        let changeset = store::get_run_changeset(&run.id)
+            .unwrap()
+            .expect("changeset");
+        assert_eq!(changeset.completeness, "partial");
+    }
+
+    /// `Fixture` drops remove HOME when it was unset before the fixture was
+    /// created (the `None` restore arm).
+    #[test]
+    fn fixture_drop_removes_home_when_unset_before() {
+        let _lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let saved = std::env::var("HOME").ok();
+        std::env::remove_var("HOME");
+        {
+            let (_fx, _thread, _run) = fixture("unset-home");
+        }
+        assert!(std::env::var("HOME").is_err(), "HOME removed on drop");
+        if let Some(saved) = saved {
+            std::env::set_var("HOME", saved);
+        }
     }
 }
