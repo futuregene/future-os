@@ -171,6 +171,13 @@ export function blocksFromMarkdown(text: string): Block[] {
   return blocks;
 }
 
+// CommonMark lets the link destination be wrapped in `<...>` (models use it
+// when the target contains spaces). The hand-rolled inline parser doesn't strip
+// it the way remark does on desktop, so unwrap it here.
+function unwrapLinkTarget(href: string): string {
+  return href.length >= 2 && href.startsWith("<") && href.endsWith(">") ? href.slice(1, -1) : href;
+}
+
 function InlineMarkdown({
   text,
   onOpenFile,
@@ -179,7 +186,7 @@ function InlineMarkdown({
   onOpenFile?: (path: string) => void;
 }) {
   const parts = text.split(
-    /(!\[[^\]]+\]\([^\s)]+\)|\*\*[^*]+\*\*|~~[^~]+~~|`[^`]+`|\*[^*]+\*|\[[^\]]+\]\([^\s)]+\))/g,
+    /(!\[[^\]]+\]\((?:<[^>]*>|[^)\s]+)\)|\*\*[^*]+\*\*|~~[^~]+~~|`[^`]+`|\*[^*]+\*|\[[^\]]+\]\((?:<[^>]*>|[^)\s]+)\))/g,
   );
   return (
     <>
@@ -212,10 +219,10 @@ function InlineMarkdown({
             </Text>
           );
         }
-        const image = part.match(/^!\[([^\]]+)\]\(([^)\s]+)\)$/);
+        const image = part.match(/^!\[([^\]]+)\]\((<[^>]*>|[^)\s]+)\)$/);
         if (image) {
           const alt = image[1] ?? "";
-          const target = image[2] ?? "";
+          const target = unwrapLinkTarget(image[2] ?? "");
           const path = localFilePath(target);
           if (path && onOpenFile) {
             return (
@@ -232,9 +239,9 @@ function InlineMarkdown({
             </Text>
           );
         }
-        const link = part.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/);
+        const link = part.match(/^\[([^\]]+)\]\((<[^>]*>|[^)\s]+)\)$/);
         if (link) {
-          const target = link[2] ?? "";
+          const target = unwrapLinkTarget(link[2] ?? "");
           const path = localFilePath(target);
           return (
             <Text
