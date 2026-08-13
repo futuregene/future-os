@@ -129,6 +129,10 @@ if (-not $SkipDeps) {
     Push-Location desktop; try { Invoke-Native { npm ci } } finally { Pop-Location }
 }
 
+# The desktop's vite build resolves thread-projection via a `file:` dep; rebuild
+# it (if stale) before `tauri build` compiles the frontend.
+& "$PSScriptRoot\build-thread-projection.ps1"
+
 Write-Host "==> Building CLI (release) and staging as Tauri sidecar" -ForegroundColor Cyan
 Invoke-Native { cargo build --release --manifest-path cli/Cargo.toml }
 New-Item -ItemType Directory -Force -Path desktop/src-tauri/binaries | Out-Null

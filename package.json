@@ -1,4 +1,5 @@
 {
+  "name": "future-os",
   "private": true,
   "workspaces": ["thread-projection"]
 }

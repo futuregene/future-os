@@ -1,5 +1,5 @@
 .PHONY: help version \
-	build build-cli build-desktop build-desktop-dist build-mobile-android build-mobile-ios desktop-sidecars build-thread-projection \
+	build build-cli build-desktop build-mobile-android build-mobile-ios desktop-sidecars build-thread-projection \
 	test test-agent test-channels test-cli test-tui test-cli-diff test-tui-diff test-tui-tmux \
 	test-desktop test-desktop-rust test-mobile \
 	lint lint-rust lint-desktop stylelint-desktop lint-mobile check-desktop check-mobile fmt fmt-mobile \
@@ -154,7 +154,8 @@ endif
 
 # Shared thread projection package: desktop/mobile both depend on its compiled
 # dist/ via a `file:` dep, so any TS change here must rebuild before either app
-# typechecks. Depends on nothing else; run once per source change.
+# typechecks or runs. Every desktop/mobile build, test, lint and run target
+# below depends on this, so it always reflects the latest source — no manual step.
 build-thread-projection:
 	$(call npm-install-if-needed,thread-projection)
 	@if [ ! -f thread-projection/dist/index.js ] || find thread-projection/src -newer thread-projection/dist/index.js -print -quit | grep -q .; then \
@@ -162,14 +163,12 @@ build-thread-projection:
 		cd thread-projection && npm run build; \
 	fi
 
-# React frontend only (dep of build-desktop / check-desktop).
-build-desktop-dist: build-thread-projection
-	$(call npm-install-if-needed,desktop)
-	cd desktop && npm run build
-
 # Self-contained standalone binary (no installer):
 #   desktop/src-tauri/target/release/futureos$(EXE_SUFFIX)
-build-desktop: build-desktop-dist desktop-sidecars
+# `tauri build` runs the frontend build (`npm run build`) via beforeBuildCommand,
+# so it is not repeated here.
+build-desktop: build-thread-projection desktop-sidecars
+	$(call npm-install-if-needed,desktop)
 	cd desktop && npx tauri build --no-bundle
 
 # Mobile native projects are generated locally by Expo (gitignored).
@@ -240,7 +239,9 @@ lint-mobile: build-thread-projection
 	$(call npm-install-if-needed,mobile)
 	cd mobile && npm run typecheck && npm run lint
 
-check-desktop: lint-desktop stylelint-desktop build-desktop-dist desktop-sidecar-placeholder
+check-desktop: lint-desktop stylelint-desktop build-thread-projection desktop-sidecar-placeholder
+	$(call npm-install-if-needed,desktop)
+	cd desktop && npm run build
 	cd desktop/src-tauri && cargo check
 
 check-mobile: lint-mobile test-mobile
@@ -276,7 +277,7 @@ run-channels:
 run-loop:
 	cd orchestration/loop && cargo run
 
-run-desktop: desktop-sidecars
+run-desktop: build-thread-projection desktop-sidecars
 	cd desktop && npm run tauri:dev
 
 run-mobile-android: build-thread-projection
