@@ -2155,7 +2155,14 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn run_observer_retries_connect_failures() {
+        // Serialize with the remote mock family too: breaking
+        // `FUTURE_AGENT_GRPC_ADDR` must not race a bridge/commands test's
+        // `connect_agent`. Acquire MOCK_SER before MOCK_LOCK so the lock
+        // ordering stays acyclic (bridge: MOCK_SER→TEST_HOME_LOCK; TestHome
+        // observer: TEST_HOME_LOCK→MOCK_LOCK; here: MOCK_SER→MOCK_LOCK).
+        let _remote = crate::remote::test_support::mock_agent_lock();
         let _mock = mock_agent();
         std::env::set_var("FUTURE_TEST_OBSERVER_BACKOFF_MS", "40");
         let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock addr");
