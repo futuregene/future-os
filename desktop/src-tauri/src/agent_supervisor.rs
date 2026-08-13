@@ -64,7 +64,7 @@ fn agent_reachable(addr: &str) -> bool {
 /// The agent runs through the unified `future` CLI sidecar (`future agent`),
 /// which embeds the same code as the retired standalone future-agent binary —
 /// so only `future` is bundled (tauri.conf.json externalBin).
-pub fn ensure_agent_running(app: &AppHandle) {
+pub fn ensure_agent_running<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let addr = bare_addr();
     if agent_reachable(&addr) {
         eprintln!("FutureOS: agent already reachable at {addr}; not spawning bundled agent");

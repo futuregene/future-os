@@ -50,6 +50,26 @@ pub fn get_future_environment() -> Result<FutureEnvironment, AppError> {
     })
 }
 
+/// Resolve an environment selector (`production` | `test` | anything else) to
+/// the platform root it names. Extracted from [`set_future_environment`] so the
+/// selector validation and the release-build guard are testable without a real
+/// `AppHandle` — the command itself ends in `app.restart()`, which re-execs the
+/// process and never returns.
+fn resolve_environment(environment: &str) -> Result<&'static str, AppError> {
+    // Release builds are production-locked (the UI hides the switcher; this is
+    // the backend guard behind it). Only dev builds may switch environments.
+    if crate::build_info::is_release() && environment != ENV_PRODUCTION {
+        return Err(AppError::Message(
+            "Production builds only support the production environment; cannot switch.".to_string(),
+        ));
+    }
+    match environment {
+        ENV_PRODUCTION => Ok(PRODUCTION_PLATFORM_URL),
+        ENV_TEST => Ok(TEST_PLATFORM_URL),
+        other => Err(AppError::Message(format!("Unknown environment: {other}"))),
+    }
+}
+
 /// Switch the FutureGene environment and relaunch so the change takes effect.
 /// Pins `auth.json`'s `future.base_url` to `{platform}/api` (mirroring the CLI's
 /// `auth login --url`) and drops the stale key; both the agent and the GUI
@@ -76,18 +96,7 @@ pub fn get_future_environment() -> Result<FutureEnvironment, AppError> {
 /// forces the relaunched GUI to spawn a new agent that reads the new `base_url`.
 #[tauri::command]
 pub fn set_future_environment(app: tauri::AppHandle, environment: String) -> Result<(), AppError> {
-    // Release builds are production-locked (the UI hides the switcher; this is
-    // the backend guard behind it). Only dev builds may switch environments.
-    if crate::build_info::is_release() && environment != ENV_PRODUCTION {
-        return Err(AppError::Message(
-            "Production builds only support the production environment; cannot switch.".to_string(),
-        ));
-    }
-    let platform_url = match environment.as_str() {
-        ENV_PRODUCTION => PRODUCTION_PLATFORM_URL,
-        ENV_TEST => TEST_PLATFORM_URL,
-        other => return Err(AppError::Message(format!("Unknown environment: {other}"))),
-    };
+    let platform_url = resolve_environment(&environment)?;
     // Deliberately a direct `auth_store` write (not the RPC-first path of audit
     // item 2): this is a sync command that immediately kills and restarts the
     // agent, so there is nothing to RPC — the relaunched agent reads the new
@@ -119,5 +128,19 @@ mod tests {
         let env = get_future_environment().expect("custom env");
         assert_eq!(env.environment, "custom");
         assert_eq!(env.platform_url, "https://custom.example.com");
+    }
+
+    #[test]
+    fn resolve_environment_maps_known_selectors_and_rejects_unknown() {
+        assert_eq!(
+            resolve_environment("production").unwrap(),
+            "https://future-os.cn"
+        );
+        assert_eq!(
+            resolve_environment("test").unwrap(),
+            "https://test.future-os.cn"
+        );
+        assert!(resolve_environment("custom").is_err());
+        assert!(resolve_environment("nonsense").is_err());
     }
 }

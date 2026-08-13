@@ -129,4 +129,82 @@ mod tests {
         let _home = crate::auth_store::test_support::HomeGuard::new("cmd-skills-install");
         assert!(install_skill("../evil".into(), "1.0".into()).await.is_err());
     }
+
+    /// A one-shot mock HTTP server: each `(status, content-type, body)` tuple
+    /// answers one request. `Connection: close` so the client reads the body
+    /// and moves on without keep-alive stalls.
+    fn mock_http_server(responses: Vec<(u16, &'static str, Vec<u8>)>) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            for (status, content_type, body) in responses {
+                let (mut stream, _) = listener.accept().expect("mock accept");
+                let mut sink = [0u8; 8192];
+                let _ = stream.read(&mut sink);
+                let header = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(&body);
+                let _ = stream.flush();
+            }
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    fn skill_zip() -> Vec<u8> {
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut cursor);
+            let options = zip::write::SimpleFileOptions::default();
+            writer.start_file("SKILL.md", options).unwrap();
+            std::io::Write::write_all(&mut writer, b"# acme\n").unwrap();
+            writer.finish().unwrap();
+        }
+        cursor.into_inner()
+    }
+
+    #[tokio::test]
+    async fn install_skill_success_refreshes_the_agent() {
+        let _lock = mock_agent_lock();
+        let _home = crate::auth_store::test_support::HomeGuard::new("cmd-skills-install-ok");
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([("refresh_skills".to_string(), "{}".to_string())]),
+            ..Default::default()
+        });
+
+        // Point the platform at a mock that serves a valid skill zip, so the
+        // download + extract path succeeds and the command reaches its
+        // post-install agent refresh.
+        let url = mock_http_server(vec![(200, "application/zip", skill_zip())]);
+        crate::auth_store::set_future_base_url(&format!("{url}/api")).unwrap();
+
+        install_skill("acme".into(), "1.0".into())
+            .await
+            .expect("install");
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn uninstall_skill_removed_true_refreshes_the_agent() {
+        let _lock = mock_agent_lock();
+        let _home = crate::auth_store::test_support::HomeGuard::new("cmd-skills-uninstall-ok");
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([("refresh_skills".to_string(), "{}".to_string())]),
+            ..Default::default()
+        });
+
+        // Lay down an installed skill dir manually (no download needed) so the
+        // command's `if removed` branch fires and refreshes the agent.
+        let dest = crate::auth_store::agent_dir().unwrap().join("skills/acme");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let removed = uninstall_skill("acme".into()).await.expect("uninstall");
+        assert!(removed);
+        script_mock_agent(MockScript::default());
+    }
 }
