@@ -299,8 +299,8 @@ fn doctor_goal_replay_error_arm() {
 #[test]
 fn capability_commands_experimental_note() {
     let _cr = cli_root();
-    // pr_review_queue is experimental: without the flag its commands are
-    // hidden and the note prints; with the flag they list.
+    // pr_review_queue ships as active-preview: its commands list with and
+    // without the flag; experimental-gated capabilities still need it.
     cli_ok(&["capability", "commands", "--name", "pr_review_queue"]);
     cli_ok(&[
         "capability",
