@@ -305,15 +305,14 @@ pub async fn fork_agent_session(
     // Now that the thread (and its workspace) exist, set the forked
     // session's cwd to match so ensure_agent_session can find it
     // instead of creating a brand-new empty session.
-    let cwd = workspace_path_for_thread(&new_thread.id).unwrap_or_default();
-    if !cwd.is_empty() {
-        std::fs::create_dir_all(&cwd)?;
-        if let Err(e) = client
-            .execute_command(set_cwd_command(cwd, new_session_id.clone()))
-            .await
-        {
-            eprintln!("FutureOS: fork set_cwd failed: {e}");
-        }
+    let cwd = workspace_path_for_thread(&new_thread.id)
+        .expect("invariant: thread workspace exists immediately after create_thread");
+    std::fs::create_dir_all(&cwd)?;
+    if let Err(e) = client
+        .execute_command(set_cwd_command(cwd, new_session_id.clone()))
+        .await
+    {
+        eprintln!("FutureOS: fork set_cwd failed: {e}");
     }
 
     let (provider, model_id) = split_model(&session_model);

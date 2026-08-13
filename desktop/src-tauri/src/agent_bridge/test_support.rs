@@ -73,20 +73,20 @@ fn rpc_response(cmd: &RpcCommand, success: bool, data: String, error: String) ->
 
 struct MockAgent;
 
-/// Default reply for an unscripted command: a generic success, so incidental
-/// calls (observer replays, health checks) always work. `prompt` echoes the
-/// requested run id so tests that let the pipeline generate one still get a
-/// consistent acknowledgement.
-fn default_reply(cmd: &RpcCommand) -> Reply {
+/// Default reply payload for an unscripted command: a generic success, so
+/// incidental calls (observer replays, health checks) always work. `prompt`
+/// echoes the requested run id so tests that let the pipeline generate one
+/// still get a consistent acknowledgement.
+fn default_reply_data(cmd: &RpcCommand) -> String {
     if cmd.r#type == "prompt" {
         let run_id = if cmd.requested_run_id.is_empty() {
             "mock-run"
         } else {
             cmd.requested_run_id.as_str()
         };
-        return Reply::Data(format!(r#"{{"run_id":"{run_id}"}}"#));
+        return format!(r#"{{"run_id":"{run_id}"}}"#);
     }
-    Reply::Data("{}".to_string())
+    "{}".to_string()
 }
 
 #[tonic::async_trait]
@@ -114,7 +114,7 @@ impl FutureAgent for MockAgent {
                 .replies
                 .get_mut(&key)
                 .and_then(VecDeque::pop_front)
-                .unwrap_or_else(|| default_reply(&cmd))
+                .unwrap_or_else(|| Reply::Data(default_reply_data(&cmd)))
         };
         match reply {
             Reply::Data(data) => Ok(tonic::Response::new(rpc_response(
@@ -206,11 +206,17 @@ fn ensure_mock_server() {
                             }
                             std::task::Poll::Pending => std::task::Poll::Pending,
                         });
-                    let _ = tonic::transport::Server::builder()
+                    // Drive the server on the runtime's worker pool; it lives
+                    // until the process exits, so it is spawned rather than
+                    // awaited (awaiting would park this async block forever).
+                    let serve = tonic::transport::Server::builder()
                         .add_service(FutureAgentServer::new(MockAgent))
-                        .serve_with_incoming(incoming)
-                        .await;
+                        .serve_with_incoming(incoming);
+                    tokio::spawn(serve);
                 });
+                // Park this thread: the runtime's worker threads keep serving
+                // the mock until the test process exits.
+                std::thread::park();
             })
             .expect("spawn mock agent thread");
         let addr = addr_rx.recv().expect("mock agent address");
@@ -472,9 +478,10 @@ mod tests {
     use super::*;
     use crate::agent_proto::RpcCommand;
 
-    /// `default_reply` echoes the requested run id when present and falls back
-    /// to `mock-run` when a prompt carries an empty one (headless callers that
-    /// let the pipeline pick the id still get a consistent acknowledgement).
+    /// `default_reply_data` echoes the requested run id when present and
+    /// falls back to `mock-run` when a prompt carries an empty one (headless
+    /// callers that let the pipeline pick the id still get a consistent
+    /// acknowledgement).
     #[test]
     fn default_reply_falls_back_to_mock_run_for_empty_requested_id() {
         let with_id = RpcCommand {
@@ -482,20 +489,14 @@ mod tests {
             requested_run_id: "real-run".to_string(),
             ..Default::default()
         };
-        match default_reply(&with_id) {
-            Reply::Data(data) => assert!(data.contains("real-run"), "{data}"),
-            _ => panic!("expected a data reply"),
-        }
+        assert!(default_reply_data(&with_id).contains("real-run"));
 
         let empty_id = RpcCommand {
             r#type: "prompt".to_string(),
             requested_run_id: String::new(),
             ..Default::default()
         };
-        match default_reply(&empty_id) {
-            Reply::Data(data) => assert!(data.contains("mock-run"), "{data}"),
-            _ => panic!("expected a data reply"),
-        }
+        assert!(default_reply_data(&empty_id).contains("mock-run"));
     }
 
     /// `TestHome::drop` takes the `None` arm (removes HOME) when no HOME was

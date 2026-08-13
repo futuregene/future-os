@@ -2811,10 +2811,10 @@ mod pipeline_tests {
             )],
             None,
         ));
-        // The best-effort abort is rejected — exercise the abort-failure log.
+        // The best-effort abort transport-fails — exercise the abort-failure log.
         fixture
             .mock
-            .push("abort", Reply::Reject("abort refused".to_string()));
+            .push("abort", Reply::Status(tonic::Code::Internal, "abort down"));
 
         let error = agent_prompt(
             message,
