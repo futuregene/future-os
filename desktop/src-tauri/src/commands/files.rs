@@ -351,13 +351,22 @@ pub fn delete_temp_attachment(path: String) -> Result<(), crate::AppError> {
 
 #[tauri::command]
 pub fn open_path(path: String) -> Result<(), crate::AppError> {
+    open_path_with(&path, open_path_with_system)
+}
+
+/// Validation + opener, with the OS layer injectable so the happy path and
+/// the OS-error path are testable without launching a GUI app.
+fn open_path_with(
+    path: &str,
+    opener: impl Fn(&str) -> Result<(), crate::AppError>,
+) -> Result<(), crate::AppError> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
         return Err("path cannot be empty.".to_string().into());
     }
 
     ensure_path_allowed(Path::new(trimmed))?;
-    open_path_with_system(trimmed)
+    opener(trimmed)
 }
 
 #[derive(serde::Serialize)]
@@ -420,6 +429,14 @@ pub fn list_directory(path: String) -> Result<Vec<DirEntry>, crate::AppError> {
 /// local handlers (`file:`, custom app schemes, …) via a crafted url.
 #[tauri::command]
 pub fn open_external_url(url: String) -> Result<(), crate::AppError> {
+    open_external_url_with(&url, open_path_with_system)
+}
+
+/// Validation + opener with the OS layer injectable (see [`open_path_with`]).
+fn open_external_url_with(
+    url: &str,
+    opener: impl Fn(&str) -> Result<(), crate::AppError>,
+) -> Result<(), crate::AppError> {
     let trimmed = url.trim();
     if !(trimmed.starts_with("http://")
         || trimmed.starts_with("https://")
@@ -430,7 +447,7 @@ pub fn open_external_url(url: String) -> Result<(), crate::AppError> {
             .into());
     }
 
-    open_path_with_system(trimmed)
+    opener(trimmed)
 }
 
 /// Resolve a markdown link target encountered while previewing a local file into
@@ -592,21 +609,29 @@ pub fn save_pasted_image(
 /// would be interpreted — an injection vector, not just a broken open.
 #[cfg(target_os = "macos")]
 fn open_path_with_system(path: &str) -> Result<(), crate::AppError> {
-    open::that(path).or_else(|_| {
-        // macOS may not have a default handler for extensionless / dotfiles
-        // (e.g. `.env`).  Fall back to `open -t` which forces the default
-        // text editor.
-        let status = std::process::Command::new("open")
-            .arg("-t")
-            .arg(path)
-            .status()
-            .map_err(|e| format!("Failed to open: {e}"))?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(format!("Failed to open {path}: open -t exited with {status}").into())
-        }
-    })
+    open::that(path).or_else(|_| fallback_open_text(path))
+}
+
+/// The `open -t` fallback: spawn + classify, split so the status classifier is
+/// pure (spawn itself is an OS seam).
+#[cfg(target_os = "macos")]
+fn fallback_open_text(path: &str) -> Result<(), crate::AppError> {
+    let status = std::process::Command::new("open")
+        .arg("-t")
+        .arg(path)
+        .status()
+        .map_err(|e| format!("Failed to open: {e}"))?;
+    open_t_status_to_result(status.success(), path)
+}
+
+/// Pure classifier for the `open -t` fallback's exit status.
+#[cfg(target_os = "macos")]
+fn open_t_status_to_result(success: bool, path: &str) -> Result<(), crate::AppError> {
+    if success {
+        Ok(())
+    } else {
+        Err(format!("Failed to open {path}: open -t exited with an error").into())
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -882,6 +907,51 @@ mod tests {
         assert!(open_path("   ".into()).is_err());
         assert!(open_external_url("file:///etc/passwd".into()).is_err());
         assert!(open_external_url("ftp://x".into()).is_err());
+    }
+
+    #[test]
+    fn open_path_with_injects_the_opener_for_both_arms() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("files_open_seam");
+        assert!(open_path_with("   ", |_| unreachable!()).is_err());
+        assert!(open_path_with("/tmp/ok", |_| Ok(())).is_ok());
+        assert!(open_path_with("/tmp/err", |_| Err("os failed".to_string().into())).is_err());
+        // Credential files stay blocked even with an injected opener.
+        let home = std::env::var("HOME").expect("test home");
+        let agent_dir = std::path::Path::new(&home).join(".future/agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(agent_dir.join("auth.json"), "{}").unwrap();
+        let cred = agent_dir.join("auth.json");
+        assert!(open_path_with(cred.to_str().unwrap(), |_| unreachable!()).is_err());
+    }
+
+    #[test]
+    fn open_external_url_with_injects_the_opener_for_both_arms() {
+        assert!(open_external_url_with("https://ok.example/", |_| Ok(())).is_ok());
+        assert!(open_external_url_with("mailto:x@example.com", |_| Ok(())).is_ok());
+        assert!(
+            open_external_url_with("https://x", |_| Err("os failed".to_string().into()))
+                .is_err()
+        );
+        assert!(open_external_url_with("ftp://x", |_| unreachable!()).is_err());
+        assert!(open_external_url_with("   ", |_| unreachable!()).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn open_t_status_classifier_maps_both_arms() {
+        assert!(open_t_status_to_result(true, "x").is_ok());
+        assert!(open_t_status_to_result(false, "x").is_err());
+    }
+
+    #[test]
+    fn open_path_runs_the_real_os_fallback_chain() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("files_open_os");
+        // A path whose PARENT does not exist: `open` and `open -t` both fail
+        // fast without launching any GUI app, so the fallback chain runs
+        // end-to-end and returns the OS error.
+        let ghost = "/definitely-not-a-real-dir-cov100/file.txt";
+        let err = open_path(ghost.to_string()).unwrap_err();
+        assert!(!err.to_string().is_empty());
     }
 
     #[test]
