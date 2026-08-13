@@ -334,6 +334,24 @@ pub fn drop_observer(session_id: &str) {
     }
 }
 
+/// Cancel and deregister every live observer. Test-only: a finished test's
+/// spawned observers outlive it (they run on the ambient runtime, not the test
+/// runtime) and keep re-attaching — their `get_state`/`stream_events` calls
+/// would otherwise consume the next test's scripted replies. The mock guard
+/// calls this on acquisition so each test starts from a clean observer slate.
+#[cfg(test)]
+pub(crate) fn cancel_all_observers() {
+    let handles: Vec<ObserverHandle> = OBSERVERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .drain()
+        .map(|(_, handle)| handle)
+        .collect();
+    for handle in handles {
+        let _ = handle.cancel.send(());
+    }
+}
+
 /// Evict least-recently-active idle observers while at/over the cap. Active
 /// runs are never evicted — if every observer tracks one, the cap overflows.
 fn evict_idle_if_over_cap(guard: &mut HashMap<String, ObserverHandle>) {
