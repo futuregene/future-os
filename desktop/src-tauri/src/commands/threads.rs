@@ -509,7 +509,7 @@ mod tests {
         let _home = init("cmd_streaming_err");
         let thread = make_thread(&_home, Some("sess_stream_err"));
         crate::commands::agent_mock::ensure_mock_agent();
-        crate::commands::agent_mock::with_broken_endpoint(|| list_streaming_thread_ids())
+        crate::commands::agent_mock::with_broken_endpoint(list_streaming_thread_ids)
             .await
             .expect("streaming");
         let _ = thread;
