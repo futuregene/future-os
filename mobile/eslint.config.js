@@ -11,4 +11,11 @@ module.exports = defineConfig([
       "react-hooks/exhaustive-deps": "error",
     },
   },
+  {
+    // The namespace rule recursively loads the linked ESM-only Remark graph
+    // through eslint-plugin-import's legacy resolver and rejects its interface.
+    // TypeScript still validates every named import during `typecheck`.
+    files: ["src/components/MarkdownText.tsx", "src/remote/localPath.ts"],
+    rules: { "import/namespace": "off" },
+  },
 ]);

@@ -61,6 +61,26 @@ describe("parseFutureMarkdown", () => {
     ]);
   });
 
+  it("preserves a local-file link nested inside strong formatting", () => {
+    const document = parseFutureMarkdown("**[gomoku.html](<./gomoku.html>)**");
+    const paragraph = document.nodes[0];
+    expect(paragraph?.type).toBe("paragraph");
+    const strong = paragraph?.type === "paragraph" ? paragraph.children[0] : null;
+    expect(strong).toMatchObject({
+      children: [
+        {
+          reference: {
+            label: "gomoku.html",
+            targetId: "gomoku.html",
+            targetType: "file",
+          },
+          type: "futureReference",
+        },
+      ],
+      type: "strong",
+    });
+  });
+
   it("turns a ./relative path link into a file reference, stripping ./", () => {
     const document = parseFutureMarkdown("Saved [poem.txt](./poem.txt).");
 
