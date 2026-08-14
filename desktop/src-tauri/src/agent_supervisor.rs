@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager};
+use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
@@ -366,6 +366,8 @@ mod tests {
 
     #[test]
     fn confirmed_quit_flow_aborts_waits_and_exits() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("agent-supervisor-quit-flow");
+        crate::store::initialize_app_store().unwrap();
         let _lock = crate::commands::agent_mock::mock_agent_lock();
         crate::commands::agent_mock::ensure_mock_agent();
         crate::commands::agent_mock::script_mock_agent(Default::default());
@@ -381,6 +383,8 @@ mod tests {
 
     #[test]
     fn confirm_quit_builds_the_dialog_against_a_mock_handle() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("agent-supervisor-quit-dialog");
+        crate::store::initialize_app_store().unwrap();
         let app = tauri::test::mock_builder()
             .plugin(tauri_plugin_shell::init())
             .plugin(tauri_plugin_dialog::init())
