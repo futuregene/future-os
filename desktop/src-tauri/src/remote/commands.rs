@@ -2638,7 +2638,7 @@ mod bridge_tests {
         let reply = bridge
             .call(json!({ "id": unique("cmd"), "type": "set_session_pinned", "threadId": thread.id, "pinned": true }))
             .await;
-        assert_eq!(reply["success"], json!(true));
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
         let reply = bridge
             .call(json!({ "id": unique("cmd"), "type": "set_session_pinned", "threadId": "missing-thread", "pinned": false }))
             .await;

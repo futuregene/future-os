@@ -366,9 +366,13 @@ mod tests {
 
     #[test]
     fn confirmed_quit_flow_aborts_waits_and_exits() {
+        // Lock order MUST match the suite convention (mock_agent_lock BEFORE
+        // TEST_HOME_LOCK) — the approvals tests hold mock_agent_lock while
+        // acquiring their HomeGuard, so the reverse order deadlocks under
+        // instrumented timing.
+        let _lock = crate::commands::agent_mock::mock_agent_lock();
         let _home = crate::auth_store::test_support::HomeGuard::new("agent-supervisor-quit-flow");
         crate::store::initialize_app_store().unwrap();
-        let _lock = crate::commands::agent_mock::mock_agent_lock();
         crate::commands::agent_mock::ensure_mock_agent();
         crate::commands::agent_mock::script_mock_agent(Default::default());
         let app = tauri::test::mock_builder()
@@ -383,6 +387,8 @@ mod tests {
 
     #[test]
     fn confirm_quit_builds_the_dialog_against_a_mock_handle() {
+        // Same lock-order convention as confirmed_quit_flow above.
+        let _lock = crate::commands::agent_mock::mock_agent_lock();
         let _home = crate::auth_store::test_support::HomeGuard::new("agent-supervisor-quit-dialog");
         crate::store::initialize_app_store().unwrap();
         let app = tauri::test::mock_builder()
