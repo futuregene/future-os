@@ -554,6 +554,45 @@ pub enum Event {
         receipt: crate::capabilities::decision_context::packets::DecisionOutcomeReceipt,
         ts: u64,
     },
+    /// G12: multi-agent contract set — the declarative peer/handoff/
+    /// collective topology for a goal (full replace; the latest event wins).
+    /// Projection-only: goal state is unchanged; the multi_agent read model
+    /// (`agent contract show`) reads the ledger. Validation fails closed at
+    /// the command layer before append.
+    MultiAgentContractSet {
+        goal_id: String,
+        contract: crate::agents::multi_agent::MultiAgentContract,
+        ts: u64,
+    },
+    /// G12: named agent recipe added (capabilities / workspaces / default
+    /// priority). Re-adding a name is allowed — lookups resolve the latest
+    /// event. Projection-only.
+    AgentRecipeAdded {
+        goal_id: String,
+        recipe: crate::agents::multi_agent::AgentRecipe,
+        ts: u64,
+    },
+    /// G12: role succession occurred — a primary's lease expired or its
+    /// heartbeat went silent past the threshold, so the declared backup was
+    /// promoted. Projection-only: the succession read model and the
+    /// attention hint read the ledger.
+    SuccessionOccurred {
+        goal_id: String,
+        primary: String,
+        backup: String,
+        reason: String,
+        ts: u64,
+    },
+    /// G13 ②: replan rule set updated — the goal's explicit rule set (full
+    /// replace; latest wins). `rule_ids` empty ⇒ reset to the default rule
+    /// set. Folded into `Goal::replan_rule_set` on replay.
+    ReplanRuleSetUpdated {
+        goal_id: String,
+        rule_set_version: String,
+        #[serde(default)]
+        rule_ids: Vec<String>,
+        ts: u64,
+    },
 }
 
 impl Event {
@@ -595,7 +634,11 @@ impl Event {
             | Event::SupervisorProposed { goal_id, .. }
             | Event::SupervisorReceiptRecorded { goal_id, .. }
             | Event::ProjectionRepaired { goal_id, .. }
-            | Event::DecisionOutcomeRecorded { goal_id, .. } => goal_id,
+            | Event::DecisionOutcomeRecorded { goal_id, .. }
+            | Event::MultiAgentContractSet { goal_id, .. }
+            | Event::AgentRecipeAdded { goal_id, .. }
+            | Event::SuccessionOccurred { goal_id, .. }
+            | Event::ReplanRuleSetUpdated { goal_id, .. } => goal_id,
         }
     }
 }
@@ -1369,7 +1412,7 @@ fn copy_dir_if_present(src: &Path, dest: &Path) -> Result<()> {
 fn apply(goal: &mut Goal, event: Event) {
     match event {
         Event::GoalStarted { .. } => {}
-        Event::TodoAdded { todo, .. } => {
+        Event::TodoAdded { todo, ts, .. } => {
             let mut t = todo;
             // Assign the goal-relative index on replay too (identity/order).
             if t.index == 0 {
@@ -1377,6 +1420,8 @@ fn apply(goal: &mut Goal, event: Event) {
                 t.index = goal.next_index;
             }
             goal.todos.push(t);
+            // G13 ①: a new todo changes the frontier (segment reset marker).
+            goal.frontier_change_ts.push(ts);
         }
         Event::TodoCompleted {
             todo_id,
@@ -1386,6 +1431,14 @@ fn apply(goal: &mut Goal, event: Event) {
             ts,
             ..
         } => {
+            // G13 ③: summary first — `complete` takes `successor_ids` by value.
+            let summary = if no_follow_up {
+                "no-follow-up".to_string()
+            } else if !successor_ids.is_empty() {
+                format!("successor {}", successor_ids.join(","))
+            } else {
+                "completed".to_string()
+            };
             if let Some(t) = goal.todo_mut(&todo_id) {
                 t.complete(no_follow_up, successor_ids);
                 // The event ts is authoritative for the completion stamp
@@ -1397,8 +1450,26 @@ fn apply(goal: &mut Goal, event: Event) {
                     t.evidence = Some(e);
                 }
             }
+            // G13 ①: completion moves the frontier (segment reset marker).
+            goal.frontier_change_ts.push(ts);
+            // G13 ③: semantic history fold.
+            goal.record_semantic_event(
+                crate::decision::goal_frontier::semantic_history::KIND_TODO_COMPLETED,
+                Some(&todo_id),
+                &summary,
+                ts,
+            );
         }
-        Event::TodoSuperseded { todo_id, .. } => goal.supersede(&todo_id),
+        Event::TodoSuperseded { todo_id, ts, .. } => {
+            goal.supersede(&todo_id);
+            goal.frontier_change_ts.push(ts);
+            goal.record_semantic_event(
+                crate::decision::goal_frontier::semantic_history::KIND_TODO_SUPERSEDED,
+                Some(&todo_id),
+                "superseded",
+                ts,
+            );
+        }
         Event::TodoUpdated {
             todo_id,
             text,
@@ -1485,9 +1556,43 @@ fn apply(goal: &mut Goal, event: Event) {
                     t.note = Some(n);
                 }
             }
+            // G13 ①: a resolved gate unblocks the frontier (segment reset).
+            goal.frontier_change_ts.push(ts);
+            goal.record_semantic_event(
+                crate::decision::goal_frontier::semantic_history::KIND_GATE_RESOLVED,
+                Some(&todo_id),
+                "gate resolved",
+                ts,
+            );
         }
-        Event::GapSatisfied { gap_id, .. } => goal.satisfy_gap(&gap_id),
-        Event::RunRecorded { .. } => {} // run history is read from runs.jsonl
+        Event::GapSatisfied { gap_id, ts, .. } => {
+            goal.satisfy_gap(&gap_id);
+            goal.record_semantic_event(
+                crate::decision::goal_frontier::semantic_history::KIND_ACCEPTANCE_GAP_SATISFIED,
+                None,
+                &format!("acceptance gap {gap_id} satisfied"),
+                ts,
+            );
+        }
+        Event::RunRecorded { record, ts, .. } => {
+            // run history itself is read from runs.jsonl; G13 ③ folds the
+            // semantic summary from the event ledger.
+            let summary = if record.evidence.trim().is_empty() {
+                record.terminal_state.clone()
+            } else {
+                format!(
+                    "{} — {}",
+                    record.terminal_state,
+                    crate::decision::truncate(&record.evidence, 120)
+                )
+            };
+            goal.record_semantic_event(
+                crate::decision::goal_frontier::semantic_history::KIND_RUN_LANDED,
+                Some(&record.todo_id),
+                &summary,
+                ts,
+            );
+        }
         Event::TodoClaimed {
             todo_id,
             agent_id,
@@ -1539,9 +1644,20 @@ fn apply(goal: &mut Goal, event: Event) {
         } => {
             goal.replan_ack = Some(crate::state::ReplanAck {
                 recorded: true,
-                delta_kinds,
+                delta_kinds: delta_kinds.clone(),
                 at: ts,
             });
+            // G13 ①: only frontier-changing acks reset outcome segments.
+            let ack = goal.replan_ack.as_ref().expect("just recorded");
+            if ack.has_frontier_delta() {
+                goal.frontier_change_ts.push(ts);
+            }
+            goal.record_semantic_event(
+                crate::decision::goal_frontier::semantic_history::KIND_REPLAN_ACKED,
+                None,
+                &format!("delta kinds: {}", delta_kinds.join(",")),
+                ts,
+            );
         }
         Event::ProfileSet {
             outcome_floor_streak_threshold,
@@ -1557,7 +1673,11 @@ fn apply(goal: &mut Goal, event: Event) {
             goal.authority.write_scope = write_scope;
             goal.authority.requires_approval = requires_approval;
         }
-        Event::TodoArchived { todo_id, .. } => goal.archive_todo(&todo_id),
+        Event::TodoArchived { todo_id, ts, .. } => {
+            goal.archive_todo(&todo_id);
+            // G13 ①: archiving removes the todo from the frontier.
+            goal.frontier_change_ts.push(ts);
+        }
         Event::MonitorPolled {
             todo_id,
             result,
@@ -1587,6 +1707,12 @@ fn apply(goal: &mut Goal, event: Event) {
                 }
                 m.updated_at = ts;
             }
+            goal.record_semantic_event(
+                crate::decision::goal_frontier::semantic_history::KIND_MONITOR_POLL,
+                Some(&todo_id),
+                &result,
+                ts,
+            );
         }
         Event::QuotaSpent { slots, .. } => {
             goal.quota_spent_slots = goal.quota_spent_slots.saturating_add(slots);
@@ -1667,7 +1793,15 @@ fn apply(goal: &mut Goal, event: Event) {
             seq,
             ts,
             ..
-        } => goal.apply_delivery_outcome(&todo_id, &outcome, note, delivered_turn, seq, ts),
+        } => {
+            goal.apply_delivery_outcome(&todo_id, &outcome, note, delivered_turn, seq, ts);
+            goal.record_semantic_event(
+                crate::decision::goal_frontier::semantic_history::KIND_DELIVERY_OUTCOME,
+                Some(&todo_id),
+                &outcome,
+                ts,
+            );
+        }
         Event::FollowthroughCreated {
             source_todo_id,
             followup_todo_id,
@@ -1704,18 +1838,53 @@ fn apply(goal: &mut Goal, event: Event) {
             idle_secs,
             tool_calls_total,
             ts,
-        } => goal
-            .turn_no_progress
-            .push(crate::state::TurnNoProgressRecord {
-                goal_id,
-                todo_id,
-                agent_id,
-                idle_secs,
-                tool_calls_total,
+        } => {
+            let summary = format!("{}s idle after {} tool calls", idle_secs, tool_calls_total);
+            goal.turn_no_progress
+                .push(crate::state::TurnNoProgressRecord {
+                    goal_id,
+                    todo_id,
+                    agent_id,
+                    idle_secs,
+                    tool_calls_total,
+                    ts,
+                });
+            goal.record_semantic_event(
+                crate::decision::goal_frontier::semantic_history::KIND_TURN_NO_PROGRESS,
+                None,
+                &summary,
                 ts,
-            }),
-        // P1-5 + P1-1 + P1-4 + G-16 projection-only events: read from the
-        // event log by their read models; goal state is unchanged on replay.
+            );
+        }
+        // G13 ②: replan rule set update — latest wins; empty ids reset to
+        // the default rule set (the folded state never stores an empty list).
+        Event::ReplanRuleSetUpdated {
+            rule_set_version,
+            rule_ids,
+            ts,
+            ..
+        } => {
+            // Empty ids on the wire = reset to the default rule set.
+            goal.replan_rule_set = if rule_ids.is_empty() {
+                None
+            } else {
+                Some(
+                    crate::decision::goal_frontier::replan_rules::ReplanRuleSet {
+                        schema_version: rule_set_version,
+                        rule_ids,
+                    },
+                )
+            };
+            goal.record_semantic_event(
+                crate::decision::goal_frontier::semantic_history::KIND_REPLAN_ACKED,
+                None,
+                "replan rule set updated",
+                ts,
+            );
+        }
+        // P1-5 + P1-1 + P1-4 + G-16 + G12 projection-only events: read from
+        // the event log by their read models; goal state is unchanged on
+        // replay.
         Event::RewardSignalRecorded { .. }
         | Event::DecisionSummaryRecorded { .. }
         | Event::HeartbeatReceiptRecorded { .. }
@@ -1723,7 +1892,23 @@ fn apply(goal: &mut Goal, event: Event) {
         | Event::SupervisorProposed { .. }
         | Event::SupervisorReceiptRecorded { .. }
         | Event::ProjectionRepaired { .. }
-        | Event::DecisionOutcomeRecorded { .. } => {}
+        | Event::DecisionOutcomeRecorded { .. }
+        | Event::MultiAgentContractSet { .. }
+        | Event::AgentRecipeAdded { .. } => {}
+        Event::SuccessionOccurred {
+            primary,
+            backup,
+            reason,
+            ts,
+            ..
+        } => {
+            goal.record_semantic_event(
+                crate::decision::goal_frontier::semantic_history::KIND_ROLE_SUCCESSION,
+                None,
+                &format!("{primary}→{backup} ({reason})"),
+                ts,
+            );
+        }
     }
 }
 
