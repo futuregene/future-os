@@ -759,16 +759,14 @@ pub struct SurfaceValidation {
 fn raw_material_key_names(groups: &[&[&Value]]) -> Vec<String> {
     let mut names: BTreeSet<String> = BTreeSet::new();
     for group in groups {
-        for record in group.iter() {
-            if let Some(object) = record.as_object() {
-                for key in object.keys() {
-                    let lowered = key.to_lowercase();
-                    if RAW_MATERIAL_KEY_HINTS
-                        .iter()
-                        .any(|hint| lowered.contains(hint))
-                    {
-                        names.insert(key.clone());
-                    }
+        for object in group.iter().filter_map(|record| record.as_object()) {
+            for key in object.keys() {
+                let lowered = key.to_lowercase();
+                if RAW_MATERIAL_KEY_HINTS
+                    .iter()
+                    .any(|hint| lowered.contains(hint))
+                {
+                    names.insert(key.clone());
                 }
             }
         }
@@ -1609,9 +1607,6 @@ impl Capability for ContentOpsCapability {
         let class = classify_content(text);
         let signals = quality_signals(text, class.kind);
         let ops = suggest_operations(&class, &signals);
-        if ops.is_empty() {
-            return vec![TypedProposal::no_followup("no content operation applies")];
-        }
         ops.into_iter()
             .map(|op| match op.role {
                 "user" => TypedProposal::gate(&op.title, op.action_kind),

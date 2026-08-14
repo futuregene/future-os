@@ -215,10 +215,7 @@ impl ChangeQualityPolicy {
 /// `C:\Users` / `C:/Users`-style drive paths (mirrors explore.rs).
 fn contains_windows_abs_path(text: &str) -> bool {
     let bytes = text.as_bytes();
-    for (index, _) in text.char_indices() {
-        let Some(drive) = text[index..].chars().next() else {
-            continue;
-        };
+    for (index, drive) in text.char_indices() {
         if !drive.is_ascii_alphabetic() {
             continue;
         }
@@ -3105,5 +3102,627 @@ mod tests {
         let proposals = cap.propose("--- a/lib.rs\n+++ b/lib.rs\n");
         assert_eq!(proposals.len(), 1);
         assert_eq!(proposals[0].kind, ProposalKind::Gate);
+    }
+
+    // ── deep per-line coverage: every error arm + defensive branch ────────
+
+    #[test]
+    fn policy_to_value_roundtrips_flags() {
+        let value = ChangeQualityPolicy {
+            enabled: true,
+            safe_fix: true,
+            strict_receipt: true,
+        }
+        .to_value();
+        assert_eq!(
+            value.get("schema_version").and_then(Value::as_str),
+            Some(CHANGE_QUALITY_POLICY_SCHEMA_VERSION)
+        );
+        assert_eq!(value.get("enabled"), Some(&Value::Bool(true)));
+        assert_eq!(value.get("safe_fix"), Some(&Value::Bool(true)));
+        assert_eq!(value.get("strict_receipt"), Some(&Value::Bool(true)));
+    }
+
+    #[test]
+    fn capability_metadata_is_nonempty() {
+        assert_eq!(ChangeQualityCapability.name(), "change_quality");
+        assert!(!ChangeQualityCapability.describe().is_empty());
+    }
+
+    #[test]
+    fn bounded_text_accepts_non_string_scalars() {
+        assert_eq!(bounded_text(&serde_json::json!(42), "x", 10).unwrap(), "42");
+        assert_eq!(
+            bounded_text(&serde_json::json!(true), "x", 10).unwrap(),
+            "true"
+        );
+    }
+
+    #[test]
+    fn reject_private_material_rejects_file_and_windows_paths() {
+        assert!(
+            bounded_text(&Value::String("file:///etc/passwd".into()), "x", 100)
+                .unwrap_err()
+                .contains("private")
+        );
+        assert!(
+            bounded_text(&Value::String("C:\\Users\\alice\\s.txt".into()), "x", 100)
+                .unwrap_err()
+                .contains("private")
+        );
+        assert!(
+            bounded_text(&Value::String("C:/Users/alice".into()), "x", 100)
+                .unwrap_err()
+                .contains("private")
+        );
+        // A bare drive letter or a lone "C:" is not an absolute path.
+        assert_eq!(
+            bounded_text(&Value::String("C: drive".into()), "x", 100).unwrap(),
+            "C: drive"
+        );
+        assert_eq!(
+            bounded_text(&Value::String("C".into()), "x", 100).unwrap(),
+            "C"
+        );
+        assert_eq!(
+            bounded_text(&Value::String("C:".into()), "x", 100).unwrap(),
+            "C:"
+        );
+    }
+
+    #[test]
+    fn relative_path_normalizes_and_rejects() {
+        assert_eq!(relative_path(&Value::String("".into()), "x").unwrap(), None);
+        assert!(relative_path(&Value::String("/abs".into()), "x")
+            .unwrap_err()
+            .contains("repo-relative"));
+        assert!(relative_path(&Value::String("a/../b".into()), "x")
+            .unwrap_err()
+            .contains("repo-relative"));
+        assert_eq!(
+            relative_path(&Value::String("src/lib.rs".into()), "x").unwrap(),
+            Some("src/lib.rs".to_string())
+        );
+        assert_eq!(
+            relative_path(&Value::String("src\\lib.rs".into()), "x").unwrap(),
+            Some("src/lib.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_evidence_ref_covers_every_branch() {
+        assert!(
+            normalize_evidence_ref(&Value::String("no-colon".into()), "x")
+                .unwrap_err()
+                .contains("one of")
+        );
+        assert!(
+            normalize_evidence_ref(&Value::String("bogus:target".into()), "x")
+                .unwrap_err()
+                .contains("one of")
+        );
+        assert!(normalize_evidence_ref(&Value::String("path:".into()), "x")
+            .unwrap_err()
+            .contains("non-empty"));
+        assert!(
+            normalize_evidence_ref(&Value::String("validator:".into()), "x")
+                .unwrap_err()
+                .contains("non-empty")
+        );
+        assert_eq!(
+            normalize_evidence_ref(&Value::String("path:src/lib.rs".into()), "x").unwrap(),
+            "path:src/lib.rs"
+        );
+        assert_eq!(
+            normalize_evidence_ref(&Value::String("instruction:CONTRIBUTING.md".into()), "x")
+                .unwrap(),
+            "instruction:CONTRIBUTING.md"
+        );
+        assert_eq!(
+            normalize_evidence_ref(&Value::String("validator:cargo test".into()), "x").unwrap(),
+            "validator:cargo test"
+        );
+    }
+
+    #[test]
+    fn normalize_evidence_refs_rejects_bad_collections() {
+        assert!(
+            normalize_evidence_refs(Some(&Value::String("x".into())), "x")
+                .unwrap_err()
+                .contains("array")
+        );
+        let many: Vec<Value> = (0..21)
+            .map(|i| Value::String(format!("path:p{i}")))
+            .collect();
+        assert!(normalize_evidence_refs(Some(&Value::Array(many)), "x")
+            .unwrap_err()
+            .contains("20"));
+        let dup = vec![
+            Value::String("path:a".into()),
+            Value::String("path:a".into()),
+        ];
+        assert!(normalize_evidence_refs(Some(&Value::Array(dup)), "x")
+            .unwrap_err()
+            .contains("duplicates"));
+    }
+
+    #[test]
+    fn normalize_conclusion_rejects_bad_objects() {
+        assert!(normalize_conclusion(None, "reuse", &REUSE_OUTCOMES)
+            .unwrap_err()
+            .contains("object"));
+        let bad_outcome =
+            serde_json::json!({"outcome": "nope", "summary": "s", "evidence_refs": ["path:a"]});
+        assert!(
+            normalize_conclusion(Some(&bad_outcome), "reuse", &REUSE_OUTCOMES)
+                .unwrap_err()
+                .contains("outcome")
+        );
+        let empty_summary =
+            serde_json::json!({"outcome": "reused", "summary": "", "evidence_refs": ["path:a"]});
+        assert!(
+            normalize_conclusion(Some(&empty_summary), "reuse", &REUSE_OUTCOMES)
+                .unwrap_err()
+                .contains("summary")
+        );
+        let empty_evidence =
+            serde_json::json!({"outcome": "reused", "summary": "s", "evidence_refs": []});
+        assert!(
+            normalize_conclusion(Some(&empty_evidence), "reuse", &REUSE_OUTCOMES)
+                .unwrap_err()
+                .contains("grounded")
+        );
+    }
+
+    #[test]
+    fn normalize_risk_covers_every_error_branch() {
+        assert!(normalize_risk(&Value::String("x".into()), 0)
+            .unwrap_err()
+            .contains("object"));
+        let bad_category = serde_json::json!({"category": "nope", "severity": "warning", "code": "c", "message": "m", "evidence_refs": ["path:a"]});
+        assert!(normalize_risk(&bad_category, 0)
+            .unwrap_err()
+            .contains("category"));
+        let bad_severity = serde_json::json!({"category": "efficiency", "severity": "nope", "code": "c", "message": "m", "evidence_refs": ["path:a"]});
+        assert!(normalize_risk(&bad_severity, 0)
+            .unwrap_err()
+            .contains("severity"));
+        let empty_code = serde_json::json!({"category": "efficiency", "severity": "warning", "code": "", "message": "m", "evidence_refs": ["path:a"]});
+        assert!(normalize_risk(&empty_code, 0)
+            .unwrap_err()
+            .contains("code and message"));
+        let oversize_code = serde_json::json!({"category": "efficiency", "severity": "warning", "code": "x".repeat(81), "message": "m", "evidence_refs": ["path:a"]});
+        assert!(normalize_risk(&oversize_code, 0)
+            .unwrap_err()
+            .contains("exceeds"));
+        let oversize_message = serde_json::json!({"category": "efficiency", "severity": "warning", "code": "c", "message": "x".repeat(321), "evidence_refs": ["path:a"]});
+        assert!(normalize_risk(&oversize_message, 0)
+            .unwrap_err()
+            .contains("exceeds"));
+        let bad_evidence = serde_json::json!({"category": "efficiency", "severity": "warning", "code": "c", "message": "m", "evidence_refs": "not-array"});
+        assert!(normalize_risk(&bad_evidence, 0)
+            .unwrap_err()
+            .contains("array"));
+        let empty_evidence = serde_json::json!({"category": "efficiency", "severity": "warning", "code": "c", "message": "m", "evidence_refs": []});
+        assert!(normalize_risk(&empty_evidence, 0)
+            .unwrap_err()
+            .contains("grounded"));
+        let zero_line = serde_json::json!({"category": "efficiency", "severity": "warning", "code": "c", "message": "m", "evidence_refs": ["path:a"], "line": 0});
+        assert!(normalize_risk(&zero_line, 0)
+            .unwrap_err()
+            .contains("positive"));
+        let string_line = serde_json::json!({"category": "efficiency", "severity": "warning", "code": "c", "message": "m", "evidence_refs": ["path:a"], "line": "x"});
+        assert!(normalize_risk(&string_line, 0)
+            .unwrap_err()
+            .contains("positive"));
+        let ok = serde_json::json!({"category": "efficiency", "severity": "warning", "code": "c", "message": "m", "evidence_refs": ["path:a"], "path": "a.rs", "line": 3});
+        let risk = normalize_risk(&ok, 0).unwrap();
+        assert_eq!(risk.path.as_deref(), Some("a.rs"));
+        assert_eq!(risk.line, Some(3));
+        assert!(!risk.resolved);
+    }
+
+    #[test]
+    fn normalize_risks_rejects_bad_collections() {
+        assert!(normalize_risks(Some(&Value::String("x".into())))
+            .unwrap_err()
+            .contains("array"));
+        let many: Vec<Value> = (0..21)
+            .map(|i| {
+                serde_json::json!({"category": "efficiency", "severity": "warning", "code": format!("c{i}"), "message": "m", "evidence_refs": ["path:a"]})
+            })
+            .collect();
+        assert!(normalize_risks(Some(&Value::Array(many)))
+            .unwrap_err()
+            .contains("20"));
+    }
+
+    #[test]
+    fn normalize_validation_entry_covers_every_error_branch() {
+        assert!(normalize_validation_entry(&Value::String("x".into()), 0)
+            .unwrap_err()
+            .contains("object"));
+        let bad_status = serde_json::json!({"validator": "v", "status": "nope", "scope": "s"});
+        assert!(normalize_validation_entry(&bad_status, 0)
+            .unwrap_err()
+            .contains("status"));
+        let empty_validator =
+            serde_json::json!({"validator": "", "status": "passed", "scope": "s"});
+        assert!(normalize_validation_entry(&empty_validator, 0)
+            .unwrap_err()
+            .contains("validator and scope"));
+        let failed_no_reason =
+            serde_json::json!({"validator": "v", "status": "failed", "scope": "s"});
+        assert!(normalize_validation_entry(&failed_no_reason, 0)
+            .unwrap_err()
+            .contains("reason"));
+        let skipped_no_reason =
+            serde_json::json!({"validator": "v", "status": "skipped", "scope": "s"});
+        assert!(normalize_validation_entry(&skipped_no_reason, 0)
+            .unwrap_err()
+            .contains("reason"));
+        let ok = serde_json::json!({"validator": "v", "status": "passed", "scope": "s", "required": false, "command": "make test", "reason": "why"});
+        let entry = normalize_validation_entry(&ok, 0).unwrap();
+        assert!(!entry.required);
+        assert_eq!(entry.command.as_deref(), Some("make test"));
+        assert_eq!(entry.reason.as_deref(), Some("why"));
+    }
+
+    #[test]
+    fn normalize_validations_rejects_bad_collections() {
+        assert!(normalize_validations(Some(&Value::String("x".into())))
+            .unwrap_err()
+            .contains("at least one"));
+        assert!(normalize_validations(Some(&Value::Array(vec![])))
+            .unwrap_err()
+            .contains("at least one"));
+        let many: Vec<Value> = (0..21)
+            .map(|i| serde_json::json!({"validator": format!("v{i}"), "status": "passed", "scope": "s"}))
+            .collect();
+        assert!(normalize_validations(Some(&Value::Array(many)))
+            .unwrap_err()
+            .contains("20"));
+    }
+
+    #[test]
+    fn validate_evidence_targets_rejects_malformed_and_unknown() {
+        let changed: BTreeSet<&str> = ["src/lib.rs"].into_iter().collect();
+        let instructions: BTreeSet<&str> = ["CONTRIBUTING.md"].into_iter().collect();
+        let validators: BTreeSet<&str> = ["cargo test"].into_iter().collect();
+        let empty: BTreeSet<&str> = BTreeSet::new();
+        assert!(validate_evidence_targets(
+            &["no-colon".to_string()],
+            "x",
+            &changed,
+            &empty,
+            &empty
+        )
+        .unwrap_err()
+        .contains("malformed"));
+        assert!(validate_evidence_targets(
+            &["bogus:target".to_string()],
+            "x",
+            &changed,
+            &empty,
+            &empty
+        )
+        .unwrap_err()
+        .contains("unknown"));
+        validate_evidence_targets(
+            &["path:src/lib.rs".to_string()],
+            "x",
+            &changed,
+            &empty,
+            &empty,
+        )
+        .unwrap();
+        validate_evidence_targets(
+            &["instruction:CONTRIBUTING.md".to_string()],
+            "x",
+            &changed,
+            &instructions,
+            &empty,
+        )
+        .unwrap();
+        validate_evidence_targets(
+            &["validator:cargo test".to_string()],
+            "x",
+            &changed,
+            &empty,
+            &validators,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn result_normalization_rejects_wrong_schema() {
+        let mut forged = valid_result();
+        forged["schema_version"] = Value::String("wrong".into());
+        let err = normalize_change_quality_result(&forged, "fp_1", false, None, None).unwrap_err();
+        assert!(err.contains("schema_version"), "{err}");
+    }
+
+    #[test]
+    fn result_normalization_propagates_conclusion_errors() {
+        let mut bad = valid_result();
+        bad["reuse"] = serde_json::json!({"outcome": "nope", "summary": "s", "evidence_refs": ["path:src/lib.rs"]});
+        let err = normalize_change_quality_result(
+            &bad,
+            "fp_1",
+            false,
+            Some(&["src/lib.rs".to_string()]),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("reuse.outcome"), "{err}");
+        let mut bad2 = valid_result();
+        bad2["simplification"] = serde_json::json!({"outcome": "nope", "summary": "s", "evidence_refs": ["path:src/lib.rs"]});
+        let err = normalize_change_quality_result(
+            &bad2,
+            "fp_1",
+            false,
+            Some(&["src/lib.rs".to_string()]),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("simplification.outcome"), "{err}");
+    }
+
+    #[test]
+    fn safe_task_name_rejects_empty_and_bad_first_char() {
+        assert!(!safe_task_name(""));
+        assert!(!safe_task_name("-start"));
+        assert!(safe_task_name("ok-test"));
+        assert!(safe_task_name("@scope:test"));
+    }
+
+    #[test]
+    fn source_ref_joins_parts() {
+        assert_eq!(
+            source_ref("pyproject.toml", &["tool", "poe"]),
+            "pyproject.toml#tool.poe"
+        );
+        assert_eq!(source_ref("path", &[]), "path");
+    }
+
+    #[test]
+    fn python_hatch_env_scripts_are_discovered() {
+        let manifests = vec![serde_json::json!({
+            "path": "pyproject.toml",
+            "content": "[tool.hatch.envs.default.scripts]\ntest = \"pytest\"\nformat = \"ruff format\"\n"
+        })];
+        let plan = build_change_quality_validation_plan(&manifests, &[]);
+        let candidates = plan.get("candidates").and_then(Value::as_array).unwrap();
+        let hatch: Vec<&Value> = candidates
+            .iter()
+            .filter(|c| c.get("runner").and_then(Value::as_str) == Some("hatch_script"))
+            .collect();
+        assert_eq!(hatch.len(), 2);
+        let categories: BTreeSet<&str> = hatch
+            .iter()
+            .filter_map(|c| c.get("category").and_then(Value::as_str))
+            .collect();
+        assert_eq!(
+            categories,
+            ["format", "test"].into_iter().collect::<BTreeSet<&str>>()
+        );
+    }
+
+    #[test]
+    fn toml_to_json_maps_every_value_kind() {
+        let parsed: toml::Value = toml::from_str(
+            "int = 3\nfloat = 2.5\nbool = true\narr = [1, 2, 3]\ndate = 1979-05-27T07:32:00Z\nstr = \"x\"\n[table]\nkey = \"v\"\n",
+        )
+        .unwrap();
+        let json = toml_to_json(&parsed);
+        let obj = json.as_object().unwrap();
+        assert_eq!(obj.get("int"), Some(&serde_json::json!(3)));
+        assert_eq!(obj.get("bool"), Some(&serde_json::json!(true)));
+        assert_eq!(obj.get("str"), Some(&serde_json::json!("x")));
+        assert_eq!(obj.get("arr").unwrap().as_array().unwrap().len(), 3);
+        assert_eq!(
+            obj.get("table").unwrap().get("key"),
+            Some(&serde_json::json!("v"))
+        );
+        assert!(obj.get("float").unwrap().is_number());
+        assert!(obj.get("date").unwrap().is_string());
+    }
+
+    #[test]
+    fn read_manifest_reports_root_not_object() {
+        let (payload, warning) = read_manifest("package.json", "[1, 2, 3]");
+        assert!(payload.is_none());
+        assert_eq!(warning, Some("manifest_root_not_object"));
+    }
+
+    #[test]
+    fn validation_plan_handles_missing_and_unreadable_manifests() {
+        let manifests = vec![
+            serde_json::json!({"content": "[tool.poe.tasks]\ntest = \"x\""}),
+            serde_json::json!({"path": "pyproject.toml"}),
+            serde_json::json!({"path": "/abs/pyproject.toml", "content": "[tool.poe.tasks]\ntest = \"x\""}),
+            serde_json::json!({"path": "../pyproject.toml", "content": "[tool.poe.tasks]\ntest = \"x\""}),
+            serde_json::json!({"path": "Makefile", "content": "x"}),
+            serde_json::json!({"path": "pyproject.toml", "content": "not [valid"}),
+        ];
+        let plan = build_change_quality_validation_plan(&manifests, &[]);
+        let warnings = plan
+            .get("discovery_warnings")
+            .and_then(Value::as_array)
+            .unwrap();
+        assert_eq!(warnings.len(), 2);
+        assert_eq!(
+            plan.get("candidates")
+                .and_then(Value::as_array)
+                .unwrap()
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn parse_status_maps_unknown_to_skipped() {
+        assert_eq!(parse_status("fail"), VALIDATION_STATUS_FAILED);
+        assert_eq!(parse_status("error"), VALIDATION_STATUS_FAILED);
+        assert_eq!(parse_status("skip"), VALIDATION_STATUS_SKIPPED);
+        assert_eq!(parse_status("pass"), VALIDATION_STATUS_PASSED);
+        assert_eq!(parse_status("ok"), VALIDATION_STATUS_PASSED);
+        assert_eq!(parse_status("unknown"), VALIDATION_STATUS_SKIPPED);
+    }
+
+    #[test]
+    fn classify_parses_exit_code_command_and_unknown_status() {
+        let c = classify_change_input("validator: v\nexit_code: 1\ncommand: make test\n");
+        assert_eq!(c.validators[0].status, "failed");
+        assert_eq!(c.validators[0].command.as_deref(), Some("make test"));
+        let c2 = classify_change_input("validator: v\nstatus: whatever\n");
+        assert_eq!(c2.validators[0].status, "skipped");
+        assert!(!c2.tests_pass && !c2.tests_fail);
+    }
+
+    #[test]
+    fn change_kind_as_str_is_stable() {
+        assert_eq!(ChangeKind::Addition.as_str(), "addition");
+        assert_eq!(ChangeKind::Deletion.as_str(), "deletion");
+        assert_eq!(ChangeKind::Rename.as_str(), "rename");
+        assert_eq!(ChangeKind::Move.as_str(), "move");
+        assert_eq!(ChangeKind::BehaviorChange.as_str(), "behavior_change");
+    }
+
+    #[test]
+    fn classify_fallback_shapes_without_markers() {
+        let deletion = "diff --git a/old.rs b/old.rs\n--- a/old.rs\n+++ b/old.rs\n@@ -1,2 +0,0 @@\n-old line\n-old line2\n";
+        assert_eq!(classify(deletion), vec![ChangeKind::Deletion]);
+        let context = "diff --git a/lib.rs b/lib.rs\n@@ -1,1 +1,1 @@\n context line\n";
+        assert_eq!(classify(context), vec![ChangeKind::BehaviorChange]);
+    }
+
+    #[test]
+    fn looks_like_diff_detects_header_pair() {
+        assert!(looks_like_diff("diff --git a b"));
+        assert!(looks_like_diff("--- a\n"));
+        assert!(looks_like_diff("prose\n@@ -1 +1 @@\n"));
+        assert!(looks_like_diff("header\n+++ b/lib.rs\n--- a/lib.rs\n"));
+        assert!(!looks_like_diff("just prose"));
+    }
+
+    #[test]
+    fn qualification_proposals_require_result_and_fingerprint() {
+        // Missing result → defensive gate (only reachable via direct call).
+        let p =
+            ChangeQualityCapability::qualification_proposals(&serde_json::json!({"goal_id": "g1"}));
+        assert_eq!(p[0].kind, ProposalKind::Gate);
+        assert!(p[0].gate_question.as_deref().unwrap().contains("result"));
+
+        // Result without fingerprint → gate.
+        let p = ChangeQualityCapability::qualification_proposals(
+            &serde_json::json!({"result": valid_result()}),
+        );
+        assert_eq!(p[0].kind, ProposalKind::Gate);
+        assert!(p[0]
+            .gate_question
+            .as_deref()
+            .unwrap()
+            .contains("fingerprint"));
+
+        // Fingerprint via the scope fallback → accepted.
+        let p = ChangeQualityCapability::qualification_proposals(&serde_json::json!({
+            "result": valid_result(),
+            "scope": {"scope_fingerprint": "fp_1", "changed_files": ["src/lib.rs"]}
+        }));
+        assert_eq!(p[0].kind, ProposalKind::SuccessorTodo);
+        assert!(p[0].reason.contains("all guardrails pass"));
+    }
+
+    #[test]
+    fn double_separator_after_drive_is_not_absolute() {
+        assert_eq!(
+            bounded_text(&Value::String("C://foo".into()), "x", 100).unwrap(),
+            "C://foo"
+        );
+    }
+
+    #[test]
+    fn validator_evidence_ref_enforces_its_own_length_limit() {
+        // The first bounded_text (limit 400) passes; only the validator
+        // branch's tighter 160-char limit fails.
+        let long_target = "x".repeat(170);
+        let ref_str = format!("validator:{long_target}");
+        let err = normalize_evidence_ref(&Value::String(ref_str), "x").unwrap_err();
+        assert!(err.contains("exceeds"), "{err}");
+    }
+
+    #[test]
+    fn evidence_ref_and_conclusion_error_arms() {
+        // validator ref with private material → the validator bounded_text ? arm.
+        assert!(
+            normalize_evidence_ref(&Value::String("validator:/Users/secret".into()), "x")
+                .unwrap_err()
+                .contains("private")
+        );
+        // conclusion summary with private material → summary bounded_text ? arm.
+        let private_summary = serde_json::json!({"outcome": "reused", "summary": "/Users/secret", "evidence_refs": ["path:a"]});
+        assert!(
+            normalize_conclusion(Some(&private_summary), "reuse", &REUSE_OUTCOMES)
+                .unwrap_err()
+                .contains("private")
+        );
+        // conclusion evidence_refs not an array → normalize_evidence_refs ? arm.
+        let bad_evidence =
+            serde_json::json!({"outcome": "reused", "summary": "s", "evidence_refs": "not-array"});
+        assert!(
+            normalize_conclusion(Some(&bad_evidence), "reuse", &REUSE_OUTCOMES)
+                .unwrap_err()
+                .contains("array")
+        );
+    }
+
+    #[test]
+    fn risk_and_validation_error_arms() {
+        // risk path must be repo-relative → relative_path ? arm.
+        let bad_path = serde_json::json!({"category": "efficiency", "severity": "warning", "code": "c", "message": "m", "evidence_refs": ["path:a"], "path": "/abs"});
+        assert!(normalize_risk(&bad_path, 0)
+            .unwrap_err()
+            .contains("repo-relative"));
+        // validator with private material → validator bounded_text ? arm.
+        let private_validator =
+            serde_json::json!({"validator": "/Users/x", "status": "passed", "scope": "s"});
+        assert!(normalize_validation_entry(&private_validator, 0)
+            .unwrap_err()
+            .contains("private"));
+        // scope oversize → scope bounded_text ? arm.
+        let oversize_scope =
+            serde_json::json!({"validator": "v", "status": "passed", "scope": "x".repeat(241)});
+        assert!(normalize_validation_entry(&oversize_scope, 0)
+            .unwrap_err()
+            .contains("exceeds"));
+    }
+
+    #[test]
+    fn result_normalization_rejects_unknown_simplification_and_risk_evidence() {
+        let changed: &[String] = &["src/lib.rs".to_string()];
+        // reuse evidence valid, simplification evidence unknown → simplification ? arm.
+        let mut bad_simpl = valid_result();
+        bad_simpl["simplification"] = serde_json::json!({
+            "outcome": "retained",
+            "summary": "kept",
+            "evidence_refs": ["path:unknown_file.rs"],
+            "safe_fix_applied": false
+        });
+        let err = normalize_change_quality_result(&bad_simpl, "fp_1", false, Some(changed), None)
+            .unwrap_err();
+        assert!(err.contains("simplification"), "{err}");
+        // reuse + simplification valid, risk evidence unknown → risk ? arm.
+        let mut bad_risk = valid_result();
+        bad_risk["risks"] = serde_json::json!([{
+            "category": "efficiency",
+            "severity": "warning",
+            "code": "c",
+            "message": "m",
+            "evidence_refs": ["path:unknown_file.rs"]
+        }]);
+        let err = normalize_change_quality_result(&bad_risk, "fp_1", false, Some(changed), None)
+            .unwrap_err();
+        assert!(err.contains("risks[0]"), "{err}");
     }
 }
