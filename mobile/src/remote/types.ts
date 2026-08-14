@@ -60,6 +60,10 @@ export interface PresenceSession {
 
 export interface Presence {
   online: boolean;
+  /** An intentional desktop disconnect; `online: false` is authoritative. */
+  disconnected?: boolean;
+  /** Immediate desktop-originated unpair notice; server revocation backs it up. */
+  unpaired?: boolean;
   pairId: string;
   bridgeInstanceId: string;
   lastHeartbeatTs: number;

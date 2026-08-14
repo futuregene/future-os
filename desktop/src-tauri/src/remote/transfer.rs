@@ -23,6 +23,7 @@ pub const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 pub const MAX_MESSAGE_BYTES: u64 = 20 * 1024 * 1024;
 pub const MAX_ATTACHMENTS: usize = 10;
 pub const MAX_IMAGES: usize = 4;
+const MOBILE_PREVIEW_MAX_EDGE: u32 = 1600;
 pub const CHUNK_BYTES: u64 = 512 * 1024;
 const TRANSFER_TTL: Duration = Duration::from_secs(30 * 60);
 
@@ -445,7 +446,7 @@ pub async fn prepare_download(
     let prepared = prepare_preview(&source, &display_name)?;
     // prepare_preview already bounds its output: text/markdown previews are
     // byte-copies of a size-checked source and image previews are re-encoded at
-    // ≤600px, so the preview can never exceed MAX_FILE_BYTES here.
+    // ≤1600px, so the preview can never exceed MAX_FILE_BYTES here.
     let size = std::fs::metadata(&prepared.path)?.len();
     let transfer_id = new_transfer_id("download");
     let content_hash = sha256_file(&prepared.path)?;
@@ -550,8 +551,12 @@ fn prepare_preview(
         let image = reader
             .decode()
             .map_err(|error| format!("Undecodable image: {error}"))?;
-        let resized = if image.width().max(image.height()) > 600 {
-            image.resize(600, 600, image::imageops::FilterType::Lanczos3)
+        let resized = if image.width().max(image.height()) > MOBILE_PREVIEW_MAX_EDGE {
+            image.resize(
+                MOBILE_PREVIEW_MAX_EDGE,
+                MOBILE_PREVIEW_MAX_EDGE,
+                image::imageops::FilterType::Lanczos3,
+            )
         } else {
             image
         };
@@ -1494,7 +1499,7 @@ mod flow_tests {
 
         // Large PNG → resized PNG preview.
         let png = dir.join("big.png");
-        image::DynamicImage::new_rgb8(1200, 800).save(&png).unwrap();
+        image::DynamicImage::new_rgb8(3200, 800).save(&png).unwrap();
         let preview = prepare_preview(&png, "big.png").unwrap();
         assert_eq!(preview.mime_type, "image/png");
         let decoded = image::ImageReader::open(&preview.path)
@@ -1503,7 +1508,8 @@ mod flow_tests {
             .unwrap()
             .decode()
             .unwrap();
-        assert!(decoded.width().max(decoded.height()) <= 600);
+        assert_eq!(decoded.width(), MOBILE_PREVIEW_MAX_EDGE);
+        assert_eq!(decoded.height(), 400);
         std::fs::remove_file(preview.path).unwrap();
 
         // Corrupt bytes under an image extension → undecodable.

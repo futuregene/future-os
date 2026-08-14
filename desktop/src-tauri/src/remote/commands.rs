@@ -356,6 +356,18 @@ async fn handle_command(
             )
             .await;
         }
+        // A phone-initiated unpair first reaches the desktop over the existing
+        // authenticated command channel. Acknowledge before stopping the
+        // bridge, then perform the destructive work in a separate task so the
+        // requester can clear itself without waiting for token expiry.
+        "unpair" => {
+            reply(client, &msg, true, json!({}), None).await;
+            tauri::async_runtime::spawn(async {
+                if let Err(error) = super::unpair().await {
+                    eprintln!("remote: phone-initiated unpair failed: {error}");
+                }
+            });
+        }
         "list_sessions" => match crate::store::list_threads() {
             Ok(threads) => {
                 let active_sessions: Vec<String> =
