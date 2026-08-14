@@ -45,8 +45,6 @@
 
 - [wiki-prompt.md](wiki-prompt.md)（[en](wiki-prompt-en.md)）——（重新）生成 wiki
   页面的提示词；定义范围、风格与页面清单。
-- [architecture-audit/](architecture-audit/README.md) —— 代码架构审计报告
-  （时点快照，2026-08-05）。
 - [verification/](verification/errors-outdated-missing.md) —— 文档↔源码核验工作
   笔记（事实清单、错误/过时/缺失清单）。
 

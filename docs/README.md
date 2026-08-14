@@ -47,8 +47,6 @@ only together with the packaging pipelines.
 
 - [wiki-prompt.md](wiki-prompt.md) ([en](wiki-prompt-en.md)) — generation prompt
   for (re)creating the wiki pages; defines scope, style and page inventory.
-- [architecture-audit/](architecture-audit/README.md) — point-in-time code
-  architecture audit reports (historical snapshot, 2026-08-05).
 - [verification/](verification/errors-outdated-missing.md) — doc↔source
   verification working notes (fact inventory, error/outdated/missing list).
 
