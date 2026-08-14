@@ -126,7 +126,8 @@ fn assemble_reflects_goal_state_and_runs_via_cli() {
             vec![
                 "run_history".to_string(),
                 "outcome_streak".to_string(),
-                "quota_status".to_string()
+                "quota_status".to_string(),
+                "semantic_history".to_string()
             ]
         );
         assert_eq!(packet.run_history.run_count, 1);

@@ -106,6 +106,18 @@ pub struct QuotaStatusSection {
     pub projected_spent_slots: u32,
 }
 
+/// Semantic-history section (provider `semantic_history`, G13 ③): the
+/// goal-level bounded semantic event summaries (kind / todo_id / summary /
+/// ts — summaries are truncated at write time, public-safe).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemanticHistorySection {
+    pub schema_version: String,
+    pub cap: usize,
+    /// Newest-last, bounded to `cap`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<crate::decision::goal_frontier::semantic_history::SemanticEvent>,
+}
+
 /// The assembled decision context (LoopX evidence packet, compact set).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecisionContextPacket {
@@ -124,6 +136,9 @@ pub struct DecisionContextPacket {
     pub run_history: RunHistorySection,
     pub outcome_streak: OutcomeStreakSection,
     pub quota: QuotaStatusSection,
+    /// G13 ③: semantic event history (bounded) — provider `semantic_history`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_history: Option<SemanticHistorySection>,
 }
 
 impl DecisionContextPacket {
@@ -222,6 +237,7 @@ mod tests {
             run_history: RunHistorySection::default(),
             outcome_streak: OutcomeStreakSection::default(),
             quota: QuotaStatusSection::default(),
+            semantic_history: None,
         };
         assert_eq!(packet.digest(), packet.digest());
         assert_eq!(packet.digest().len(), 20);

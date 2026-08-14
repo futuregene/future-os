@@ -9,7 +9,9 @@
 
 use crate::state::Goal;
 
-use super::packets::{OutcomeStreakSection, QuotaStatusSection, RunHistorySection};
+use super::packets::{
+    OutcomeStreakSection, QuotaStatusSection, RunHistorySection, SemanticHistorySection,
+};
 
 /// One provider's contribution to the packet.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,6 +19,7 @@ pub enum ProviderSection {
     RunHistory(RunHistorySection),
     OutcomeStreak(OutcomeStreakSection),
     QuotaStatus(QuotaStatusSection),
+    SemanticHistory(SemanticHistorySection),
 }
 
 impl ProviderSection {
@@ -25,6 +28,7 @@ impl ProviderSection {
             ProviderSection::RunHistory(_) => RunHistoryProvider.id(),
             ProviderSection::OutcomeStreak(_) => OutcomeStreakProvider.id(),
             ProviderSection::QuotaStatus(_) => QuotaStatusProvider.id(),
+            ProviderSection::SemanticHistory(_) => SemanticHistoryProvider.id(),
         }
     }
 }
@@ -111,13 +115,38 @@ impl DecisionContextProvider for QuotaStatusProvider {
     }
 }
 
+/// Provider `semantic_history` (G13 ③): the goal-level bounded semantic
+/// event summaries folded from the event ledger (kind / todo_id / summary /
+/// ts) — consumed as `semantic_history` in the decision-context packet.
+pub struct SemanticHistoryProvider;
+
+impl DecisionContextProvider for SemanticHistoryProvider {
+    fn id(&self) -> &'static str {
+        "semantic_history"
+    }
+    fn describe(&self) -> &'static str {
+        "bounded goal-level semantic event summaries folded from the event ledger"
+    }
+    fn collect(&self, goal: &Goal) -> ProviderSection {
+        ProviderSection::SemanticHistory(SemanticHistorySection {
+            schema_version:
+                crate::decision::goal_frontier::semantic_history::SEMANTIC_HISTORY_SCHEMA_VERSION
+                    .to_string(),
+            cap: crate::decision::goal_frontier::semantic_history::SEMANTIC_HISTORY_CAP,
+            events: goal.semantic_history.clone(),
+        })
+    }
+}
+
 /// The builtin provider set in deterministic assembly order (the report's
-/// P1-4 compact set: run history / outcome streak / quota status).
+/// P1-4 compact set: run history / outcome streak / quota status + the G13
+/// semantic history).
 pub fn builtin_providers() -> Vec<Box<dyn DecisionContextProvider>> {
     vec![
         Box::new(RunHistoryProvider),
         Box::new(OutcomeStreakProvider),
         Box::new(QuotaStatusProvider),
+        Box::new(SemanticHistoryProvider),
     ]
 }
 
@@ -260,7 +289,37 @@ mod tests {
     #[test]
     fn builtin_order_is_deterministic() {
         let ids: Vec<&str> = builtin_providers().iter().map(|p| p.id()).collect();
-        assert_eq!(ids, vec!["run_history", "outcome_streak", "quota_status"]);
+        assert_eq!(
+            ids,
+            vec![
+                "run_history",
+                "outcome_streak",
+                "quota_status",
+                "semantic_history"
+            ]
+        );
         assert!(!builtin_providers().iter().any(|p| p.describe().is_empty()));
+    }
+
+    #[test]
+    fn semantic_history_provider_collects_bounded_events() {
+        let mut g = Goal::new("g", "o", "/tmp");
+        g.record_semantic_event("run_landed", Some("T1"), "completed", 10);
+        let section = SemanticHistoryProvider.collect(&g);
+        assert_eq!(section.provider_id(), "semantic_history");
+        let ProviderSection::SemanticHistory(s) = section else {
+            panic!("expected semantic history section")
+        };
+        assert_eq!(
+            s.schema_version,
+            crate::decision::goal_frontier::semantic_history::SEMANTIC_HISTORY_SCHEMA_VERSION
+        );
+        assert_eq!(s.events.len(), 1);
+        assert_eq!(s.events[0].kind, "run_landed");
+        assert_eq!(s.events[0].todo_id.as_deref(), Some("T1"));
+        assert_eq!(
+            s.cap,
+            crate::decision::goal_frontier::semantic_history::SEMANTIC_HISTORY_CAP
+        );
     }
 }

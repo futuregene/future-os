@@ -771,6 +771,22 @@ pub struct Goal {
     /// (append-only; detection + bookkeeping, no auto-injection).
     #[serde(default)]
     pub turn_no_progress: Vec<TurnNoProgressRecord>,
+    /// G13 ①: timestamps of frontier-changing events (todo added/completed/
+    /// superseded, gate resolved, frontier-delta replan ack, todo archived),
+    /// folded during replay — the reset markers for outcome-continuity
+    /// segments ([`crate::decision::goal_frontier::outcome_continuity`]).
+    #[serde(default)]
+    pub frontier_change_ts: Vec<u64>,
+    /// G13 ③: goal-level bounded semantic event history (recent
+    /// [`crate::decision::goal_frontier::semantic_history::SEMANTIC_HISTORY_CAP`]
+    /// summaries, oldest dropped) — folded from the event ledger during
+    /// replay; consumable by the decision-context `semantic_history` provider.
+    #[serde(default)]
+    pub semantic_history: Vec<crate::decision::goal_frontier::semantic_history::SemanticEvent>,
+    /// G13 ②: explicit replan rule set (folded from `ReplanRuleSetUpdated`;
+    /// latest wins). `None` → the default rule set applies.
+    #[serde(default)]
+    pub replan_rule_set: Option<crate::decision::goal_frontier::replan_rules::ReplanRuleSet>,
 }
 
 /// P1-3①: one automation-liveness breach alert (LoopX automation_liveness):
@@ -873,6 +889,9 @@ impl Goal {
             scheduler_heartbeats: std::collections::BTreeMap::new(),
             liveness_alerts: vec![],
             turn_no_progress: vec![],
+            frontier_change_ts: vec![],
+            semantic_history: vec![],
+            replan_rule_set: None,
         }
     }
 
@@ -1223,7 +1242,7 @@ pub struct TodoSourceProof {
     pub schema_version: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TerminalClosureProof {
     pub all_todos_done: bool,
     pub derived: bool,

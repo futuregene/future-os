@@ -127,6 +127,7 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         "backup" => cmd_backup(&store, &args[1..]),
         "authority" => cmd_authority(&mut store, &args[1..]),
         "replan" => cmd_replan(&mut store, &args[1..]),
+        "frontier" => cmd_frontier(&store, &args[1..]),
         "profile" => cmd_profile(&mut store, &args[1..]),
         "status" => cmd_status(&store, &args[1..]),
         "quota" => cmd_quota(&store, &args[1..]),
@@ -197,6 +198,7 @@ const JOURNEY_ASSIGNMENTS: &[(&str, Journey)] = &[
     ("todo", Journey::Daily),
     ("gate", Journey::Daily),
     ("replan", Journey::Daily),
+    ("frontier", Journey::Daily),
     ("lease", Journey::Daily),
     ("task-graph", Journey::Daily),
     ("quota", Journey::Daily),
@@ -291,8 +293,14 @@ fn build_cli_registry() -> CommandRegistry {
     r.command(
         todo,
         "replan",
-        "ack a replan obligation / list obligations",
-        "replan ack --goal G --delta-kind ... | replan obligations --goal G",
+        "ack a replan obligation / list obligations / inspect or set the replan rule set",
+        "replan ack --goal G --delta-kind ... | replan obligations --goal G | replan rules show|set --goal G",
+    );
+    r.command(
+        todo,
+        "frontier",
+        "goal-frontier projection (G13): frontier + outcome segments + replan rule + terminal judgement + semantic history",
+        "frontier show --goal G [--format json]",
     );
     r.command(
         todo,
@@ -2252,7 +2260,12 @@ fn cmd_authority(store: &mut Store, args: &[String]) -> Result<()> {
 /// frontier-changing delta (LoopX: replan ACK contract).
 /// `loopx replan obligations --goal G` lists the unfulfilled replan
 /// obligations (G-13 bookkeeping).
+/// `loopx replan rules show|set --goal G [--rule-ids R1,R2,...]` inspects or
+/// updates the goal's replan rule set (G13 ②).
 fn cmd_replan(store: &mut Store, args: &[String]) -> Result<()> {
+    if args.first().map(|s| s.as_str()) == Some("rules") {
+        return cmd_replan_rules(store, &args[1..]);
+    }
     if args.first().map(|s| s.as_str()) == Some("obligations") {
         let mut goal_id = None;
         reject_unknown_flags(
@@ -2312,6 +2325,211 @@ fn cmd_replan(store: &mut Store, args: &[String]) -> Result<()> {
         ts: crate::state::now_epoch(),
     })?;
     println!("replan ack recorded (delta_kinds={delta_kinds:?}) ✔");
+    Ok(())
+}
+
+/// `loopx replan rules show --goal G [--format json]` — the goal's active
+/// replan rule set, the ordered policy table with per-rule match status,
+/// and the selected rule decision (disposition → replan decision +
+/// obligation).
+/// `loopx replan rules set --goal G [--rule-ids R1,R2,...]` — declare an
+/// explicit rule set (full replace; `--rule-ids ""` resets to the default
+/// set) via a `ReplanRuleSetUpdated` event.
+fn cmd_replan_rules(store: &mut Store, args: &[String]) -> Result<()> {
+    let sub = args.first().map(|s| s.as_str());
+    match sub {
+        Some("show") => {}
+        Some("set") => {}
+        _ => bail!("replan rules subcommand must be `show` or `set`"),
+    }
+    let mut goal_id = None;
+    let mut rule_ids: Option<String> = None;
+    reject_unknown_flags(&args[1..], &["--format", "--goal", "--json", "--rule-ids"])?;
+    parse_pairs(&args[1..], |k, v| match k {
+        "--goal" => goal_id = Some(v),
+        "--rule-ids" => rule_ids = Some(v),
+        _ => {}
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    if sub == Some("set") {
+        let ids: Vec<String> = match rule_ids {
+            Some(raw) => {
+                if raw.trim().is_empty() {
+                    vec![]
+                } else {
+                    raw.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                }
+            }
+            None => vec![],
+        };
+        // Validate against the builtin vocabulary up front (unknown ids are
+        // allowed — selection skips them — but typos deserve a warning).
+        for id in &ids {
+            if !crate::decision::goal_frontier::replan_rules::is_known_rule(id) {
+                println!("warning: unknown rule id `{id}` — selection will skip it");
+            }
+        }
+        store
+            .replay(&goal_id)?
+            .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+        store.append(Event::ReplanRuleSetUpdated {
+            goal_id: goal_id.clone(),
+            rule_set_version:
+                crate::decision::goal_frontier::replan_rules::DEFAULT_REPLAN_RULE_SET_VERSION
+                    .to_string(),
+            rule_ids: ids.clone(),
+            ts: crate::state::now_epoch(),
+        })?;
+        if ids.is_empty() {
+            println!("replan rule set reset to the default set ✔");
+        } else {
+            println!("replan rule set updated (rule_ids={ids:?}) ✔");
+        }
+        return Ok(());
+    }
+    // show
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let active = crate::decision::goal_frontier::replan_rules::active_rule_set(&goal);
+    let facts = crate::decision::goal_frontier::replan_rules::facts_for_goal(&goal);
+    let decision = crate::decision::goal_frontier::replan_rules::select_replan_rule(&goal);
+    if wants_json(&args[1..]) {
+        let table: Vec<serde_json::Value> = active
+            .effective_rule_ids()
+            .iter()
+            .map(|id| {
+                serde_json::json!({
+                    "rule": id,
+                    "selected": id == &decision.rule,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schema_version": crate::decision::goal_frontier::replan_rules::DEFAULT_REPLAN_RULE_SET_VERSION,
+                "goal_id": goal_id,
+                "rule_set": active,
+                "table": table,
+                "facts": {
+                    "existing_replan_required": facts.existing_replan_required,
+                    "blocking_user_open_count": facts.blocking_user_open_count,
+                    "succession_gap_count": facts.succession_gap_count,
+                    "acceptance_gap_count": facts.acceptance_gap_count,
+                    "selectable_frontier_advancement": facts.selectable_frontier_advancement,
+                    "monitor_count": facts.monitor_count,
+                    "monitor_no_change_streak_triggered": facts.monitor_no_change_streak_triggered,
+                    "monitor_only_lane": facts.monitor_only_lane,
+                },
+                "decision": decision,
+            }))?
+        );
+        return Ok(());
+    }
+    println!(
+        "replan rule set ({goal_id}) — version {}:",
+        active.schema_version
+    );
+    for id in active.effective_rule_ids() {
+        let mark = if id == decision.rule {
+            "◀ selected"
+        } else {
+            ""
+        };
+        println!("  {id} {mark}");
+    }
+    println!(
+        "decision: rule={} derives_obligation={} obligation={} reason=\"{}\"",
+        decision.rule,
+        decision.derives_obligation,
+        decision.obligation_kind.as_deref().unwrap_or("-"),
+        decision.reason
+    );
+    Ok(())
+}
+
+// ── frontier (G13) ────────────────────────────────────────────────────────
+
+/// `loopx frontier show --goal G [--format json]` — the composed goal
+/// frontier: the existing frontier projection plus the four G13 layers
+/// (outcome segments / replan rule decision / terminal judgement /
+/// semantic history).
+fn cmd_frontier(store: &Store, args: &[String]) -> Result<()> {
+    if args.first().map(|s| s.as_str()) != Some("show") {
+        bail!(
+            "frontier subcommand must be `show` (try `{} frontier show --help`)",
+            prog()
+        );
+    }
+    let mut goal_id = None;
+    reject_unknown_flags(&args[1..], &["--format", "--goal", "--json"])?;
+    parse_pairs(&args[1..], |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v)
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let show = crate::decision::goal_frontier::frontier_show(&goal);
+    if wants_json(&args[1..]) {
+        println!("{}", serde_json::to_string_pretty(&show)?);
+        return Ok(());
+    }
+    let fp = &show.frontier_projection;
+    println!("goal frontier ({goal_id}):");
+    println!(
+        "  lane={} replan_required={} unclaimed_advancement={} acceptance_gaps={} monitors_open={} monitors_due={}",
+        show.lane,
+        fp.replan_required,
+        fp.unclaimed_advancement,
+        fp.acceptance_gaps,
+        fp.monitors_open,
+        fp.monitors_due
+    );
+    if show.outcome_segments.is_empty() {
+        println!("  outcome_segments: (no runs yet)");
+    } else {
+        let segments = show
+            .outcome_segments
+            .iter()
+            .map(|s| format!("{} [{} ×{}]", s.segment_id, s.kind, s.length))
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("  outcome_segments: {segments}");
+    }
+    println!(
+        "  replan rule: {} (derives_obligation={}{})",
+        show.replan_rule.rule,
+        show.replan_rule.derives_obligation,
+        show.replan_rule
+            .obligation_kind
+            .as_deref()
+            .map(|k| format!(", obligation={k}"))
+            .unwrap_or_default()
+    );
+    if show.terminal_judgement.terminal {
+        println!("  terminal: yes (kind=no_followup, source=validated_goal_closure)");
+    } else {
+        println!(
+            "  terminal: no ({} gap(s)):",
+            show.terminal_judgement.gaps.len()
+        );
+        for gap in &show.terminal_judgement.gaps {
+            println!("    - [{}] {}", gap.kind, gap.description);
+        }
+    }
+    let recent: Vec<&crate::decision::goal_frontier::semantic_history::SemanticEvent> =
+        show.semantic_history.iter().rev().take(5).collect();
+    println!("  semantic_history (last {}):", recent.len());
+    for e in recent.iter().rev() {
+        println!("    {} {} — {}", e.ts, e.kind, e.summary);
+    }
     Ok(())
 }
 
@@ -8218,6 +8436,16 @@ fn describe_event(event: &crate::store::Event) -> String {
         } => {
             return format!(
                 "succession_occurred primary={primary} backup={backup} reason={reason}"
+            );
+        }
+        Event::ReplanRuleSetUpdated {
+            rule_set_version,
+            rule_ids,
+            ..
+        } => {
+            return format!(
+                "replan_rule_set_updated version={rule_set_version} rules={}",
+                rule_ids.join(",")
             );
         }
     };
