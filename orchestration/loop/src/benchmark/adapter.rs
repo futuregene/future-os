@@ -242,7 +242,11 @@ impl BenchmarkAdapter for GrpcLoopxAdapter {
 
     fn observe(&mut self, handle: &RunHandle) -> Result<Observation> {
         let before = Self::block_on(self.client.session_totals(&self.session_id))?;
-        let summary = Self::block_on(self.client.run_turn(&self.session_id, &handle.run_id, None))?;
+        let summary =
+            Self::block_on(
+                self.client
+                    .run_turn(&self.session_id, &handle.run_id, None, None),
+            )?;
         let after = Self::block_on(self.client.session_totals(&self.session_id))?;
         Ok(Observation {
             terminal_state: summary.terminal_state,

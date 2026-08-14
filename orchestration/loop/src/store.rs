@@ -295,6 +295,21 @@ pub enum Event {
         no_change_count: u32,
         ts: u64,
     },
+    /// O3: idle-turn detection — a turn ended with no write-class tool
+    /// (write/edit/shell) started inside the no-progress window. Detection +
+    /// bookkeeping only (no auto-injection): orchestrators nudge via the todo
+    /// update steering channel. `agent_id` is `None` for anonymous runs.
+    TurnNoProgress {
+        goal_id: String,
+        todo_id: String,
+        #[serde(default)]
+        agent_id: Option<String>,
+        /// Seconds since the last write-class tool start (turn start when none).
+        idle_secs: u64,
+        /// Total tool calls observed this turn (all classes).
+        tool_calls_total: u32,
+        ts: u64,
+    },
     /// G-3: a quota slot was spent (reference QUOTA_SPENT). Recorded alongside
     /// the run ledger; `source` mirrors the slot-accounting spend source
     /// (`run` / `agent` / `heartbeat`) and `slots` the count spent (1 per
@@ -562,6 +577,7 @@ impl Event {
             | Event::AuthoritySet { goal_id, .. }
             | Event::TodoArchived { goal_id, .. }
             | Event::MonitorPolled { goal_id, .. }
+            | Event::TurnNoProgress { goal_id, .. }
             | Event::QuotaSpent { goal_id, .. }
             | Event::CapabilityInvoked { goal_id, .. }
             | Event::EvidenceAttached { goal_id, .. }
@@ -1678,6 +1694,26 @@ fn apply(goal: &mut Goal, event: Event) {
             consecutive,
             ts,
         }),
+        // O3: idle-turn no-progress records fold into goal state
+        // (append-only) — visible in `status` so orchestrators can see the
+        // breach without replaying the raw ledger.
+        Event::TurnNoProgress {
+            goal_id,
+            todo_id,
+            agent_id,
+            idle_secs,
+            tool_calls_total,
+            ts,
+        } => goal
+            .turn_no_progress
+            .push(crate::state::TurnNoProgressRecord {
+                goal_id,
+                todo_id,
+                agent_id,
+                idle_secs,
+                tool_calls_total,
+                ts,
+            }),
         // P1-5 + P1-1 + P1-4 + G-16 projection-only events: read from the
         // event log by their read models; goal state is unchanged on replay.
         Event::RewardSignalRecorded { .. }

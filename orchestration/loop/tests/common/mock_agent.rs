@@ -10,6 +10,21 @@ use std::sync::{Arc, Mutex};
 
 use future_rpc::proto::future_agent_server::{FutureAgent, FutureAgentServer};
 use future_rpc::proto::{RpcCommand, RpcResponse, StreamEvent, StreamRequest};
+use tokio_stream::StreamExt;
+
+/// O5: scripted behavior for ONE `stream_events` attach (consumed in order;
+/// the first entry scripts the first attach, and so on).
+#[derive(Clone, Copy, Debug)]
+pub enum AttachPlan {
+    /// Serve the matching events (idx > after_idx), then terminate with a
+    /// `DataLoss` "event stream gap" error after `n` served events.
+    GapAfter(usize),
+    /// Like `GapAfter`, but with a non-recoverable `internal` status (no
+    /// retry path).
+    HardErrorAfter(usize),
+    /// Serve all matching events and close cleanly.
+    Complete,
+}
 
 #[derive(Default)]
 pub struct MockState {
@@ -28,11 +43,19 @@ pub struct MockState {
     pub grpc_error: bool,
     /// stream_events returns a stream that never yields (timeout tests).
     pub hang_stream: bool,
+    /// Replays the scripted `events` first, then never yields — the
+    /// budget-truncation path WITH observed tool starts (O3 idle detection).
+    pub events_then_hang: bool,
     /// stream_events fails immediately with a tonic status.
     pub stream_error: bool,
     /// After N scripted events the stream yields one tonic error (mid-stream
     /// failure path in run_turn).
     pub stream_fail_after: Option<usize>,
+    /// O5: per-attach stream script for gap-recovery tests. Empty = the
+    /// legacy single-shot knobs above.
+    pub stream_attach_plan: Vec<AttachPlan>,
+    /// O5: `after_idx` values seen by stream_events, in attach order.
+    pub attach_after_idx: Vec<i64>,
     /// Per-command raw `data` payload override (valid JSON or not).
     pub raw: HashMap<String, String>,
     pub models_payload: Option<String>,
@@ -137,8 +160,41 @@ impl FutureAgent for MockAgent {
         &self,
         request: tonic::Request<StreamRequest>,
     ) -> Result<tonic::Response<Self::StreamEventsStream>, tonic::Status> {
-        let _ = request.into_inner();
-        let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let req = request.into_inner();
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        st.attach_after_idx.push(req.after_idx);
+        if !st.stream_attach_plan.is_empty() {
+            let attach_no = st.attach_after_idx.len();
+            let plan = st.stream_attach_plan.remove(0);
+            // Like the real agent's atomic attach: replay only events after
+            // the client's cursor.
+            let matching: Vec<StreamEvent> = st
+                .events
+                .iter()
+                .filter(|e| e.idx > req.after_idx)
+                .cloned()
+                .collect();
+            let mut items: Vec<Result<StreamEvent, tonic::Status>> = Vec::new();
+            match plan {
+                AttachPlan::Complete => {
+                    items.extend(matching.into_iter().map(Ok));
+                }
+                AttachPlan::GapAfter(n) => {
+                    items.extend(matching.into_iter().take(n).map(Ok));
+                    items.push(Err(tonic::Status::data_loss(format!(
+                        "event stream gap for session sess, run mock; reconnect with \
+                         atomic attach (mock gap #{attach_no})"
+                    ))));
+                }
+                AttachPlan::HardErrorAfter(n) => {
+                    items.extend(matching.into_iter().take(n).map(Ok));
+                    items.push(Err(tonic::Status::internal(format!(
+                        "mock hard failure #{attach_no}"
+                    ))));
+                }
+            }
+            return Ok(tonic::Response::new(Box::pin(tokio_stream::iter(items))));
+        }
         if st.stream_error {
             return Err(tonic::Status::internal("mock stream attach failure"));
         }
@@ -151,6 +207,11 @@ impl FutureAgent for MockAgent {
             if items.len() >= n {
                 items.insert(n, Err(tonic::Status::data_loss("mock mid-stream failure")));
             }
+        }
+        if st.events_then_hang {
+            let scripted = tokio_stream::iter(items);
+            let pending = tokio_stream::pending::<Result<StreamEvent, tonic::Status>>();
+            return Ok(tonic::Response::new(Box::pin(scripted.chain(pending))));
         }
         Ok(tonic::Response::new(Box::pin(tokio_stream::iter(items))))
     }
