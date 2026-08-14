@@ -11,9 +11,10 @@
 //! reference-control-plane layout mirrors).
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde_json::json;
 
 use crate::state::{Goal, TaskClass, Todo, TodoStatus};
@@ -67,12 +68,125 @@ pub fn write_goal_doc(project: &str, objective: &str) -> Result<()> {
 /// (`<cwd>/.future/loop/goals/<id>/ACTIVE_GOAL_STATE.md`).
 pub fn write_active_state(goal_dir: &Path, goal: &Goal) -> Result<()> {
     fs::create_dir_all(goal_dir)?;
+    let lock = acquire_active_state_lock(goal_dir)?;
     let md = render_active_state(goal);
-    fs::write(goal_dir.join("ACTIVE_GOAL_STATE.md"), md).context("write ACTIVE_GOAL_STATE.md")?;
-    // Lock sidecar (file-tree parity; our real concurrency guard is the
-    // advisory file lock in the store).
-    fs::write(goal_dir.join("ACTIVE_GOAL_STATE.md.lock"), "").ok();
-    Ok(())
+    let result =
+        fs::write(goal_dir.join("ACTIVE_GOAL_STATE.md"), md).context("write ACTIVE_GOAL_STATE.md");
+    release_active_state_lock(&lock);
+    result
+}
+
+// ── ACTIVE_GOAL_STATE.md.lock (liveness-checked sidecar lock) ─────────────
+//
+// The active-state markdown has a LoopX-compatible sidecar lock. Acquiring
+// writes OUR pid into the lock file; on conflict we read the holder's pid
+// and probe liveness (`kill -0`): a live holder is a hard error, a dead
+// holder or an empty lock older than [`EMPTY_LOCK_STALE_AFTER`] is a zombie
+// we clear and take over (O2: lock liveness self-heal).
+
+/// How old an EMPTY (no pid) lock file must be before it counts as a zombie
+/// and is taken over. A fresh empty lock is either a writer that has not
+/// finished writing its pid yet, or one that crashed mid-acquire —
+/// conservative: refuse takeover until it ages out.
+pub const EMPTY_LOCK_STALE_AFTER: Duration = Duration::from_secs(10 * 60);
+
+/// Acquire the `ACTIVE_GOAL_STATE.md.lock` sidecar for `goal_dir`, writing
+/// this process's pid into the file. On success the caller owns the lock and
+/// MUST release it with [`release_active_state_lock`]; on failure a live
+/// holder or a fresh empty lock is reported with a descriptive error.
+pub fn acquire_active_state_lock(goal_dir: &Path) -> Result<PathBuf> {
+    acquire_active_state_lock_with(goal_dir, EMPTY_LOCK_STALE_AFTER)
+}
+
+/// Testable variant: `empty_stale_after` overrides the empty-lock staleness
+/// threshold.
+fn acquire_active_state_lock_with(goal_dir: &Path, empty_stale_after: Duration) -> Result<PathBuf> {
+    fs::create_dir_all(goal_dir)?;
+    let lock_path = goal_dir.join("ACTIVE_GOAL_STATE.md.lock");
+    // Bounded retry: takeover clears the file, but another process may win
+    // the create race; re-check a few times.
+    for _ in 0..4 {
+        if lock_path.exists() {
+            probe_and_takeover(&lock_path, empty_stale_after)?;
+        }
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(mut f) => {
+                use std::io::Write;
+                writeln!(f, "{}", std::process::id()).context("write pid into lock")?;
+                return Ok(lock_path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e).context("create ACTIVE_GOAL_STATE.md.lock"),
+        }
+    }
+    bail!("could not acquire ACTIVE_GOAL_STATE.md.lock (contended)")
+}
+
+/// Check an existing lock file: a live pid holder is a hard error; a dead
+/// holder or an empty lock past `empty_stale_after` is removed (zombie
+/// takeover). A fresh empty lock is refused.
+fn probe_and_takeover(lock_path: &Path, empty_stale_after: Duration) -> Result<()> {
+    let raw = fs::read_to_string(lock_path).unwrap_or_default();
+    match raw.trim().parse::<u32>() {
+        Ok(pid) if pid_alive(pid) => {
+            bail!("ACTIVE_GOAL_STATE.md.lock held by pid {pid}")
+        }
+        Ok(_) => remove_lock_file(lock_path).context("remove dead-holder lock"),
+        Err(_) => {
+            // Empty / garbage content: stale only past the age threshold.
+            let mtime = fs::metadata(lock_path).and_then(|m| m.modified()).ok();
+            let stale = mtime.is_some_and(|t| t.elapsed().is_ok_and(|el| el > empty_stale_after));
+            if stale {
+                remove_lock_file(lock_path).context("remove stale empty lock")
+            } else {
+                bail!(
+                    "ACTIVE_GOAL_STATE.md.lock exists without a pid and is not stale (mtime {:?}); \
+                     refusing takeover until it ages past {empty_stale_after:?}",
+                    mtime
+                )
+            }
+        }
+    }
+}
+
+/// Remove a lock file we decided to take over; a concurrent cleanup is fine.
+fn remove_lock_file(lock_path: &Path) -> std::io::Result<()> {
+    match fs::remove_file(lock_path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Release the lock sidecar acquired by [`acquire_active_state_lock`].
+/// Best-effort: the lock is a liveness signal, not the store's real
+/// concurrency guard (that remains the advisory file lock in the store).
+pub fn release_active_state_lock(lock_path: &Path) {
+    let _ = fs::remove_file(lock_path);
+}
+
+/// Is the process with this pid still alive? Unix probes with `kill -0`
+/// (no signal delivered). Non-unix platforms have no zero-cost probe here —
+/// conservatively report alive so a lock is never stolen from a possibly
+/// live holder (empty-lock aging still applies).
+#[cfg(unix)]
+fn pid_alive(pid: u32) -> bool {
+    // SAFETY: signal 0 performs existence checking only; no signal is sent.
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    if rc == 0 {
+        return true;
+    }
+    // EPERM: the process exists but we may not signal it → alive.
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(unix))]
+fn pid_alive(_pid: u32) -> bool {
+    true
 }
 
 // ── <state>/runs/ (per-run history + index) ────────────────────────────────
@@ -316,4 +430,83 @@ fn todo_line(t: &Todo, _history: &[crate::state::RunRecord]) -> String {
     line.push_str(&ts);
     line.push_str(" -->\n");
     line
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lock_path(dir: &Path) -> PathBuf {
+        dir.join("ACTIVE_GOAL_STATE.md.lock")
+    }
+
+    #[test]
+    fn live_holder_pid_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        // Our own pid is certainly alive → the lock must be reported held.
+        let own_pid = std::process::id();
+        std::fs::write(lock_path(dir.path()), format!("{own_pid}\n")).unwrap();
+        let err = acquire_active_state_lock(dir.path()).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("held by pid"), "unexpected error: {msg}");
+        assert!(
+            msg.contains(&own_pid.to_string()),
+            "unexpected error: {msg}"
+        );
+        // The live lock is left untouched.
+        assert!(lock_path(dir.path()).exists());
+    }
+
+    #[test]
+    fn dead_holder_pid_is_taken_over() {
+        let dir = tempfile::tempdir().unwrap();
+        // Spawn a child and reap it — its pid is now guaranteed dead.
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("sleep 30")
+            .spawn()
+            .unwrap();
+        let dead_pid = child.id();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        std::fs::write(lock_path(dir.path()), format!("{dead_pid}\n")).unwrap();
+        let lock = acquire_active_state_lock(dir.path()).unwrap();
+        let content = std::fs::read_to_string(&lock).unwrap();
+        assert_eq!(content.trim(), std::process::id().to_string());
+        release_active_state_lock(&lock);
+        assert!(!lock_path(dir.path()).exists());
+    }
+
+    #[test]
+    fn stale_empty_lock_is_taken_over() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(lock_path(dir.path()), "").unwrap();
+        // Threshold zero: any empty lock counts as stale.
+        let lock = acquire_active_state_lock_with(dir.path(), Duration::ZERO).unwrap();
+        let content = std::fs::read_to_string(&lock).unwrap();
+        assert_eq!(content.trim(), std::process::id().to_string());
+        release_active_state_lock(&lock);
+        assert!(!lock_path(dir.path()).exists());
+    }
+
+    #[test]
+    fn fresh_empty_lock_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(lock_path(dir.path()), "").unwrap();
+        let err =
+            acquire_active_state_lock_with(dir.path(), Duration::from_secs(3600)).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("not stale"), "unexpected error: {msg}");
+        assert!(lock_path(dir.path()).exists());
+    }
+
+    #[test]
+    fn write_active_state_acquires_and_releases_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let goal = Goal::new("g", "lock objective", "/tmp");
+        write_active_state(dir.path(), &goal).unwrap();
+        assert!(dir.path().join("ACTIVE_GOAL_STATE.md").exists());
+        // Released after the write — no residual lock file.
+        assert!(!lock_path(dir.path()).exists());
+    }
 }
