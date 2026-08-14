@@ -4,10 +4,12 @@
   "webClient": "Web 客户端",
   "webClientLan": "手机 / 局域网访问：",
   "connect": "连接",
+  "reconnect": "重新连接",
   "disconnect": "断开",
   "pairAndStart": "配对并启动",
   "pairedAs": "已配对 {{pairId}}",
   "connectedAs": "已连接 {{pairId}}",
+  "reconnectingAs": "正在重新连接 {{pairId}}…",
   "unpair": "解除配对",
   "unpairConfirmTitle": "解除配对？",
   "unpairConfirmDesc": "这会在服务器端撤销配对，并清除本机保存的配对凭证。解除后，该手机将无法再控制本机，直到重新配对。",
@@ -24,8 +26,8 @@
     "network": "无法连接到 Future 服务器，请检查网络连接后重试。",
     "revoked": "该配对已被撤销或已失效，请重新配对。",
     "server": "Future 服务器返回错误，请稍后重试。",
-    "loop_dead": "命令订阅已停止，请重新启动远程控制以恢复。",
-    "web_bind": "本地 Web 客户端无法启动（端口可能已被占用），桥接仍在运行。",
+    "reconnect_required": "自动重连失败，请重新连接。",
+    "web_bind": "网页版暂时无法连接，手机端不受影响。你可以重新连接后再试。",
     "generic": "远程操作失败，请重试。"
   }
 }

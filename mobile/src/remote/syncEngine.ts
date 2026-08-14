@@ -95,19 +95,25 @@ interface ReconcileRequest {
 
 interface SessionLane {
   sessionId: string;
+  generation: number;
   chain: Promise<void>;
   cursor: RunCursor;
   timeline: TimelineState | null;
   ops: Op[];
   replayQueue: ReconcileRequest[];
   established: boolean;
+  retryAttempt: number;
+  retryNotBefore: number;
+  retryTimer: ReturnType<typeof setTimeout> | null;
 }
 
 const MAX_REPLAY_QUEUE = 6;
+const RECONCILE_RETRY_MAX_MS = 30_000;
 
 export class SyncEngine {
   private lanes = new Map<string, SessionLane>();
   private subscribers = new Set<(commit: Commit) => void>();
+  private generation = 0;
   private deps: SyncDeps;
 
   constructor(deps: SyncDeps) {
@@ -170,6 +176,10 @@ export class SyncEngine {
 
   /** Drop all lanes (unpair / credentials cleared). */
   clear(): void {
+    this.generation += 1;
+    for (const lane of this.lanes.values()) {
+      if (lane.retryTimer) clearTimeout(lane.retryTimer);
+    }
     this.lanes.clear();
   }
 
@@ -178,12 +188,16 @@ export class SyncEngine {
     if (!lane) {
       lane = {
         sessionId,
+        generation: this.generation,
         chain: Promise.resolve(),
         cursor: newCursor(),
         timeline: null,
         ops: [],
         replayQueue: [],
         established: false,
+        retryAttempt: 0,
+        retryNotBefore: 0,
+        retryTimer: null,
       };
       this.lanes.set(sessionId, lane);
     }
@@ -210,17 +224,53 @@ export class SyncEngine {
   }
 
   private async step(lane: SessionLane): Promise<void> {
+    if (!this.isCurrent(lane)) return;
+    if (lane.retryNotBefore > Date.now()) {
+      this.scheduleRetry(lane);
+      return;
+    }
     let justReconciledRun: string | null = null;
     const request = lane.replayQueue.shift();
     if (request) {
+      const reconciled = await this.runReconcile(lane, request);
+      if (!this.isCurrent(lane)) return;
+      if (!reconciled) {
+        // Preserve both the reconcile instruction and every queued live op.
+        // Marking a failed request as "just reconciled" made applyOps discard
+        // the gap event and its suffix under exactly the weak-network condition
+        // reconcile is meant to heal.
+        lane.replayQueue.unshift(request);
+        lane.retryAttempt += 1;
+        const delay = Math.min(
+          RECONCILE_RETRY_MAX_MS,
+          500 * 2 ** Math.min(lane.retryAttempt - 1, 6),
+        );
+        lane.retryNotBefore = Date.now() + delay;
+        this.scheduleRetry(lane);
+        return;
+      }
+      lane.retryAttempt = 0;
+      lane.retryNotBefore = 0;
+      if (lane.retryTimer) clearTimeout(lane.retryTimer);
+      lane.retryTimer = null;
       justReconciledRun = request.runId ?? null;
-      await this.runReconcile(lane, request);
     }
     this.applyOps(lane, justReconciledRun);
   }
 
-  private async runReconcile(lane: SessionLane, request: ReconcileRequest): Promise<void> {
-    if (lane.sessionId === "") return; // the draft lane has no desktop state.
+  private scheduleRetry(lane: SessionLane): void {
+    if (!this.isCurrent(lane)) return;
+    if (lane.retryTimer) return;
+    const delay = Math.max(0, lane.retryNotBefore - Date.now());
+    lane.retryTimer = setTimeout(() => {
+      lane.retryTimer = null;
+      if (!this.isCurrent(lane)) return;
+      this.loop(lane);
+    }, delay);
+  }
+
+  private async runReconcile(lane: SessionLane, request: ReconcileRequest): Promise<boolean> {
+    if (lane.sessionId === "") return true; // the draft lane has no desktop state.
     try {
       const state = await this.deps.requestGetState(lane.sessionId);
       const activeRunId = state.activeRun?.runId ?? "";
@@ -235,9 +285,11 @@ export class SyncEngine {
         await this.tailReconcile(lane, targetRunId);
       }
       lane.established = true;
+      return true;
     } catch {
       // Network/desktop failure mid-reconcile — keep the last committed
-      // snapshot. If the lane never established, the next event re-triggers.
+      // snapshot and let the lane's bounded retry timer try the same instruction.
+      return false;
     }
   }
 
@@ -283,6 +335,7 @@ export class SyncEngine {
     since: number,
   ): Promise<TimelineState> {
     const result = await this.deps.fetchReplay(lane.sessionId, runId, since);
+    if (!this.isCurrent(lane)) throw new Error("stale_sync_lane");
     if (result.projection?.events?.length) {
       let events = normalizeReplayEvents(result.projection.events);
       // A folded projection's run id rides on the envelope, not necessarily on
@@ -402,10 +455,14 @@ export class SyncEngine {
   }
 
   private commit(lane: SessionLane): void {
-    if (!lane.timeline) return;
+    if (!lane.timeline || !this.isCurrent(lane)) return;
     for (const fn of this.subscribers) {
       fn({ sessionId: lane.sessionId, timeline: lane.timeline, cursor: lane.cursor });
     }
+  }
+
+  private isCurrent(lane: SessionLane): boolean {
+    return lane.generation === this.generation && this.lanes.get(lane.sessionId) === lane;
   }
 }
 

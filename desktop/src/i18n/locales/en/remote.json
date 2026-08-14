@@ -4,10 +4,12 @@
   "webClient": "Web client",
   "webClientLan": "Phone / LAN:",
   "connect": "Connect",
+  "reconnect": "Reconnect",
   "disconnect": "Disconnect",
   "pairAndStart": "Pair & start",
   "pairedAs": "Paired as {{pairId}}",
   "connectedAs": "Connected as {{pairId}}",
+  "reconnectingAs": "Reconnecting {{pairId}}…",
   "unpair": "Unpair",
   "unpairConfirmTitle": "Unpair this device?",
   "unpairConfirmDesc": "This revokes the pairing on the server and clears the saved credentials on this desktop. The phone will no longer be able to control this machine until you pair again.",
@@ -24,8 +26,8 @@
     "network": "Cannot reach the Future server. Check your network connection and try again.",
     "revoked": "This pairing was revoked or is no longer valid. Pair again to continue.",
     "server": "The Future server returned an error. Please try again later.",
-    "loop_dead": "The command subscription stopped. Restart remote control to recover.",
-    "web_bind": "The local web client could not start (its port may already be in use). The bridge is still running.",
+    "reconnect_required": "Automatic reconnect failed. Reconnect to continue.",
+    "web_bind": "The web client is temporarily unavailable; phone access is unaffected. Reconnect to try again.",
     "generic": "The remote control action failed. Please try again."
   }
 }

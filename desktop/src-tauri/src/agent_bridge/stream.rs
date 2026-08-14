@@ -10,7 +10,6 @@ use super::{connect_agent, persist::persist_run_event};
 use crate::agent_proto::StreamRequest;
 
 const AGENT_EVENT_STREAM_TIMEOUT_SECS: u64 = 600;
-const STREAM_RECONNECT_ATTEMPTS: u32 = 6;
 
 /// Idle timeout for one stream read while the run is not parked on an
 /// approval. The 600s production budget is unexercisable in real time, so
@@ -66,6 +65,24 @@ impl From<CollectError> for crate::AppError {
 enum AttachFailure {
     Transient(String),
     RunGone(String),
+    Fatal(String),
+}
+
+/// Transport and server-lifecycle failures are recoverable: the Agent
+/// supervisor may still be restarting, or the machine may just have resumed
+/// from sleep. Contract/auth/request-shape failures cannot improve by waiting.
+fn retryable_stream_code(code: Code) -> bool {
+    matches!(
+        code,
+        Code::Cancelled
+            | Code::Unknown
+            | Code::DeadlineExceeded
+            | Code::ResourceExhausted
+            | Code::Aborted
+            | Code::Internal
+            | Code::Unavailable
+            | Code::DataLoss
+    )
 }
 
 /// Persist a run event on a blocking thread, so the synchronous SQLite write
@@ -178,7 +195,10 @@ pub(super) async fn collect_agent_response(
                     Code::FailedPrecondition | Code::NotFound => {
                         AttachFailure::RunGone(status.to_string())
                     }
-                    _ => AttachFailure::Transient(status.to_string()),
+                    code if retryable_stream_code(code) => {
+                        AttachFailure::Transient(status.to_string())
+                    }
+                    _ => AttachFailure::Fatal(status.to_string()),
                 })
         }
         .await;
@@ -186,14 +206,13 @@ pub(super) async fn collect_agent_response(
         let mut stream = match attach_result {
             Ok(stream) => stream,
             Err(AttachFailure::RunGone(reason)) => return Err(CollectError::RunGone(reason)),
+            Err(AttachFailure::Fatal(reason)) => return Err(reason.into()),
             Err(AttachFailure::Transient(stream_error)) => {
-                reconnect_attempt += 1;
-                if reconnect_attempt > STREAM_RECONNECT_ATTEMPTS {
-                    return Err(format!(
-                        "Future Agent stream could not be resumed after {STREAM_RECONNECT_ATTEMPTS} attempts: {stream_error}"
-                    )
-                    .into());
-                }
+                reconnect_attempt = reconnect_attempt.saturating_add(1);
+                eprintln!(
+                    "FutureOS reattaching Agent run {canonical_run_id} after idx {last_idx} \
+                     (attempt {reconnect_attempt}): {stream_error}"
+                );
                 sleep(reconnect_delay(reconnect_attempt)).await;
                 continue;
             }
@@ -214,6 +233,9 @@ pub(super) async fn collect_agent_response(
             let next_event = match next_event {
                 Ok(event) => event,
                 Err(error) => {
+                    if !retryable_stream_code(error.code()) {
+                        return Err(format!("Future Agent event stream failed: {error}").into());
+                    }
                     break format!("Future Agent event stream failed: {error}");
                 }
             };
@@ -319,21 +341,7 @@ pub(super) async fn collect_agent_response(
             }
         };
 
-        reconnect_attempt += 1;
-        if reconnect_attempt > STREAM_RECONNECT_ATTEMPTS {
-            persist_run_event_off_thread(
-                thread_id,
-                local_run_id,
-                "stream_disconnected".to_string(),
-                serde_json::json!({"error": stream_error}).to_string(),
-                last_idx.saturating_add(1),
-            )
-            .await;
-            return Err(format!(
-                "Future Agent stream could not be resumed after {STREAM_RECONNECT_ATTEMPTS} attempts: {stream_error}"
-            )
-            .into());
-        }
+        reconnect_attempt = reconnect_attempt.saturating_add(1);
         eprintln!(
             "FutureOS reattaching Agent run {canonical_run_id} after idx {last_idx} \
              (attempt {reconnect_attempt}): {stream_error}"
@@ -429,10 +437,7 @@ fn event_error(data: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        agent_end_incomplete, fold_response_event, reconnect_delay, FoldOutcome,
-        STREAM_RECONNECT_ATTEMPTS,
-    };
+    use super::{agent_end_incomplete, fold_response_event, reconnect_delay, FoldOutcome};
 
     #[test]
     fn incomplete_reason_marks_truncated() {
@@ -483,10 +488,6 @@ mod tests {
     #[test]
     fn reconnect_backoff_is_bounded() {
         assert!(reconnect_delay(1) < reconnect_delay(2));
-        assert_eq!(
-            reconnect_delay(STREAM_RECONNECT_ATTEMPTS),
-            std::time::Duration::from_millis(1_600)
-        );
         assert_eq!(
             reconnect_delay(u32::MAX),
             std::time::Duration::from_millis(1_600)
@@ -774,23 +775,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn collect_gives_up_after_six_transient_attach_failures() {
+    async fn collect_recovers_after_more_than_six_transient_attach_failures() {
         let mock = mock_agent();
-        for _ in 0..=STREAM_RECONNECT_ATTEMPTS {
+        for _ in 0..7 {
             mock.push_stream(StreamScript::AttachError(
                 tonic::Code::Unavailable,
                 "still down",
             ));
         }
+        mock.push_stream(StreamScript::Events(
+            vec![stream_event(
+                "run-1",
+                0,
+                "agent_end",
+                r#"{"reason":"complete"}"#,
+            )],
+            None,
+        ));
+        let response = collect_agent_response(None, "run-1", "sess-1", "thread-1")
+            .await
+            .expect("collector must keep recovering");
+        assert!(response.complete);
+    }
+
+    #[tokio::test]
+    async fn collect_does_not_retry_a_permanent_attach_failure() {
+        let mock = mock_agent();
+        mock.push_stream(StreamScript::AttachError(
+            tonic::Code::PermissionDenied,
+            "forbidden",
+        ));
         let error = collect_agent_response(None, "run-1", "sess-1", "thread-1")
             .await
-            .expect_err("attach failures");
-        let message = crate::AppError::from(error).to_string();
+            .expect_err("permanent failure");
         assert!(
-            message.contains("could not be resumed after 6 attempts"),
-            "message: {message}"
+            crate::AppError::from(error)
+                .to_string()
+                .contains("forbidden"),
+            "the original status should be preserved"
         );
-        assert!(message.contains("still down"), "message: {message}");
     }
 
     #[tokio::test]
@@ -937,22 +960,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn collect_gives_up_after_six_stream_breaks() {
+    async fn collect_recovers_after_more_than_six_stream_breaks() {
         let mock = mock_agent();
-        // Seven streams that each close without a terminal event (and without
-        // ever resetting `reconnect_attempt` via a valid event): the seventh
-        // break exhausts the budget and surfaces the reconnect error.
-        for _ in 0..=STREAM_RECONNECT_ATTEMPTS {
+        for _ in 0..7 {
             mock.push_stream(StreamScript::Events(vec![], None));
         }
-        let error = collect_agent_response(None, "run-1", "sess-1", "thread-1")
+        mock.push_stream(StreamScript::Events(
+            vec![stream_event(
+                "run-1",
+                0,
+                "agent_end",
+                r#"{"reason":"complete"}"#,
+            )],
+            None,
+        ));
+        let response = collect_agent_response(None, "run-1", "sess-1", "thread-1")
             .await
-            .expect_err("repeated stream breaks");
-        let message = crate::AppError::from(error).to_string();
-        assert!(
-            message.contains("could not be resumed after 6 attempts"),
-            "{message}"
-        );
+            .expect("collector must keep recovering");
+        assert!(response.complete);
     }
 
     #[tokio::test]
