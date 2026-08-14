@@ -1,7 +1,7 @@
 {
   "name": "future-os",
   "private": true,
-  "workspaces": ["thread-projection", "desktop", "mobile"],
+  "workspaces": ["markdown", "thread-projection", "desktop", "mobile"],
   "allowScripts": {
     "esbuild@0.27.7": true,
     "fsevents@2.3.3": true,
