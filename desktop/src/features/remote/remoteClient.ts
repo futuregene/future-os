@@ -3,6 +3,8 @@ import { invokeCommand } from "../../integrations/tauri/invoke";
 export interface RemoteStatus {
   running: boolean;
   connected: boolean;
+  /** A failed connection generation is being reconnected automatically. */
+  reconnecting: boolean;
   natsUrl: string;
   pairId: string;
   /** One-shot pairing code (base64url) returned only by a successful start. */
@@ -18,7 +20,7 @@ export interface RemoteStatus {
   webLanUrl: string | null;
   /**
    * Machine-readable reason the bridge isn't healthy (`network` / `revoked` /
-   * `server` / `loop_dead` / `web_bind`). Localized via `error.<code>`; preferred
+   * `server` / `reconnect_required` / `web_bind`). Localized via `error.<code>`; preferred
    * over `error` when present.
    */
   errorCode: string | null;

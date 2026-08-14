@@ -8,6 +8,8 @@ import {
   useRef,
   useState,
 } from "react";
+import * as Network from "expo-network";
+import { AppState, type AppStateStatus } from "react-native";
 import {
   emptyTimeline,
   markApprovalDecision,
@@ -209,9 +211,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // Session streaming is mirrored for the send guard: reads must reflect the
   // latest snapshot even before the subscriber's setState re-renders.
   const streamingRef = useRef<Record<string, boolean>>({});
-  // Unsubscribes the current engine's commit feed when the client is replaced
-  // or torn down (unpair).
+  // Unsubscribes the engine's local commit feed only when the Provider itself
+  // unmounts. Pairing generations own network streams, not this UI listener.
   const engineRefCleanupRef = useRef<(() => void) | null>(null);
+  const networkAvailableRef = useRef<boolean | null>(null);
 
   useEffect(() => {
     credentialsRef.current = credentials;
@@ -412,6 +415,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // unexpected errors only.
   const recordError = useCallback((nextError: unknown) => {
     if (classifyError(nextError) === "transport") return;
+    console.warn("[remote] unexpected non-transport error", nextError);
     setError(nextError instanceof Error ? nextError.message : String(nextError));
   }, []);
 
@@ -518,11 +522,15 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         },
       });
       clientRef.current = client;
+      if (networkAvailableRef.current === false) client.setNetworkAvailable(false);
       // The sync engine is created ONCE and survives client generations —
       // reconcileAll (reconnect recovery) must keep working across a client
       // replacement. Its deps read the live clientRef on every call.
       await client.open();
-      await Promise.all([
+      // Catalogue reads are opportunistic. A stored pairing opened with no
+      // signal must stay paired/reconnecting instead of falling back to the QR
+      // screen merely because these first reads found no socket yet.
+      await Promise.allSettled([
         refreshModels(),
         refreshSessions(),
         refreshWorkspaces(),
@@ -580,6 +588,83 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     };
   }, [connect]);
 
+  const recoverLifecycle = useCallback(
+    async (reason: "foreground" | "network-restored" | "network-changed") => {
+      const client = clientRef.current;
+      if (!client || !credentialsRef.current || networkAvailableRef.current === false) return;
+      try {
+        await client.recoverNow(reason);
+        if (clientRef.current !== client || !credentialsRef.current) return;
+        // Lifecycle recovery may have missed at-most-once events even when the
+        // foreground probe found a healthy socket, so always re-baseline and
+        // reconcile durable state after validation.
+        presenceStateRef.current = INITIAL_PRESENCE_STATE;
+        await recoverRef.current();
+      } catch (nextError) {
+        if (clientRef.current === client) recordError(nextError);
+      }
+    },
+    [recordError],
+  );
+
+  useEffect(() => {
+    let previous: AppStateStatus = AppState.currentState;
+    const subscription = AppState.addEventListener("change", next => {
+      const returnedToForeground = next === "active" && previous !== "active";
+      previous = next;
+      if (returnedToForeground) void recoverLifecycle("foreground");
+    });
+    return () => subscription.remove();
+  }, [recoverLifecycle]);
+
+  useEffect(() => {
+    let active = true;
+    let eventSeen = false;
+    let previousType: Network.NetworkStateType | undefined;
+
+    const observe = (state: Network.NetworkState) => {
+      if (!active) return;
+      const available =
+        state.type !== Network.NetworkStateType.NONE &&
+        state.isConnected !== false &&
+        state.isInternetReachable !== false;
+      const wasAvailable = networkAvailableRef.current;
+      const pathChanged =
+        wasAvailable === true &&
+        available &&
+        previousType !== undefined &&
+        previousType !== Network.NetworkStateType.UNKNOWN &&
+        state.type !== undefined &&
+        state.type !== Network.NetworkStateType.UNKNOWN &&
+        state.type !== previousType;
+      networkAvailableRef.current = available;
+      previousType = state.type;
+
+      const client = clientRef.current;
+      client?.setNetworkAvailable(available);
+      if (!available) return;
+      if (wasAvailable === false) {
+        void recoverLifecycle("network-restored");
+      } else if (pathChanged) {
+        void recoverLifecycle("network-changed");
+      }
+    };
+
+    void Network.getNetworkStateAsync()
+      .then(state => {
+        if (!eventSeen) observe(state);
+      })
+      .catch(() => undefined);
+    const subscription = Network.addNetworkStateListener(state => {
+      eventSeen = true;
+      observe(state);
+    });
+    return () => {
+      active = false;
+      subscription.remove();
+    };
+  }, [recoverLifecycle]);
+
   useEffect(() => {
     const timer = setInterval(() => setClock(Date.now()), 10_000);
     return () => clearInterval(timer);
@@ -634,8 +719,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     credentialsRef.current = null;
     await clientRef.current?.close();
     clientRef.current = null;
-    engineRefCleanupRef.current?.();
-    engineRefCleanupRef.current = null;
+    // Stop and discard every pairing-owned network stream, but keep the
+    // Provider-owned local commit subscription so a later pair can render.
     syncEngineRef.current?.clear();
     if (current) {
       try {
@@ -689,7 +774,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
 
   useEffect(() => {
     recoverRef.current = async (sessionId?: string) => {
-      await Promise.all([
+      await Promise.allSettled([
         refreshModels(),
         refreshSessions(),
         refreshWorkspaces(),

@@ -48,6 +48,7 @@ class Harness {
   omitProjectionCursor = false;
   /** Emit replay events with snake_case run_id (legacy desktop wire). */
   snakeCaseReplay = false;
+  replayFailures = 0;
   timeline: Record<string, ReturnType<typeof emptyTimeline>> = {};
   engine: SyncEngine;
 
@@ -61,6 +62,10 @@ class Harness {
       },
       requestHistory: async () => this.history,
       fetchReplay: async (_sessionId, run, since) => {
+        if (this.replayFailures > 0) {
+          this.replayFailures -= 1;
+          throw new Error("temporary replay failure");
+        }
         // The desktop RPC serializes replay events with camelCase runId — the
         // real wire shape that reproduced the missing-runId ghost.
         const runKey = this.snakeCaseReplay ? "run_id" : "runId";
@@ -117,6 +122,47 @@ class Harness {
 describe("SyncEngine", () => {
   beforeEach(() => {
     resetSeq();
+  });
+
+  test("clear drops pairing state but preserves the Provider commit subscription", async () => {
+    const h = new Harness();
+    const commits = jest.fn();
+    h.engine.subscribe(commits);
+
+    h.engine.mutate("", () => ({ ...emptyTimeline(), streaming: true }));
+    await h.settle();
+    h.engine.clear();
+    h.engine.mutate("", () => ({ ...emptyTimeline(), streaming: false }));
+    await h.settle();
+
+    expect(commits).toHaveBeenCalledTimes(2);
+    expect(commits.mock.calls[1][0].timeline.streaming).toBe(false);
+  });
+
+  test("clear rejects a late commit from the previous pairing generation", async () => {
+    let releaseState: ((state: { activeRun?: { runId: string } }) => void) | undefined;
+    const state = new Promise<{ activeRun?: { runId: string } }>(resolve => {
+      releaseState = resolve;
+    });
+    const engine = new SyncEngine({
+      requestGetState: async () => state,
+      requestHistory: async () => emptyTimeline(),
+      fetchReplay: async () => ({ events: [] }),
+    });
+    const commits = jest.fn();
+    engine.subscribe(commits);
+
+    engine.event("old-session", agentStart("old-run"));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    engine.clear();
+    releaseState?.({ activeRun: { runId: "old-run" } });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(commits).not.toHaveBeenCalled();
+
+    engine.mutate("new-session", () => emptyTimeline());
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(commits).toHaveBeenCalledTimes(1);
+    expect(commits.mock.calls[0][0].sessionId).toBe("new-session");
   });
 
   test("mid-run join replays the prefix from -1 (H3)", async () => {
@@ -176,6 +222,29 @@ describe("SyncEngine", () => {
     await h.settle();
 
     expect(h.textOf("s1")).toBe("abc");
+  });
+
+  test("a failed gap replay preserves queued events and retries automatically", async () => {
+    const run = nextRunId();
+    const h = new Harness(run);
+    h.journal.add(agentStart(run, 0));
+    h.journal.add(textChunk(run, 1, "a"));
+    h.engine.event("s1", agentStart(run, 0));
+    h.engine.event("s1", textChunk(run, 1, "a"));
+    await h.settle();
+
+    h.journal.add(textChunk(run, 2, "b"));
+    h.journal.add(textChunk(run, 3, "c"));
+    h.journal.add(agentEnd(run, 4));
+    h.replayFailures = 1;
+    h.engine.event("s1", textChunk(run, 3, "c"));
+    h.engine.event("s1", agentEnd(run, 4));
+
+    // The first reconcile fails. The lane-owned retry fires after 500ms and
+    // must retain the gap event plus the terminal event queued behind it.
+    await new Promise(resolve => setTimeout(resolve, 650));
+    expect(h.textOf("s1")).toBe("abc");
+    expect(h.timelineOf("s1").streaming).toBe(false);
   });
 
   test("agent_end drops are healed by a snapshot-flip reconcile (M11)", async () => {

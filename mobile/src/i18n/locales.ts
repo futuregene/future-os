@@ -14,7 +14,10 @@ export const resources = {
         host: "The QR code belongs to a different FutureOS environment.",
         secureEndpoint:
           "The desktop returned an unencrypted connection address. Make sure the server uses wss://.",
-        failedWithReason: "Pairing failed: {{reason}}",
+        network: "The network is unavailable. Reconnect to the network and scan the code again.",
+        service: "The remote service is temporarily unavailable. Scan the code again in a moment.",
+        verification: "The desktop could not be verified. Update both apps and scan a new code.",
+        failed: "Pairing could not be completed. Scan a new code and try again.",
         manual: "Paste pairing code",
         manualPlaceholder: "futureos://remote/pair?code=...",
         manualSubmit: "Pair",
@@ -40,7 +43,7 @@ export const resources = {
         errorNetwork: "Network unreachable. Check the connection to your desktop server.",
         errorAgentOffline:
           "The desktop Agent is offline — conversation history is unavailable until it recovers.",
-        errorWithReason: "Something went wrong: {{reason}}",
+        errorGeneric: "The operation could not be completed. Please try again.",
       },
       sessions: {
         title: "Sessions",
@@ -213,7 +216,10 @@ export const resources = {
         invalid: "配对码无效或已过期。",
         host: "二维码属于另一个 FutureOS 环境。",
         secureEndpoint: "桌面端返回了未加密的连接地址，请确认服务器使用 wss://。",
-        failedWithReason: "配对失败：{{reason}}",
+        network: "当前网络不可用，请恢复网络后重新扫码。",
+        service: "远程服务暂时不可用，请稍后重新扫码。",
+        verification: "无法验证桌面端，请更新两端应用后重新扫码。",
+        failed: "无法完成配对，请重新扫码后再试。",
         manual: "粘贴配对码",
         manualPlaceholder: "futureos://remote/pair?code=...",
         manualSubmit: "配对",
@@ -236,7 +242,7 @@ export const resources = {
         errorTimeout: "请求超时，请检查网络后重试。",
         errorNetwork: "网络不可达，请检查与桌面服务器的连接。",
         errorAgentOffline: "桌面端 Agent 离线，会话历史暂不可用，恢复后会自动加载。",
-        errorWithReason: "操作失败：{{reason}}",
+        errorGeneric: "操作未能完成，请重试。",
       },
       sessions: {
         title: "会话",
