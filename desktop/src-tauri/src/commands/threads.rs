@@ -229,6 +229,14 @@ pub async fn list_streaming_thread_ids() -> Result<Vec<String>, crate::AppError>
 /// resolve the bare `thread.id` as a session_id — the agent's `get_session`
 /// fallback returns the default session's state, leaking another
 /// conversation's model/thinking into the wrong thread.
+/// Converge a stale DB title toward the agent's session_name, best-effort.
+/// Extracted so the defensive failure log is testable with a broken store.
+fn sync_title_best_effort(thread_id: &str, name: &str) {
+    if let Err(error) = store::sync_thread_title(thread_id, name) {
+        eprintln!("FutureOS thread title sync failed for {thread_id}: {error}");
+    }
+}
+
 #[tauri::command]
 pub async fn get_thread_agent_state(
     thread_id: String,
@@ -283,9 +291,7 @@ pub async fn get_thread_agent_state(
         .filter(|n| !n.is_empty())
     {
         if name != thread.title {
-            if let Err(error) = store::sync_thread_title(&thread_id, name) {
-                eprintln!("FutureOS thread title sync failed for {thread_id}: {error}");
-            }
+            sync_title_best_effort(&thread_id, name);
         }
     }
     Ok(value)
@@ -497,6 +503,32 @@ mod tests {
         assert!(attach_remote_stream("no-such-thread".into()).await.is_err());
     }
 
+    #[tokio::test]
+    async fn list_streaming_thread_ids_is_empty_when_the_agent_call_errors() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_streaming_err");
+        let thread = make_thread(&_home, Some("sess_stream_err"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        crate::commands::agent_mock::with_broken_endpoint(list_streaming_thread_ids)
+            .await
+            .expect("streaming");
+        let _ = thread;
+    }
+
+    #[test]
+    fn sync_title_best_effort_logs_through_a_store_failure() {
+        let _home = init("cmd_title_sync_fail");
+        let thread = make_thread(&_home, Some("sess_sync"));
+        let home = std::env::var("HOME").expect("test home");
+        let conn =
+            rusqlite::Connection::open(std::path::Path::new(&home).join(".future/app/app.db"))
+                .expect("open db");
+        conn.execute_batch("DROP TABLE threads;").unwrap();
+        drop(conn);
+        // The defensive eprintln arm must not panic.
+        sync_title_best_effort(&thread.id, "Renamed");
+    }
+
     #[test]
     fn thread_read_and_pin_commands_round_trip() {
         let _home = init("cmd_threads");
@@ -612,6 +644,66 @@ mod tests {
             .await
             .expect("entries");
         assert_eq!(value["entries"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn rename_thread_maps_transport_errors() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_rename_xport");
+        let thread = make_thread(&_home, Some("sess_rename_x"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            transport_fail: ["set_session_name".to_string()].into_iter().collect(),
+            ..Default::default()
+        });
+        let err = rename_thread(store::RenameThreadInput {
+            thread_id: thread.id.clone(),
+            title: "Renamed".into(),
+        })
+        .await
+        .unwrap_err();
+        assert!(!err.to_string().is_empty());
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn delete_thread_drops_observer_when_the_tombstone_survives() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_delete_tomb");
+        let thread = make_thread(&_home, Some("sess_tomb"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        // The agent never acknowledges the delete, so the tombstone row
+        // survives and the observer-drop arm runs.
+        script_mock_agent(MockScript {
+            transport_fail: ["delete_session".to_string()].into_iter().collect(),
+            ..Default::default()
+        });
+        let deleted = delete_thread(store::DeleteThreadInput {
+            thread_id: thread.id.clone(),
+            delete_files: false,
+        })
+        .await
+        .expect("delete");
+        assert_eq!(deleted.id, thread.id);
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn list_streaming_thread_ids_is_empty_on_transport_error() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_streaming_xport");
+        let thread = make_thread(&_home, Some("sess_xport"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            transport_fail: ["list_streaming_sessions".to_string()]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        });
+        let ids = list_streaming_thread_ids().await.expect("streaming");
+        assert!(ids.is_empty());
+        script_mock_agent(MockScript::default());
+        let _ = thread;
     }
 
     #[tokio::test]
