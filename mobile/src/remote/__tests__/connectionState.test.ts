@@ -195,7 +195,7 @@ describe("connectionState FSM", () => {
     expect(failed.effects.filter(e => e.type === "schedule_reconnect")).toHaveLength(1);
     state = failed.next;
 
-    // While recovering, another disconnect status is absorbed (no re-arm).
+    // While reconnecting, another disconnect status is absorbed (no re-arm).
     const absorbed = transition(state, { type: "transport_disconnect" });
     expect(absorbed.next).toBe("reconnecting");
     expect(absorbed.effects).toEqual([]);
@@ -270,7 +270,7 @@ function recoveryClient(): {
 
 describe("RemoteClient terminal iterator recovery", () => {
   test("a throwing NATS status iterator enters the outer recovery path", async () => {
-    const { client, callbacks } = recoveryClient();
+    const { client } = recoveryClient();
     const recovery = jest.fn();
     const testClient = client as unknown as {
       watchStatus(connection: unknown, generation: number): void;
@@ -282,12 +282,11 @@ describe("RemoteClient terminal iterator recovery", () => {
     }
     testClient.watchStatus({ status: statuses }, 0);
     await new Promise(resolve => setTimeout(resolve, 0));
-    expect(callbacks.onError).toHaveBeenCalledTimes(1);
     expect(recovery).toHaveBeenCalledWith(expect.any(Error));
   });
 
   test("a throwing event subscription cannot die as an unhandled task", async () => {
-    const { client, callbacks } = recoveryClient();
+    const { client } = recoveryClient();
     const recovery = jest.fn();
     const testClient = client as unknown as {
       subscribeEvents(connection: unknown, generation: number): void;
@@ -299,8 +298,45 @@ describe("RemoteClient terminal iterator recovery", () => {
     }
     testClient.subscribeEvents({ subscribe: events }, 0);
     await new Promise(resolve => setTimeout(resolve, 0));
-    expect(callbacks.onError).toHaveBeenCalledTimes(1);
     expect(recovery).toHaveBeenCalledWith(expect.any(Error));
+  });
+
+  test.each(["subscribeTransfers", "subscribeLiveness", "subscribeState"] as const)(
+    "%s reconnects when its iterator ends independently",
+    async method => {
+      const { client } = recoveryClient();
+      const recovery = jest.fn();
+      const testClient = client as unknown as {
+        subscribeTransfers(connection: unknown, generation: number): void;
+        subscribeLiveness(connection: unknown, generation: number): void;
+        subscribeState(connection: unknown, generation: number): void;
+        handleFailure(error: unknown): void;
+      };
+      testClient.handleFailure = recovery;
+      async function* ended(): AsyncGenerator<never> {
+        return;
+      }
+
+      testClient[method]({ subscribe: () => ended() }, 0);
+      await new Promise(resolve => setTimeout(resolve, 0));
+
+      expect(recovery).toHaveBeenCalledWith(expect.any(Error));
+    },
+  );
+
+  test("several subscriptions ending in one generation trigger one reconnect", () => {
+    const { client } = recoveryClient();
+    const recovery = jest.fn();
+    const testClient = client as unknown as {
+      failGeneration(error: unknown, generation: number): void;
+      handleFailure(error: unknown): void;
+    };
+    testClient.handleFailure = recovery;
+
+    testClient.failGeneration(new Error("events ended"), 0);
+    testClient.failGeneration(new Error("presence ended"), 0);
+
+    expect(recovery).toHaveBeenCalledTimes(1);
   });
 });
 

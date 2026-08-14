@@ -6,14 +6,14 @@ import { usePolling } from "../../../lib/usePolling";
 /**
  * Live connection state for the left-nav Remote indicator dot:
  * - `"connected"` — bridge is up and healthy (blue dot).
- * - `"recovering"` — bridge is rebuilding a failed subscription (yellow dot).
+ * - `"reconnecting"` — bridge is reconnecting a failed generation (yellow dot).
  * - `"error"` — bridge reports a problem, e.g. network/revoked (yellow dot).
  * - `null` — not connected / not running (no dot).
  *
  * Remote control is a dev-only feature, so the caller gates `enabled` to
  * non-release builds; when disabled the poll never runs.
  */
-export type RemoteIndicator = "connected" | "recovering" | "error" | null;
+export type RemoteIndicator = "connected" | "reconnecting" | "error" | null;
 
 /**
  * Shared remote bridge status — polled once at the app level, consumed by both
@@ -44,8 +44,8 @@ export function useRemoteStatus(enabled: boolean): {
 
   usePolling(refresh, 3000, { enabled, deps: [refresh] });
 
-  const indicator: RemoteIndicator = status?.recovering
-    ? "recovering"
+  const indicator: RemoteIndicator = status?.reconnecting
+    ? "reconnecting"
     : status?.errorCode
       ? "error"
       : status?.running && status?.connected

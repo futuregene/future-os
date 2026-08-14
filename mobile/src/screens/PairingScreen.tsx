@@ -27,9 +27,20 @@ function pairingErrorMessage(error: unknown, t: TFunction): string {
   const rawMessage = error instanceof Error ? error.message : error;
   const message = (typeof rawMessage === "string" ? rawMessage.trim() : "") || "unknown error";
   if (message === "unexpected_pairing_host") return t("pairing.host");
-  if (message === "invalid_pairing_code") return t("pairing.invalid");
+  if (/invalid_pairing_code|invalid_jwt|expired|HTTP\s*(401|403|404)/i.test(message)) {
+    return t("pairing.invalid");
+  }
   if (message === "nats_ws_not_tls") return t("pairing.secureEndpoint");
-  return t("pairing.failedWithReason", { reason: message });
+  if (/handshake|signature|confirmation_mismatch/i.test(message)) {
+    return t("pairing.verification");
+  }
+  if (/network|unreachable|load failed|fetch failed|econn|time-?out|nats_connect/i.test(message)) {
+    return t("pairing.network");
+  }
+  if (/HTTP\s*(429|5\d\d)|server|service unavailable/i.test(message)) {
+    return t("pairing.service");
+  }
+  return t("pairing.failed");
 }
 
 export function PairingScreen({ revoked = false }: { revoked?: boolean }) {

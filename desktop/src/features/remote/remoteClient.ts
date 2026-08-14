@@ -3,8 +3,8 @@ import { invokeCommand } from "../../integrations/tauri/invoke";
 export interface RemoteStatus {
   running: boolean;
   connected: boolean;
-  /** A dead subscription task was detected and is being rebuilt automatically. */
-  recovering: boolean;
+  /** A failed connection generation is being reconnected automatically. */
+  reconnecting: boolean;
   natsUrl: string;
   pairId: string;
   /** One-shot pairing code (base64url) returned only by a successful start. */

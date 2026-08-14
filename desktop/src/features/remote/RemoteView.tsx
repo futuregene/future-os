@@ -47,13 +47,6 @@ function formatPairId(pairId: string | null | undefined): string {
   return (pairId.startsWith("pair_") ? pairId.slice(5) : pairId).toUpperCase();
 }
 
-/** Tauri rejects arrive as strings or Errors; keep the raw detail for the banner. */
-function errorDetail(err: unknown): string {
-  if (err instanceof Error)
-    return err.message;
-  return typeof err === "string" ? err : String(err);
-}
-
 export function RemoteView({
   leftPanelExpanded,
   onToggleLeftPanel,
@@ -70,7 +63,7 @@ export function RemoteView({
   // --- derived from the shared app-level status (same source as the sidebar indicator) ---
   const running = remoteStatus?.running ?? false;
   const connected = remoteStatus?.connected ?? false;
-  const recovering = remoteStatus?.recovering ?? false;
+  const reconnecting = remoteStatus?.reconnecting ?? false;
   // Backend `status()` now includes the persisted pair_id even when stopped, so
   // this is authoritative for "paired" across all states: idle, running, and
   // previously-stopped-but-credential-still-here.  Empty when truly unpaired.
@@ -106,10 +99,9 @@ export function RemoteView({
       await startRemote({});
     }
     catch (err) {
-      // The backend string is the only clue on a failed start — log it and
-      // surface it verbatim instead of collapsing to the generic banner.
+      // Keep internal detail in the console; the user gets a stable action.
       console.error("remote start failed:", err);
-      setError(errorDetail(err));
+      setError(t("error.generic"));
     }
     finally {
       setBusy(false);
@@ -126,7 +118,7 @@ export function RemoteView({
     }
     catch (err) {
       console.error("remote stop failed:", err);
-      setError(errorDetail(err));
+      setError(t("error.generic"));
     }
     finally {
       setBusy(false);
@@ -143,7 +135,7 @@ export function RemoteView({
     }
     catch (err) {
       console.error("remote unpair failed:", err);
-      setError(errorDetail(err));
+      setError(t("error.generic"));
     }
     finally {
       setBusy(false);
@@ -190,13 +182,13 @@ export function RemoteView({
                         "inline-block size-2 shrink-0 rounded-full",
                         connected
                           ? "bg-accent"
-                          : recovering
+                          : reconnecting
                             ? "animate-pulse bg-warning"
                             : "bg-ink-muted/60",
                       )}
                     />
                     <span className="min-w-0 truncate text-sm font-medium text-ink">
-                      {t(recovering ? "reconnectingAs" : connected ? "connectedAs" : "pairedAs", { pairId: formatPairId(remoteStatus?.pairId) })}
+                      {t(reconnecting ? "reconnectingAs" : connected ? "connectedAs" : "pairedAs", { pairId: formatPairId(remoteStatus?.pairId) })}
                     </span>
                     <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">
                       <Button
@@ -225,7 +217,7 @@ export function RemoteView({
             ? (
                 <div className="flex items-center gap-3 rounded-md border border-danger-line bg-danger-soft px-3 py-2 text-sm text-danger">
                   <span className="min-w-0 flex-1">{errorText}</span>
-                  {activeErrorCode === "reconnect_required"
+                  {activeErrorCode === "reconnect_required" || activeErrorCode === "web_bind"
                     ? (
                         <Button disabled={busy} onClick={() => void handleStart()} size="sm" variant="secondary">
                           {t("reconnect")}

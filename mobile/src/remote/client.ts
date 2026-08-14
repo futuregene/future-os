@@ -82,6 +82,7 @@ export class RemoteClient {
   private stopped = false;
   private networkAvailable = true;
   private recoveryPromise: Promise<void> | null = null;
+  private failedGeneration: number | null = null;
   private state: ConnectionState = "unpaired";
   private confirmedBridgeInstanceId = "";
   private handshakePromise: Promise<HandshakeConfirmation> | null = null;
@@ -263,6 +264,7 @@ export class RemoteClient {
       this.confirmedBridgeInstanceId = confirmation.bridgeInstanceId;
       this.retryAttempt = 0;
       this.authRetryCount = 0;
+      this.failedGeneration = null;
       this.callbacks.onPresence(confirmation.presence);
       this.callbacks.onFeatures(confirmation.features ?? []);
       this.subscribeEvents(connection, generation);
@@ -304,6 +306,17 @@ export class RemoteClient {
     }
     this.callbacks.onError(error instanceof Error ? error : new Error(String(error)));
     this.scheduleRetry();
+  }
+
+  /** A live generation may lose several subscriptions at once. Reconnect it
+   * exactly once so their terminal callbacks cannot reset the retry timer into
+   * a reconnect storm. */
+  private failGeneration(error: unknown, generation: number): void {
+    if (this.stopped || generation !== this.generation || this.failedGeneration === generation) {
+      return;
+    }
+    this.failedGeneration = generation;
+    this.handleFailure(error);
   }
 
   private scheduleRetry(): void {
@@ -371,9 +384,14 @@ export class RemoteClient {
     const prefix = `p.${this.credentials.pairId}.xfer.down.`;
     const subscription = connection.subscribe(`${prefix}>`);
     void (async () => {
+      let liveGeneration = true;
+      let failure: unknown = new Error("remote_transfer_subscription_ended");
       try {
         for await (const message of subscription) {
-          if (this.stopped || generation !== this.generation) break;
+          if (this.stopped || generation !== this.generation) {
+            liveGeneration = false;
+            break;
+          }
           const suffix = message.subject.startsWith(prefix)
             ? message.subject.slice(prefix.length)
             : "";
@@ -387,7 +405,14 @@ export class RemoteClient {
           waiter.resolve(message.data);
         }
       } catch (error) {
-        if (!this.stopped) this.callbacks.onError(asError(error));
+        if (!this.stopped && generation === this.generation) {
+          failure = error;
+        } else {
+          liveGeneration = false;
+        }
+      }
+      if (liveGeneration) {
+        this.failGeneration(failure, generation);
       }
     })();
   }
@@ -396,6 +421,7 @@ export class RemoteClient {
     const subscription = connection.subscribe(`p.${this.credentials.pairId}.evt.>`);
     void (async () => {
       let liveGeneration = true;
+      let failure: unknown = new Error("remote_event_subscription_ended");
       try {
         for await (const message of subscription) {
           if (this.stopped || generation !== this.generation) {
@@ -419,7 +445,7 @@ export class RemoteClient {
         }
       } catch (error) {
         if (!this.stopped && generation === this.generation) {
-          this.callbacks.onError(asError(error));
+          failure = error;
         } else {
           liveGeneration = false;
         }
@@ -428,7 +454,7 @@ export class RemoteClient {
       // Restart the whole connection generation so realtime delivery cannot die
       // silently while commands and presence still appear healthy.
       if (liveGeneration && !this.stopped && generation === this.generation) {
-        this.handleFailure(new Error("remote_event_subscription_ended"));
+        this.failGeneration(failure, generation);
       }
     })();
   }
@@ -436,9 +462,14 @@ export class RemoteClient {
   private subscribeLiveness(connection: NatsConnection, generation: number): void {
     const subscription = connection.subscribe(`p.${this.credentials.pairId}.presence`);
     void (async () => {
+      let liveGeneration = true;
+      let failure: unknown = new Error("remote_presence_subscription_ended");
       try {
         for await (const message of subscription) {
-          if (this.stopped || generation !== this.generation) break;
+          if (this.stopped || generation !== this.generation) {
+            liveGeneration = false;
+            break;
+          }
           let presence: Presence;
           try {
             presence = decodeJson<Presence>(message.data);
@@ -459,14 +490,22 @@ export class RemoteClient {
               this.callbacks.onFeatures(confirmation.features ?? []);
               this.callbacks.onReconnected();
             } catch (error) {
-              this.callbacks.onError(asError(error));
+              this.failGeneration(error, generation);
+              return;
             }
           } else {
             this.callbacks.onPresence(presence);
           }
         }
       } catch (error) {
-        if (!this.stopped) this.callbacks.onError(asError(error));
+        if (!this.stopped && generation === this.generation) {
+          failure = error;
+        } else {
+          liveGeneration = false;
+        }
+      }
+      if (liveGeneration) {
+        this.failGeneration(failure, generation);
       }
     })();
   }
@@ -474,9 +513,14 @@ export class RemoteClient {
   private subscribeState(connection: NatsConnection, generation: number): void {
     const subscription = connection.subscribe(`p.${this.credentials.pairId}.state.>`);
     void (async () => {
+      let liveGeneration = true;
+      let failure: unknown = new Error("remote_state_subscription_ended");
       try {
         for await (const message of subscription) {
-          if (this.stopped || generation !== this.generation) break;
+          if (this.stopped || generation !== this.generation) {
+            liveGeneration = false;
+            break;
+          }
           const suffix = message.subject.slice(`p.${this.credentials.pairId}.state.`.length);
           if (suffix === "sessions") {
             const data = decodeJson<{ sessions?: PresenceSession[] }>(message.data);
@@ -487,7 +531,14 @@ export class RemoteClient {
           }
         }
       } catch (error) {
-        if (!this.stopped) this.callbacks.onError(asError(error));
+        if (!this.stopped && generation === this.generation) {
+          failure = error;
+        } else {
+          liveGeneration = false;
+        }
+      }
+      if (liveGeneration) {
+        this.failGeneration(failure, generation);
       }
     })();
   }
@@ -527,7 +578,9 @@ export class RemoteClient {
               this.signal({ type: "ready" });
               this.callbacks.onReconnected();
             } catch (error) {
-              this.handleFailure(error);
+              this.failGeneration(error, generation);
+              exitedNaturally = false;
+              return;
             }
           }
         }
@@ -537,11 +590,11 @@ export class RemoteClient {
       // The status iterator ended (or threw) while this is still the live
       // generation: NATS's internal reconnect budget was spent and the
       // connection is permanently closed. Treat it as a dead attempt so the
-      // backoff timer (single owner) keeps the app recovering — without this,
+      // backoff timer (single owner) keeps the app reconnecting — without this,
       // a >30s outage wedges the UI in "reconnecting" until a JWT refresh
       // happens to fire.
       if (exitedNaturally && !this.stopped && generation === this.generation) {
-        this.handleFailure(new Error("nats_connection_exhausted"));
+        this.failGeneration(new Error("nats_connection_exhausted"), generation);
       }
     })();
   }

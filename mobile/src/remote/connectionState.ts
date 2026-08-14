@@ -113,7 +113,7 @@ export function transition(current: ConnectionState, event: LifecycleEvent): Con
         case "revoked":
           return { next: "revoked", effects: [{ type: "dispose_connection", reason: "revoked" }] };
         case "transport_disconnect":
-          // Already recovering — absorb; only open_failed may arm the timer.
+          // Already reconnecting — absorb; only open_failed may arm the timer.
           return { next: "reconnecting", effects: [] };
         case "open_failed":
           return { next: "reconnecting", effects: [{ type: "schedule_reconnect" }] };

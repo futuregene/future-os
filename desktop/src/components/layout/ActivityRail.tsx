@@ -137,7 +137,7 @@ export function ActivityRail({
           className={cn(
             "absolute -right-1 -top-1 size-2 rounded-full",
             remoteIndicator === "connected" ? "bg-accent" : "bg-warning",
-            remoteIndicator === "recovering" && "animate-pulse",
+            remoteIndicator === "reconnecting" && "animate-pulse",
           )}
         />
       )

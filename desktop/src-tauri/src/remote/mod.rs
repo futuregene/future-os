@@ -168,11 +168,14 @@ static START_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static START_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// At most one process-lifetime startup retry worker may run at once.
 static START_RETRY_RUNNING: AtomicBool = AtomicBool::new(false);
-/// A finished command/transfer task is rebuilt automatically. Bound repeated
-/// crash recovery so a deterministic panic cannot spin forever.
-static RUNTIME_RECOVERY_RUNNING: AtomicBool = AtomicBool::new(false);
-static RUNTIME_RECOVERY_ATTEMPTS: AtomicU8 = AtomicU8::new(0);
-const MAX_RUNTIME_RECOVERY_ATTEMPTS: u8 = 3;
+/// A finished critical task is rebuilt automatically. Bound repeated
+/// reconnects so a deterministic panic cannot spin forever.
+static RUNTIME_RECONNECT_RUNNING: AtomicBool = AtomicBool::new(false);
+static RUNTIME_RECONNECT_ATTEMPTS: AtomicU8 = AtomicU8::new(0);
+const MAX_RUNTIME_RECONNECT_ATTEMPTS: u8 = 3;
+static WEB_RECONNECT_RUNNING: AtomicBool = AtomicBool::new(false);
+static WEB_RECONNECT_ATTEMPTS: AtomicU8 = AtomicU8::new(0);
+const MAX_WEB_RECONNECT_ATTEMPTS: u8 = 3;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -183,8 +186,8 @@ pub struct RemoteStartInput {}
 pub struct RemoteStatus {
     pub running: bool,
     pub connected: bool,
-    /// The bridge detected a dead subscription task and is rebuilding itself.
-    pub recovering: bool,
+    /// The bridge is rebuilding a failed connection generation.
+    pub reconnecting: bool,
     pub nats_url: String,
     pub pair_id: String,
     /// One-shot pairing code (base64url) returned only by a successful start, for the UI to display/copy.
@@ -222,7 +225,7 @@ fn empty() -> RemoteStatus {
     RemoteStatus {
         running: false,
         connected: false,
-        recovering: false,
+        reconnecting: false,
         nats_url: String::new(),
         pair_id: String::new(),
         pairing_code: None,
@@ -237,8 +240,9 @@ fn empty() -> RemoteStatus {
 }
 
 pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppError> {
-    // An explicit user reconnect gets a fresh automatic-recovery budget.
-    RUNTIME_RECOVERY_ATTEMPTS.store(0, Ordering::Release);
+    // An explicit user reconnect gets fresh automatic-reconnect budgets.
+    RUNTIME_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
+    WEB_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
     START_REQUESTED.store(true, Ordering::Release);
     let result = start_once(true).await;
     if result.as_ref().is_ok_and(retryable_start_status) {
@@ -338,14 +342,14 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
             (None, None, None)
         }
     };
-    // A failed web bind is non-fatal (the bridge still runs) but the UI should
-    // explain why there's no local web client to point at.
+    // A failed web bind is non-fatal (the bridge still runs) and is retried
+    // silently before the UI is asked to intervene.
     let web_bind_failed = web_task.is_none();
 
     let status = RemoteStatus {
         running: true,
         connected: true,
-        recovering: false,
+        reconnecting: false,
         nats_url: creds.nats_url.clone(),
         pair_id: pair_id.clone(),
         pairing_code: pairing_code.clone(),
@@ -354,7 +358,7 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
         desktop_public_key: desktop_public_key.clone(),
         web_url: web_url.clone(),
         web_lan_url: web_lan_url.clone(),
-        error_code: web_bind_failed.then(|| "web_bind".to_string()),
+        error_code: None,
         error: None,
     };
     *STATE.lock().unwrap() = Some(RemoteState {
@@ -377,6 +381,9 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
         pairing_code_expires_at,
         pairing_confirmed,
     });
+    if web_bind_failed {
+        spawn_web_reconnect(status.pair_id.clone());
+    }
     Ok(status)
 }
 
@@ -425,30 +432,75 @@ fn spawn_start_retry() {
 /// Rebuild the whole bridge generation when a subscription task itself dies.
 /// Ordinary NATS disconnects are handled inside the task; reaching this path
 /// means the task exited or panicked and cannot resubscribe on its own.
-fn spawn_runtime_recovery() {
+fn spawn_runtime_reconnect() {
     #[cfg(test)]
     return;
 
     #[cfg(not(test))]
     {
-        if RUNTIME_RECOVERY_RUNNING.swap(true, Ordering::AcqRel) {
+        if RUNTIME_RECONNECT_RUNNING.swap(true, Ordering::AcqRel) {
             return;
         }
-        let attempt = RUNTIME_RECOVERY_ATTEMPTS.fetch_add(1, Ordering::AcqRel) + 1;
+        let attempt = RUNTIME_RECONNECT_ATTEMPTS.fetch_add(1, Ordering::AcqRel) + 1;
         eprintln!(
-            "remote: subscription task stopped; rebuilding bridge automatically ({attempt}/{MAX_RUNTIME_RECOVERY_ATTEMPTS})"
+            "remote: critical task stopped; reconnecting bridge automatically ({attempt}/{MAX_RUNTIME_RECONNECT_ATTEMPTS})"
         );
         tauri::async_runtime::spawn(async move {
             let result = start_once(true).await;
             match &result {
                 Ok(status) if retryable_start_status(status) => spawn_start_retry(),
                 Err(error) => {
-                    eprintln!("remote: automatic bridge recovery failed: {error}");
+                    eprintln!("remote: automatic bridge reconnect failed: {error}");
                     *LAST_ERROR_CODE.lock().unwrap() = Some("reconnect_required".to_string());
                 }
                 _ => {}
             }
-            RUNTIME_RECOVERY_RUNNING.store(false, Ordering::Release);
+            RUNTIME_RECONNECT_RUNNING.store(false, Ordering::Release);
+        });
+    }
+}
+
+/// Retry only the optional local Web listener. A busy port must not tear down
+/// the healthy phone/NATS bridge; after a bounded retry budget the UI offers a
+/// full reconnect button, which retries the listener with a fresh generation.
+fn spawn_web_reconnect(pair_id: String) {
+    #[cfg(test)]
+    {
+        let _ = pair_id;
+        return;
+    }
+
+    #[cfg(not(test))]
+    {
+        if WEB_RECONNECT_RUNNING.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let attempt = WEB_RECONNECT_ATTEMPTS.fetch_add(1, Ordering::AcqRel) + 1;
+        eprintln!(
+            "remote: local web listener unavailable; retrying ({attempt}/{MAX_WEB_RECONNECT_ATTEMPTS})"
+        );
+        tauri::async_runtime::spawn(async move {
+            match bind_web_listener().await {
+                Ok(listener) => {
+                    let web_url = Some(format!("http://localhost:{WEB_PORT}"));
+                    let web_lan_url = lan_ip().map(|ip| format!("http://{ip}:{WEB_PORT}"));
+                    let web_task = spawn_web_server(listener);
+                    let mut guard = STATE.lock().unwrap();
+                    if let Some(state) = guard.as_mut().filter(|state| state.pair_id == pair_id) {
+                        if let Some(previous) = state.web_task.replace(web_task) {
+                            previous.abort();
+                        }
+                        state.web_url = web_url;
+                        state.web_lan_url = web_lan_url;
+                        WEB_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
+                        eprintln!("remote: local web listener reconnected");
+                    } else {
+                        web_task.abort();
+                    }
+                }
+                Err(error) => eprintln!("remote: local web listener reconnect failed: {error}"),
+            }
+            WEB_RECONNECT_RUNNING.store(false, Ordering::Release);
         });
     }
 }
@@ -543,7 +595,8 @@ pub async fn unpair() -> Result<RemoteStatus, crate::AppError> {
 
 pub fn stop() -> RemoteStatus {
     START_REQUESTED.store(false, Ordering::Release);
-    RUNTIME_RECOVERY_ATTEMPTS.store(0, Ordering::Release);
+    RUNTIME_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
+    WEB_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
     stop_runtime()
 }
 
@@ -581,24 +634,44 @@ pub fn status() -> RemoteStatus {
         Some(s) => {
             // Derive real health instead of reporting `connected: true` for as
             // long as STATE is occupied: the NATS client reconnects with state
-            // transitions, and the command loop can die independently (failed
-            // subscribe / stream end) — a dead loop processes nothing and must
-            // not present as a healthy bridge.
-            let loop_dead = s.cmd_task.is_finished() || s.transfer_task.is_finished();
-            if !loop_dead {
-                RUNTIME_RECOVERY_ATTEMPTS.store(0, Ordering::Release);
+            // transitions, and every critical background task can die
+            // independently. Any finished task requires a full generation
+            // reconnect; otherwise the bridge can look connected while losing
+            // commands, events, presence, transfers, or credential refreshes.
+            let critical_task_dead = s.cmd_task.is_finished()
+                || s.transfer_task.is_finished()
+                || s.event_task.is_finished()
+                || s.heartbeat_task.is_finished()
+                || s.refresh_task.is_finished();
+            if !critical_task_dead {
+                RUNTIME_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
             }
-            let recovery_in_flight = RUNTIME_RECOVERY_RUNNING.load(Ordering::Acquire);
-            let can_auto_recover =
-                RUNTIME_RECOVERY_ATTEMPTS.load(Ordering::Acquire) < MAX_RUNTIME_RECOVERY_ATTEMPTS;
-            let recovering = loop_dead
+            let reconnect_in_flight = RUNTIME_RECONNECT_RUNNING.load(Ordering::Acquire);
+            let can_auto_reconnect =
+                RUNTIME_RECONNECT_ATTEMPTS.load(Ordering::Acquire) < MAX_RUNTIME_RECONNECT_ATTEMPTS;
+            let reconnecting = critical_task_dead
                 && START_REQUESTED.load(Ordering::Acquire)
-                && (recovery_in_flight || can_auto_recover);
-            if recovering && !recovery_in_flight {
-                spawn_runtime_recovery();
+                && (reconnect_in_flight || can_auto_reconnect);
+            if reconnecting && !reconnect_in_flight {
+                spawn_runtime_reconnect();
             }
-            let connected = !loop_dead
+            let connected = !critical_task_dead
                 && s.client.connection_state() == async_nats::connection::State::Connected;
+
+            // The local Web listener is optional and retries independently so
+            // a busy port never disrupts the healthy phone bridge.
+            let web_dead = s.web_task.as_ref().is_none_or(|task| task.is_finished());
+            if !web_dead {
+                WEB_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
+            }
+            let web_reconnect_in_flight = WEB_RECONNECT_RUNNING.load(Ordering::Acquire);
+            let can_reconnect_web =
+                WEB_RECONNECT_ATTEMPTS.load(Ordering::Acquire) < MAX_WEB_RECONNECT_ATTEMPTS;
+            if web_dead && can_reconnect_web && !web_reconnect_in_flight {
+                spawn_web_reconnect(s.pair_id.clone());
+            }
+            let web_reconnect_exhausted =
+                web_dead && !web_reconnect_in_flight && !can_reconnect_web;
             // Re-expose the pairing code until it expires so the UI keeps it
             // after navigating away and back (it's no longer a show-once value).
             let confirmed = s.pairing_confirmed.load(Ordering::Acquire);
@@ -614,7 +687,7 @@ pub fn status() -> RemoteStatus {
             RemoteStatus {
                 running: true,
                 connected,
-                recovering,
+                reconnecting,
                 nats_url: s.nats_url.clone(),
                 pair_id: s.pair_id.clone(),
                 pairing_code,
@@ -623,9 +696,9 @@ pub fn status() -> RemoteStatus {
                 desktop_public_key: s.desktop_public_key.clone(),
                 web_url: s.web_url.clone(),
                 web_lan_url: s.web_lan_url.clone(),
-                error_code: if loop_dead && !recovering {
+                error_code: if critical_task_dead && !reconnecting {
                     Some("reconnect_required".to_string())
-                } else if s.web_task.is_none() {
+                } else if web_reconnect_exhausted {
                     Some("web_bind".to_string())
                 } else {
                     None
@@ -642,14 +715,14 @@ pub fn status() -> RemoteStatus {
             let error_code = LAST_ERROR_CODE.lock().unwrap().clone();
             // Startup retries run before a bridge instance exists, so this
             // state cannot be inferred from `STATE`. Expose it explicitly so
-            // the UI shows an amber recovering indicator instead of briefly
+            // the UI shows an amber reconnecting indicator instead of briefly
             // presenting the initial transient network/server error as final.
-            let recovering = START_REQUESTED.load(Ordering::Acquire)
+            let reconnecting = START_REQUESTED.load(Ordering::Acquire)
                 && START_RETRY_RUNNING.load(Ordering::Acquire)
                 && matches!(error_code.as_deref(), Some("network") | Some("server"));
             RemoteStatus {
-                recovering,
-                error_code: if recovering { None } else { error_code },
+                reconnecting,
+                error_code: if reconnecting { None } else { error_code },
                 pair_id: pairing::load_creds().map(|c| c.pair_id).unwrap_or_default(),
                 ..empty()
             }
@@ -908,8 +981,11 @@ fn spawn_presence_heartbeat(
 
             // 2. Sessions snapshot (signature change or 20s self-heal).
             let dirty = crate::store::take_catalog_dirty();
-            secs_since_sessions += 1;
-            secs_since_workspaces += 1;
+            // A prolonged store read failure must not overflow and panic the
+            // heartbeat task in debug/dev builds; the task supervisor would
+            // reconnect it, but the deterministic panic would simply repeat.
+            secs_since_sessions = secs_since_sessions.saturating_add(1);
+            secs_since_workspaces = secs_since_workspaces.saturating_add(1);
             if let Some((sessions_payload, sessions_sig)) = build_sessions_snapshot(&pair_id) {
                 if sessions_sig != last_sessions_sig || secs_since_sessions >= 20 {
                     let bytes = serde_json::to_vec(&sessions_payload)
@@ -1583,12 +1659,12 @@ mod runtime_tests {
         assert_eq!(current.pair_id, "pair_stopped");
 
         // A transient first connect failure starts the process-lifetime retry
-        // worker before `STATE` exists. It is recoverable, not a final error.
+        // worker before `STATE` exists. It is reconnecting, not a final error.
         *LAST_ERROR_CODE.lock().unwrap() = Some("network".to_string());
         START_REQUESTED.store(true, Ordering::Release);
         START_RETRY_RUNNING.store(true, Ordering::Release);
         let current = status();
-        assert!(current.recovering);
+        assert!(current.reconnecting);
         assert_eq!(current.error_code, None);
 
         START_RETRY_RUNNING.store(false, Ordering::Release);
@@ -1640,7 +1716,7 @@ mod runtime_tests {
         }
         assert_eq!(status().pairing_code, None);
 
-        // A dead command loop first enters transparent automatic recovery.
+        // A dead critical task first enters transparent automatic reconnect.
         {
             let mut guard = STATE.lock().unwrap();
             let state = guard.as_mut().unwrap();
@@ -1648,27 +1724,30 @@ mod runtime_tests {
             state.cmd_task = tokio::spawn(async {});
         }
         START_REQUESTED.store(true, Ordering::Release);
-        RUNTIME_RECOVERY_ATTEMPTS.store(0, Ordering::Release);
+        RUNTIME_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
         tokio::time::sleep(Duration::from_millis(20)).await;
         let current = status();
         assert!(!current.connected);
-        assert!(current.recovering);
+        assert!(current.reconnecting);
         assert_eq!(current.error_code, None);
 
         // Only after the bounded automatic budget is exhausted does the UI
         // receive an actionable reconnect-required error.
-        RUNTIME_RECOVERY_ATTEMPTS.store(MAX_RUNTIME_RECOVERY_ATTEMPTS, Ordering::Release);
+        RUNTIME_RECONNECT_ATTEMPTS.store(MAX_RUNTIME_RECONNECT_ATTEMPTS, Ordering::Release);
         let current = status();
-        assert!(!current.recovering);
+        assert!(!current.reconnecting);
         assert_eq!(current.error_code.as_deref(), Some("reconnect_required"));
 
-        // Without a web task the bind failure is reported.
+        // The optional Web listener retries silently, then becomes actionable
+        // only after its own reconnect budget is exhausted.
         {
             let mut guard = STATE.lock().unwrap();
             let state = guard.as_mut().unwrap();
             state.web_task = None;
             state.cmd_task = tokio::spawn(std::future::pending());
         }
+        assert_eq!(status().error_code, None);
+        WEB_RECONNECT_ATTEMPTS.store(MAX_WEB_RECONNECT_ATTEMPTS, Ordering::Release);
         assert_eq!(status().error_code.as_deref(), Some("web_bind"));
 
         let stopped = stop();
@@ -2007,7 +2086,7 @@ mod runtime_tests {
     }
 
     #[tokio::test]
-    async fn start_reports_web_bind_failure_but_keeps_running() {
+    async fn start_retries_web_bind_before_reporting_failure() {
         let _home = HomeGuard::new("remote-web-bind");
         wait_for_web_port_free().await;
         let blocker =
@@ -2021,7 +2100,9 @@ mod runtime_tests {
         assert!(started.running);
         assert_eq!(started.web_url, None);
         assert_eq!(started.web_lan_url, None);
-        assert_eq!(started.error_code.as_deref(), Some("web_bind"));
+        assert_eq!(started.error_code, None);
+        assert_eq!(status().error_code, None);
+        WEB_RECONNECT_ATTEMPTS.store(MAX_WEB_RECONNECT_ATTEMPTS, Ordering::Release);
         assert_eq!(status().error_code.as_deref(), Some("web_bind"));
         stop();
         drop(blocker);

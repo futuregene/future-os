@@ -415,6 +415,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // unexpected errors only.
   const recordError = useCallback((nextError: unknown) => {
     if (classifyError(nextError) === "transport") return;
+    console.warn("[remote] unexpected non-transport error", nextError);
     setError(nextError instanceof Error ? nextError.message : String(nextError));
   }, []);
 
