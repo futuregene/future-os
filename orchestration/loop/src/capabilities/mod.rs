@@ -14,7 +14,10 @@
 //! plus the 15th (pr_review_queue, P2-3): the queue observation + review
 //! contract rule version. `explore` shipped its Wave 2 deepening:
 //! hypothesis modeling + verification tracking + the explore graph
-//! (node/edge/status events folded into a bounded projection).
+//! (node/edge/status events folded into a bounded projection);
+//! `change_quality` shipped its Wave 2 deepening: the qualification
+//! pipeline (policy / exact-scope result contract / derived guardrails /
+//! validation-plan oracles) as a deterministic rule version.
 
 pub mod agent_turn_recall;
 pub mod auto_research;
