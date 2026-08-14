@@ -74,7 +74,7 @@ pub(super) fn new_reply_slots() -> ReplySlots {
 /// milliseconds so expiry can be observed without a ten-minute wait.
 fn reply_slot_ttl() -> Duration {
     #[cfg(test)]
-    const TTL: Duration = Duration::from_millis(20);
+    const TTL: Duration = Duration::from_millis(500);
     #[cfg(not(test))]
     const TTL: Duration = Duration::from_secs(600);
     TTL
@@ -3023,7 +3023,7 @@ mod bridge_tests {
         assert_eq!(executions, 1, "retried command must not re-execute");
 
         // After the reply-slot TTL the entry expires and the command runs again.
-        tokio::time::sleep(Duration::from_millis(120)).await;
+        tokio::time::sleep(Duration::from_millis(650)).await;
         let third = bridge.call(cmd()).await;
         assert_eq!(third["success"], json!(true));
         let executions = agent
