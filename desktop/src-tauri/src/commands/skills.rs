@@ -51,6 +51,13 @@ pub async fn uninstall_skill(id: String) -> Result<bool, crate::AppError> {
 /// since it blocks on the CLI child process.
 #[tauri::command]
 pub async fn bootstrap_builtin_skills(app: tauri::AppHandle) {
+    spawn_builtin_skills(app)
+}
+
+/// Spawn the builtin skill bootstrap on a background thread. Extracted so the
+/// thread body can run against a mock handle (the command wrapper itself needs
+/// a real Wry handle).
+fn spawn_builtin_skills<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     std::thread::spawn(move || skills_bootstrap::run_builtin_skills(&app));
 }
 
@@ -62,11 +69,23 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
+    fn spawn_builtin_skills_runs_against_a_mock_handle() {
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_shell::init())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build mock app");
+        // The spawned thread fails the sidecar spawn and logs — no panic, no
+        // drain, and the thread body runs against the mock handle.
+        spawn_builtin_skills(app.handle().clone());
+    }
+
+    #[test]
     fn async_command_wrappers_reject_malformed_bodies() {
         crate::commands::ipc_harness::assert_all_reject_bad_body(
             tauri::generate_handler![install_skill, uninstall_skill],
             &["install_skill", "uninstall_skill"],
         );
+        // `install_skill` takes two arguments, so the empty-body rejection above
         // `install_skill` takes two arguments, so the empty-body rejection above
         // only exercises its *first* argument's error arm (attributed to the
         // signature line). Fail the *last* argument instead to hit the error arm
