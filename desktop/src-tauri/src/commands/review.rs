@@ -66,9 +66,11 @@ pub fn get_last_run_review(
 #[tauri::command]
 pub fn retry_run_review(run_id: String) -> Result<Option<LastRunReviewData>, crate::AppError> {
     agent_bridge::retry_run_review(&run_id)?;
-    let Some(changeset) = store::get_run_changeset(&run_id)? else {
-        return Ok(None);
-    };
+    // `retry` materializes a fresh changeset before returning Ok (otherwise it
+    // errors), so the changeset is always present here — the old `else {
+    // return Ok(None) }` arm was unreachable.
+    let changeset = store::get_run_changeset(&run_id)?
+        .expect("retry_run_review: retry always materializes a run changeset");
     Ok(Some(shadow_review::build_last_run_review(changeset)?))
 }
 
@@ -266,5 +268,45 @@ mod tests {
         let value = serde_json::to_value(&review).expect("serialize");
         assert_eq!(value["isGitWorkspace"], serde_json::json!(true));
         assert_eq!(value["branch"], serde_json::json!("main"));
+    }
+
+    #[test]
+    fn get_last_run_review_errors_when_changeset_lookup_fails() {
+        let _home = init("cmd_review_last_run_db");
+        let home = std::env::var("HOME").expect("test home");
+        let conn =
+            rusqlite::Connection::open(std::path::Path::new(&home).join(".future/app/app.db"))
+                .expect("open db");
+        conn.execute_batch("DROP TABLE review_changesets;").unwrap();
+        drop(conn);
+        assert!(get_last_run_review("any".into()).is_err());
+    }
+
+    #[test]
+    fn get_last_run_review_errors_when_file_changes_lookup_fails() {
+        let _home = init("cmd_review_last_run_files");
+        let ws = workspace("last_run_files_ws");
+        let thread = thread_in(&ws);
+        let run = crate::store::create_run(crate::store::CreateRunInput {
+            id: None,
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("run");
+        std::fs::write(std::path::Path::new(&ws.path).join("a.txt"), b"hello").unwrap();
+        crate::agent_bridge::capture_before(&thread.id, &run.id);
+        crate::agent_bridge::finalize_after(&thread.id, &run.id);
+        // Drop the file-changes table so `build_last_run_review`'s first lookup
+        // fails after a real changeset has been materialized.
+        let home = std::env::var("HOME").expect("test home");
+        let conn =
+            rusqlite::Connection::open(std::path::Path::new(&home).join(".future/app/app.db"))
+                .expect("open db");
+        conn.execute_batch("DROP TABLE review_file_changes;")
+            .unwrap();
+        drop(conn);
+        assert!(get_last_run_review(thread.id).is_err());
     }
 }

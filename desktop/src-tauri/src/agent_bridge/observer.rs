@@ -2487,6 +2487,32 @@ mod tests {
         std::env::remove_var("FUTURE_TEST_IDLE_CHECK_MS");
     }
 
+    #[tokio::test]
+    async fn run_observer_keeps_waiting_through_idle_with_an_active_run() {
+        let _home = TestHome::new("observer-idle-active");
+        let mock = mock_agent();
+        std::env::set_var("FUTURE_TEST_IDLE_CHECK_MS", "10");
+        mock.push_data(
+            "get_session_events_since",
+            serde_json::json!({"events": []}),
+        );
+        mock.push_data("get_state", serde_json::json!({"isStreaming": false}));
+        // Plain subscribe hangs; the idle timeout fires but `has_active_run`
+        // keeps `should_sleep()` false, so the observer hits the keep-waiting
+        // (`continue`) arm instead of self-terminating.
+        let shared = Arc::new(ObserverShared {
+            last_activity_ms: AtomicI64::new(0),
+            has_active_run: AtomicBool::new(true),
+            ..ObserverShared::new("thread-idle-active")
+        });
+        let (cancel_tx, handle) = spawn_run_observer("sess-idle-active", shared);
+        // A few idle cycles, then cancel so the loop exits deterministically.
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        cancel_tx.send(()).unwrap();
+        handle.await.unwrap();
+        std::env::remove_var("FUTURE_TEST_IDLE_CHECK_MS");
+    }
+
     #[test]
     fn emit_settings_event_emits_through_a_mock_handle() {
         let app = tauri::test::mock_builder()

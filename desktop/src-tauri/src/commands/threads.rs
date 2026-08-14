@@ -1026,9 +1026,7 @@ mod tests {
             errors: HashMap::from([("get_state".to_string(), "rejected".to_string())]),
             ..Default::default()
         });
-        let err = get_thread_agent_state(thread.id.clone())
-            .await
-            .unwrap_err();
+        let err = get_thread_agent_state(thread.id.clone()).await.unwrap_err();
         assert!(!err.to_string().is_empty());
         script_mock_agent(MockScript::default());
     }
@@ -1110,7 +1108,9 @@ mod tests {
         .expect("create run");
         crate::commands::agent_mock::ensure_mock_agent();
         script_mock_agent(MockScript::default());
-        let value = attach_remote_stream(thread.id.clone()).await.expect("attach");
+        let value = attach_remote_stream(thread.id.clone())
+            .await
+            .expect("attach");
         assert_eq!(value["runId"], serde_json::json!("run_active"));
         agent_bridge::drop_observer("sess_attach");
         script_mock_agent(MockScript::default());

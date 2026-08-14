@@ -58,7 +58,7 @@ fn spawn_builtin_skills<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
 
 #[tauri::command]
 #[rustfmt::skip]
-pub async fn bootstrap_builtin_skills(app: tauri::AppHandle) { spawn_builtin_skills(app) }
+pub async fn bootstrap_builtin_skills<R: tauri::Runtime>(app: tauri::AppHandle<R>) { spawn_builtin_skills(app) }
 
 #[cfg(test)]
 mod tests {
@@ -76,6 +76,15 @@ mod tests {
         // The spawned thread fails the sidecar spawn and logs — no panic, no
         // drain, and the thread body runs against the mock handle.
         spawn_builtin_skills(app.handle().clone());
+    }
+
+    #[tokio::test]
+    async fn bootstrap_builtin_skills_command_runs_against_a_mock_handle() {
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_shell::init())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build mock app");
+        bootstrap_builtin_skills(app.handle().clone()).await;
     }
 
     #[test]
