@@ -1,6 +1,7 @@
 import * as Device from "expo-device";
 import { createUser, fromSeed } from "nkeys.js";
 import {
+  attemptPendingRevoke,
   claimPairingCode,
   ensureFreshCredentials,
   refreshCredentials,
@@ -238,5 +239,28 @@ describe("serverRevoke", () => {
   test("rethrows the server error on a non-terminal failure", async () => {
     globalThis.fetch = jest.fn().mockResolvedValue(jsonResponse({ message: "boom" }, 500));
     await expect(serverRevoke(makeCredentials())).rejects.toThrow("boom");
+  });
+});
+
+describe("attemptPendingRevoke", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test("fires the queued revoke and resolves", async () => {
+    globalThis.fetch = jest.fn().mockResolvedValue(jsonResponse({}, 200));
+    const credentials = makeCredentials();
+    const pending = {
+      pairId: credentials.pairId,
+      deviceId: credentials.deviceId,
+      seed: credentials.seed,
+      refreshToken: credentials.refreshToken,
+      tokenUrl: credentials.tokenUrl,
+    };
+    await expect(attemptPendingRevoke(pending)).resolves.toBeUndefined();
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "https://example.com/pair/revoke",
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 });
