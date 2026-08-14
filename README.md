@@ -11,7 +11,7 @@
 
 # FutureOS
 
-> A local-first AI agent workspace — terminal, desktop, messaging platforms, all through one gRPC backend.
+> One AI agent, everywhere you work — terminal, desktop, and your chat apps.
 
 FutureOS gives you a unified AI agent experience across a terminal UI (TUI),
 desktop app (GUI), CLI, and IM bots — on macOS, Linux, and Windows.

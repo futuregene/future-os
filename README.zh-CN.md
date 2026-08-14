@@ -11,7 +11,7 @@
 
 # FutureOS
 
-> 本地优先的 AI Agent 工作台——终端、桌面、消息平台，一个 gRPC 后端全搞定。
+> 同一个 AI Agent，处处随你——终端、桌面、飞书与钉钉。
 
 FutureOS 提供统一的 AI Agent 体验，覆盖终端界面 (TUI)、桌面应用 (GUI)、命令行 (CLI) 和 IM 机器人——支持 macOS、Linux、Windows。写代码、做调研、管理文件——从终端、聊天软件或原生桌面窗口，无缝切换。
 

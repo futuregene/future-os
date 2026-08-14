@@ -1,7 +1,7 @@
 #!/bin/bash
 # Measure desktop/src-tauri per-line coverage (lcov DA:0) for the final-tauri residual.
 set -uo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 REALHOME="$HOME"
 
 while IFS='=' read -r k _; do case "$k" in CARGO*) unset "$k";; esac; done < <(env)
