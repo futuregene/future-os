@@ -15,8 +15,23 @@ use crate::{agent_supervisor, auth_store, store, AppError};
 /// leaving an orphaned sidecar on every reset is a process leak).
 #[tauri::command]
 pub fn clear_app_data(app: tauri::AppHandle) -> Result<(), AppError> {
+    clear_app_data_with(app, relaunch_app)
+}
+
+/// Body of [`clear_app_data`] with the relaunch injectable — `restart()`
+/// re-execs the process, so tests inject a no-op (see [`relaunch_app`]).
+fn clear_app_data_with<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    relaunch: impl FnOnce(tauri::AppHandle<R>) -> Result<(), AppError>,
+) -> Result<(), AppError> {
     store::clear_all_data()?;
     agent_supervisor::shutdown_agent();
+    relaunch(app)
+}
+
+/// Re-exec the GUI process. Never callable from tests: `restart()` never
+/// returns (the test binary would re-run forever).
+fn relaunch_app<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<(), AppError> {
     app.restart()
 }
 
@@ -56,18 +71,24 @@ pub fn get_future_environment() -> Result<FutureEnvironment, AppError> {
 /// `AppHandle` — the command itself ends in `app.restart()`, which re-execs the
 /// process and never returns.
 fn resolve_environment(environment: &str) -> Result<&'static str, AppError> {
-    // Release builds are production-locked (the UI hides the switcher; this is
-    // the backend guard behind it). Only dev builds may switch environments.
-    if crate::build_info::is_release() && environment != ENV_PRODUCTION {
-        return Err(AppError::Message(
-            "Production builds only support the production environment; cannot switch.".to_string(),
-        ));
-    }
+    enforce_release_lock(crate::build_info::is_release(), environment)?;
     match environment {
         ENV_PRODUCTION => Ok(PRODUCTION_PLATFORM_URL),
         ENV_TEST => Ok(TEST_PLATFORM_URL),
         other => Err(AppError::Message(format!("Unknown environment: {other}"))),
     }
+}
+
+/// Release builds are production-locked (the UI hides the switcher; this is
+/// the backend guard behind it). Only dev builds may switch environments.
+/// Extracted so the guard is testable — test builds never report `is_release`.
+fn enforce_release_lock(is_release: bool, environment: &str) -> Result<(), AppError> {
+    if is_release && environment != ENV_PRODUCTION {
+        return Err(AppError::Message(
+            "Production builds only support the production environment; cannot switch.".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Switch the FutureGene environment and relaunch so the change takes effect.
@@ -96,14 +117,33 @@ fn resolve_environment(environment: &str) -> Result<&'static str, AppError> {
 /// forces the relaunched GUI to spawn a new agent that reads the new `base_url`.
 #[tauri::command]
 pub fn set_future_environment(app: tauri::AppHandle, environment: String) -> Result<(), AppError> {
-    let platform_url = resolve_environment(&environment)?;
+    set_future_environment_on(app, &environment)
+}
+
+/// Body of [`set_future_environment`], generic so a mock-runtime handle can
+/// drive it (the command itself ends in `app.restart()`).
+fn set_future_environment_on<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    environment: &str,
+) -> Result<(), AppError> {
+    set_future_environment_with(app, environment, relaunch_app)
+}
+
+/// Body of [`set_future_environment`] with the relaunch injectable (see
+/// [`clear_app_data_with`]).
+fn set_future_environment_with<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    environment: &str,
+    relaunch: impl FnOnce(tauri::AppHandle<R>) -> Result<(), AppError>,
+) -> Result<(), AppError> {
+    let platform_url = resolve_environment(environment)?;
     // Deliberately a direct `auth_store` write (not the RPC-first path of audit
     // item 2): this is a sync command that immediately kills and restarts the
     // agent, so there is nothing to RPC — the relaunched agent reads the new
     // `base_url` from auth.json at startup.
     auth_store::set_future_base_url(&format!("{platform_url}/api"))?;
     agent_supervisor::shutdown_agent();
-    app.restart()
+    relaunch(app)
 }
 
 #[cfg(test)]
@@ -128,6 +168,25 @@ mod tests {
         let env = get_future_environment().expect("custom env");
         assert_eq!(env.environment, "custom");
         assert_eq!(env.platform_url, "https://custom.example.com");
+    }
+
+    #[test]
+    fn enforce_release_lock_guards_non_production_switches() {
+        assert!(enforce_release_lock(false, "test").is_ok());
+        assert!(enforce_release_lock(true, "production").is_ok());
+        assert!(enforce_release_lock(true, "test").is_err());
+    }
+
+    #[test]
+    fn clear_app_data_and_set_future_environment_run_end_to_end() {
+        let _home = HomeGuard::new("cmd-env-switch");
+        crate::store::initialize_app_store().expect("init store");
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        clear_app_data_with(handle.clone(), |_| Ok(())).expect("clear");
+        set_future_environment_with(handle, "test", |_| Ok(())).expect("switch");
+        let env = get_future_environment().expect("env");
+        assert_eq!(env.environment, "test");
     }
 
     #[test]
