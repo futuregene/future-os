@@ -147,13 +147,13 @@ pub fn restore_thread(thread_id: String) -> Result<store::ThreadRecord, crate::A
 pub async fn delete_thread(
     input: store::DeleteThreadInput,
 ) -> Result<store::ThreadRecord, crate::AppError> {
-    let session_id = store::get_thread(&input.thread_id)?
-        .map(|thread| thread.agent_session_id.unwrap_or(thread.id));
+    // `delete_thread_with_files` returns the deleted record and already errors
+    // for a missing thread, so its session id is always present here — the old
+    // pre-delete `get_thread` + `if let Some` guard had an unreachable None arm.
     let thread = store::delete_thread_with_files(&input.thread_id, input.delete_files)?;
-    if let Some(session_id) = session_id {
-        if store::is_agent_session_tombstoned(&session_id)? {
-            agent_bridge::drop_observer(&session_id);
-        }
+    let session_id = thread.agent_session_id.as_deref().unwrap_or(&thread.id);
+    if store::is_agent_session_tombstoned(session_id)? {
+        agent_bridge::drop_observer(session_id);
     }
     crate::agent_bridge::reconcile_delete_outbox().await;
     Ok(thread)
@@ -962,6 +962,169 @@ mod tests {
         });
         let cleared = clear_finished_runs(thread.id.clone()).await.expect("clear");
         assert_eq!(cleared, 1);
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn update_thread_model_with_blank_model_skips_the_agent() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_model_blank");
+        let thread = make_thread(&_home, None);
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript::default());
+        let updated = update_thread_model(store::UpdateThreadModelInput {
+            thread_id: thread.id.clone(),
+            model_provider: None,
+            model_id: Some("  ".into()),
+        })
+        .await
+        .expect("update");
+        assert_eq!(updated.id, thread.id);
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn update_thread_thinking_level_with_blank_level_skips_the_agent() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_level_blank");
+        let thread = make_thread(&_home, None);
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript::default());
+        let updated = update_thread_thinking_level(store::UpdateThreadThinkingLevelInput {
+            thread_id: thread.id.clone(),
+            thinking_level: Some("  ".into()),
+        })
+        .await
+        .expect("update");
+        assert_eq!(updated.id, thread.id);
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn list_streaming_thread_ids_is_empty_when_sessions_rejected() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_streaming_reject");
+        let thread = make_thread(&_home, Some("sess_stream_rej"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            errors: HashMap::from([("list_streaming_sessions".to_string(), "boom".to_string())]),
+            ..Default::default()
+        });
+        let ids = list_streaming_thread_ids().await.expect("streaming");
+        assert!(ids.is_empty());
+        script_mock_agent(MockScript::default());
+        let _ = thread;
+    }
+
+    #[tokio::test]
+    async fn get_thread_agent_state_errors_when_get_state_rejected() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_agent_state_rej");
+        let thread = make_thread(&_home, Some("sess_state_rej"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            errors: HashMap::from([("get_state".to_string(), "rejected".to_string())]),
+            ..Default::default()
+        });
+        let err = get_thread_agent_state(thread.id.clone())
+            .await
+            .unwrap_err();
+        assert!(!err.to_string().is_empty());
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn get_thread_agent_state_skips_title_sync_without_session_name() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_agent_state_noname");
+        let thread = make_thread(&_home, Some("sess_state_noname"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([("get_state".to_string(), "{\"model\":\"m\"}".to_string())]),
+            ..Default::default()
+        });
+        let value = get_thread_agent_state(thread.id.clone())
+            .await
+            .expect("state");
+        assert_eq!(value["model"], serde_json::json!("m"));
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn get_session_entries_errors_when_agent_rejects() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_entries_rej");
+        let thread = make_thread(&_home, Some("sess_entries_rej"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            errors: HashMap::from([("get_session_entries".to_string(), "nope".to_string())]),
+            ..Default::default()
+        });
+        let err = get_session_entries(thread.id.clone()).await.unwrap_err();
+        assert!(!err.to_string().is_empty());
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn clear_finished_runs_errors_when_prune_rejected() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_clear_runs_rej");
+        let thread = make_thread(&_home, Some("sess_clear_rej"));
+        crate::store::create_run(store::CreateRunInput {
+            id: Some("run_term_rej".into()),
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("create run");
+        crate::store::update_run_status_if_active(store::UpdateRunStatusInput {
+            run_id: "run_term_rej".into(),
+            status: "completed".into(),
+            error_message: None,
+            error_type: None,
+        })
+        .expect("terminal");
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            errors: HashMap::from([("prune_run_events".to_string(), "nope".to_string())]),
+            ..Default::default()
+        });
+        let err = clear_finished_runs(thread.id.clone()).await.unwrap_err();
+        assert!(!err.to_string().is_empty());
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn attach_remote_stream_returns_the_active_run_id() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_attach_ok");
+        let thread = make_thread(&_home, Some("sess_attach"));
+        crate::store::create_run(store::CreateRunInput {
+            id: Some("run_active".into()),
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("create run");
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript::default());
+        let value = attach_remote_stream(thread.id.clone()).await.expect("attach");
+        assert_eq!(value["runId"], serde_json::json!("run_active"));
+        agent_bridge::drop_observer("sess_attach");
+        script_mock_agent(MockScript::default());
+    }
+
+    #[test]
+    fn observe_session_ensures_an_observer_for_valid_ids() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_observe_ok");
+        let thread = make_thread(&_home, Some("sess_observe"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript::default());
+        observe_session(thread.id.clone(), "sess_observe".into()).expect("observe");
+        agent_bridge::drop_observer("sess_observe");
         script_mock_agent(MockScript::default());
     }
 }
