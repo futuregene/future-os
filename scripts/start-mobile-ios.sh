@@ -12,14 +12,27 @@ RUNTIME="com.apple.CoreSimulator.SimRuntime.iOS-26-5"
 DEVICE_TYPE="com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro"
 DEVICE_NAME="iPhone 17 Pro"
 BUNDLE_ID="cn.futureos.mobile"
+APP_SCHEME="futureos"
 
 MODE="${1:-dev}"
 REBUILD_PREBUILD="${REBUILD_PREBUILD:-0}"
 WARM_START="${WARM_START:-0}"
 CLEAN_NATIVE_BUILD="${CLEAN_NATIVE_BUILD:-0}"
+FORCE_NATIVE_BUILD="${FORCE_NATIVE_BUILD:-0}"
+METRO_PORT="${METRO_PORT:-8081}"
 alias_on_exit=""
+IOS_NATIVE_LOCK=""
+ios_native_lock_held=0
+
+release_native_lock() {
+  if [[ "$ios_native_lock_held" == "1" ]]; then
+    rm -f "$IOS_NATIVE_LOCK"
+    ios_native_lock_held=0
+  fi
+}
 
 cleanup() {
+  release_native_lock
   if [[ -n "$alias_on_exit" ]]; then
     echo ""
     echo "=========================================="
@@ -27,7 +40,7 @@ cleanup() {
     echo "=========================================="
     echo "  Simulator: $DEVICE_NAME ($RUNTIME)"
     if [[ "$MODE" == "dev" ]]; then
-      echo "  Metro:     http://localhost:8081"
+      echo "  Metro:     http://localhost:$METRO_PORT"
       echo "  Reload:    press Cmd+R in the simulator"
     fi
     echo "  Logs:      cd $MOBILE_DIR && npx react-native log-ios"
@@ -36,6 +49,28 @@ cleanup() {
 }
 
 trap cleanup EXIT
+
+acquire_native_lock() {
+  IOS_NATIVE_LOCK="$MOBILE_DIR/build/.futureos-ios-native.lock"
+  mkdir -p "$MOBILE_DIR/build"
+
+  local waited=0
+  until /usr/bin/shlock -f "$IOS_NATIVE_LOCK" -p "$$"; do
+    local owner_pid
+    owner_pid="$(cat "$IOS_NATIVE_LOCK" 2>/dev/null || echo "unknown")"
+    if [[ "$waited" == "0" ]]; then
+      echo "Another iOS native build is using the shared cache (PID $owner_pid). Waiting..."
+    fi
+    if [[ "$waited" -ge 120 ]]; then
+      echo "The other iOS native build is still running (PID $owner_pid)."
+      echo "Wait for it to finish, or stop that build before retrying."
+      return 1
+    fi
+    sleep 2
+    waited=$((waited + 2))
+  done
+  ios_native_lock_held=1
+}
 
 # ── checks ──────────────────────────────────────────────────────────────────
 
@@ -117,6 +152,11 @@ else
   fi
 fi
 
+# `xcodebuild` stores a SQLite database in the persistent DerivedData cache.
+# Serializing native work prevents a second terminal from failing with
+# "build.db: database is locked" while the first build is still running.
+acquire_native_lock
+
 # ── prebuild ─────────────────────────────────────────────────────────────────
 
 if [[ "$REBUILD_PREBUILD" == "1" ]] || [[ ! -d "$MOBILE_DIR/ios" ]]; then
@@ -124,16 +164,25 @@ if [[ "$REBUILD_PREBUILD" == "1" ]] || [[ ! -d "$MOBILE_DIR/ios" ]]; then
   (cd "$MOBILE_DIR" && npx expo prebuild --platform ios)
 fi
 
-# expo run:ios reuses an existing Pods directory. When a package adds an Expo
-# native module, Metro can load its JS while the installed development client
-# still lacks the corresponding native code. A regular `pod install` refuses
-# stale local podspec snapshots, so refresh Pods without updating remote specs
-# whenever the JavaScript dependency manifests changed.
+# Keep Pods intact between runs. Synchronize only when the dependency manifests
+# actually changed; comparing mtimes made every fresh checkout run CocoaPods
+# again, even when the lockfile contents were unchanged.
 POD_LOCK="$MOBILE_DIR/ios/Podfile.lock"
-if [[ ! -f "$POD_LOCK" ]] || [[ "$MOBILE_DIR/package.json" -nt "$POD_LOCK" ]] || \
-  [[ "$MOBILE_DIR/package-lock.json" -nt "$POD_LOCK" ]]; then
+POD_STAMP="$MOBILE_DIR/ios/Pods/.futureos-dependencies.sha256"
+POD_INPUT_HASH="$({
+  shasum -a 256 "$MOBILE_DIR/package.json"
+  shasum -a 256 "$ROOT_DIR/package-lock.json"
+  shasum -a 256 "$MOBILE_DIR/ios/Podfile"
+  shasum -a 256 "$POD_LOCK"
+} | shasum -a 256 | awk '{print $1}')"
+INSTALLED_POD_HASH="$(cat "$POD_STAMP" 2>/dev/null || true)"
+if [[ ! -f "$POD_LOCK" ]] || [[ ! -d "$MOBILE_DIR/ios/Pods" ]] || \
+  [[ "$POD_INPUT_HASH" != "$INSTALLED_POD_HASH" ]]; then
   echo "Synchronizing updated iOS native dependencies..."
-  (cd "$MOBILE_DIR/ios" && pod update --no-repo-update)
+  (cd "$MOBILE_DIR/ios" && pod install --no-repo-update)
+  printf '%s\n' "$POD_INPUT_HASH" > "$POD_STAMP"
+else
+  echo "iOS native dependencies unchanged; reusing Pods."
 fi
 
 # ── gen version ──────────────────────────────────────────────────────────────
@@ -155,8 +204,7 @@ if [[ "$MODE" == "release" ]]; then
   (cd "$MOBILE_DIR/ios" && xcodebuild -workspace FutureOS.xcworkspace \
     -scheme FutureOS -configuration Release \
     -destination "id=$DEVICE_UDID" \
-    -derivedDataPath "$MOBILE_DIR/build/ios-release" build \
-    CODE_SIGNING_ALLOWED=NO 2>&1 | tail -5)
+    -derivedDataPath "$MOBILE_DIR/build/ios-release" build 2>&1 | tail -5)
 
   APP="$MOBILE_DIR/build/ios-release/Build/Products/Release-iphonesimulator/FutureOS.app"
   if [[ ! -d "$APP" ]]; then
@@ -170,6 +218,7 @@ if [[ "$MODE" == "release" ]]; then
 
   echo "Starting app..."
   xcrun simctl launch "$DEVICE_UDID" "$BUNDLE_ID"
+  release_native_lock
 
   APP_SIZE=$(du -h -d 0 "$APP" | cut -f1)
   echo ""
@@ -185,18 +234,119 @@ else
   # ── dev (Metro + debug build) ───────────────────────────────────────────────
 
   echo ""
-  echo "Building + installing debug app + starting Metro..."
+  echo "Preparing debug app with persistent Xcode cache..."
   echo ""
 
-  run_args=()
+  # Keep DerivedData inside mobile/build so every run reuses compiled pods,
+  # Swift modules, and object files. `expo run:ios` uses Xcode's implicit cache
+  # location and then treats a transient simctl openurl timeout as a build
+  # failure, even when the app was built and installed successfully.
+  DEV_DERIVED_DATA="$MOBILE_DIR/build/ios-debug"
+  APP="$DEV_DERIVED_DATA/Build/Products/Debug-iphonesimulator/FutureOS.app"
+  NATIVE_BUILD_STAMP="$DEV_DERIVED_DATA/.futureos-native-inputs.sha256"
+  NATIVE_BUILD_HASH="$({
+    shasum -a 256 "$ROOT_DIR/package-lock.json"
+    shasum -a 256 "$MOBILE_DIR/package.json"
+    shasum -a 256 "$MOBILE_DIR/app.config.ts"
+    find "$MOBILE_DIR/ios" -type f \
+      ! -path "$MOBILE_DIR/ios/Pods/*" \
+      ! -path "$MOBILE_DIR/ios/build/*" \
+      ! -path "*/xcuserdata/*" \
+      ! -name ".xcode.env.local" -print | LC_ALL=C sort | while IFS= read -r native_file; do
+        shasum -a 256 "$native_file"
+      done
+  } | shasum -a 256 | awk '{print $1}')"
+  CACHED_NATIVE_BUILD_HASH="$(cat "$NATIVE_BUILD_STAMP" 2>/dev/null || true)"
+  APP_INSTALLED=0
+  if xcrun simctl get_app_container "$DEVICE_UDID" "$BUNDLE_ID" app >/dev/null 2>&1; then
+    APP_INSTALLED=1
+  fi
+
+  build_actions=(build)
   if [[ "$CLEAN_NATIVE_BUILD" == "1" ]]; then
-    echo "CLEAN_NATIVE_BUILD=1 — clearing Xcode DerivedData before building."
-    run_args+=(--no-build-cache)
+    echo "CLEAN_NATIVE_BUILD=1 — cleaning the persistent debug build first."
+    build_actions=(clean build)
   fi
-  cd "$MOBILE_DIR"
-  if [[ "${#run_args[@]}" -gt 0 ]]; then
-    exec npx expo run:ios "${run_args[@]}"
+
+  if [[ "$FORCE_NATIVE_BUILD" == "1" ]] || [[ "$CLEAN_NATIVE_BUILD" == "1" ]] || \
+    [[ ! -d "$APP" ]] || [[ "$NATIVE_BUILD_HASH" != "$CACHED_NATIVE_BUILD_HASH" ]]; then
+    (cd "$MOBILE_DIR/ios" && xcodebuild -workspace FutureOS.xcworkspace \
+      -scheme FutureOS -configuration Debug \
+      -destination "id=$DEVICE_UDID" \
+      -derivedDataPath "$DEV_DERIVED_DATA" "${build_actions[@]}")
+
+    if [[ ! -d "$APP" ]]; then
+      echo "Debug app not found at $APP"
+      exit 1
+    fi
+
+    printf '%s\n' "$NATIVE_BUILD_HASH" > "$NATIVE_BUILD_STAMP"
+    APP_INSTALLED=0
   else
-    exec npx expo run:ios
+    echo "Native inputs unchanged; skipping Xcode build."
   fi
+
+  if [[ "$APP_INSTALLED" != "1" ]]; then
+    echo "Installing cached debug app..."
+    xcrun simctl install "$DEVICE_UDID" "$APP"
+  else
+    echo "Reusing the installed debug app."
+  fi
+
+  release_native_lock
+
+  # Start Metro in the foreground, but wait for it in a helper before opening
+  # the development-client URL. Launching the app first avoids the common
+  # CoreSimulator code-60 timeout. If SpringBoard is still unhealthy, restart
+  # the app and finally the simulator before asking the developer to intervene.
+  DEV_CLIENT_URL="${APP_SCHEME}://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A${METRO_PORT}"
+  launch_dev_client() {
+    local metro_ready=0
+    local attempt
+
+    for attempt in $(seq 1 120); do
+      # Prefer the ::1 listener used by current macOS/Node releases, with an
+      # IPv4 fallback for environments where localhost resolves differently.
+      if { curl -6 --fail --silent "http://[::1]:${METRO_PORT}/status" || \
+        curl -4 --fail --silent "http://127.0.0.1:${METRO_PORT}/status"; \
+      } | grep -q "packager-status:running"; then
+        metro_ready=1
+        break
+      fi
+      sleep 0.5
+    done
+
+    if [[ "$metro_ready" != "1" ]]; then
+      echo "Metro did not become ready on port $METRO_PORT."
+      return 1
+    fi
+
+    echo "Starting development client..."
+    xcrun simctl launch --terminate-running-process "$DEVICE_UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
+    if xcrun simctl openurl "$DEVICE_UDID" "$DEV_CLIENT_URL"; then
+      return 0
+    fi
+
+    echo "Development-client link timed out; restarting the app and retrying..."
+    xcrun simctl terminate "$DEVICE_UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
+    xcrun simctl launch "$DEVICE_UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
+    if xcrun simctl openurl "$DEVICE_UDID" "$DEV_CLIENT_URL"; then
+      return 0
+    fi
+
+    echo "Simulator is not responding; rebooting it and retrying once..."
+    xcrun simctl shutdown "$DEVICE_UDID" >/dev/null 2>&1 || true
+    xcrun simctl boot "$DEVICE_UDID"
+    xcrun simctl bootstatus "$DEVICE_UDID" -b
+    xcrun simctl launch "$DEVICE_UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
+    if ! xcrun simctl openurl "$DEVICE_UDID" "$DEV_CLIENT_URL"; then
+      echo "Could not reconnect the development client automatically."
+      echo "Close and reopen Simulator, then run this script again."
+      return 1
+    fi
+  }
+
+  launch_dev_client &
+  cd "$MOBILE_DIR"
+  exec npx expo start --dev-client --localhost --port "$METRO_PORT"
 fi
