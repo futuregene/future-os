@@ -189,7 +189,7 @@ fn run_turn_completed_with_live_log() {
         let dir = tempfile::tempdir().unwrap();
         let live = dir.path().join("live.jsonl");
         let summary = client
-            .run_turn("sess", "mock-run-1", Some(&live))
+            .run_turn("sess", "mock-run-1", Some(&live), None)
             .await
             .unwrap();
         assert_eq!(summary.terminal_state, "completed");
@@ -232,7 +232,7 @@ fn run_turn_skips_foreign_and_malformed_events() {
         })
         .await;
         let mut client = AgentClient::connect(&addr).await.unwrap();
-        let summary = client.run_turn("sess", "mine", None).await.unwrap();
+        let summary = client.run_turn("sess", "mine", None, None).await.unwrap();
         assert_eq!(summary.terminal_state, "completed");
         assert_eq!(summary.error.as_deref(), Some("soft fail"));
         assert!(summary.tools.is_empty());
@@ -258,7 +258,7 @@ fn run_turn_long_text_truncates_at_char_boundary() {
         })
         .await;
         let mut client = AgentClient::connect(&addr).await.unwrap();
-        let summary = client.run_turn("sess", "mine", None).await.unwrap();
+        let summary = client.run_turn("sess", "mine", None, None).await.unwrap();
         assert!(summary.text.len() <= 8003, "{}", summary.text.len());
         assert!(summary.text.starts_with("aaaa"));
     });
@@ -279,7 +279,7 @@ fn run_turn_error_event_and_stream_failure() {
         })
         .await;
         let mut client = AgentClient::connect(&addr).await.unwrap();
-        let summary = client.run_turn("sess", "mine", None).await.unwrap();
+        let summary = client.run_turn("sess", "mine", None, None).await.unwrap();
         assert_eq!(summary.terminal_state, "error");
         assert_eq!(summary.error.as_deref(), Some("boom"));
 
@@ -291,7 +291,7 @@ fn run_turn_error_event_and_stream_failure() {
         })
         .await;
         let mut client = AgentClient::connect(&addr).await.unwrap();
-        let summary = client.run_turn("sess", "mine", None).await.unwrap();
+        let summary = client.run_turn("sess", "mine", None, None).await.unwrap();
         assert_eq!(summary.error.as_deref(), Some("unknown error"));
 
         // Mid-stream transport failure.
@@ -302,7 +302,10 @@ fn run_turn_error_event_and_stream_failure() {
         st.stream_fail_after = Some(1);
         let (addr, _) = spawn_mock(st).await;
         let mut client = AgentClient::connect(&addr).await.unwrap();
-        let err = client.run_turn("sess", "mine", None).await.unwrap_err();
+        let err = client
+            .run_turn("sess", "mine", None, None)
+            .await
+            .unwrap_err();
         assert!(format!("{err:#}").contains("stream error"));
 
         // Attach failure.
@@ -312,7 +315,10 @@ fn run_turn_error_event_and_stream_failure() {
         };
         let (addr, _) = spawn_mock(st).await;
         let mut client = AgentClient::connect(&addr).await.unwrap();
-        let err = client.run_turn("sess", "mine", None).await.unwrap_err();
+        let err = client
+            .run_turn("sess", "mine", None, None)
+            .await
+            .unwrap_err();
         assert!(format!("{err:#}").contains("Failed to attach"));
 
         // Stream closes without agent_end → incomplete.
@@ -323,7 +329,7 @@ fn run_turn_error_event_and_stream_failure() {
         })
         .await;
         let mut client = AgentClient::connect(&addr).await.unwrap();
-        let summary = client.run_turn("sess", "mine", None).await.unwrap();
+        let summary = client.run_turn("sess", "mine", None, None).await.unwrap();
         assert_eq!(summary.terminal_state, "incomplete");
     });
 }
@@ -344,7 +350,10 @@ fn run_turn_live_log_without_tool_name() {
         let mut client = AgentClient::connect(&addr).await.unwrap();
         let dir = tempfile::tempdir().unwrap();
         let live = dir.path().join("live.jsonl");
-        let summary = client.run_turn("sess", "mine", Some(&live)).await.unwrap();
+        let summary = client
+            .run_turn("sess", "mine", Some(&live), None)
+            .await
+            .unwrap();
         assert!(summary.tools.is_empty());
         let log = std::fs::read_to_string(&live).unwrap();
         assert!(log.contains("tool_start"), "{log}");
@@ -381,6 +390,7 @@ fn execute_turn_completed_no_validator() {
             false,
             None,
             Some(runs_dir.clone()),
+            None,
         )
         .await
         .unwrap();
@@ -420,6 +430,7 @@ fn execute_turn_with_decision_summary_and_prev() {
             true,
             Some(&packet),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -444,9 +455,20 @@ fn execute_turn_error_turn_skips_validator() {
         let mut client = AgentClient::connect(&addr).await.unwrap();
         let (goal, mut todo) = sample_goal_with_todo();
         todo.validator = Some("exit 0".to_string());
-        let record = execute_turn(&mut client, "sess", &goal, &todo, 1, None, true, None, None)
-            .await
-            .unwrap();
+        let record = execute_turn(
+            &mut client,
+            "sess",
+            &goal,
+            &todo,
+            1,
+            None,
+            true,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(record.terminal_state, "error");
         assert!(record.validation.is_none(), "failed turn never validates");
     });
@@ -464,9 +486,20 @@ fn execute_turn_validator_pass_and_fail() {
         let mut client = AgentClient::connect(&addr).await.unwrap();
         let (goal, mut todo) = sample_goal_with_todo();
         todo.validator = Some("exit 0".to_string());
-        let record = execute_turn(&mut client, "sess", &goal, &todo, 1, None, true, None, None)
-            .await
-            .unwrap();
+        let record = execute_turn(
+            &mut client,
+            "sess",
+            &goal,
+            &todo,
+            1,
+            None,
+            true,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         let v = record.validation.unwrap();
         assert!(v.ok, "validator exit 0 passes: {}", v.summary);
 
@@ -479,9 +512,20 @@ fn execute_turn_validator_pass_and_fail() {
         let mut client = AgentClient::connect(&addr).await.unwrap();
         let (goal, mut todo) = sample_goal_with_todo();
         todo.validator = Some("exit 3".to_string());
-        let record = execute_turn(&mut client, "sess", &goal, &todo, 1, None, true, None, None)
-            .await
-            .unwrap();
+        let record = execute_turn(
+            &mut client,
+            "sess",
+            &goal,
+            &todo,
+            1,
+            None,
+            true,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         let v = record.validation.unwrap();
         assert!(!v.ok, "validator exit 3 fails");
         assert_eq!(v.exit_code, Some(3));

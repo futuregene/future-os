@@ -16,6 +16,7 @@
 use std::collections::HashMap;
 use std::time::SystemTime;
 
+use crate::agent_client::TurnProgressTracker;
 use crate::cli::registry::{CommandRegistry, Journey};
 use crate::decision::{complete_todo, decide_for, MAX_REPAIR_ATTEMPTS};
 use crate::executor::{execute_turn, writeback};
@@ -1947,6 +1948,13 @@ fn print_status_json(store: &Store, goal_filter: Option<String>) -> Result<()> {
             "objective": goal.objective,
             "status": goal.status,
             "ledger_read_diagnostics": store.ledger_read_diagnostics(&gid),
+            "turn_no_progress": goal.turn_no_progress.iter().map(|np| serde_json::json!({
+                "todo_id": np.todo_id,
+                "agent_id": np.agent_id,
+                "idle_secs": np.idle_secs,
+                "tool_calls_total": np.tool_calls_total,
+                "ts": np.ts,
+            })).collect::<Vec<_>>(),
             "todos": goal.todos.iter().map(|t| serde_json::json!({
                 "id": t.id,
                 "text": t.text,
@@ -2018,6 +2026,18 @@ fn print_goal_status(goal: &Goal) {
     );
     let spent: u64 = goal.history.len() as u64;
     println!("spent     : {spent} turns");
+    // O3: idle-turn no-progress breaches (recent last) — the orchestrator's
+    // signal to nudge via `todo update` steering.
+    for np in goal.turn_no_progress.iter().rev().take(3) {
+        println!(
+            "no-progress: turn todo={} agent={} idle={}s tools={} ts={}",
+            np.todo_id,
+            np.agent_id.as_deref().unwrap_or("anonymous"),
+            np.idle_secs,
+            np.tool_calls_total,
+            np.ts
+        );
+    }
 }
 
 fn status_label(t: &Todo) -> &'static str {
@@ -3268,6 +3288,9 @@ async fn run_turns(
             todo_id.clone(),
             session_id.to_string(),
         ));
+        // O3: progress signals for this turn (tool starts observed on the
+        // stream; read at turn end, including the budget-truncation path).
+        let progress = std::sync::Arc::new(TurnProgressTracker::new(now_epoch()));
         let turn_future = execute_turn(
             client,
             session_id,
@@ -3280,6 +3303,7 @@ async fn run_turns(
             // the turn envelope.
             Some(&packet),
             Some(runs_dir),
+            Some(&progress),
         );
         let record = if max_turn_secs > 0 {
             // Wall-clock budget per turn: a long turn that never sees new
@@ -3291,6 +3315,10 @@ async fn run_turns(
                 Ok(r) => r?,
                 Err(_) => {
                     steer_handle.abort();
+                    // O3: budget truncation is a turn end — evaluate the
+                    // no-progress window against the observed tool starts
+                    // before stopping the run.
+                    record_no_progress_if_idle(store, goal_id, &todo_id, agent_id, &progress)?;
                     println!(
                         "   ⏱ turn exceeded --max-turn-secs ({max_turn_secs}s) — stopping run gracefully; relaunch to continue"
                     );
@@ -3365,6 +3393,9 @@ async fn run_turns(
             record: record.clone(),
             ts: now_epoch(),
         })?;
+        // O3: normal turn end — evaluate the no-progress window and ledger
+        // the breach (detection + bookkeeping; no auto-injection).
+        record_no_progress_if_idle(store, goal_id, &todo_id, agent_id, &progress)?;
         // P1-5 reward_memory ingestion: the turn's independent validation
         // receipt (if any) lands in the reward ledger (source `validator`).
         if ingest_validator_reward(store, goal_id, &todo_id, agent_id, &record)? {
@@ -3457,6 +3488,43 @@ async fn run_turns(
         store.set_next_action(goal_id, &next_text)?;
         println!("   ✔ writeback ok — next action synced");
     }
+    Ok(())
+}
+
+/// O3: evaluate the no-progress window at turn end (normal or budget-truncated)
+/// and append a `TurnNoProgress` ledger event when breached. Detection +
+/// bookkeeping only — nudge injection is the orchestrator's job via the
+/// existing todo update steering channel.
+fn record_no_progress_if_idle(
+    store: &mut Store,
+    goal_id: &str,
+    todo_id: &str,
+    agent_id: Option<&str>,
+    progress: &TurnProgressTracker,
+) -> Result<()> {
+    let now = now_epoch();
+    let snap = progress.snapshot();
+    let threshold = crate::state::no_progress_idle_secs();
+    let Some(idle_secs) = crate::executor::no_progress_idle_secs(
+        snap.turn_start_at,
+        snap.last_write_tool_at,
+        now,
+        threshold,
+    ) else {
+        return Ok(());
+    };
+    store.append(Event::TurnNoProgress {
+        goal_id: goal_id.to_string(),
+        todo_id: todo_id.to_string(),
+        agent_id: agent_id.map(String::from),
+        idle_secs,
+        tool_calls_total: snap.tool_calls_total,
+        ts: now,
+    })?;
+    println!(
+        "   ⏳ TurnNoProgress: no write-class tool started for {idle_secs}s (threshold {threshold}s, {} tool calls)",
+        snap.tool_calls_total
+    );
     Ok(())
 }
 
@@ -7374,6 +7442,7 @@ fn event_touches_todo(event: &crate::store::Event, todo_id: &str) -> bool {
             ..
         } => source_todo_id == todo_id || followup_todo_id == todo_id,
         Event::RunRecorded { record, .. } => record.todo_id == todo_id,
+        Event::TurnNoProgress { todo_id: id, .. } => id == todo_id,
         Event::HeartbeatReceiptRecorded { todo_id: id, .. } => id.as_deref() == Some(todo_id),
         _ => false,
     }
@@ -7484,6 +7553,18 @@ fn describe_event(event: &crate::store::Event) -> String {
         } => {
             return format!(
                 "monitor_polled todo={todo_id} result={result} no_change_count={no_change_count}"
+            );
+        }
+        Event::TurnNoProgress {
+            todo_id,
+            agent_id,
+            idle_secs,
+            tool_calls_total,
+            ..
+        } => {
+            return format!(
+                "turn_no_progress todo={todo_id} agent={} idle={idle_secs}s tool_calls={tool_calls_total}",
+                agent_id.as_deref().unwrap_or("anonymous")
             );
         }
         Event::QuotaSpent {

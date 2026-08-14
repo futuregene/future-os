@@ -767,6 +767,10 @@ pub struct Goal {
     /// comparing against `scheduler_heartbeats`).
     #[serde(default)]
     pub liveness_alerts: Vec<LivenessAlert>,
+    /// O3: idle-turn no-progress records, folded from `TurnNoProgress`
+    /// (append-only; detection + bookkeeping, no auto-injection).
+    #[serde(default)]
+    pub turn_no_progress: Vec<TurnNoProgressRecord>,
 }
 
 /// P1-3①: one automation-liveness breach alert (LoopX automation_liveness):
@@ -779,6 +783,38 @@ pub struct LivenessAlert {
     /// 1-based alert ordinal for this (goal, agent) scope.
     pub consecutive: u32,
     pub ts: u64,
+}
+
+/// O3: one idle-turn (no-progress) breach — the turn ended with no write-class
+/// tool (write/edit/shell) started inside the no-progress window. Folded from
+/// `TurnNoProgress` events; the orchestrator nudges via the todo update
+/// steering channel (the loop itself never auto-injects).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TurnNoProgressRecord {
+    pub goal_id: String,
+    pub todo_id: String,
+    pub agent_id: Option<String>,
+    /// Seconds since the last write-class tool start (turn start when none).
+    pub idle_secs: u64,
+    /// Total tool calls observed this turn (all classes).
+    pub tool_calls_total: u32,
+    pub ts: u64,
+}
+
+/// O3: default idle-turn no-progress window (15 minutes). A turn that ends
+/// without any write-class tool (write/edit/shell) starting inside this
+/// window is ledgered as `TurnNoProgress`.
+pub const TURN_NO_PROGRESS_IDLE_SECS_DEFAULT: u64 = 15 * 60;
+
+/// O3: effective no-progress window (secs). The `FUTURE_LOOP_NO_PROGRESS_SECS`
+/// env var shrinks it in tests (mirrors the FUTURE_LOOP_AGENT_ADDR hook);
+/// invalid or non-positive values fall back to the 15-minute default.
+pub fn no_progress_idle_secs() -> u64 {
+    std::env::var("FUTURE_LOOP_NO_PROGRESS_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|s| *s > 0)
+        .unwrap_or(TURN_NO_PROGRESS_IDLE_SECS_DEFAULT)
 }
 
 /// P1-2②: freshness stamp of the event ledger a decision was compiled
@@ -836,6 +872,7 @@ impl Goal {
             decision_freshness: None,
             scheduler_heartbeats: std::collections::BTreeMap::new(),
             liveness_alerts: vec![],
+            turn_no_progress: vec![],
         }
     }
 
