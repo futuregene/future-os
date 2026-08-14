@@ -308,6 +308,14 @@ impl AgentClient {
     /// `live_log`: when set, every streamed event is teed to this JSONL file
     /// so operators can watch a long turn live (`loop status` shows one line
     /// otherwise).
+    ///
+    /// O5: when the stream terminates with a gap-class error (the agent's
+    /// `DataLoss` "event stream gap" — its replay ring lagged), reconnect
+    /// once after a 2s backoff on the same session and resume from the last
+    /// observed idx (atomic attach replays everything after the cursor, so
+    /// nothing double-counts). A second consecutive gap-class failure —
+    /// including a failed reconnect — terminates the turn carrying the
+    /// original error.
     pub async fn run_turn(
         &mut self,
         session_id: &str,
@@ -315,20 +323,6 @@ impl AgentClient {
         live_log: Option<&std::path::Path>,
         progress: Option<&TurnProgressTracker>,
     ) -> Result<RunSummary> {
-        let request = tonic::Request::new(StreamRequest {
-            session_id: session_id.to_string(),
-            run_id: run_id.to_string(),
-            event_types: vec![],
-            after_idx: -1,
-            atomic_attach: true,
-        });
-        let mut stream = self
-            .inner
-            .stream_events(request)
-            .await
-            .map_err(|e| anyhow!("Failed to attach to run {run_id}: {e}"))?
-            .into_inner();
-
         let mut summary = RunSummary {
             run_id: run_id.to_string(),
             terminal_state: "incomplete".to_string(),
@@ -338,89 +332,181 @@ impl AgentClient {
             usage: None,
             duration_ms: None,
         };
-
-        use tokio_stream::StreamExt;
-        while let Some(ev) = stream.next().await {
-            let ev = ev.map_err(|e| anyhow!("stream error on run {run_id}: {e}"))?;
-            if ev.run_id != run_id {
-                // Stale tail from a previous run on the same session (or a
-                // supersede) — ignore foreign events.
-                continue;
-            }
-            let Some(data) = parse_data(&ev) else {
-                continue;
-            };
-            if let Some(path) = live_log {
-                let wall_ts = crate::state::now_epoch();
-                let mut line = serde_json::json!({
-                    "type": ev.r#type.as_str(),
-                    "idx": ev.idx,
-                    "wall_ts": wall_ts,
-                });
-                if ev.r#type == "tool_start" {
-                    if let Some(n) = data.get("tool_name").and_then(|v| v.as_str()) {
-                        line["tool"] = serde_json::Value::String(n.to_string());
-                    }
-                }
-                let _ = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-                    .map(|mut f| {
-                        use std::io::Write;
-                        let _ = writeln!(f, "{}", line);
-                    });
-            }
-            // O3: fold tool_start into the progress tracker (write-class
-            // starts reset the idle clock; all starts count).
-            if ev.r#type == "tool_start" {
-                if let (Some(progress), Some(name)) =
-                    (progress, data.get("tool_name").and_then(|v| v.as_str()))
-                {
-                    progress.observe_tool_start(name, crate::state::now_epoch());
-                }
-            }
-            match ev.r#type.as_str() {
-                "tool_start" => {
-                    if let Some(name) = data.get("tool_name").and_then(|v| v.as_str()) {
-                        summary.tools.push(name.to_string());
-                    }
-                }
-                "text_chunk" => {
-                    if let Some(text) = data.get("text").and_then(|v| v.as_str()) {
-                        summary.text.push_str(text);
-                        if summary.text.len() > 8_000 {
-                            // truncate at a UTF-8 char boundary — str::truncate panics mid-char
-                            let boundary = summary.text.floor_char_boundary(8_000);
-                            summary.text.truncate(boundary);
+        // O5: resume cursor (last event idx actually observed) and the
+        // original gap error (carried if the retry also fails).
+        let mut after_idx: i64 = -1;
+        let mut first_gap_error: Option<String> = None;
+        loop {
+            let request = tonic::Request::new(StreamRequest {
+                session_id: session_id.to_string(),
+                run_id: run_id.to_string(),
+                event_types: vec![],
+                after_idx,
+                atomic_attach: true,
+            });
+            let mut stream = match self.inner.stream_events(request).await {
+                Ok(resp) => resp.into_inner(),
+                Err(e) => {
+                    let attach_err = format!("Failed to attach to run {run_id}: {e}");
+                    return match first_gap_error {
+                        // The reconnect itself failed: a second consecutive
+                        // failure — terminate the turn with the ORIGINAL
+                        // gap error attached (O5).
+                        Some(original) => {
+                            Err(anyhow!("{original} (reconnect also failed: {attach_err})"))
                         }
+                        None => Err(anyhow!("{attach_err}")),
+                    };
+                }
+            };
+            match consume_run_stream(&mut stream, run_id, &mut summary, live_log, progress).await {
+                StreamOutcome::Done | StreamOutcome::Closed => return Ok(summary),
+                StreamOutcome::Failed { status, last_idx } => {
+                    after_idx = last_idx;
+                    let gap_err = format!("stream error on run {run_id}: {status}");
+                    if !is_stream_gap(&status) {
+                        return Err(anyhow!("{gap_err}"));
                     }
+                    if let Some(original) = first_gap_error.take() {
+                        // Second consecutive gap — terminate the turn with
+                        // the original error (O5: 把原错误带上).
+                        return Err(anyhow!("{original} (retry also failed: {gap_err})"));
+                    }
+                    first_gap_error = Some(gap_err);
+                    tokio::time::sleep(STREAM_GAP_RETRY_BACKOFF).await;
                 }
-                "agent_end" => {
-                    summary.error = data.get("error").and_then(|v| v.as_str()).map(String::from);
-                    summary.terminal_state = data
-                        .get("state")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("completed")
-                        .to_string();
-                    summary.usage = data.get("usage").cloned();
-                    summary.duration_ms = data.get("duration_ms").and_then(|v| v.as_i64());
-                    break;
-                }
-                "error" => {
-                    let msg = data
-                        .get("error")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown error");
-                    summary.error = Some(msg.to_string());
-                    summary.terminal_state = "error".to_string();
-                    break;
-                }
-                _ => {}
             }
         }
-        Ok(summary)
     }
+}
+
+/// O5: backoff between a stream-gap disconnect and the reconnect attempt.
+const STREAM_GAP_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// O5: gap-class stream errors. The agent terminates the event stream with
+/// `DataLoss` when its per-run replay ring lagged (message: "event stream
+/// gap … reconnect with atomic attach"). Those are recoverable by reconnect
+/// + cursor resume; anything else fails the turn immediately.
+fn is_stream_gap(status: &tonic::Status) -> bool {
+    status.code() == tonic::Code::DataLoss
+        || status
+            .message()
+            .to_ascii_lowercase()
+            .contains("event stream gap")
+}
+
+/// How one stream subscription ended (O5).
+enum StreamOutcome {
+    /// A terminal event (`agent_end` / run `error` event) was consumed.
+    Done,
+    /// The subscription closed cleanly without a terminal event.
+    Closed,
+    /// Transport failure — the `status` plus the last event idx actually
+    /// observed (the resume cursor for a gap retry).
+    Failed {
+        status: tonic::Status,
+        last_idx: i64,
+    },
+}
+
+/// Consume one subscription until it terminates; `summary` accumulates
+/// across reconnect attempts (each attempt replays only idx > last cursor,
+/// so nothing double-counts).
+async fn consume_run_stream(
+    stream: &mut tonic::Streaming<StreamEvent>,
+    run_id: &str,
+    summary: &mut RunSummary,
+    live_log: Option<&std::path::Path>,
+    progress: Option<&TurnProgressTracker>,
+) -> StreamOutcome {
+    use tokio_stream::StreamExt;
+    let mut last_idx: i64 = -1;
+    while let Some(ev) = stream.next().await {
+        let ev = match ev {
+            Ok(ev) => ev,
+            Err(status) => return StreamOutcome::Failed { status, last_idx },
+        };
+        if ev.run_id != run_id {
+            // Stale tail from a previous run on the same session (or a
+            // supersede) — ignore foreign events.
+            continue;
+        }
+        // Resume cursor: the last event of THIS run, even when its payload
+        // is malformed (attach replays strictly idx > cursor).
+        last_idx = ev.idx;
+        let Some(data) = parse_data(&ev) else {
+            continue;
+        };
+        if let Some(path) = live_log {
+            let wall_ts = crate::state::now_epoch();
+            let mut line = serde_json::json!({
+                "type": ev.r#type.as_str(),
+                "idx": ev.idx,
+                "wall_ts": wall_ts,
+            });
+            if ev.r#type == "tool_start" {
+                if let Some(n) = data.get("tool_name").and_then(|v| v.as_str()) {
+                    line["tool"] = serde_json::Value::String(n.to_string());
+                }
+            }
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .map(|mut f| {
+                    use std::io::Write;
+                    let _ = writeln!(f, "{}", line);
+                });
+        }
+        // O3: fold tool_start into the progress tracker (write-class
+        // starts reset the idle clock; all starts count).
+        if ev.r#type == "tool_start" {
+            if let (Some(progress), Some(name)) =
+                (progress, data.get("tool_name").and_then(|v| v.as_str()))
+            {
+                progress.observe_tool_start(name, crate::state::now_epoch());
+            }
+        }
+        match ev.r#type.as_str() {
+            "tool_start" => {
+                if let Some(name) = data.get("tool_name").and_then(|v| v.as_str()) {
+                    summary.tools.push(name.to_string());
+                }
+            }
+            "text_chunk" => {
+                if let Some(text) = data.get("text").and_then(|v| v.as_str()) {
+                    summary.text.push_str(text);
+                    if summary.text.len() > 8_000 {
+                        // truncate at a UTF-8 char boundary — str::truncate panics mid-char
+                        let boundary = summary.text.floor_char_boundary(8_000);
+                        summary.text.truncate(boundary);
+                    }
+                }
+            }
+            "agent_end" => {
+                summary.error = data.get("error").and_then(|v| v.as_str()).map(String::from);
+                summary.terminal_state = data
+                    .get("state")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("completed")
+                    .to_string();
+                summary.usage = data.get("usage").cloned();
+                summary.duration_ms = data.get("duration_ms").and_then(|v| v.as_i64());
+                return StreamOutcome::Done;
+            }
+            "error" => {
+                let msg = data
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown error");
+                summary.error = Some(msg.to_string());
+                summary.terminal_state = "error".to_string();
+                return StreamOutcome::Done;
+            }
+            _ => {}
+        }
+    }
+    StreamOutcome::Closed
 }
 
 fn parse_data(ev: &StreamEvent) -> Option<Value> {
