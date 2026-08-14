@@ -29,9 +29,20 @@ fn validator_spawn_failure_is_inconclusive() {
 
         let saved = std::env::var_os("PATH");
         std::env::set_var("PATH", "/nonexistent-dir-xyz");
-        let record = execute_turn(&mut client, "sess", &goal, &todo, 1, None, true, None, None)
-            .await
-            .unwrap();
+        let record = execute_turn(
+            &mut client,
+            "sess",
+            &goal,
+            &todo,
+            1,
+            None,
+            true,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         if let Some(p) = saved {
             std::env::set_var("PATH", p);
         }

@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use future_rpc::proto::future_agent_server::{FutureAgent, FutureAgentServer};
 use future_rpc::proto::{RpcCommand, RpcResponse, StreamEvent, StreamRequest};
+use tokio_stream::StreamExt;
 
 #[derive(Default)]
 pub struct MockState {
@@ -28,6 +29,9 @@ pub struct MockState {
     pub grpc_error: bool,
     /// stream_events returns a stream that never yields (timeout tests).
     pub hang_stream: bool,
+    /// Replays the scripted `events` first, then never yields — the
+    /// budget-truncation path WITH observed tool starts (O3 idle detection).
+    pub events_then_hang: bool,
     /// stream_events fails immediately with a tonic status.
     pub stream_error: bool,
     /// After N scripted events the stream yields one tonic error (mid-stream
@@ -151,6 +155,11 @@ impl FutureAgent for MockAgent {
             if items.len() >= n {
                 items.insert(n, Err(tonic::Status::data_loss("mock mid-stream failure")));
             }
+        }
+        if st.events_then_hang {
+            let scripted = tokio_stream::iter(items);
+            let pending = tokio_stream::pending::<Result<StreamEvent, tonic::Status>>();
+            return Ok(tonic::Response::new(Box::pin(scripted.chain(pending))));
         }
         Ok(tonic::Response::new(Box::pin(tokio_stream::iter(items))))
     }

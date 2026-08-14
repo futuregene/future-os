@@ -6,7 +6,7 @@
 
 use anyhow::Result;
 
-use crate::agent_client::{AgentClient, RunSummary};
+use crate::agent_client::{AgentClient, RunSummary, TurnProgressTracker};
 use crate::decision::{compose_goal_boundary, compose_turn_envelope, compose_turn_message};
 use crate::state::{
     now_epoch, task_validation_receipt, Goal, RecoveryKind, RunRecord, TaskValidation, Todo,
@@ -17,6 +17,21 @@ use crate::state::{
 /// independent validator passed (no validator ⇒ not required ⇒ ok).
 pub fn turn_succeeded(record: &RunRecord) -> bool {
     record.terminal_state == "completed" && record.validation.as_ref().map(|v| v.ok).unwrap_or(true)
+}
+
+/// O3: evaluate turn-end progress. Returns `Some(idle_secs)` when the last
+/// write-class tool (write/edit/shell) start — or the turn start when no
+/// write-class tool started at all — is at least `threshold_secs` before
+/// `now`; `None` otherwise. Pure so tests exercise it without wall-clock
+/// waits.
+pub fn no_progress_idle_secs(
+    turn_start_at: u64,
+    last_write_tool_at: Option<u64>,
+    now: u64,
+    threshold_secs: u64,
+) -> Option<u64> {
+    let idle_secs = now.saturating_sub(last_write_tool_at.unwrap_or(turn_start_at));
+    (idle_secs >= threshold_secs).then_some(idle_secs)
 }
 
 /// Run the todo's independent validator (if any) after a completed turn.
@@ -78,6 +93,7 @@ pub async fn execute_turn(
     boundary_injected: bool,
     decision_summary: Option<&crate::contract::ShouldRunPacket>,
     runs_dir: Option<std::path::PathBuf>,
+    progress: Option<&TurnProgressTracker>,
 ) -> Result<RunRecord> {
     if !boundary_injected {
         client
@@ -101,7 +117,7 @@ pub async fn execute_turn(
         .await?;
     let live_path = runs_dir.map(|d| d.join(format!("{run_id}.live.jsonl")));
     let summary: RunSummary = client
-        .run_turn(session_id, &run_id, live_path.as_deref())
+        .run_turn(session_id, &run_id, live_path.as_deref(), progress)
         .await?;
     let after = client.session_totals(session_id).await?;
     let terminal_state = summary.terminal_state.clone();

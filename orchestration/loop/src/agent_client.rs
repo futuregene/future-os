@@ -43,6 +43,66 @@ pub struct SessionTotals {
     pub cost: f64,
 }
 
+/// O3: write-class tools — a `tool_start` of any of these resets the idle
+/// clock. Everything else (read, grep, todo, …) is observation-only.
+pub fn is_write_class_tool(name: &str) -> bool {
+    matches!(name, "write" | "edit" | "shell")
+}
+
+/// O3: per-turn progress signals observed on the event stream. Shared between
+/// `run_turn` (writer) and the run loop (reader) so the budget-truncation
+/// path can still evaluate progress after dropping the turn future. Atomics:
+/// written from the stream task, read from the loop task.
+#[derive(Debug)]
+pub struct TurnProgressTracker {
+    /// Wall-clock epoch secs at turn start (the idle baseline when no
+    /// write-class tool ever starts).
+    turn_start_at: std::sync::atomic::AtomicU64,
+    /// Wall-clock epoch secs of the last write-class tool start; 0 = none.
+    last_write_tool_at: std::sync::atomic::AtomicU64,
+    /// Total tool_start events observed (all classes).
+    tool_calls_total: std::sync::atomic::AtomicU32,
+}
+
+/// Immutable snapshot of [`TurnProgressTracker`] for turn-end evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TurnProgressSnapshot {
+    pub turn_start_at: u64,
+    /// `None` when no write-class tool started this turn.
+    pub last_write_tool_at: Option<u64>,
+    pub tool_calls_total: u32,
+}
+
+impl TurnProgressTracker {
+    pub fn new(turn_start_at: u64) -> Self {
+        Self {
+            turn_start_at: std::sync::atomic::AtomicU64::new(turn_start_at),
+            last_write_tool_at: std::sync::atomic::AtomicU64::new(0),
+            tool_calls_total: std::sync::atomic::AtomicU32::new(0),
+        }
+    }
+
+    /// Record one `tool_start` event (the live-log wall_ts doubles as the
+    /// observation clock, same as the streamed events).
+    pub fn observe_tool_start(&self, tool: &str, at: u64) {
+        use std::sync::atomic::Ordering;
+        self.tool_calls_total.fetch_add(1, Ordering::Relaxed);
+        if is_write_class_tool(tool) {
+            self.last_write_tool_at.store(at, Ordering::Relaxed);
+        }
+    }
+
+    pub fn snapshot(&self) -> TurnProgressSnapshot {
+        use std::sync::atomic::Ordering;
+        let last = self.last_write_tool_at.load(Ordering::Relaxed);
+        TurnProgressSnapshot {
+            turn_start_at: self.turn_start_at.load(Ordering::Relaxed),
+            last_write_tool_at: (last != 0).then_some(last),
+            tool_calls_total: self.tool_calls_total.load(Ordering::Relaxed),
+        }
+    }
+}
+
 pub struct AgentClient {
     inner: FutureAgentClient<tonic::transport::Channel>,
 }
@@ -253,6 +313,7 @@ impl AgentClient {
         session_id: &str,
         run_id: &str,
         live_log: Option<&std::path::Path>,
+        progress: Option<&TurnProgressTracker>,
     ) -> Result<RunSummary> {
         let request = tonic::Request::new(StreamRequest {
             session_id: session_id.to_string(),
@@ -290,10 +351,11 @@ impl AgentClient {
                 continue;
             };
             if let Some(path) = live_log {
+                let wall_ts = crate::state::now_epoch();
                 let mut line = serde_json::json!({
                     "type": ev.r#type.as_str(),
                     "idx": ev.idx,
-                    "wall_ts": crate::state::now_epoch(),
+                    "wall_ts": wall_ts,
                 });
                 if ev.r#type == "tool_start" {
                     if let Some(n) = data.get("tool_name").and_then(|v| v.as_str()) {
@@ -308,6 +370,15 @@ impl AgentClient {
                         use std::io::Write;
                         let _ = writeln!(f, "{}", line);
                     });
+            }
+            // O3: fold tool_start into the progress tracker (write-class
+            // starts reset the idle clock; all starts count).
+            if ev.r#type == "tool_start" {
+                if let (Some(progress), Some(name)) =
+                    (progress, data.get("tool_name").and_then(|v| v.as_str()))
+                {
+                    progress.observe_tool_start(name, crate::state::now_epoch());
+                }
             }
             match ev.r#type.as_str() {
                 "tool_start" => {
