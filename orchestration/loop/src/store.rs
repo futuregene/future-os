@@ -554,6 +554,35 @@ pub enum Event {
         receipt: crate::capabilities::decision_context::packets::DecisionOutcomeReceipt,
         ts: u64,
     },
+    /// G12: multi-agent contract set — the declarative peer/handoff/
+    /// collective topology for a goal (full replace; the latest event wins).
+    /// Projection-only: goal state is unchanged; the multi_agent read model
+    /// (`agent contract show`) reads the ledger. Validation fails closed at
+    /// the command layer before append.
+    MultiAgentContractSet {
+        goal_id: String,
+        contract: crate::agents::multi_agent::MultiAgentContract,
+        ts: u64,
+    },
+    /// G12: named agent recipe added (capabilities / workspaces / default
+    /// priority). Re-adding a name is allowed — lookups resolve the latest
+    /// event. Projection-only.
+    AgentRecipeAdded {
+        goal_id: String,
+        recipe: crate::agents::multi_agent::AgentRecipe,
+        ts: u64,
+    },
+    /// G12: role succession occurred — a primary's lease expired or its
+    /// heartbeat went silent past the threshold, so the declared backup was
+    /// promoted. Projection-only: the succession read model and the
+    /// attention hint read the ledger.
+    SuccessionOccurred {
+        goal_id: String,
+        primary: String,
+        backup: String,
+        reason: String,
+        ts: u64,
+    },
 }
 
 impl Event {
@@ -595,7 +624,10 @@ impl Event {
             | Event::SupervisorProposed { goal_id, .. }
             | Event::SupervisorReceiptRecorded { goal_id, .. }
             | Event::ProjectionRepaired { goal_id, .. }
-            | Event::DecisionOutcomeRecorded { goal_id, .. } => goal_id,
+            | Event::DecisionOutcomeRecorded { goal_id, .. }
+            | Event::MultiAgentContractSet { goal_id, .. }
+            | Event::AgentRecipeAdded { goal_id, .. }
+            | Event::SuccessionOccurred { goal_id, .. } => goal_id,
         }
     }
 }
@@ -1714,8 +1746,9 @@ fn apply(goal: &mut Goal, event: Event) {
                 tool_calls_total,
                 ts,
             }),
-        // P1-5 + P1-1 + P1-4 + G-16 projection-only events: read from the
-        // event log by their read models; goal state is unchanged on replay.
+        // P1-5 + P1-1 + P1-4 + G-16 + G12 projection-only events: read from
+        // the event log by their read models; goal state is unchanged on
+        // replay.
         Event::RewardSignalRecorded { .. }
         | Event::DecisionSummaryRecorded { .. }
         | Event::HeartbeatReceiptRecorded { .. }
@@ -1723,7 +1756,10 @@ fn apply(goal: &mut Goal, event: Event) {
         | Event::SupervisorProposed { .. }
         | Event::SupervisorReceiptRecorded { .. }
         | Event::ProjectionRepaired { .. }
-        | Event::DecisionOutcomeRecorded { .. } => {}
+        | Event::DecisionOutcomeRecorded { .. }
+        | Event::MultiAgentContractSet { .. }
+        | Event::AgentRecipeAdded { .. }
+        | Event::SuccessionOccurred { .. } => {}
     }
 }
 
