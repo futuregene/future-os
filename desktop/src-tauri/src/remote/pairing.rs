@@ -235,6 +235,7 @@ pub fn refresh_delay(creds: &PairingCreds) -> std::time::Duration {
 }
 
 fn http_client() -> Result<reqwest::Client, crate::AppError> {
+    crate::install_rustls_provider();
     reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .build()

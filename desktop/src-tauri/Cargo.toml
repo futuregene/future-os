@@ -57,7 +57,11 @@ image = { version = "0.25", default-features = false, features = [
     "webp",
     "bmp",
 ] }
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+# Use one process-wide Rustls provider. async-nats/Tauri already uses `ring`;
+# reqwest keeps TLS without selecting its default aws-lc provider. We install
+# this provider during application startup before constructing any HTTP client.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 sha2 = "0.10"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 chrono = "0.4"

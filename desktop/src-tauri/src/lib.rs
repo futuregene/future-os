@@ -554,6 +554,11 @@ async fn sample_thread_streaming_with<R, F, Fut>(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // `reqwest` intentionally uses `rustls-no-provider` so it shares the
+    // `ring` backend selected by async-nats/Tauri instead of pulling aws-lc
+    // into the same process. Rustls requires the application to select that
+    // backend before the first HTTP client is built.
+    install_rustls_provider();
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // A second instance was launched — activate the existing window.
@@ -720,33 +725,6 @@ pub fn run() {
             // Shadow-review maintenance (consistency check + crash recovery) runs
             // off the launch path so it never delays the window.
             std::thread::spawn(shadow_review::run_startup_maintenance);
-            // Remote auto-connect: a desktop can pair with exactly one phone, so
-            // when the user has opted in (Settings → Remote) and a pairing is
-            // already persisted, reconnect to that device on launch — they can
-            // still disconnect by hand from the Remote view. Runs off the launch
-            // path (NATS connect does network IO) so it never delays the window.
-            // Gated to non-release builds to match the Remote nav entry, which is
-            // hidden in release builds: autostarting an invisible bridge there
-            // would leave the user no way to stop it. The store is initialized
-            // above, so the setting read is safe here.
-            if !build_info::is_release()
-                && store::get_app_settings()
-                    .map(|settings| settings.auto_connect_remote)
-                    .unwrap_or(false)
-                && remote::pairing::load_creds().is_some()
-            {
-                std::thread::spawn(|| {
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .expect("tokio runtime");
-                    rt.block_on(async {
-                        if let Err(error) = remote::start(remote::RemoteStartInput {}).await {
-                            eprintln!("FutureOS remote auto-connect failed: {error}");
-                        }
-                    });
-                });
-            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -857,6 +835,11 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while running FutureOS")
         .run(|app_handle, event| match event {
+            // `setup` runs while Tauri is still constructing its event loop.
+            // Starting the bridge there races the runtime initialization on
+            // macOS and can leave the detached start task without a live
+            // connection. `Ready` is emitted once the process runtime is live.
+            tauri::RunEvent::Ready => spawn_remote_auto_connect(),
             // ⌘Q / the menu's "Quit FutureOS" / a programmatic `app.exit()` come
             // through here, NOT the window's `CloseRequested`. Guard them the same
             // way so a running conversation can't be torn down without warning.
@@ -876,6 +859,40 @@ pub fn run() {
             }
             _ => {}
         });
+}
+
+fn install_rustls_provider() {
+    // A test or an embedding host may have already chosen this same provider;
+    // in that case `install_default` returns an error and no action is needed.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
+/// Start the persisted remote bridge only after Tauri's runtime has entered its
+/// event loop. Calling this from `setup` is too early on macOS: the detached
+/// task can be scheduled before the process runtime is ready and never obtain
+/// a lasting NATS connection.
+fn spawn_remote_auto_connect() {
+    // The Remote UI is deliberately dev-only. Keep auto-connect on the same
+    // channel so a release build never starts a bridge the user cannot stop.
+    let enabled = !build_info::is_release()
+        && store::get_app_settings()
+            .map(|settings| settings.auto_connect_remote)
+            .unwrap_or(false)
+        && remote::pairing::load_creds().is_some();
+    if !enabled {
+        return;
+    }
+
+    tauri::async_runtime::spawn(async {
+        match remote::start(remote::RemoteStartInput {}).await {
+            Ok(status) if status.running => eprintln!("FutureOS remote auto-connect: connected"),
+            Ok(status) => eprintln!(
+                "FutureOS remote auto-connect: deferred ({})",
+                status.error_code.as_deref().unwrap_or("unknown")
+            ),
+            Err(error) => eprintln!("FutureOS remote auto-connect failed: {error}"),
+        }
+    });
 }
 
 #[cfg(test)]
