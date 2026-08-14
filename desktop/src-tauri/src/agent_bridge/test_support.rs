@@ -268,6 +268,10 @@ pub(crate) struct MockAgentGuard {
 
 pub(crate) fn mock_agent() -> MockAgentGuard {
     let lock = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // A finished test's observers keep re-attaching on the ambient runtime;
+    // drop them now so their get_state/stream_events calls can't consume the
+    // replies this test is about to script.
+    super::observer::cancel_all_observers();
     ensure_mock_server();
     {
         let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
