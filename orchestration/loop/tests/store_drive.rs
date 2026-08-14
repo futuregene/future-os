@@ -784,3 +784,145 @@ fn apply_matrix() {
     assert_eq!(goal.todo("t_preset").unwrap().index, 7);
     assert_eq!(goal.todo("m1").unwrap().status, TodoStatus::Done);
 }
+
+// ── O1: unknown-kind tolerant ledger reads ─────────────────────────────────
+
+/// Kind string of a stored event (the externally-tagged `kind` field).
+fn kind_of(event: &future_loop::store::StoredEvent) -> String {
+    serde_json::to_value(&event.event)
+        .unwrap()
+        .get("kind")
+        .and_then(|k| k.as_str())
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn read_ledger_tolerates_unknown_kind_lines() {
+    let (_d, root) = fresh_store("s-o1-unknown");
+    let mut store = Store::open(&root).unwrap();
+    registered_goal(&mut store, "g1"); // goal_started
+    add(&mut store, "g1", "t1"); // todo_added
+                                 // Clean ledger → no diagnostics sidecar.
+    assert!(store.ledger_read_diagnostics("g1").is_none());
+
+    // A newer binary wrote two lines with a kind this binary does not know,
+    // plus one ordinary known line, after our writes.
+    let events_path = store.goal_dir("g1").join("events.jsonl");
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&events_path)
+        .unwrap();
+    for line in [
+        serde_json::json!({"event_id":"u1","kind":"kind_from_the_future_v99","goal_id":"g1","ts":42}),
+        serde_json::json!({"event_id":"u2","kind":"kind_from_the_future_v99","goal_id":"g1","ts":43}),
+        serde_json::json!({"event_id":"e9","kind":"goal_started","goal_id":"g1","ts":1}),
+    ] {
+        writeln!(f, "{line}").unwrap();
+    }
+    drop(f);
+
+    // Unknown-kind lines are skipped; known lines are kept.
+    let events = store.events("g1").unwrap();
+    let kinds: Vec<String> = events.iter().map(kind_of).collect();
+    assert_eq!(kinds, vec!["goal_started", "todo_added", "goal_started"]);
+    assert!(events.iter().all(|e| !e.effective_id().is_empty()));
+
+    // Replay (the status/diagnose read model) still rebuilds from the kept
+    // events and surfaces the skip diagnostics.
+    let goal = store.replay("g1").unwrap().expect("replay succeeds");
+    assert_eq!(goal.todos.len(), 1);
+    let diag = store
+        .ledger_read_diagnostics("g1")
+        .expect("sidecar written");
+    assert_eq!(diag["skipped_unknown_kinds"], 2);
+    assert_eq!(diag["skipped_lines"], serde_json::json!([3, 4]));
+    assert_eq!(
+        diag["unknown_kinds"],
+        serde_json::json!(["kind_from_the_future_v99"])
+    );
+    let note = diag["note"].as_str().unwrap();
+    assert!(note.contains("2 unknown-kind event(s) skipped"), "{note}");
+    assert!(note.contains("please upgrade"), "{note}");
+
+    // store verify surfaces the same tolerance surface.
+    let report = store.verify("g1").unwrap();
+    assert_eq!(report.skipped_unknown_kinds, 2);
+    assert_eq!(report.unknown_kinds, vec!["kind_from_the_future_v99"]);
+    assert!(report.ok);
+}
+
+#[test]
+fn read_ledger_clears_diagnostics_when_ledger_clean_again() {
+    let (_d, root) = fresh_store("s-o1-clear");
+    let mut store = Store::open(&root).unwrap();
+    registered_goal(&mut store, "g1");
+    let events_path = store.goal_dir("g1").join("events.jsonl");
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&events_path)
+        .unwrap();
+    writeln!(
+        f,
+        "{}",
+        serde_json::json!({"event_id":"u1","kind":"kind_from_the_future_v99","goal_id":"g1","ts":42})
+    )
+    .unwrap();
+    drop(f);
+    assert!(store.ledger_read_diagnostics("g1").is_none());
+    let _ = store.events("g1").unwrap();
+    assert!(store.ledger_read_diagnostics("g1").is_some());
+    // Rewrite the ledger without unknown lines → next read clears the sidecar.
+    std::fs::write(
+        &events_path,
+        format!(
+            "{}\n",
+            serde_json::json!({"kind":"goal_started","goal_id":"g1","ts":1})
+        ),
+    )
+    .unwrap();
+    let events = store.events("g1").unwrap();
+    assert_eq!(events.len(), 1);
+    assert!(store.ledger_read_diagnostics("g1").is_none());
+}
+
+#[test]
+fn read_ledger_still_hard_fails_on_structural_errors() {
+    // Known kind with a missing required field → hard fail (not a skip).
+    let (_d, root) = fresh_store("s-o1-hardfail");
+    let mut store = Store::open(&root).unwrap();
+    registered_goal(&mut store, "g1");
+    let events_path = store.goal_dir("g1").join("events.jsonl");
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&events_path)
+        .unwrap();
+    writeln!(
+        f,
+        "{}",
+        serde_json::json!({"event_id":"e1","kind":"todo_added"})
+    )
+    .unwrap();
+    drop(f);
+    let err = store.events("g1").unwrap_err().to_string();
+    assert!(err.contains("parse event line"), "{err}");
+    assert!(!err.contains("skipped"), "{err}");
+
+    // A line with no `kind` at all → hard fail too.
+    let (_d2, root2) = fresh_store("s-o1-nokind");
+    let mut store2 = Store::open(&root2).unwrap();
+    registered_goal(&mut store2, "g2");
+    let events_path2 = store2.goal_dir("g2").join("events.jsonl");
+    let mut f2 = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&events_path2)
+        .unwrap();
+    writeln!(
+        f2,
+        "{}",
+        serde_json::json!({"event_id":"e2","goal_id":"g2","ts":1})
+    )
+    .unwrap();
+    drop(f2);
+    assert!(store2.events("g2").is_err());
+}

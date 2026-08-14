@@ -26,6 +26,10 @@ const RUNS_FILE: &str = "runs.jsonl";
 const NEXT_ACTION_FILE: &str = "next_action.txt";
 const BACKUPS_DIR: &str = "backups";
 const SCHEMA_FILE: &str = "schema.json";
+/// Per-goal ledger read diagnostics (O1): written when the read path skips
+/// lines carrying event kinds this binary does not know (a newer binary
+/// wrote the ledger). Surfaced by `status` / `diagnose` / `store verify`.
+const READ_DIAGNOSTICS_FILE: &str = "read_diagnostics.json";
 
 // ── Event ledger ───────────────────────────────────────────────────────────
 
@@ -817,6 +821,13 @@ impl Store {
         read_ledger(&dir, &from)
     }
 
+    /// Ledger read diagnostics (O1): the sidecar written by the last ledger
+    /// read when unknown-kind lines were skipped, or `None` when the ledger
+    /// read clean. Surfaced by `status` / `diagnose` / `store verify`.
+    pub fn ledger_read_diagnostics(&self, goal_id: &str) -> Option<serde_json::Value> {
+        read_diagnostics(&self.goal_dir(goal_id))
+    }
+
     /// Verify the ledger for id/conflict integrity (G-3): duplicate event
     /// ids with identical content are counted (idempotent duplicates); a
     /// duplicate id with DIFFERENT content is a conflict (fail closed).
@@ -1072,25 +1083,92 @@ fn append_event_locked(path: PathBuf, line: &str, event_id: &str) -> Result<()> 
     result
 }
 
+/// Classify a [`StoredEvent`] deserialization failure as an unknown `kind`
+/// variant (O1). Relies purely on serde's error text plus a non-empty `kind`
+/// string present in the line — no hand-maintained kind list, so a kind added
+/// by a newer binary is tolerated without shipping a new enum here.
+fn is_unknown_kind_error(value: &serde_json::Value, err: &serde_json::Error) -> Option<String> {
+    let kind = value.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+    if kind.is_empty() {
+        return None;
+    }
+    err.to_string()
+        .contains("unknown variant")
+        .then(|| kind.to_string())
+}
+
+/// Persist (or clear) the ledger read diagnostics sidecar (O1). Best-effort:
+/// a failed write must never take down the read path. `skipped` holds
+/// (1-based line number, kind) pairs for lines skipped as unknown-kind.
+fn write_read_diagnostics(dir: &Path, skipped: &[(usize, String)]) {
+    let path = dir.join(READ_DIAGNOSTICS_FILE);
+    if skipped.is_empty() {
+        let _ = fs::remove_file(&path);
+        return;
+    }
+    let mut kinds: Vec<&str> = skipped.iter().map(|(_, k)| k.as_str()).collect();
+    kinds.sort_unstable();
+    kinds.dedup();
+    let note = format!(
+        "{} unknown-kind event(s) skipped — binary older than ledger, please upgrade",
+        skipped.len()
+    );
+    let payload = serde_json::json!({
+        "skipped_unknown_kinds": skipped.len(),
+        "skipped_lines": skipped.iter().map(|(l, _)| *l).collect::<Vec<_>>(),
+        "unknown_kinds": kinds,
+        "note": note,
+    });
+    let _ = fs::write(
+        path,
+        serde_json::to_string_pretty(&payload).unwrap_or_default(),
+    );
+}
+
+/// Read the ledger read diagnostics sidecar, if present.
+pub fn read_diagnostics(dir: &Path) -> Option<serde_json::Value> {
+    let text = fs::read_to_string(dir.join(READ_DIAGNOSTICS_FILE)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
 /// Read + parse the ledger, migrating legacy lines in-memory to the current
 /// schema (G-6 read path) and backfilling content-derived ids for lines that
 /// predate G-3. Identical duplicate ids are collapsed to the first occurrence
 /// (idempotent dedupe); conflicting duplicates fail closed.
+///
+/// O1: lines carrying an event `kind` this binary does not know (written by
+/// a newer binary) are SKIPPED with a warning recorded to
+/// [`READ_DIAGNOSTICS_FILE`] instead of hard-failing the whole ledger read;
+/// structural errors (missing fields / wrong types on a known kind) still
+/// fail closed.
 fn read_ledger(dir: &Path, from_schema: &str) -> Result<Vec<StoredEvent>> {
     let path = dir.join(EVENTS_FILE);
     if !path.exists() {
+        write_read_diagnostics(dir, &[]);
         return Ok(vec![]);
     }
     let text = fs::read_to_string(&path).unwrap_or_default();
     let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut out: Vec<StoredEvent> = vec![];
+    let mut skipped: Vec<(usize, String)> = vec![];
     for (line_number, line) in text.lines().filter(|l| !l.trim().is_empty()).enumerate() {
         let mut value: serde_json::Value =
             serde_json::from_str(line).context(format!("parse event line {}", line_number + 1))?;
         crate::migration::migrate_event_line(&mut value, from_schema, EVENT_STORE_SCHEMA_VERSION)
             .context(format!("migrate event line {}", line_number + 1))?;
-        let stored: StoredEvent = serde_json::from_value(value)
-            .context(format!("parse event line {}", line_number + 1))?;
+        let stored: StoredEvent = match serde_json::from_value(value.clone()) {
+            Ok(stored) => stored,
+            Err(err) => {
+                if let Some(kind) = is_unknown_kind_error(&value, &err) {
+                    skipped.push((line_number + 1, kind));
+                    continue;
+                }
+                return Err(anyhow::anyhow!(
+                    "parse event line {}: {err}",
+                    line_number + 1
+                ));
+            }
+        };
         let id = stored.effective_id();
         let fingerprint = event_fingerprint(
             &serde_json::to_value(&stored.event).unwrap_or(serde_json::Value::Null),
@@ -1107,6 +1185,7 @@ fn read_ledger(dir: &Path, from_schema: &str) -> Result<Vec<StoredEvent>> {
         seen.insert(id, fingerprint);
         out.push(stored);
     }
+    write_read_diagnostics(dir, &skipped);
     Ok(out)
 }
 
@@ -1119,6 +1198,10 @@ pub struct LedgerReport {
     pub unique_events: usize,
     pub idempotent_duplicates: usize,
     pub legacy_lines_without_id: usize,
+    /// O1: lines whose `kind` this binary does not know (skipped by the read
+    /// path, kept here so verify surfaces the tolerance surface).
+    pub skipped_unknown_kinds: usize,
+    pub unknown_kinds: Vec<String>,
     pub conflicts: Vec<String>,
     pub ok: bool,
 }
@@ -1135,6 +1218,8 @@ pub fn verify_ledger(dir: &Path, goal_id: &str, schema: &str) -> Result<LedgerRe
             unique_events: 0,
             idempotent_duplicates: 0,
             legacy_lines_without_id: 0,
+            skipped_unknown_kinds: 0,
+            unknown_kinds: vec![],
             conflicts: vec![],
             ok: true,
         });
@@ -1145,12 +1230,23 @@ pub fn verify_ledger(dir: &Path, goal_id: &str, schema: &str) -> Result<LedgerRe
     let mut legacy_lines_without_id = 0usize;
     let mut conflicts: Vec<String> = vec![];
     let mut total = 0usize;
+    let mut skipped_unknown_kinds = 0usize;
+    let mut unknown_kinds: Vec<String> = vec![];
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         total += 1;
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
             conflicts.push("unparsable line".to_string());
             continue;
         };
+        // O1: count the lines the read path would tolerate-and-skip.
+        if let Err(err) = serde_json::from_value::<StoredEvent>(value.clone()) {
+            if let Some(kind) = is_unknown_kind_error(&value, &err) {
+                skipped_unknown_kinds += 1;
+                if !unknown_kinds.contains(&kind) {
+                    unknown_kinds.push(kind);
+                }
+            }
+        }
         let raw_id = value
             .get("event_id")
             .and_then(|v| v.as_str())
@@ -1176,6 +1272,7 @@ pub fn verify_ledger(dir: &Path, goal_id: &str, schema: &str) -> Result<LedgerRe
         }
     }
     let ok = conflicts.is_empty();
+    unknown_kinds.sort();
     Ok(LedgerReport {
         goal_id: goal_id.to_string(),
         schema_version: schema.to_string(),
@@ -1183,6 +1280,8 @@ pub fn verify_ledger(dir: &Path, goal_id: &str, schema: &str) -> Result<LedgerRe
         unique_events: by_id.len(),
         idempotent_duplicates,
         legacy_lines_without_id,
+        skipped_unknown_kinds,
+        unknown_kinds,
         conflicts,
         ok,
     })
