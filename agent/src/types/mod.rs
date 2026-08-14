@@ -812,7 +812,17 @@ impl AgentMessage {
 }
 
 pub fn convert_to_llm(msgs: &[AgentMessage]) -> Vec<Message> {
-    msgs.iter().map(|m| m.to_llm()).collect()
+    msgs.iter()
+        // Drop empty assistant messages (no content and no tool_calls) before
+        // they reach the model. A crash/interrupt can leave a reasoning-only
+        // assistant entry in the journal; on resume the API rejects it with
+        // "content or tool_calls must be set". Filtering here — at the single
+        // AgentMessage → Message boundary every send path and every provider
+        // format (OpenAI, Anthropic, responses) flows through — keeps the
+        // model-bound context clean without touching display or the journal.
+        .filter(|m| !(m.role == "assistant" && m.content.is_empty() && m.tool_calls.is_empty()))
+        .map(|m| m.to_llm())
+        .collect()
 }
 
 pub fn convert_from_llm(msgs: Vec<Message>) -> Vec<AgentMessage> {
@@ -1512,6 +1522,28 @@ mod tests {
         assert_eq!(back.len(), 1);
         assert_eq!(back[0].role, "user");
         assert_eq!(back[0].text(), "test");
+    }
+
+    #[test]
+    fn convert_to_llm_skips_empty_assistant() {
+        // Regression: a crash mid-turn can leave a reasoning-only assistant
+        // entry (no content, no tool_calls). convert_to_llm must drop it so the
+        // API never sees "content or tool_calls must be set" on resume.
+        let msgs = vec![
+            AgentMessage {
+                role: "assistant".to_string(),
+                thinking: "thinking...".to_string(),
+                ..Default::default()
+            },
+            AgentMessage {
+                role: "user".to_string(),
+                content: vec![ContentBlock::text("hi")],
+                ..Default::default()
+            },
+        ];
+        let llm_msgs = convert_to_llm(&msgs);
+        assert_eq!(llm_msgs.len(), 1);
+        assert_eq!(llm_msgs[0].role, "user");
     }
 
     #[test]
