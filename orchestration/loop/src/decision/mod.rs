@@ -360,6 +360,29 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
         );
     }
 
+    // ── 5c. Open advancement work exists but none of it is runnable for
+    //        THIS agent (leased to peers). Quiet wait — never terminal: a
+    //        leased todo is not a closed goal, and falling through to
+    //        closure here parks every subsequent run in a skip loop until
+    //        the lease expires. (Learned from goal_c86c1a0aa7b8.) ────────
+    if goal.todos.iter().any(|t| {
+        t.class == TaskClass::Advancement
+            && (t.status == TodoStatus::Open
+                || (t.status == TodoStatus::Deferred && t.is_due_deferred(now)))
+    }) {
+        return packet(
+            goal,
+            DecisionReasonCode::WorkLeasedToOthers,
+            "wait",
+            false,
+            "quiet_wait",
+            TurnMode::WaitMonitor,
+            "open advancement(s) leased to other agents — quiet wait, goal is not closed",
+            UserChannel::none(),
+            agent_channel(None, None, None, false, false, true),
+        );
+    }
+
     // ── 6. Validated closure. ───────────────────────────────────────────
     let mut p = packet(
         goal,
