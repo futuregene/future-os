@@ -12,7 +12,7 @@
 
 use tauri::{
     menu::{Menu, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder},
-    AppHandle, Wry,
+    Runtime,
 };
 
 /// Menu item id for "About FutureOS" → opens Settings.
@@ -23,7 +23,7 @@ pub const MENU_RESTART_WEBVIEW: &str = "restart-webview";
 const APP_NAME: &str = "FutureOS";
 
 /// Build the full macOS menu bar with correct "FutureOS" naming.
-pub fn build_macos_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
+pub fn build_macos_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
     let about = MenuItemBuilder::with_id(MENU_ABOUT, format!("About {APP_NAME}")).build(app)?;
     let restart_webview =
         MenuItemBuilder::with_id(MENU_RESTART_WEBVIEW, "Restart Webview").build(app)?;
@@ -76,3 +76,7 @@ pub fn build_macos_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .item(&window_menu)
         .build()
 }
+
+// NOTE: build_macos_menu cannot run in unit tests — muda requires menu
+// construction on the main thread (test threads are workers). Documented in
+// coverage/acceptance-waivers.md as W-menu.

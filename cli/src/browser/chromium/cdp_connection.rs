@@ -14,8 +14,8 @@ use super::target_registry::{AttachedTarget, SharedTargetRegistry, TargetSession
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use tokio::sync::oneshot;
+use std::sync::{Arc, Mutex, Weak};
+use tokio::sync::{broadcast, oneshot};
 
 // ── Errors ───────────────────────────────────────────────────────────
 
@@ -98,6 +98,35 @@ pub struct CdpConnection {
     connected: AtomicBool,
 }
 
+/// The dispatch loop body, extracted from `connect` so the broadcast
+/// `Lagged`/`Closed` arms can be exercised directly with a small-capacity
+/// channel in tests (a lagged receiver is otherwise only reachable after a
+/// 1024-event burst on a live transport).
+async fn run_dispatch_loop(
+    mut rx: broadcast::Receiver<TransportEvent>,
+    dispatch: Weak<CdpConnection>,
+) {
+    loop {
+        match rx.recv().await {
+            Ok(event) => {
+                // Upgrade failed → the connection is gone and its
+                // transport's sender dropped with it; the next recv
+                // observes Closed and breaks.
+                if let Some(conn) = dispatch.upgrade() {
+                    match event {
+                        TransportEvent::Message(raw) => conn.handle_message(&raw),
+                        TransportEvent::Close(reason) => conn.handle_close(reason),
+                    }
+                }
+            }
+            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            // Every sender is gone (the last connection Arc was dropped):
+            // nothing more can arrive.
+            Err(broadcast::error::RecvError::Closed) => break,
+        }
+    }
+}
+
 impl CdpConnection {
     /// Connect to a CDP WebSocket endpoint and start the dispatch loop.
     pub async fn connect(
@@ -126,28 +155,8 @@ impl CdpConnection {
         // "no subscribers" as fatal (broadcast buffers up to 1024 events
         // until the loop starts polling).
         let dispatch = Arc::downgrade(&conn);
-        let mut rx = conn.transport.subscribe();
-        tokio::spawn(async move {
-            loop {
-                match rx.recv().await {
-                    Ok(event) => {
-                        // Upgrade failed → the connection is gone and its
-                        // transport's sender dropped with it; the next recv
-                        // observes Closed and breaks.
-                        if let Some(conn) = dispatch.upgrade() {
-                            match event {
-                                TransportEvent::Message(raw) => conn.handle_message(&raw),
-                                TransportEvent::Close(reason) => conn.handle_close(reason),
-                            }
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                    // Every sender is gone (the last connection Arc was
-                    // dropped): nothing more can arrive.
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        });
+        let rx = conn.transport.subscribe();
+        tokio::spawn(run_dispatch_loop(rx, dispatch));
 
         Ok(conn)
     }
@@ -938,5 +947,23 @@ mod tests {
         let s = seen.clone();
         assert!(crate::test_env::wait_for(move || s.load(Ordering::SeqCst) > 0).await);
         conn.disconnect().await;
+    }
+
+    #[tokio::test]
+    async fn dispatch_loop_skips_lagged_broadcast_deterministically() {
+        // A small-capacity channel forces the receiver to lag after a burst,
+        // exercising the `Err(Lagged) => continue` arm without the 40k-event
+        // race of the live-transport flood test.
+        let (tx, rx) = broadcast::channel::<TransportEvent>(1);
+        tx.send(TransportEvent::Message("a".into())).unwrap();
+        tx.send(TransportEvent::Message("b".into())).unwrap();
+        tx.send(TransportEvent::Message("c".into())).unwrap();
+        drop(tx);
+        // Dead weak ref: the loop must skip the gap and exit on Closed.
+        let handle = tokio::spawn(run_dispatch_loop(rx, Weak::new()));
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("dispatch loop hung")
+            .expect("dispatch loop panicked");
     }
 }
