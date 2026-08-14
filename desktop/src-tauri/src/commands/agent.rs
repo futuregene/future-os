@@ -51,6 +51,27 @@ mod tests {
     use crate::commands::agent_mock::{mock_agent_lock, script_mock_agent, MockScript};
     use std::collections::HashMap;
 
+    #[test]
+    fn async_command_wrappers_reject_malformed_bodies() {
+        crate::commands::ipc_harness::assert_all_reject_bad_body(
+            tauri::generate_handler![set_default_model, agent_prompt],
+            &["set_default_model", "agent_prompt"],
+        );
+        // `agent_prompt` takes seven arguments; its *last* argument
+        // (`thinking_level: Option<String>`) deserializes a missing key to
+        // `None`, so the empty-body rejection above never reaches its error
+        // arm. Feed it a wrong-typed value instead to make the final
+        // `CommandArg::from_command(..)?` fail and hit the error arm
+        // attributed to the `#[tauri::command]` attribute line.
+        crate::commands::ipc_harness::assert_all_reject_bodies(
+            tauri::generate_handler![agent_prompt],
+            &[(
+                "agent_prompt",
+                serde_json::json!({ "message": "hi", "attachments": null, "threadId": "t", "sessionId": null, "runId": null, "modelId": null, "thinkingLevel": 123 }),
+            )],
+        );
+    }
+
     #[tokio::test]
     async fn list_agent_models_parses_the_agent_response() {
         let _lock = mock_agent_lock();
@@ -93,5 +114,27 @@ mod tests {
         assert!(result.synced);
         assert_eq!(result.model_count, 3);
         script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_wrapper_delegates_and_propagates_errors() {
+        let _lock = mock_agent_lock();
+        let _home = crate::auth_store::test_support::HomeGuard::new("cmd-agent-prompt");
+        crate::store::initialize_app_store().expect("init store");
+        crate::commands::agent_mock::ensure_mock_agent();
+        // A thread the store has never seen fails before any prompt work — the
+        // wrapper's job is just to forward the error (and the message).
+        let error = agent_prompt(
+            "hi".to_string(),
+            None,
+            "ghost".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect_err("prompt should fail for a missing thread");
+        assert!(!error.to_string().is_empty());
     }
 }

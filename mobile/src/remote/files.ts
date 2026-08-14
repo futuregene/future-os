@@ -13,7 +13,7 @@ export const MAX_IMAGES = 4;
 // Longest-edge cap for image attachments. Images over this are downsampled
 // (never rejected) so every source — camera, album, screenshot — behaves the
 // same. 1600px keeps documents/screenshots readable and the transfer small
-// (report 06 decision D1). The desktop receive-side 2000px check still passes.
+// (report 06 decision D1).
 export const MAX_IMAGE_EDGE = 1600;
 const MAX_PREVIEW_CACHE_BYTES = 100 * 1024 * 1024;
 const preparedPreviewIndex = new Map<string, DownloadInfo>();
@@ -322,6 +322,29 @@ export async function takePhoto(existing: MobileAttachment[]): Promise<MobileAtt
     ? { ...prepared, name: prepared.transferName }
     : prepared;
   const combined = [...existing, cameraAttachment];
+  validateBatch(combined);
+  return combined;
+}
+
+export async function pickFromAlbum(existing: MobileAttachment[]): Promise<MobileAttachment[]> {
+  const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+  if (!permission.granted) throw new Error("attachment_album_permission");
+  const result = await ImagePicker.launchImageLibraryAsync({
+    mediaTypes: ["images"],
+    allowsMultipleSelection: true,
+    quality: 1,
+    exif: false,
+  });
+  if (result.canceled || result.assets.length === 0) return existing;
+  const selected = result.assets.map(asset => ({
+    file: new File(asset.uri),
+    mimeType: asset.mimeType ?? "image/jpeg",
+  }));
+  validateRawSelection(existing, selected);
+  const prepared = await Promise.all(
+    selected.map(({ file, mimeType }) => prepareFile(file, mimeType)),
+  );
+  const combined = [...existing, ...prepared];
   validateBatch(combined);
   return combined;
 }

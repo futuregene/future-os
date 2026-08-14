@@ -4,7 +4,6 @@ import {
   isPrefixComplete,
   newCursor,
   nextEvent,
-  rebuildCursorFromEvents,
 } from "../runCursor";
 
 describe("runCursor", () => {
@@ -76,23 +75,6 @@ describe("runCursor", () => {
     expect(cursor.get("run1")?.highWater).toBe(7);
   });
 
-  test("rebuildCursorFromEvents sets max idx per run and marks prefix complete", () => {
-    const cursor = newCursor();
-    rebuildCursorFromEvents(cursor, [
-      { runId: "run1", idx: 0 },
-      { runId: "run1", idx: 3 },
-      { runId: "run1", idx: 1 },
-      { runId: "run2", idx: 10 },
-      { runId: null, idx: 99 },
-      { runId: "run3", idx: null },
-    ]);
-    expect(cursor.get("run1")?.highWater).toBe(3);
-    expect(cursor.get("run1")?.prefixComplete).toBe(true);
-    expect(cursor.get("run2")?.highWater).toBe(10);
-    expect(cursor.has("run3")).toBe(false);
-    expect(cursor.size).toBe(2);
-  });
-
   test("first event idx 0 → prefix complete (H3)", () => {
     const cursor = newCursor();
     nextEvent(cursor, "run1", 0);
@@ -119,7 +101,7 @@ describe("runCursor", () => {
 
   test("advanceCursor without completePrefix never regresses completeness", () => {
     const cursor = newCursor();
-    rebuildCursorFromEvents(cursor, [{ runId: "run1", idx: 3 }]);
+    advanceCursor(cursor, "run1", 3, true);
     advanceCursor(cursor, "run1", 5); // tail top-up, no completion flag
     expect(cursor.get("run1")?.prefixComplete).toBe(true);
   });

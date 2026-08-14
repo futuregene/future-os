@@ -31,12 +31,7 @@
  */
 
 export type ConnectionState =
-  | "connecting"
-  | "ready"
-  | "reconnecting"
-  | "refreshing"
-  | "revoked"
-  | "unpaired";
+  "connecting" | "ready" | "reconnecting" | "refreshing" | "revoked" | "unpaired";
 
 export type LifecycleEvent =
   | { type: "open_started" }
@@ -102,10 +97,7 @@ export function classifyError(error: unknown): "authTerminal" | "auth" | "transp
  * never leave — a revoked device retries nothing (M1), and an unpaired device
  * only acts on a fresh pair.
  */
-export function transition(
-  current: ConnectionState,
-  event: LifecycleEvent,
-): ConnectionAction {
+export function transition(current: ConnectionState, event: LifecycleEvent): ConnectionAction {
   switch (current) {
     case "connecting":
     case "reconnecting":
@@ -128,10 +120,7 @@ export function transition(
         case "unpair":
           return {
             next: "unpaired",
-            effects: [
-              { type: "dispose_connection", reason: "unpair" },
-              { type: "enter_unpaired" },
-            ],
+            effects: [{ type: "dispose_connection", reason: "unpair" }, { type: "enter_unpaired" }],
           };
       }
       break;
@@ -149,10 +138,7 @@ export function transition(
         case "unpair":
           return {
             next: "unpaired",
-            effects: [
-              { type: "dispose_connection", reason: "unpair" },
-              { type: "enter_unpaired" },
-            ],
+            effects: [{ type: "dispose_connection", reason: "unpair" }, { type: "enter_unpaired" }],
           };
         default:
           return { next: current, effects: [] };

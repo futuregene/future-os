@@ -105,31 +105,12 @@ export function advanceCursor(
   }
 }
 
-/**
- * Rebuild cursor state from a set of already-applied events (e.g. after a full
- * reconcile). The run is prefix-complete because the events were fetched from
- * -1 (or from 0 — both render the whole known run).
- */
-export function rebuildCursorFromEvents(
-  cursor: RunCursor,
-  events: { runId?: string | null; idx?: number | null }[],
-): void {
-  for (const event of events) {
-    if (event.runId && event.idx != null) {
-      advanceCursor(cursor, event.runId, event.idx, true);
-    }
-  }
-}
-
 export function cursorHighWater(cursor: RunCursor, runId: string | undefined | null): number {
   if (!runId) return -1;
   return cursor.get(runId)?.highWater ?? -1;
 }
 
-export function isPrefixComplete(
-  cursor: RunCursor,
-  runId: string | undefined | null,
-): boolean {
+export function isPrefixComplete(cursor: RunCursor, runId: string | undefined | null): boolean {
   if (!runId) return true;
   return cursor.get(runId)?.prefixComplete ?? false;
 }

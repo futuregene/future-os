@@ -1,3 +1,5 @@
+import type { RemoteSession } from "./types";
+
 /**
  * Effective run status for a session row — mirrors the desktop sidebar
  * (`ThreadListItem.effectiveRunStatus`): the local run status wins when it
@@ -43,4 +45,16 @@ export function detectFinished(
     next[s.sessionId] = s.status;
   }
   return { finished, next };
+}
+
+/**
+ * Stable pinned-first reorder for optimistic pin/unpin. Pinned sessions move
+ * to the top in their original relative order; everything else keeps the
+ * incoming (desktop-sorted) order. Matches the desktop sidebar's `pinned DESC`
+ * grouping, which the pushed snapshot also converges on.
+ */
+export function sortPinnedFirst(list: RemoteSession[]): RemoteSession[] {
+  const pinned = list.filter(session => session.pinned);
+  const rest = list.filter(session => !session.pinned);
+  return [...pinned, ...rest];
 }

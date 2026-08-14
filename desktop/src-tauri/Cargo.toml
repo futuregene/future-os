@@ -16,6 +16,14 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+# The `test` feature is only needed to drive `#[tauri::command]` wrappers
+# through the real IPC deserialization path in unit tests (cov100 final-tauri):
+# the async wrapper's `CommandArg::from_command(..)?` error arm is attributed
+# to the `#[tauri::command]` attribute line and is only reachable by rejecting
+# a malformed invoke body via `tauri::test::get_ipc_response`.
+[dev-dependencies]
+tauri = { version = "2", features = ["protocol-asset", "test"] }
+
 [dependencies]
 # Shared agent wire contract (proto codegen + typed/JSON decode; typed-RPC
 # milestone). Path dep: this crate lives in the root cargo workspace, and

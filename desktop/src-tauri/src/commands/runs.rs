@@ -272,6 +272,42 @@ mod tests {
     }
 
     #[test]
+    fn async_command_wrappers_reject_malformed_bodies() {
+        crate::commands::ipc_harness::assert_all_reject_bad_body(
+            tauri::generate_handler![
+                abort_run,
+                list_run_events,
+                list_run_events_since,
+                list_run_events_bulk,
+                list_tool_calls,
+                list_tool_calls_bulk,
+                list_tool_outputs
+            ],
+            &[
+                "abort_run",
+                "list_run_events",
+                "list_run_events_since",
+                "list_run_events_bulk",
+                "list_tool_calls",
+                "list_tool_calls_bulk",
+                "list_tool_outputs",
+            ],
+        );
+        // Multi-argument commands fail their *first* missing key with the
+        // empty body above, whose error arm is attributed to the signature
+        // line. Fail the *last* argument instead to hit the error arm on the
+        // `#[tauri::command]` attribute line.
+        crate::commands::ipc_harness::assert_all_reject_bodies(
+            tauri::generate_handler![abort_run, list_run_events_since, list_tool_outputs],
+            &[
+                ("abort_run", serde_json::json!({ "threadId": "x" })),
+                ("list_run_events_since", serde_json::json!({ "runId": "x" })),
+                ("list_tool_outputs", serde_json::json!({ "runId": "x" })),
+            ],
+        );
+    }
+
+    #[test]
     fn run_read_wrappers_round_trip() {
         let (_home, thread) = seeded("cmd_runs");
         let created = create_run(run_input(&thread.id, "run_1")).expect("create run");
@@ -429,6 +465,49 @@ mod tests {
             .await
             .expect("delegated fallback");
         assert!(events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_run_events_since_reads_the_agent_when_up() {
+        use crate::commands::agent_mock::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_events_since_up");
+        create_run(run_input(&thread.id, "run_since_up")).expect("create run");
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "get_events_since".to_string(),
+                "{\"events\":[]}".to_string(),
+            )]),
+            ..Default::default()
+        });
+        let events = list_run_events_since("run_since_up".into(), 0)
+            .await
+            .expect("events");
+        assert!(events.is_empty());
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn list_run_events_since_logs_and_falls_back_on_non_transport_error() {
+        use crate::commands::agent_mock::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_events_since_reject");
+        create_run(run_input(&thread.id, "run_since_rej")).expect("create run");
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            errors: HashMap::from([("get_events_since".to_string(), "unknown run".to_string())]),
+            ..Default::default()
+        });
+        let events = list_run_events_since("run_since_rej".into(), 0)
+            .await
+            .expect("fallback");
+        assert!(events.is_empty());
+        script_mock_agent(MockScript::default());
     }
 
     #[tokio::test]

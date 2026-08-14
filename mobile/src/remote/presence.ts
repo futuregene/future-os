@@ -99,10 +99,8 @@ export function isDesktopOnline(
   // frozen (a death). The advancing-heartbeat condition removes any dependence
   // on sampling-timer alignment. The first out-of-window sample only seeds the
   // detector (staleCount 1); subsequent confirmations compare against it.
-  const heartbeatAdvanced =
-    state.staleCount > 0 && heartbeatTs > state.staleHeartbeatTs;
-  const nearLastStale =
-    Math.abs(observedDeltaMs - state.staleDeltaMs) <= CLOCK_JUMP_TOLERANCE_MS;
+  const heartbeatAdvanced = state.staleCount > 0 && heartbeatTs > state.staleHeartbeatTs;
+  const nearLastStale = Math.abs(observedDeltaMs - state.staleDeltaMs) <= CLOCK_JUMP_TOLERANCE_MS;
   const confirmed = heartbeatAdvanced && nearLastStale;
   const staleCount = confirmed ? state.staleCount + 1 : 1;
   if (staleCount >= CLOCK_JUMP_CONFIRM_SAMPLES) {

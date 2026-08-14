@@ -970,6 +970,21 @@ mod tests {
     }
 
     #[test]
+    fn replay_reconstructs_p2_priority() {
+        // A P2 todo must survive the compact snapshot and reconstruct as P2
+        // (the P1 default is the absence of the field).
+        let mut goal = Goal::new("g1", "objective", "/tmp");
+        goal.add(Todo::advancement("T1", "work"));
+        goal.todo_mut("T1").unwrap().priority = crate::state::Priority::P2;
+        let packet = crate::decision::decide(&goal, std::time::SystemTime::now());
+        let case = reduce_public_safe_decision(&packet, &goal, "case-p2", None);
+        assert_eq!(
+            goal_from_case(&case).todo("T1").unwrap().priority,
+            crate::state::Priority::P2
+        );
+    }
+
+    #[test]
     fn replay_matches_capability_gated_frontier() {
         // T1 requires capability "shell"; the recording agent declared it →
         // runnable live. Replay must register the same capabilities.

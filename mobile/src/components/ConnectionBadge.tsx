@@ -13,8 +13,7 @@ export function ConnectionBadge({
   const { t } = useTranslation();
   const revoked = phase === "revoked";
   const connected = phase === "connected" && desktopOnline;
-  const reconnecting =
-    phase === "connecting" || phase === "reconnecting" || phase === "refreshing";
+  const reconnecting = phase === "connecting" || phase === "reconnecting" || phase === "refreshing";
   const label = revoked
     ? t("connection.revoked")
     : connected

@@ -6,8 +6,7 @@ export type ConnectionPhase =
   | "connected"
   | "reconnecting"
   | "refreshing"
-  | "revoked"
-  | "error";
+  | "revoked";
 
 export interface PairingCode {
   v: 2;
@@ -333,4 +332,36 @@ export interface RemoteCommand {
   transferId?: string;
   filePath?: string;
   attachments?: { uploadId: string }[];
+}
+
+export interface SessionsData {
+  sessions: RemoteSession[];
+}
+
+export interface ModelsData {
+  models: RemoteModel[];
+}
+
+export interface WorkspacesData {
+  workspaces: RemoteWorkspace[];
+}
+
+export interface HistoryData {
+  messages: HistoryMessage[];
+  total?: number;
+  hasMore?: boolean;
+  nextOffset?: number;
+}
+
+export interface EntriesData {
+  entries: HistoryEntry[];
+  total?: number;
+  hasMore?: boolean;
+  nextOffset?: number;
+}
+
+export interface PromptAck {
+  sessionId: string;
+  threadId: string;
+  runId: string;
 }

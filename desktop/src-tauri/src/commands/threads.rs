@@ -428,6 +428,76 @@ mod tests {
     }
 
     #[test]
+    fn async_command_wrappers_reject_malformed_bodies() {
+        crate::commands::ipc_harness::assert_all_reject_bad_body(
+            tauri::generate_handler![
+                fork_thread,
+                rename_thread,
+                update_thread_model,
+                update_thread_thinking_level,
+                delete_thread,
+                batch_delete_threads,
+                get_thread_agent_state,
+                get_session_entries,
+                clear_finished_runs,
+                attach_remote_stream
+            ],
+            &[
+                "fork_thread",
+                "rename_thread",
+                "update_thread_model",
+                "update_thread_thinking_level",
+                "delete_thread",
+                "batch_delete_threads",
+                "get_thread_agent_state",
+                "get_session_entries",
+                "clear_finished_runs",
+                "attach_remote_stream",
+            ],
+        );
+        // `fork_thread` takes three arguments, so the empty-body rejection only
+        // exercises its *first* argument's error arm (attributed to the signature
+        // line). Fail the *last* argument instead to hit the error arm attributed
+        // to the `#[tauri::command]` attribute line.
+        crate::commands::ipc_harness::assert_all_reject_bodies(
+            tauri::generate_handler![fork_thread],
+            &[(
+                "fork_thread",
+                serde_json::json!({ "threadId": "t", "userMessageContent": "c" }),
+            )],
+        );
+    }
+
+    #[test]
+    fn create_thread_command_creates_a_chat_thread() {
+        let _home = init("cmd_create_thread");
+        let thread = create_thread(store::CreateThreadInput {
+            mode: "chat".into(),
+            title: Some("New Chat".into()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: None,
+        })
+        .expect("create thread");
+        assert_eq!(thread.title, "New Chat");
+    }
+
+    #[tokio::test]
+    async fn fork_thread_errors_for_an_unknown_thread() {
+        let _home = init("cmd_fork_ghost");
+        assert!(fork_thread("no-such-thread".into(), "x".into(), 0)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn attach_remote_stream_errors_for_an_unknown_thread() {
+        let _home = init("cmd_attach_ghost");
+        assert!(attach_remote_stream("no-such-thread".into()).await.is_err());
+    }
+
+    #[test]
     fn thread_read_and_pin_commands_round_trip() {
         let _home = init("cmd_threads");
         assert!(list_threads().expect("list empty").is_empty());

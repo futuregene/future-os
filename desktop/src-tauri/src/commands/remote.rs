@@ -74,6 +74,14 @@ mod tests {
     use crate::auth_store::test_support::HomeGuard;
 
     #[test]
+    fn async_command_wrapper_rejects_malformed_body() {
+        crate::commands::ipc_harness::assert_all_reject_bad_body(
+            tauri::generate_handler![remote_start],
+            &["remote_start"],
+        );
+    }
+
+    #[test]
     fn remote_status_and_stop_report_no_bridge_when_idle() {
         let _home = HomeGuard::new("remote_idle");
         let status = remote_status().expect("status");
@@ -112,5 +120,49 @@ mod tests {
         let _home = HomeGuard::new("remote_unpair");
         let status = remote_unpair().await.expect("unpair");
         assert!(!status.connected);
+    }
+
+    #[tokio::test]
+    async fn remote_start_surfaces_a_degraded_status() {
+        let _home = HomeGuard::new("remote_start_deg");
+        // Point the platform at an unreachable host so `establish()` fails with
+        // a categorized "network" status — `remote::start` returns an Ok
+        // not-running status with `error_code` set, exercising the command's
+        // degraded-status eprintln arm (and the Ok branch of the match).
+        crate::remote::test_support::sign_in("http://127.0.0.1:9");
+        let status = remote_start(remote::RemoteStartInput {})
+            .await
+            .expect("start");
+        assert!(!status.running);
+        assert_eq!(status.error_code.as_deref(), Some("network"));
+    }
+
+    #[tokio::test]
+    async fn remote_start_propagates_a_local_failure() {
+        let _home = HomeGuard::new("remote_start_err");
+        // A legacy pairing credential + a read-only `.future` dir makes clearing
+        // it fail as an uncategorized *local* fault — `remote::start` then
+        // propagates `Err`, exercising the command's error arm.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            crate::remote::pairing::save_creds(&crate::remote::pairing::PairingCreds {
+                handshake_version: 0,
+                pair_id: "pair_err".into(),
+                desktop_id: "desk_err".into(),
+                nkey_seed: String::new(),
+                user_jwt: "jwt".into(),
+                nats_url: "nats://127.0.0.1:9".into(),
+                nats_ws_url: "ws://127.0.0.1:9".into(),
+                jwt_expires_at: 3600,
+            })
+            .unwrap();
+            let config_dir = std::path::Path::new(&std::env::var("HOME").unwrap()).join(".future");
+            let permissions = std::fs::metadata(&config_dir).unwrap().permissions();
+            std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let result = remote_start(remote::RemoteStartInput {}).await;
+            std::fs::set_permissions(&config_dir, permissions).unwrap();
+            assert!(result.is_err());
+        }
     }
 }

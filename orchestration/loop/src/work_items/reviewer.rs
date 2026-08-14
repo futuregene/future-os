@@ -37,9 +37,9 @@ pub fn parse_codeowners(content: &str) -> Vec<OwnerRule> {
             continue;
         }
         let mut parts = trimmed.split_whitespace();
-        let Some(pattern) = parts.next() else {
-            continue;
-        };
+        let pattern = parts
+            .next()
+            .expect("a non-empty trimmed line always yields a pattern token");
         let owners: Vec<String> = parts.map(|owner| owner.to_string()).collect();
         if owners.is_empty() {
             continue;
@@ -219,11 +219,12 @@ pub fn scan_owners_files(root: &Path) -> BTreeMap<String, Vec<String>> {
                     .to_string_lossy()
                     .replace('\\', "/");
                 let key = normalize_dir(&relative);
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    let owners = parse_owners(&content);
-                    if !owners.is_empty() {
-                        dir_owners.insert(key, owners);
-                    }
+                let owners = std::fs::read_to_string(&path)
+                    .ok()
+                    .map(|content| parse_owners(&content))
+                    .unwrap_or_default();
+                if !owners.is_empty() {
+                    dir_owners.insert(key, owners);
                 }
             }
         }
@@ -529,8 +530,78 @@ mod tests {
     }
 
     #[test]
+    fn path_matching_covers_question_mark_and_double_star_dir() {
+        // in-segment single-char wildcard
+        assert!(path_matches("src/file?.rs", "src/file1.rs"));
+        assert!(!path_matches("src/file?.rs", "src/file12.rs"));
+        assert!(!path_matches("src/file?.rs", "src/file.rs"));
+        // `**/` matches everything under the root
+        assert!(path_matches("**/", "any/deep/path.rs"));
+        // `dir/**/` requires the prefix then anything underneath
+        assert!(path_matches("src/**/", "src/a/b/c.rs"));
+        assert!(!path_matches("src/**/", "other/a.rs"));
+    }
+
+    #[test]
+    fn scan_owners_files_walks_tree_and_skips_git() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join("OWNERS"), "root-owner\n").unwrap();
+        std::fs::write(root.join("src/OWNERS"), "src-owner\n").unwrap();
+        // A `.git` OWNERS file must be skipped (git internals).
+        std::fs::write(root.join(".git/OWNERS"), "git-owner\n").unwrap();
+        let dirs = scan_owners_files(root);
+        assert_eq!(dirs.get(""), Some(&vec!["root-owner".to_string()]));
+        assert_eq!(dirs.get("src"), Some(&vec!["src-owner".to_string()]));
+        assert!(!dirs.contains_key(".git"));
+        // An unreadable root degrades to an empty map.
+        assert!(scan_owners_files(std::path::Path::new("/nonexistent/repo-xyz")).is_empty());
+    }
+
+    #[test]
+    fn empty_reviewer_names_are_skipped() {
+        let mut dirs: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        dirs.insert("".to_string(), vec!["   ".to_string(), "alice".to_string()]);
+        let candidates = recommend_reviewers(&["src/x.rs".to_string()], None, &dirs, &[]);
+        // only alice is credited; the whitespace-only reviewer is dropped.
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].reviewer, "alice");
+        assert_eq!(candidates[0].score, 2);
+    }
+
+    #[test]
     fn git_recent_commits_degrades_on_missing_repo() {
         let commits = git_recent_commits(Path::new("/nonexistent/repo-xyz"), 30, 50);
         assert!(commits.is_empty());
+    }
+
+    #[test]
+    fn git_recent_commits_parses_real_log_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .output()
+                .unwrap();
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(out.status.success(), "git {args:?} failed: {stderr}");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "a@b.c"]);
+        git(&["config", "user.name", "Test Author"]);
+        std::fs::write(repo.join("file.rs"), "fn main() {}").unwrap();
+        git(&["add", "file.rs"]);
+        git(&["commit", "-q", "-m", "init"]);
+        let commits = git_recent_commits(repo, 30, 50);
+        assert!(
+            commits
+                .iter()
+                .any(|(author, path)| author == "Test Author" && path == "file.rs"),
+            "got: {commits:?}"
+        );
     }
 }

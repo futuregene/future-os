@@ -6640,10 +6640,16 @@ mod tests {
         let log = std::fs::read_to_string(home.path().join(".future/tui/debug.log")).unwrap();
         assert!(log.contains("width changed"));
         // Unwritable log path (a directory) — the open failure is swallowed.
-        std::fs::remove_file(home.path().join(".future/tui/debug.log")).unwrap();
-        std::fs::create_dir(home.path().join(".future/tui/debug.log")).unwrap();
+        // A fresh HOME whose debug.log is already a directory exercises the
+        // swallow path without racing a remove_file/create_dir (instrumented
+        // runs slow the suite down and the previous file can be re-created
+        // between the two calls).
+        let blocked = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(blocked.path().join(".future/tui/debug.log")).unwrap();
+        std::env::set_var("HOME", blocked.path());
         app.terminal.cols = 80;
         app.do_render();
+        std::env::set_var("HOME", home.path());
         restore_env2("PI_TUI_DEBUG", old_debug);
         restore_env2("PI_DEBUG_REDRAW", old_redraw);
         restore_env2("HOME", old_home);

@@ -550,4 +550,54 @@ mod tests {
         assert!(queue.get(3).is_none());
         assert!(ReviewQueue::from_goal(&Goal::new("e", "o", "/tmp")).is_empty());
     }
+
+    #[test]
+    fn empty_title_defaults_to_review_pr_number() {
+        let mut it = item(9, &"a".repeat(40));
+        it.title = String::new();
+        assert_eq!(it.to_todo("pr-review-9").title, "Review PR #9");
+    }
+
+    #[test]
+    fn non_advancement_todo_does_not_project() {
+        let todo = Todo::monitor("m1", "watch", std::time::Duration::from_secs(60));
+        assert!(ReviewItem::from_todo(&todo).is_none());
+    }
+
+    #[test]
+    fn from_todo_falls_back_to_title_for_pr_number() {
+        let mut todo = item(42, &"a".repeat(40)).to_todo("custom-id");
+        // id has no pr-review- prefix → number comes from the title.
+        todo.title = "PR #42".to_string();
+        let parsed = ReviewItem::from_todo(&todo).unwrap();
+        assert_eq!(parsed.number, 42);
+        // Title without "PR #" fails closed.
+        todo.title = "Renamed".to_string();
+        assert!(ReviewItem::from_todo(&todo).is_none());
+        // "PR #" without digits fails closed.
+        todo.title = "PR #abc".to_string();
+        assert!(ReviewItem::from_todo(&todo).is_none());
+    }
+
+    #[test]
+    fn rework_verdict_maps_to_rework_outcome() {
+        let mut todo = item(5, &"d".repeat(40)).to_todo("pr-review-5");
+        let outcome = apply_verdict(&mut todo, ReviewVerdict::Rework, None, None, 1).unwrap();
+        assert_eq!(outcome, VerdictOutcome::Rework);
+    }
+
+    #[test]
+    fn renew_and_expire_review_reuse_the_lease_state_machine() {
+        let mut goal = Goal::new("g", "obj", "/tmp");
+        goal.add(item(7, &"e".repeat(40)).to_todo("pr-review-7"));
+        let now = now_epoch();
+        claim_review(&mut goal, &item(7, &"e".repeat(40)), "alice", 60, now).unwrap();
+        let op = renew_review(&mut goal, &item(7, &"e".repeat(40)), "alice", 120, now).unwrap();
+        assert_eq!(op, task_lease::LeaseOp::Renewed);
+        assert!(renew_review(&mut goal, &item(7, &"e".repeat(40)), "bob", 120, now).is_err());
+        let op = expire_review(&mut goal, &item(7, &"e".repeat(40)), now + 200).unwrap();
+        assert_eq!(op, task_lease::LeaseOp::Expired { had_lease: true });
+        let op = expire_review(&mut goal, &item(7, &"e".repeat(40)), now + 200).unwrap();
+        assert_eq!(op, task_lease::LeaseOp::Expired { had_lease: false });
+    }
 }

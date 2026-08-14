@@ -62,6 +62,38 @@ const OBSERVER_IDLE_SLEEP: Duration = Duration::from_secs(15 * 60);
 /// How often a quiet stream is checked for the idle-sleep condition.
 const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 
+/// Initial attach backoff. Tests shrink it so the self-heal retry loop runs
+/// without real waits (the doubling stays, capped at 10s); the env override
+/// lets individual tests pick a long window to cancel mid-backoff.
+fn observer_backoff() -> Duration {
+    #[cfg(test)]
+    if let Some(ms) = std::env::var("FUTURE_TEST_OBSERVER_BACKOFF_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        return Duration::from_millis(ms);
+    }
+    #[cfg(test)]
+    const INITIAL: Duration = Duration::from_millis(5);
+    #[cfg(not(test))]
+    const INITIAL: Duration = Duration::from_millis(500);
+    INITIAL
+}
+
+/// How often a quiet stream is checked for the idle-sleep condition. Tests
+/// shrink it via env so the quiet-window branch can be exercised without a
+/// 30-second wait.
+fn idle_check_interval() -> Duration {
+    #[cfg(test)]
+    if let Some(ms) = std::env::var("FUTURE_TEST_IDLE_CHECK_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        return Duration::from_millis(ms);
+    }
+    IDLE_CHECK_INTERVAL
+}
+
 /// Event types forwarded to the webview as `agent-event`. Same whitelist as
 /// the retired single-slot observer: settings changes applied by
 /// `agentStateCache`, plus `user_message` (zero-latency user bubble in the
@@ -485,7 +517,7 @@ async fn run_observer(
     mut cancel: oneshot::Receiver<()>,
 ) {
     let mut state = ObserverState::default();
-    let mut backoff = Duration::from_millis(500);
+    let mut backoff = observer_backoff();
 
     'attach: loop {
         let mut client = match connect_agent().await {
@@ -575,13 +607,13 @@ async fn run_observer(
                 }
             }
         };
-        backoff = Duration::from_millis(500);
+        backoff = observer_backoff();
 
         // ── Streaming ──────────────────────────────────────────────
         loop {
             let message = tokio::select! {
                 _ = &mut cancel => return,
-                result = tokio::time::timeout(IDLE_CHECK_INTERVAL, stream.message()) => result,
+                result = tokio::time::timeout(idle_check_interval(), stream.message()) => result,
             };
             let event = match message {
                 Ok(Ok(Some(event))) => event,
@@ -597,9 +629,6 @@ async fn run_observer(
             shared.touch();
             if !handle_event(session_id, shared, &mut state, event).await {
                 break; // idx gap — reattach for replay/snapshot healing
-            }
-            if shared.should_sleep() {
-                return;
             }
         }
 
@@ -685,7 +714,13 @@ async fn handle_event(
         }
         let event_data = future_rpc::decode::event_data_json(&event);
         if FORWARDED_EVENTS.contains(&event_type) {
-            forward_settings_event(session_id, &shared.thread_id, event_type, &event_data);
+            forward_settings_event(
+                crate::APP_HANDLE.get(),
+                session_id,
+                &shared.thread_id,
+                event_type,
+                &event_data,
+            );
         }
         crate::remote::publish_event(
             session_id,
@@ -780,6 +815,7 @@ async fn handle_event(
                     let event_data = future_rpc::decode::event_data_json(&event);
                     if FORWARDED_EVENTS.contains(&event_type) {
                         forward_settings_event(
+                            crate::APP_HANDLE.get(),
                             session_id,
                             &shared.thread_id,
                             event_type,
@@ -853,7 +889,13 @@ async fn handle_event(
     }
 
     if FORWARDED_EVENTS.contains(&event_type) {
-        forward_settings_event(session_id, &shared.thread_id, event_type, &event_data);
+        forward_settings_event(
+            crate::APP_HANDLE.get(),
+            session_id,
+            &shared.thread_id,
+            event_type,
+            &event_data,
+        );
     }
     crate::remote::publish_event(
         session_id,
@@ -972,10 +1014,28 @@ async fn observer_run(
 /// Forward a whitelisted event to the webview as `agent-event`. Both owner
 /// identities are injected so the frontend can reject stale listeners during
 /// a thread switch instead of trusting session identity alone.
-fn forward_settings_event(session_id: &str, thread_id: &str, event_type: &str, data: &str) {
-    let Some(app_handle) = crate::APP_HANDLE.get() else {
-        return;
-    };
+fn forward_settings_event<R: tauri::Runtime>(
+    app_handle: Option<&tauri::AppHandle<R>>,
+    session_id: &str,
+    thread_id: &str,
+    event_type: &str,
+    data: &str,
+) {
+    if let Some(app_handle) = app_handle {
+        emit_settings_event(app_handle, session_id, thread_id, event_type, data);
+    }
+}
+
+/// Emit the enriched payload via an injectable `Emitter`. Generic over
+/// `Runtime` so unit tests can drive the emit body with a mock app handle
+/// (the process-global `APP_HANDLE` is `None` outside a running Tauri app).
+fn emit_settings_event<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+    session_id: &str,
+    thread_id: &str,
+    event_type: &str,
+    data: &str,
+) {
     if let Some(payload) = settings_event_payload(session_id, thread_id, event_type, data) {
         let _ = app_handle.emit("agent-event", &payload);
     }
@@ -1288,7 +1348,8 @@ mod tests {
     // ── manager + task helpers ────────────────────────────────────────
 
     use super::super::test_support::{
-        break_home, mock_agent, restore_home, seed_thread, seed_workspace, Reply, TestHome,
+        break_home, mock_agent, restore_home, seed_thread, seed_workspace, Reply, StreamScript,
+        TestHome,
     };
 
     #[tokio::test]
@@ -1589,11 +1650,28 @@ mod tests {
     }
 
     #[test]
-    fn forward_settings_event_returns_without_an_app_handle() {
-        // No APP_HANDLE (unit test) → early return.
-        forward_settings_event("sess", "thread", "model_changed", "{}");
-        // Malformed JSON → the parse arm is skipped without an emit.
-        forward_settings_event("sess", "thread", "model_changed", "not json");
+    fn forward_settings_event_emits_or_skips_without_a_handle() {
+        // No handle → no emit (the `if let Some` body is skipped).
+        forward_settings_event(
+            None::<&tauri::AppHandle<tauri::test::MockRuntime>>,
+            "sess",
+            "thread",
+            "model_changed",
+            "{}",
+        );
+        // A mock handle → the emit body runs (valid + malformed payloads).
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app");
+        let handle = app.handle();
+        forward_settings_event(
+            Some(handle),
+            "sess",
+            "thread",
+            "model_changed",
+            r#"{"model":"k3"}"#,
+        );
+        forward_settings_event(Some(handle), "sess", "thread", "model_changed", "not json");
     }
 
     #[test]
@@ -2067,5 +2145,362 @@ mod tests {
             serde_json::json!({"sessionIds": []}),
         );
         discovery_tick(60).await;
+    }
+
+    // ── run_observer self-heal paths ─────────────────────────────────
+
+    /// Spawn `run_observer` directly on the test runtime so its retry/idle
+    /// arms can be driven deterministically (unlike `spawn_observer`, which
+    /// runs on Tauri's ambient runtime).
+    fn spawn_run_observer(
+        session_id: &str,
+        shared: Arc<ObserverShared>,
+    ) -> (oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        let sid = session_id.to_string();
+        let handle = tokio::spawn(async move {
+            run_observer(&sid, &shared, cancel_rx).await;
+        });
+        (cancel_tx, handle)
+    }
+
+    fn quiet_shared(thread_id: &str) -> Arc<ObserverShared> {
+        Arc::new(ObserverShared {
+            last_activity_ms: AtomicI64::new(0),
+            has_active_run: AtomicBool::new(false),
+            ..ObserverShared::new(thread_id)
+        })
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn run_observer_retries_connect_failures() {
+        // Serialize with the remote mock family too: breaking
+        // `FUTURE_AGENT_GRPC_ADDR` must not race a bridge/commands test's
+        // `connect_agent`. Acquire MOCK_SER before MOCK_LOCK so the lock
+        // ordering stays acyclic (bridge: MOCK_SER→TEST_HOME_LOCK; TestHome
+        // observer: TEST_HOME_LOCK→MOCK_LOCK; here: MOCK_SER→MOCK_LOCK).
+        let _remote = crate::remote::test_support::mock_agent_lock();
+        let _mock = mock_agent();
+        std::env::set_var("FUTURE_TEST_OBSERVER_BACKOFF_MS", "40");
+        let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock addr");
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
+
+        let shared = Arc::new(ObserverShared::new("thread-cf"));
+        let (cancel_tx, handle) = spawn_run_observer("sess-cf", shared);
+        // Cycle 1: connect fails → 40ms backoff completes → double + continue.
+        // Cycle 2: connect fails → 80ms backoff; cancel lands mid-sleep → return.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        cancel_tx.send(()).unwrap();
+        handle.await.unwrap();
+
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
+        std::env::remove_var("FUTURE_TEST_OBSERVER_BACKOFF_MS");
+    }
+
+    #[tokio::test]
+    async fn run_observer_retries_replay_failures() {
+        let _home = TestHome::new("observer-replay-retry");
+        let mock = mock_agent();
+        std::env::set_var("FUTURE_TEST_OBSERVER_BACKOFF_MS", "50");
+        mock.push(
+            "get_session_events_since",
+            Reply::Reject("nope".to_string()),
+        );
+        mock.push(
+            "get_session_events_since",
+            Reply::Reject("nope".to_string()),
+        );
+
+        let shared = Arc::new(ObserverShared::new("thread-rr"));
+        let (cancel_tx, handle) = spawn_run_observer("sess-rr", shared);
+        // Cycle 1: replay fails → 50ms backoff completes → continue (no doubling).
+        // Cycle 2: replay fails → 50ms backoff; cancel mid-sleep → return.
+        tokio::time::sleep(Duration::from_millis(75)).await;
+        cancel_tx.send(()).unwrap();
+        handle.await.unwrap();
+        std::env::remove_var("FUTURE_TEST_OBSERVER_BACKOFF_MS");
+    }
+
+    #[tokio::test]
+    async fn run_observer_attaches_atomically_to_an_active_run() {
+        let _home = TestHome::new("observer-atomic");
+        let mock = mock_agent();
+        std::env::set_var("FUTURE_TEST_OBSERVER_BACKOFF_MS", "200");
+        mock.push_data(
+            "get_session_events_since",
+            serde_json::json!({"events": []}),
+        );
+        mock.push_data(
+            "get_state",
+            serde_json::json!({"activeRun": {"runId": "run-aa"}}),
+        );
+        mock.push_stream(StreamScript::Events(
+            vec![stream_event("agent_start", "run-aa", 0)],
+            None,
+        ));
+
+        let shared = Arc::new(ObserverShared::new("thread-aa"));
+        let (cancel_tx, handle) = spawn_run_observer("sess-aa", shared);
+        // The atomic attach streams one event then closes; the post-stream
+        // 200ms backoff sleep is where cancel lands → return (post-stream arm).
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        cancel_tx.send(()).unwrap();
+        handle.await.unwrap();
+        std::env::remove_var("FUTURE_TEST_OBSERVER_BACKOFF_MS");
+    }
+
+    /// A re-attach to a run already seen resumes from the in-memory cursor
+    /// (`Some` arm) instead of replaying from the start.
+    #[tokio::test]
+    async fn run_observer_reattaches_with_a_cached_cursor() {
+        let _home = TestHome::new("observer-reattach");
+        let mock = mock_agent();
+        std::env::set_var("FUTURE_TEST_OBSERVER_BACKOFF_MS", "50");
+        // Two full attach cycles (replay empty → probe active → atomic stream
+        // yields one event then closes).
+        for _ in 0..2 {
+            mock.push_data(
+                "get_session_events_since",
+                serde_json::json!({"events": []}),
+            );
+            mock.push_data(
+                "get_state",
+                serde_json::json!({"activeRun": {"runId": "run-rc"}}),
+            );
+            mock.push_stream(StreamScript::Events(
+                vec![stream_event("agent_start", "run-rc", 0)],
+                None,
+            ));
+        }
+
+        let shared = Arc::new(ObserverShared::new("thread-rc"));
+        let (cancel_tx, handle) = spawn_run_observer("sess-rc", shared);
+        // Cycle 1 attaches fresh (cursor None → -1) and re-attaches; cycle 2
+        // attaches with a cached cursor (Some arm).
+        tokio::time::sleep(Duration::from_millis(140)).await;
+        cancel_tx.send(()).unwrap();
+        handle.await.unwrap();
+        std::env::remove_var("FUTURE_TEST_OBSERVER_BACKOFF_MS");
+    }
+
+    #[tokio::test]
+    async fn run_observer_falls_back_to_plain_subscribe_after_atomic_error() {
+        let _home = TestHome::new("observer-atomic-fallback");
+        let mock = mock_agent();
+        std::env::set_var("FUTURE_TEST_OBSERVER_BACKOFF_MS", "50");
+        mock.push_data(
+            "get_session_events_since",
+            serde_json::json!({"events": []}),
+        );
+        mock.push_data(
+            "get_state",
+            serde_json::json!({"activeRun": {"runId": "run-fb"}}),
+        );
+        // Atomic attach fails with FailedPrecondition → plain subscribe; the
+        // plain subscribe also fails → sleep_or_cancel → cancel mid-sleep.
+        mock.push_stream(StreamScript::AttachError(
+            tonic::Code::FailedPrecondition,
+            "ended",
+        ));
+        mock.push_plain_stream(StreamScript::AttachError(tonic::Code::Internal, "down"));
+
+        let shared = Arc::new(ObserverShared::new("thread-fb"));
+        let (cancel_tx, handle) = spawn_run_observer("sess-fb", shared);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        cancel_tx.send(()).unwrap();
+        handle.await.unwrap();
+        std::env::remove_var("FUTURE_TEST_OBSERVER_BACKOFF_MS");
+    }
+
+    /// When the atomic attach fails with `FailedPrecondition`/`NotFound` but the
+    /// fallback plain subscribe works, the observer streams from it (`Some` arm).
+    #[tokio::test]
+    async fn run_observer_falls_back_to_a_working_plain_subscribe() {
+        let _home = TestHome::new("observer-fallback-ok");
+        let mock = mock_agent();
+        mock.push_data(
+            "get_session_events_since",
+            serde_json::json!({"events": []}),
+        );
+        mock.push_data(
+            "get_state",
+            serde_json::json!({"activeRun": {"runId": "run-fbok"}}),
+        );
+        mock.push_stream(StreamScript::AttachError(tonic::Code::NotFound, "ended"));
+        // Plain subscribe succeeds (yields one event then closes).
+        mock.push_plain_stream(StreamScript::Events(
+            vec![stream_event("model_changed", "", -1)],
+            None,
+        ));
+
+        let shared = Arc::new(ObserverShared::new("thread-fbok"));
+        let (cancel_tx, handle) = spawn_run_observer("sess-fbok", shared);
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        cancel_tx.send(()).unwrap();
+        handle.await.unwrap();
+        std::env::remove_var("FUTURE_TEST_OBSERVER_BACKOFF_MS");
+    }
+
+    /// When the fallback plain subscribe also fails, the observer sleeps the
+    /// backoff and re-attaches (the `continue 'attach` arm).
+    #[tokio::test]
+    async fn run_observer_continues_after_plain_subscribe_failure() {
+        let _home = TestHome::new("observer-fallback-retry");
+        let mock = mock_agent();
+        std::env::set_var("FUTURE_TEST_OBSERVER_BACKOFF_MS", "50");
+        for _ in 0..2 {
+            mock.push_data(
+                "get_session_events_since",
+                serde_json::json!({"events": []}),
+            );
+            mock.push_data(
+                "get_state",
+                serde_json::json!({"activeRun": {"runId": "run-fbr"}}),
+            );
+            mock.push_stream(StreamScript::AttachError(
+                tonic::Code::FailedPrecondition,
+                "ended",
+            ));
+            mock.push_plain_stream(StreamScript::AttachError(tonic::Code::Internal, "down"));
+        }
+
+        let shared = Arc::new(ObserverShared::new("thread-fbr"));
+        let (cancel_tx, handle) = spawn_run_observer("sess-fbr", shared);
+        // Cycle 1's backoff completes → continue 'attach; cycle 2's backoff is
+        // where cancel lands (the `return` arm) after both arms are exercised.
+        tokio::time::sleep(Duration::from_millis(75)).await;
+        cancel_tx.send(()).unwrap();
+        handle.await.unwrap();
+        std::env::remove_var("FUTURE_TEST_OBSERVER_BACKOFF_MS");
+    }
+
+    #[tokio::test]
+    async fn run_observer_retries_atomic_attach_errors() {
+        let _home = TestHome::new("observer-atomic-error");
+        let mock = mock_agent();
+        std::env::set_var("FUTURE_TEST_OBSERVER_BACKOFF_MS", "40");
+        mock.push_data(
+            "get_session_events_since",
+            serde_json::json!({"events": []}),
+        );
+        mock.push_data(
+            "get_state",
+            serde_json::json!({"activeRun": {"runId": "run-ae"}}),
+        );
+        mock.push_data(
+            "get_session_events_since",
+            serde_json::json!({"events": []}),
+        );
+        mock.push_data(
+            "get_state",
+            serde_json::json!({"activeRun": {"runId": "run-ae"}}),
+        );
+        // Both atomic attaches fail with a non-NotFound status → settle + backoff.
+        mock.push_stream(StreamScript::AttachError(tonic::Code::Internal, "down"));
+        mock.push_stream(StreamScript::AttachError(tonic::Code::Internal, "down"));
+
+        let shared = Arc::new(ObserverShared::new("thread-ae"));
+        let (cancel_tx, handle) = spawn_run_observer("sess-ae", shared);
+        // Cycle 1: 40ms backoff completes → double + continue. Cycle 2: 80ms
+        // backoff; cancel mid-sleep → return.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        cancel_tx.send(()).unwrap();
+        handle.await.unwrap();
+        std::env::remove_var("FUTURE_TEST_OBSERVER_BACKOFF_MS");
+    }
+
+    #[tokio::test]
+    async fn run_observer_retries_plain_subscribe_failure() {
+        let _home = TestHome::new("observer-plain-retry");
+        let mock = mock_agent();
+        std::env::set_var("FUTURE_TEST_OBSERVER_BACKOFF_MS", "40");
+        // No active run → plain subscribe; it fails twice so both the continue
+        // and the cancel-during-sleep arms execute.
+        mock.push_data(
+            "get_session_events_since",
+            serde_json::json!({"events": []}),
+        );
+        mock.push_data("get_state", serde_json::json!({"isStreaming": false}));
+        mock.push_plain_stream(StreamScript::AttachError(tonic::Code::Internal, "down"));
+        mock.push_data(
+            "get_session_events_since",
+            serde_json::json!({"events": []}),
+        );
+        mock.push_data("get_state", serde_json::json!({"isStreaming": false}));
+        mock.push_plain_stream(StreamScript::AttachError(tonic::Code::Internal, "down"));
+
+        let shared = Arc::new(ObserverShared::new("thread-pr"));
+        let (cancel_tx, handle) = spawn_run_observer("sess-pr", shared);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        cancel_tx.send(()).unwrap();
+        handle.await.unwrap();
+        std::env::remove_var("FUTURE_TEST_OBSERVER_BACKOFF_MS");
+    }
+
+    #[tokio::test]
+    async fn run_observer_gap_breaks_the_stream() {
+        let _home = TestHome::new("observer-gap");
+        let mock = mock_agent();
+        std::env::set_var("FUTURE_TEST_OBSERVER_BACKOFF_MS", "40");
+        mock.push_data(
+            "get_session_events_since",
+            serde_json::json!({"events": []}),
+        );
+        // No active run → plain subscribe; the stream yields a gap event first.
+        mock.push_data("get_state", serde_json::json!({"isStreaming": false}));
+        mock.push_plain_stream(StreamScript::Events(
+            vec![stream_event("text_chunk", "run-gap-stream", 3)],
+            None,
+        ));
+
+        let shared = Arc::new(ObserverShared::new("thread-gap"));
+        let (cancel_tx, handle) = spawn_run_observer("sess-gap", shared);
+        // handle_event rejects the gap (idx 3 with no cursor) → break → backoff.
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        cancel_tx.send(()).unwrap();
+        handle.await.unwrap();
+        std::env::remove_var("FUTURE_TEST_OBSERVER_BACKOFF_MS");
+    }
+
+    #[tokio::test]
+    async fn run_observer_quiet_window_sleeps() {
+        let _home = TestHome::new("observer-quiet");
+        let mock = mock_agent();
+        std::env::set_var("FUTURE_TEST_IDLE_CHECK_MS", "10");
+        mock.push_data(
+            "get_session_events_since",
+            serde_json::json!({"events": []}),
+        );
+        mock.push_data("get_state", serde_json::json!({"isStreaming": false}));
+        // Plain subscribe hangs; the quiet-window timeout fires and, with an
+        // ancient last-activity timestamp and no active run, the observer sleeps.
+
+        let shared = quiet_shared("thread-quiet");
+        let (_cancel_tx, handle) = spawn_run_observer("sess-quiet", shared);
+        // The observer should self-terminate via the quiet-window return; give
+        // it a bounded window to do so.
+        tokio::time::timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("observer sleeps")
+            .expect("observer joins cleanly");
+        std::env::remove_var("FUTURE_TEST_IDLE_CHECK_MS");
+    }
+
+    #[test]
+    fn emit_settings_event_emits_through_a_mock_handle() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app");
+        let handle = app.handle();
+        // Valid object payload → emits; malformed JSON → no emit.
+        emit_settings_event(
+            handle,
+            "sess",
+            "thread",
+            "model_changed",
+            r#"{"model":"k3"}"#,
+        );
+        emit_settings_event(handle, "sess", "thread", "model_changed", "not json");
     }
 }
