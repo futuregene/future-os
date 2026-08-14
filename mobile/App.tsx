@@ -6,6 +6,7 @@ import { ChatScreen } from "./src/screens/ChatScreen";
 import { PairingScreen } from "./src/screens/PairingScreen";
 import { SessionsScreen } from "./src/screens/SessionsScreen";
 import { RemoteProvider, useRemote } from "./src/remote/RemoteContext";
+import { useUpdateReminder } from "./src/update/useUpdateReminder";
 import { colors } from "./src/theme/tokens";
 
 // Enter transition for top-level screen swaps (there is no navigation library
@@ -37,6 +38,7 @@ function EnterTransition({ fromRight, children }: PropsWithChildren<{ fromRight:
 
 function AppContent() {
   const remote = useRemote();
+  useUpdateReminder();
 
   if (remote.phase === "booting") {
     return (

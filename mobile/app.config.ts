@@ -74,6 +74,7 @@ const config: ExpoConfig = {
   android: {
     package: "cn.futureos.mobile",
     versionCode: Number.parseInt(buildNumber, 10),
+    permissions: ["android.permission.REQUEST_INSTALL_PACKAGES"],
     adaptiveIcon: {
       backgroundColor: "#0f172a",
       foregroundImage: "../desktop/src-tauri/icons/icon.png",

@@ -35,6 +35,9 @@ import { useRemote } from "../remote/RemoteContext";
 import { effectiveRunStatus } from "../remote/sessionStatus";
 import type { RemoteSession, RemoteWorkspace } from "../remote/types";
 import { colors, radius, spacing } from "../theme/tokens";
+import { promptUpgrade } from "../update/prompt";
+import { checkForUpdate } from "../update/update";
+import { VERSION } from "../version.generated";
 
 type Tab = "workspace" | "chat";
 
@@ -105,6 +108,7 @@ export function SessionsScreen() {
   const [newMode, setNewMode] = useState<Tab>("chat");
   const [workspaceId, setWorkspaceId] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [menuSession, setMenuSession] = useState<RemoteSession | null>(null);
   const [renameTarget, setRenameTarget] = useState<RemoteSession | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -139,6 +143,22 @@ export function SessionsScreen() {
         onPress: () => void remote.unpair(),
       },
     ]);
+  };
+
+  const checkUpdate = async () => {
+    setCheckingUpdate(true);
+    try {
+      const status = await checkForUpdate();
+      if (status.hasUpdate) {
+        promptUpgrade(status, t);
+      } else {
+        Alert.alert(t("update.upToDate"));
+      }
+    } catch {
+      Alert.alert(t("update.checkFailed"));
+    } finally {
+      setCheckingUpdate(false);
+    }
   };
 
   const startConversation = () => {
@@ -477,6 +497,18 @@ export function SessionsScreen() {
                     </Pressable>
                   );
                 })}
+              <View style={styles.updateRow}>
+                <Text style={styles.updateVersion}>
+                  {t("common.version", { version: VERSION })}
+                </Text>
+                <Button
+                  compact
+                  label={t("update.check")}
+                  loading={checkingUpdate}
+                  onPress={() => void checkUpdate()}
+                  variant="secondary"
+                />
+              </View>
               <Button
                 icon={<LogOut color={colors.danger} size={16} />}
                 label={t("sessions.unpair")}
@@ -784,6 +816,13 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     letterSpacing: 0.5,
   },
+  updateRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.md,
+  },
+  updateVersion: { color: colors.inkMuted, fontSize: 13 },
   tierOption: {
     padding: spacing.md,
     borderWidth: 1,
