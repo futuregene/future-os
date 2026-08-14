@@ -69,6 +69,8 @@ export function RemoteView({
 
   // --- derived from the shared app-level status (same source as the sidebar indicator) ---
   const running = remoteStatus?.running ?? false;
+  const connected = remoteStatus?.connected ?? false;
+  const recovering = remoteStatus?.recovering ?? false;
   // Backend `status()` now includes the persisted pair_id even when stopped, so
   // this is authoritative for "paired" across all states: idle, running, and
   // previously-stopped-but-credential-still-here.  Empty when truly unpaired.
@@ -183,9 +185,18 @@ export function RemoteView({
             ? (
                 <div className="rounded-lg border border-line-soft bg-surface-subtle p-4">
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                    <span className={cn("inline-block size-2 shrink-0 rounded-full", running ? "bg-accent" : "bg-ink-muted/60")} />
+                    <span
+                      className={cn(
+                        "inline-block size-2 shrink-0 rounded-full",
+                        connected
+                          ? "bg-accent"
+                          : recovering
+                            ? "animate-pulse bg-warning"
+                            : "bg-ink-muted/60",
+                      )}
+                    />
                     <span className="min-w-0 truncate text-sm font-medium text-ink">
-                      {t(running ? "connectedAs" : "pairedAs", { pairId: formatPairId(remoteStatus?.pairId) })}
+                      {t(recovering ? "reconnectingAs" : connected ? "connectedAs" : "pairedAs", { pairId: formatPairId(remoteStatus?.pairId) })}
                     </span>
                     <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">
                       <Button
@@ -212,7 +223,16 @@ export function RemoteView({
 
           {showError
             ? (
-                <div className="rounded-md border border-danger-line bg-danger-soft px-3 py-2 text-sm text-danger">{errorText}</div>
+                <div className="flex items-center gap-3 rounded-md border border-danger-line bg-danger-soft px-3 py-2 text-sm text-danger">
+                  <span className="min-w-0 flex-1">{errorText}</span>
+                  {activeErrorCode === "reconnect_required"
+                    ? (
+                        <Button disabled={busy} onClick={() => void handleStart()} size="sm" variant="secondary">
+                          {t("reconnect")}
+                        </Button>
+                      )
+                    : null}
+                </div>
               )
             : null}
 
