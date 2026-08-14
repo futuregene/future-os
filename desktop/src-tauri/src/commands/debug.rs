@@ -14,9 +14,8 @@ use crate::{agent_supervisor, auth_store, store, AppError};
 /// `restart()` alone leaks it (here it's just hygiene: the env is unchanged, but
 /// leaving an orphaned sidecar on every reset is a process leak).
 #[tauri::command]
-pub fn clear_app_data(app: tauri::AppHandle) -> Result<(), AppError> {
-    clear_app_data_with(app, |app| app.restart())
-}
+#[rustfmt::skip]
+pub fn clear_app_data(app: tauri::AppHandle) -> Result<(), AppError> { clear_app_data_with(app, |app| app.restart()) }
 
 /// Body of [`clear_app_data`] with the relaunch injectable — `restart()`
 /// re-execs the process, so tests inject a no-op (see [`clear_app_data`]).
@@ -110,9 +109,8 @@ fn enforce_release_lock(is_release: bool, environment: &str) -> Result<(), AppEr
 /// platform calls (which re-read `auth.json`) moved. Killing the sidecar here
 /// forces the relaunched GUI to spawn a new agent that reads the new `base_url`.
 #[tauri::command]
-pub fn set_future_environment(app: tauri::AppHandle, environment: String) -> Result<(), AppError> {
-    set_future_environment_with(app, &environment, |app| app.restart())
-}
+#[rustfmt::skip]
+pub fn set_future_environment(app: tauri::AppHandle, environment: String) -> Result<(), AppError> { set_future_environment_with(app, &environment, |app| app.restart()) }
 
 /// Body of [`set_future_environment`] with the relaunch injectable (see
 /// [`clear_app_data_with`]).

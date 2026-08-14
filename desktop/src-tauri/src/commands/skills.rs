@@ -57,9 +57,8 @@ fn spawn_builtin_skills<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
 }
 
 #[tauri::command]
-pub async fn bootstrap_builtin_skills(app: tauri::AppHandle) {
-    spawn_builtin_skills(app)
-}
+#[rustfmt::skip]
+pub async fn bootstrap_builtin_skills(app: tauri::AppHandle) { spawn_builtin_skills(app) }
 
 #[cfg(test)]
 mod tests {

@@ -520,10 +520,9 @@ mod tests {
         let _home = init("cmd_title_sync_fail");
         let thread = make_thread(&_home, Some("sess_sync"));
         let home = std::env::var("HOME").expect("test home");
-        let conn = rusqlite::Connection::open(
-            std::path::Path::new(&home).join(".future/app/app.db"),
-        )
-        .expect("open db");
+        let conn =
+            rusqlite::Connection::open(std::path::Path::new(&home).join(".future/app/app.db"))
+                .expect("open db");
         conn.execute_batch("DROP TABLE threads;").unwrap();
         drop(conn);
         // The defensive eprintln arm must not panic.
@@ -696,7 +695,9 @@ mod tests {
         let thread = make_thread(&_home, Some("sess_xport"));
         crate::commands::agent_mock::ensure_mock_agent();
         script_mock_agent(MockScript {
-            transport_fail: ["list_streaming_sessions".to_string()].into_iter().collect(),
+            transport_fail: ["list_streaming_sessions".to_string()]
+                .into_iter()
+                .collect(),
             ..Default::default()
         });
         let ids = list_streaming_thread_ids().await.expect("streaming");

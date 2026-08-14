@@ -929,8 +929,7 @@ mod tests {
         assert!(open_external_url_with("https://ok.example/", |_| Ok(())).is_ok());
         assert!(open_external_url_with("mailto:x@example.com", |_| Ok(())).is_ok());
         assert!(
-            open_external_url_with("https://x", |_| Err("os failed".to_string().into()))
-                .is_err()
+            open_external_url_with("https://x", |_| Err("os failed".to_string().into())).is_err()
         );
         assert!(open_external_url_with("ftp://x", |_| unreachable!()).is_err());
         assert!(open_external_url_with("   ", |_| unreachable!()).is_err());
