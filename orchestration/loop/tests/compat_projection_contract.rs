@@ -4,7 +4,8 @@
 //! URL-encoded format.
 
 use future_loop::compat::{
-    future_loop_status, future_loop_task_class, rfc3339, write_active_state, write_goal_doc,
+    acquire_active_state_lock, future_loop_status, future_loop_task_class,
+    release_active_state_lock, rfc3339, write_active_state, write_goal_doc,
 };
 use future_loop::state::{Goal, TaskClass, Todo, TodoStatus};
 
@@ -59,9 +60,18 @@ fn file_layout_is_project_local() {
     assert!(std::path::Path::new(&proj).join("GOAL.md").exists());
     let state = std::path::Path::new(&proj).join(".future/loop/goals/g1/ACTIVE_GOAL_STATE.md");
     assert!(state.exists());
-    assert!(std::path::Path::new(&proj)
-        .join(".future/loop/goals/g1/ACTIVE_GOAL_STATE.md.lock")
-        .exists());
+    // O2 lock liveness: the lock sidecar is acquired (pid written) and
+    // released after each projection write — it must not linger as a
+    // permanent artifact.
+    let lock = std::path::Path::new(&proj).join(".future/loop/goals/g1/ACTIVE_GOAL_STATE.md.lock");
+    assert!(!lock.exists(), "lock sidecar is released after the write");
+    // While held it carries the holder's pid.
+    let goal_dir = std::path::Path::new(&proj).join(".future/loop/goals/g1");
+    let held = acquire_active_state_lock(&goal_dir).unwrap();
+    let held_pid = std::fs::read_to_string(&held).unwrap();
+    assert_eq!(held_pid.trim(), std::process::id().to_string());
+    release_active_state_lock(&held);
+    assert!(!lock.exists());
     // Nothing reference-layout outside the project: no .codex, no .loopx.
     assert!(!std::path::Path::new(&proj).join(".codex").exists());
     assert!(!std::path::Path::new(&proj).join(".loopx").exists());

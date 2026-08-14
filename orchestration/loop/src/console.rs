@@ -1872,6 +1872,7 @@ fn cmd_status(store: &Store, args: &[String]) -> Result<()> {
             .replay(&g)?
             .ok_or_else(|| anyhow::anyhow!("goal {g} not found"))?;
         print_goal_status(&goal);
+        print_ledger_read_note(store, &g);
         return Ok(());
     }
     if store.registry().is_empty() {
@@ -1881,10 +1882,23 @@ fn cmd_status(store: &Store, args: &[String]) -> Result<()> {
     for entry in store.registry() {
         if let Ok(Some(goal)) = store.replay(&entry.goal_id) {
             print_goal_status(&goal);
+            print_ledger_read_note(store, &entry.goal_id);
             println!();
         }
     }
     Ok(())
+}
+
+/// O1: surface the ledger read diagnostics note (unknown-kind lines skipped
+/// because this binary is older than the ledger) below a goal's status.
+fn print_ledger_read_note(store: &Store, goal_id: &str) {
+    if let Some(note) = store.ledger_read_diagnostics(goal_id).and_then(|d| {
+        d.get("note")
+            .and_then(|n| n.as_str())
+            .map(|s| s.to_string())
+    }) {
+        println!("note      : {note}");
+    }
 }
 
 /// `loop status --format json` — machine-readable projection (goal, todos
@@ -1904,6 +1918,7 @@ fn print_status_json(store: &Store, goal_filter: Option<String>) -> Result<()> {
             "goal_id": goal.goal_id,
             "objective": goal.objective,
             "status": goal.status,
+            "ledger_read_diagnostics": store.ledger_read_diagnostics(&gid),
             "todos": goal.todos.iter().map(|t| serde_json::json!({
                 "id": t.id,
                 "text": t.text,
@@ -3470,15 +3485,23 @@ fn cmd_store(store: &mut Store, args: &[String]) -> Result<()> {
                 return Ok(());
             }
             println!(
-                "ledger {goal_id}: schema={} events={} unique={} idempotent_dups={} legacy_without_id={} conflicts={:?} → {}",
+                "ledger {goal_id}: schema={} events={} unique={} idempotent_dups={} legacy_without_id={} skipped_unknown_kinds={} conflicts={:?} → {}",
                 report.schema_version,
                 report.total_events,
                 report.unique_events,
                 report.idempotent_duplicates,
                 report.legacy_lines_without_id,
+                report.skipped_unknown_kinds,
                 report.conflicts,
                 if report.ok { "ok" } else { "CONFLICT" }
             );
+            if report.skipped_unknown_kinds > 0 {
+                println!(
+                    "note: {} unknown-kind event(s) [{}] skipped by the read path — binary older than ledger, please upgrade",
+                    report.skipped_unknown_kinds,
+                    report.unknown_kinds.join(", ")
+                );
+            }
             println!(
                 "run_index {goal_id}: rows={} files={} missing={} stale={} duplicates={} → {}",
                 drift.index_rows,
@@ -7031,6 +7054,7 @@ fn cmd_diagnose(store: &Store, args: &[String]) -> Result<()> {
             "projection_gap": crate::store::projection_gap(&goal),
             "terminal": goal.terminal_closure().is_some(),
             "runs": goal.history.len(),
+            "ledger_read_diagnostics": store.ledger_read_diagnostics(&goal_id),
             "recent_evidence": goal.history.iter().rev().take(3).map(|r| serde_json::json!({
                 "turn": r.turn, "todo": r.todo_id, "state": r.terminal_state,
                 "tools": r.tools, "cost": r.cost_delta, "evidence": crate::decision::truncate(&r.evidence, 200),
@@ -7062,6 +7086,13 @@ fn cmd_diagnose(store: &Store, args: &[String]) -> Result<()> {
     );
     if let Some(gap) = crate::store::projection_gap(&goal) {
         println!("gap       : {gap}");
+    }
+    if let Some(note) = store.ledger_read_diagnostics(&goal_id).and_then(|d| {
+        d.get("note")
+            .and_then(|n| n.as_str())
+            .map(|s| s.to_string())
+    }) {
+        println!("note      : {note}");
     }
     for r in goal.history.iter().rev().take(3) {
         println!(

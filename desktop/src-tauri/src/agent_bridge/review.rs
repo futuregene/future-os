@@ -897,6 +897,46 @@ mod tests {
         assert_eq!(changeset.completeness, "partial");
     }
 
+    /// When the changeset store vanishes (raw table drop on the app db),
+    /// materialize fails at the changeset upsert — exercising the `?` error
+    /// arm on the upsert call itself (not the earlier snapshot reads).
+    #[test]
+    fn materialize_fails_when_the_changeset_store_is_gone() {
+        let _lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let (_fx, thread, run) = fixture("changeset-gone");
+        let ws_id = store::get_thread(&thread.id).unwrap().unwrap().workspace_id;
+
+        for (phase, status) in [("before", "complete"), ("after", "complete")] {
+            store::create_review_snapshot(store::CreateReviewSnapshotInput {
+                workspace_id: ws_id.clone(),
+                thread_id: thread.id.clone(),
+                run_id: run.id.clone(),
+                phase: phase.to_string(),
+                commit_id: None,
+                tree_id: None,
+                status: status.to_string(),
+                file_count: 1,
+                total_bytes: 1,
+                ignored_count: 0,
+                omitted_count: 0,
+                error_message: None,
+            })
+            .unwrap();
+        }
+
+        // Drop the changeset table so the upsert fails deterministically (raw
+        // table drop; rusqlite does not enforce FKs by default).
+        let conn =
+            rusqlite::Connection::open(_fx.base.join("home/.future/app/app.db")).expect("open db");
+        conn.execute_batch("DROP TABLE review_changesets;").unwrap();
+        drop(conn);
+
+        let err = super::try_materialize_changeset(&thread.id, &run.id, vec![]).unwrap_err();
+        assert!(!err.to_string().is_empty());
+    }
+
     /// `Fixture` drops remove HOME when it was unset before the fixture was
     /// created (the `None` restore arm).
     #[test]

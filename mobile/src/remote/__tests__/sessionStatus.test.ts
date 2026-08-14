@@ -1,4 +1,5 @@
-import { detectFinished, effectiveRunStatus } from "../sessionStatus";
+import { detectFinished, effectiveRunStatus, sortPinnedFirst } from "../sessionStatus";
+import type { RemoteSession } from "../types";
 
 describe("effectiveRunStatus", () => {
   test("local running/queued status wins", () => {
@@ -50,5 +51,26 @@ describe("detectFinished", () => {
       "s-1",
     );
     expect(finished).toEqual(["s-2"]);
+  });
+});
+
+describe("sortPinnedFirst", () => {
+  function session(id: string, pinned: boolean): RemoteSession {
+    return { sessionId: id, threadId: `thread-${id}`, title: id, streaming: false, pinned };
+  }
+
+  test("moves pinned sessions to the top in their original relative order", () => {
+    const list = [session("a", false), session("b", true), session("c", false), session("d", true)];
+    expect(sortPinnedFirst(list).map(s => s.sessionId)).toEqual(["b", "d", "a", "c"]);
+  });
+
+  test("keeps the incoming order when nothing is pinned", () => {
+    const list = [session("a", false), session("b", false), session("c", false)];
+    expect(sortPinnedFirst(list).map(s => s.sessionId)).toEqual(["a", "b", "c"]);
+  });
+
+  test("returns the same order when everything is pinned", () => {
+    const list = [session("a", true), session("b", true)];
+    expect(sortPinnedFirst(list).map(s => s.sessionId)).toEqual(["a", "b"]);
   });
 });
