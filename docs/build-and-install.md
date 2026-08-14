@@ -23,7 +23,14 @@ The TUI and CLI are Rust (`cargo build`) and no longer need Bun or Node.
 ```bash
 git clone https://github.com/futuregene/future-os.git
 cd future-os
+make setup    # JS deps (desktop/mobile) + skills submodule + sidecar placeholder
 ```
+
+`make setup` is a one-time bootstrap: it installs the shared `thread-projection`
+package and the desktop/mobile JavaScript dependencies, initializes the `skills`
+submodule, and creates an empty Tauri sidecar placeholder so `cargo check`/
+`clippy`/`test` under `desktop/src-tauri` run even before the first `cargo
+build`. After it, any `make build-*` / `run-*` / `lint` / `test` target works.
 
 ## macOS
 

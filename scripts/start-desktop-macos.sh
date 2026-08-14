@@ -158,6 +158,11 @@ fi
 # rebuild it (if stale) before anything that compiles the frontend.
 "$ROOT_DIR/scripts/build-thread-projection.sh"
 
+if [[ ! -d "$DESKTOP_DIR/node_modules" ]]; then
+  echo "Installing desktop dependencies..."
+  (cd "$DESKTOP_DIR" && npm ci)
+fi
+
 if [[ "${RUN_CHECKS:-0}" == "1" ]]; then
   echo "Running desktop checks..."
   (cd "$DESKTOP_DIR" && npm run lint)
@@ -165,11 +170,6 @@ if [[ "${RUN_CHECKS:-0}" == "1" ]]; then
   (cd "$DESKTOP_DIR" && npm test)
   (cd "$DESKTOP_DIR" && npm run build)
   (cd "$DESKTOP_DIR/src-tauri" && cargo check)
-fi
-
-if [[ ! -d "$DESKTOP_DIR/node_modules" ]]; then
-  echo "Installing desktop dependencies..."
-  (cd "$DESKTOP_DIR" && npm ci)
 fi
 
 if [[ "$BUILD_AGENT" == "1" ]]; then
