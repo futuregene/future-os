@@ -42,6 +42,9 @@ pub(crate) struct MockScript {
     pub data: HashMap<String, String>,
     /// Per-command canned rejections (success = false, message as given).
     pub errors: HashMap<String, String>,
+    /// Per-command transport-level failures (tonic `Unavailable`), for the
+    /// RPC-error arms that `errors` (a success=false reply) cannot reach.
+    pub transport_fail: std::collections::HashSet<String>,
 }
 
 /// Start the shared mock (idempotent) and point `FUTURE_AGENT_GRPC_ADDR` at
@@ -75,7 +78,7 @@ pub(crate) fn script_mock_agent(script: MockScript) {
     // script; otherwise a stale one-shot response would answer a caller that
     // expected the persistent canned answer.
     agent.clear_scripts();
-    agent.set_persistent_script(data, errors, script.down);
+    agent.set_persistent_script(data, errors, script.down, script.transport_fail);
 }
 
 /// Run `call` with a deliberately unparseable agent endpoint, then restore

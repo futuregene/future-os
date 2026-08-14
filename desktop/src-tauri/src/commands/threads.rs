@@ -648,6 +648,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rename_thread_maps_transport_errors() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_rename_xport");
+        let thread = make_thread(&_home, Some("sess_rename_x"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            transport_fail: ["set_session_name".to_string()].into_iter().collect(),
+            ..Default::default()
+        });
+        let err = rename_thread(store::RenameThreadInput {
+            thread_id: thread.id.clone(),
+            title: "Renamed".into(),
+        })
+        .await
+        .unwrap_err();
+        assert!(!err.to_string().is_empty());
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn delete_thread_drops_observer_when_the_tombstone_survives() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_delete_tomb");
+        let thread = make_thread(&_home, Some("sess_tomb"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        // The agent never acknowledges the delete, so the tombstone row
+        // survives and the observer-drop arm runs.
+        script_mock_agent(MockScript {
+            transport_fail: ["delete_session".to_string()].into_iter().collect(),
+            ..Default::default()
+        });
+        let deleted = delete_thread(store::DeleteThreadInput {
+            thread_id: thread.id.clone(),
+            delete_files: false,
+        })
+        .await
+        .expect("delete");
+        assert_eq!(deleted.id, thread.id);
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn list_streaming_thread_ids_is_empty_on_transport_error() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_streaming_xport");
+        let thread = make_thread(&_home, Some("sess_xport"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            transport_fail: ["list_streaming_sessions".to_string()].into_iter().collect(),
+            ..Default::default()
+        });
+        let ids = list_streaming_thread_ids().await.expect("streaming");
+        assert!(ids.is_empty());
+        script_mock_agent(MockScript::default());
+        let _ = thread;
+    }
+
+    #[tokio::test]
     async fn rename_thread_propagates_to_the_agent_first() {
         let _lock = mock_agent_lock();
         let _home = init("cmd_rename");

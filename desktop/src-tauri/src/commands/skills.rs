@@ -49,16 +49,16 @@ pub async fn uninstall_skill(id: String) -> Result<bool, crate::AppError> {
 /// via the bundled `future` CLI). Idempotent — the CLI skips already-installed
 /// skills. Used by the post-login onboarding flow; runs on a background thread
 /// since it blocks on the CLI child process.
-#[tauri::command]
-pub async fn bootstrap_builtin_skills(app: tauri::AppHandle) {
-    spawn_builtin_skills(app)
-}
-
 /// Spawn the builtin skill bootstrap on a background thread. Extracted so the
 /// thread body can run against a mock handle (the command wrapper itself needs
 /// a real Wry handle).
 fn spawn_builtin_skills<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     std::thread::spawn(move || skills_bootstrap::run_builtin_skills(&app));
+}
+
+#[tauri::command]
+pub async fn bootstrap_builtin_skills(app: tauri::AppHandle) {
+    spawn_builtin_skills(app)
 }
 
 #[cfg(test)]

@@ -15,11 +15,11 @@ use crate::{agent_supervisor, auth_store, store, AppError};
 /// leaving an orphaned sidecar on every reset is a process leak).
 #[tauri::command]
 pub fn clear_app_data(app: tauri::AppHandle) -> Result<(), AppError> {
-    clear_app_data_with(app, relaunch_app)
+    clear_app_data_with(app, |app| app.restart())
 }
 
 /// Body of [`clear_app_data`] with the relaunch injectable — `restart()`
-/// re-execs the process, so tests inject a no-op (see [`relaunch_app`]).
+/// re-execs the process, so tests inject a no-op (see [`clear_app_data`]).
 fn clear_app_data_with<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     relaunch: impl FnOnce(tauri::AppHandle<R>) -> Result<(), AppError>,
@@ -27,12 +27,6 @@ fn clear_app_data_with<R: tauri::Runtime>(
     store::clear_all_data()?;
     agent_supervisor::shutdown_agent();
     relaunch(app)
-}
-
-/// Re-exec the GUI process. Never callable from tests: `restart()` never
-/// returns (the test binary would re-run forever).
-fn relaunch_app<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<(), AppError> {
-    app.restart()
 }
 
 const ENV_PRODUCTION: &str = "production";
@@ -117,16 +111,7 @@ fn enforce_release_lock(is_release: bool, environment: &str) -> Result<(), AppEr
 /// forces the relaunched GUI to spawn a new agent that reads the new `base_url`.
 #[tauri::command]
 pub fn set_future_environment(app: tauri::AppHandle, environment: String) -> Result<(), AppError> {
-    set_future_environment_on(app, &environment)
-}
-
-/// Body of [`set_future_environment`], generic so a mock-runtime handle can
-/// drive it (the command itself ends in `app.restart()`).
-fn set_future_environment_on<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-    environment: &str,
-) -> Result<(), AppError> {
-    set_future_environment_with(app, environment, relaunch_app)
+    set_future_environment_with(app, &environment, |app| app.restart())
 }
 
 /// Body of [`set_future_environment`] with the relaunch injectable (see

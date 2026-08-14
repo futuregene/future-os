@@ -16,7 +16,7 @@
 //! `upsert_provider`, ...) are only scripted by tests that hold the
 //! `TEST_HOME_LOCK` (via `HomeGuard`), which serializes them.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -109,6 +109,9 @@ struct MockAgentState {
     /// When true, every command except the connect-time health check
     /// (`list_streaming_sessions`) fails with `Code::Unavailable`.
     down: bool,
+    /// Commands that fail with `Code::Unavailable` regardless of `down` —
+    /// includes the health check itself, for RPC-error-arm tests.
+    persistent_transport_fail: HashSet<String>,
 }
 
 /// Handle to the process-global mock agent.
@@ -169,11 +172,13 @@ impl MockAgent {
         data: HashMap<String, String>,
         errors: HashMap<String, String>,
         down: bool,
+        transport_fail: std::collections::HashSet<String>,
     ) {
         let mut state = self.state.lock().unwrap();
         state.persistent_data = data;
         state.persistent_errors = errors;
         state.down = down;
+        state.persistent_transport_fail = transport_fail;
     }
 
     /// Drop every queued one-shot script. Callers holding [`mock_agent_lock`]
@@ -322,7 +327,16 @@ impl crate::agent_proto::future_agent_server::FutureAgent for AgentService {
         let cmd = request.into_inner();
         // Down mode: everything but the connect-time health check fails like
         // a dead agent — except it still lets clients latch their channel.
-        if self.state.lock().unwrap().down && cmd.r#type != "list_streaming_sessions" {
+        // `persistent_transport_fail` extends that to specific commands,
+        // including the health check itself.
+        let (down, transport_fail) = {
+            let state = self.state.lock().unwrap();
+            (
+                state.down,
+                state.persistent_transport_fail.contains(&cmd.r#type),
+            )
+        };
+        if (down && cmd.r#type != "list_streaming_sessions") || transport_fail {
             return Err(tonic::Status::new(
                 tonic::Code::Unavailable,
                 "mock agent is down",
