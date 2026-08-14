@@ -64,6 +64,8 @@ fn handle_skill_event(event: CommandEvent, exit_code: &mut Option<i32>) {
         CommandEvent::Terminated(payload) => {
             *exit_code = payload.code;
         }
+        // `CommandEvent` is #[non_exhaustive]: the wildcard is required by the
+        // compiler even though the released enum has no further variants.
         _ => {}
     }
 }
