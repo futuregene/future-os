@@ -338,10 +338,19 @@ pub(super) fn derive_thinking_compat(
         || has("include_reasoning")
     {
         // DeepSeek / Doubao / Kimi K2.6 / Anthropic Claude:
-        // thinking toggle + reasoning_effort for depth
+        // thinking toggle + reasoning_effort for depth.
+        // 各 provider 对 reasoning_effort 的"最高档"取值不同：
+        //   DeepSeek → "max"
+        //   豆包(火山引擎) → 不认 max/xhigh，退化为 "high"
+        //   kimi(moonshot) → 枚举就是 none/minimal/low/medium/high/xhigh
+        let xhigh_value = match tokenizer.map(|t| t.to_ascii_lowercase()).as_deref() {
+            Some("doubao") => "high",
+            Some("kimi") => "xhigh",
+            _ => "max",
+        };
         compat.insert("thinkingFormat".into(), serde_json::json!("deepseek"));
         tlm.insert("high".into(), serde_json::json!("high"));
-        tlm.insert("xhigh".into(), serde_json::json!("max"));
+        tlm.insert("xhigh".into(), serde_json::json!(xhigh_value));
     }
     // else: no thinking parameters → empty compat (model doesn't support thinking)
 
@@ -731,6 +740,48 @@ mod tests {
             compat.get("thinkingFormat").unwrap(),
             &serde_json::json!("deepseek")
         );
+    }
+
+    #[test]
+    fn doubao_xhigh_maps_to_high_not_max() {
+        // 豆包支持 reasoning_effort 的 low/medium/high，但不认 "max"。
+        // xhigh 必须退化为 high，而不是 DeepSeek 的 max。
+        let params: Vec<String> = vec!["include_reasoning".to_string(), "reasoning".to_string()];
+        let (compat, tlm) = derive_thinking_compat(&params, Some("Doubao"));
+        assert_eq!(
+            compat.get("thinkingFormat").unwrap(),
+            &serde_json::json!("deepseek")
+        );
+        assert_eq!(tlm.get("high").unwrap(), &serde_json::json!("high"));
+        assert_eq!(tlm.get("xhigh").unwrap(), &serde_json::json!("high"));
+    }
+
+    #[test]
+    fn doubao_case_insensitive_xhigh_still_high() {
+        let params: Vec<String> = vec!["reasoning".to_string()];
+        let (_, tlm) = derive_thinking_compat(&params, Some("doubao"));
+        assert_eq!(tlm.get("xhigh").unwrap(), &serde_json::json!("high"));
+    }
+
+    #[test]
+    fn kimi_xhigh_maps_to_xhigh() {
+        // kimi(moonshot) 的 reasoning_effort 枚举是
+        // none/minimal/low/medium/high/xhigh，认 "xhigh" 字面值但不认 "max"。
+        let params: Vec<String> = vec!["thinking".to_string(), "reasoning".to_string()];
+        let (compat, tlm) = derive_thinking_compat(&params, Some("Kimi"));
+        assert_eq!(
+            compat.get("thinkingFormat").unwrap(),
+            &serde_json::json!("deepseek")
+        );
+        assert_eq!(tlm.get("xhigh").unwrap(), &serde_json::json!("xhigh"));
+    }
+
+    #[test]
+    fn deepseek_xhigh_maps_to_max() {
+        // DeepSeek 用 "max" 作为最高档，保持不变。
+        let params: Vec<String> = vec!["reasoning".to_string()];
+        let (_, tlm) = derive_thinking_compat(&params, Some("DeepSeek"));
+        assert_eq!(tlm.get("xhigh").unwrap(), &serde_json::json!("max"));
     }
 
     #[test]
