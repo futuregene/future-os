@@ -11,7 +11,7 @@
 
 # FutureOS
 
-> A local-first AI agent workspace — terminal, desktop, messaging platforms, all through one backend.
+> A local-first AI agent workspace — terminal, desktop, messaging platforms, all through one gRPC backend.
 
 FutureOS gives you a unified AI agent experience across a terminal UI (TUI),
 desktop app (GUI), CLI, and IM bots — on macOS, Linux, and Windows.
@@ -24,12 +24,11 @@ or from a native desktop window.
 |---|---|
 | **Multi-Interface** | Terminal UI (TUI), desktop app (GUI), CLI, IM bots — one agent, everywhere |
 | **Model Flexibility** | 3800+ built-in models across 140+ providers ([catalog](docs/wiki/en/Models.md)); custom providers via `models.json`; scoped model lists |
-| **Streaming & Thinking** | Real-time token streaming with collapsible reasoning-content blocks; configurable thinking levels (off ↔ xhigh) |
-| **Tool Execution** | read, write, edit, shell with approval gating; sandbox tiers (off / manual / macOS Seatbelt) |
-| **Session Persistence** | JSONL-based sessions with fork, clone, tree navigation, and query-count tracking ([using](docs/wiki/en/Using-FutureOS.md)) |
-| **Skills System** | Pluggable YAML-defined skill bundles discovered from multiple directories ([guide](docs/wiki/en/Skills.md)) |
-| **Compaction & Retry** | Automatic context compaction; exponential-backoff retry on context-length errors |
-| **Loop Control Plane** | `future-loop`: durable goals/todos/gates/monitors, quota should-run kernel, event-sourced state, validators, extensions & multi-agent ([guide](docs/loop-control-plane.md)) — a Rust rewrite of the [loopx](https://github.com/huangruiteng/loopx) control plane, customized for FutureOS |
+| **Agent Service** | The agent runs as a standalone gRPC service — the runtime is decoupled from the TUI, desktop app, channel bridge, and loop control plane, leaving room for new clients and extensions |
+| **Minimalist Tool Execution** | read, write, edit, shell with approval gating; sandbox tiers (off / manual / macOS Seatbelt) — Pi-style minimalism: a lean tool set, no prompt bloat |
+| **Forkable Sessions** | Branch any conversation like a repo — fork, clone, and tree navigation over JSONL session history |
+| **Powerful Built-in Skills** | 14+ skills out of the box for everyday agent work — image read & generation, PDF/Word parsing, web search, browser control, slides, and software install ([builtin](https://github.com/futuregene/future-skills/tree/main/builtin)) |
+| **Loop Engineering** | Durable goals/todos/gates/monitors for long-horizon runs of 24+ hours, quota should-run kernel, event-sourced state, validators, extensions & multi-agent ([guide](docs/loop-control-plane.md)) — a Rust rewrite of the [loopx](https://github.com/huangruiteng/loopx) control plane, customized for FutureOS |
 | **Rust Core** | Agent, IM channel bridge, loop control plane, CLI, and TUI are all written in Rust — high performance with memory safety |
 
 ## Quick Start
