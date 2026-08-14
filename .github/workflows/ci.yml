@@ -93,11 +93,16 @@ jobs:
               - 'desktop/**'
               - '!desktop/src-tauri/**'
               - 'thread-projection/**'
+              # The root npm workspace manifest + lock define the shared install.
+              - 'package.json'
+              - 'package-lock.json'
             mobile:
               - 'mobile/**'
               - '!mobile/android/**'
               - '!mobile/ios/**'
               - 'thread-projection/**'
+              - 'package.json'
+              - 'package-lock.json'
 
   # ─── Rust lint gate (Linux): fmt + clippy ─────────────────────────────────
   # Lint every workspace crate (agent / channels / tui / cli / loop / future-rpc,
@@ -545,20 +550,10 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: desktop/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
-        working-directory: desktop
         run: npm ci
-
-      # The desktop frontend depends on the shared thread-projection package via
-      # a `file:` dep whose entry points at dist/ (a gitignored build artifact),
-      # so a fresh checkout must compile it before any tsc/eslint/vitest run.
-      - name: Build thread-projection
-        working-directory: thread-projection
-        run: |
-          npm ci
-          npm run build
 
       - name: Typecheck
         working-directory: desktop
@@ -591,19 +586,10 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: mobile/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
-        working-directory: mobile
         run: npm ci
-
-      # Same as the desktop job: compile the shared package's dist/ first so the
-      # symlinked `file:` dep resolves before typecheck/jest.
-      - name: Build thread-projection
-        working-directory: thread-projection
-        run: |
-          npm ci
-          npm run build
 
       - name: Typecheck
         working-directory: mobile

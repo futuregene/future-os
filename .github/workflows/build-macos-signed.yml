@@ -81,7 +81,7 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: desktop/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@1.97.0
@@ -151,15 +151,7 @@ jobs:
         working-directory: desktop
         run: npm ci
 
-      # The desktop bundles the shared thread-projection package via a `file:`
-      # dep whose entry points at dist/ (gitignored) — compile it before the
-      # vite build (tauri:build's beforeBuildCommand) resolves the import.
-      - name: Build thread-projection
-        working-directory: thread-projection
-        run: |
-          npm ci
-          npm run build
-
+     
       # The unified `future` CLI is the single sidecar (tauri.conf.json
       # bundle.externalBin); the agent runs through `future agent`, so only the
       # CLI needs building and staging.

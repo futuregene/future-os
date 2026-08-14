@@ -88,9 +88,6 @@ if [[ "$SKIP_DEPS" != true ]]; then
   (cd desktop && npm ci)
 fi
 
-# The desktop's vite build resolves thread-projection via a `file:` dep; rebuild
-# it (if stale) before `tauri build` compiles the frontend.
-"$ROOT/scripts/build-thread-projection.sh"
 
 echo "==> Building CLI (release) and staging as Tauri sidecar"
 cargo build --release --manifest-path cli/Cargo.toml
