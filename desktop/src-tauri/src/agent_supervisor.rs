@@ -212,7 +212,7 @@ pub fn on_close_requested() -> QuitDecision {
 /// bundled sidecar or an externally-managed one), then kill the sidecar if we own
 /// it, then exit. On cancel: clear the in-progress flag so a later close prompts
 /// again.
-pub fn confirm_quit(app: AppHandle) {
+pub fn confirm_quit<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     QUIT_DIALOG_OPEN.store(true, Ordering::SeqCst);
     // Read at prompt time so the count/list reflects the moment the user is
     // asked, not when the close was first requested.
@@ -244,36 +244,49 @@ pub fn confirm_quit(app: AppHandle) {
         }
         // Commit to quitting before any close can be re-requested.
         QUIT_CONFIRMED.store(true, Ordering::SeqCst);
-        // Abort each running session best-effort — an unreachable agent or a
-        // session that finished in the meantime is a harmless no-op.
-        tauri::async_runtime::block_on(async {
-            // Abort all sessions in parallel, then wait for all to go idle.
-            // Sequential waits would make force-quit take 3s per session;
-            // concurrent gRPC calls over the shared channel complete together.
-            let abort_futs: Vec<_> = sessions
-                .iter()
-                .map(|session| async move {
-                    if let Err(error) = crate::agent_bridge::abort_session(session).await {
-                        eprintln!("FutureOS: failed to abort session {session} on quit: {error}");
-                    }
-                })
-                .collect();
-            futures::future::join_all(abort_futs).await;
-            // Give the agent a moment for its abort to settle before the process
-            // exits or kills the sidecar. Without this the agent's LLM stream is
-            // torn down while it's still processing the abort interrupt, leaving a
-            // "LLM stream ended without a terminal signal" WARN in the agent log.
-            // Best-effort: an unreachable agent returns immediately.
-            let wait_futs: Vec<_> = sessions
-                .iter()
-                .map(|session| crate::agent_bridge::wait_for_agent_idle(session))
-                .collect();
-            futures::future::join_all(wait_futs).await;
-        });
-        // Kill the bundled sidecar if we own it (no-op for an external agent).
-        shutdown_agent();
-        callback_app.exit(0);
+        confirmed_quit_flow(&callback_app, &sessions, || callback_app.exit(0));
     });
+}
+
+/// Body of the force-quit confirmation: abort every running session, wait for
+/// idle, kill the bundled sidecar, then exit. Extracted so the flow is testable
+/// with a mock handle and an injectable exit (a real `exit(0)` ends the test
+/// process).
+fn confirmed_quit_flow<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    sessions: &[String],
+    exit: impl FnOnce(),
+) {
+    // Abort each running session best-effort — an unreachable agent or a
+    // session that finished in the meantime is a harmless no-op.
+    tauri::async_runtime::block_on(async {
+        // Abort all sessions in parallel, then wait for all to go idle.
+        // Sequential waits would make force-quit take 3s per session;
+        // concurrent gRPC calls over the shared channel complete together.
+        let abort_futs: Vec<_> = sessions
+            .iter()
+            .map(|session| async move {
+                if let Err(error) = crate::agent_bridge::abort_session(session).await {
+                    eprintln!("FutureOS: failed to abort session {session} on quit: {error}");
+                }
+            })
+            .collect();
+        futures::future::join_all(abort_futs).await;
+        // Give the agent a moment for its abort to settle before the process
+        // exits or kills the sidecar. Without this the agent's LLM stream is
+        // torn down while it's still processing the abort interrupt, leaving a
+        // "LLM stream ended without a terminal signal" WARN in the agent log.
+        // Best-effort: an unreachable agent returns immediately.
+        let wait_futs: Vec<_> = sessions
+            .iter()
+            .map(|session| crate::agent_bridge::wait_for_agent_idle(session))
+            .collect();
+        futures::future::join_all(wait_futs).await;
+    });
+    let _ = app;
+    // Kill the bundled sidecar if we own it (no-op for an external agent).
+    shutdown_agent();
+    exit();
 }
 
 /// Body of the force-quit confirmation, singular/plural by running-conversation
@@ -349,6 +362,89 @@ mod tests {
         // `AGENT_CHILD` is `None` by default in tests (no real sidecar spawn),
         // so this exercises the idempotent no-op path.
         shutdown_agent();
+    }
+
+    #[test]
+    fn confirmed_quit_flow_aborts_waits_and_exits() {
+        let _lock = crate::commands::agent_mock::mock_agent_lock();
+        crate::commands::agent_mock::ensure_mock_agent();
+        crate::commands::agent_mock::script_mock_agent(Default::default());
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_shell::init())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build mock app");
+        let mut exited = false;
+        confirmed_quit_flow(app.handle(), &["sess-quit".to_string()], || exited = true);
+        assert!(exited);
+        crate::commands::agent_mock::script_mock_agent(Default::default());
+    }
+
+    #[test]
+    fn confirm_quit_builds_the_dialog_against_a_mock_handle() {
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_shell::init())
+            .plugin(tauri_plugin_dialog::init())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build mock app");
+        confirm_quit(app.handle().clone());
+    }
+
+    #[test]
+    fn spawn_bundled_agent_spawns_an_executable_sidecar() {
+        let _lock = crate::commands::agent_mock::mock_agent_lock();
+        // Install a real executable placeholder so the sidecar spawn succeeds —
+        // the default placeholder is an empty non-executable file (spawn Err).
+        let triple = std::env::var("CARGO_BUILD_TARGET")
+            .ok()
+            .or_else(|| {
+                Some(format!(
+                    "{}-{}",
+                    std::env::consts::ARCH,
+                    if cfg!(target_os = "macos") {
+                        "apple-darwin"
+                    } else {
+                        "unknown-linux-gnu"
+                    }
+                ))
+            })
+            .unwrap();
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries");
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join(format!("future-{triple}"));
+        let was_placeholder = !std::fs::metadata(&bin)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false);
+        std::fs::write(&bin, "#!/bin/sh\nsleep 30\n").unwrap();
+        let mut perms = std::fs::metadata(&bin).unwrap().permissions();
+        use std::os::unix::fs::PermissionsExt;
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&bin, perms).unwrap();
+
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_shell::init())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build mock app");
+        spawn_bundled_agent(app.handle(), "127.0.0.1:59999");
+        // Give the spawn a moment to start the child, then kill it via the
+        // ownership path (covers the shutdown kill-Ok arm too).
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        shutdown_agent();
+
+        // Restore the empty placeholder for other tests / CI builds.
+        if was_placeholder {
+            std::fs::write(&bin, b"").unwrap();
+        }
+    }
+
+    #[test]
+    fn spawn_bundled_agent_logs_spawn_failure_for_a_non_executable_sidecar() {
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_shell::init())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build mock app");
+        // The default placeholder is empty/non-executable → spawn fails and the
+        // error arm logs without panicking.
+        spawn_bundled_agent(app.handle(), "127.0.0.1:59998");
     }
 
     #[test]
