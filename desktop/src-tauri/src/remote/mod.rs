@@ -167,7 +167,6 @@ static START_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// network returns; an explicit stop clears it and prevents resurrection.
 static START_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// At most one process-lifetime startup retry worker may run at once.
-#[cfg(not(test))]
 static START_RETRY_RUNNING: AtomicBool = AtomicBool::new(false);
 /// A finished command/transfer task is rebuilt automatically. Bound repeated
 /// crash recovery so a deterministic panic cannot spin forever.
@@ -639,11 +638,22 @@ pub fn status() -> RemoteStatus {
         // When stopped, surface the persisted pair_id so the frontend can still
         // show the paired row (disconnected state) — the authoritative pairing
         // fact is the persisted credential, not the runtime STATE.
-        None => RemoteStatus {
-            error_code: LAST_ERROR_CODE.lock().unwrap().clone(),
-            pair_id: pairing::load_creds().map(|c| c.pair_id).unwrap_or_default(),
-            ..empty()
-        },
+        None => {
+            let error_code = LAST_ERROR_CODE.lock().unwrap().clone();
+            // Startup retries run before a bridge instance exists, so this
+            // state cannot be inferred from `STATE`. Expose it explicitly so
+            // the UI shows an amber recovering indicator instead of briefly
+            // presenting the initial transient network/server error as final.
+            let recovering = START_REQUESTED.load(Ordering::Acquire)
+                && START_RETRY_RUNNING.load(Ordering::Acquire)
+                && matches!(error_code.as_deref(), Some("network") | Some("server"));
+            RemoteStatus {
+                recovering,
+                error_code: if recovering { None } else { error_code },
+                pair_id: pairing::load_creds().map(|c| c.pair_id).unwrap_or_default(),
+                ..empty()
+            }
+        }
     }
 }
 
@@ -1572,6 +1582,17 @@ mod runtime_tests {
         assert_eq!(current.error_code.as_deref(), Some("revoked"));
         assert_eq!(current.pair_id, "pair_stopped");
 
+        // A transient first connect failure starts the process-lifetime retry
+        // worker before `STATE` exists. It is recoverable, not a final error.
+        *LAST_ERROR_CODE.lock().unwrap() = Some("network".to_string());
+        START_REQUESTED.store(true, Ordering::Release);
+        START_RETRY_RUNNING.store(true, Ordering::Release);
+        let current = status();
+        assert!(current.recovering);
+        assert_eq!(current.error_code, None);
+
+        START_RETRY_RUNNING.store(false, Ordering::Release);
+        START_REQUESTED.store(false, Ordering::Release);
         *LAST_ERROR_CODE.lock().unwrap() = None;
         pairing::clear_creds().unwrap();
     }
