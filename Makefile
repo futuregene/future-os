@@ -6,7 +6,7 @@
 	run-agent run-tui run-cli run-desktop run-mobile-android run-mobile-ios run-channels run-loop \
 	profile-agent-build profile-agent profile-quick profile-heap \
 	generate-models generate-proto \
-	install install-cli install-desktop install-skills uninstall package-desktop clean
+	install install-cli install-desktop install-skills uninstall package-desktop clean setup
 
 # ─── Version ────────────────────────────────────────────────────────────────
 # Single source of truth for the build version (scripts/version.mjs); exported
@@ -49,6 +49,16 @@ CARGO_PINNED := rustup run $(RUST_TOOLCHAIN) cargo
 # it as a sidecar (`future agent`). Standalone future-agent/-tui/-channel/-loop
 # binaries are dev-only (cargo run -p <crate>) — install puts exactly two files
 # in PREFIX: `future` and `future-desktop`.
+
+# One-time developer bootstrap for a fresh clone. Installs the shared
+# thread-projection deps (via build-thread-projection), the desktop/mobile JS
+# deps, the skills submodule, and an empty sidecar placeholder — so any build /
+# run / lint / test target below works without knowing which one installs what.
+setup: build-thread-projection
+	git submodule update --init skills
+	$(call npm-install-if-needed,desktop)
+	$(call npm-install-if-needed,mobile)
+	$(MAKE) desktop-sidecar-placeholder
 
 install: install-cli install-desktop install-skills
 
@@ -232,9 +242,11 @@ lint-rust: desktop-sidecar-placeholder
 	$(CARGO_PINNED) clippy --all-targets --manifest-path desktop/src-tauri/Cargo.toml -- -D warnings
 
 lint-desktop: build-thread-projection
+	$(call npm-install-if-needed,desktop)
 	cd desktop && npm run lint
 
 stylelint-desktop:
+	$(call npm-install-if-needed,desktop)
 	cd desktop && npm run stylelint
 
 lint-mobile: build-thread-projection
@@ -280,6 +292,7 @@ run-loop:
 	cd orchestration/loop && cargo run
 
 run-desktop: build-thread-projection desktop-sidecars
+	$(call npm-install-if-needed,desktop)
 	cd desktop && npm run tauri:dev
 
 run-mobile-android: build-thread-projection
@@ -397,6 +410,7 @@ help:
 	@echo "  generate-models                     Fetch model data, regenerate Rust catalog + wiki docs"
 	@echo "  generate-proto                      Regenerate wire code (rpc future.proto + channels feishu_ws)"
 	@echo "  install / install-cli / install-desktop / install-skills   Install to $(PREFIX)"
+	@echo "  setup                               Bootstrap a fresh clone (JS deps + skills + sidecar)"
 	@echo "  uninstall                           Remove installed binaries from $(PREFIX)"
 	@echo "  package-desktop                     Package desktop bundles"
 	@echo "  clean                               Remove build artifacts"

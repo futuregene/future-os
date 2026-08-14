@@ -64,6 +64,13 @@ rem Build the shared thread-projection package (desktop's vite build/typecheck
 rem resolve it via a `file:` dep) before compiling the frontend.
 powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%build-thread-projection.ps1" || (echo Failed to build thread-projection & exit /b 1)
 
+if not exist "%DESKTOP_DIR%\node_modules" (
+  echo Installing desktop dependencies...
+  pushd "%DESKTOP_DIR%" || exit /b 1
+  call npm ci || (popd & exit /b 1)
+  popd
+)
+
 if "%RUN_CHECKS%"=="1" (
   echo Running desktop checks...
   pushd "%DESKTOP_DIR%" || exit /b 1
@@ -74,13 +81,6 @@ if "%RUN_CHECKS%"=="1" (
   popd
   pushd "%DESKTOP_DIR%\src-tauri" || exit /b 1
   cargo check || (popd & exit /b 1)
-  popd
-)
-
-if not exist "%DESKTOP_DIR%\node_modules" (
-  echo Installing desktop dependencies...
-  pushd "%DESKTOP_DIR%" || exit /b 1
-  call npm ci || (popd & exit /b 1)
   popd
 )
 
