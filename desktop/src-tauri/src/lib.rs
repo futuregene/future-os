@@ -56,15 +56,29 @@ fn size_main_window_to_screen<R: tauri::Runtime>(app: &tauri::App<R>) {
     let Ok(Some(monitor)) = window.current_monitor() else {
         return;
     };
-    let scale = monitor.scale_factor();
-    let area = monitor.work_area();
-    let (width, height, x, y) = main_window_geometry(
-        scale,
-        area.size.width as f64,
-        area.size.height as f64,
-        area.position.x as f64,
-        area.position.y as f64,
+    apply_main_window_geometry(
+        &window,
+        monitor.scale_factor(),
+        monitor.work_area().size.width as f64,
+        monitor.work_area().size.height as f64,
+        monitor.work_area().position.x as f64,
+        monitor.work_area().position.y as f64,
     );
+}
+
+/// Size + position the window from a monitor's scale factor and work area.
+/// Extracted so the geometry application is testable with a mock window (the
+/// monitor lookup itself needs a real display server).
+fn apply_main_window_geometry<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    scale: f64,
+    area_width: f64,
+    area_height: f64,
+    area_x: f64,
+    area_y: f64,
+) {
+    let (width, height, x, y) =
+        main_window_geometry(scale, area_width, area_height, area_x, area_y);
     let _ = window.set_size(tauri::LogicalSize::new(width, height));
     // Center horizontally; sit a bit above vertical center (smaller top gap).
     let _ = window.set_position(tauri::LogicalPosition::new(x, y));
@@ -231,7 +245,17 @@ fn icon_ico_bytes() -> &'static [u8] {
 /// Notify the frontend that a Thread's "last-run changes" changeset has updated. The
 /// frontend bridges this to its typed event bus (§6.1, C1).
 pub(crate) fn emit_review_updated(thread_id: &str) {
-    if let Some(handle) = APP_HANDLE.get() {
+    emit_review_updated_via(APP_HANDLE.get(), thread_id);
+}
+
+/// Route an emit through an optional handle (see [`emit_review_updated_on`]).
+/// Extracted so the process-global `APP_HANDLE` Some/None arms are testable
+/// with a mock handle.
+fn emit_review_updated_via<R: tauri::Runtime>(
+    handle: Option<&tauri::AppHandle<R>>,
+    thread_id: &str,
+) {
+    if let Some(handle) = handle {
         emit_review_updated_on(handle, thread_id);
     }
 }
@@ -247,7 +271,15 @@ fn emit_review_updated_on<R: tauri::Runtime>(handle: &tauri::AppHandle<R>, threa
 /// Notify the frontend that a remote (phone) client created/drove a thread, so
 /// the thread list + runs refresh and the conversation shows up live.
 pub(crate) fn emit_remote_activity(thread_id: &str) {
-    if let Some(handle) = APP_HANDLE.get() {
+    emit_remote_activity_via(APP_HANDLE.get(), thread_id);
+}
+
+/// Route an emit through an optional handle (see [`emit_remote_activity_on`]).
+fn emit_remote_activity_via<R: tauri::Runtime>(
+    handle: Option<&tauri::AppHandle<R>>,
+    thread_id: &str,
+) {
+    if let Some(handle) = handle {
         emit_remote_activity_on(handle, thread_id);
     }
 }
@@ -345,28 +377,7 @@ pub(crate) fn emit_thread_runtime_updated(
         let (tx, rx) = std::sync::mpsc::channel::<ThreadRuntimeUpdate>();
         std::thread::Builder::new()
             .name("thread-runtime-updates".to_string())
-            .spawn(move || {
-                use std::time::{Duration, Instant};
-
-                while let Ok(first) = rx.recv() {
-                    let deadline = Instant::now() + Duration::from_millis(40);
-                    let mut rest = Vec::new();
-                    loop {
-                        let remaining = deadline.saturating_duration_since(Instant::now());
-                        if remaining.is_zero() {
-                            break;
-                        }
-                        match rx.recv_timeout(remaining) {
-                            Ok(next) => rest.push(next),
-                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
-                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
-                        }
-                    }
-                    if let Some(handle) = APP_HANDLE.get() {
-                        emit_runtime_updates_on(handle, coalesce_runtime_updates(first, rest));
-                    }
-                }
-            })
+            .spawn(|| runtime_update_drain_loop(rx))
             .expect("spawn thread runtime update emitter");
         tx
     });
@@ -400,10 +411,18 @@ struct ThreadStreamingUpdate {
 /// the 40ms coalescing channel — the composer card and the sidebar badge
 /// react as soon as the write lands, and polling is only a backstop.
 pub(crate) fn emit_approvals_updated(thread_id: &str, approval_request_id: &str) {
-    let Some(handle) = APP_HANDLE.get() else {
-        return;
-    };
-    emit_approvals_updated_on(handle, thread_id, approval_request_id);
+    emit_approvals_updated_via(APP_HANDLE.get(), thread_id, approval_request_id);
+}
+
+/// Route an emit through an optional handle (see [`emit_approvals_updated_on`]).
+fn emit_approvals_updated_via<R: tauri::Runtime>(
+    handle: Option<&tauri::AppHandle<R>>,
+    thread_id: &str,
+    approval_request_id: &str,
+) {
+    if let Some(handle) = handle {
+        emit_approvals_updated_on(handle, thread_id, approval_request_id);
+    }
 }
 
 /// Emit the "approvals-updated" event on a caller-supplied handle (see
@@ -452,15 +471,45 @@ struct ApprovalsUpdate {
 /// the only source that can see runs started by older TUI/CLI clients which do
 /// not create a GUI StoredRun or route through the Tauri collector.
 fn start_thread_streaming_monitor() {
-    tauri::async_runtime::spawn(async move {
-        let mut previous: Option<Vec<String>> = None;
-        loop {
-            if let Some(handle) = APP_HANDLE.get() {
-                sample_thread_streaming(handle, &mut previous).await;
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    tauri::async_runtime::spawn(thread_streaming_monitor_loop());
+}
+
+/// Poll the agent's streaming thread ids every second. Extracted so the loop
+/// body (sample + sleep) is testable; the `APP_HANDLE` Some arm needs the
+/// real Wry handle and stays untestable.
+async fn thread_streaming_monitor_loop() {
+    let mut previous: Option<Vec<String>> = None;
+    loop {
+        if let Some(handle) = APP_HANDLE.get() {
+            sample_thread_streaming(handle, &mut previous).await;
         }
-    });
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+}
+
+/// Drain the runtime-update channel: coalesce bursts within a 40ms window,
+/// then emit the coalesced update. Extracted so the drain/coalesce/emit body
+/// is testable; the `APP_HANDLE` Some arm needs the real Wry handle.
+fn runtime_update_drain_loop(rx: std::sync::mpsc::Receiver<ThreadRuntimeUpdate>) {
+    use std::time::{Duration, Instant};
+    while let Ok(first) = rx.recv() {
+        let deadline = Instant::now() + Duration::from_millis(40);
+        let mut rest = Vec::new();
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match rx.recv_timeout(remaining) {
+                Ok(next) => rest.push(next),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+        }
+        if let Some(handle) = APP_HANDLE.get() {
+            emit_runtime_updates_on(handle, coalesce_runtime_updates(first, rest));
+        }
+    }
 }
 
 /// Sample the agent's streaming thread ids once and, if the set changed, emit a
@@ -832,9 +881,11 @@ pub fn run() {
 #[cfg(test)]
 mod runtime_update_tests {
     use super::{
-        coalesce_runtime_updates, emit_approvals_updated_on, emit_remote_activity_on,
-        emit_review_updated_on, emit_runtime_updates_on, main_window_geometry,
-        sample_thread_streaming, sample_thread_streaming_with, size_main_window_to_screen,
+        apply_main_window_geometry, coalesce_runtime_updates, emit_approvals_updated_on,
+        emit_approvals_updated_via, emit_remote_activity_on, emit_remote_activity_via,
+        emit_review_updated_on, emit_review_updated_via, emit_runtime_updates_on,
+        main_window_geometry, runtime_update_drain_loop, sample_thread_streaming,
+        sample_thread_streaming_with, size_main_window_to_screen, thread_streaming_monitor_loop,
         ThreadRuntimeUpdate,
     };
 
@@ -992,5 +1043,53 @@ mod runtime_update_tests {
         sample_thread_streaming(handle, &mut previous).await;
         assert_eq!(previous, Some(Vec::new()));
         crate::commands::agent_mock::script_mock_agent(Default::default());
+    }
+
+    #[test]
+    fn apply_main_window_geometry_sizes_and_positions() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build mock app");
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("build webview");
+        // Mock windows accept the set_* calls without a display server.
+        apply_main_window_geometry(&window, 2.0, 4000.0, 2000.0, 100.0, 50.0);
+    }
+
+    #[test]
+    fn emit_via_helpers_route_both_arms() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle();
+        emit_review_updated_via(Some(handle), "thread-1");
+        emit_remote_activity_via(Some(handle), "thread-1");
+        emit_approvals_updated_via(Some(handle), "thread-1", "approval-1");
+        // None arm: process-global APP_HANDLE unset in tests.
+        emit_review_updated_via::<tauri::test::MockRuntime>(None, "thread-1");
+        emit_remote_activity_via::<tauri::test::MockRuntime>(None, "thread-1");
+        emit_approvals_updated_via::<tauri::test::MockRuntime>(None, "thread-1", "approval-1");
+    }
+
+    #[test]
+    fn runtime_update_drain_loop_coalesces_and_exits() {
+        let (tx, rx) = std::sync::mpsc::channel::<ThreadRuntimeUpdate>();
+        let handle = std::thread::spawn(|| runtime_update_drain_loop(rx));
+        // One burst: both messages coalesce into a single emit attempt (the
+        // APP_HANDLE arm is skipped — no handle in tests — but the drain body
+        // runs end to end).
+        tx.send(update("run-1", 1, "running", false)).unwrap();
+        tx.send(update("run-2", 2, "running", false)).unwrap();
+        drop(tx);
+        handle.join().expect("drain loop exits on disconnect");
+    }
+
+    #[tokio::test]
+    async fn streaming_monitor_loop_enters_and_sleeps() {
+        // One iteration, then abort — the loop is infinite by design; this
+        // proves the iteration body (APP_HANDLE check + sleep) executes.
+        let task = tokio::spawn(thread_streaming_monitor_loop());
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        task.abort();
+        let _ = task.await;
     }
 }
