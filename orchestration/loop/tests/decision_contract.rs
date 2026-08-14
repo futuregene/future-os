@@ -96,6 +96,27 @@ fn runnable_advancement_is_bounded_delivery() {
     );
 }
 
+// ── Contract: work leased to other agents is quiet wait, NOT terminal ────
+// An agent whose runnable frontier is empty because every open advancement
+// is leased to peers must get a quiet wait — never the validated-closure
+// terminal stop, which parks the goal in a skip loop until leases expire.
+#[test]
+fn work_leased_to_peers_is_quiet_wait_not_terminal() {
+    let mut goal = Goal::new("g", "objective", "/tmp");
+    goal.register_agent("worker-2", vec![]);
+    goal.add(Todo::advancement("T1", "Open work"));
+    goal.todo_mut("T1")
+        .unwrap()
+        .claim("worker-1", 3600, future_loop::state::now_epoch());
+    let p = future_loop::decision::decide_for(&goal, now(), Some("worker-2"));
+    assert_eq!(p.interaction_contract.mode, TurnMode::WaitMonitor);
+    assert!(p.reason.contains("leased to other agents"));
+    // And once the lease holder completes it, the same goal is terminal.
+    goal.todo_mut("T1").unwrap().complete(true, vec![]);
+    let p = future_loop::decision::decide_for(&goal, now(), Some("worker-2"));
+    assert_eq!(p.interaction_contract.mode, TurnMode::Terminal);
+}
+
 // ── Contract: terminal closure is NOT "open_count == 0" ────────────────────
 #[test]
 fn open_todos_alone_is_not_terminal() {
