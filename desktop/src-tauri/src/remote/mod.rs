@@ -467,7 +467,6 @@ fn spawn_web_reconnect(pair_id: String) {
     #[cfg(test)]
     {
         let _ = pair_id;
-        return;
     }
 
     #[cfg(not(test))]
