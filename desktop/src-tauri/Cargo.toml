@@ -84,6 +84,16 @@ windows = { version = "0.61", features = [
     "Win32_Graphics_Gdi",
 ] }
 
+# macOS sends these workspace notifications before sleep/power-off, giving the
+# paired phone a short chance to become offline before the machine disappears.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2-app-kit = { version = "0.3.2", features = ["NSWorkspace"] }
+objc2-foundation = { version = "0.3.2", features = ["NSNotification", "NSOperation", "NSString", "block2"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5.18", default-features = false, features = ["tokio"] }
+
 # Stripped symbols + no debug info: smaller desktop binary and less link/scan
 # I/O, negligible runtime cost for a Tauri shell. See ../../.cargo/config.toml.
 # Thin LTO: cross-crate inlining for a few % runtime win and a smaller binary.

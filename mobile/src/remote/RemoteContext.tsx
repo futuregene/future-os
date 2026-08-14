@@ -436,6 +436,27 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         },
         onEvent: handleEvent,
         onPresence: nextPresence => {
+          if (nextPresence.unpaired) {
+            // The desktop sent an authenticated unpair notice before revoking
+            // the server credentials. Clear locally at once instead of waiting
+            // for the next token refresh to discover the revocation.
+            credentialsRef.current = null;
+            void clientRef.current?.close("Unpair");
+            clientRef.current = null;
+            syncEngineRef.current?.clear();
+            void clearCredentials();
+            setCredentials(null);
+            setPresence(null);
+            resetCatalog();
+            setSelectedSessionId("");
+            setDraft(false);
+            setTimelines({});
+            cursorsRef.current = {};
+            streamingRef.current = {};
+            setPhase("unpaired");
+            setError(null);
+            return;
+          }
           lastPresenceReceiptRef.current = Date.now();
           setPresence(nextPresence);
         },
@@ -543,6 +564,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       handleEvent,
       recordError,
       reconcileSession,
+      resetCatalog,
       refreshModels,
       refreshSessions,
       refreshWorkspaces,
@@ -717,6 +739,13 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     // Local deregistration — ALWAYS succeeds (M7). Even an offline unpair
     // must free the device; only the server-side revoke is best-effort.
     credentialsRef.current = null;
+    // If the desktop is online, ask it to unpair too. Do not let an unavailable
+    // desktop hold the local action hostage: the server revoke below remains
+    // the authoritative offline fallback.
+    const remoteUnpair = clientRef.current?.request({ type: "unpair" }).catch(() => undefined);
+    if (remoteUnpair) {
+      await Promise.race([remoteUnpair, new Promise<void>(resolve => setTimeout(resolve, 750))]);
+    }
     await clientRef.current?.close();
     clientRef.current = null;
     // Stop and discard every pairing-owned network stream, but keep the

@@ -23,6 +23,10 @@ use std::sync::{
 
 /// Port for the embedded web client HTTP server.
 const WEB_PORT: u16 = 8022;
+/// A shutdown notification is advisory: never delay closing the desktop for a
+/// slow or unreachable broker, but give a healthy connection a short window to
+/// flush the packet before its tasks are torn down.
+const DISCONNECT_NOTICE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(750);
 
 /// Bound on the event publish queue; on overflow the newest event is dropped
 /// (logged) rather than blocking the agent event loop. The client recovers the
@@ -584,6 +588,11 @@ async fn connect_nats(
 
 /// Drop the persisted pairing and stop the bridge (the desktop "unpair").
 pub async fn unpair() -> Result<RemoteStatus, crate::AppError> {
+    // Give an online phone an immediate, authenticated signal before the
+    // server-side revoke invalidates the shared NATS credentials. Revocation
+    // remains the authoritative fallback when this at-most-once message cannot
+    // be delivered (phone offline, broker outage, older client, etc.).
+    notify_mobile_unpair().await;
     if let Some(creds) = pairing::load_creds() {
         pairing::revoke_pairing(&creds).await?;
     }
@@ -592,11 +601,74 @@ pub async fn unpair() -> Result<RemoteStatus, crate::AppError> {
     Ok(status)
 }
 
+async fn notify_mobile_unpair() {
+    let Some((client, pair_id, bridge_instance_id)) = STATE.lock().unwrap().as_ref().map(|state| {
+        (
+            state.client.clone(),
+            state.pair_id.clone(),
+            state.bridge_instance_id.clone(),
+        )
+    }) else {
+        return;
+    };
+    let payload = serde_json::to_vec(&json!({
+        "online": false,
+        "unpaired": true,
+        "pairId": pair_id,
+        "bridgeInstanceId": bridge_instance_id,
+        "lastHeartbeatTs": unix_timestamp(),
+    }))
+    .unwrap_or_default();
+    let _ = client
+        .publish(format!("p.{pair_id}.presence"), payload.into())
+        .await;
+    let _ = client.flush().await;
+}
+
 pub fn stop() -> RemoteStatus {
     START_REQUESTED.store(false, Ordering::Release);
     RUNTIME_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
     WEB_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
     stop_runtime()
+}
+
+/// Notify an online mobile client before an intentional desktop disconnect.
+/// The mobile client treats this as immediate offline state; heartbeat expiry
+/// remains the fallback for crashes, forced power-off, and any lost packet.
+pub async fn stop_gracefully(reason: &str) -> RemoteStatus {
+    notify_mobile_disconnect(reason).await;
+    stop()
+}
+
+pub async fn notify_mobile_disconnect(reason: &str) {
+    let Some((client, pair_id, bridge_instance_id)) = STATE.lock().unwrap().as_ref().map(|state| {
+        (
+            state.client.clone(),
+            state.pair_id.clone(),
+            state.bridge_instance_id.clone(),
+        )
+    }) else {
+        return;
+    };
+    let payload = serde_json::to_vec(&json!({
+        "online": false,
+        "disconnected": true,
+        "reason": reason,
+        "pairId": pair_id,
+        "bridgeInstanceId": bridge_instance_id,
+        "lastHeartbeatTs": unix_timestamp(),
+    }))
+    .unwrap_or_default();
+    let send = async {
+        if client
+            .publish(format!("p.{pair_id}.presence"), payload.into())
+            .await
+            .is_ok()
+        {
+            let _ = client.flush().await;
+        }
+    };
+    let _ = tokio::time::timeout(DISCONNECT_NOTICE_TIMEOUT, send).await;
 }
 
 fn stop_runtime() -> RemoteStatus {

@@ -24,8 +24,8 @@ pub async fn remote_start(
 }
 
 #[tauri::command]
-pub fn remote_stop() -> Result<remote::RemoteStatus, crate::AppError> {
-    Ok(remote::stop())
+pub async fn remote_stop() -> Result<remote::RemoteStatus, crate::AppError> {
+    Ok(remote::stop_gracefully("user_disconnect").await)
 }
 
 #[tauri::command]
@@ -96,7 +96,7 @@ mod tests {
         let _home = HomeGuard::new("remote_idle");
         let status = remote_status().expect("status");
         assert!(!status.connected);
-        let stopped = remote_stop().expect("stop");
+        let stopped = tauri::async_runtime::block_on(remote_stop()).expect("stop");
         assert!(!stopped.connected);
     }
 
