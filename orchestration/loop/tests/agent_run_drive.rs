@@ -117,6 +117,76 @@ fn run_max_turns_bails() {
 }
 
 #[test]
+fn run_workspace_conflict_and_force_workspace() {
+    let cr = cli_root();
+    let goal = init_goal(&cr, "workspace conflict run");
+    // Two agents declaring the same workspace.
+    cli_ok(&[
+        "agent",
+        "onboard",
+        "--goal",
+        &goal,
+        "--agent-id",
+        "a1",
+        "--workspace",
+        "/ws1",
+    ]);
+    cli_ok(&[
+        "agent",
+        "onboard",
+        "--goal",
+        &goal,
+        "--agent-id",
+        "a2",
+        "--workspace",
+        "/ws1",
+    ]);
+    // a1 claims the onboarding todo (live lease in the shared workspace).
+    let onboarding = first_todo_id(&cr.root, &goal);
+    cli_ok(&[
+        "todo",
+        "claim",
+        "--goal",
+        &goal,
+        "--todo-id",
+        &onboarding,
+        "--agent-id",
+        "a1",
+    ]);
+    // A second open todo for a2 to pick up after forcing.
+    let second = add_todo(&cr, &goal, "second task");
+    let (_rt, _shared) = mock_env(MockState {
+        events: completed_events("mock-run-1"),
+        ..Default::default()
+    });
+    // a2 running in the same workspace is refused (degrade to serial).
+    let err = cli_err(&[
+        "run",
+        "--goal",
+        &goal,
+        "--agent-id",
+        "a2",
+        "--max-turns",
+        "2",
+    ]);
+    assert!(err.contains("workspace conflict"), "{err}");
+    // --force-workspace lets a2 claim the second todo and complete it.
+    cli_ok(&[
+        "run",
+        "--goal",
+        &goal,
+        "--agent-id",
+        "a2",
+        "--force-workspace",
+        "--max-turns",
+        "3",
+    ]);
+    let store = open_store(&cr);
+    let g = store.replay(&goal).unwrap().unwrap();
+    assert_eq!(g.todo(&second).unwrap().status, TodoStatus::Done);
+}
+
+#[test]
 fn run_failing_turns_exhaust_repair_budget() {
     let cr = cli_root();
     let events = vec![ev(

@@ -1711,20 +1711,17 @@ impl ExploreCapability {
                 }
             }
         }
-        let projection = match build_explore_result_projection(
+        // `build_explore_result_projection` can only fail on an unsafe
+        // goal_id, and every event above already passed
+        // `validate_explore_result_event(.., Some(goal_id))`, which checks the
+        // same invariant — so this cannot fail here.
+        let projection = build_explore_result_projection(
             &validated,
             goal_id,
             DEFAULT_FINDING_LIMIT,
             DEFAULT_MERMAID_NODE_LIMIT,
-        ) {
-            Ok(projection) => projection,
-            Err(err) => {
-                return vec![TypedProposal::gate(
-                    &format!("Fix the explore payload before projecting: {err}"),
-                    "explore payload rejected by the projection contract",
-                )];
-            }
-        };
+        )
+        .expect("goal_id was validated as a single path segment upstream");
         let nodes: Vec<Value> = projection
             .get("nodes")
             .and_then(Value::as_array)

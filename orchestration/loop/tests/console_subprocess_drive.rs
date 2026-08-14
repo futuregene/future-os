@@ -87,8 +87,17 @@ fn init_goal(root: &str, objective: &str) -> String {
 fn worker_bridge_worker_finishes_on_eof_and_done() {
     let root = tmp_root("bridge-eof");
     let gid = init_goal(&root, "bridge eof");
+    // Register the agent so `--agent-id` passes the coordination gate.
+    run(
+        &root,
+        &["agent", "register", "--goal", &gid, "--agent-id", "a1"],
+    );
     // EOF on stdin → "worker finished".
-    let (out, _, code) = run_stdin(&root, &["worker-bridge", "--goal", &gid], "");
+    let (out, _, code) = run_stdin(
+        &root,
+        &["worker-bridge", "--goal", &gid, "--agent-id", "a1"],
+        "",
+    );
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("BRIDGE packet:"), "{out}");
     assert!(out.contains("worker finished"), "{out}");
@@ -332,6 +341,26 @@ fn worker_bridge_errors() {
     let (_, err, code) = run(&root, &["worker-bridge", "--goal", "goal_nope"]);
     assert_ne!(code, 0);
     assert!(err.contains("not found"), "{err}");
+}
+
+#[cfg(unix)]
+#[test]
+fn worker_bridge_read_only_ledger_hits_decision_record_error() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tmp_root("bridge-ro");
+    let gid = init_goal(&root, "bridge read-only ledger");
+    let ledger = format!("{root}/goals/{gid}/events.jsonl");
+    let mut perms = std::fs::metadata(&ledger).unwrap().permissions();
+    perms.set_mode(0o444);
+    std::fs::set_permissions(&ledger, perms).unwrap();
+    // record_turn_decision appends to the read-only ledger → the `?` error
+    // edge in run_bridge propagates and the bridge exits non-zero.
+    let (_, err, code) = run_stdin(&root, &["worker-bridge", "--goal", &gid], "");
+    assert_ne!(code, 0, "{err}");
+    assert!(!err.is_empty(), "a read-only append failure is reported");
+    let mut perms = std::fs::metadata(&ledger).unwrap().permissions();
+    perms.set_mode(0o644);
+    std::fs::set_permissions(&ledger, perms).unwrap();
 }
 
 // ── serve-status ───────────────────────────────────────────────────────────
