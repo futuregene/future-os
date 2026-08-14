@@ -2827,13 +2827,7 @@ pub fn ensure_run_identity(
                 let cwd = std::env::current_dir()
                     .map(|p| p.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                let workspaces = if cwd.is_empty() {
-                    vec![]
-                } else {
-                    vec![crate::agents::workspace_guard::normalize_workspace_path(
-                        &cwd,
-                    )]
-                };
+                let workspaces = auto_register_workspaces(&cwd);
                 store.append(Event::AgentRegistered {
                     goal_id: goal_id.to_string(),
                     agent_id: aid.to_string(),
@@ -3124,18 +3118,7 @@ async fn run_turns(
     // consumers (status, stale-latest-run, run history projection) read stale
     // state; rebuild it from the run files before the first decision and
     // record the ProjectionRepaired audit event.
-    if let Some(outcome) = crate::runtime::run_index::repair_index_if_drifted(store, goal_id)? {
-        println!(
-            "⚒ projection self-heal: run_index drifted ({} rows) — rebuilt {} rows (backup {})",
-            outcome.drift.drift_count,
-            outcome.rebuilt.rows_written,
-            if outcome.rebuilt.backup_path.is_empty() {
-                "none".to_string()
-            } else {
-                outcome.rebuilt.backup_path
-            }
-        );
-    }
+    run_index_self_heal(store, goal_id)?;
     loop {
         turn += 1;
         if turn > max_turns {
@@ -3193,7 +3176,7 @@ async fn run_turns(
         // overlapping declared workspace, degrade to serial — stop the run
         // with a retry hint (the scheduler will relaunch later) unless the
         // operator passed --force-workspace.
-        let mut workspace_conflict_forced = false;
+        let mut forced_ws = false;
         if let Some(aid) = agent_id {
             let now = crate::state::now_epoch();
             let conflicts =
@@ -3206,7 +3189,7 @@ async fn run_turns(
                     crate::agents::workspace_guard::render_conflicts(&conflicts, now)
                 );
             }
-            workspace_conflict_forced = !conflicts.is_empty() && force_workspace;
+            forced_ws = !conflicts.is_empty() && force_workspace;
         }
         let mut packet = packet;
         let Some(todo_id) =
@@ -3219,17 +3202,10 @@ async fn run_turns(
         // trail for agent list / history). Best-effort against the
         // turn-start replay — profiles rarely change mid-turn.
         if let Some(aid) = agent_id {
-            let goal = store.replay(goal_id)?.ok_or_else(|| {
-                anyhow::anyhow!("goal {goal_id} not found (deleted while running?)")
-            })?;
-            append_workspace_lock(
-                store,
-                goal_id,
-                aid,
-                &todo_id,
-                &goal,
-                workspace_conflict_forced,
-            )?;
+            let goal = store
+                .replay(goal_id)?
+                .ok_or_else(|| goal_vanished_error(goal_id))?;
+            append_workspace_lock(store, goal_id, aid, &todo_id, &goal, forced_ws)?;
         }
         let goal = store
             .replay(goal_id)?
@@ -3398,21 +3374,7 @@ async fn run_turns(
             })?;
             // P0-2①: a completed advancement todo is a delivery pending
             // verification — record the outcome signal at this turn.
-            if g.todo(&todo_id)
-                .map(|t| t.class == crate::state::TaskClass::Advancement)
-                .unwrap_or(false)
-            {
-                let seq = g.delivery_state(&todo_id).map(|d| d.seq + 1).unwrap_or(1);
-                store.append(Event::DeliveryOutcomeRecorded {
-                    goal_id: goal_id.to_string(),
-                    todo_id: todo_id.clone(),
-                    outcome: crate::work_items::delivery_outcome::OUTCOME_DELIVERED.to_string(),
-                    note: None,
-                    delivered_turn: record.turn,
-                    seq,
-                    ts: now_epoch(),
-                })?;
-            }
+            record_delivery_if_advancement(store, &g, goal_id, &todo_id, record.turn)?;
         } else {
             // A missing todo (deleted mid-turn) carries no budget signal.
             let stop = g
@@ -3440,22 +3402,9 @@ async fn run_turns(
             }
         }
         // P0-2②: outcome_followthrough — auto-derive a follow-up todo for any
-        // delivery left unverified past the threshold (fires once per cycle).
-        let followups = run_followthrough_check(
-            store,
-            goal_id,
-            crate::work_items::delivery_outcome::DEFAULT_FOLLOWTHROUGH_TURNS,
-        )?;
-        for followup in &followups {
-            println!("   ↻ follow-through: todo {followup} auto-created (unverified delivery)");
-        }
-        if !followups.is_empty() {
-            // The follow-up todo(s) joined the frontier — refresh the read
-            // model so the Next Action sync below cannot project a gap.
-            g = store.replay(goal_id)?.ok_or_else(|| {
-                anyhow::anyhow!("goal {goal_id} not found (deleted while running?)")
-            })?;
-        }
+        // delivery left unverified past the threshold, then refresh the read
+        // model when the follow-up(s) joined the frontier.
+        g = run_followthrough_and_refresh(store, goal_id, g)?;
         // Sync Next Action to the frontier (avoid projection gap).
         let next_text = g
             .runnable_advancement()
@@ -4638,6 +4587,95 @@ fn print_obligation(obligation: &crate::work_items::replan_obligation::ReplanObl
 /// The goal disappeared between decide and claim (deleted mid-run).
 fn goal_vanished_error(goal_id: &str) -> anyhow::Error {
     anyhow::anyhow!("goal {goal_id} not found (deleted while running?)")
+}
+
+/// Auto-registration workspace declaration: the process cwd (P0-1 write set),
+/// empty when the cwd could not be resolved (deleted directory / failure).
+fn auto_register_workspaces(cwd: &str) -> Vec<String> {
+    if cwd.is_empty() {
+        vec![]
+    } else {
+        vec![crate::agents::workspace_guard::normalize_workspace_path(
+            cwd,
+        )]
+    }
+}
+
+/// P1-2③: run the drift self-heal at run start and print the repair summary.
+/// Extracted so the drifted-index projection (and both backup-path variants)
+/// are unit-testable without a live agent client.
+fn run_index_self_heal(store: &mut Store, goal_id: &str) -> Result<()> {
+    if let Some(outcome) = crate::runtime::run_index::repair_index_if_drifted(store, goal_id)? {
+        print_run_index_self_heal(&outcome);
+    }
+    Ok(())
+}
+
+fn print_run_index_self_heal(outcome: &crate::runtime::run_index::IndexRepairOutcome) {
+    let backup = if outcome.rebuilt.backup_path.is_empty() {
+        "none".to_string()
+    } else {
+        outcome.rebuilt.backup_path.clone()
+    };
+    println!(
+        "⚒ projection self-heal: run_index drifted ({} rows) — rebuilt {} rows (backup {backup})",
+        outcome.drift.drift_count, outcome.rebuilt.rows_written,
+    );
+}
+
+/// P0-2①: a completed advancement todo is a delivery pending verification —
+/// record the outcome signal at this turn. Non-advancement completions carry
+/// no delivery signal (monitor/gate work is not a shipped artifact).
+fn record_delivery_if_advancement(
+    store: &mut Store,
+    goal: &crate::state::Goal,
+    goal_id: &str,
+    todo_id: &str,
+    turn: u32,
+) -> Result<()> {
+    if !goal
+        .todo(todo_id)
+        .map(|t| t.class == crate::state::TaskClass::Advancement)
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    let seq = goal.delivery_state(todo_id).map(|d| d.seq + 1).unwrap_or(1);
+    store.append(Event::DeliveryOutcomeRecorded {
+        goal_id: goal_id.to_string(),
+        todo_id: todo_id.to_string(),
+        outcome: crate::work_items::delivery_outcome::OUTCOME_DELIVERED.to_string(),
+        note: None,
+        delivered_turn: turn,
+        seq,
+        ts: now_epoch(),
+    })?;
+    Ok(())
+}
+
+/// P0-2②: run the delivery follow-through check, print any auto-created
+/// follow-up todos, and refresh the read model when they joined the frontier
+/// (so the Next Action sync cannot project a gap).
+fn run_followthrough_and_refresh(
+    store: &mut Store,
+    goal_id: &str,
+    goal: crate::state::Goal,
+) -> Result<crate::state::Goal> {
+    let followups = run_followthrough_check(
+        store,
+        goal_id,
+        crate::work_items::delivery_outcome::DEFAULT_FOLLOWTHROUGH_TURNS,
+    )?;
+    for followup in &followups {
+        println!("   ↻ follow-through: todo {followup} auto-created (unverified delivery)");
+    }
+    if followups.is_empty() {
+        Ok(goal)
+    } else {
+        store
+            .replay(goal_id)?
+            .ok_or_else(|| goal_vanished_error(goal_id))
+    }
 }
 
 /// One-line summary of a backfilled event for `backfill --dry-run` output.
@@ -6132,13 +6170,19 @@ fn decision_context_assemble(store: &Store, args: &[String]) -> Result<()> {
         "  quota: spent={}/{} (projected {})",
         packet.quota.spent_slots, packet.quota.allowed_slots, packet.quota.projected_spent_slots
     );
+    print_open_acceptance_gaps(&packet);
+    Ok(())
+}
+
+fn print_open_acceptance_gaps(
+    packet: &crate::capabilities::decision_context::packets::DecisionContextPacket,
+) {
     if !packet.open_acceptance_gaps.is_empty() {
         println!(
             "  open_acceptance_gaps: [{}]",
             packet.open_acceptance_gaps.join(", ")
         );
     }
-    Ok(())
 }
 
 /// `decision-context outcomes --goal G [--format json]` — the outcome
@@ -6901,8 +6945,14 @@ fn cmd_canary_premerge(args: &[String]) -> Result<()> {
         }
     });
     let report = crate::canary::run_premerge_gate_isolated()?;
+    render_premerge_gate(&report, json)
+}
+
+/// Render the premerge gate report and fail the command when the gate did not
+/// pass. Extracted so the failure arm is unit-testable with a failing report.
+fn render_premerge_gate(report: &crate::canary::PremergeGateReport, json: bool) -> Result<()> {
     if json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        println!("{}", serde_json::to_string_pretty(report)?);
     } else {
         println!(
             "canary premerge (suite {}): {} check(s) over {} goal(s)",
@@ -9921,5 +9971,313 @@ mod reward_memory_cli_tests {
         assert!(event_touches_todo(&follow, "t1"));
         assert!(event_touches_todo(&follow, "t9"));
         assert!(!event_touches_todo(&follow, "t2"));
+    }
+}
+
+#[cfg(test)]
+mod residual_branch_tests {
+    use super::*;
+    use crate::state::{Goal, Todo};
+    use crate::store::{Event, Store};
+
+    fn tmp_store() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().into_owned();
+        let store = Store::open(&root).unwrap();
+        (dir, store)
+    }
+
+    fn registered(store: &mut Store, id: &str) {
+        let goal = Goal::new(id, "obj", "/tmp");
+        store.register(&goal).unwrap();
+        store
+            .append(Event::GoalStarted {
+                goal_id: id.into(),
+                ts: 1,
+            })
+            .unwrap();
+    }
+
+    // ── print_monitor_poll_plan: goal-vanished early return ────────────────
+    #[test]
+    fn monitor_poll_plan_missing_goal_returns_ok() {
+        let (_dir, store) = tmp_store();
+        // Goal never registered → replay() returns Ok(None) → early return.
+        print_monitor_poll_plan(&store, "goal_missing").unwrap();
+    }
+
+    // ── record_tick_heartbeat: empty rrule → None branch ───────────────────
+    #[test]
+    fn record_tick_heartbeat_empty_rrule_records_none() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        let state = crate::scheduler::state::SchedulerState {
+            schema_version: String::new(),
+            goal_id: "g".into(),
+            agent_id: "a".into(),
+            surface: String::new(),
+            state_key: String::new(),
+            reset_token: String::new(),
+            identity_signature: String::new(),
+            progression_index: 0,
+            progression_minutes: vec![],
+            last_applied_rrule: String::new(),
+            updated_at: 0,
+            host_update_failures: vec![],
+        };
+        record_tick_heartbeat(&mut store, "g", "a", "tick_next", &state).unwrap();
+        // The heartbeat landed; empty rrule projected as no recurrence.
+        let goal = store.replay("g").unwrap().unwrap();
+        assert!(goal.todos.is_empty());
+    }
+
+    // ── write_liveness_inbox_alert: create_dir_all failure → early return ──
+    #[test]
+    fn liveness_inbox_alert_bails_when_inbox_dir_is_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("not-a-dir");
+        std::fs::write(&blocker, "x").unwrap();
+        let goal = Goal::new("g", "obj", &blocker.to_string_lossy());
+        let eval = crate::scheduler::liveness::evaluate_liveness("g", "a", Some(1), 1000, 60);
+        // `.future/loop/inbox` cannot be created under a regular file.
+        write_liveness_inbox_alert(&goal, "a", &eval);
+    }
+
+    // ── auto_register_workspaces: empty vs non-empty cwd ───────────────────
+    #[test]
+    fn auto_register_workspaces_empty_cwd_declares_nothing() {
+        assert!(auto_register_workspaces("").is_empty());
+        assert_eq!(
+            auto_register_workspaces("/tmp/w"),
+            vec!["/tmp/w".to_string()]
+        );
+    }
+
+    // ── pr_review_claim: idempotent re-claim skips the append block ────────
+    #[test]
+    fn pr_review_claim_idempotent_reclaim_skips_append() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().into_owned();
+        let mut store = Store::open(&root).unwrap();
+        let goal = Goal::new("g", "obj", "/tmp");
+        store.register(&goal).unwrap();
+        store
+            .append(Event::GoalStarted {
+                goal_id: "g".into(),
+                ts: 1,
+            })
+            .unwrap();
+        let item = crate::work_items::review_queue::ReviewItem {
+            number: 7,
+            head_oid: "a".repeat(40),
+            repository: Some("o/r".into()),
+            title: "PR 7".into(),
+            url: None,
+        };
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: item.to_todo("pr-review-7"),
+                ts: 2,
+            })
+            .unwrap();
+        let args = vec![
+            "claim".to_string(),
+            "--goal".to_string(),
+            "g".to_string(),
+            "--number".to_string(),
+            "7".to_string(),
+            "--reviewer".to_string(),
+            "bob".to_string(),
+            "--lease-secs".to_string(),
+            "60".to_string(),
+        ];
+        pr_review_claim(&mut store, &args).unwrap();
+        // Same reviewer re-claims the live lease → idempotent (no append).
+        pr_review_claim(&mut store, &args).unwrap();
+    }
+
+    // ── print_run_index_self_heal: empty + non-empty backup ────────────────
+    #[test]
+    fn run_index_self_heal_prints_both_backup_variants() {
+        let drift = crate::runtime::run_index::IndexDriftReport {
+            goal_id: "g".into(),
+            index_path: String::new(),
+            index_rows: 0,
+            run_files: 1,
+            missing_rows: 1,
+            stale_rows: 0,
+            duplicate_rows: 0,
+            drift_count: 1,
+            repair_recommended: true,
+            missing_identities: vec![],
+            stale_identities: vec![],
+        };
+        let mk = |backup: String| crate::runtime::run_index::IndexRepairOutcome {
+            drift: drift.clone(),
+            rebuilt: crate::runtime::run_index::RebuildReport {
+                index_path: String::new(),
+                backup_path: backup,
+                rows_written: 1,
+                non_destructive: true,
+            },
+        };
+        print_run_index_self_heal(&mk(String::new()));
+        print_run_index_self_heal(&mk("index.pre-rebuild-123.jsonl".into()));
+    }
+
+    // ── record_delivery_if_advancement: advancement vs non-advancement ─────
+    #[test]
+    fn record_delivery_only_for_advancement_todos() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        // Non-advancement (monitor) todo → early return, no delivery event.
+        let mut goal = store.replay("g").unwrap().unwrap();
+        goal.todos.push(Todo::monitor(
+            "m1",
+            "watch",
+            std::time::Duration::from_secs(60),
+        ));
+        record_delivery_if_advancement(&mut store, &goal, "g", "m1", 3).unwrap();
+        // Advancement todo → records a delivery outcome.
+        let mut goal = store.replay("g").unwrap().unwrap();
+        goal.todos.push(Todo::advancement("t1", "ship"));
+        record_delivery_if_advancement(&mut store, &goal, "g", "t1", 3).unwrap();
+        let goal = store.replay("g").unwrap().unwrap();
+        assert!(goal.delivery_state("t1").is_some());
+        assert!(goal.delivery_state("m1").is_none());
+    }
+
+    // ── print_open_acceptance_gaps: non-empty packet ───────────────────────
+    #[test]
+    fn print_open_acceptance_gaps_non_empty() {
+        let goal = Goal::new("g", "obj", "/tmp").with_acceptance(vec![("A1", "match")]);
+        let packet =
+            crate::capabilities::decision_context::assembler::assemble_decision_context(&goal);
+        assert!(!packet.open_acceptance_gaps.is_empty());
+        print_open_acceptance_gaps(&packet);
+    }
+
+    // ── run_index_self_heal: drifted index drives the repair summary ────────
+    #[test]
+    fn run_index_self_heal_detects_and_repairs_drift() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        // Seed a run file (source of truth) with no index row → drift.
+        let runs = store.goal_dir("g").join("runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        std::fs::write(
+            runs.join("a.json"),
+            r#"{"timestamp":"123","turn":1,"terminal_state":"completed"}"#,
+        )
+        .unwrap();
+        run_index_self_heal(&mut store, "g").unwrap();
+        // A clean index now reports no drift (the None arm).
+        run_index_self_heal(&mut store, "g").unwrap();
+    }
+
+    fn seed_overdue_delivery(store: &mut Store) {
+        store
+            .append(Event::DeliveryOutcomeRecorded {
+                goal_id: "g".into(),
+                todo_id: "t1".into(),
+                outcome: crate::work_items::delivery_outcome::OUTCOME_DELIVERED.into(),
+                note: None,
+                delivered_turn: 1,
+                seq: 1,
+                ts: 2,
+            })
+            .unwrap();
+        let run = crate::state::RunRecord {
+            turn: 4,
+            todo_id: "t1".into(),
+            run_id: "run-1".into(),
+            terminal_state: "completed".into(),
+            error: None,
+            tokens_in_delta: 1,
+            tokens_out_delta: 2,
+            cost_delta: 0.1,
+            tools: vec!["shell".into()],
+            evidence: "proof".into(),
+            recorded_at: 1,
+            spend_source: Some("run".into()),
+            validation: None,
+        };
+        std::fs::write(
+            store.goal_dir("g").join("runs.jsonl"),
+            format!("{}\n", serde_json::to_string(&run).unwrap()),
+        )
+        .unwrap();
+    }
+
+    // ── run_followthrough_and_refresh: empty vs overdue-delivery ────────────
+    #[test]
+    fn followthrough_refresh_no_overdue_returns_same_goal() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        let goal = store.replay("g").unwrap().unwrap();
+        let next = run_followthrough_and_refresh(&mut store, "g", goal).unwrap();
+        assert!(next.todos.is_empty());
+    }
+
+    #[test]
+    fn followthrough_refresh_overdue_creates_followup_and_refreshes() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        seed_overdue_delivery(&mut store);
+        let goal = store.replay("g").unwrap().unwrap();
+        let next = run_followthrough_and_refresh(&mut store, "g", goal).unwrap();
+        assert!(
+            next.todos.iter().any(|t| t.text.contains("Follow-through")),
+            "a follow-through todo joined the frontier"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn followthrough_refresh_read_only_ledger_hits_error_edge() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        seed_overdue_delivery(&mut store);
+        let ledger = store.goal_dir("g").join("events.jsonl");
+        let mut perms = std::fs::metadata(&ledger).unwrap().permissions();
+        perms.set_mode(0o444);
+        std::fs::set_permissions(&ledger, perms).unwrap();
+        let goal = store.replay("g").unwrap().unwrap();
+        let err = run_followthrough_and_refresh(&mut store, "g", goal).unwrap_err();
+        assert!(format!("{err:#}").contains("append"), "{err:#}");
+        let mut perms = std::fs::metadata(&ledger).unwrap().permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&ledger, perms).unwrap();
+    }
+
+    // ── render_premerge_gate: failing gate hits the bail arm ────────────────
+    #[test]
+    fn render_premerge_gate_failing_report_bails() {
+        let report = crate::canary::PremergeGateReport {
+            schema_version: "v1".into(),
+            gate: crate::canary::GateDecision {
+                gate: "premerge".into(),
+                passed: false,
+                goals_checked: 1,
+                failed_checks: vec!["root_writable".into()],
+                reason: "root_writable check failed".into(),
+            },
+            run: crate::canary::SmokeRunResult {
+                schema_version: "v1".into(),
+                profile_id: "premerge".into(),
+                suite: "premerge".into(),
+                all_passed: false,
+                checks: vec![crate::canary::SmokeCheckOutcome {
+                    id: "root_writable".into(),
+                    module: "state".into(),
+                    passed: false,
+                    detail: "root NOT writable".into(),
+                }],
+            },
+        };
+        let err = render_premerge_gate(&report, false).unwrap_err();
+        assert!(format!("{err:#}").contains("gate failed"), "{err:#}");
     }
 }

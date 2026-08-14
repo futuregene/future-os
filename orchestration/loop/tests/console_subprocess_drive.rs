@@ -343,6 +343,26 @@ fn worker_bridge_errors() {
     assert!(err.contains("not found"), "{err}");
 }
 
+#[cfg(unix)]
+#[test]
+fn worker_bridge_read_only_ledger_hits_decision_record_error() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tmp_root("bridge-ro");
+    let gid = init_goal(&root, "bridge read-only ledger");
+    let ledger = format!("{root}/goals/{gid}/events.jsonl");
+    let mut perms = std::fs::metadata(&ledger).unwrap().permissions();
+    perms.set_mode(0o444);
+    std::fs::set_permissions(&ledger, perms).unwrap();
+    // record_turn_decision appends to the read-only ledger → the `?` error
+    // edge in run_bridge propagates and the bridge exits non-zero.
+    let (_, err, code) = run_stdin(&root, &["worker-bridge", "--goal", &gid], "");
+    assert_ne!(code, 0, "{err}");
+    assert!(!err.is_empty(), "a read-only append failure is reported");
+    let mut perms = std::fs::metadata(&ledger).unwrap().permissions();
+    perms.set_mode(0o644);
+    std::fs::set_permissions(&ledger, perms).unwrap();
+}
+
 // ── serve-status ───────────────────────────────────────────────────────────
 
 /// Find a free TCP port (best-effort; released before the server binds).
