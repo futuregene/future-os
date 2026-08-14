@@ -210,6 +210,28 @@ mod tests {
     }
 
     #[test]
+    fn get_last_run_review_returns_the_changeset_after_a_capture() {
+        let _home = init("cmd_review_last_run_ok");
+        let ws = workspace("last_run_ok_ws");
+        let thread = thread_in(&ws);
+        let run = crate::store::create_run(crate::store::CreateRunInput {
+            id: None,
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("run");
+        // Real captures produce real shadow commits + a materialized changeset,
+        // so the Some arm of get_last_run_review runs.
+        std::fs::write(std::path::Path::new(&ws.path).join("a.txt"), b"hello").unwrap();
+        crate::agent_bridge::capture_before(&thread.id, &run.id);
+        crate::agent_bridge::finalize_after(&thread.id, &run.id);
+        let review = get_last_run_review(thread.id).expect("review");
+        assert!(review.is_some());
+    }
+
+    #[test]
     fn retry_run_review_errors_for_an_unknown_run() {
         let _home = init("cmd_review_retry");
         assert!(retry_run_review("ghost_run".into()).is_err());
