@@ -7,6 +7,8 @@ import {
   type ConnectionState,
   type LifecycleEvent,
 } from "../connectionState";
+import { RemoteClient, type RemoteClientCallbacks } from "../client";
+import type { RemoteCredentials } from "../types";
 
 const ALL_STATES: ConnectionState[] = [
   "connecting",
@@ -234,5 +236,128 @@ describe("classifyError", () => {
     expect(classifyError(new Error("nats_connect_failed"))).toBe("transport");
     expect(classifyError(new Error("ETIMEDOUT"))).toBe("transport");
     expect(classifyError("boom")).toBe("transport");
+  });
+});
+
+function recoveryClient(): {
+  client: RemoteClient;
+  callbacks: jest.Mocked<RemoteClientCallbacks>;
+} {
+  const credentials: RemoteCredentials = {
+    pairId: "pair_1",
+    deviceId: "device_1",
+    seed: "unused",
+    userJwt: "unused",
+    refreshToken: "unused",
+    natsWsUrl: "wss://nats.example",
+    tokenUrl: "https://example.com/token",
+    expectedDesktopId: "desktop_1",
+    expectedDesktopPublicKey: "UDESKTOP",
+  };
+  const callbacks = {
+    onCredentials: jest.fn(),
+    onEvent: jest.fn(),
+    onPresence: jest.fn(),
+    onSessions: jest.fn(),
+    onWorkspaces: jest.fn(),
+    onFeatures: jest.fn(),
+    onConnectionState: jest.fn(),
+    onReconnected: jest.fn(),
+    onError: jest.fn(),
+  } as jest.Mocked<RemoteClientCallbacks>;
+  return { client: new RemoteClient(credentials, callbacks), callbacks };
+}
+
+describe("RemoteClient terminal iterator recovery", () => {
+  test("a throwing NATS status iterator enters the outer recovery path", async () => {
+    const { client, callbacks } = recoveryClient();
+    const recovery = jest.fn();
+    const testClient = client as unknown as {
+      watchStatus(connection: unknown, generation: number): void;
+      handleFailure(error: unknown): void;
+    };
+    testClient.handleFailure = recovery;
+    async function* statuses(): AsyncGenerator<never> {
+      throw new Error("status iterator failed");
+    }
+    testClient.watchStatus({ status: statuses }, 0);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(callbacks.onError).toHaveBeenCalledTimes(1);
+    expect(recovery).toHaveBeenCalledWith(expect.any(Error));
+  });
+
+  test("a throwing event subscription cannot die as an unhandled task", async () => {
+    const { client, callbacks } = recoveryClient();
+    const recovery = jest.fn();
+    const testClient = client as unknown as {
+      subscribeEvents(connection: unknown, generation: number): void;
+      handleFailure(error: unknown): void;
+    };
+    testClient.handleFailure = recovery;
+    async function* events(): AsyncGenerator<never> {
+      throw new Error("event iterator failed");
+    }
+    testClient.subscribeEvents({ subscribe: events }, 0);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(callbacks.onError).toHaveBeenCalledTimes(1);
+    expect(recovery).toHaveBeenCalledWith(expect.any(Error));
+  });
+});
+
+describe("RemoteClient OS lifecycle recovery", () => {
+  test("foreground validates a healthy socket without replacing it", async () => {
+    const { client } = recoveryClient();
+    const flush = jest.fn().mockResolvedValue(undefined);
+    const close = jest.fn().mockResolvedValue(undefined);
+    const testClient = client as unknown as {
+      connection: { flush(): Promise<void>; close(): Promise<void>; isClosed(): boolean } | null;
+    };
+    testClient.connection = { flush, close, isClosed: () => false };
+    const open = jest.spyOn(client, "open").mockResolvedValue(undefined);
+
+    await client.recoverNow("foreground");
+
+    expect(flush).toHaveBeenCalledTimes(1);
+    expect(close).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  test("network path changes immediately replace the old generation", async () => {
+    const { client } = recoveryClient();
+    const close = jest.fn().mockResolvedValue(undefined);
+    const testClient = client as unknown as {
+      connection: { flush(): Promise<void>; close(): Promise<void>; isClosed(): boolean } | null;
+    };
+    testClient.connection = {
+      flush: jest.fn().mockResolvedValue(undefined),
+      close,
+      isClosed: () => false,
+    };
+    const open = jest.spyOn(client, "open").mockResolvedValue(undefined);
+
+    await client.recoverNow("network-changed");
+
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(testClient.connection).toBeNull();
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+
+  test("offline pauses the socket and open attempts until reachability returns", async () => {
+    const { client, callbacks } = recoveryClient();
+    const close = jest.fn().mockResolvedValue(undefined);
+    const testClient = client as unknown as {
+      connection: { close(): Promise<void> } | null;
+    };
+    testClient.connection = { close };
+
+    client.setNetworkAvailable(false);
+    callbacks.onConnectionState.mockClear();
+    await client.open();
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(callbacks.onConnectionState).not.toHaveBeenCalled();
+
+    const open = jest.spyOn(client, "open").mockResolvedValue(undefined);
+    await client.recoverNow("network-restored");
+    expect(open).toHaveBeenCalledTimes(1);
   });
 });

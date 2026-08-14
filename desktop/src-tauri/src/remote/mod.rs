@@ -162,6 +162,14 @@ static LAST_ERROR_CODE: Mutex<Option<String>> = Mutex::new(None);
 /// queue-group membership then silently steals a share of incoming commands.
 static START_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// User/runtime intent for the bridge to stay online. A transient startup
+/// failure leaves this set so the background retry worker can recover when the
+/// network returns; an explicit stop clears it and prevents resurrection.
+static START_REQUESTED: AtomicBool = AtomicBool::new(false);
+/// At most one process-lifetime startup retry worker may run at once.
+#[cfg(not(test))]
+static START_RETRY_RUNNING: AtomicBool = AtomicBool::new(false);
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteStartInput {}
@@ -196,6 +204,14 @@ pub struct RemoteStatus {
     pub error: Option<String>,
 }
 
+fn retryable_start_status(status: &RemoteStatus) -> bool {
+    !status.running
+        && matches!(
+            status.error_code.as_deref(),
+            Some("network") | Some("server")
+        )
+}
+
 fn empty() -> RemoteStatus {
     RemoteStatus {
         running: false,
@@ -214,8 +230,26 @@ fn empty() -> RemoteStatus {
 }
 
 pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppError> {
+    START_REQUESTED.store(true, Ordering::Release);
+    let result = start_once(true).await;
+    if result.as_ref().is_ok_and(retryable_start_status) {
+        spawn_start_retry();
+    }
+    result
+}
+
+async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppError> {
     let _start_guard = START_LOCK.lock().await;
-    let _ = stop();
+    if !START_REQUESTED.load(Ordering::Acquire) {
+        return Ok(empty());
+    }
+    if !replace_existing {
+        let current = status();
+        if current.running {
+            return Ok(current);
+        }
+    }
+    let _ = stop_runtime();
     *LAST_ERROR_CODE.lock().unwrap() = None;
 
     // A remote/server failure here (offline, revoked, HTTP error) is not a
@@ -229,6 +263,9 @@ pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppE
             return start_failure(error);
         }
     };
+    if !START_REQUESTED.load(Ordering::Acquire) {
+        return Ok(empty());
+    }
     let client = match connect_nats(&creds).await {
         Ok(client) => client,
         Err(error) => {
@@ -236,6 +273,9 @@ pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppE
             return start_failure(error);
         }
     };
+    if !START_REQUESTED.load(Ordering::Acquire) {
+        return Ok(empty());
+    }
     let pairing_confirmed = Arc::new(AtomicBool::new(pairing_code.is_none()));
     if pairing_confirmed.load(Ordering::Acquire) {
         pairing::save_creds(&creds)?;
@@ -330,6 +370,48 @@ pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppE
     Ok(status)
 }
 
+/// Keep retrying a categorized startup failure on Tauri's process-lifetime
+/// runtime. This covers launching while offline and a network transition during
+/// the first connect. Runtime disconnects after a successful start continue to
+/// use async-nats plus the credential-refresh health swap below.
+fn spawn_start_retry() {
+    #[cfg(test)]
+    return;
+
+    #[cfg(not(test))]
+    {
+        if START_RETRY_RUNNING.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        tauri::async_runtime::spawn(async {
+            let mut delay = std::time::Duration::from_secs(1);
+            loop {
+                tokio::time::sleep(delay).await;
+                if !START_REQUESTED.load(Ordering::Acquire) || status().running {
+                    break;
+                }
+                match start_once(false).await {
+                    Ok(status) if status.running => break,
+                    Ok(status) if retryable_start_status(&status) => {
+                        delay = delay
+                            .saturating_mul(2)
+                            .min(std::time::Duration::from_secs(30));
+                    }
+                    Ok(_) | Err(_) => break,
+                }
+            }
+            START_RETRY_RUNNING.store(false, Ordering::Release);
+            // Close the tiny stop→start race: a new start may have requested
+            // recovery after this worker decided to exit but before it released
+            // the singleton flag. Re-arm from the latest status in that case.
+            let latest = status();
+            if START_REQUESTED.load(Ordering::Acquire) && retryable_start_status(&latest) {
+                spawn_start_retry();
+            }
+        });
+    }
+}
+
 /// Resolve a usable credential: refresh the persisted pairing, or — if it was
 /// revoked server-side — drop it and mint a fresh pairing code. Pure control
 /// plane; the NATS connect happens in [`start`] so its failure can be reported
@@ -419,6 +501,11 @@ pub async fn unpair() -> Result<RemoteStatus, crate::AppError> {
 }
 
 pub fn stop() -> RemoteStatus {
+    START_REQUESTED.store(false, Ordering::Release);
+    stop_runtime()
+}
+
+fn stop_runtime() -> RemoteStatus {
     if let Some(state) = STATE.lock().unwrap().take() {
         let pair_id = state.pair_id.clone();
         let client = state.client.clone();
@@ -1967,6 +2054,30 @@ mod runtime_tests {
             assert!(result.is_err());
         }
         *LAST_ERROR_CODE.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn only_transient_remote_start_failures_arm_background_recovery() {
+        let network = RemoteStatus {
+            error_code: Some("network".to_string()),
+            ..empty()
+        };
+        let server = RemoteStatus {
+            error_code: Some("server".to_string()),
+            ..empty()
+        };
+        let revoked = RemoteStatus {
+            error_code: Some("revoked".to_string()),
+            ..empty()
+        };
+        assert!(retryable_start_status(&network));
+        assert!(retryable_start_status(&server));
+        assert!(!retryable_start_status(&revoked));
+        assert!(!retryable_start_status(&RemoteStatus {
+            running: true,
+            error_code: Some("network".to_string()),
+            ..empty()
+        }));
     }
 
     #[tokio::test]

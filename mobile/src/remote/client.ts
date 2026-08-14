@@ -18,6 +18,9 @@ import type {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const HANDSHAKE_PROTOCOL_VERSION = 1;
+const FOREGROUND_PROBE_TIMEOUT_MS = 4_000;
+
+export type RecoveryReason = "foreground" | "network-restored" | "network-changed";
 
 interface HandshakeConfirmation {
   confirmed: boolean;
@@ -46,6 +49,20 @@ function decodeJson<T>(data: Uint8Array): T {
   return JSON.parse(decoder.decode(data)) as T;
 }
 
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("network_probe_timeout")), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export class RemoteClient {
   private connection: NatsConnection | null = null;
   private credentials: RemoteCredentials;
@@ -63,6 +80,8 @@ export class RemoteClient {
   private authRetryCount = 0;
   private generation = 0;
   private stopped = false;
+  private networkAvailable = true;
+  private recoveryPromise: Promise<void> | null = null;
   private state: ConnectionState = "unpaired";
   private confirmedBridgeInstanceId = "";
   private handshakePromise: Promise<HandshakeConfirmation> | null = null;
@@ -98,7 +117,7 @@ export class RemoteClient {
    * the retry timer is owned by exactly one place, here).
    */
   async open(): Promise<void> {
-    if (this.stopped) return;
+    if (this.stopped || !this.networkAvailable) return;
     this.signal({ type: "open_started" });
     const generation = ++this.generation;
     try {
@@ -107,6 +126,7 @@ export class RemoteClient {
       this.credentials = fresh;
       this.callbacks.onCredentials(fresh);
       await this.connectSocket(generation);
+      if (this.stopped || !this.networkAvailable || generation !== this.generation) return;
       this.scheduleRefresh();
     } catch (error) {
       if (this.stopped || generation !== this.generation) return;
@@ -121,6 +141,57 @@ export class RemoteClient {
     this.clearTimers();
     this.disposeConnection(reason === "UserInitiated" ? "close" : "unpair");
     this.rejectDownloadWaiters("closed");
+  }
+
+  /** Stop live iterators and retries while the OS reports no usable network. */
+  setNetworkAvailable(available: boolean): void {
+    if (this.stopped || available === this.networkAvailable) return;
+    this.networkAvailable = available;
+    if (available) return;
+    this.generation += 1;
+    this.clearTimers();
+    this.signal({ type: "transport_disconnect" });
+    this.disposeConnection("network_unavailable");
+  }
+
+  /** Validate after foregrounding, or immediately rebuild after a path change. */
+  recoverNow(reason: RecoveryReason): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    if (reason !== "foreground") this.networkAvailable = true;
+    if (!this.networkAvailable) return Promise.resolve();
+    if (this.recoveryPromise) return this.recoveryPromise;
+    const recovery = this.runRecovery(reason).finally(() => {
+      if (this.recoveryPromise === recovery) this.recoveryPromise = null;
+    });
+    this.recoveryPromise = recovery;
+    return recovery;
+  }
+
+  private async runRecovery(reason: RecoveryReason): Promise<void> {
+    const connection = this.connection;
+    const generation = this.generation;
+    if (reason === "foreground" && connection && !connection.isClosed()) {
+      try {
+        await withTimeout(connection.flush(), FOREGROUND_PROBE_TIMEOUT_MS);
+        if (
+          !this.stopped &&
+          this.networkAvailable &&
+          generation === this.generation &&
+          connection === this.connection
+        ) {
+          return;
+        }
+      } catch {
+        // Rebuild below without waiting for NATS's ping budget to expire.
+      }
+    }
+    if (this.stopped || !this.networkAvailable) return;
+    this.generation += 1;
+    this.clearTimers();
+    this.signal({ type: "transport_disconnect" });
+    this.disposeConnection(reason);
+    this.retryAttempt = 0;
+    await this.open();
   }
 
   /** Rotate the JWT in place and resume the connection (M1's refreshable class). */
@@ -237,13 +308,13 @@ export class RemoteClient {
 
   private scheduleRetry(): void {
     this.signal({ type: "open_failed", error: new Error("transport_failed") });
-    if (this.stopped) return;
+    if (this.stopped || !this.networkAvailable) return;
     if (this.retryTimer) clearTimeout(this.retryTimer);
     const delay = backoffDelayMs(this.retryAttempt);
     this.retryAttempt += 1;
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null;
-      if (this.stopped) return;
+      if (this.stopped || !this.networkAvailable) return;
       void this.open();
     }, delay);
   }
@@ -290,6 +361,7 @@ export class RemoteClient {
   private disposeConnection(reason: string): void {
     const connection = this.connection;
     this.connection = null;
+    this.handshakePromise = null;
     this.confirmedBridgeInstanceId = "";
     this.rejectDownloadWaiters(reason);
     if (connection) void connection.close().catch(() => undefined);
@@ -323,22 +395,40 @@ export class RemoteClient {
   private subscribeEvents(connection: NatsConnection, generation: number): void {
     const subscription = connection.subscribe(`p.${this.credentials.pairId}.evt.>`);
     void (async () => {
-      for await (const message of subscription) {
-        if (this.stopped || generation !== this.generation) break;
-        const prefix = `p.${this.credentials.pairId}.evt.`;
-        const sessionId = message.subject.startsWith(prefix)
-          ? message.subject.slice(prefix.length)
-          : "";
-        let event: StreamEvent;
-        try {
-          event = decodeJson<StreamEvent>(message.data);
-        } catch {
-          // A single malformed event must not kill the whole subscription
-          // (L6) — drop it; the session's next reconcile re-fetches truth.
-          this.callbacks.onError(new Error("remote_event_decode_failed"));
-          continue;
+      let liveGeneration = true;
+      try {
+        for await (const message of subscription) {
+          if (this.stopped || generation !== this.generation) {
+            liveGeneration = false;
+            break;
+          }
+          const prefix = `p.${this.credentials.pairId}.evt.`;
+          const sessionId = message.subject.startsWith(prefix)
+            ? message.subject.slice(prefix.length)
+            : "";
+          let event: StreamEvent;
+          try {
+            event = decodeJson<StreamEvent>(message.data);
+          } catch {
+            // A single malformed event must not kill the whole subscription
+            // (L6) — drop it; the session's next reconcile re-fetches truth.
+            this.callbacks.onError(new Error("remote_event_decode_failed"));
+            continue;
+          }
+          this.callbacks.onEvent(event, sessionId);
         }
-        this.callbacks.onEvent(event, sessionId);
+      } catch (error) {
+        if (!this.stopped && generation === this.generation) {
+          this.callbacks.onError(asError(error));
+        } else {
+          liveGeneration = false;
+        }
+      }
+      // A subscription can fail independently of the NATS status iterator.
+      // Restart the whole connection generation so realtime delivery cannot die
+      // silently while commands and presence still appear healthy.
+      if (liveGeneration && !this.stopped && generation === this.generation) {
+        this.handleFailure(new Error("remote_event_subscription_ended"));
       }
     })();
   }
@@ -443,7 +533,6 @@ export class RemoteClient {
         }
       } catch (error) {
         if (!this.stopped) this.callbacks.onError(asError(error));
-        exitedNaturally = false;
       }
       // The status iterator ended (or threw) while this is still the live
       // generation: NATS's internal reconnect budget was spent and the
