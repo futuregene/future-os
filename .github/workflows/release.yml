@@ -76,7 +76,7 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: desktop/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@1.97.0
@@ -112,15 +112,7 @@ jobs:
         working-directory: desktop
         run: npm ci
 
-      # The desktop frontend imports the shared thread-projection package via a
-      # `file:` dep whose entry points at dist/ (gitignored) — compile it before
-      # `npm run tauri:build` (vite build) resolves the import.
-      - name: Build thread-projection
-        working-directory: thread-projection
-        run: |
-          npm ci
-          npm run build
-
+     
       - name: Build CLI binary
         working-directory: cli
         run: |
@@ -216,15 +208,7 @@ jobs:
         working-directory: mobile
         run: npm ci
 
-      # The mobile app depends on the shared thread-projection package via a
-      # `file:` dep whose entry points at dist/ (gitignored) — compile it before
-      # expo prebuild so Metro resolves the import when bundling.
-      - name: Build thread-projection
-        working-directory: thread-projection
-        run: |
-          npm ci
-          npm run build
-
+     
       - name: Generate version
         working-directory: mobile
         run: npm run gen-version
@@ -272,7 +256,7 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: mobile/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install Apple signing certificate
         env:
@@ -353,12 +337,7 @@ jobs:
         working-directory: mobile
         run: npm ci
 
-      - name: Build thread-projection
-        working-directory: thread-projection
-        run: |
-          npm ci
-          npm run build
-
+     
       - name: Prebuild iOS
         working-directory: mobile
         env:

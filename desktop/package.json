@@ -17,7 +17,7 @@
     "desktop:package": "tauri build"
   },
   "dependencies": {
-    "@future-os/thread-projection": "file:../thread-projection",
+    "@future-os/thread-projection": "*",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "i18next": "^26.3.4",
@@ -55,10 +55,6 @@
     "typescript": "^6.0.3",
     "vite": "^8.1.0",
     "vitest": "^4.1.9"
-  },
-  "allowScripts": {
-    "esbuild@0.25.12": true,
-    "fsevents@2.3.3": true
   },
   "overrides": {
     "js-yaml": "^4.3.1",

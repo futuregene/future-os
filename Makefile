@@ -1,5 +1,5 @@
 .PHONY: help version \
-	build build-cli build-desktop build-mobile-android build-mobile-ios desktop-sidecars build-thread-projection \
+	build build-cli build-desktop build-mobile-android build-mobile-ios desktop-sidecars \
 	test test-agent test-channels test-cli test-tui test-cli-diff test-tui-diff test-tui-tmux \
 	test-desktop test-desktop-rust test-mobile \
 	lint lint-rust lint-desktop stylelint-desktop lint-mobile check-desktop check-mobile fmt fmt-mobile \
@@ -50,11 +50,11 @@ CARGO_PINNED := rustup run $(RUST_TOOLCHAIN) cargo
 # binaries are dev-only (cargo run -p <crate>) — install puts exactly two files
 # in PREFIX: `future` and `future-desktop`.
 
-# One-time developer bootstrap for a fresh clone. Installs the shared
-# thread-projection deps (via build-thread-projection), the desktop/mobile JS
-# deps, the skills submodule, and an empty sidecar placeholder — so any build /
-# run / lint / test target below works without knowing which one installs what.
-setup: build-thread-projection
+# One-time developer bootstrap for a fresh clone. Installs the workspace JS
+# deps (thread-projection, desktop, mobile), the skills submodule, and an empty
+# sidecar placeholder — so any build / run / lint / test target below works
+# without knowing which one installs what.
+setup:
 	git submodule update --init skills
 	$(call npm-install-if-needed,desktop)
 	$(call npm-install-if-needed,mobile)
@@ -127,17 +127,19 @@ build: build-cli build-desktop
 build-cli:
 	cargo build --release -p future-cli
 
-# Only run npm install when package.json is newer than the install stamp
+# Workspace install: desktop/mobile/thread-projection are npm workspaces, so all
+# deps hoist to the root node_modules and one `npm install` at the repo root
+# installs everything. Run it when any manifest is newer than the install stamp
 # (on Windows npm install is idempotent — just run it).
 ifeq ($(OS),windows)
 define npm-install-if-needed
-	@cd $(1) && npm install --silent
+	@npm install --silent
 endef
 else
 define npm-install-if-needed
-	@if [ ! -f "$(1)/node_modules/.package-lock.json" ] || [ "$(1)/package.json" -nt "$(1)/node_modules/.package-lock.json" ]; then \
-		echo "  npm install $(1)/"; \
-		cd $(1) && npm install; \
+	@if [ ! -f "node_modules/.package-lock.json" ] || [ "package.json" -nt "node_modules/.package-lock.json" ] || [ "$(1)/package.json" -nt "node_modules/.package-lock.json" ]; then \
+		echo "  npm install (workspace)"; \
+		npm install; \
 	fi
 endef
 endif
@@ -162,33 +164,20 @@ else
 	@[ -f "desktop/src-tauri/binaries/future-$(TARGET)" ] || : > "desktop/src-tauri/binaries/future-$(TARGET)"
 endif
 
-# Shared thread projection package: desktop/mobile both depend on its compiled
-# dist/ via a `file:` dep, so any TS change here must rebuild before either app
-# typechecks or runs. Every desktop/mobile build, test, lint and run target
-# below depends on this, so it always reflects the latest source — no manual step.
-# The stale-check lives in helper scripts: make recipes run under cmd.exe on
-# Windows, which cannot parse POSIX shell (`if [ ! -f ... ]`).
-build-thread-projection:
-ifeq ($(OS),windows)
-	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-thread-projection.ps1
-else
-	bash scripts/build-thread-projection.sh
-endif
-
 # Self-contained standalone binary (no installer):
 #   desktop/src-tauri/target/release/futureos$(EXE_SUFFIX)
 # `tauri build` runs the frontend build (`npm run build`) via beforeBuildCommand,
 # so it is not repeated here.
-build-desktop: build-thread-projection desktop-sidecars
+build-desktop: desktop-sidecars
 	$(call npm-install-if-needed,desktop)
 	cd desktop && npx tauri build --no-bundle
 
 # Mobile native projects are generated locally by Expo (gitignored).
-build-mobile-android: build-thread-projection
+build-mobile-android:
 	$(call npm-install-if-needed,mobile)
 	cd mobile && npm run android
 
-build-mobile-ios: build-thread-projection
+build-mobile-ios:
 	$(call npm-install-if-needed,mobile)
 	cd mobile && npm run ios
 
@@ -219,14 +208,14 @@ test-tui-diff:
 test-tui-tmux:
 	./tui/tests/tmux-diff.sh
 
-test-desktop: build-thread-projection
+test-desktop:
 	$(call npm-install-if-needed,desktop)
 	cd desktop && npm test
 
 test-desktop-rust: desktop-sidecar-placeholder
 	cd desktop/src-tauri && cargo test
 
-test-mobile: build-thread-projection
+test-mobile:
 	$(call npm-install-if-needed,mobile)
 	cd mobile && npm test
 
@@ -241,7 +230,7 @@ lint-rust: desktop-sidecar-placeholder
 	$(CARGO_PINNED) fmt --check --manifest-path desktop/src-tauri/Cargo.toml
 	$(CARGO_PINNED) clippy --all-targets --manifest-path desktop/src-tauri/Cargo.toml -- -D warnings
 
-lint-desktop: build-thread-projection
+lint-desktop:
 	$(call npm-install-if-needed,desktop)
 	cd desktop && npm run lint
 
@@ -249,11 +238,11 @@ stylelint-desktop:
 	$(call npm-install-if-needed,desktop)
 	cd desktop && npm run stylelint
 
-lint-mobile: build-thread-projection
+lint-mobile:
 	$(call npm-install-if-needed,mobile)
 	cd mobile && npm run typecheck && npm run lint
 
-check-desktop: lint-desktop stylelint-desktop build-thread-projection desktop-sidecar-placeholder
+check-desktop: lint-desktop stylelint-desktop desktop-sidecar-placeholder
 	$(call npm-install-if-needed,desktop)
 	cd desktop && npm run build
 	cd desktop/src-tauri && cargo check
@@ -291,15 +280,15 @@ run-channels:
 run-loop:
 	cd orchestration/loop && cargo run
 
-run-desktop: build-thread-projection desktop-sidecars
+run-desktop: desktop-sidecars
 	$(call npm-install-if-needed,desktop)
 	cd desktop && npm run tauri:dev
 
-run-mobile-android: build-thread-projection
+run-mobile-android:
 	$(call npm-install-if-needed,mobile)
 	cd mobile && npm run android:device
 
-run-mobile-ios: build-thread-projection
+run-mobile-ios:
 	$(call npm-install-if-needed,mobile)
 	cd mobile && npm run ios
 

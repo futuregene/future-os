@@ -85,15 +85,7 @@ jobs:
         working-directory: mobile
         run: npm ci
 
-      # The mobile app depends on the shared thread-projection package via a
-      # `file:` dep whose entry points at dist/ (gitignored) — compile it before
-      # expo prebuild so Metro resolves the import when bundling.
-      - name: Build thread-projection
-        working-directory: thread-projection
-        run: |
-          npm ci
-          npm run build
-
+     
       - name: Generate version
         working-directory: mobile
         run: npm run gen-version
