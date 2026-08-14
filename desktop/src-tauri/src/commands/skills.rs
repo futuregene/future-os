@@ -50,8 +50,8 @@ pub async fn uninstall_skill(id: String) -> Result<bool, crate::AppError> {
 /// skills. Used by the post-login onboarding flow; runs on a background thread
 /// since it blocks on the CLI child process.
 /// Spawn the builtin skill bootstrap on a background thread. Extracted so the
-/// thread body can run against a mock handle (the command wrapper itself needs
-/// a real Wry handle).
+/// thread body can run against a mock handle. The command wrapper is generic
+/// over `Runtime` for the same reason.
 fn spawn_builtin_skills<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     std::thread::spawn(move || skills_bootstrap::run_builtin_skills(&app));
 }
@@ -79,11 +79,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bootstrap_builtin_skills_command_runs_against_a_mock_handle() {
+    async fn bootstrap_builtin_skills_spawns_against_a_mock_handle() {
         let app = tauri::test::mock_builder()
             .plugin(tauri_plugin_shell::init())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build mock app");
+        // The command wrapper is generic over Runtime so its body (which just
+        // delegates to spawn_builtin_skills) can run against a mock handle.
         bootstrap_builtin_skills(app.handle().clone()).await;
     }
 
