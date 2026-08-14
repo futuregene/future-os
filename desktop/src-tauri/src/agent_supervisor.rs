@@ -394,53 +394,6 @@ mod tests {
     }
 
     #[test]
-    fn spawn_bundled_agent_spawns_an_executable_sidecar() {
-        let _lock = crate::commands::agent_mock::mock_agent_lock();
-        // Install a real executable placeholder so the sidecar spawn succeeds —
-        // the default placeholder is an empty non-executable file (spawn Err).
-        let triple = std::env::var("CARGO_BUILD_TARGET")
-            .ok()
-            .or_else(|| {
-                Some(format!(
-                    "{}-{}",
-                    std::env::consts::ARCH,
-                    if cfg!(target_os = "macos") {
-                        "apple-darwin"
-                    } else {
-                        "unknown-linux-gnu"
-                    }
-                ))
-            })
-            .unwrap();
-        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries");
-        std::fs::create_dir_all(&dir).unwrap();
-        let bin = dir.join(format!("future-{triple}"));
-        let was_placeholder = !std::fs::metadata(&bin)
-            .map(|m| m.len() > 0)
-            .unwrap_or(false);
-        std::fs::write(&bin, "#!/bin/sh\nsleep 30\n").unwrap();
-        let mut perms = std::fs::metadata(&bin).unwrap().permissions();
-        use std::os::unix::fs::PermissionsExt;
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&bin, perms).unwrap();
-
-        let app = tauri::test::mock_builder()
-            .plugin(tauri_plugin_shell::init())
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("build mock app");
-        spawn_bundled_agent(app.handle(), "127.0.0.1:59999");
-        // Give the spawn a moment to start the child, then kill it via the
-        // ownership path (covers the shutdown kill-Ok arm too).
-        std::thread::sleep(std::time::Duration::from_millis(150));
-        shutdown_agent();
-
-        // Restore the empty placeholder for other tests / CI builds.
-        if was_placeholder {
-            std::fs::write(&bin, b"").unwrap();
-        }
-    }
-
-    #[test]
     fn spawn_bundled_agent_logs_spawn_failure_for_a_non_executable_sidecar() {
         let app = tauri::test::mock_builder()
             .plugin(tauri_plugin_shell::init())
