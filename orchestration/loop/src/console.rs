@@ -870,6 +870,26 @@ fn cmd_todo(store: &mut Store, args: &[String]) -> Result<()> {
     }
 }
 
+/// O4: heuristic for the `todo add` advisory hint — does the text look like a
+/// code/implementation task that should carry a `--verify` validator? Matches
+/// coding keywords (worktree / commit / cargo / clippy / 测试 / 代码 …) or a
+/// `.rs` source path. Advisory only; never changes CLI semantics.
+fn looks_like_code_todo(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    if lower.contains(".rs") {
+        return true;
+    }
+    const CODE_WORDS: &[&str] = &[
+        "worktree", "commit", "cargo", "clippy", "rustfmt", "test", "tests", "compile", "build",
+        "lint", "refactor", "patch", "crate", "git", "merge", "code", "debug",
+    ];
+    const CODE_ZH: &[&str] = &["测试", "代码", "编译", "修复"];
+    CODE_ZH.iter().any(|k| text.contains(k))
+        || lower
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|tok| CODE_WORDS.contains(&tok))
+}
+
 fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut role = "agent".to_string();
@@ -977,6 +997,10 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let text = text.ok_or_else(|| anyhow::anyhow!("--text required"))?;
+    // O4: advisory hint — code-like todos without a validator can be marked
+    // done by an agent even when the code does not compile. Computed before
+    // `verify` is moved into the todo below.
+    let wants_verify_hint = verify.is_none() && looks_like_code_todo(&text);
     store
         .replay(&goal_id)?
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
@@ -1106,6 +1130,10 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     refresh_next_action(store, &goal_id)?;
     sync_compat(store, &goal_id)?;
     println!("todo {id} added to {goal_id} ✔");
+    // O4: pure reminder after a successful add; no semantic change.
+    if wants_verify_hint {
+        eprintln!("hint: 实现类 todo 建议挂 --verify \"cargo check -p ...\"，防不编译代码被标完成");
+    }
     Ok(())
 }
 
@@ -10310,5 +10338,48 @@ mod residual_branch_tests {
         };
         let err = render_premerge_gate(&report, false).unwrap_err();
         assert!(format!("{err:#}").contains("gate failed"), "{err:#}");
+    }
+}
+
+#[cfg(test)]
+mod todo_verify_hint_tests {
+    use super::looks_like_code_todo;
+
+    #[test]
+    fn code_keywords_detect_implementation_todos() {
+        // ASCII keywords (case-insensitive), Chinese keywords, and .rs paths.
+        for text in [
+            "cargo check -p future-loop",
+            "Commit worktree changes",
+            "clippy 全绿",
+            "写测试用例",
+            "修改代码",
+            "修复编译错误",
+            "refactor console.rs",
+            "fix orchestration/loop/src/console.rs",
+            "merge main 后补回归",
+        ] {
+            assert!(
+                looks_like_code_todo(text),
+                "{text:?} should look like a code todo"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_todos_do_not_trigger_the_hint() {
+        for text in [
+            "整理会议纪要",
+            "ship the widget",
+            "gate one",
+            "approve the plan",
+            "latest release notes", // "test" substring inside "latest" must not match
+            "version 1.2.3 bump",
+        ] {
+            assert!(
+                !looks_like_code_todo(text),
+                "{text:?} should not look like a code todo"
+            );
+        }
     }
 }
