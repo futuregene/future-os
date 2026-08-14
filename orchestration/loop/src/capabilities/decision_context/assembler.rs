@@ -55,6 +55,7 @@ impl DecisionContextAssembler {
             run_history: RunHistorySection::default(),
             outcome_streak: OutcomeStreakSection::default(),
             quota: QuotaStatusSection::default(),
+            semantic_history: None,
         };
         for provider in &self.providers {
             packet.providers.push(provider.id().to_string());
@@ -62,6 +63,9 @@ impl DecisionContextAssembler {
                 ProviderSection::RunHistory(section) => packet.run_history = section,
                 ProviderSection::OutcomeStreak(section) => packet.outcome_streak = section,
                 ProviderSection::QuotaStatus(section) => packet.quota = section,
+                ProviderSection::SemanticHistory(section) => {
+                    packet.semantic_history = Some(section)
+                }
             }
         }
         packet
@@ -98,12 +102,20 @@ mod tests {
             vec![
                 "run_history".to_string(),
                 "outcome_streak".to_string(),
-                "quota_status".to_string()
+                "quota_status".to_string(),
+                "semantic_history".to_string()
             ]
         );
         assert_eq!(packet.open_acceptance_gaps, vec!["A1".to_string()]);
         assert!(packet.outcome_streak.floor_breached);
         assert_eq!(packet.run_history.run_count, 0);
+        // G13 ③: the semantic-history section is attached by its provider.
+        let section = packet.semantic_history.expect("semantic history section");
+        assert_eq!(
+            section.schema_version,
+            crate::decision::goal_frontier::semantic_history::SEMANTIC_HISTORY_SCHEMA_VERSION
+        );
+        assert!(section.events.is_empty());
         assert_eq!(
             packet.quota.allowed_slots,
             crate::quota::slot_accounting::QUOTA_ALLOWED_SLOTS
@@ -158,7 +170,8 @@ mod tests {
             vec![
                 "run_history".to_string(),
                 "outcome_streak".to_string(),
-                "quota_status".to_string()
+                "quota_status".to_string(),
+                "semantic_history".to_string()
             ]
         );
         // The duplicate-provider test double exposes its description.
@@ -173,5 +186,21 @@ mod tests {
         assert_eq!(packet.run_history, RunHistorySection::default());
         assert_eq!(packet.outcome_streak, OutcomeStreakSection::default());
         assert_eq!(packet.quota, QuotaStatusSection::default());
+        assert_eq!(packet.semantic_history, None);
+    }
+
+    #[test]
+    fn semantic_history_section_reflects_folded_events() {
+        let mut g = Goal::new("g1", "objective", "/tmp");
+        g.record_semantic_event("run_landed", Some("T1"), "completed", 42);
+        let packet = assemble_decision_context(&g);
+        let section = packet.semantic_history.expect("semantic history section");
+        assert_eq!(section.events.len(), 1);
+        assert_eq!(section.events[0].kind, "run_landed");
+        assert_eq!(section.events[0].ts, 42);
+        assert_eq!(
+            section.schema_version,
+            crate::decision::goal_frontier::semantic_history::SEMANTIC_HISTORY_SCHEMA_VERSION
+        );
     }
 }

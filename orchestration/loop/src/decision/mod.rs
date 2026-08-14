@@ -28,6 +28,7 @@ pub mod arbitration;
 mod boundary;
 mod frontier;
 mod goal_boundary;
+pub mod goal_frontier;
 mod heartbeat_recommendation;
 mod identity;
 pub(crate) mod monitor;
@@ -383,7 +384,30 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
         );
     }
 
-    // ── 6. Validated closure. ───────────────────────────────────────────
+    // ── 6. Validated closure — the terminal judgement (G13 ④): closure is
+    //       validated from complete sources (todos done/superseded, every
+    //       acceptance gap satisfied, closure intent declared, no pending
+    //       deferred work) and the judgement enumerates the gap detail.
+    //       `terminal` ⇔ `Goal::is_terminal()` — the judgement is the single
+    //       authoritative gate here; any remaining blocker surfaces as a
+    //       replan with the explicit gap list (defensive: the pipeline above
+    //       catches every blocker before this point). ───────────────────────
+    let judgement = crate::decision::goal_frontier::terminal::terminal_judgement(goal);
+    if !judgement.terminal {
+        let gaps: Vec<String> = judgement
+            .gaps
+            .iter()
+            .map(|g| {
+                let id = g.gap_id.as_deref().or(g.todo_id.as_deref()).unwrap_or("-");
+                format!("{}:{}", g.kind, id)
+            })
+            .collect();
+        return replan_packet(
+            goal,
+            DecisionReasonCode::AcceptanceGapOpen,
+            &format!("terminal judgement open gaps: {}", gaps.join(", ")),
+        );
+    }
     let mut p = packet(
         goal,
         DecisionReasonCode::ValidatedClosure,
