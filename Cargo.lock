@@ -938,6 +938,7 @@ dependencies = [
  "fs2",
  "future-rpc",
  "futures-util",
+ "libc",
  "serde",
  "serde_json",
  "sha2",
