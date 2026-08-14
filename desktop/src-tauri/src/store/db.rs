@@ -90,6 +90,10 @@ static POOL: std::sync::LazyLock<std::sync::Mutex<(std::path::PathBuf, Vec<Conne
 /// statements, `transaction()` via `DerefMut`) work unchanged.
 pub(super) struct PooledConnection {
     conn: Option<Connection>,
+    /// Path this connection was opened for. This must travel with the
+    /// connection: tests temporarily switch HOME, and background tasks can
+    /// return an old connection after the process-wide pool has been re-keyed.
+    path: PathBuf,
 }
 
 impl std::ops::Deref for PooledConnection {
@@ -114,13 +118,12 @@ impl Drop for PooledConnection {
         let Some(conn) = self.conn.take() else {
             return;
         };
-        let Ok(path) = db_path() else {
-            return;
-        };
         if let Ok(mut pool) = POOL.lock() {
-            // Return only if the pool still points at this database (a HOME
-            // override mid-process swaps the path) and it has room.
-            if pool.0 == path && pool.1.len() < POOL_MAX_IDLE {
+            // Return only if the pool still points at the database this
+            // connection was opened for. Never derive that identity from the
+            // current HOME: an async task may outlive a temporary HOME and
+            // otherwise contaminate the newly re-keyed pool with a stale DB.
+            if pool.0 == self.path && pool.1.len() < POOL_MAX_IDLE {
                 pool.1.push(conn);
             }
         }
@@ -145,13 +148,19 @@ pub(super) fn connect() -> Result<PooledConnection, crate::AppError> {
         if let Some(conn) = pool.1.pop() {
             // Directory creation is skipped on the pooled path — the dirs
             // provably existed when the pooled connection was first opened.
-            return Ok(PooledConnection { conn: Some(conn) });
+            return Ok(PooledConnection {
+                conn: Some(conn),
+                path,
+            });
         }
     }
     ensure_app_dirs()?;
-    let conn = Connection::open(path)?;
+    let conn = Connection::open(&path)?;
     conn.execute_batch(CONNECTION_PRAGMAS)?;
-    Ok(PooledConnection { conn: Some(conn) })
+    Ok(PooledConnection {
+        conn: Some(conn),
+        path,
+    })
 }
 
 pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
@@ -692,7 +701,7 @@ mod tests {
         use std::sync::MutexGuard;
 
         /// Removes HOME for the guard's lifetime (serialized against other
-        /// HOME-mutating tests) so `db_path()` fails inside `Drop`.
+        /// HOME-mutating tests).
         struct NoHomeGuard {
             previous: Option<String>,
             _lock: MutexGuard<'static, ()>,
@@ -719,10 +728,14 @@ mod tests {
         }
 
         let _no_home = NoHomeGuard::new();
-        // The `conn: None` and `db_path()`-fails drop arms.
-        drop(PooledConnection { conn: None });
+        // The `conn: None` and mismatched-path drop arms.
+        drop(PooledConnection {
+            conn: None,
+            path: PathBuf::new(),
+        });
         drop(PooledConnection {
             conn: Some(Connection::open_in_memory().unwrap()),
+            path: PathBuf::new(),
         });
     }
 
