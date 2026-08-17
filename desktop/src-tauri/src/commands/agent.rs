@@ -24,26 +24,9 @@ pub async fn set_default_model(model_id: String) -> Result<(), crate::AppError> 
 
 #[tauri::command]
 pub async fn agent_prompt(
-    message: String,
-    model_context: Option<String>,
-    attachments: Option<Vec<agent_bridge::AttachmentInput>>,
-    thread_id: String,
-    session_id: Option<String>,
-    run_id: Option<String>,
-    model_id: Option<String>,
-    thinking_level: Option<String>,
+    request: agent_bridge::AgentPromptRequest,
 ) -> Result<agent_bridge::AgentPromptResponse, crate::AppError> {
-    agent_bridge::agent_prompt_with_model_context(
-        message,
-        model_context.unwrap_or_default(),
-        attachments,
-        thread_id,
-        session_id,
-        run_id,
-        model_id,
-        thinking_level,
-    )
-    .await
+    agent_bridge::agent_prompt_with_model_context(request).await
 }
 
 #[cfg(test)]
@@ -59,18 +42,11 @@ mod tests {
             tauri::generate_handler![set_default_model, agent_prompt],
             &["set_default_model", "agent_prompt"],
         );
-        // `agent_prompt` takes seven arguments; its *last* argument
-        // (`thinking_level: Option<String>`) deserializes a missing key to
-        // `None`, so the empty-body rejection above never reaches its error
-        // arm. Feed it a wrong-typed value instead to make the final
-        // `CommandArg::from_command(..)?` fail and hit the error arm
-        // attributed to the `#[tauri::command]` attribute line.
+        // Feed the request argument a scalar so its `CommandArg` conversion
+        // reaches the wrapper's error arm.
         crate::commands::ipc_harness::assert_all_reject_bodies(
             tauri::generate_handler![agent_prompt],
-            &[(
-                "agent_prompt",
-                serde_json::json!({ "message": "hi", "attachments": null, "threadId": "t", "sessionId": null, "runId": null, "modelId": null, "thinkingLevel": 123 }),
-            )],
+            &[("agent_prompt", serde_json::json!({ "request": 123 }))],
         );
     }
 
@@ -126,16 +102,16 @@ mod tests {
         crate::commands::agent_mock::ensure_mock_agent();
         // A thread the store has never seen fails before any prompt work — the
         // wrapper's job is just to forward the error (and the message).
-        let error = agent_prompt(
-            "hi".to_string(),
-            None,
-            None,
-            "ghost".to_string(),
-            None,
-            None,
-            None,
-            None,
-        )
+        let error = agent_prompt(agent_bridge::AgentPromptRequest {
+            message: "hi".to_string(),
+            model_context: String::new(),
+            attachments: None,
+            thread_id: "ghost".to_string(),
+            session_id: None,
+            run_id: None,
+            model_id: None,
+            thinking_level: None,
+        })
         .await
         .expect_err("prompt should fail for a missing thread");
         assert!(!error.to_string().is_empty());

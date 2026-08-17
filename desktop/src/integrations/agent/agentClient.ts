@@ -67,14 +67,16 @@ export async function sendPromptToFutureAgent({
   thinkingLevel,
 }: AgentPromptInput) {
   const response = await invokeCommand<AgentPromptResponse>("agent_prompt", {
-    attachments: attachments ?? [],
-    message,
-    modelContext: modelContext ?? "",
-    sessionId: sessionId ?? null,
-    threadId,
-    runId: runId ?? null,
-    modelId: modelId ?? null,
-    thinkingLevel: thinkingLevel ?? null,
+    request: {
+      attachments: attachments ?? [],
+      message,
+      modelContext: modelContext ?? "",
+      sessionId: sessionId ?? null,
+      threadId,
+      runId: runId ?? null,
+      modelId: modelId ?? null,
+      thinkingLevel: thinkingLevel ?? null,
+    },
   });
   return {
     content: response.content,
