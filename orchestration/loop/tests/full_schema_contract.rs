@@ -32,9 +32,7 @@ fn todo_exposes_all_future_loop_fields() {
             .with_action_kind("benchmark")
             .with_repository("github.com/acme/repo")
             .with_continuation_policy("independent_handoff")
-            .with_write_scopes(&["results/", "logs/"])
-            .with_capability_binding("bench:run")
-            .requiring("bench"),
+            .with_write_scopes(&["results/", "logs/"]),
     );
     let t = goal.todo("t1").unwrap();
     assert_eq!(t.title, "Run bench");
@@ -47,7 +45,6 @@ fn todo_exposes_all_future_loop_fields() {
         Some("independent_handoff")
     );
     assert_eq!(t.required_write_scope, vec!["results/", "logs/"]);
-    assert_eq!(t.capability_binding_ref.as_deref(), Some("bench:run"));
     assert_eq!(t.archive_state, "active");
     assert_eq!(t.updated_at, t.updated_at); // audit timestamps present
 }
@@ -72,8 +69,7 @@ fn full_schema_survives_replay() {
             todo: Todo::advancement("t1", "Work")
                 .with_action_kind("shell")
                 .with_repository("github.com/acme/repo")
-                .with_continuation_policy("independent_handoff")
-                .with_capability_binding("shell:exec"),
+                .with_continuation_policy("independent_handoff"),
             ts,
         })
         .unwrap();
@@ -103,7 +99,6 @@ fn full_schema_survives_replay() {
         t.continuation_policy.as_deref(),
         Some("independent_handoff")
     );
-    assert_eq!(t.capability_binding_ref.as_deref(), Some("shell:exec"));
     assert_eq!(t.status, TodoStatus::Done);
     assert!(t.completed_at.is_some(), "completed_at recorded");
     assert_eq!(t.archive_state, "archived");

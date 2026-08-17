@@ -238,8 +238,8 @@ fn recipe_record_resolve_and_apply() {
     assert!(recipe_named(&store, "g1", "missing").unwrap().is_none());
 
     // Applying the recipe onboards the agent with the recipe profile — the
-    // capability gate / workspace guard consume the same AgentOnboarded
-    // event as the explicit onboard path.
+    // workspace guard consumes the same AgentOnboarded event as the explicit
+    // onboard path; capabilities ride along as descriptive metadata.
     apply_recipe_onboard(&mut store, "g1", "agent-r", &resolved).unwrap();
     let goal = store.replay("g1").unwrap().unwrap();
     assert!(goal.registered_agents.contains(&"agent-r".to_string()));

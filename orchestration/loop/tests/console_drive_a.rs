@@ -186,8 +186,6 @@ fn todo_add_flag_matrix() {
         "P0",
         "--action-kind",
         "deploy",
-        "--required-capability",
-        "shell",
         "--title",
         "Sink",
         "--task-repository",
@@ -196,8 +194,6 @@ fn todo_add_flag_matrix() {
         "resume",
         "--required-write-scope",
         "src, tests",
-        "--capability-binding-ref",
-        "bind-1",
         "--note",
         "a note",
         "--goal-bound",
@@ -323,14 +319,12 @@ fn todo_add_flag_matrix() {
     assert!(sink.text.starts_with("[P0] "), "{}", sink.text);
     assert_eq!(sink.title, "Sink", "custom title is kept");
     assert_eq!(sink.action_kind.as_deref(), Some("deploy"));
-    assert_eq!(sink.required_capability.as_deref(), Some("shell"));
     assert_eq!(sink.task_repository.as_deref(), Some("repo-1"));
     assert_eq!(sink.continuation_policy.as_deref(), Some("resume"));
     assert_eq!(
         sink.required_write_scope,
         vec!["src".to_string(), "tests".to_string()]
     );
-    assert_eq!(sink.capability_binding_ref.as_deref(), Some("bind-1"));
     assert_eq!(sink.note.as_deref(), Some("a note"));
     assert!(sink.goal_bound);
     assert_eq!(sink.validator.as_deref(), Some("exit 0"));
@@ -964,26 +958,8 @@ fn agent_registry_surface() {
     // list with no agents.
     cli_ok(&["agent", "list", "--goal", &gid]);
     cli_ok(&["agent", "register", "--goal", &gid, "--agent-id", "w1"]);
-    cli_ok(&[
-        "agent",
-        "onboard",
-        "--goal",
-        &gid,
-        "--agent-id",
-        "w2",
-        "--capability",
-        "shell,github",
-    ]);
-    cli_ok(&[
-        "agent",
-        "onboard",
-        "--goal",
-        &gid,
-        "--agent-id",
-        "w3",
-        "--capabilities",
-        "web",
-    ]);
+    cli_ok(&["agent", "onboard", "--goal", &gid, "--agent-id", "w2"]);
+    cli_ok(&["agent", "onboard", "--goal", &gid, "--agent-id", "w3"]);
     // w1 holds a live lease → running row in `agent list`.
     let t = first_todo_id(&cr.root, &gid);
     cli_ok(&[

@@ -1,4 +1,4 @@
-//! The state substrate — LoopX's durable bottom layer, natively implemented.
+// P1-1 + G-16 + G12 projection-only events: read from
 //!
 //!   registry.json    — known goals (id, objective, cwd, status, authority)
 //!   <goal>/events.jsonl   — append-only event ledger (the canonical truth)
@@ -235,10 +235,13 @@ pub enum Event {
         workspaces: Vec<String>,
         ts: u64,
     },
-    /// Onboard an agent with declared capabilities (LoopX: agent_profiles).
+    /// Onboard an agent with declared capabilities (descriptive metadata —
+    /// kept on the event for recipe/agent-list surfaces; the runnability
+    /// gate is gone). Old events without the field deserialize as empty.
     AgentOnboarded {
         goal_id: String,
         agent_id: String,
+        #[serde(default)]
         capabilities: Vec<String>,
         #[serde(default)]
         workspaces: Vec<String>,
@@ -322,24 +325,6 @@ pub enum Event {
         slots: u32,
         ts: u64,
     },
-    /// Per-tool quota ledger (LoopX 对比改进项 ②): a capability-boundary
-    /// tool invocation. Appended at the capability invocation boundary
-    /// (`capability propose` / per-capability command hooks) when a goal
-    /// context is present. `outcome` is `accepted` (counted against the
-    /// tool's quota, folded into the goal's invocation projection) or
-    /// `rejected` (over-limit refusal — audit trail only, never counted).
-    /// `invocation_id` makes each invocation's content unique: every CLI
-    /// call is a distinct logical invocation (non-retryable side-effect
-    /// boundary), so content-derived-id idempotency must NOT collapse two
-    /// invocations that land in the same second.
-    CapabilityInvoked {
-        goal_id: String,
-        capability: String,
-        command: String,
-        outcome: String,
-        invocation_id: String,
-        ts: u64,
-    },
     /// G-3: evidence attached to a todo independently of completion (LoopX
     /// EVIDENCE_ATTACHED).
     EvidenceAttached {
@@ -401,41 +386,6 @@ pub enum Event {
         turns_overdue: u32,
         ts: u64,
     },
-    /// P1-5: reward_memory ingestion (phase 1) — one scoped reward signal
-    /// in the ledger (LoopX `capabilities/reward_memory/ingestion.py`,
-    /// compact set). Sources: `validator` (auto-recorded by the run path
-    /// when a turn carries an independent task-validation receipt),
-    /// `delivery_outcome` (auto-recorded when a P0-2 delivery is resolved
-    /// verified/failed/rework), `evidence` (manual score via
-    /// `reward-memory record`). Projection-only: goal state is unchanged;
-    /// the scoped-feedback query (`reward-memory query`) reads the ledger.
-    RewardSignalRecorded {
-        goal_id: String,
-        todo_id: String,
-        #[serde(default)]
-        agent_id: Option<String>,
-        #[serde(default)]
-        run_id: Option<String>,
-        source: String,
-        signal: String,
-        #[serde(default)]
-        score: Option<f64>,
-        #[serde(default)]
-        note: Option<String>,
-        /// Per-todo ingestion sequence (1-based, from the ledger at append
-        /// time). Distinguishes otherwise-identical signals appended within
-        /// the same second (G-3 content-id dedupe anchor, mirroring
-        /// DeliveryOutcomeRecorded.seq). Old events without the field
-        /// deserialize as 0.
-        #[serde(default)]
-        seq: u32,
-        ts: u64,
-    },
-    /// P1-1②: decision_summary projection — one compact quota decision
-    /// persisted per executed turn (LoopX `decision_summary.py` /
-    /// `compact_quota_decision`). Projection-only: replay ignores it; the
-    /// read model (`quota::decision_summary`) serves status/TUI/desktop and
-    /// `quota decisions` without re-running the kernel.
     DecisionSummaryRecorded {
         goal_id: String,
         summary: crate::quota::decision_summary::DecisionSummary,
@@ -542,23 +492,6 @@ pub enum Event {
         backup_path: String,
         ts: u64,
     },
-    /// P1-4: decision_context outcome feedback — one settled outcome
-    /// receipt against an anchored decision (LoopX
-    /// `capabilities/decision_context/outcome_feedback.py`). Recorded via
-    /// `decision-context feedback`; the receipt's `seq` is the G-3 dedupe
-    /// anchor for same-second repeat settles. Projection-only: replay
-    /// ignores it; the read model (`decision-context outcomes`) and the
-    /// reward-memory `decision_outcome` source read the ledger.
-    DecisionOutcomeRecorded {
-        goal_id: String,
-        receipt: crate::capabilities::decision_context::packets::DecisionOutcomeReceipt,
-        ts: u64,
-    },
-    /// G12: multi-agent contract set — the declarative peer/handoff/
-    /// collective topology for a goal (full replace; the latest event wins).
-    /// Projection-only: goal state is unchanged; the multi_agent read model
-    /// (`agent contract show`) reads the ledger. Validation fails closed at
-    /// the command layer before append.
     MultiAgentContractSet {
         goal_id: String,
         contract: crate::agents::multi_agent::MultiAgentContract,
@@ -618,14 +551,12 @@ impl Event {
             | Event::MonitorPolled { goal_id, .. }
             | Event::TurnNoProgress { goal_id, .. }
             | Event::QuotaSpent { goal_id, .. }
-            | Event::CapabilityInvoked { goal_id, .. }
             | Event::EvidenceAttached { goal_id, .. }
             | Event::TodoRenewed { goal_id, .. }
             | Event::TodoReleased { goal_id, .. }
             | Event::TodoExpired { goal_id, .. }
             | Event::DeliveryOutcomeRecorded { goal_id, .. }
             | Event::FollowthroughCreated { goal_id, .. }
-            | Event::RewardSignalRecorded { goal_id, .. }
             | Event::DecisionSummaryRecorded { goal_id, .. }
             | Event::HeartbeatReceiptRecorded { goal_id, .. }
             | Event::SchedulerAcked { goal_id, .. }
@@ -634,7 +565,6 @@ impl Event {
             | Event::SupervisorProposed { goal_id, .. }
             | Event::SupervisorReceiptRecorded { goal_id, .. }
             | Event::ProjectionRepaired { goal_id, .. }
-            | Event::DecisionOutcomeRecorded { goal_id, .. }
             | Event::MultiAgentContractSet { goal_id, .. }
             | Event::AgentRecipeAdded { goal_id, .. }
             | Event::SuccessionOccurred { goal_id, .. }
@@ -1717,22 +1647,6 @@ fn apply(goal: &mut Goal, event: Event) {
         Event::QuotaSpent { slots, .. } => {
             goal.quota_spent_slots = goal.quota_spent_slots.saturating_add(slots);
         }
-        Event::CapabilityInvoked {
-            capability,
-            outcome,
-            ts,
-            ..
-        } => {
-            // Only accepted invocations consume quota; rejected ones stay in
-            // the ledger as the enforcement audit trail.
-            if outcome == crate::quota::tool_quota::OUTCOME_ACCEPTED {
-                let invocations = &mut goal.capability_invocations;
-                if invocations.len() >= crate::state::CAPABILITY_INVOCATION_PROJECTION_CAP {
-                    invocations.remove(0);
-                }
-                invocations.push((ts, capability));
-            }
-        }
         Event::EvidenceAttached {
             todo_id,
             evidence,
@@ -1882,17 +1796,15 @@ fn apply(goal: &mut Goal, event: Event) {
                 ts,
             );
         }
-        // P1-5 + P1-1 + P1-4 + G-16 + G12 projection-only events: read from
+        // P1-1 + G-16 + G12 projection-only events: read from
         // the event log by their read models; goal state is unchanged on
         // replay.
-        Event::RewardSignalRecorded { .. }
-        | Event::DecisionSummaryRecorded { .. }
+        Event::DecisionSummaryRecorded { .. }
         | Event::HeartbeatReceiptRecorded { .. }
         | Event::SchedulerAcked { .. }
         | Event::SupervisorProposed { .. }
         | Event::SupervisorReceiptRecorded { .. }
         | Event::ProjectionRepaired { .. }
-        | Event::DecisionOutcomeRecorded { .. }
         | Event::MultiAgentContractSet { .. }
         | Event::AgentRecipeAdded { .. } => {}
         Event::SuccessionOccurred {

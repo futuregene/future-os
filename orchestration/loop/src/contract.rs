@@ -215,6 +215,8 @@ pub struct ShouldRunPacket {
     pub normal_delivery_allowed: bool,
     pub recovery_delivery_allowed: bool,
     pub self_repair_allowed: bool,
+    /// Always `false` — the capability framework was removed; kept for wire
+    /// compatibility with consumers of the legacy packet.
     pub capability_repair_allowed: bool,
     pub workspace_repair_allowed: bool,
     pub actionable_by_codex: bool,

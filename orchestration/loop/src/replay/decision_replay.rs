@@ -65,8 +65,6 @@ pub struct CompactTodo {
     /// Comma-joined predecessor ids (gates, blockers, todo→todo blocks).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_by_gate: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub required_capability: Option<String>,
     /// Repair-budget counter (absent = 0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failed_attempts: Option<u32>,
@@ -160,13 +158,6 @@ pub struct DecisionCase {
     pub user_todos: Vec<CompactTodo>,
     pub interaction_contract: InteractionCase,
     pub expected: ExpectedCase,
-    /// P1-4: the decision context assembled at record time (run history /
-    /// outcome streak / quota status + the goal-boundary header). Replay
-    /// rebuilds the goal-level decision state from it; `None` on legacy
-    /// pre-P1-4 cases (replay then reconstructs todos only).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub decision_context:
-        Option<crate::capabilities::decision_context::packets::DecisionContextPacket>,
 }
 
 impl DecisionCase {
@@ -264,7 +255,6 @@ fn compact_todo(todo: &Todo, now_epoch: u64) -> CompactTodo {
         priority: (todo.priority != crate::state::Priority::default())
             .then(|| todo.priority.to_string()),
         blocked_by_gate: todo.blocked_by_gate.clone(),
-        required_capability: todo.required_capability.clone(),
         failed_attempts: (todo.failed_attempts > 0).then_some(todo.failed_attempts),
         consecutive_no_change: (todo.consecutive_no_change > 0)
             .then_some(todo.consecutive_no_change),
@@ -346,12 +336,6 @@ pub fn reduce_public_safe_decision(
             scheduler_interval_minutes: packet.scheduler_hint.next_due_ms.map(|ms| ms / 60_000),
             decision_scope_status: "consistent".to_string(),
         },
-        // P1-4: capture the assembled decision context (run history /
-        // outcome streak / quota status + goal boundary) so replay can
-        // rebuild the goal-level decision state the compact todos can't.
-        decision_context: Some(
-            crate::capabilities::decision_context::assembler::assemble_decision_context(goal),
-        ),
     }
 }
 
@@ -457,7 +441,6 @@ pub fn goal_from_case(case: &DecisionCase) -> Goal {
             _ => crate::state::Priority::P1,
         };
         todo.blocked_by_gate = item.blocked_by_gate.clone();
-        todo.required_capability = item.required_capability.clone();
         todo.failed_attempts = item.failed_attempts.unwrap_or(0);
         todo.consecutive_no_change = item.consecutive_no_change.unwrap_or(0);
         todo.no_follow_up = item.no_follow_up.unwrap_or(false);
@@ -481,23 +464,6 @@ pub fn goal_from_case(case: &DecisionCase) -> Goal {
             todo.role = role;
         }
         goal.add(todo);
-    }
-    // P1-4: rebuild the goal-level decision state from the assembled
-    // context (the mismatch fix — without it an outcome-floor replan, a
-    // cancelled-goal skip, or an acceptance-gap replan replays as run /
-    // terminal because the fresh goal defaults to streak 0 / active / no
-    // gaps). Legacy cases without a context keep the pre-P1-4 behavior.
-    if let Some(context) = &case.decision_context {
-        goal.status = context.goal_status.clone();
-        goal.outcome_streak = context.outcome_streak.surface_streak;
-        goal.execution_profile.outcome_floor_streak_threshold = context.outcome_streak.threshold;
-        for gap_id in &context.open_acceptance_gaps {
-            goal.acceptance.push(crate::state::AcceptanceGap {
-                id: gap_id.clone(),
-                description: format!("Replay gap {gap_id}."),
-                satisfied: false,
-            });
-        }
     }
     goal
 }
@@ -855,20 +821,6 @@ mod tests {
     }
 
     #[test]
-    fn replay_matches_outcome_floor_breach_replan() {
-        // Live: outcome floor breached → replan. Pre-P1-4 replay lost the
-        // streak + threshold → replayed as normal_run (MISMATCH).
-        let mut goal = Goal::new("g1", "objective", "/tmp");
-        goal.add(Todo::advancement("T1", "work"));
-        goal.execution_profile.outcome_floor_streak_threshold = 2;
-        goal.outcome_streak = 2;
-        let packet = crate::decision::decide(&goal, std::time::SystemTime::now());
-        assert_eq!(packet.decision, "replan", "fixture must breach the floor");
-        let comparison = reduce_and_replay(&goal, "case-floor");
-        assert!(comparison.matched, "{:?}", comparison.mismatches);
-    }
-
-    #[test]
     fn replay_matches_repair_budget_exhaustion_and_attempt_count() {
         // failed_attempts drives both the retryable filter (repair budget)
         // and the repair-attempt reason; pre-P1-4 replay reset it to 0.
@@ -913,28 +865,6 @@ mod tests {
         let packet = crate::decision::decide(&goal, std::time::SystemTime::now());
         assert_eq!(packet.effective_action, "monitor_poll");
         let comparison = reduce_and_replay(&goal, "case-due");
-        assert!(comparison.matched, "{:?}", comparison.mismatches);
-    }
-
-    #[test]
-    fn replay_matches_cancelled_goal_skip() {
-        let mut goal = Goal::new("g1", "objective", "/tmp");
-        goal.add(Todo::advancement("T1", "work"));
-        goal.status = "cancelled".to_string();
-        let packet = crate::decision::decide(&goal, std::time::SystemTime::now());
-        assert_eq!(packet.decision, "skip");
-        let comparison = reduce_and_replay(&goal, "case-cancelled");
-        assert!(comparison.matched, "{:?}", comparison.mismatches);
-    }
-
-    #[test]
-    fn replay_matches_acceptance_gap_replan() {
-        // Open acceptance gap with no runnable work → replan; pre-P1-4
-        // replay had no gaps → terminal closure (MISMATCH).
-        let goal = Goal::new("g1", "objective", "/tmp").with_acceptance(vec![("A1", "match")]);
-        let packet = crate::decision::decide(&goal, std::time::SystemTime::now());
-        assert_eq!(packet.decision, "replan", "fixture must have an open gap");
-        let comparison = reduce_and_replay(&goal, "case-gap");
         assert!(comparison.matched, "{:?}", comparison.mismatches);
     }
 
@@ -985,41 +915,18 @@ mod tests {
     }
 
     #[test]
-    fn replay_matches_capability_gated_frontier() {
-        // T1 requires capability "shell"; the recording agent declared it →
-        // runnable live. Replay must register the same capabilities.
-        let mut goal = Goal::new("g1", "objective", "/tmp");
-        goal.add(Todo::advancement("T1", "work").with_action_kind("shell"));
-        goal.todo_mut("T1").unwrap().required_capability = Some("shell".to_string());
-        goal.register_agent("agent-x", vec!["shell".to_string()]);
-        let packet =
-            crate::decision::decide_for(&goal, std::time::SystemTime::now(), Some("agent-x"));
-        assert!(
-            packet.should_run,
-            "fixture todo must be runnable for agent-x"
-        );
-        let case = reduce_public_safe_decision(&packet, &goal, "case-caps", Some("agent-x"));
-        assert_eq!(case.agent_capabilities, vec!["shell".to_string()]);
-        let comparison = replay_public_safe_decision_case(&case).unwrap();
-        assert!(comparison.matched, "{:?}", comparison.mismatches);
-    }
-
-    #[test]
     fn legacy_case_without_context_still_loads_and_replays() {
-        // Pre-P1-4 recordings carry no decision_context and no P1-4 compact
-        // fields — they must keep deserializing and replaying (back-compat).
+        // Pre-P1-4 recordings carry no P1-4 compact fields — they must
         let goal = sample_goal();
         let packet = crate::decision::decide(&goal, std::time::SystemTime::now());
         let case = reduce_public_safe_decision(&packet, &goal, "case-legacy", None);
         let mut value = serde_json::to_value(&case).unwrap();
         let obj = value.as_object_mut().unwrap();
-        obj.remove("decision_context");
         obj.remove("agent_capabilities");
         let strip = |t: &mut serde_json::Map<String, serde_json::Value>| {
             for key in [
                 "priority",
                 "blocked_by_gate",
-                "required_capability",
                 "failed_attempts",
                 "consecutive_no_change",
                 "no_follow_up",
@@ -1038,7 +945,6 @@ mod tests {
             strip(todo.as_object_mut().unwrap());
         }
         let legacy: DecisionCase = serde_json::from_value(value).unwrap();
-        assert!(legacy.decision_context.is_none());
         assert!(legacy.agent_capabilities.is_empty());
         let comparison = replay_public_safe_decision_case(&legacy).unwrap();
         assert!(comparison.matched, "{:?}", comparison.mismatches);

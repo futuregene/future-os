@@ -59,6 +59,8 @@ pub fn successor_offline_threshold_secs() -> u64 {
 /// this peer succeeds when the primary dies (None = this peer is a primary
 /// itself, or standalone). In this native single-process subset a role maps
 /// 1:1 to an agent id, so `handoff_rules.to_role` resolves to a peer agent.
+/// `capabilities` is descriptive metadata only (the capability framework
+/// and its gate were removed); `workspaces` feeds the workspace guard.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerRole {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -267,6 +269,9 @@ pub fn latest_contract(store: &Store, goal_id: &str) -> Result<Option<MultiAgent
 /// A named onboarding recipe: capabilities + workspaces + the default
 /// priority for work this agent claims (LoopX minimal-recipe idea, native:
 /// the reusable part is the declarative profile, not process mechanics).
+/// `capabilities` is kept as a descriptive string list — nothing consumes
+/// it as a runnability gate anymore; `workspaces` feeds the workspace
+/// guard.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentRecipe {
     pub schema_version: String,
@@ -334,8 +339,8 @@ pub fn recipe_named(store: &Store, goal_id: &str, name: &str) -> Result<Option<A
 }
 
 /// Onboard `agent_id` with a recipe (capabilities + workspaces land on the
-/// same `AgentOnboarded` event the explicit onboard path uses — the
-/// capability gate and workspace guard consume them identically).
+/// same `AgentOnboarded` event the explicit onboard path uses — capabilities
+/// stay descriptive; the workspace guard consumes `workspaces`).
 pub fn apply_recipe_onboard(
     store: &mut Store,
     goal_id: &str,

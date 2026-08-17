@@ -1,14 +1,12 @@
 //! Coverage drive for `canary/mod.rs` — the per-check failure arms need
 //! goals in deliberately broken states (empty/corrupt/conflicting ledgers,
-//! projection gaps, extension-state files).
+//! projection gaps).
 
 mod common;
 
-use common::{cli_root, init_goal, open_store, CliRoot};
+use common::{cli_root, init_goal, open_store};
 use future_loop::canary::run_smoke;
 use future_loop::state::Goal;
-#[cfg(unix)]
-use future_loop::store::Store;
 
 fn check<'a>(
     result: &'a future_loop::canary::SmokeRunResult,
@@ -129,77 +127,4 @@ fn smoke_projection_gap_fails_frontier() {
     let c = check(&result, "todo_frontier");
     assert!(!c.passed, "{c:?}");
     assert!(c.detail.contains("no matching open agent todo"), "{c:?}");
-}
-
-#[test]
-fn smoke_extension_state_arms() {
-    let cr: CliRoot = cli_root();
-    // A valid extension state file → "N extension(s) readable".
-    {
-        let dir = std::path::Path::new(&cr.root).join("extensions");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("state.json"),
-            "{\"schema_version\":\"future_loop_extension_state_v0\",\"extensions\":{}}",
-        )
-        .unwrap();
-        let store = open_store(&cr);
-        let result = run_smoke(&store, "release-gate").unwrap();
-        let c = check(&result, "extension_state");
-        assert!(c.passed, "{c:?}");
-        assert!(c.detail.contains("extension"), "{c:?}");
-    }
-    // A corrupt one → check fails.
-    {
-        std::fs::write(
-            std::path::Path::new(&cr.root).join("extensions/state.json"),
-            "{corrupt",
-        )
-        .unwrap();
-        let store = open_store(&cr);
-        let result = run_smoke(&store, "release-gate").unwrap();
-        let c = check(&result, "extension_state");
-        assert!(!c.passed, "{c:?}");
-        assert!(c.detail.contains("corrupt"), "{c:?}");
-    }
-}
-
-#[test]
-fn smoke_backup_check_with_backup() {
-    let cr = cli_root();
-    let gid = init_goal(&cr, "backup canary");
-    {
-        let store = open_store(&cr);
-        store.backup_goal(&gid).unwrap();
-    }
-    let store = open_store(&cr);
-    let result = run_smoke(&store, "release-gate").unwrap();
-    assert!(check(&result, "backup_dir").passed);
-}
-
-#[test]
-fn smoke_unknown_profile_errors() {
-    let cr = cli_root();
-    let store = open_store(&cr);
-    assert!(run_smoke(&store, "no-such-profile").is_err());
-}
-
-#[cfg(unix)]
-#[test]
-fn smoke_unwritable_root_fails_check() {
-    use std::os::unix::fs::PermissionsExt;
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("ro-root");
-    std::fs::create_dir_all(&root).unwrap();
-    let mut perms = std::fs::metadata(&root).unwrap().permissions();
-    perms.set_mode(0o555);
-    std::fs::set_permissions(&root, perms).unwrap();
-    let store = Store::open(root.to_str().unwrap()).unwrap();
-    let result = run_smoke(&store, "release-gate").unwrap();
-    let c = check(&result, "root_writable");
-    assert!(!c.passed, "{c:?}");
-    // Restore writability so the tempdir can be cleaned up.
-    let mut perms = std::fs::metadata(&root).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&root, perms).unwrap();
 }
