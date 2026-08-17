@@ -797,6 +797,13 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let text = text.ok_or_else(|| anyhow::anyhow!("--text required"))?;
+    // Bare `--blocks` at end-of-line is parsed as the literal "true" by
+    // parse_pairs' value-less flag convention; no generated todo id is ever
+    // "true", so reject it loudly instead of writing a dangling dependency
+    // that later fails task-graph with "references unknown todo `true`".
+    if blocks.iter().any(|b| b == "true") {
+        bail!("--blocks requires a comma-separated todo id list (bare `--blocks` reads as `true`)");
+    }
     // O4: advisory hint — code-like todos without a validator can be marked
     // done by an agent even when the code does not compile. Computed before
     // `verify` is moved into the todo below.
@@ -6547,6 +6554,13 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
+    // Same bare-flag trap as todo add: a value-less `--blocks` parses as
+    // the literal "true" — never a real todo id, so reject it loudly.
+    if let Some(ids) = &blocks {
+        if ids.iter().any(|b| b == "true") {
+            bail!("--blocks requires a comma-separated todo id list (bare `--blocks` reads as `true`)");
+        }
+    }
     let goal = store
         .replay(&goal_id)?
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
