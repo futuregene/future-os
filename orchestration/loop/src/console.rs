@@ -545,6 +545,13 @@ fn cmd_goal(store: &mut Store, args: &[String]) -> Result<()> {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default()
     });
+    // Idempotent re-init: an already-registered goal returns its existing
+    // state — re-running `goal init` with the same --goal-id must not
+    // duplicate the onboarding bootstrap todo.
+    if store.registered(&goal_id) {
+        println!("goal {goal_id} already exists — continuing (no duplicate bootstrap)");
+        return Ok(());
+    }
     let mut goal = Goal::new(&goal_id, &objective, &cwd);
     let ts = now_epoch();
     goal.created_at = ts;
@@ -1992,6 +1999,15 @@ fn cmd_gate(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal = store
         .replay(&goal_id)?
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    // Fail closed on unknown / non-gate todos — a typo'd id must not write
+    // a phantom GateResolved event (previously the command printed ✔ for
+    // any todo id, silently corrupting the gate audit trail).
+    let t = goal
+        .todo(&todo_id)
+        .ok_or_else(|| anyhow::anyhow!("todo {todo_id} not found in goal {goal_id}"))?;
+    if t.class != crate::state::TaskClass::UserGate {
+        bail!("todo {todo_id} is not a user_gate — gate resolve only applies to user_gate todos");
+    }
     store.append(Event::GateResolved {
         goal_id: goal_id.clone(),
         todo_id: todo_id.clone(),
