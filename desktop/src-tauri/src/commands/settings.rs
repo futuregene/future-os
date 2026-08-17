@@ -38,6 +38,7 @@ mod tests {
             show_thinking: Some(false),
             auto_upgrade_skills: Some(false),
             auto_connect_remote: Some(true),
+            skill_guide_dismissed: None,
         })
         .expect("update");
         assert_eq!(updated.approval_tier, "manual");

@@ -19,6 +19,11 @@ export interface AppSettings {
    * so this only takes effect on non-release builds.
    */
   autoConnectRemote: boolean;
+  /**
+   * The user closed the skill-onboarding banner on the new-conversation
+   * screen. Off by default (the banner shows until dismissed).
+   */
+  skillGuideDismissed: boolean;
 }
 
 /** Fallback used before the persisted settings load. */
@@ -28,6 +33,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   showThinking: false,
   autoUpgradeSkills: false,
   autoConnectRemote: false,
+  skillGuideDismissed: false,
 };
 
 export async function getAppSettings() {
@@ -40,6 +46,7 @@ export async function updateAppSettings(input: {
   showThinking?: boolean;
   autoUpgradeSkills?: boolean;
   autoConnectRemote?: boolean;
+  skillGuideDismissed?: boolean;
 }) {
   return invokeCommand<AppSettings>("update_app_settings", { input });
 }

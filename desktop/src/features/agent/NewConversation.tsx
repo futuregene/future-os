@@ -13,10 +13,16 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
+import { getLanguage } from "../../i18n";
 import { defaultAgentModelId } from "../../integrations/agent/agentClient";
+import { getSkillGuide } from "../../integrations/skills/skillsClient";
 import { cn } from "../../lib/cn";
+import { errorMessage } from "../../lib/errors";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { startWindowDrag } from "../../lib/windowDrag";
+import { SkillGuideBanner } from "../skills/SkillGuideBanner";
+import { buildCoachPrompt } from "../skills/skillGuidePrompt";
 import { Composer } from "./Composer";
 import { WorkspaceModal } from "./NewConversationWorkspaceForm";
 import { useWorkspaceForm } from "./useWorkspaceForm";
@@ -56,6 +62,9 @@ interface NewConversationProps {
   onStart: (input: NewConversationStart) => void | Promise<void>;
   onAddWorkspace: (input: WorkspaceCreateRequest) => Promise<StoredWorkspace | null>;
   onToggleLeftPanel: () => void;
+  /** The user closed the skill-guide banner; persisted via app settings. */
+  skillGuideDismissed: boolean;
+  onDismissSkillGuide: () => void;
   workspaces: StoredWorkspace[];
 }
 
@@ -75,6 +84,8 @@ export function NewConversation({
   onChangeApprovalTier,
   onStart,
   onToggleLeftPanel,
+  skillGuideDismissed,
+  onDismissSkillGuide,
   workspaces,
 }: NewConversationProps) {
   const { t } = useTranslation("agent");
@@ -141,6 +152,48 @@ export function NewConversation({
   // Block sending until the model catalog actually loads — the initial
   // modelId is empty and would fall back to the agent default (v4-flash).
   const catalogLoading = modelOptions.length === 0;
+  const [guideStarting, setGuideStarting] = useState(false);
+
+  // "Start learning" → fetch the platform coach prompt, then create a real
+  // chat session whose first message is the prompt (auto-sent by the existing
+  // new-conversation flow). A fetch failure toasts and never creates a thread.
+  async function handleStartGuide() {
+    if (catalogLoading || guideStarting)
+      return;
+    setGuideStarting(true);
+    let prompt: string;
+    try {
+      const guide = await getSkillGuide();
+      prompt = buildCoachPrompt(guide, getLanguage());
+    }
+    catch (error) {
+      emitFutureEvent("toast", {
+        message: t("skillGuide.loadFailed", { message: errorMessage(error) }),
+        tone: "error",
+      });
+      setGuideStarting(false);
+      return;
+    }
+    try {
+      await onStart({
+        content: prompt,
+        mode: "chat",
+        modelId: modelId || defaultAgentModelId,
+        thinkingLevel,
+      });
+    }
+    catch {
+      // startNewConversation already surfaced a toast; keep the banner usable.
+    }
+    finally {
+      setGuideStarting(false);
+    }
+  }
+
+  function handleDismissGuide() {
+    onDismissSkillGuide();
+    emitFutureEvent("toast", { message: t("skillGuide.dismissed") });
+  }
 
   function handleSend({ attachments, content }: ComposerSendPayload) {
     if (catalogLoading)
@@ -309,6 +362,15 @@ export function NewConversation({
               </div>
             </div>
           </div>
+          {skillGuideDismissed
+            ? null
+            : (
+                <SkillGuideBanner
+                  starting={guideStarting}
+                  onDismiss={handleDismissGuide}
+                  onStart={() => void handleStartGuide()}
+                />
+              )}
         </div>
       </div>
       {workspaceForm.mode

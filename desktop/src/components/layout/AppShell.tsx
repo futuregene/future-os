@@ -483,6 +483,8 @@ export function AppShell() {
                 onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
                 onStart={startNewConversation}
                 onToggleLeftPanel={handleToggleLeftPanel}
+                skillGuideDismissed={appSettings.skillGuideDismissed}
+                onDismissSkillGuide={() => void changeSettings({ skillGuideDismissed: true })}
                 workspaces={userWorkspaces}
               />
             )

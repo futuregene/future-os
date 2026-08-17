@@ -32,6 +32,28 @@ export function listAvailableSkills(): Promise<AvailableSkill[]> {
   return invokeCommand<AvailableSkill[]>("list_available_skills");
 }
 
+/** A zh/en text pair from the platform guide config. */
+export interface LocalizedText {
+  zh: string;
+  en: string;
+}
+
+/** The platform skill-guide config (`GET /client/v1/guide`). */
+export interface SkillGuide {
+  links: { help: string };
+  skills: {
+    /** The onboarding banner's first-message prompt, per UI language. */
+    coachPrompt: LocalizedText;
+    /** The skill manual link the coach prompt references, per UI language. */
+    manual: LocalizedText;
+  };
+}
+
+/** The platform skill-guide config. Unauthenticated, like the catalogue. */
+export function getSkillGuide(): Promise<SkillGuide> {
+  return invokeCommand<SkillGuide>("get_skill_guide");
+}
+
 /** Download + unpack a skill version into the app scope. */
 export function installSkill(id: string, version: string): Promise<void> {
   return invokeCommand<void>("install_skill", { id, version });
