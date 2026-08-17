@@ -200,28 +200,7 @@ fn supervisor_surface() {
     assert!(cli_err(&["supervisor", "bogus", "--goal", &gid]).contains("propose|receipt|events"));
 }
 
-// ── handoff / task-graph / attention ───────────────────────────────────────
-
-#[test]
-fn handoff_surface() {
-    let cr = cli_root();
-    let gid = init_goal(&cr, "handoff goal");
-    cli_ok(&["handoff", "--goal", &gid]);
-    cli_ok(&["handoff", "--goal", &gid, "--write"]);
-    let handoff = open_store(&cr).goal_dir(&gid).join("HANDOFF.md");
-    assert!(handoff.exists(), "handoff written");
-    // With a degraded run in history → delivery contract present.
-    {
-        let store = open_store(&cr);
-        let first = first_todo_id(&cr.root, &gid);
-        store
-            .append_run(&gid, &common::run_record(&first, "error", now_epoch()))
-            .unwrap();
-    }
-    cli_ok(&["handoff", "--goal", &gid]);
-    assert!(cli_err(&["handoff"]).contains("--goal required"));
-    assert!(cli_err(&["handoff", "--goal", "goal_nope"]).contains("not found"));
-}
+// ── task-graph / attention ─────────────────────────────────────────────────
 
 #[test]
 fn task_graph_surface() {

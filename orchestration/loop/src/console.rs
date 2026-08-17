@@ -22,7 +22,7 @@ use crate::agent_client::TurnProgressTracker;
 use crate::cli::registry::{CommandRegistry, Journey};
 use crate::decision::{complete_todo, decide_for, MAX_REPAIR_ATTEMPTS};
 use crate::executor::{execute_turn, writeback};
-use crate::state::{now_epoch, Goal, RunRecord, TaskClass, Todo, TodoStatus};
+use crate::state::{now_epoch, Goal, TaskClass, Todo, TodoStatus};
 use crate::store::{Event, Store};
 use anyhow::{bail, Context, Result};
 
@@ -139,7 +139,6 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         "runs" => cmd_runs(&store, &args[1..]),
         "heartbeat-prompt" => cmd_heartbeat(&store, &args[1..]),
         "worker-bridge" => cmd_worker_bridge(&mut store, &args[1..]).await,
-        "serve-status" => cmd_serve_status(&store, &args[1..]),
         "models" => cmd_models(&args[1..]).await,
         "diagnose" => cmd_diagnose(&store, &args[1..]),
         "run" => cmd_run(&mut store, &args[1..]).await,
@@ -147,7 +146,6 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         "scope" => cmd_scope(&store, &args[1..]),
         "lane" => cmd_lane(&store, &args[1..]),
         "supervisor" => cmd_supervisor(&mut store, &args[1..]),
-        "handoff" => cmd_handoff(&store, &args[1..]),
         "task-graph" => cmd_task_graph(&store, &args[1..]),
         "attention" => cmd_attention(&store, &args[1..]),
         "inbox" => cmd_inbox(&store, &args[1..]),
@@ -194,7 +192,6 @@ const JOURNEY_ASSIGNMENTS: &[(&str, Journey)] = &[
     ("evidence-log", Journey::Daily),
     ("todo-event", Journey::Daily),
     ("history", Journey::Daily),
-    ("handoff", Journey::Daily),
     // Loop driver — per-turn execution surface for the driving agent
     ("run", Journey::Driver),
     ("turn", Journey::Driver),
@@ -210,7 +207,6 @@ const JOURNEY_ASSIGNMENTS: &[(&str, Journey)] = &[
     ("store", Journey::Setup),
     ("backfill", Journey::Setup),
     ("privacy", Journey::Setup),
-    ("serve-status", Journey::Setup),
     // Maintainer & adapter — quality gates, retention, introspection
     ("benchmark", Journey::Maintainer),
     ("replay", Journey::Maintainer),
@@ -417,12 +413,6 @@ fn build_cli_registry() -> CommandRegistry {
     );
     r.command(
         ops,
-        "serve-status",
-        "serve the status projection",
-        "serve-status [--goal G]",
-    );
-    r.command(
-        ops,
         "run",
         "drive one bounded gRPC turn (requires --agent-id; auto-registers)",
         "run --goal G --agent-id A [--model M] [--thinking-level L] [--max-turns N] [--lease-secs N] [--force-workspace]",
@@ -449,14 +439,6 @@ fn build_cli_registry() -> CommandRegistry {
         "delivery",
         "post-delivery outcome closure (P0-2): delivered → verified/failed/rework + follow-through",
         "delivery status --goal G [--format json] | record --goal G --todo-id T --outcome verified|failed|rework [--note N] | followthrough --goal G [--turns N]",
-    );
-
-    let handoff = r.group("handoff", "project handoff (G-17)");
-    r.command(
-        handoff,
-        "handoff",
-        "generate the handoff document + delivery contract",
-        "handoff --goal G [--write]",
     );
 
     let cli = r.group("cli", "command registry");
@@ -4886,19 +4868,6 @@ async fn cmd_worker_bridge(store: &mut Store, args: &[String]) -> Result<()> {
     .await
 }
 
-/// `loopx serve-status [--port 8791]` — zero-dependency HTTP dashboard
-/// (GET / , GET /goals.json). Read-only projection; ledger stays the truth.
-fn cmd_serve_status(store: &Store, args: &[String]) -> Result<()> {
-    let mut port = 8791u16;
-    reject_unknown_flags(args, &["--port"])?;
-    parse_pairs(args, |k, v| {
-        if k == "--port" {
-            port = v.parse().unwrap_or(8791);
-        }
-    });
-    crate::status_server::serve(store, &format!("127.0.0.1:{port}"))
-}
-
 /// Join todo ids for CLI display (empty → "(none)").
 fn join_ids(ids: &[String]) -> String {
     if ids.is_empty() {
@@ -5167,59 +5136,6 @@ fn cmd_supervisor(store: &mut Store, args: &[String]) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&projection)?);
         }
         _ => bail!("supervisor subcommand must be propose|receipt|events"),
-    }
-    Ok(())
-}
-
-// ── handoff (G-17) ─────────────────────────────────────────────────────────
-
-/// `loopx handoff --goal G [--write]` — generate the handoff document
-/// (projection-derived) + the delivery contract from run-history signals.
-fn cmd_handoff(store: &Store, args: &[String]) -> Result<()> {
-    let mut goal_id = None;
-    let mut write = false;
-    reject_unknown_flags(args, &["--goal", "--write"])?;
-    parse_pairs(args, |k, v| {
-        if k == "--goal" {
-            goal_id = Some(v);
-        } else if k == "--write" {
-            write = true;
-        }
-    });
-    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
-    let goal = store
-        .replay(&goal_id)?
-        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
-    // Delivery contract consumes newest-first runs.
-    let mut runs: Vec<RunRecord> = goal.history.clone();
-    runs.reverse();
-    let contract = crate::handoff::delivery_contract::handoff_delivery_contract(&goal, &runs);
-    if let Some(c) = &contract {
-        println!("delivery contract: {}", c.mode);
-        println!("  summary: {}", c.summary);
-    } else {
-        println!("delivery contract: none (no degradation)");
-    }
-    let handoff = crate::handoff::project_handoff::build_project_handoff(
-        &goal,
-        contract.as_ref().map(|c| c.summary.as_str()),
-    );
-    if write {
-        crate::handoff::project_handoff::write_project_handoff(
-            &store.goal_dir(&goal_id),
-            &goal,
-            &handoff,
-        )
-        .map_err(|e| anyhow::anyhow!("write handoff: {e}"))?;
-        println!(
-            "handoff written to .future/loop/goals/{}/HANDOFF.md",
-            goal.goal_id
-        );
-    } else {
-        println!(
-            "{}",
-            crate::handoff::project_handoff::render_project_handoff_markdown(&handoff)
-        );
     }
     Ok(())
 }

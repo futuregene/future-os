@@ -6,7 +6,7 @@
 mod common;
 
 use common::mock_agent::{completed_events, spawn_mock, MockState};
-use common::{cli_err, cli_ok, cli_root, first_todo_id, init_goal, open_store, run_record};
+use common::{cli_err, cli_ok, cli_root, first_todo_id, init_goal, open_store};
 use future_loop::state::{now_epoch, Todo, TodoStatus};
 
 fn rt() -> tokio::runtime::Runtime {
@@ -70,7 +70,6 @@ fn unknown_flags_hard_error_everywhere() {
         vec!["scope", "--goal", &gid, "--agent-id", "w1", "--zz", "1"],
         vec!["lane", "--goal", &gid, "--agent-id", "w1", "--zz", "1"],
         vec!["supervisor", "events", "--goal", &gid, "--zz", "1"],
-        vec!["handoff", "--goal", &gid, "--zz", "1"],
         vec!["task-graph", "--goal", &gid, "--zz", "1"],
         vec!["attention", "--goal", &gid, "--zz", "1"],
         vec!["inbox", "--project", &cr.cwd, "--zz", "1"],
@@ -579,58 +578,4 @@ fn runs_index_duplicate_report() {
         .unwrap();
     }
     cli_ok(&["runs", "index", "--goal", &gid]);
-}
-
-// ── handoff: delivery contract present arm ─────────────────────────────────
-
-#[test]
-fn handoff_delivery_contract_present() {
-    let cr = cli_root();
-    let gid = init_goal(&cr, "handoff contract");
-    {
-        let store = open_store(&cr);
-        // Two small-scale runs → small-batch streak hits the default threshold.
-        let mut r1 = run_record("t", "completed", now_epoch());
-        r1.evidence = "unit test passed".into();
-        let mut r2 = run_record("t", "completed", now_epoch());
-        r2.evidence = "unit test passed".into();
-        store.append_run(&gid, &r1).unwrap();
-        store.append_run(&gid, &r2).unwrap();
-    }
-    cli_ok(&["handoff", "--goal", &gid]);
-}
-
-// ── serve-status via the CLI (parse + serve, thread-leaked) ────────────────
-
-#[test]
-fn serve_status_command_arm() {
-    let cr = cli_root();
-    let _gid = init_goal(&cr, "serve via cli");
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    // cmd_serve_status blocks forever in serve() → run it on a leaked thread.
-    std::thread::spawn(move || {
-        let _ = future_loop::console::run(
-            "future-loop",
-            vec![
-                "serve-status".to_string(),
-                "--port".to_string(),
-                port.to_string(),
-            ],
-        );
-    });
-    // Wait for the server, then hit it.
-    let mut ok = false;
-    for _ in 0..100 {
-        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            ok = true;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    assert!(ok, "serve-status came up");
-    let _ = cr;
 }

@@ -121,9 +121,8 @@ future loop commands        # grouped by operator journey
 - **goal group**: `goal` `status` `models` `diagnose`
 - **todo group**: `todo` `gate` `replan` `frontier` `lease` `task-graph`
 - **agent group**: `agent` `scope` `lane` `supervisor`
-- **ops group**: `version` `doctor` `history` `turn` `todo-event` `evidence-log` `backup` `authority` `profile` `quota` `scheduler` `store` `backfill` `privacy` `runs` `heartbeat-prompt` `worker-bridge` `serve-status` `run`
+- **ops group**: `version` `doctor` `history` `turn` `todo-event` `evidence-log` `backup` `authority` `profile` `quota` `scheduler` `store` `backfill` `privacy` `runs` `heartbeat-prompt` `worker-bridge` `run`
 - **work-items group**: `attention` `inbox` `delivery`
-- **handoff group**: `handoff`
 - **quality group**: `benchmark` `replay` `canary`
 
 ## How it fits FutureOS
