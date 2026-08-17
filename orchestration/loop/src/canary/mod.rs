@@ -41,13 +41,6 @@ pub fn smoke_suite_profiles() -> Vec<SmokeProfile> {
                 .to_string(),
         },
         SmokeProfile {
-            id: "extension-runtime".to_string(),
-            suite: "full-public".to_string(),
-            modules: vec!["capability-extension".to_string(), "extension".to_string()],
-            description: "Extension placement, lifecycle and provider activation checks."
-                .to_string(),
-        },
-        SmokeProfile {
             id: "release-gate".to_string(),
             suite: "release".to_string(),
             modules: vec![
@@ -56,8 +49,6 @@ pub fn smoke_suite_profiles() -> Vec<SmokeProfile> {
                 "scheduler".to_string(),
                 "todo".to_string(),
                 "status".to_string(),
-                "extension".to_string(),
-                "capability-extension".to_string(),
                 "backup".to_string(),
                 "canary".to_string(),
             ],
@@ -72,10 +63,9 @@ pub fn smoke_suite_profiles() -> Vec<SmokeProfile> {
                 "scheduler".to_string(),
                 "todo".to_string(),
                 "status".to_string(),
-                "capability-extension".to_string(),
             ],
             description: "P1-6 premerge gate (CI): the fast deterministic core surface — \
-                          skips backup/extension/canary-self so the PR check stays hermetic \
+                          skips backup/canary-self so the PR check stays hermetic \
                           and quick."
                 .to_string(),
         },
@@ -261,8 +251,6 @@ fn run_module_checks(store: &Store, module: &str) -> Vec<SmokeCheckOutcome> {
         "scheduler" => vec![check_scheduler_state(store)],
         "todo" => vec![check_todo_frontier(store)],
         "status" => vec![check_status_projection(store)],
-        "extension" => vec![check_extension_state(store)],
-        "capability-extension" => vec![check_capability_catalog(store)],
         "backup" => vec![check_backup_dir(store)],
         "canary" => vec![check_canary_self(store)],
         _ => vec![],
@@ -495,56 +483,6 @@ fn check_status_projection(store: &Store) -> SmokeCheckOutcome {
         detail,
     }
 }
-
-fn check_extension_state(_store: &Store) -> SmokeCheckOutcome {
-    // Extension state lives under the project-local state root; a missing
-    // file means no extensions installed — valid. A corrupt file fails
-    // closed (same root as `extension` commands).
-    let runtime = std::env::var("FUTURE_LOOP_ROOT").unwrap_or_else(|_| {
-        format!(
-            "{}/.future/loop",
-            std::env::current_dir()
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| ".".into())
-        )
-    });
-    let state_file = crate::extensions::runtime::default_extension_state_file(&runtime);
-    if !state_file.exists() {
-        return SmokeCheckOutcome {
-            id: "extension_state".to_string(),
-            module: "extension".to_string(),
-            passed: true,
-            detail: "no extensions installed (state file absent) — valid".to_string(),
-        };
-    }
-    match crate::extensions::runtime::extension_status(&state_file, None) {
-        Ok(rows) => SmokeCheckOutcome {
-            id: "extension_state".to_string(),
-            module: "extension".to_string(),
-            passed: true,
-            detail: format!("{} extension(s) readable", rows.len()),
-        },
-        Err(e) => SmokeCheckOutcome {
-            id: "extension_state".to_string(),
-            module: "extension".to_string(),
-            passed: false,
-            detail: format!("extension state corrupt: {e}"),
-        },
-    }
-}
-
-fn check_capability_catalog(_store: &Store) -> SmokeCheckOutcome {
-    let catalog = crate::capabilities::catalog::CapabilityCatalog::with_builtin();
-    let records = catalog.records(true);
-    let passed = records.len() == 15;
-    SmokeCheckOutcome {
-        id: "capability_catalog".to_string(),
-        module: "capability-extension".to_string(),
-        passed,
-        detail: format!("{} records (expect 15)", records.len()),
-    }
-}
-
 fn check_backup_dir(store: &Store) -> SmokeCheckOutcome {
     for entry in store.registry() {
         let _ = store.backups(&entry.goal_id);
@@ -618,13 +556,12 @@ mod tests {
     #[test]
     fn profile_manifest_is_stable() {
         let profiles = smoke_suite_profiles();
-        assert_eq!(profiles.len(), 4);
+        assert_eq!(profiles.len(), 3);
         let ids: Vec<&str> = profiles.iter().map(|p| p.id.as_str()).collect();
         assert_eq!(
             ids,
             vec![
                 "core-control-plane",
-                "extension-runtime",
                 "release-gate",
                 "premerge"
             ]
@@ -737,15 +674,6 @@ mod tests {
             .checks
             .iter()
             .any(|c| !c.passed && c.id == "ledger_integrity"));
-        let _ = std::fs::remove_dir_all(store.root_path());
-    }
-
-    #[test]
-    fn capability_catalog_check_passes() {
-        let store = tmp_store("cap");
-        let outcome = check_capability_catalog(&store);
-        assert!(outcome.passed);
-        assert!(outcome.detail.contains("15"));
         let _ = std::fs::remove_dir_all(store.root_path());
     }
 }
