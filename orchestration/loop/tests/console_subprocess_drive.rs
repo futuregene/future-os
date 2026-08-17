@@ -309,6 +309,8 @@ fn worker_bridge_stops_when_should_run_false() {
             "--todo-id",
             &onboarding,
             "--no-follow-up",
+            "--evidence",
+            "onboarding complete",
         ],
     );
     assert_eq!(code, 0);
