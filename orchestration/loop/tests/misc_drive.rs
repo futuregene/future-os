@@ -612,6 +612,7 @@ fn store_projection_gap_and_guard_arms() {
                 priority: Some("p2".into()),
                 resume_when: None,
                 blocks: None,
+                acceptance: None,
                 ts: now_epoch(),
             })
             .unwrap();

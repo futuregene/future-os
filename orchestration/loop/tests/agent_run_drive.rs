@@ -209,6 +209,8 @@ fn run_failing_turns_exhaust_repair_budget() {
         "--todo-id",
         &onboarding,
         "--no-follow-up",
+        "--evidence",
+        "operator closed the auto-created onboarding todo",
     ]);
     // Pre-seed a todo that already consumed one repair attempt (the ledger
     // does not persist failed_attempts from failed runs — see coverage
@@ -380,6 +382,8 @@ fn run_monitor_not_due_waits() {
         "--todo-id",
         &onboarding,
         "--no-follow-up",
+        "--evidence",
+        "operator closed the auto-created onboarding todo",
     ]);
     append_monitor(&cr, &goal, "mon_future", 3600);
     cli_ok(&["run", "--goal", &goal, "--anonymous", "--max-turns", "3"]);
@@ -404,6 +408,8 @@ fn run_validator_pass_completes_todo() {
         "--todo-id",
         &onboarding,
         "--no-follow-up",
+        "--evidence",
+        "operator closed the auto-created onboarding todo",
     ]);
     cli_ok(&[
         "todo",
@@ -442,6 +448,8 @@ fn run_validator_budget_exhaustion_stops_run() {
         "--todo-id",
         &onboarding,
         "--no-follow-up",
+        "--evidence",
+        "operator closed the auto-created onboarding todo",
     ]);
     cli_ok(&[
         "todo",

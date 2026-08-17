@@ -342,6 +342,7 @@ fn steer_poll_once_arms() {
                 priority: None,
                 resume_when: None,
                 blocks: None,
+                acceptance: None,
                 ts: now_epoch(),
             })
             .unwrap();
