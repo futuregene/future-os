@@ -395,13 +395,23 @@ impl Todo {
     /// Claim a slice: succeeds only when open AND (unclaimed OR the previous
     /// lease expired). Returns false if another agent holds a live lease
     /// (LoopX: claim is not ownership; lease is the bounded execution window).
+    ///
+    /// Lease liveness: a live lease held by a DEAD holder is reclaimed
+    /// automatically (kill -0 probe on the recorded holder pid, mirroring
+    /// the run-path claim in `work_items::task_lease`). A lease from a
+    /// pre-liveness ledger (no pid) keeps the old hard error.
     pub fn claim(&mut self, agent_id: &str, lease_secs: u64, now_epoch: u64) -> bool {
         if self.status != TodoStatus::Open {
             return false;
         }
         if let Some(expires) = self.lease_expires_at {
             if expires > now_epoch && self.claimed_by.as_deref() != Some(agent_id) {
-                return false;
+                // Dead holder → reclaim instead of refusing (killed runs
+                // leave orphaned leases behind; pid probe recycles them).
+                match self.holder_pid {
+                    Some(pid) if !crate::compat::pid_alive(pid) => {}
+                    _ => return false,
+                }
             }
         }
         self.claimed_by = Some(agent_id.to_string());

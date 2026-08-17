@@ -423,8 +423,12 @@ fn two_agent_sessions_hold_disjoint_frontiers() {
             "agent-b",
         ],
     );
-    // claim is exclusive: A cannot claim B's slice.
-    let (_, err, code) = run(
+    // claim is exclusive while the holder is ALIVE; the CLI subprocess that
+    // claimed for agent-b has exited, so its dead holder's lease is reclaimed
+    // by the next claim (lease liveness — killed runs must not wedge the
+    // frontier). The live-holder refusal is covered in-process by
+    // claim_lease_contract::claim_refuses_live_holder_pid.
+    let (out, err, code) = run(
         &root,
         &[
             "todo",
@@ -437,8 +441,8 @@ fn two_agent_sessions_hold_disjoint_frontiers() {
             "agent-a",
         ],
     );
-    assert_ne!(code, 0, "A must not be able to claim B's live lease");
-    assert!(err.contains("another agent"), "stderr: {err}");
+    assert_eq!(code, 0, "dead holder's lease must be reclaimed: {err}");
+    assert!(out.contains("claimed"), "reclaim: {out}");
 }
 
 /// ── P4: version / doctor / history / turn / todo-event / evidence-log ────
