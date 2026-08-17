@@ -50,6 +50,7 @@ import { loadSessionDraft, saveSessionDraft } from "../remote/draftStorage";
 import {
   deleteTemporaryAttachment,
   MAX_FILE_BYTES,
+  mimeFor,
   pickAttachments,
   pickFromAlbum,
   takePhoto,
@@ -184,6 +185,13 @@ export function ChatScreen() {
     () => timelineItems.filter(item => item.kind !== "approval"),
     [timelineItems],
   );
+  const latestAssistantId = useMemo(() => {
+    for (let index = transcriptItems.length - 1; index >= 0; index -= 1) {
+      const item = transcriptItems[index];
+      if (item?.kind === "message") return item.role === "assistant" ? item.id : null;
+    }
+    return null;
+  }, [transcriptItems]);
   const pendingApprovals = useMemo(
     () =>
       timelineItems.filter(
@@ -382,7 +390,38 @@ export function ChatScreen() {
       for (let i = index - 1; i >= 0; i -= 1) {
         const prev = items[i];
         if (prev?.kind === "message" && prev.role === "user") {
-          void remote.sendMessage(prev.text).catch(() => showToast(t("chat.sendFailed")));
+          void (async () => {
+            const retryAttachments: MobileAttachment[] = [];
+            for (const attachment of prev.attachments ?? []) {
+              if (/^[a-z][a-z0-9+.-]*:\/\//i.test(attachment.path)) {
+                const file = new File(attachment.path);
+                retryAttachments.push({
+                  localUri: file.uri,
+                  name: attachment.name,
+                  mimeType: mimeFor(attachment.name),
+                  kind: attachment.kind === "image" ? "image" : "file",
+                  originalSize: file.size,
+                  transferSize: file.size,
+                  mobilePreviewUnsupported: attachment.mobilePreviewUnsupported,
+                });
+                continue;
+              }
+              const info = await remote.prepareAttachment(attachment);
+              const cached = remote.cachedAttachment(attachment);
+              const file = cached?.file ?? (await remote.downloadAttachment(info));
+              retryAttachments.push({
+                localUri: file.uri,
+                name: attachment.name,
+                transferName: info.name,
+                mimeType: info.mimeType,
+                kind: attachment.kind === "image" ? "image" : "file",
+                originalSize: info.size,
+                transferSize: info.size,
+                mobilePreviewUnsupported: attachment.mobilePreviewUnsupported,
+              });
+            }
+            await remote.sendMessage(prev.text, retryAttachments);
+          })().catch(() => showToast(t("chat.sendFailed")));
           return;
         }
       }
@@ -737,6 +776,7 @@ export function ChatScreen() {
             renderItem={({ item }) => (
               <TimelineCard
                 item={item}
+                isLatestAssistant={item.id === latestAssistantId}
                 onOpenAttachment={attachment => void openAttachment(attachment)}
                 onOpenFile={path => void openFileLink(path)}
                 onRetry={retryMessage}
