@@ -130,13 +130,18 @@ export function ActivityRail({
   const build = useBuildInfo();
   const showRemote = build.data ? !build.data.isRelease : false;
   // Connection indicator overlaid on the Remote nav icon: blue when connected,
-  // amber when the bridge reports an error, nothing when disconnected.
+  // amber while recovery is in progress, red for an actionable bridge error,
+  // and nothing when disconnected.
   const remoteDot = showRemote && remoteIndicator
     ? (
         <span
           className={cn(
             "absolute -right-1 -top-1 size-2 rounded-full",
-            remoteIndicator === "connected" ? "bg-accent" : "bg-warning",
+            remoteIndicator === "connected"
+              ? "bg-accent"
+              : remoteIndicator === "reconnecting"
+                ? "bg-warning"
+                : "bg-danger",
             remoteIndicator === "reconnecting" && "animate-pulse",
           )}
         />

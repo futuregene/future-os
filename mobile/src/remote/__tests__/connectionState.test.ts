@@ -9,17 +9,19 @@ import {
 } from "../connectionState";
 import { RemoteClient, type RemoteClientCallbacks } from "../client";
 import type { RemoteCredentials } from "../types";
+import { ErrorCode, NatsError } from "nats.ws";
 
 const ALL_STATES: ConnectionState[] = [
   "connecting",
   "ready",
   "reconnecting",
   "refreshing",
+  "failed",
   "revoked",
   "unpaired",
 ];
 
-const TERMINAL: ConnectionState[] = ["revoked", "unpaired"];
+const TERMINAL: ConnectionState[] = ["failed", "revoked", "unpaired"];
 
 function runTable(): Record<string, ConnectionState> {
   const matrix: LifecycleEvent[] = [
@@ -28,6 +30,7 @@ function runTable(): Record<string, ConnectionState> {
     { type: "ready" },
     { type: "transport_disconnect" },
     { type: "auth_failed" },
+    { type: "fatal", error: new Error("fatal") },
     { type: "revoked" },
     { type: "unpair" },
   ];
@@ -60,6 +63,7 @@ describe("connectionState FSM", () => {
     for (const event of [
       { type: "transport_disconnect" },
       { type: "auth_failed" },
+      { type: "fatal", error: new Error("fatal") },
       { type: "revoked" },
       { type: "unpair" },
       { type: "open_started" },
@@ -100,6 +104,15 @@ describe("connectionState FSM", () => {
     }
   });
 
+  test("fatal NATS configuration errors enter a failed terminal state", () => {
+    for (const state of ["ready", "connecting", "reconnecting", "refreshing"] as const) {
+      const error = new Error("remote_service_misconfigured");
+      const action = transition(state, { type: "fatal", error });
+      expect(action.next).toBe("failed");
+      expect(action.effects).toEqual([{ type: "dispose_connection", reason: "fatal" }]);
+    }
+  });
+
   test("unpair → unpaired terminal, disposes + enters unpaired", () => {
     for (const state of ["ready", "connecting", "reconnecting", "refreshing"] as const) {
       const action = transition(state, { type: "unpair" });
@@ -130,6 +143,7 @@ describe("connectionState FSM", () => {
       { type: "ready" },
       { type: "transport_disconnect" },
       { type: "auth_failed" },
+      { type: "fatal", error: new Error("fatal") },
       { type: "revoked" },
       { type: "unpair" },
     ];
@@ -150,8 +164,8 @@ describe("connectionState FSM", () => {
     const table = runTable();
     for (const key of Object.keys(table)) {
       const [from, event] = key.split("+");
-      if (from === "revoked") {
-        expect(table[key]).toBe("revoked");
+      if (from === "revoked" || from === "failed") {
+        expect(table[key]).toBe(from);
       }
       if (from === "unpaired") {
         expect(table[key]).toBe(event === "open_started" ? "connecting" : "unpaired");
@@ -232,6 +246,10 @@ describe("classifyError", () => {
     expect(classifyError(new Error("pairing_signature_invalid"))).toBe("auth");
     expect(classifyError(new Error("pairing_confirmation_mismatch"))).toBe("auth");
   });
+  test("service permission errors → fatal", () => {
+    expect(classifyError(new Error("PERMISSIONS_VIOLATION"))).toBe("fatal");
+    expect(classifyError(new Error("remote_service_misconfigured"))).toBe("fatal");
+  });
   test("everything else → transport", () => {
     expect(classifyError(new Error("nats_connect_failed"))).toBe("transport");
     expect(classifyError(new Error("ETIMEDOUT"))).toBe("transport");
@@ -257,6 +275,7 @@ function recoveryClient(): {
   const callbacks = {
     onCredentials: jest.fn(),
     onEvent: jest.fn(),
+    onEventDecodeFailure: jest.fn(),
     onPresence: jest.fn(),
     onSessions: jest.fn(),
     onWorkspaces: jest.fn(),
@@ -269,6 +288,24 @@ function recoveryClient(): {
 }
 
 describe("RemoteClient terminal iterator recovery", () => {
+  test("a permission status becomes a terminal service failure", async () => {
+    const { client } = recoveryClient();
+    const recovery = jest.fn();
+    const testClient = client as unknown as {
+      watchStatus(connection: unknown, generation: number): void;
+      handleFailure(error: unknown): void;
+    };
+    testClient.handleFailure = recovery;
+    async function* statuses() {
+      yield { type: "error", data: ErrorCode.PermissionsViolation };
+    }
+    testClient.watchStatus({ status: statuses }, 0);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(recovery).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining("remote_service_misconfigured") }),
+    );
+  });
+
   test("a throwing NATS status iterator enters the outer recovery path", async () => {
     const { client } = recoveryClient();
     const recovery = jest.fn();
@@ -299,6 +336,26 @@ describe("RemoteClient terminal iterator recovery", () => {
     testClient.subscribeEvents({ subscribe: events }, 0);
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(recovery).toHaveBeenCalledWith(expect.any(Error));
+  });
+
+  test("a malformed live event requests immediate session reconciliation", async () => {
+    const { client, callbacks } = recoveryClient();
+    const testClient = client as unknown as {
+      subscribeEvents(connection: unknown, generation: number): void;
+    };
+    async function* events() {
+      yield {
+        subject: "p.pair_1.evt.session_1",
+        data: new TextEncoder().encode("{not-json"),
+      };
+      await new Promise(() => {});
+    }
+    testClient.subscribeEvents({ subscribe: () => events() }, 0);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(callbacks.onEventDecodeFailure).toHaveBeenCalledWith(
+      "session_1",
+      expect.objectContaining({ message: expect.stringContaining("remote_event_decode_failed") }),
+    );
   });
 
   test.each(["subscribeTransfers", "subscribeLiveness", "subscribeState"] as const)(
@@ -337,6 +394,47 @@ describe("RemoteClient terminal iterator recovery", () => {
     testClient.failGeneration(new Error("presence ended"), 0);
 
     expect(recovery).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("RemoteClient request retry classification", () => {
+  function response(data: unknown): Uint8Array {
+    return new TextEncoder().encode(JSON.stringify(data));
+  }
+
+  test("retries transient NATS failures with one stable command id", async () => {
+    jest.useFakeTimers();
+    try {
+      const { client } = recoveryClient();
+      const request = jest
+        .fn()
+        .mockRejectedValueOnce(new NatsError("timeout", ErrorCode.Timeout))
+        .mockResolvedValueOnce({ data: response({ success: true, data: { ok: true } }) });
+      (client as unknown as { connection: { request: jest.Mock } | null }).connection = { request };
+
+      const pending = client.requestRetry<{ ok: boolean }>({ type: "list_sessions" }, "list");
+      await jest.runAllTimersAsync();
+      await expect(pending).resolves.toMatchObject({ data: { ok: true } });
+      expect(request).toHaveBeenCalledTimes(2);
+      const first = JSON.parse(new TextDecoder().decode(request.mock.calls[0]?.[1]));
+      const second = JSON.parse(new TextDecoder().decode(request.mock.calls[1]?.[1]));
+      expect(first.id).toBe(second.id);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("does not retry a backend business error", async () => {
+    const { client } = recoveryClient();
+    const request = jest.fn().mockResolvedValue({
+      data: response({ success: false, error: "session_is_running" }),
+    });
+    (client as unknown as { connection: { request: jest.Mock } | null }).connection = { request };
+
+    await expect(client.requestRetry({ type: "abort" }, "list")).rejects.toThrow(
+      "session_is_running",
+    );
+    expect(request).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -22,12 +22,7 @@ import { RemoteClient } from "./client";
 import { MAX_PROMPT_MESSAGE_BYTES, utf8Bytes } from "./codec";
 import type { ConnectionState } from "./connectionState";
 import { classifyError } from "./connectionState";
-import {
-  attemptPendingRevoke,
-  claimPairingCode,
-  ensureFreshCredentials,
-  serverRevoke,
-} from "./pairing";
+import { attemptPendingRevoke, claimPairingCode, serverRevoke } from "./pairing";
 import {
   INITIAL_PRESENCE_STATE,
   isDesktopOnline,
@@ -334,7 +329,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       const entries: HistoryEntry[] = [];
       let offset = 0;
       for (;;) {
-        const response = await client.request<EntriesData>(
+        const response = await client.requestRetry<EntriesData>(
           { type: "get_session_entries", sessionId, offset },
           sessionId,
         );
@@ -351,7 +346,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     const history: HistoryMessage[] = [];
     let offset = 0;
     for (;;) {
-      const response = await client.request<HistoryData>(
+      const response = await client.requestRetry<HistoryData>(
         { type: "get_messages", sessionId, offset },
         sessionId,
       );
@@ -373,7 +368,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       requestGetState: async sessionId => {
         const client = clientRef.current;
         if (!client) throw new Error("not_connected");
-        const response = await client.request<RemoteSessionState>(
+        const response = await client.requestRetry<RemoteSessionState>(
           { type: "get_state", sessionId },
           sessionId,
         );
@@ -424,17 +419,26 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       // Dispose any previous client first — it owns its own reconnect timer,
       // which must not keep running under a new pairing.
       await clientRef.current?.close();
-      const fresh = await ensureFreshCredentials(nextCredentials);
-      credentialsRef.current = fresh;
-      setCredentials(fresh);
+      // Let RemoteClient own refresh failures too. Pre-refreshing here used to
+      // throw a transient token-endpoint outage past the client's backoff and
+      // incorrectly send a stored pairing back to the unpaired screen.
+      credentialsRef.current = nextCredentials;
+      setCredentials(nextCredentials);
       setError(null);
       setCapabilities(new Set());
-      const client = new RemoteClient(fresh, {
+      const client = new RemoteClient(nextCredentials, {
         onCredentials: next => {
           setCredentials(next);
           void saveCredentials(next);
         },
         onEvent: handleEvent,
+        onEventDecodeFailure: (sessionId, decodeError) => {
+          console.warn("[remote] malformed live event; reconciling session", {
+            sessionId,
+            error: decodeError,
+          });
+          reconcileSession(sessionId, "resend");
+        },
         onPresence: nextPresence => {
           if (nextPresence.unpaired) {
             // The desktop sent an authenticated unpair notice before revoking
@@ -518,6 +522,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
             setPhase("unpaired");
           } else if (state === "refreshing") {
             setPhase("refreshing");
+          } else if (state === "failed") {
+            setPhase("failed");
           } else if (state === "connecting") {
             setPhase("connecting");
           } else {
@@ -832,7 +838,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         // Model + thinking come from the durable session state; the timeline
         // itself reconciles on the lane (replay from the cursor / from -1 for
         // a run whose prefix isn't proven).
-        const state = await client.request<RemoteSessionState>(
+        const state = await client.requestRetry<RemoteSessionState>(
           { type: "get_state", sessionId },
           sessionId,
         );

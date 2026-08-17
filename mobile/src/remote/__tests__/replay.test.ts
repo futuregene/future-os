@@ -6,7 +6,7 @@ import type { ReplayEventWire } from "../eventReducer";
 function clientReturning(pages: EventsPage[]): { client: RemoteClient; request: jest.Mock } {
   const request = jest.fn();
   for (const page of pages) request.mockResolvedValueOnce({ data: page });
-  return { client: { request } as unknown as RemoteClient, request };
+  return { client: { requestRetry: request } as unknown as RemoteClient, request };
 }
 
 function event(type: string, idx: number): ReplayEventWire {

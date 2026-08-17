@@ -34,7 +34,7 @@ export async function fetchEventsSince(
   let offset = 0;
   for (;;) {
     const page = (
-      await client.request<EventsPage>(
+      await client.requestRetry<EventsPage>(
         { type: "get_events_since", sessionId, runId, sinceIdx, offset },
         sessionId,
       )

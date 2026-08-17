@@ -1,5 +1,5 @@
 import type { NatsConnection } from "nats.ws";
-import { connect, jwtAuthenticator } from "nats.ws";
+import { connect, ErrorCode, jwtAuthenticator } from "nats.ws";
 import { fromSeed } from "nkeys.js";
 import { ensureFreshCredentials, refreshCredentials } from "./pairing";
 import { jwtExpiry, randomId, encodeBase64Url } from "./codec";
@@ -36,6 +36,7 @@ interface HandshakeConfirmation {
 export interface RemoteClientCallbacks {
   onCredentials(credentials: RemoteCredentials): void;
   onEvent(event: StreamEvent, sessionId: string): void;
+  onEventDecodeFailure(sessionId: string, error: Error): void;
   onPresence(presence: Presence): void;
   onSessions(sessions: PresenceSession[]): void;
   onWorkspaces(workspaces: RemoteWorkspace[]): void;
@@ -290,6 +291,13 @@ export class RemoteClient {
       this.callbacks.onError(error instanceof Error ? error : new Error(String(error)));
       return;
     }
+    if (kind === "fatal") {
+      this.clearTimers();
+      const failure = error instanceof Error ? error : new Error(String(error));
+      this.signal({ type: "fatal", error: failure });
+      this.callbacks.onError(failure);
+      return;
+    }
     if (kind === "auth") {
       // Refreshable — rotate the JWT ONCE, then back off. A handshake that
       // keeps failing after a successful refresh must not spin at one full
@@ -347,6 +355,7 @@ export class RemoteClient {
       | { type: "ready" }
       | { type: "transport_disconnect" }
       | { type: "auth_failed" }
+      | { type: "fatal"; error: Error }
       | { type: "revoked" }
       | { type: "unpair" },
   ): void {
@@ -435,10 +444,15 @@ export class RemoteClient {
           let event: StreamEvent;
           try {
             event = decodeJson<StreamEvent>(message.data);
-          } catch {
+          } catch (error) {
             // A single malformed event must not kill the whole subscription
-            // (L6) — drop it; the session's next reconcile re-fetches truth.
-            this.callbacks.onError(new Error("remote_event_decode_failed"));
+            // (L6). Reconcile this subject immediately: if the malformed frame
+            // was the run's final event there may be no later idx gap to trigger
+            // the normal replay path.
+            this.callbacks.onEventDecodeFailure(
+              sessionId,
+              errorWithContext("remote_event_decode_failed", error),
+            );
             continue;
           }
           this.callbacks.onEvent(event, sessionId);
@@ -582,6 +596,26 @@ export class RemoteClient {
               exitedNaturally = false;
               return;
             }
+          } else if (status.type === "error") {
+            const code = String(status.data);
+            console.warn("[remote] NATS asynchronous error", {
+              code,
+              permissionContext: status.permissionContext,
+            });
+            if (code === ErrorCode.AuthenticationExpired || code === ErrorCode.AccountExpired) {
+              if (this.state !== "refreshing") void this.refreshToken();
+            } else if (
+              code === ErrorCode.PermissionsViolation ||
+              code === ErrorCode.AuthorizationViolation
+            ) {
+              this.handleFailure(new Error(`remote_service_misconfigured: ${code}`));
+              exitedNaturally = false;
+              return;
+            } else if (code === ErrorCode.ProtocolError) {
+              this.failGeneration(new Error(`nats_protocol_error: ${code}`), generation);
+              exitedNaturally = false;
+              return;
+            }
           }
         }
       } catch (error) {
@@ -641,6 +675,7 @@ export class RemoteClient {
         return await this.request<T>(stableCommand, sessionId);
       } catch (error) {
         lastError = error;
+        if (!isTransientNatsRequestError(error)) throw error;
         if (attempt < 2) {
           await new Promise(resolve => setTimeout(resolve, 250 * 2 ** attempt));
         }
@@ -702,7 +737,7 @@ export class RemoteClient {
     );
     const response = decodeJson<RpcResponse<T>>(message.data);
     if (!response.success) {
-      const error = new Error(response.error ?? "command_failed");
+      const error = new RemoteResponseError(response.error ?? "command_failed");
       if (classifyError(error) === "authTerminal") this.signal({ type: "revoked" });
       throw error;
     }
@@ -778,6 +813,29 @@ export class RemoteClient {
     void pending.then(clear, clear);
     return pending;
   }
+}
+
+class RemoteResponseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RemoteResponseError";
+  }
+}
+
+function isTransientNatsRequestError(error: unknown): boolean {
+  if (error instanceof RemoteResponseError) return false;
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? (error as { code?: unknown }).code
+      : undefined;
+  if (typeof code !== "string") return false;
+  return new Set<string>([
+    ErrorCode.Timeout,
+    ErrorCode.NoResponders,
+    ErrorCode.ConnectionClosed,
+    ErrorCode.Disconnect,
+    ErrorCode.RequestError,
+  ]).has(code);
 }
 
 function asError(value: unknown): Error {

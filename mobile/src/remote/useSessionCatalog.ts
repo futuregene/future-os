@@ -10,6 +10,8 @@ import type {
   WorkspacesData,
 } from "./types";
 
+const MODEL_RECOVERY_DELAYS_MS = [1_000, 5_000, 15_000, 30_000] as const;
+
 /**
  * The desktop's control-plane catalogue — sessions, workspaces, the model
  * list, approval settings — and the unread/rename bookkeeping that rides on
@@ -33,10 +35,28 @@ export function useSessionCatalog(
   const [titleOverrides, setTitleOverrides] = useState<Record<string, string>>({});
   const lastStatusRef = useRef<Record<string, string | undefined>>({});
   const titleOverridesRef = useRef<Record<string, string>>({});
+  const modelsRef = useRef<RemoteModel[]>([]);
+  const modelRecoveryRef = useRef<{
+    generation: number;
+    timer: ReturnType<typeof setTimeout> | null;
+  }>({ generation: 0, timer: null });
 
   useEffect(() => {
     titleOverridesRef.current = titleOverrides;
   }, [titleOverrides]);
+
+  useEffect(() => {
+    modelsRef.current = models;
+  }, [models]);
+
+  useEffect(
+    () => () => {
+      modelRecoveryRef.current.generation += 1;
+      if (modelRecoveryRef.current.timer) clearTimeout(modelRecoveryRef.current.timer);
+      modelRecoveryRef.current.timer = null;
+    },
+    [],
+  );
 
   const applySessionSnapshot = useCallback(
     (list: RemoteSession[]) => {
@@ -67,7 +87,7 @@ export function useSessionCatalog(
     const client = clientRef.current;
     if (!client) return;
     try {
-      const response = await client.request<SessionsData>({ type: "list_sessions" }, "list");
+      const response = await client.requestRetry<SessionsData>({ type: "list_sessions" }, "list");
       applySessionSnapshot(response.data.sessions ?? []);
     } catch {
       // If the connection has gone (refresh/reconnect cycle), swallow
@@ -76,31 +96,52 @@ export function useSessionCatalog(
   }, [applySessionSnapshot, clientRef]);
 
   const refreshModels = useCallback(async () => {
-    const client = clientRef.current;
-    if (!client) return;
-    // The desktop's model catalogue can lag the handshake on a fresh connect (or
-    // the agent may still be warming up and error out), so an empty or failed
-    // first answer is re-asked once before we accept it — otherwise the selector
-    // and the "no models" banner stay stale until a manual refresh.
-    let list: RemoteModel[] = [];
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    const recovery = modelRecoveryRef.current;
+    recovery.generation += 1;
+    const generation = recovery.generation;
+    if (recovery.timer) clearTimeout(recovery.timer);
+    recovery.timer = null;
+
+    // Resolve the immediate probe before returning, then continue a bounded
+    // background recovery while the desktop Agent warms. A later refresh or
+    // reconnect invalidates this generation, so stale timers cannot overwrite a
+    // newer catalogue.
+    const run = async (attempt: number): Promise<void> => {
+      if (modelRecoveryRef.current.generation !== generation) return;
+      const client = clientRef.current;
+      if (!client) return;
+      let list: RemoteModel[] | null = null;
       try {
         list =
-          (await client.request<ModelsData>({ type: "list_models" }, "list")).data.models ?? [];
-        if (list.length > 0) break;
+          (await client.requestRetry<ModelsData>({ type: "list_models" }, "list")).data.models ??
+          [];
       } catch {
-        list = [];
+        // A connection or Agent warm-up failure shares the same bounded retry.
       }
-      if (attempt === 0) await new Promise(resolve => setTimeout(resolve, 1200));
-    }
-    setModels(list);
+      if (modelRecoveryRef.current.generation !== generation) return;
+      if (list && list.length > 0) {
+        setModels(list);
+        return;
+      }
+      const delay = MODEL_RECOVERY_DELAYS_MS[attempt];
+      if (delay === undefined) {
+        // Preserve a previously usable catalogue through a transient outage.
+        if (modelsRef.current.length === 0) setModels([]);
+        return;
+      }
+      modelRecoveryRef.current.timer = setTimeout(() => {
+        modelRecoveryRef.current.timer = null;
+        void run(attempt + 1);
+      }, delay);
+    };
+    await run(0);
   }, [clientRef]);
 
   const refreshSettings = useCallback(async () => {
     const client = clientRef.current;
     if (!client) return;
     try {
-      const data = await client.request<{ approvalTier: string; sandboxAvailable: boolean }>(
+      const data = await client.requestRetry<{ approvalTier: string; sandboxAvailable: boolean }>(
         { type: "get_settings" },
         "list",
       );
@@ -115,17 +156,25 @@ export function useSessionCatalog(
     const client = clientRef.current;
     if (!client) return;
     try {
-      const response = await client.request<WorkspacesData>({ type: "list_workspaces" }, "list");
+      const response = await client.requestRetry<WorkspacesData>(
+        { type: "list_workspaces" },
+        "list",
+      );
       setWorkspaces(response.data.workspaces ?? []);
     } catch {
-      setWorkspaces([]);
+      // Keep the last snapshot. The desktop also pushes a 20-second baseline,
+      // so a transient read failure must not flash the catalogue empty.
     }
   }, [clientRef]);
 
   /** Drop catalogue state (unpair / credentials cleared). */
   const reset = useCallback(() => {
+    modelRecoveryRef.current.generation += 1;
+    if (modelRecoveryRef.current.timer) clearTimeout(modelRecoveryRef.current.timer);
+    modelRecoveryRef.current.timer = null;
     setSessions([]);
     setWorkspaces([]);
+    setModels([]);
     setTitleOverrides({});
     titleOverridesRef.current = {};
     // Clear the status baseline too — a stale running→completed comparison
