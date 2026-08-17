@@ -226,6 +226,8 @@ pub enum Event {
         todo_id: String,
         agent_id: String,
         lease_expires_at: u64,
+        /// Pid of the claiming run process (lease liveness — see Todo.holder_pid).
+        holder_pid: Option<u32>,
         ts: u64,
     },
     /// Register an agent peer for the goal (LoopX: coordination.registered_agents).
@@ -745,7 +747,7 @@ impl Store {
             let existing = fs::read_to_string(&path).unwrap_or_default();
             // Reconstruct the current lease for this todo from the ledger
             // (StoredEvent flattens the Event payload to top level).
-            let mut lease: Option<(String, u64)> = None;
+            let mut lease: Option<(String, u64, Option<u32>)> = None;
             for line in existing.lines().filter(|l| !l.trim().is_empty()) {
                 let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
                     continue;
@@ -764,7 +766,11 @@ impl Store {
                             .get("lease_expires_at")
                             .and_then(|e| e.as_u64())
                             .unwrap_or(0);
-                        lease = Some((agent, exp));
+                        let pid = v
+                            .get("holder_pid")
+                            .and_then(|p| p.as_u64())
+                            .map(|p| p as u32);
+                        lease = Some((agent, exp, pid));
                     }
                     "todo_released" => lease = None,
                     // Mirror replay (apply): an expiry record clears the
@@ -774,9 +780,16 @@ impl Store {
                     _ => {}
                 }
             }
-            if let Some((holder, exp)) = &lease {
+            if let Some((holder, exp, holder_pid)) = &lease {
                 if *exp > now && holder != agent_id {
-                    return Ok(false);
+                    // Lease liveness: a dead holder's claim is reclaimed
+                    // automatically (mirrors the task_lease steal path).
+                    let holder_dead = holder_pid
+                        .map(|p| !crate::compat::pid_alive(p))
+                        .unwrap_or(false);
+                    if !holder_dead {
+                        return Ok(false);
+                    }
                 }
             }
             let event = Event::TodoClaimed {
@@ -784,6 +797,7 @@ impl Store {
                 todo_id: todo_id.to_string(),
                 agent_id: agent_id.to_string(),
                 lease_expires_at: now + lease_secs,
+                holder_pid: Some(std::process::id()),
                 ts: now,
             };
             let stored = StoredEvent {
@@ -1535,11 +1549,13 @@ fn apply(goal: &mut Goal, event: Event) {
             todo_id,
             agent_id,
             lease_expires_at,
+            holder_pid,
             ..
         } => {
             if let Some(t) = goal.todo_mut(&todo_id) {
                 t.claimed_by = Some(agent_id);
                 t.lease_expires_at = Some(lease_expires_at);
+                t.holder_pid = holder_pid;
             }
         }
         Event::AgentRegistered {

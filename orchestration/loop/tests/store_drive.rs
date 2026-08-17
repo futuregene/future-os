@@ -471,6 +471,7 @@ fn apply_renew_and_priority_arms() {
             goal_id: "g1".into(),
             todo_id: "t1".into(),
             agent_id: "a".into(),
+            holder_pid: None,
             lease_expires_at: 100,
             ts: now_epoch(),
         })
@@ -499,6 +500,7 @@ fn apply_renew_and_priority_arms() {
             goal_id: "g1".into(),
             todo_id: "t1".into(),
             agent_id: "b".into(),
+            holder_pid: None,
             lease_expires_at: 50,
             ts: now_epoch(),
         })
@@ -609,6 +611,7 @@ fn apply_matrix() {
             goal_id: "g1".into(),
             todo_id: "todo_ghost".into(),
             agent_id: "a".into(),
+            holder_pid: None,
             lease_expires_at: 9,
             ts: now_epoch(),
         })

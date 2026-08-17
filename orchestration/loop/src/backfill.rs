@@ -375,6 +375,7 @@ pub fn backfill_todo_events(
                     todo_id: todo_id.clone(),
                     agent_id: owner,
                     lease_expires_at: crate::state::now_epoch() + 45 * 60,
+                    holder_pid: None,
                     ts: anchor_ts,
                 },
             });

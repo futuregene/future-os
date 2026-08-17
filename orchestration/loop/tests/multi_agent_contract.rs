@@ -507,6 +507,7 @@ fn collective_turn_ledger_counts_claims_and_full_rounds() {
                     goal_id: "g1".into(),
                     todo_id: format!("t-{agent}-{i}"),
                     agent_id: agent.into(),
+                    holder_pid: None,
                     lease_expires_at: base + 1000,
                     ts: base + i,
                 })
@@ -519,6 +520,7 @@ fn collective_turn_ledger_counts_claims_and_full_rounds() {
             goal_id: "g1".into(),
             todo_id: "t-outsider".into(),
             agent_id: "outsider".into(),
+            holder_pid: None,
             lease_expires_at: base + 1000,
             ts: base + 99,
         })
@@ -562,6 +564,7 @@ fn collective_full_participation_is_zero_until_every_member_claims() {
                 goal_id: "g1".into(),
                 todo_id: format!("t-{agent}"),
                 agent_id: agent.into(),
+                holder_pid: None,
                 lease_expires_at: base + 1000,
                 ts: base,
             })
