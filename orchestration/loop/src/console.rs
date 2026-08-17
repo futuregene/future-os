@@ -154,7 +154,6 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         "commands" => cmd_commands(&registry, &args[1..]),
         // ── P4 commands (G-18 / G-19 / G-20 / G-27) ───────────────────────
         "benchmark" => cmd_benchmark(&store, &args[1..]).await,
-        "replay" => cmd_replay(&store, &args[1..]),
         "canary" => cmd_canary(&store, &args[1..]),
         "version" => cmd_version(&store, &args[1..]),
         "doctor" => cmd_doctor(&store, &args[1..]).await,
@@ -209,7 +208,6 @@ const JOURNEY_ASSIGNMENTS: &[(&str, Journey)] = &[
     ("privacy", Journey::Setup),
     // Maintainer & adapter — quality gates, retention, introspection
     ("benchmark", Journey::Maintainer),
-    ("replay", Journey::Maintainer),
     ("canary", Journey::Maintainer),
     ("runs", Journey::Maintainer),
     ("backup", Journey::Maintainer),
@@ -461,14 +459,6 @@ fn build_cli_registry() -> CommandRegistry {
         "benchmark",
         "benchmark protocol|run|ledger — loop protocol, qualification run, run ledger",
         "benchmark protocol --route R | run --benchmark-id X --case-id Y --task \"...\" [--agent-addr A] | ledger [--benchmark-id X]",
-    );
-
-    let replay = r.group("replay", "decision replay / behavior corpus (G-19)");
-    r.command(
-        replay,
-        "replay",
-        "record / replay public-safe decisions + model-behavior corpus",
-        "replay record --goal G [--out PATH] | replay run --case PATH | replay corpus build|run ...",
     );
 
     let canary = r.group("canary", "canary smoke (G-20)");
@@ -5842,238 +5832,6 @@ async fn cmd_benchmark(store: &Store, args: &[String]) -> Result<()> {
             anyhow::bail!("unknown benchmark subcommand `{other}` (protocol|run|ledger)")
         }
         None => anyhow::bail!("benchmark requires a subcommand (protocol|run|ledger)"),
-    }
-}
-
-// ── P4: replay & corpus (G-19) ─────────────────────────────────────────────
-
-/// `loopx replay record --goal G [--case-id X] [--agent-id A] [--out PATH]` —
-/// reduce the current kernel decision to a public-safe case; with `--out`,
-/// append it to a replay file.
-fn cmd_replay_record(store: &Store, args: &[String]) -> Result<()> {
-    use crate::replay::decision_replay::{reduce_public_safe_decision, DecisionReplay};
-    let mut goal_id = None;
-    let mut case_id = None;
-    let mut agent_id = None;
-    let mut out = None;
-    reject_unknown_flags(args, &["--agent-id", "--case-id", "--goal", "--out"])?;
-    parse_pairs(args, |k, v| {
-        if k == "--goal" {
-            goal_id = Some(v);
-        } else if k == "--case-id" {
-            case_id = Some(v);
-        } else if k == "--agent-id" {
-            agent_id = Some(v);
-        } else if k == "--out" {
-            out = Some(v);
-        }
-    });
-    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
-    let goal = store
-        .replay(&goal_id)?
-        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
-    let packet =
-        crate::decision::decide_for(&goal, std::time::SystemTime::now(), agent_id.as_deref());
-    let case_id = case_id.unwrap_or_else(|| format!("{goal_id}-{}", crate::state::now_epoch()));
-    let case = reduce_public_safe_decision(&packet, &goal, &case_id, agent_id.as_deref());
-    crate::replay::decision_replay::validate_public_safe_decision_case(&case)?;
-    match out {
-        Some(path) => {
-            let path = std::path::PathBuf::from(&path);
-            let mut replay = if path.exists() {
-                DecisionReplay::load(&path)?
-            } else {
-                DecisionReplay::new()
-            };
-            replay.add(case);
-            replay.save(&path)?;
-            println!("decision case `{case_id}` appended to {}", path.display());
-        }
-        None => {
-            println!("{}", serde_json::to_string_pretty(&case)?);
-        }
-    }
-    Ok(())
-}
-
-/// `loopx replay run --case PATH` — replay every recorded case against the
-/// kernel and diff. Fails closed on the first mismatch (regression canary).
-fn cmd_replay_run(store: &Store, args: &[String]) -> Result<()> {
-    use crate::replay::decision_replay::DecisionReplay;
-    let mut path = None;
-    let mut json = false;
-    reject_unknown_flags(args, &["--case", "--json"])?;
-    parse_pairs(args, |k, v| {
-        if k == "--case" {
-            path = Some(v);
-        } else if k == "--json" {
-            json = true;
-        }
-    });
-    let path = path.ok_or_else(|| anyhow::anyhow!("--case required"))?;
-    let replay = DecisionReplay::load(std::path::Path::new(&path))?;
-    let mut any_mismatch = false;
-    for case in &replay.cases {
-        let comparison = crate::replay::decision_replay::replay_public_safe_decision_case(case)?;
-        if json {
-            println!("{}", serde_json::to_string(&comparison)?);
-        } else {
-            println!(
-                "case {}: {}",
-                comparison.case_id,
-                if comparison.matched {
-                    "MATCHED"
-                } else {
-                    "MISMATCH"
-                }
-            );
-            for m in &comparison.mismatches {
-                println!("  ✗ {m}");
-            }
-        }
-        if !comparison.matched {
-            any_mismatch = true;
-        }
-    }
-    if any_mismatch {
-        anyhow::bail!("decision replay failed: kernel behavior drifted from recorded cases");
-    }
-    let _ = store;
-    Ok(())
-}
-
-/// `loopx replay corpus build --goal G [--out PATH] [--ablate PATH]...
-/// [--patch NAME=JSON]...` — build a model-behavior corpus from the live
-/// packet.
-fn cmd_replay_corpus_build(store: &Store, args: &[String]) -> Result<()> {
-    use crate::replay::corpus::{build_model_behavior_corpus, PatchCase};
-    reject_unknown_flags(
-        args,
-        &["--ablate", "--goal", "--out", "--patch", "--patch-name"],
-    )?;
-    let mut goal_id = None;
-    let mut out = None;
-    let mut ablations: Vec<String> = vec![];
-    let mut patches: Vec<PatchCase> = vec![];
-    let mut patch_name = "p".to_string();
-    let mut patch_index = 0usize;
-    let mut i = 0;
-    let argv: Vec<String> = args.to_vec();
-    while i < argv.len() {
-        if argv[i].as_str() == "--goal" {
-            i += 1;
-            goal_id = argv.get(i).cloned();
-        } else if argv[i].as_str() == "--out" {
-            i += 1;
-            out = argv.get(i).cloned();
-        } else if argv[i].as_str() == "--ablate" {
-            i += 1;
-            if let Some(p) = argv.get(i) {
-                ablations.push(p.clone());
-            }
-        } else if argv[i].as_str() == "--patch-name" {
-            i += 1;
-            if let Some(n) = argv.get(i) {
-                patch_name = n.clone();
-            }
-        } else if argv[i].as_str() == "--patch" {
-            i += 1;
-            if let Some(raw) = argv.get(i) {
-                let value: serde_json::Value = serde_json::from_str(raw)
-                    .map_err(|e| anyhow::anyhow!("--patch must be a JSON object: {e}"))?;
-                patches.push(PatchCase::new(&format!("{patch_name}{patch_index}"), value));
-                patch_index += 1;
-            }
-        }
-        i += 1;
-    }
-    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
-    let goal = store
-        .replay(&goal_id)?
-        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
-    let packet = crate::decision::decide(&goal, std::time::SystemTime::now());
-    let corpus = build_model_behavior_corpus(&packet, &patches, &[], &ablations, &[])?;
-    match out {
-        Some(path) => {
-            corpus.save(std::path::Path::new(&path))?;
-            println!(
-                "corpus with {} case(s) written to {}",
-                corpus.cases.len(),
-                path
-            );
-        }
-        None => {
-            println!("{}", serde_json::to_string_pretty(&corpus)?);
-        }
-    }
-    Ok(())
-}
-
-/// `loopx replay corpus run --corpus PATH [--repeats N] [--seed S] [--json]` —
-/// run the corpus against the deterministic stub actor.
-fn cmd_replay_corpus_run(store: &Store, args: &[String]) -> Result<()> {
-    use crate::replay::corpus::{run_model_behavior_corpus, ModelBehaviorCorpus, StubActor};
-    let mut corpus_path = None;
-    let mut repeats = 3u32;
-    let mut seed = 0u64;
-    let mut json = false;
-    reject_unknown_flags(args, &["--corpus", "--json", "--repeats", "--seed"])?;
-    parse_pairs(args, |k, v| {
-        if k == "--corpus" {
-            corpus_path = Some(v);
-        } else if k == "--repeats" {
-            repeats = v.parse::<u32>().unwrap_or(3);
-        } else if k == "--seed" {
-            seed = v.parse::<u64>().unwrap_or(0);
-        } else if k == "--json" {
-            json = true;
-        }
-    });
-    let corpus_path = corpus_path.ok_or_else(|| anyhow::anyhow!("--corpus required"))?;
-    let corpus = ModelBehaviorCorpus::load(std::path::Path::new(&corpus_path))?;
-    let result = run_model_behavior_corpus(&corpus, &StubActor, repeats, seed)?;
-    if json {
-        println!("{}", serde_json::to_string_pretty(&result)?);
-        return Ok(());
-    }
-    println!(
-        "corpus run: {} case(s) x {} repeat(s), seed={}",
-        result.case_count, result.repeats, result.seed
-    );
-    for case in &result.cases {
-        println!(
-            "  case {} ({}): passed={}",
-            case.case_id, case.source_kind, case.passed
-        );
-    }
-    println!(
-        "gate: all_cases_passed={} corpus_gate_passed={} promotion_eligible={}",
-        result.all_cases_passed, result.corpus_gate_passed, result.promotion_eligible
-    );
-    if !result.corpus_gate_passed {
-        anyhow::bail!("corpus gate NOT passed");
-    }
-    let _ = store;
-    Ok(())
-}
-
-/// `loopx replay record|run|corpus ...`
-fn cmd_replay(store: &Store, args: &[String]) -> Result<()> {
-    match args.first().map(|s| s.as_str()) {
-        Some("record") => cmd_replay_record(store, &args[1..]),
-        Some("run") => cmd_replay_run(store, &args[1..]),
-        Some("corpus") => match args.get(1).map(|s| s.as_str()) {
-            Some("build") => cmd_replay_corpus_build(store, &args[2..]),
-            Some("run") => cmd_replay_corpus_run(store, &args[2..]),
-            Some(other) => {
-                anyhow::bail!("unknown replay corpus subcommand `{other}` (build|run)")
-            }
-            None => anyhow::bail!("replay corpus requires a subcommand (build|run)"),
-        },
-        Some(other) => {
-            anyhow::bail!("unknown replay subcommand `{other}` (record|run|corpus)")
-        }
-        None => anyhow::bail!("replay requires a subcommand (record|run|corpus)"),
     }
 }
 

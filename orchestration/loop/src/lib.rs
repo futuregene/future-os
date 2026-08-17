@@ -20,7 +20,6 @@ pub mod heartbeat;
 pub mod migration;
 pub mod projection;
 pub mod quota;
-pub mod replay;
 pub mod runtime;
 pub mod scheduler;
 pub mod state;
