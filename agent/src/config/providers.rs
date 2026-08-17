@@ -16,6 +16,9 @@ use std::sync::Mutex;
 
 use serde_json::{json, Map, Value};
 
+/// Consistent `(models.json, auth.json)` object snapshot used by provider RPCs.
+pub type ProviderDocuments = (Map<String, Value>, Map<String, Value>);
+
 /// One mutation of an `auth.json` provider entry (the domain carrier of the
 /// proto `AuthUpdate` sub-message; the gRPC layer maps proto onto this).
 #[derive(Debug, Clone, Default)]
@@ -60,12 +63,121 @@ pub struct ProviderUpsertSpec {
     pub base_url: Option<String>,
     /// Remove the `baseUrl` override; drop the entry if nothing remains.
     pub clear_base_url: bool,
-    /// Non-empty: replace the `models` list.
+    /// Replacement `models` list. Applied even when empty when
+    /// [`Self::replace_models`] is true.
     pub models: Vec<ProviderModelSpec>,
+    /// Presence bit for `models`; repeated proto fields cannot distinguish an
+    /// omitted list from an explicit request to clear it.
+    pub replace_models: bool,
     /// Fail when the provider already exists (create mode).
     pub create_only: bool,
     /// Non-empty: also store as this provider's `auth.json` key.
     pub api_key: Option<String>,
+    /// Remove the provider key in the same two-file transaction.
+    pub clear_api_key: bool,
+}
+
+impl ProviderUpsertSpec {
+    /// Whether this mutation changes the models.json side of provider state.
+    /// Non-empty model lists remain supported for older RPC clients that do
+    /// not yet send the explicit replacement presence bit.
+    fn changes_models_document(&self) -> bool {
+        self.name.is_some()
+            || self.api.is_some()
+            || self.base_url.is_some()
+            || self.clear_base_url
+            || self.replace_models
+            || !self.models.is_empty()
+    }
+}
+
+fn valid_provider_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"-_".contains(&byte))
+}
+
+fn ascii_without_control(value: &str) -> bool {
+    value.is_ascii() && !value.bytes().any(|byte| byte.is_ascii_control())
+}
+
+pub fn validate_auth_mutation(mutation: &AuthMutation) -> Result<(), String> {
+    let provider = mutation.provider.trim();
+    if !valid_provider_id(provider) {
+        return Err("provider id must use lowercase letters, digits, '-' or '_'".to_string());
+    }
+    if let Some(key) = mutation.key.as_deref() {
+        if key.len() > 16_384 || !ascii_without_control(key) {
+            return Err("API key is invalid or too long".to_string());
+        }
+    }
+    if let Some(base_url) = mutation.base_url.as_deref() {
+        let url = reqwest::Url::parse(base_url)
+            .map_err(|_| "base URL must be a valid http/https address".to_string())?;
+        if !matches!(url.scheme(), "http" | "https") {
+            return Err("base URL must be a valid http/https address".to_string());
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_provider_upsert(spec: &ProviderUpsertSpec) -> Result<(), String> {
+    let id = spec.id.trim();
+    if !valid_provider_id(id) {
+        return Err("provider id must use lowercase letters, digits, '-' or '_'".to_string());
+    }
+    if let Some(name) = spec.name.as_deref() {
+        if name.is_empty() || name.len() > 128 || !ascii_without_control(name) {
+            return Err("provider name is invalid or too long".to_string());
+        }
+    }
+    if let Some(api) = spec.api.as_deref() {
+        if !matches!(api, "openai-completions" | "openai-responses" | "anthropic") {
+            return Err("unsupported provider API type".to_string());
+        }
+    }
+    if let Some(base_url) = spec.base_url.as_deref() {
+        let url = reqwest::Url::parse(base_url)
+            .map_err(|_| "base URL must be a valid http/https address".to_string())?;
+        if !matches!(url.scheme(), "http" | "https") {
+            return Err("base URL must be a valid http/https address".to_string());
+        }
+    }
+    if let Some(key) = spec.api_key.as_deref() {
+        if key.len() > 16_384 || !ascii_without_control(key) {
+            return Err("API key is invalid or too long".to_string());
+        }
+    }
+    if spec.api_key.is_some() && spec.clear_api_key {
+        return Err("cannot set and clear an API key in the same mutation".to_string());
+    }
+    if spec.models.len() > 100 {
+        return Err("provider has too many models".to_string());
+    }
+    let mut model_ids = std::collections::HashSet::new();
+    for model in &spec.models {
+        if model.id.is_empty()
+            || model.id.len() > 256
+            || !ascii_without_control(&model.id)
+            || !model_ids.insert(model.id.as_str())
+        {
+            return Err("provider model id is invalid or duplicated".to_string());
+        }
+        if model.name.len() > 128 || !ascii_without_control(&model.name) {
+            return Err("provider model name is invalid or too long".to_string());
+        }
+        if model.modalities.is_empty()
+            || model
+                .modalities
+                .iter()
+                .any(|modality| !matches!(modality.as_str(), "text" | "image"))
+        {
+            return Err("provider model modalities are invalid".to_string());
+        }
+    }
+    Ok(())
 }
 
 /// Serializes every config read-modify-write: commands are handled
@@ -281,6 +393,16 @@ pub fn apply_provider_upsert(
     root: &mut Map<String, Value>,
     spec: &ProviderUpsertSpec,
 ) -> Result<(), String> {
+    if !spec.changes_models_document() {
+        let exists = root
+            .get("providers")
+            .and_then(Value::as_object)
+            .is_some_and(|providers| providers.contains_key(&spec.id));
+        if spec.create_only && exists {
+            return Err(format!("Provider ID `{}` already exists.", spec.id));
+        }
+        return Ok(());
+    }
     let providers_value = root
         .entry("providers".to_string())
         .or_insert_with(|| Value::Object(Map::new()));
@@ -327,7 +449,7 @@ pub fn apply_provider_upsert(
     if spec.clear_base_url {
         provider.remove("baseUrl");
     }
-    if !spec.models.is_empty() {
+    if spec.replace_models || !spec.models.is_empty() {
         let models = spec
             .models
             .iter()
@@ -387,32 +509,62 @@ pub fn upsert_provider_files(
         // Only models.json can be rolled back in an upsert — auth.json is
         // written last and atomically, so a failed auth write leaves it
         // untouched and there is nothing to restore.
-        let models_snapshot = snapshot_file(models_path)?;
+        let models_change = spec.changes_models_document();
+        let models_snapshot = if models_change {
+            Some(snapshot_file(models_path)?)
+        } else {
+            None
+        };
 
         // Validate + apply in memory first; nothing is written if this fails.
-        let mut models_doc = read_json_object(models_path)?;
-        apply_provider_upsert(&mut models_doc, spec)?;
+        let models_doc = if models_change {
+            let mut models = read_json_object(models_path)?;
+            apply_provider_upsert(&mut models, spec)?;
+            Some(models)
+        } else {
+            None
+        };
 
         // Prepare the auth mutation in memory too, so all reads/validations
         // precede the first disk write.
         let mut auth_doc = None;
-        if let Some(key) = &spec.api_key {
+        if spec.api_key.is_some() || spec.clear_api_key {
             let mut auth = read_json_object(auth_path)?;
-            upsert_auth_entry(&mut auth, &spec.id)
-                .insert("key".to_string(), Value::String(key.clone()));
+            if let Some(key) = &spec.api_key {
+                upsert_auth_entry(&mut auth, &spec.id)
+                    .insert("key".to_string(), Value::String(key.clone()));
+            } else if let Some(entry) = auth.get_mut(&spec.id).and_then(Value::as_object_mut) {
+                entry.remove("key");
+            }
             auth_doc = Some(auth);
         }
 
         // Persist models.json, then auth.json. Restore only what this call
         // already wrote: a failed models write means nothing was persisted; a
         // failed auth write means only models.json changed.
-        if let Err(error) = write_json_atomic(models_path, &models_doc, false) {
-            restore_file(models_path, models_snapshot.as_deref(), false);
-            return Err(error);
+        if let Some(models) = models_doc {
+            if let Err(error) = write_json_atomic(models_path, &models, false) {
+                restore_file(
+                    models_path,
+                    models_snapshot
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.as_deref()),
+                    false,
+                );
+                return Err(error);
+            }
         }
         if let Some(auth) = auth_doc {
             if let Err(error) = write_json_atomic(auth_path, &auth, true) {
-                restore_file(models_path, models_snapshot.as_deref(), false);
+                if models_change {
+                    restore_file(
+                        models_path,
+                        models_snapshot
+                            .as_ref()
+                            .and_then(|snapshot| snapshot.as_deref()),
+                        false,
+                    );
+                }
                 return Err(error);
             }
         }
@@ -459,13 +611,30 @@ pub fn delete_provider_files(auth_path: &Path, models_path: &Path, id: &str) -> 
 
 /// Default-path wrappers used by the RPC handlers.
 pub fn mutate_auth(mutation: &AuthMutation) -> Result<(), String> {
+    validate_auth_mutation(mutation)?;
     mutate_auth_file(&auth_json_path(), mutation)
 }
 pub fn upsert_provider(spec: &ProviderUpsertSpec) -> Result<(), String> {
+    validate_provider_upsert(spec)?;
     upsert_provider_files(&auth_json_path(), &models_json_path(), spec)
 }
 pub fn delete_provider(id: &str) -> Result<(), String> {
+    if !valid_provider_id(id.trim()) {
+        return Err("provider id must use lowercase letters, digits, '-' or '_'".to_string());
+    }
     delete_provider_files(&auth_json_path(), &models_json_path(), id)
+}
+
+/// Read a consistent Agent-owned snapshot of the two provider configuration
+/// documents. The same lock as mutations prevents a view from combining the
+/// models half of one revision with the auth half of another.
+pub fn read_provider_documents() -> Result<ProviderDocuments, String> {
+    with_config_lock(|| {
+        Ok((
+            read_json_object(&models_json_path())?,
+            read_json_object(&auth_json_path())?,
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -603,6 +772,91 @@ mod tests {
         assert_eq!(provider["baseUrl"], json!("https://new.example.com"));
         assert_eq!(provider["compat"], json!("strict"), "unmanaged fields kept");
         assert_eq!(provider["models"][0]["modalities"][1], json!("image"));
+    }
+
+    #[test]
+    fn explicit_empty_models_replaces_the_existing_list() {
+        let mut root: Map<String, Value> = serde_json::from_str(
+            r#"{"providers":{"myprov":{"name":"My","models":[{"id":"old"}]}}}"#,
+        )
+        .unwrap();
+        apply_provider_upsert(
+            &mut root,
+            &ProviderUpsertSpec {
+                id: "myprov".to_string(),
+                replace_models: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(root["providers"]["myprov"]["models"], json!([]));
+    }
+
+    #[test]
+    fn auth_only_upsert_does_not_create_models_file() {
+        let (_dir, auth, models) = temp_paths("auth-only-upsert");
+        upsert_provider_files(
+            &auth,
+            &models,
+            &ProviderUpsertSpec {
+                id: "deepseek".to_string(),
+                api_key: Some("sk-new".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!models.exists());
+        let stored: Value = serde_json::from_str(&std::fs::read_to_string(auth).unwrap()).unwrap();
+        assert_eq!(stored["deepseek"]["key"], json!("sk-new"));
+    }
+
+    #[test]
+    fn builtin_url_and_key_are_committed_by_one_upsert() {
+        let (_dir, auth, models) = temp_paths("builtin-atomic");
+        upsert_provider_files(
+            &auth,
+            &models,
+            &ProviderUpsertSpec {
+                id: "azure-openai-responses".to_string(),
+                base_url: Some("https://tenant.openai.azure.com/openai".to_string()),
+                api_key: Some("azure-key".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let stored_models: Value =
+            serde_json::from_str(&std::fs::read_to_string(&models).unwrap()).unwrap();
+        let stored_auth: Value =
+            serde_json::from_str(&std::fs::read_to_string(&auth).unwrap()).unwrap();
+        assert_eq!(
+            stored_models["providers"]["azure-openai-responses"]["baseUrl"],
+            json!("https://tenant.openai.azure.com/openai")
+        );
+        assert_eq!(
+            stored_auth["azure-openai-responses"]["key"],
+            json!("azure-key")
+        );
+
+        upsert_provider_files(
+            &auth,
+            &models,
+            &ProviderUpsertSpec {
+                id: "azure-openai-responses".to_string(),
+                base_url: Some("https://other.openai.azure.com/openai".to_string()),
+                clear_api_key: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let stored_models: Value =
+            serde_json::from_str(&std::fs::read_to_string(models).unwrap()).unwrap();
+        let stored_auth: Value =
+            serde_json::from_str(&std::fs::read_to_string(auth).unwrap()).unwrap();
+        assert_eq!(
+            stored_models["providers"]["azure-openai-responses"]["baseUrl"],
+            json!("https://other.openai.azure.com/openai")
+        );
+        assert!(stored_auth["azure-openai-responses"].get("key").is_none());
     }
 
     #[test]

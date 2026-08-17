@@ -235,6 +235,17 @@ export function installAgentEventListener() {
     return;
   eventListenerInstalled = true;
 
+  void listen<Record<string, unknown>>("provider-config-changed", (event) => {
+    const p = event.payload ?? {};
+    emitFutureEvent("providers-changed", {
+      revision: typeof p.revision === "number" ? p.revision : 0,
+      providerId: typeof p.providerId === "string" ? p.providerId : "*",
+      operation: typeof p.operation === "string" ? p.operation : "snapshot",
+      authChanged: p.authChanged !== false,
+      modelsChanged: p.modelsChanged !== false,
+    });
+  });
+
   void listen<Record<string, unknown>>("agent-event", (event) => {
     const p = event.payload;
     if (!p)

@@ -202,7 +202,9 @@ pub struct ProviderUpsert {
     /// Remove the "baseUrl" override; the entry is dropped if nothing remains.
     #[prost(bool, tag = "5")]
     pub clear_base_url: bool,
-    /// Non-empty: replace the "models" list.
+    /// Replacement model list. `replace_models` carries presence so an empty
+    /// repeated field can explicitly clear every model instead of meaning
+    /// "leave unchanged".
     #[prost(message, repeated, tag = "6")]
     pub models: ::prost::alloc::vec::Vec<ProviderModel>,
     /// Fail when the provider already exists (create mode; edits must not
@@ -212,6 +214,13 @@ pub struct ProviderUpsert {
     /// Non-empty: also store as this provider's auth.json "key".
     #[prost(string, tag = "8")]
     pub api_key: ::prost::alloc::string::String,
+    /// Apply `models`, including an empty list, as a full replacement.
+    #[prost(bool, tag = "9")]
+    pub replace_models: bool,
+    /// Remove this provider's auth.json key in the same transaction as the
+    /// models.json/baseUrl mutation.
+    #[prost(bool, tag = "10")]
+    pub clear_api_key: bool,
 }
 /// A model entry under a custom provider, persisted to models.json.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1146,6 +1155,11 @@ pub struct StreamRequest {
     pub after_idx: i64,
     #[prost(bool, tag = "5")]
     pub atomic_attach: bool,
+    /// Subscribe to process-wide Agent control-plane events instead of one
+    /// session. When true, session_id/run_id must be empty and atomic_attach
+    /// false. The initial ping carries the current config revision.
+    #[prost(bool, tag = "6")]
+    pub global_events: bool,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StreamEvent {
@@ -1166,6 +1180,7 @@ pub struct StreamEvent {
     ///    usage                        token accounting
     ///    error                        run error
     ///    tool_sandboxed / persistence_error / compaction_end   sideband signals
+    ///    provider_config_changed  global provider/auth configuration committed
     ///
     /// Provider-specific aliases are normalized inside the Agent and never cross
     /// this RPC boundary.

@@ -747,6 +747,10 @@ impl crate::types::LLMProvider for Client {
         *self.api_key.write() = api_key.to_string();
     }
 
+    fn set_base_url(&self, base_url: &str) {
+        *self.base_url.write() = base_url.to_string();
+    }
+
     fn update_thinking(&self, level: &str, budget: i32) {
         *self.thinking_level.write() = level.to_string();
         *self.thinking_budget.write() = budget;

@@ -1,41 +1,40 @@
 //! Mutating command paths for provider configuration: built-in API key / Base
 //! URL overrides and custom-provider upsert/delete.
 //!
-//! Each operation is RPC-first (audit item 2): the validated change is sent to
-//! the agent via `set_auth` / `upsert_provider` / `delete_provider`, and the
-//! agent writes its own auth.json/models.json and refreshes live sessions. The
-//! locked local read-modify-write remains as the fallback for an unreachable
-//! or pre-item-2 agent (then followed by the best-effort `reload_auth`). The
-//! synchronous `_with_catalog` cores are exactly that local path — validation
-//! plus file writes — which keeps the module tests agent-free.
+//! Production writes are Agent-only: success means the Agent durably wrote its
+//! config and refreshed live state. The synchronous `_with_catalog` helpers
+//! remain only for isolated storage contract tests; production never falls
+//! back to an out-of-band GUI write.
 
 use std::collections::BTreeMap;
 
-use serde_json::{Map, Value};
+#[cfg(test)]
+use serde_json::Map;
+#[cfg(test)]
+use serde_json::Value;
 
 use crate::agent_bridge::config as agent_config;
 use crate::auth_store::FUTURE_PROVIDER_ID;
+#[cfg(test)]
 use crate::config_io;
 use crate::AppError;
 
-use super::catalog::{builtin_catalog_providers, models_json_path, CatalogProviderSummary};
+#[cfg(test)]
+use super::catalog::models_json_path;
+use super::catalog::{builtin_catalog_providers, CatalogProviderSummary};
+#[cfg(test)]
+use super::refresh_view_with_catalog;
+#[cfg(test)]
+use super::validate::model_json_values;
 use super::validate::{
-    is_ascii_no_control, model_json_values, validate_custom_provider, ValidatedCustomProvider,
-    API_KEY_MAX_LEN, BASE_URL_MAX_LEN,
+    is_ascii_no_control, validate_custom_provider, ValidatedCustomProvider, API_KEY_MAX_LEN,
+    BASE_URL_MAX_LEN,
 };
 use super::{
-    refresh_view_with_catalog, ProvidersView, SetBuiltinProviderBaseUrlInput,
+    ProvidersView, SetBuiltinProviderBaseUrlInput, UpdateBuiltinProviderInput,
     UpdateBuiltinProviderKeyInput, UpsertCustomProviderInput, BASE_URL_PLACEHOLDER,
     FUTURE_PROVIDER_NAME,
 };
-
-/// Best-effort `reload_auth` after a LOCAL config write: the agent caches the
-/// resolved credentials per session, so the file change alone leaves live
-/// sessions on the old state. Not needed when the RPC write path was used —
-/// the agent refreshed itself.
-async fn reload_after_local_write() {
-    let _ = crate::agent_bridge::reload_agent_credentials().await;
-}
 
 /// One-shot injected failure for the paired auth.json write of a transactional
 /// local write. models.json and auth.json live in the same directory, so a
@@ -56,6 +55,7 @@ fn injected_auth_write_failure() -> Result<(), AppError> {
 
 /// The auth half of the transactional upsert. A thin wrapper so the test-only
 /// failure injection (see above) shares one line with the real call.
+#[cfg(test)]
 fn paired_key_write(id: &str, key: &str) -> Result<(), AppError> {
     #[cfg(test)]
     injected_auth_write_failure()?;
@@ -97,6 +97,7 @@ fn validate_builtin_key_update<'a>(
 }
 
 /// Local fallback: write the key straight to auth.json.
+#[cfg(test)]
 fn apply_builtin_key_update_local(id: &str, api_key: Option<&str>) -> Result<(), AppError> {
     if let Some(key) = api_key {
         crate::auth_store::set_provider_key(id, key)?;
@@ -113,19 +114,56 @@ pub async fn update_builtin_provider_key(
     // Validate before the RPC so bad input never reaches the agent; the
     // fallback core below re-validates from the same input.
     let (id, api_key) = validate_builtin_key_update(&input, &catalog)?;
-    let applied = match api_key {
+    match api_key {
         Some(key) => agent_config::set_provider_key(id, key).await?,
         None => agent_config::clear_provider_key(id).await?,
     };
-    if applied {
-        // The agent wrote auth.json and refreshed live sessions itself.
-        return refresh_view_with_catalog(&catalog);
-    }
-    let view = update_builtin_provider_key_with_catalog(input, &catalog)?;
-    reload_after_local_write().await;
-    Ok(view)
+    super::list_agent_providers().await
 }
 
+pub async fn update_builtin_provider(
+    input: UpdateBuiltinProviderInput,
+) -> Result<ProvidersView, AppError> {
+    let catalog = builtin_catalog_providers().await;
+    let key_input = UpdateBuiltinProviderKeyInput {
+        id: input.id.clone(),
+        api_key: input.api_key.clone(),
+    };
+    let (id, api_key_change) = if input.update_api_key {
+        let (id, key) = validate_builtin_key_update(&key_input, &catalog)?;
+        (id.to_string(), Some(key.map(str::to_string)))
+    } else {
+        let id = input.id.trim();
+        if id.is_empty() || id == FUTURE_PROVIDER_ID || !catalog.contains_key(id) {
+            return Err("Unknown or unsupported built-in provider."
+                .to_string()
+                .into());
+        }
+        (id.to_string(), None)
+    };
+    let base_url = if let Some(base_url) = input.base_url.as_ref() {
+        let base_input = SetBuiltinProviderBaseUrlInput {
+            id: id.clone(),
+            base_url: base_url.clone(),
+        };
+        let (_, validated) = validate_builtin_base_url_update(&base_input, &catalog)?;
+        Some(validated.to_string())
+    } else {
+        None
+    };
+    if base_url.is_none() && api_key_change.is_none() {
+        return Err("No provider changes were supplied.".to_string().into());
+    }
+    agent_config::update_builtin_provider(
+        &id,
+        base_url.as_deref(),
+        api_key_change.as_ref().map(|key| key.as_deref()),
+    )
+    .await?;
+    super::list_agent_providers().await
+}
+
+#[cfg(test)]
 pub(super) fn update_builtin_provider_key_with_catalog(
     input: UpdateBuiltinProviderKeyInput,
     catalog: &BTreeMap<String, CatalogProviderSummary>,
@@ -176,6 +214,7 @@ fn validate_builtin_base_url_update<'a>(
 
 /// Local fallback: strict, per-path-locked models.json read-modify-write of
 /// the `baseUrl` override.
+#[cfg(test)]
 fn apply_builtin_base_url_local(id: &str, base_url: &str) -> Result<(), AppError> {
     let models_path = models_json_path()?;
     config_io::with_config_lock(&models_path, || {
@@ -222,15 +261,11 @@ pub async fn set_builtin_provider_base_url(
 ) -> Result<ProvidersView, AppError> {
     let catalog = builtin_catalog_providers().await;
     let (id, base_url) = validate_builtin_base_url_update(&input, &catalog)?;
-    let applied = agent_config::set_builtin_provider_base_url(id, base_url).await?;
-    if applied {
-        return refresh_view_with_catalog(&catalog);
-    }
-    let view = set_builtin_provider_base_url_with_catalog(input, &catalog)?;
-    reload_after_local_write().await;
-    Ok(view)
+    agent_config::set_builtin_provider_base_url(id, base_url).await?;
+    super::list_agent_providers().await
 }
 
+#[cfg(test)]
 pub(super) fn set_builtin_provider_base_url_with_catalog(
     input: SetBuiltinProviderBaseUrlInput,
     catalog: &BTreeMap<String, CatalogProviderSummary>,
@@ -311,6 +346,7 @@ fn provider_upsert_message(
                 modalities: model.modalities.clone(),
             })
             .collect(),
+        replace_models: true,
         create_only: validated.create,
         api_key: validated.api_key.clone().unwrap_or_default(),
         ..Default::default()
@@ -323,6 +359,7 @@ fn provider_upsert_message(
 /// on either file never leaves a dangling key or a provider whose models and
 /// key disagree. The models write comes first; if the key write then fails, the
 /// models file is rolled back to its exact pre-call bytes.
+#[cfg(test)]
 fn apply_upsert_local(validated: &ValidatedCustomProvider) -> Result<(), AppError> {
     let models_path = models_json_path()?;
     config_io::with_config_lock(&models_path, || {
@@ -408,16 +445,11 @@ pub async fn upsert_custom_provider(
     // needs it.
     let validated = validate_custom_provider(input.clone())?;
     validate_upsert_against_catalog(&validated, &catalog)?;
-    let applied = agent_config::upsert_provider(provider_upsert_message(&validated)).await?;
-    if applied {
-        // The agent wrote models.json/auth.json and refreshed live sessions.
-        return refresh_view_with_catalog(&catalog);
-    }
-    let view = upsert_custom_provider_with_catalog(input, &catalog)?;
-    reload_after_local_write().await;
-    Ok(view)
+    agent_config::upsert_provider(provider_upsert_message(&validated)).await?;
+    super::list_agent_providers().await
 }
 
+#[cfg(test)]
 pub(super) fn upsert_custom_provider_with_catalog(
     input: UpsertCustomProviderInput,
     catalog: &BTreeMap<String, CatalogProviderSummary>,
@@ -452,6 +484,7 @@ fn validate_delete_id(
 }
 
 /// Local fallback: remove the models.json entry AND the auth.json credentials.
+#[cfg(test)]
 fn apply_delete_local(id: &str) -> Result<(), AppError> {
     let models_path = models_json_path()?;
     config_io::with_config_lock(&models_path, || {
@@ -522,16 +555,11 @@ fn apply_delete_local(id: &str) -> Result<(), AppError> {
 pub async fn delete_custom_provider(id: String) -> Result<ProvidersView, AppError> {
     let catalog = builtin_catalog_providers().await;
     let id = validate_delete_id(&id, &catalog)?;
-    let applied = agent_config::delete_provider(&id).await?;
-    if applied {
-        // The agent removed its models.json + auth.json entries and refreshed.
-        return refresh_view_with_catalog(&catalog);
-    }
-    let view = delete_custom_provider_with_catalog(id, &catalog)?;
-    reload_after_local_write().await;
-    Ok(view)
+    agent_config::delete_provider(&id).await?;
+    super::list_agent_providers().await
 }
 
+#[cfg(test)]
 pub(super) fn delete_custom_provider_with_catalog(
     id: String,
     catalog: &BTreeMap<String, CatalogProviderSummary>,
@@ -546,6 +574,7 @@ pub(super) fn delete_custom_provider_with_catalog(
 /// True when a models.json provider entry only carries overrides (Base URL) for
 /// a built-in provider, i.e. it defines no `name`, `api`, or explicit `models`.
 /// Such entries are surfaced through the built-in list rather than as customs.
+#[cfg(test)]
 pub(super) fn is_override_only(config: &Value) -> bool {
     let has_str = |key: &str| {
         config
@@ -563,6 +592,7 @@ pub(super) fn is_override_only(config: &Value) -> bool {
 }
 
 /// The stored Base URL override for a provider, if any (non-empty).
+#[cfg(test)]
 pub(super) fn provider_base_url_override(models: &Value, id: &str) -> Option<String> {
     models
         .get("providers")

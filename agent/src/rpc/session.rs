@@ -520,9 +520,14 @@ impl ServerSession {
     /// Active runs use a provider snapshot, so updating this control plane
     /// affects the next request without mutating headers already sent by an
     /// in-flight request.
-    pub fn reload_credentials(&self) {
+    pub fn reload_credentials(&self) -> Result<()> {
         if self.model.is_empty() {
-            return;
+            let loop_ = self
+                .agent_loop
+                .try_read()
+                .map_err(|_| anyhow::anyhow!("run configuration is busy; retry prompt"))?;
+            loop_.provider.set_api_key("");
+            return Ok(());
         }
         let registry_resolved = self.model_registry.read().resolve(&self.model);
         let provider = registry_resolved
@@ -535,11 +540,25 @@ impl ServerSession {
             .as_ref()
             .map(|m| m.api_key.clone())
             .unwrap_or_default();
+        let base_url = registry_resolved
+            .as_ref()
+            .map(|m| m.base_url.clone())
+            .unwrap_or_default();
         let api_key = resolve_api_key(&auth, &self.model, &provider, &model_key);
 
-        if let Ok(loop_) = self.agent_loop.try_read() {
-            loop_.provider.set_api_key(&api_key);
+        // The shared loop is a short-lived control plane; active runs own
+        // independent snapshots. Wait until the latest credential revision is
+        // installed so config commands cannot acknowledge while a session is
+        // still on the old key.
+        let loop_ = self
+            .agent_loop
+            .try_read()
+            .map_err(|_| anyhow::anyhow!("run configuration is busy; retry prompt"))?;
+        loop_.provider.set_api_key(&api_key);
+        if !base_url.is_empty() {
+            loop_.provider.set_base_url(&base_url);
         }
+        Ok(())
     }
 
     fn strip_image_content_from_messages(&self) {
@@ -920,6 +939,26 @@ mod tests {
         ) -> anyhow::Result<ReceiverStream<StreamEvent>> {
             let (_tx, rx) = mpsc::channel(1);
             Ok(ReceiverStream::new(rx))
+        }
+    }
+
+    struct KeyRecordingProvider(Arc<parking_lot::Mutex<String>>);
+
+    #[async_trait::async_trait]
+    impl LLMProvider for KeyRecordingProvider {
+        async fn stream_chat(
+            &self,
+            _model: String,
+            _messages: Vec<Message>,
+            _tools: Vec<ToolDef>,
+            _system_prompt: String,
+        ) -> anyhow::Result<ReceiverStream<StreamEvent>> {
+            let (_tx, rx) = mpsc::channel(1);
+            Ok(ReceiverStream::new(rx))
+        }
+
+        fn set_api_key(&self, api_key: &str) {
+            *self.0.lock() = api_key.to_string();
         }
     }
 
@@ -2292,7 +2331,38 @@ mod tests {
     #[test]
     fn reload_credentials_no_panic() {
         let session = make_test_session("s1");
-        session.reload_credentials();
+        let _ = session.reload_credentials();
+    }
+
+    #[test]
+    fn reload_credentials_applies_authoritative_provider_key() {
+        let _home = crate::test_support::TestHome::new();
+        let auth_path = crate::config::providers::auth_json_path();
+        std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            auth_path,
+            r#"{"custom":{"type":"api_key","key":"new-key"}}"#,
+        )
+        .unwrap();
+
+        let observed = Arc::new(parking_lot::Mutex::new("old-key".to_string()));
+        let cwd = test_workspace();
+        let mut session = ServerSession::new(
+            "key-refresh".to_string(),
+            Arc::new(tokio::sync::RwLock::new(Loop::new(
+                Arc::new(KeyRecordingProvider(observed.clone())),
+                "model",
+            ))),
+            Arc::new(Manager::new(test_session_dir())),
+            &cwd,
+            Arc::new(SseBroadcaster::new()),
+            ApprovalGate::default(),
+            Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
+        );
+        session.model = "custom/model".to_string();
+
+        session.reload_credentials().unwrap();
+        assert_eq!(&*observed.lock(), "new-key");
     }
 
     #[test]

@@ -878,6 +878,7 @@ fn is_session_scoped_event(event_type: &str) -> bool {
             | "tools_changed"
             | "config_reloaded"
             | "skills_reloaded"
+            | "provider_config_changed"
     )
 }
 

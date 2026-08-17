@@ -1,6 +1,7 @@
 mod approval;
 mod client;
 pub(crate) mod config;
+mod config_observer;
 mod headless;
 mod import;
 mod models;
@@ -23,6 +24,7 @@ pub use self::client::{
     prune_run_events_command, set_default_model_command, set_model_command,
     set_session_name_command, set_thinking_level_command, RpcResponseExt,
 };
+pub use self::config_observer::spawn_provider_config_observer;
 pub use self::headless::{prepare_prompt_persisted, run_prepared_prompt, PreparedPrompt};
 pub(crate) use self::import::{import_missing_sessions, list_agent_session_ids};
 pub use self::models::{list_agent_models, list_builtin_providers, AgentModelOption};
@@ -407,6 +409,7 @@ pub(crate) async fn provision_agent_session(
 ///
 /// Best-effort: if the agent isn't running there's no in-memory state to
 /// refresh, so an unavailable agent is treated as success.
+#[cfg(test)]
 pub async fn reload_agent_credentials() -> Result<(), crate::AppError> {
     let mut client = match connect_agent().await {
         Ok(client) => client,

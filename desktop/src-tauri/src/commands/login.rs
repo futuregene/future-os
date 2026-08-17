@@ -1,8 +1,8 @@
 //! FutureGene device-code login Tauri commands (see desktop/ER.md §6.9).
 
 use crate::agent_providers::{self, ProvidersView};
+use crate::agent_supervisor;
 use crate::future_login::{self, FutureBalance, FutureLoginPoll, FutureLoginStart, FutureProfile};
-use crate::{agent_supervisor, auth_store};
 
 #[tauri::command]
 pub async fn start_future_login() -> Result<FutureLoginStart, crate::AppError> {
@@ -34,23 +34,15 @@ pub async fn poll_future_login<R: tauri::Runtime>(
         }
         let handle = app.clone();
         std::thread::spawn(move || agent_supervisor::ensure_agent_running(&handle));
-        // Credential persistence + live-session refresh now happen inside
-        // `future_login::poll` (RPC-first via set_auth, with a local-write +
-        // reload_auth fallback), so no separate refresh is needed here.
+        // Credential persistence + live-session refresh completed inside the
+        // Agent before `future_login::poll` reported authorization.
     }
     Ok(result)
 }
 
 #[tauri::command]
 pub async fn logout_future_provider() -> Result<ProvidersView, crate::AppError> {
-    // RPC-first (audit item 2): the agent drops the key from its own auth.json
-    // and refreshes live sessions so the user can't keep prompting with the
-    // stale key after logout. Fallback for an unreachable/pre-item-2 agent:
-    // local file write + best-effort reload_auth (the legacy path).
-    if !crate::agent_bridge::config::future_logout().await? {
-        auth_store::clear_future_key()?;
-        let _ = crate::agent_bridge::reload_agent_credentials().await;
-    }
+    crate::agent_bridge::config::future_logout().await?;
     agent_providers::list_agent_providers().await
 }
 
@@ -132,16 +124,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn logout_future_provider_falls_back_when_the_agent_is_down() {
+    async fn logout_future_provider_keeps_credentials_when_the_agent_is_down() {
         let _lock = mock_agent_lock();
         let _home = HomeGuard::new("cmd-login-logout-fb");
         crate::auth_store::set_future_login("sekret", "https://future-os.cn/api").unwrap();
-        let view = crate::commands::agent_mock::with_broken_endpoint(logout_future_provider)
+        let error = crate::commands::agent_mock::with_broken_endpoint(logout_future_provider)
             .await
-            .expect("logout fallback");
-        assert!(!view.builtin.is_empty());
-        // The local fallback cleared the stored key.
-        assert!(crate::future_login::future_api_key().is_err());
+            .expect_err("logout must fail without the Agent");
+        assert!(error.to_string().contains("not saved"));
+        assert_eq!(crate::future_login::future_api_key().unwrap(), "sekret");
     }
 
     #[tokio::test]

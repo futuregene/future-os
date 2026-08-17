@@ -261,14 +261,10 @@ pub async fn poll(device_code: &str) -> Result<FutureLoginPoll, AppError> {
         // Only report success after the key is durably written. Pin `base_url`
         // to the resolved platform (`{platform}/api`), exactly as the CLI does,
         // so a GUI login and a CLI login leave identical `auth.json` state.
-        // RPC-first (audit item 2): the agent writes its own auth.json and
-        // refreshes live sessions. An unreachable or pre-item-2 agent falls
-        // back to the local file write plus the best-effort reload_auth, so a
-        // login during agent startup still lands (the agent reads auth.json at
-        // boot anyway).
+        // The Agent is the sole writer. Authorization is reported complete
+        // only after it durably stores the key and refreshes live sessions.
         let base_url = format!("{platform}/api");
-        let registered = crate::agent_bridge::config::future_login(key.trim(), &base_url).await?;
-        persist_future_login_if_needed(registered, key.trim(), &base_url).await?;
+        crate::agent_bridge::config::future_login(key.trim(), &base_url).await?;
         return Ok(FutureLoginPoll::of("authorized"));
     }
 
@@ -359,22 +355,6 @@ fn validate_browser_url(target: &str) -> Result<(), AppError> {
         return Err(AppError::Message(
             "Authorization URL scheme is not permitted.".to_string(),
         ));
-    }
-    Ok(())
-}
-
-/// Write the login key to `auth.json` and reload agent credentials when the
-/// RPC-first write did not already persist it (agent unreachable, or a legacy
-/// agent without `set_auth`). Extracted so the already-registered no-op path is
-/// testable without a live mock agent.
-async fn persist_future_login_if_needed(
-    registered: bool,
-    key: &str,
-    base_url: &str,
-) -> Result<(), AppError> {
-    if !registered {
-        crate::auth_store::set_future_login(key, base_url)?;
-        let _ = crate::agent_bridge::reload_agent_credentials().await;
     }
     Ok(())
 }
@@ -520,14 +500,6 @@ mod tests {
     fn open_browser_uses_injected_opener() {
         let _ = BROWSER_OPENER.set(|_| Ok(()));
         open_browser("https://example.com/device");
-    }
-
-    #[tokio::test]
-    async fn persist_future_login_skips_when_already_registered() {
-        // RPC-first path already persisted the key → the local fallback no-ops.
-        persist_future_login_if_needed(true, "key", "https://future-os.cn/api")
-            .await
-            .unwrap();
     }
 
     #[tokio::test]
@@ -892,12 +864,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn poll_authorized_writes_key_via_local_fallback() {
+    async fn poll_does_not_report_authorized_when_agent_write_fails() {
         let _home = crate::auth_store::test_support::HomeGuard::new("fl-poll-ok");
         // Force `connect_agent` to fail deterministically with an unparseable
         // endpoint — `Endpoint::from_shared` fails before the latched channel
-        // is consulted, so the RPC-first write reports "unreachable" and poll
-        // falls back to the local auth.json write. Restore the env var after
+        // is consulted. Restore the env var after
         // instead of re-pointing at the shared mock: starting the mock here
         // would re-order the process-wide agent-channel latch and break the
         // agent_bridge mock tests.
@@ -908,12 +879,15 @@ mod tests {
         )]);
         point_auth(&url);
 
-        let out = with_broken_agent_endpoint(|| poll("dc")).await.unwrap();
+        let error = with_broken_agent_endpoint(|| poll("dc"))
+            .await
+            .expect_err("authorization must wait for the Agent write");
 
-        assert_eq!(out.status, "authorized");
-        assert_eq!(
-            crate::auth_store::read().unwrap()["future"]["key"],
-            "sekret"
-        );
+        assert!(error.to_string().contains("not saved"));
+        assert!(crate::auth_store::read()
+            .unwrap()
+            .get("future")
+            .and_then(|entry| entry.get("key"))
+            .is_none());
     }
 }
