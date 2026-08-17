@@ -34,7 +34,7 @@ CRATE_ROOTS: list[tuple[str, str]] = [
     ("agent/", "future-agent"),
     ("channels/", "future-channels"),
     ("cli/", "future-cli"),
-    ("rpc/", "future-rpc"),
+    ("packages/rpc/", "future-rpc"),
     ("tui/", "future-tui"),
 ]
 

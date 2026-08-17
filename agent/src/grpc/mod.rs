@@ -1,7 +1,7 @@
 //! gRPC Server for FutureAgent
 //!
 //! This module implements the FutureAgent gRPC service using tonic.
-//! The proto definition is in the rpc/proto/ directory.
+//! The proto definition is in the packages/rpc/proto/ directory.
 //!
 //! HTTP endpoints:
 //! - POST / - RPC commands (JSON)

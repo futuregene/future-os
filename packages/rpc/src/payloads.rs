@@ -1,6 +1,6 @@
 //! Serde-serialisable carriers for the big read-command payloads — the wire
 //! payload half of the typed-RPC contract. Each struct mirrors a message in
-//! `rpc/proto/future.proto`'s "Response payload contracts" section and is the
+//! `packages/rpc/proto/future.proto`'s "Response payload contracts" section and is the
 //! single source for constructing the corresponding `RpcResponse.data` JSON
 //! (agent side, Serialize) AND for decoding it back (client fallback path,
 //! Deserialize). Because both directions land in the same types, the JSON

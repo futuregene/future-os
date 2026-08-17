@@ -28,7 +28,7 @@ tauri = { version = "2", features = ["protocol-asset", "test"] }
 # Shared agent wire contract (proto codegen + typed/JSON decode; typed-RPC
 # milestone). Path dep: this crate lives in the root cargo workspace, and
 # tonic/prost versions must stay aligned with its workspace pins.
-future-rpc = { path = "../../rpc" }
+future-rpc = { path = "../../packages/rpc" }
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-shell = "2"
 tauri-plugin-updater = "2"
