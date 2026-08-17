@@ -185,6 +185,7 @@ pub(super) async fn collect_agent_response(
                     run_id: canonical_run_id.to_string(),
                     after_idx: last_idx,
                     atomic_attach: true,
+                    global_events: false,
                 })
                 .await
                 .map(|response| response.into_inner())

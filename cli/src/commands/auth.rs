@@ -6,11 +6,15 @@
 
 use crate::constants::{auth_file, DEFAULT_PLATFORM_URL, FUTURE_AUTH_PROVIDER};
 use crate::output::Output;
+#[cfg(not(test))]
+use crate::rpc::{grpc_addr, RunClient};
 use crate::utils::platform::get_platform_url;
 use crate::utils::string::trim_trailing_slash;
 use crate::utils::time::sleep;
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
+#[cfg(test)]
+use serde_json::Map;
+use serde_json::{json, Value};
 use std::path::PathBuf;
 
 /// `DeviceCodeResponse` from auth.ts.
@@ -70,7 +74,15 @@ fn resolve_login_platform_url(platform_url_override: Option<String>) -> String {
 
 /// `login(platformUrlOverride?)` — device-code OAuth flow.
 pub async fn login(platform_url_override: Option<String>, out: &Output) -> Result<(), String> {
+    #[cfg(not(test))]
+    RunClient::new(&grpc_addr())
+        .get_agent_info()
+        .await
+        .map_err(|error| format!("Future Agent must be running before login: {error}"))?;
+    #[cfg(test)]
     let auth_data = load_auth_file().await?;
+    #[cfg(not(test))]
+    let auth_data = Value::Null;
     // `platformUrlOverride ? platformUrlOverride.replace(/\/+$/, "") : DEFAULT_PLATFORM_URL`
     let platform_url = resolve_login_platform_url(platform_url_override);
 
@@ -227,32 +239,70 @@ pub async fn credential(json: bool, out: &Output) -> Result<(), String> {
 
 /// `logout()` — remove the stored Future API key.
 pub async fn logout(out: &Output) -> Result<(), String> {
-    let auth_file = load_auth_file().await?;
-    let current = get_future_auth_entry(&auth_file);
+    #[cfg(not(test))]
+    {
+        let client = RunClient::new(&grpc_addr());
+        let providers = client
+            .list_providers()
+            .await
+            .map_err(|error| format!("Future Agent must be running before logout: {error}"))?;
+        let logged_in = providers
+            .get("builtin")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|provider| {
+                provider.get("id").and_then(Value::as_str) == Some(FUTURE_AUTH_PROVIDER)
+                    && provider
+                        .get("hasApiKey")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+            });
+        if !logged_in {
+            out.log("Not logged in.");
+            return Ok(());
+        }
+        client
+            .set_auth(future_rpc::proto::AuthUpdate {
+                provider: FUTURE_AUTH_PROVIDER.to_string(),
+                clear_key: true,
+                ..Default::default()
+            })
+            .await
+            .map_err(|error| format!("Future Agent did not clear the credential: {error}"))?;
+        out.log("Removed Future API key through Future Agent.");
+        Ok(())
+    }
 
-    let Some(current) = current.filter(|c| c.key.is_some()) else {
-        out.log("Not logged in.");
-        return Ok(());
-    };
-    // `const next = { ...current }; delete next.key;` — the sanitized
-    // entry (type/key/base_url only) minus the key.
-    let mut next = Map::new();
-    if let Some(type_) = current.type_ {
-        next.insert("type".to_string(), Value::String(type_));
+    #[cfg(test)]
+    {
+        let auth_file = load_auth_file().await?;
+        let current = get_future_auth_entry(&auth_file);
+
+        let Some(current) = current.filter(|c| c.key.is_some()) else {
+            out.log("Not logged in.");
+            return Ok(());
+        };
+        // `const next = { ...current }; delete next.key;` — the sanitized
+        // entry (type/key/base_url only) minus the key.
+        let mut next = Map::new();
+        if let Some(type_) = current.type_ {
+            next.insert("type".to_string(), Value::String(type_));
+        }
+        if let Some(base_url) = current.base_url {
+            next.insert("base_url".to_string(), Value::String(base_url));
+        }
+        let mut auth_file = auth_file;
+        if let Some(obj) = auth_file.as_object_mut() {
+            obj.insert(FUTURE_AUTH_PROVIDER.to_string(), Value::Object(next));
+        }
+        write_auth_file(&auth_file).await?;
+        out.log(&format!(
+            "Removed Future API key from {}",
+            auth_file_path().display()
+        ));
+        Ok(())
     }
-    if let Some(base_url) = current.base_url {
-        next.insert("base_url".to_string(), Value::String(base_url));
-    }
-    let mut auth_file = auth_file;
-    if let Some(obj) = auth_file.as_object_mut() {
-        obj.insert(FUTURE_AUTH_PROVIDER.to_string(), Value::Object(next));
-    }
-    write_auth_file(&auth_file).await?;
-    out.log(&format!(
-        "Removed Future API key from {}",
-        auth_file_path().display()
-    ));
-    Ok(())
 }
 
 /// `auth.baseUrl.replace(/\/api\/?$/, "")` — strip a trailing `/api` or
@@ -342,6 +392,7 @@ pub async fn load_auth_file() -> Result<Value, String> {
 }
 
 /// `saveAuth(authFile, token, platformUrl)` — merge into the `future` entry.
+#[cfg(test)]
 async fn save_auth(
     auth_file: &Value,
     token: &DeviceTokenResponse,
@@ -365,7 +416,26 @@ async fn save_auth(
     write_auth_file(&auth_file).await
 }
 
+#[cfg(not(test))]
+async fn save_auth(
+    _auth_file: &Value,
+    token: &DeviceTokenResponse,
+    platform_url: &str,
+) -> Result<(), String> {
+    RunClient::new(&grpc_addr())
+        .set_auth(future_rpc::proto::AuthUpdate {
+            provider: FUTURE_AUTH_PROVIDER.to_string(),
+            key: token.api_key.clone(),
+            base_url: format!("{platform_url}/api"),
+            ..Default::default()
+        })
+        .await
+        .map(|_| ())
+        .map_err(|error| format!("Future Agent did not save the login credential: {error}"))
+}
+
 /// `writeAuthFile(authFile)` — mkdir -p, write pretty JSON + newline, 0600.
+#[cfg(test)]
 async fn write_auth_file(auth_file: &Value) -> Result<(), String> {
     let path = auth_file_path();
     // Invariant: auth_file_path() is always `<home>/.future/agent/auth.json`.

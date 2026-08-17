@@ -7,54 +7,62 @@
 //! and live-session credentials internally, so no follow-up round-trip is
 //! needed on this path.
 //!
-//! Fallback keeps version skew and offline edits working: an unreachable
-//! agent, or one that predates these commands (it answers `success = false`
-//! with "unknown command"), sends the caller back to the GUI's own file
-//! writers plus the best-effort `reload_auth` follow-up — exactly the legacy
-//! behavior. An explicit rejection from an agent that DOES know the command
-//! (validation failure, e.g. a duplicate provider id) is surfaced as an error
-//! instead, never silently re-applied locally.
+//! There is deliberately no local-write fallback. A successful UI response
+//! means the Agent durably committed the mutation and refreshed live state;
+//! an unavailable or outdated Agent is an error. This keeps every client and
+//! every conversation on one authoritative configuration revision.
 
 use crate::agent_proto::{AuthUpdate, RpcCommand};
 use crate::AppError;
 
 use super::client::{base_command, connect_agent};
 
+/// Read the Agent-owned, secret-redacted provider snapshot. This deliberately
+/// does not inspect Desktop's filesystem, so a custom Agent endpoint or HOME
+/// cannot make the displayed state diverge from the process serving prompts.
+pub(crate) async fn list_providers() -> Result<crate::agent_providers::ProvidersView, AppError> {
+    let mut client = connect_agent().await?;
+    let response = client
+        .execute_command(base_command("list_providers", String::new()))
+        .await
+        .map_err(|status| {
+            AppError::Message(format!("Unable to list Future Agent providers: {status}"))
+        })?
+        .into_inner();
+    if !response.success {
+        return Err(if response.error.is_empty() {
+            "Future Agent rejected the provider snapshot request."
+                .to_string()
+                .into()
+        } else {
+            response.error.into()
+        });
+    }
+    serde_json::from_str(&response.data).map_err(|error| {
+        format!("Future Agent returned an invalid provider snapshot: {error}").into()
+    })
+}
+
 /// Send a config-write command to the agent.
 ///
-/// Returns `Ok(true)` when the agent applied the change (its live state is
-/// already refreshed), `Ok(false)` when the caller must fall back to the local
-/// file writers (agent unreachable or too old), and `Err` when the agent
-/// explicitly rejected the change.
+/// Returns only after the Agent applied the change and refreshed live state.
 async fn send_config_write(command: RpcCommand, context: &str) -> Result<bool, AppError> {
-    let mut client = match connect_agent().await {
-        Ok(client) => client,
-        Err(error) => {
-            eprintln!(
-                "FutureOS: agent unavailable for {context} ({error}); falling back to the local config write"
-            );
-            return Ok(false);
-        }
-    };
-    let response = match client.execute_command(command).await {
-        Ok(response) => response.into_inner(),
-        Err(status) => {
-            eprintln!(
-                "FutureOS: {context} failed at transport level ({status}); falling back to the local config write"
-            );
-            return Ok(false);
-        }
-    };
+    let mut client = connect_agent().await.map_err(|error| {
+        AppError::Message(format!(
+            "Future Agent is unavailable; {context} was not saved: {error}"
+        ))
+    })?;
+    let response = client
+        .execute_command(command)
+        .await
+        .map_err(|status| {
+            AppError::Message(format!(
+                "Future Agent did not complete {context}; nothing was saved: {status}"
+            ))
+        })?
+        .into_inner();
     if response.success {
         return Ok(true);
-    }
-    // A pre-item-2 agent answers success=false "unknown command: <type>".
-    // Treat it like an unavailable agent and let the caller fall back.
-    if response.error.contains("unknown command") {
-        eprintln!(
-            "FutureOS: agent does not support {context}; falling back to the local config write"
-        );
-        return Ok(false);
     }
     let message = if response.error.is_empty() {
         format!("Future Agent rejected {context}.")
@@ -146,6 +154,29 @@ pub(crate) async fn set_builtin_provider_base_url(
     .await
 }
 
+/// Atomically update a built-in provider's optional Base URL and API key.
+pub(crate) async fn update_builtin_provider(
+    id: &str,
+    base_url: Option<&str>,
+    api_key: Option<Option<&str>>,
+) -> Result<bool, AppError> {
+    let mut config = crate::agent_proto::ProviderUpsert {
+        id: id.to_string(),
+        ..Default::default()
+    };
+    if let Some(base_url) = base_url {
+        config.base_url = base_url.to_string();
+        config.clear_base_url = base_url.is_empty();
+    }
+    if let Some(api_key) = api_key {
+        match api_key {
+            Some(key) => config.api_key = key.to_string(),
+            None => config.clear_api_key = true,
+        }
+    }
+    upsert_provider(config).await
+}
+
 /// Create/update a `models.json` provider entry (plus optional auth key).
 pub(crate) async fn upsert_provider(
     config: crate::agent_proto::ProviderUpsert,
@@ -190,12 +221,14 @@ mod tests {
         let result = call().await;
         if let Some(prev) = prev {
             std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
+        } else {
+            std::env::remove_var("FUTURE_AGENT_GRPC_ADDR");
         }
         result
     }
 
     #[tokio::test]
-    async fn applied_rejected_and_fallback_outcomes() {
+    async fn applied_and_rejected_outcomes_never_fall_back() {
         let mock = mock_agent();
 
         // Agent applies the change.
@@ -224,25 +257,26 @@ mod tests {
             .expect_err("rejected");
         assert_eq!(error.to_string(), "Future Agent rejected set_auth.");
 
-        // Legacy agent: "unknown command" → caller falls back (Ok(false)).
+        // A legacy Agent cannot become a second authority via local fallback.
         mock.push(
             "set_auth",
             Reply::Reject("unknown command: set_auth".to_string()),
         );
-        assert!(!set_provider_key("future", "sk-1").await.expect("fallback"));
+        assert!(set_provider_key("future", "sk-1").await.is_err());
 
-        // Transport-level failure → fall back too.
+        // Transport failure means nothing is reported as saved.
         mock.push(
             "set_auth",
             Reply::Status(tonic::Code::Unavailable, "connection reset"),
         );
-        assert!(!set_provider_key("future", "sk-1").await.expect("fallback"));
+        let error = set_provider_key("future", "sk-1").await.unwrap_err();
+        assert!(error.to_string().contains("nothing was saved"));
 
-        // Agent unreachable at connect time → fall back.
-        let applied = with_broken_endpoint(|| set_provider_key("future", "sk-1"))
+        // Connect failure also refuses an out-of-band local write.
+        let error = with_broken_endpoint(|| set_provider_key("future", "sk-1"))
             .await
-            .expect("fallback");
-        assert!(!applied);
+            .unwrap_err();
+        assert!(error.to_string().contains("was not saved"));
     }
 
     #[tokio::test]
@@ -332,5 +366,35 @@ mod tests {
             .clone()
             .expect("provider config");
         assert_eq!(config.id, "custom");
+
+        // Built-in Base URL + key are one atomic Agent upsert, not two
+        // independently observable mutations.
+        mock.push("upsert_provider", Reply::Data("{}".to_string()));
+        assert!(update_builtin_provider(
+            "azure-openai-responses",
+            Some("https://tenant.openai.azure.com/openai"),
+            Some(Some("azure-key")),
+        )
+        .await
+        .expect("ok"));
+        let requests = mock.requests_of("upsert_provider");
+        let config = requests.last().unwrap().provider_config.as_ref().unwrap();
+        assert_eq!(config.base_url, "https://tenant.openai.azure.com/openai");
+        assert_eq!(config.api_key, "azure-key");
+        assert!(!config.clear_api_key);
+
+        mock.push("upsert_provider", Reply::Data("{}".to_string()));
+        assert!(update_builtin_provider(
+            "azure-openai-responses",
+            Some("https://other.openai.azure.com/openai"),
+            Some(None),
+        )
+        .await
+        .expect("ok"));
+        let requests = mock.requests_of("upsert_provider");
+        let config = requests.last().unwrap().provider_config.as_ref().unwrap();
+        assert_eq!(config.base_url, "https://other.openai.azure.com/openai");
+        assert!(config.api_key.is_empty());
+        assert!(config.clear_api_key);
     }
 }
