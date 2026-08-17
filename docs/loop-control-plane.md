@@ -46,6 +46,31 @@ agent executes one bounded turn (gRPC) → writes evidence → kernel decides th
 | Multi-agent | `agent contract/recipe/succession/collective` | One goal, several workers: contract (backups / handoff rules), named recipes for one-command onboarding, auto back-up promotion on offline timeout, wake roster, collective turn ledger |
 | Frontier | `frontier show` | Outcome segments, structured replan rules, bounded semantic history (N=50), terminal judgement |
 
+## Drive loop via the skill (recommended entry)
+
+In most cases you won't type the CLI below — **use the `/future-loop` skill
+and let the agent drive**:
+
+```
+You say "/future-loop keep an eye on X for a week"
+   │
+   ▼
+Agent loads the future-loop skill (v3.x driving manual)
+   ├─ 1. `future loop status` first — continue an existing goal, never duplicate it
+   ├─ 2. Confirm the plan with you (steps/model/thinking level) — unless your message already carries the full objective + constraints
+   ├─ 3. `goal init` + decompose todos (dependencies via --blocks, hard checks via --verify/--acceptance)
+   ├─ 4. Drive turns: `run --max-turns 1 --agent-id <unique>`, relaunching the moment a turn exits
+   ├─ 5. Steer a drifting worker mid-turn via `todo update --text`
+   ├─ 6. Irreversible/expensive/user-only decisions → open a user gate and wait (gates freeze everything)
+   └─ 7. Close out: acceptance todo copies artifacts to the project root → validated closure (terminal)
+```
+
+**Skill vs CLI**: the skill owns "what to do when, how to decompose, how to
+drive" (the orchestration layer); the CLI is the underlying mechanism (state
+kernel + hard checks + decisions). The skill is a maintained v3.x manual, kept
+in sync with this page; full semantics at
+[future-skills/builtin/future-loop](https://github.com/futuregene/future-skills/tree/main/builtin/future-loop).
+
 ## User workflow (zero to closure)
 
 ```bash
