@@ -65,8 +65,6 @@ pub struct CompactTodo {
     /// Comma-joined predecessor ids (gates, blockers, todo→todo blocks).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_by_gate: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub required_capability: Option<String>,
     /// Repair-budget counter (absent = 0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failed_attempts: Option<u32>,
@@ -257,7 +255,6 @@ fn compact_todo(todo: &Todo, now_epoch: u64) -> CompactTodo {
         priority: (todo.priority != crate::state::Priority::default())
             .then(|| todo.priority.to_string()),
         blocked_by_gate: todo.blocked_by_gate.clone(),
-        required_capability: todo.required_capability.clone(),
         failed_attempts: (todo.failed_attempts > 0).then_some(todo.failed_attempts),
         consecutive_no_change: (todo.consecutive_no_change > 0)
             .then_some(todo.consecutive_no_change),
@@ -444,7 +441,6 @@ pub fn goal_from_case(case: &DecisionCase) -> Goal {
             _ => crate::state::Priority::P1,
         };
         todo.blocked_by_gate = item.blocked_by_gate.clone();
-        todo.required_capability = item.required_capability.clone();
         todo.failed_attempts = item.failed_attempts.unwrap_or(0);
         todo.consecutive_no_change = item.consecutive_no_change.unwrap_or(0);
         todo.no_follow_up = item.no_follow_up.unwrap_or(false);
@@ -919,26 +915,6 @@ mod tests {
     }
 
     #[test]
-    fn replay_matches_capability_gated_frontier() {
-        // T1 requires capability "shell"; the recording agent declared it →
-        // runnable live. Replay must register the same capabilities.
-        let mut goal = Goal::new("g1", "objective", "/tmp");
-        goal.add(Todo::advancement("T1", "work").with_action_kind("shell"));
-        goal.todo_mut("T1").unwrap().required_capability = Some("shell".to_string());
-        goal.register_agent("agent-x", vec!["shell".to_string()]);
-        let packet =
-            crate::decision::decide_for(&goal, std::time::SystemTime::now(), Some("agent-x"));
-        assert!(
-            packet.should_run,
-            "fixture todo must be runnable for agent-x"
-        );
-        let case = reduce_public_safe_decision(&packet, &goal, "case-caps", Some("agent-x"));
-        assert_eq!(case.agent_capabilities, vec!["shell".to_string()]);
-        let comparison = replay_public_safe_decision_case(&case).unwrap();
-        assert!(comparison.matched, "{:?}", comparison.mismatches);
-    }
-
-    #[test]
     fn legacy_case_without_context_still_loads_and_replays() {
         // Pre-P1-4 recordings carry no P1-4 compact fields — they must
         let goal = sample_goal();
@@ -951,7 +927,6 @@ mod tests {
             for key in [
                 "priority",
                 "blocked_by_gate",
-                "required_capability",
                 "failed_attempts",
                 "consecutive_no_change",
                 "no_follow_up",

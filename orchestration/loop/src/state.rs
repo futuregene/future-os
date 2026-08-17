@@ -106,8 +106,8 @@ pub struct Todo {
     pub role: TodoRole,
     /// Ordering / identity-stability index within the goal (LoopX: index).
     pub index: u32,
-    /// Action kind token (LoopX: shell/github/... — capability routing and
-    /// quota re-entry input).
+    /// Action kind token (LoopX: shell/github/... — quota re-entry routing
+    /// input).
     pub action_kind: Option<String>,
     /// Concrete question a UserGate poses (never a vague "waiting for owner").
     pub gate_question: Option<String>,
@@ -148,9 +148,6 @@ pub struct Todo {
     /// when the lease expires. Expired leases return the todo to the frontier.
     pub claimed_by: Option<String>,
     pub lease_expires_at: Option<u64>,
-    /// Capability required to run this todo (reference capability gate: a todo is
-    /// runnable only for agents declaring the capability).
-    pub required_capability: Option<String>,
     /// Gate scope flags (LoopX: goal_bound / global_gate — set by bootstrap
     /// flows, not by plain todo add).
     pub goal_bound: bool,
@@ -166,8 +163,6 @@ pub struct Todo {
     pub continuation_policy: Option<String>,
     /// Required write scopes (LoopX: required_write_scope).
     pub required_write_scope: Vec<String>,
-    /// Capability binding (LoopX: capability_binding_ref).
-    pub capability_binding_ref: Option<String>,
     /// Independent validator command (`todo add --verify "cmd"`): the kernel
     /// runs it in the goal cwd after each turn; exit 0 completes the todo
     /// (validated), non-zero keeps it open for bounded repair.
@@ -290,7 +285,6 @@ impl Todo {
             evidence: None,
             claimed_by: None,
             lease_expires_at: None,
-            required_capability: None,
             goal_bound: false,
             global_gate: false,
             updated_at: now,
@@ -299,7 +293,6 @@ impl Todo {
             task_repository: None,
             continuation_policy: None,
             required_write_scope: vec![],
-            capability_binding_ref: None,
             validator: None,
             max_validation_attempts: default_max_validation_attempts(),
         }
@@ -335,12 +328,6 @@ impl Todo {
         self
     }
 
-    /// Capability binding ref (LoopX: capability_binding_ref).
-    pub fn with_capability_binding(mut self, ref_: &str) -> Self {
-        self.capability_binding_ref = Some(ref_.to_string());
-        self
-    }
-
     /// Archive the todo (LoopX: archive_state "archived").
     pub fn archive(&mut self) {
         self.archive_state = "archived".to_string();
@@ -353,8 +340,8 @@ impl Todo {
         self
     }
 
-    /// Declare the action kind (LoopX: shell/github/...) for capability
-    /// routing and quota re-entry.
+    /// Declare the action kind (LoopX: shell/github/...) for quota
+    /// re-entry routing.
     pub fn with_action_kind(mut self, kind: &str) -> Self {
         self.action_kind = Some(kind.to_string());
         self
@@ -370,12 +357,6 @@ impl Todo {
     pub fn with_gate_scope(mut self, goal_bound: bool, global_gate: bool) -> Self {
         self.goal_bound = goal_bound;
         self.global_gate = global_gate;
-        self
-    }
-
-    /// Mark this todo as requiring a capability (capability gate).
-    pub fn requiring(mut self, capability: &str) -> Self {
-        self.required_capability = Some(capability.to_string());
         self
     }
 
@@ -615,7 +596,6 @@ pub fn delta_kind_changes_frontier(kind: &str) -> bool {
             | "runnable_todo_set"
             | "user_gate"
             | "blocker"
-            | "capability_gate"
             | "monitor_target"
             | "active_state_next_action"
             | "goal_boundary_projection"
@@ -645,9 +625,9 @@ pub struct DeliveryState {
 }
 
 /// Agent peer profile (LoopX: coordination.agent_profiles — a registered
-/// peer plus the capabilities it declares; the capability gate uses these to
-/// decide which todos an agent may run). `workspaces` is the P0-1 workspace
-/// guard declaration: the normalized absolute path set this agent writes
+/// peer plus the capabilities it declares, kept as descriptive metadata).
+/// `workspaces` is the P0-1 workspace guard declaration: the normalized
+/// absolute path set this agent writes
 /// into (empty = undeclared → the guard is fail-open for this agent).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AgentProfile {
@@ -730,7 +710,8 @@ pub struct Goal {
     pub next_action: Option<String>,
     /// Registered agent peers (LoopX: coordination.registered_agents).
     pub registered_agents: Vec<String>,
-    /// Registered peers with declared capabilities (capability gate input).
+    /// Registered peers with declared capabilities (descriptive metadata;
+    /// `workspaces` feeds the workspace guard).
     pub agent_profiles: Vec<AgentProfile>,
     pub execution_profile: ExecutionProfile,
     /// Consecutive turns without a material outcome (outcome floor).
@@ -993,30 +974,19 @@ impl Goal {
 
     /// Identity-scoped frontier (LoopX: registered peers see their own slice;
     /// unclaimed work wakes every eligible peer; a live lease held by another
-    /// agent hides the todo from this frontier). Also applies the capability
-    /// gate: a todo requiring a capability the agent did not declare is
-    /// hidden for that agent.
+    /// agent hides the todo from this frontier).
     pub fn runnable_advancement_for<'a>(
         &'a self,
         agent_id: Option<&'a str>,
     ) -> impl Iterator<Item = &'a Todo> + 'a {
         let now_sys = SystemTime::now();
         let now = now_epoch();
-        let caps = agent_id.map(|a| self.agent_capabilities(a));
         self.todos.iter().filter(move |t| {
             // Open OR due-deferred (returns to the frontier) advancement.
             (t.class == TaskClass::Advancement
                 && (t.status == TodoStatus::Open || t.is_due_deferred(now_sys)))
                 && !t.claimed_by_other(agent_id, now)
                 && !self.is_blocked(t)
-                && t.required_capability
-                    .as_deref()
-                    .map(|cap| {
-                        caps.as_ref()
-                            .map(|c| c.iter().any(|x| x == cap))
-                            .unwrap_or(true) // anonymous path: not gated
-                    })
-                    .unwrap_or(true)
         })
     }
 

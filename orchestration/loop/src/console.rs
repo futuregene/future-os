@@ -297,7 +297,7 @@ fn build_cli_registry() -> CommandRegistry {
         agent,
         "agent",
         "register/onboard agents + multi-agent contract/recipe/succession/collective surface (G12)",
-        "agent onboard --goal G --agent-id A [--capabilities c1,c2] [--recipe N] | list|contract|recipe|succession|collective --goal G",
+        "agent onboard --goal G --agent-id A [--recipe N] | list|contract|recipe|succession|collective --goal G",
     );
     r.command(
         agent,
@@ -726,13 +726,11 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     let mut blocks: Vec<String> = vec![];
     let mut priority = None;
     let mut action_kind = None;
-    let mut required_capability = None;
     let mut deferred_secs = 0u64;
     let mut title = None;
     let mut task_repository = None;
     let mut continuation_policy = None;
     let mut write_scopes = vec![];
-    let mut capability_binding = None;
     let mut goal_bound = false;
     let mut global_gate = false;
     let mut resume_when_cond = None;
@@ -748,7 +746,6 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
             "--action-kind",
             "--blocks",
             "--cadence",
-            "--capability-binding-ref",
             "--class",
             "--continuation-policy",
             "--defer-secs",
@@ -761,7 +758,6 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
             "--monitor-target",
             "--note",
             "--priority",
-            "--required-capability",
             "--required-write-scope",
             "--resume-when",
             "--role",
@@ -806,8 +802,6 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
             priority = Some(v);
         } else if k == "--action-kind" {
             action_kind = Some(v);
-        } else if k == "--required-capability" {
-            required_capability = Some(v);
         } else if k == "--defer-secs" {
             deferred_secs = v.parse().unwrap_or(0);
         } else if k == "--title" {
@@ -818,8 +812,6 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
             continuation_policy = Some(v);
         } else if k == "--required-write-scope" {
             write_scopes = v.split(',').map(|s| s.trim().to_string()).collect();
-        } else if k == "--capability-binding-ref" {
-            capability_binding = Some(v);
         }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
@@ -910,9 +902,6 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     if let Some(a) = action_kind {
         todo.action_kind = Some(a);
     }
-    if let Some(c) = required_capability {
-        todo.required_capability = Some(c);
-    }
     if let Some(v) = verify {
         todo.validator = Some(v);
     }
@@ -945,9 +934,6 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     }
     if !write_scopes.is_empty() {
         todo.required_write_scope = write_scopes;
-    }
-    if let Some(cb) = capability_binding {
-        todo.capability_binding_ref = Some(cb);
     }
     store.append(Event::TodoAdded {
         goal_id: goal_id.clone(),
@@ -1063,7 +1049,7 @@ fn append_workspace_lock(
 }
 
 /// Parse a `--workspace` flag value into normalized absolute paths
-/// (comma-separated, like `--capabilities`; empty entries dropped).
+/// (comma-separated; empty entries dropped).
 fn parse_workspaces(raw: &str) -> Vec<String> {
     raw.split(',')
         .map(|s| s.trim())
@@ -1117,25 +1103,21 @@ fn cmd_agent(store: &mut Store, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// `loopx agent onboard --goal G --agent-id A [--capability shell,github]
-/// [--workspace p1,p2] [--recipe NAME]` — register a peer AND declare its
-/// capabilities (LoopX: agent_profiles; input to the capability gate) plus
-/// the P0-1 workspace-guard write set. `--recipe NAME` applies a recorded
-/// G12 agent recipe (capabilities + workspaces + default priority) — when
-/// given, explicit `--capability`/`--workspace` flags are rejected (the
-/// recipe is the single source).
+/// `loopx agent onboard --goal G --agent-id A [--workspace p1,p2]
+/// [--recipe NAME]` — register a peer and declare the P0-1 workspace-guard
+/// write set. `--recipe NAME` applies a recorded G12 agent recipe
+/// (capabilities + workspaces + default priority, capabilities kept as
+/// descriptive metadata) — when given, an explicit `--workspace` flag is
+/// rejected (the recipe is the single source).
 fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut agent_id = None;
-    let mut capabilities = vec![];
     let mut workspaces = vec![];
     let mut recipe_name = None;
     reject_unknown_flags(
         args,
         &[
             "--agent-id",
-            "--capabilities",
-            "--capability",
             "--goal",
             "--recipe",
             "--workspace",
@@ -1146,8 +1128,6 @@ fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
             goal_id = Some(v);
         } else if k == "--agent-id" {
             agent_id = Some(v);
-        } else if k == "--capability" || k == "--capabilities" {
-            capabilities = v.split(',').map(|s| s.trim().to_string()).collect();
         } else if k == "--workspace" {
             workspaces = parse_workspaces(&v);
         } else if k == "--recipe" {
@@ -1160,9 +1140,9 @@ fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
         .replay(&goal_id)?
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
     if let Some(name) = recipe_name {
-        if !capabilities.is_empty() || !workspaces.is_empty() {
+        if !workspaces.is_empty() {
             bail!(
-                "--recipe {name} conflicts with explicit --capability/--workspace flags \
+                "--recipe {name} conflicts with an explicit --workspace flag \
                  (the recipe owns the onboarding profile)"
             );
         }
@@ -1181,12 +1161,12 @@ fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
     store.append(Event::AgentOnboarded {
         goal_id: goal_id.clone(),
         agent_id: agent_id.clone(),
-        capabilities: capabilities.clone(),
+        capabilities: vec![],
         workspaces: workspaces.clone(),
         ts: crate::state::now_epoch(),
     })?;
     println!(
-        "agent `{agent_id}` onboarded (capabilities={capabilities:?} workspaces={workspaces:?}) ✔"
+        "agent `{agent_id}` onboarded (capabilities=[] workspaces={workspaces:?}) ✔"
     );
     Ok(())
 }
