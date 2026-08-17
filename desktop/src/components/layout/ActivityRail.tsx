@@ -21,6 +21,8 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { SkillIntroBubble } from "../../features/skills/SkillIntroBubble";
+import { listInstalledSkills } from "../../integrations/skills/skillsClient";
 import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { cn } from "../../lib/cn";
 import { onFutureEvent } from "../../lib/futureEvents";
@@ -74,6 +76,9 @@ interface ActivityRailProps {
   onRecharge?: () => void;
   /** Opens the Settings dialog on the "Check for updates" tab. */
   onOpenUpdate?: () => void;
+  /** The user acknowledged the Skills intro bubble; dot + bubble hide once set. */
+  skillIntroDismissed: boolean;
+  onDismissSkillIntro: () => void;
 }
 
 // Data / Skill entries are temporarily hidden from the navigation:
@@ -118,6 +123,8 @@ export function ActivityRail({
   userEmail,
   onRecharge,
   onOpenUpdate,
+  skillIntroDismissed,
+  onDismissSkillIntro,
 }: ActivityRailProps) {
   const { t } = useTranslation("layout");
   // Pending approvals across all threads — badged on rail items so a background
@@ -171,6 +178,29 @@ export function ActivityRail({
     return () => window.clearTimeout(timer);
   }, [skillAttention]);
   useEffect(() => onFutureEvent("skill-guide-dismissed", () => setSkillAttention(true)), []);
+  // Installed-skills count for the nav badge + intro bubble. Refreshes on
+  // "skills-changed" (install/uninstall); stays null while loading or when
+  // the agent is unreachable (badge/bubble wait for a later launch).
+  const [skillCount, setSkillCount] = useState<number | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      listInstalledSkills()
+        .then((skills) => {
+          if (!cancelled)
+            setSkillCount(skills.length);
+        })
+        .catch(() => {
+          // Backend not connected — leave the count unknown this session.
+        });
+    };
+    load();
+    const unsubscribe = onFutureEvent("skills-changed", load);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
 
   function toggleWorkspaceCollapsed(workspaceId: string) {
     setCollapsedWorkspaces((current) => {
@@ -346,16 +376,33 @@ export function ActivityRail({
                 <div className="mb-3 shrink-0 space-y-0.5">
                   <NavButton icon={SquarePen} label={t("activityRail.newChat")} onClick={() => onNewChat()} primary />
                   <NavButton icon={Sparkles} label={t("activityRail.models")} onClick={onOpenModels} />
-                  <NavButton
-                    attention={skillAttention}
-                    icon={Blocks}
-                    label={t("activityRail.skills")}
-                    active={active === "skill"}
-                    onClick={() => {
-                      setSkillAttention(false);
-                      onChange("skill");
-                    }}
-                  />
+                  <div className="relative">
+                    <NavButton
+                      attention={skillAttention}
+                      badge={skillCount != null && skillCount > 0 ? skillCount : null}
+                      dot={!skillIntroDismissed}
+                      icon={Blocks}
+                      label={t("activityRail.skills")}
+                      active={active === "skill"}
+                      onClick={() => {
+                        setSkillAttention(false);
+                        onChange("skill");
+                      }}
+                    />
+                    {!skillIntroDismissed && skillCount !== null
+                      ? (
+                          <SkillIntroBubble
+                            count={skillCount}
+                            onDismiss={onDismissSkillIntro}
+                            onGo={() => {
+                              onDismissSkillIntro();
+                              setSkillAttention(false);
+                              onChange("skill");
+                            }}
+                          />
+                        )
+                      : null}
+                  </div>
                   {showRemote
                     ? <NavButton icon={Smartphone} indicator={remoteDot} label={t("activityRail.remote")} active={active === "remote"} onClick={() => onChange("remote")} />
                     : null}
@@ -934,6 +981,8 @@ function NavButton({
   primary = false,
   indicator = null,
   attention = false,
+  badge = null,
+  dot = false,
 }: {
   icon: LucideIcon;
   label: string;
@@ -945,6 +994,10 @@ function NavButton({
   indicator?: ReactNode;
   /** Short accent pulse drawing the eye to this entry (skill-guide dismissal). */
   attention?: boolean;
+  /** Count capsule at the row's right edge (Skills installed count). */
+  badge?: number | null;
+  /** Blue "unread intro" dot at the row's right edge. */
+  dot?: boolean;
 }) {
   return (
     <button
@@ -962,6 +1015,20 @@ function NavButton({
         {indicator}
       </span>
       <span className="truncate">{label}</span>
+      {(badge != null && badge > 0) || dot
+        ? (
+            <span className="ml-auto flex shrink-0 items-center gap-1.5">
+              {badge != null && badge > 0
+                ? (
+                    <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[11px] font-semibold leading-none text-accent">
+                      {badge}
+                    </span>
+                  )
+                : null}
+              {dot ? <span className="size-2 rounded-full bg-accent" /> : null}
+            </span>
+          )
+        : null}
     </button>
   );
 }

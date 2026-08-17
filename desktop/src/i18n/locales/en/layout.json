@@ -130,5 +130,12 @@
     "balance": "Balance: {{credits}}",
     "recharge": "Recharge",
     "upgrade": "Upgrade"
+  },
+  "skillIntro": {
+    "titleWithCount": "{{count}} common skills installed for you",
+    "titleEmpty": "No skills installed yet",
+    "body": "Skills let AI make PPTs, run deep research, and analyze data for you… Click here to see what you can use.",
+    "go": "Take a look",
+    "dismiss": "Got it"
   }
 }

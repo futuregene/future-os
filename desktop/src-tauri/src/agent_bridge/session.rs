@@ -634,6 +634,7 @@ mod tests {
             auto_upgrade_skills: None,
             auto_connect_remote: None,
             skill_guide_dismissed: None,
+            skill_intro_dismissed: None,
         })
         .expect("update settings");
         mock.push("set_sandbox_policy", Reply::Data("{}".to_string()));

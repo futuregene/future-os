@@ -426,6 +426,8 @@ export function AppShell() {
     userEmail: futureEmail,
     onRecharge: handleRecharge,
     onOpenUpdate: handleOpenUpdate,
+    skillIntroDismissed: appSettings.skillIntroDismissed,
+    onDismissSkillIntro: () => void changeSettings({ skillIntroDismissed: true }),
   };
 
   // Onboarding gate: show during the initial probe, when no provider is

@@ -24,6 +24,12 @@ export interface AppSettings {
    * screen. Off by default (the banner shows until dismissed).
    */
   skillGuideDismissed: boolean;
+  /**
+   * The user acknowledged the Skills nav-entry intro bubble (去看看 / 知道了
+   * / click-outside). Off by default; once set, the bubble and its blue dot
+   * never show again (until app data is wiped).
+   */
+  skillIntroDismissed: boolean;
 }
 
 /** Fallback used before the persisted settings load. */
@@ -34,6 +40,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   autoUpgradeSkills: false,
   autoConnectRemote: false,
   skillGuideDismissed: false,
+  skillIntroDismissed: false,
 };
 
 export async function getAppSettings() {
@@ -47,6 +54,7 @@ export async function updateAppSettings(input: {
   autoUpgradeSkills?: boolean;
   autoConnectRemote?: boolean;
   skillGuideDismissed?: boolean;
+  skillIntroDismissed?: boolean;
 }) {
   return invokeCommand<AppSettings>("update_app_settings", { input });
 }

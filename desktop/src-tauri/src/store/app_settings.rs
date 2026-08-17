@@ -26,6 +26,10 @@ pub struct AppSettings {
     /// The user closed the skill-onboarding banner on the new-conversation
     /// screen. Off by default (the banner shows until dismissed).
     pub skill_guide_dismissed: bool,
+    /// The user acknowledged the Skills nav-entry intro bubble (去看看 /
+    /// 知道了 / click-outside). Off by default; once set, the bubble and its
+    /// blue dot never show again (until app data is wiped).
+    pub skill_intro_dismissed: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -37,6 +41,7 @@ pub struct UpdateAppSettingsInput {
     pub auto_upgrade_skills: Option<bool>,
     pub auto_connect_remote: Option<bool>,
     pub skill_guide_dismissed: Option<bool>,
+    pub skill_intro_dismissed: Option<bool>,
 }
 
 const KEY_APPROVAL_TIER: &str = "approval_tier";
@@ -45,6 +50,7 @@ const KEY_SHOW_THINKING: &str = "show_thinking";
 const KEY_AUTO_UPGRADE_SKILLS: &str = "auto_upgrade_skills";
 const KEY_AUTO_CONNECT_REMOTE: &str = "auto_connect_remote";
 const KEY_SKILL_GUIDE_DISMISSED: &str = "skill_guide_dismissed";
+const KEY_SKILL_INTRO_DISMISSED: &str = "skill_intro_dismissed";
 
 pub fn get_app_settings() -> Result<AppSettings, crate::AppError> {
     let conn = connect()?;
@@ -84,6 +90,14 @@ pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings,
         };
         write_value(&tx, KEY_SKILL_GUIDE_DISMISSED, value, now)?;
     }
+    if let Some(skill_intro_dismissed) = input.skill_intro_dismissed {
+        let value = if skill_intro_dismissed {
+            "true"
+        } else {
+            "false"
+        };
+        write_value(&tx, KEY_SKILL_INTRO_DISMISSED, value, now)?;
+    }
 
     let settings = read_app_settings(&tx)?;
     tx.commit()?;
@@ -109,6 +123,9 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
     let skill_guide_dismissed = read_value(conn, KEY_SKILL_GUIDE_DISMISSED)?
         .map(|value| value == "true")
         .unwrap_or(false); // Off by default — the banner shows until dismissed.
+    let skill_intro_dismissed = read_value(conn, KEY_SKILL_INTRO_DISMISSED)?
+        .map(|value| value == "true")
+        .unwrap_or(false); // Off by default — the bubble shows once until dismissed.
     Ok(AppSettings {
         approval_tier,
         hidden_models,
@@ -116,6 +133,7 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
         auto_upgrade_skills,
         auto_connect_remote,
         skill_guide_dismissed,
+        skill_intro_dismissed,
     })
 }
 
@@ -162,6 +180,7 @@ mod tests {
             auto_upgrade_skills: Some(false),
             auto_connect_remote: Some(true),
             skill_guide_dismissed: Some(true),
+            skill_intro_dismissed: Some(true),
         }
     }
 
@@ -176,6 +195,7 @@ mod tests {
         assert!(settings.auto_upgrade_skills);
         assert!(!settings.auto_connect_remote);
         assert!(!settings.skill_guide_dismissed);
+        assert!(!settings.skill_intro_dismissed);
     }
 
     #[test]
@@ -190,6 +210,7 @@ mod tests {
         assert!(!updated.auto_upgrade_skills);
         assert!(updated.auto_connect_remote);
         assert!(updated.skill_guide_dismissed);
+        assert!(updated.skill_intro_dismissed);
 
         // Persisted across connections.
         assert_eq!(get_app_settings().expect("get").approval_tier, "sandbox");
@@ -206,6 +227,7 @@ mod tests {
             auto_upgrade_skills: None,
             auto_connect_remote: None,
             skill_guide_dismissed: None,
+            skill_intro_dismissed: None,
         })
         .expect("update");
         assert_eq!(updated.approval_tier, "off");
@@ -242,6 +264,7 @@ mod tests {
             auto_upgrade_skills: None,
             auto_connect_remote: None,
             skill_guide_dismissed: None,
+            skill_intro_dismissed: None,
         })
         .expect("noop update");
         assert_eq!(settings.approval_tier, "off", "defaults survive a noop");
