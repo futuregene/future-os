@@ -11,15 +11,15 @@
 
 # FutureOS
 
-> 同一个 AI Agent，处处随你——终端、桌面、**手机**、飞书与钉钉。
+> 同一个 AI Agent，处处随你——终端、桌面、手机、飞书与钉钉。
 
-FutureOS 提供统一的 AI Agent 体验，覆盖终端界面 (TUI)、桌面应用 (GUI)、**移动端 App（Android · iOS）**、命令行 (CLI) 和 IM 机器人——支持 macOS、Linux、Windows 与你的手机。写代码、做调研、管理文件——从终端、聊天软件、原生桌面窗口或口袋里的手机，无缝切换。
+FutureOS 提供统一的 AI Agent 体验，覆盖终端界面 (TUI)、桌面应用 (GUI)、移动端 App（Android · iOS）、命令行 (CLI) 和 IM 机器人——支持 macOS、Linux、Windows 与你的手机。写代码、做调研、管理文件——从终端、聊天软件、原生桌面窗口或口袋里的手机，无缝切换。
 
 ## 特性
 
 | 类别 | 说明 |
 |---|---|
-| **多端统一** | 终端界面 (TUI)、桌面应用 (GUI)、**移动端 App（Android · iOS）**、命令行 (CLI)、IM 机器人——一个 Agent，无处不在 |
+| **多端统一** | 终端界面 (TUI)、桌面应用 (GUI)、移动端 App（Android · iOS）、命令行 (CLI)、IM 机器人——一个 Agent，无处不在 |
 | **移动端 App（Android · iOS）** | 真正手机原生的 Agent 体验——多数 Agent 运行时只有桌面端；FutureOS 通过 CI 交付 Android（APK）与 iOS（TestFlight）构建，由同一个 gRPC Agent 服务驱动 |
 | **模型灵活** | 内置 3800+ 模型，覆盖 140+ Provider（[目录](docs/wiki/zh/Models.md)）；通过 `models.json` 自定义 Provider；支持模型范围限定 |
 | **Agent 服务** | Agent 以独立 gRPC 服务运行——运行时与 TUI、桌面端、移动端、IM 渠道桥、loop 控制面解耦，为新的客户端与扩展留足空间 |
