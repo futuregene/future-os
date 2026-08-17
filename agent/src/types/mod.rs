@@ -755,6 +755,11 @@ pub trait LLMProvider: Send + Sync {
     /// endpoint.
     fn set_api_key(&self, _api_key: &str) {}
 
+    /// Refresh the provider endpoint in the same shared runtime client. Run
+    /// snapshots clone the provider Arc, so this also keeps already-accepted
+    /// queued work aligned with a committed provider edit.
+    fn set_base_url(&self, _base_url: &str) {}
+
     /// Update thinking level and budget at runtime (after set_thinking_level / cycle_thinking_level).
     fn update_thinking(&self, _level: &str, _budget: i32) {}
 }

@@ -23,11 +23,14 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 type Listener = (event: { payload: Record<string, unknown> | undefined }) => void;
 let agentEventListener: Listener | null = null;
+let providerConfigListener: Listener | null = null;
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: (name: string, handler: Listener) => {
     if (name === "agent-event")
       agentEventListener = handler;
+    if (name === "provider-config-changed")
+      providerConfigListener = handler;
     return Promise.resolve(() => {});
   },
 }));
@@ -59,6 +62,30 @@ describe("agentStateCache fetch/cache", () => {
     installAgentEventListener();
     installAgentEventListener();
     expect(agentEventListener).not.toBeNull();
+  });
+
+  it("bridges Agent provider completion into the typed UI event bus", () => {
+    installAgentEventListener();
+    const handler = vi.fn();
+    window.addEventListener("futureos:providers-changed", handler);
+    act(() => {
+      providerConfigListener?.({
+        payload: {
+          revision: 7,
+          providerId: "custom",
+          operation: "updated",
+          authChanged: true,
+          modelsChanged: true,
+        },
+      });
+    });
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect((handler.mock.calls[0]?.[0] as CustomEvent).detail).toMatchObject({
+      revision: 7,
+      providerId: "custom",
+      operation: "updated",
+    });
+    window.removeEventListener("futureos:providers-changed", handler);
   });
 
   it("fetches and parses session state including activeRun variants", async () => {

@@ -379,6 +379,29 @@ describe("RemoteClient terminal iterator recovery", () => {
     );
   });
 
+  test("the global provider completion subject reaches the control-plane callback", async () => {
+    const { client, callbacks } = recoveryClient();
+    const testClient = client as unknown as {
+      subscribeEvents(connection: unknown, generation: number): void;
+    };
+    async function* events() {
+      yield {
+        subject: "p.pair_1.evt._global",
+        data: new TextEncoder().encode(JSON.stringify({
+          type: "provider_config_changed",
+          data: JSON.stringify({ revision: 9, providerId: "custom" }),
+        })),
+      };
+      await new Promise(() => {});
+    }
+    testClient.subscribeEvents({ subscribe: () => events() }, 0);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(callbacks.onEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "provider_config_changed" }),
+      "_global",
+    );
+  });
+
   test.each(["subscribeTransfers", "subscribeLiveness", "subscribeState"] as const)(
     "%s reconnects when its iterator ends independently",
     async method => {

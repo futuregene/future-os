@@ -205,5 +205,13 @@
     "forkFailed": "Fork failed: {{message}}",
     "compacted": "Context compacted",
     "compactedTokens": "Context compacted · {{formattedCount}} tokens"
+  },
+  "skillGuide": {
+    "title": "5-Minute Skill Onboarding",
+    "subtitle": "Interactive coaching — learn by doing and master skills fast",
+    "start": "Start Learning",
+    "dismiss": "Dismiss tutorial entry",
+    "dismissed": "Tutorial entry hidden · Reopen anytime from the Skills page on the left",
+    "loadFailed": "Failed to load tutorial configuration: {{message}}"
   }
 }

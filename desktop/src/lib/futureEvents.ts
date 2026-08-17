@@ -38,8 +38,21 @@ export interface FutureEventMap {
    * app-wide login gate reloads so the forced-login overlay appears / clears.
    */
   "future-auth-changed": void;
+  /** Agent-confirmed provider/auth commit, shared by every local UI surface. */
+  "providers-changed": {
+    revision: number;
+    providerId: string;
+    operation: string;
+    authChanged: boolean;
+    modelsChanged: boolean;
+  };
   /** Show the onboarding gate (e.g. when the user clicks "Connect" in Settings). */
   "show-onboarding": void;
+  /**
+   * The skill-guide banner was dismissed — the left rail pulses the Skills
+   * entry so the "reopen from the Skills page" hint points somewhere findable.
+   */
+  "skill-guide-dismissed": void;
   /** Emitted when a conversation finishes (agent_end stream event). */
   "agent_end": void;
   /**

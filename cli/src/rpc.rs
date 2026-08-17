@@ -13,7 +13,7 @@
 
 use crate::output::Output;
 use future_rpc::proto::future_agent_client::FutureAgentClient;
-use future_rpc::proto::{RpcCommand, StreamEvent, StreamRequest};
+use future_rpc::proto::{AuthUpdate, RpcCommand, StreamEvent, StreamRequest};
 use serde_json::{json, Map, Value};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -108,6 +108,26 @@ impl RunClient {
     pub async fn list_models(&self) -> Result<Value, String> {
         self.execute_command("list_models", RpcCommand::default(), None, 5)
             .await
+    }
+
+    /// Agent-authoritative, secret-redacted provider snapshot.
+    pub async fn list_providers(&self) -> Result<Value, String> {
+        self.execute_command("list_providers", RpcCommand::default(), None, 5)
+            .await
+    }
+
+    /// Persist one auth mutation through the Agent's sole-writer path.
+    pub async fn set_auth(&self, update: AuthUpdate) -> Result<Value, String> {
+        self.execute_command(
+            "set_auth",
+            RpcCommand {
+                auth_update: Some(update),
+                ..Default::default()
+            },
+            None,
+            10,
+        )
+        .await
     }
 
     /// `getState(sessionId?)` — `get_state` → SessionState JSON.

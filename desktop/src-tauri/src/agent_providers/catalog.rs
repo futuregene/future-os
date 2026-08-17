@@ -9,11 +9,16 @@
 //! the GUI has no independent id→name map to keep in sync.
 
 use std::collections::BTreeMap;
+#[cfg(test)]
 use std::path::PathBuf;
 
+#[cfg(test)]
 use serde_json::Value;
 
-use crate::auth_store::{agent_dir, FUTURE_PROVIDER_ID};
+#[cfg(test)]
+use crate::auth_store::agent_dir;
+use crate::auth_store::FUTURE_PROVIDER_ID;
+#[cfg(test)]
 use crate::config_io;
 
 #[derive(Debug, Clone)]
@@ -21,7 +26,9 @@ pub(crate) struct CatalogProviderSummary {
     /// Display name as supplied by the agent (single source of truth); falls
     /// back to the provider id for a pre-name agent.
     pub(super) name: String,
+    #[allow(dead_code)]
     pub(super) base_url: String,
+    #[allow(dead_code)]
     pub(super) model_count: usize,
 }
 
@@ -82,14 +89,17 @@ pub(super) fn catalog_unavailable(
     BTreeMap::new()
 }
 
+#[cfg(test)]
 pub(super) fn models_json_path() -> Result<PathBuf, crate::AppError> {
     Ok(agent_dir()?.join("models.json"))
 }
 
+#[cfg(test)]
 pub(super) fn future_models_cache_path() -> Result<PathBuf, crate::AppError> {
     Ok(agent_dir()?.join(".future-models-cache.json"))
 }
 
+#[cfg(test)]
 pub(super) fn future_model_count() -> usize {
     future_models_cache_path()
         .ok()

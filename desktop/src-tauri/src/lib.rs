@@ -691,6 +691,9 @@ pub fn run() {
             // pipeline collector owns, NATS mirroring). Attach/retry happens
             // inside each observer task, so a down agent never blocks startup.
             agent_bridge::seed_observers_from_store();
+            // Global provider/auth completion stream. This is independent of
+            // chat observers and fans committed revisions to WebView + Mobile.
+            agent_bridge::spawn_provider_config_observer();
             // Discovery: conversations created by other clients (TUI/CLI) get
             // a thread stub + an observer — streaming ones within ~1s, idle
             // ones on the 60s import pass.
@@ -765,6 +768,7 @@ pub fn run() {
             list_agent_providers,
             upsert_custom_provider,
             update_builtin_provider_key,
+            update_builtin_provider,
             set_builtin_provider_base_url,
             delete_custom_provider,
             start_future_login,
@@ -833,6 +837,7 @@ pub fn run() {
             agent_prompt,
             list_installed_skills,
             list_available_skills,
+            get_skill_guide,
             install_skill,
             uninstall_skill,
             refresh_skills,

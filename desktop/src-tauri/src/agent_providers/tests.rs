@@ -728,31 +728,18 @@ async fn builtin_key_update_applied_by_agent_and_validated() {
 }
 
 #[tokio::test]
-async fn builtin_key_update_falls_back_to_local_writes() {
+async fn builtin_key_update_never_falls_back_to_local_writes() {
     let _lock = mock_agent_lock();
     let _home = HomeGuard::new("wr-key-local");
     let agent = ensure_mock_agent();
-    // A pre-item-2 agent answers "unknown command" → local fallback + reload.
+    // A legacy Agent cannot turn Desktop into a second writer.
     agent.script("set_auth", false, json!(null), "unknown command: set_auth");
-    let view = update_builtin_provider_key(key_input("deepseek", Some("sk-local")))
+    let error = update_builtin_provider_key(key_input("deepseek", Some("sk-local")))
         .await
-        .unwrap();
-    assert!(
-        view.builtin
-            .iter()
-            .find(|p| p.id == "deepseek")
-            .unwrap()
-            .has_api_key
-    );
-    assert_eq!(
-        crate::auth_store::read()
-            .unwrap()
-            .get("deepseek")
-            .and_then(|entry| entry.get("key"))
-            .and_then(Value::as_str),
-        Some("sk-local")
-    );
-    assert!(agent.served("reload_auth", ""));
+        .unwrap_err();
+    assert!(error.to_string().contains("unknown command"));
+    assert!(crate::auth_store::read().unwrap().get("deepseek").is_none());
+    assert!(!agent.served("reload_auth", ""));
 
     // An explicit rejection (NOT "unknown command") surfaces as an error.
     agent.script("set_auth", false, json!(null), "key rejected by policy");
@@ -819,19 +806,22 @@ async fn builtin_base_url_update_paths() {
     .await
     .is_err());
 
-    // Fallback: unknown command → local models.json override + reload.
+    // A legacy Agent error is surfaced and the local catalog remains unchanged.
     agent.script(
         "upsert_provider",
         false,
         json!(null),
         "unknown command: upsert_provider",
     );
-    let view =
+    let error =
         set_builtin_provider_base_url(base_url_input("deepseek", "https://local.example.com/v1"))
             .await
-            .unwrap();
-    let deepseek = view.builtin.iter().find(|p| p.id == "deepseek").unwrap();
-    assert_eq!(deepseek.base_url, "https://local.example.com/v1");
+            .unwrap_err();
+    assert!(error.to_string().contains("unknown command"));
+    assert!(
+        config_io::read_json_lenient(&models_json_path().unwrap())["providers"]["deepseek"]
+            .is_null()
+    );
 
     // Explicit rejection surfaces.
     agent.script("upsert_provider", false, json!(null), "bad base url");
@@ -860,7 +850,7 @@ async fn custom_provider_upsert_paths() {
     upsert_custom_provider(create).await.unwrap();
     assert!(agent.served("upsert_provider", ""));
 
-    // Fallback writes models.json + auth.json locally.
+    // A legacy Agent error must not write models.json or auth.json locally.
     agent.script(
         "upsert_provider",
         false,
@@ -869,18 +859,11 @@ async fn custom_provider_upsert_paths() {
     );
     let mut local = input("localp", "LocalP", true);
     local.api_key = Some("sk-local".to_string());
-    let view = upsert_custom_provider(local).await.unwrap();
-    assert!(view.custom.iter().any(|p| p.id == "localp"));
+    let error = upsert_custom_provider(local).await.unwrap_err();
+    assert!(error.to_string().contains("unknown command"));
     let doc = config_io::read_json_lenient(&models_json_path().unwrap());
-    assert_eq!(doc["providers"]["localp"]["name"], json!("LocalP"));
-    assert_eq!(
-        crate::auth_store::read()
-            .unwrap()
-            .get("localp")
-            .and_then(|entry| entry.get("key"))
-            .and_then(Value::as_str),
-        Some("sk-local")
-    );
+    assert!(doc["providers"]["localp"].is_null());
+    assert!(crate::auth_store::read().unwrap().get("localp").is_none());
 
     // Explicit rejection surfaces.
     agent.script(
@@ -964,7 +947,7 @@ async fn custom_provider_delete_paths() {
         .await
         .is_err());
 
-    // Fallback deletes both local entries.
+    // A legacy Agent error leaves both local entries untouched.
     upsert_custom_provider_with_catalog(input("gone2", "Gone2", true), &fixture_catalog()).unwrap();
     crate::auth_store::set_provider_key("gone2", "sk-g").unwrap();
     agent.script(
@@ -973,9 +956,15 @@ async fn custom_provider_delete_paths() {
         json!(null),
         "unknown command: delete_provider",
     );
-    let view = delete_custom_provider("gone2".to_string()).await.unwrap();
-    assert!(view.custom.iter().all(|p| p.id != "gone2"));
-    assert!(crate::auth_store::read().unwrap().get("gone2").is_none());
+    let error = delete_custom_provider("gone2".to_string())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("unknown command"));
+    assert!(crate::auth_store::read().unwrap().get("gone2").is_some());
+    assert!(
+        config_io::read_json_lenient(&models_json_path().unwrap())["providers"]["gone2"]
+            .is_object()
+    );
 
     // Explicit rejection surfaces.
     agent.script(

@@ -27,6 +27,13 @@ pub async fn list_available_skills() -> Result<Vec<skills::SkillInfo>, crate::Ap
     skills::list_available_skills().await
 }
 
+/// The platform skill-guide config (coach prompt + manual link) for the
+/// skill-onboarding banner. Unauthenticated platform call.
+#[tauri::command]
+pub async fn get_skill_guide() -> Result<skills::SkillGuide, crate::AppError> {
+    skills::get_skill_guide().await
+}
+
 #[tauri::command]
 pub async fn install_skill(id: String, version: String) -> Result<(), crate::AppError> {
     skills::install_skill(id, version).await?;

@@ -81,6 +81,15 @@ export async function updateBuiltinProviderKey(input: {
   return view;
 }
 
+export async function updateBuiltinProvider(input: {
+  id: string;
+  baseUrl?: string;
+  apiKey?: string | null;
+  updateApiKey: boolean;
+}) {
+  return invokeCommand<ProvidersView>("update_builtin_provider", { input });
+}
+
 export async function setBuiltinProviderBaseUrl(input: {
   id: string;
   /** Empty string clears the override, reverting to the catalog placeholder. */

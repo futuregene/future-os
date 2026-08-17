@@ -6,6 +6,7 @@ import type { ComposerDragState, ComposerSendPayload } from "./Composer";
 import type { WorkspaceCreateRequest, WorkspaceFormMode } from "./useWorkspaceForm";
 import {
   Check,
+  CircleCheck,
   Folder,
   FolderOpen,
   MessageSquare,
@@ -15,8 +16,12 @@ import { useTranslation } from "react-i18next";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
 import { defaultAgentModelId } from "../../integrations/agent/agentClient";
 import { cn } from "../../lib/cn";
+import { errorMessage } from "../../lib/errors";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { startWindowDrag } from "../../lib/windowDrag";
+import { SkillGuideBanner } from "../skills/SkillGuideBanner";
+import { fetchCoachPrompt } from "../skills/skillGuidePrompt";
 import { Composer } from "./Composer";
 import { WorkspaceModal } from "./NewConversationWorkspaceForm";
 import { useWorkspaceForm } from "./useWorkspaceForm";
@@ -56,6 +61,9 @@ interface NewConversationProps {
   onStart: (input: NewConversationStart) => void | Promise<void>;
   onAddWorkspace: (input: WorkspaceCreateRequest) => Promise<StoredWorkspace | null>;
   onToggleLeftPanel: () => void;
+  /** The user closed the skill-guide banner; persisted via app settings. */
+  skillGuideDismissed: boolean;
+  onDismissSkillGuide: () => void;
   workspaces: StoredWorkspace[];
 }
 
@@ -75,6 +83,8 @@ export function NewConversation({
   onChangeApprovalTier,
   onStart,
   onToggleLeftPanel,
+  skillGuideDismissed,
+  onDismissSkillGuide,
   workspaces,
 }: NewConversationProps) {
   const { t } = useTranslation("agent");
@@ -141,6 +151,60 @@ export function NewConversation({
   // Block sending until the model catalog actually loads — the initial
   // modelId is empty and would fall back to the agent default (v4-flash).
   const catalogLoading = modelOptions.length === 0;
+  const [guideStarting, setGuideStarting] = useState(false);
+  // Inline "tutorial entry hidden" notice shown in the banner's slot for a
+  // few seconds after the user dismisses it (a top toast would sit far away
+  // from the click and go unnoticed).
+  const [guideDismissNotice, setGuideDismissNotice] = useState(false);
+  useEffect(() => {
+    if (!guideDismissNotice)
+      return;
+    const timer = window.setTimeout(setGuideDismissNotice, 4000, false);
+    return () => window.clearTimeout(timer);
+  }, [guideDismissNotice]);
+
+  // "Start learning" → fetch the platform coach prompt, then create a real
+  // chat session whose first message is the prompt (auto-sent by the existing
+  // new-conversation flow). A fetch failure toasts and never creates a thread.
+  async function handleStartGuide() {
+    if (catalogLoading || guideStarting)
+      return;
+    setGuideStarting(true);
+    let prompt: string;
+    try {
+      prompt = await fetchCoachPrompt();
+    }
+    catch (error) {
+      emitFutureEvent("toast", {
+        message: t("skillGuide.loadFailed", { message: errorMessage(error) }),
+        tone: "error",
+      });
+      setGuideStarting(false);
+      return;
+    }
+    try {
+      await onStart({
+        content: prompt,
+        mode: "chat",
+        modelId: modelId || defaultAgentModelId,
+        thinkingLevel,
+      });
+    }
+    catch {
+      // startNewConversation already surfaced a toast; keep the banner usable.
+    }
+    finally {
+      setGuideStarting(false);
+    }
+  }
+
+  function handleDismissGuide() {
+    onDismissSkillGuide();
+    setGuideDismissNotice(true);
+    // Pulse the left-rail Skills entry so the notice's "reopen from the
+    // Skills page" hint visibly points there.
+    emitFutureEvent("skill-guide-dismissed", undefined);
+  }
 
   function handleSend({ attachments, content }: ComposerSendPayload) {
     if (catalogLoading)
@@ -309,6 +373,22 @@ export function NewConversation({
               </div>
             </div>
           </div>
+          {skillGuideDismissed
+            ? (guideDismissNotice
+                ? (
+                    <div className="mt-3 flex w-full max-w-3xl items-center gap-2 rounded-lg border border-success-line bg-success-soft px-4 py-2.5">
+                      <CircleCheck className="size-4 shrink-0 text-success" />
+                      <span className="text-sm font-medium text-ink">{t("skillGuide.dismissed")}</span>
+                    </div>
+                  )
+                : null)
+            : (
+                <SkillGuideBanner
+                  starting={guideStarting}
+                  onDismiss={handleDismissGuide}
+                  onStart={() => void handleStartGuide()}
+                />
+              )}
         </div>
       </div>
       {workspaceForm.mode
