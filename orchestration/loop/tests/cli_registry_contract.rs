@@ -62,8 +62,6 @@ fn help_lists_all_pre_existing_commands_in_groups() {
         "run --goal G",
         "── work-items ──",
         "attention [--goal G] [--all]",
-        "── handoff ──",
-        "handoff --goal G",
         "── cli ──",
         "registry [--format json|--json]",
     ] {
@@ -144,7 +142,7 @@ fn unknown_command_fails_closed_with_hint() {
     let _ = out;
 }
 
-/// ── P3: agent scope / supervisor / handoff / task-graph / attention ─────
+/// ── P3: agent scope / supervisor / task-graph / attention ──────────────
 #[test]
 fn p3_multi_agent_and_work_item_commands() {
     let root = tmp_root("p3");
@@ -323,10 +321,7 @@ fn p3_multi_agent_and_work_item_commands() {
         "projection: {out}"
     );
 
-    // Handoff + task-graph + attention.
-    let (out, _, code) = run(&root, &["handoff", "--goal", "g1"]);
-    assert_eq!(code, 0);
-    assert!(out.contains("# Project Handoff"));
+    // Task-graph + attention.
     let (out, _, code) = run(&root, &["task-graph", "--goal", "g1"]);
     assert_eq!(code, 0);
     assert!(out.contains("task graph:"));

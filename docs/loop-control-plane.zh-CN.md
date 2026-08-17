@@ -107,9 +107,8 @@ future loop commands        # 按操作者旅程分组视图
 - **goal 组**：`goal` `status` `models` `diagnose`
 - **todo 组**：`todo` `gate` `replan` `frontier` `lease` `task-graph`
 - **agent 组**：`agent` `scope` `lane` `supervisor`
-- **ops 组**：`version` `doctor` `history` `turn` `todo-event` `evidence-log` `backup` `authority` `profile` `quota` `scheduler` `store` `backfill` `privacy` `runs` `heartbeat-prompt` `worker-bridge` `serve-status` `run`
+- **ops 组**：`version` `doctor` `history` `turn` `todo-event` `evidence-log` `backup` `authority` `profile` `quota` `scheduler` `store` `backfill` `privacy` `runs` `heartbeat-prompt` `worker-bridge` `run`
 - **work-items 组**：`attention` `inbox` `delivery`
-- **handoff 组**：`handoff`
 - **质量组**：`benchmark` `replay` `canary`
 
 ## 与 FutureOS 其他部件的关系

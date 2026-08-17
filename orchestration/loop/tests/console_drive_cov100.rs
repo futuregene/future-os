@@ -59,18 +59,6 @@ fn runs_compact_cutoff_without_index_errors() {
 }
 
 #[test]
-fn serve_status_on_a_busy_port_errors() {
-    let cr = cli_root();
-    let _hold = init_goal(&cr, "serve status busy port");
-    // Hold the port so bind fails deterministically; --bogus feeds the
-    // parse catch-all.
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port().to_string();
-    let err = cli_err(&["serve-status", "--port", &port, "--bogus", "x"]);
-    assert!(!err.is_empty());
-}
-
-#[test]
 fn benchmark_run_rejects_unknown_flag_and_adapter_failure() {
     let _cr = cli_root();
     // P0-3①: unknown flag is a hard error before the run starts.
