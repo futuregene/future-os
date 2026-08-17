@@ -64,6 +64,11 @@ message RpcCommand {
 
   reserved 12;
 
+  // Model-only context associated with the prompt. This is stored as a
+  // separate text block so clients display only `message` in the user's
+  // bubble while the model still receives both strings.
+  string model_context = 13;
+
   // ── fork / new_session ─────────────────────────────────────────────────
 
   // Parent session ID when forking.  If empty, fork uses the current

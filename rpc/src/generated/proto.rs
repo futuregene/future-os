@@ -15,6 +15,11 @@ pub struct RpcCommand {
     /// Images attached to the prompt (base64, URL, or file path).
     #[prost(message, repeated, tag = "11")]
     pub images: ::prost::alloc::vec::Vec<ImageContent>,
+    /// Model-only context associated with the prompt. This is stored as a
+    /// separate text block so clients display only `message` in the user's
+    /// bubble while the model still receives both strings.
+    #[prost(string, tag = "13")]
+    pub model_context: ::prost::alloc::string::String,
     /// Parent session ID when forking.  If empty, fork uses the current
     /// session.  Also used by new_session to record lineage.
     #[prost(string, tag = "20")]

@@ -133,6 +133,24 @@ pub struct AgentPromptResponse {
     pub session_recreated: bool,
 }
 
+/// Complete input for one prompt crossing the desktop-to-agent boundary.
+/// Keeping the user-authored text and its model-only sidecar together prevents
+/// bridge layers from growing parallel positional parameters as prompt metadata
+/// evolves.
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPromptRequest {
+    pub message: String,
+    #[serde(default)]
+    pub model_context: String,
+    pub attachments: Option<Vec<AttachmentInput>>,
+    pub thread_id: String,
+    pub session_id: Option<String>,
+    pub run_id: Option<String>,
+    pub model_id: Option<String>,
+    pub thinking_level: Option<String>,
+}
+
 /// Events requested per get_events_since page. A long run's journal far
 /// exceeds the gRPC message cap when returned whole (every event crosses the
 /// wire about three times under the typed dual-write), so full-tail reads
@@ -475,20 +493,28 @@ pub async fn agent_prompt(
     model_id: Option<String>,
     thinking_level: Option<String>,
 ) -> Result<AgentPromptResponse, crate::AppError> {
-    let effective_session_id = session_id
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| thread_id.clone());
-    let result = agent_prompt_inner(
+    agent_prompt_with_model_context(AgentPromptRequest {
         message,
+        model_context: String::new(),
         attachments,
-        thread_id.clone(),
+        thread_id,
         session_id,
-        run_id.clone(),
+        run_id,
         model_id,
         thinking_level,
-    )
-    .await;
+    })
+    .await
+}
+
+pub async fn agent_prompt_with_model_context(
+    request: AgentPromptRequest,
+) -> Result<AgentPromptResponse, crate::AppError> {
+    let effective_session_id = request
+        .session_id
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| request.thread_id.clone());
+    let result = agent_prompt_inner(request.clone()).await;
 
     // Settle the run row HERE, in the backend, not only in the frontend
     // pipeline: the pipeline's status write depends on this invoke response
@@ -501,18 +527,18 @@ pub async fn agent_prompt(
     // can no longer wedge the run's visible state.
     match &result {
         Ok(response) if response.complete => {
-            mark_run_completed_if_active(run_id.as_deref());
+            mark_run_completed_if_active(request.run_id.as_deref());
         }
         Ok(_) => {
             mark_run_failed_if_active(
-                run_id.as_deref(),
+                request.run_id.as_deref(),
                 "Future Agent response ended before a clean terminal.",
             );
         }
-        Err(error) => mark_run_failed_if_active(run_id.as_deref(), &error.to_string()),
+        Err(error) => mark_run_failed_if_active(request.run_id.as_deref(), &error.to_string()),
     }
 
-    if let Some(run_id) = run_id.clone() {
+    if let Some(run_id) = request.run_id.clone() {
         // The run has settled and every event was already persisted to the
         // per-run log (stream.rs awaits each write in order), so drop this run's
         // in-memory events — the Runs panel/inspector read the log from here on.
@@ -527,7 +553,7 @@ pub async fn agent_prompt(
         // Run's before-snapshot can't interleave. It forks `git` and does fs IO,
         // so run it on a blocking thread rather than stalling the async runtime.
         let sensitive = {
-            let capture_thread = thread_id.clone();
+            let capture_thread = request.thread_id.clone();
             let capture_run = run_id.clone();
             tokio::task::spawn_blocking(move || {
                 review::capture_after(&capture_thread, &capture_run)
@@ -538,13 +564,13 @@ pub async fn agent_prompt(
         // C1: the diff materialization is a read-only diff between fixed commits,
         // so defer it off the IPC path. The GUI is notified when it lands.
         tokio::spawn(async move {
-            let materialize_thread = thread_id.clone();
+            let materialize_thread = request.thread_id.clone();
             let materialize_run = run_id.clone();
             let _ = tokio::task::spawn_blocking(move || {
                 review::materialize_changeset(&materialize_thread, &materialize_run, sensitive);
             })
             .await;
-            crate::emit_review_updated(&thread_id);
+            crate::emit_review_updated(&request.thread_id);
         });
     }
 
@@ -552,14 +578,18 @@ pub async fn agent_prompt(
 }
 
 async fn agent_prompt_inner(
-    message: String,
-    attachments: Option<Vec<AttachmentInput>>,
-    thread_id: String,
-    session_id: Option<String>,
-    run_id: Option<String>,
-    model_id: Option<String>,
-    thinking_level: Option<String>,
+    request: AgentPromptRequest,
 ) -> Result<AgentPromptResponse, crate::AppError> {
+    let AgentPromptRequest {
+        message,
+        model_context,
+        attachments,
+        thread_id,
+        session_id,
+        run_id,
+        model_id,
+        thinking_level,
+    } = request;
     // The frontend may pass None when it doesn't know the session id yet
     // (e.g. first prompt after the thread was created).  Fall back to the
     // thread's persisted agent_session_id so we don't create a new session
@@ -664,6 +694,7 @@ async fn agent_prompt_inner(
     let prompt_response = command_client
         .execute_command(prompt_command(
             message,
+            model_context,
             session_id.clone(),
             attachments.unwrap_or_default(),
             Some(run_id.clone()),
@@ -2323,15 +2354,16 @@ mod pipeline_tests {
             None,
         ));
 
-        let response = agent_prompt(
-            message.clone(),
-            None,
-            thread_id.clone(),
-            None,
-            Some(run_id.clone()),
-            Some("future/k3".to_string()),
-            Some("high".to_string()),
-        )
+        let response = agent_prompt_with_model_context(AgentPromptRequest {
+            message: message.clone(),
+            model_context: "Referenced FutureOS objects:\n1. file:utils/a.py".to_string(),
+            attachments: None,
+            thread_id: thread_id.clone(),
+            session_id: None,
+            run_id: Some(run_id.clone()),
+            model_id: Some("future/k3".to_string()),
+            thinking_level: Some("high".to_string()),
+        })
         .await
         .expect("prompt");
 
@@ -2368,6 +2400,10 @@ mod pipeline_tests {
         );
         let prompt = &fixture.mock.requests_of("prompt")[0];
         assert_eq!(prompt.message, message);
+        assert_eq!(
+            prompt.model_context,
+            "Referenced FutureOS objects:\n1. file:utils/a.py"
+        );
         assert_eq!(prompt.requested_run_id, run_id);
         assert_eq!(prompt.session_id, "sess-p1");
         // The observer was registered before the prompt reached the agent.

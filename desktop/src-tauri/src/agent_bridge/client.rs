@@ -351,6 +351,7 @@ pub struct AttachmentInput {
 
 pub(super) fn prompt_command(
     message: String,
+    model_context: String,
     session_id: String,
     attachments: Vec<AttachmentInput>,
     requested_run_id: Option<String>,
@@ -367,6 +368,7 @@ pub(super) fn prompt_command(
         .collect();
     RpcCommand {
         message,
+        model_context,
         attachments,
         requested_run_id: requested_run_id.unwrap_or_default(),
         client_request_id: command_id(),
@@ -393,6 +395,7 @@ pub(super) fn base_command(command_type: &str, session_id: String) -> RpcCommand
         id: command_id(),
         r#type: command_type.to_string(),
         message: String::new(),
+        model_context: String::new(),
         images: vec![],
         attachments: vec![],
         parent_session: String::new(),
@@ -739,6 +742,7 @@ mod tests {
     fn prompt_command_maps_attachments_and_run_identity() {
         let cmd = prompt_command(
             "hello".to_string(),
+            "model-only context".to_string(),
             "sess".to_string(),
             vec![
                 AttachmentInput {
@@ -758,6 +762,7 @@ mod tests {
         );
         assert_eq!(cmd.r#type, "prompt");
         assert_eq!(cmd.message, "hello");
+        assert_eq!(cmd.model_context, "model-only context");
         assert_eq!(cmd.requested_run_id, "run-1");
         assert!(cmd.client_request_id.starts_with("desktop_"));
         assert_eq!(cmd.attachments.len(), 2);
@@ -767,7 +772,13 @@ mod tests {
             "absent thumbnail defaults"
         );
 
-        let bare = prompt_command("m".to_string(), "s".to_string(), vec![], None);
+        let bare = prompt_command(
+            "m".to_string(),
+            String::new(),
+            "s".to_string(),
+            vec![],
+            None,
+        );
         assert_eq!(bare.requested_run_id, "");
     }
 
