@@ -13,7 +13,7 @@ import {
   matchesSettledRun,
   updateRunStatusSafe,
 } from "./agentMessageFormatters";
-import { buildReferencePrompt } from "./buildReferencePrompt";
+import { buildReferenceContext } from "./buildReferencePrompt";
 import { attachmentInputs } from "./messageContent";
 import { persistImageAttachments } from "./threadAttachments";
 import {
@@ -100,7 +100,7 @@ export async function runSendPipeline(
   let run: StoredRun | null = null;
 
   try {
-    const promptContent = await buildReferencePrompt(thread.workspaceId, content, content);
+    const referenceContext = await buildReferenceContext(thread.workspaceId, content);
 
     if (isCurrentSend()) {
       patchMessage(setMessages, optimisticUserId, { attachments: importedAttachments });
@@ -137,19 +137,20 @@ export async function runSendPipeline(
     }
 
     const agentSessionId = thread.agentSessionId?.trim() || null;
-    const reply = await sendPromptToFutureAgent(
-      promptContent,
-      thread.id,
-      agentSessionId,
-      run.id,
+    const reply = await sendPromptToFutureAgent({
+      message: content,
+      modelContext: referenceContext,
+      threadId: thread.id,
+      sessionId: agentSessionId,
+      runId: run.id,
       modelId,
       // All attachments (images + files) travel by original path. The agent
       // decides per attachment: an image goes inline (image_url) when the model
       // accepts image input, otherwise — and for every non-image file — the path
       // is surfaced for the agent's own tools to read.
-      attachmentInputs(importedAttachments),
+      attachments: attachmentInputs(importedAttachments),
       thinkingLevel,
-    );
+    });
     clearStreamUpdates();
 
     if (reply.sessionRecreated) {

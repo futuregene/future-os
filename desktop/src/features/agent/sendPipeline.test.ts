@@ -4,6 +4,7 @@ import type { StoredRun, StoredThread } from "../../integrations/storage/threadS
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { sendPromptToFutureAgent } from "../../integrations/agent/agentClient";
 import { createRun, getRun, listRunEvents, updateRunStatus } from "../../integrations/storage/threadStore";
+import { buildReferenceContext } from "./buildReferencePrompt";
 import { runSendPipeline } from "./sendPipeline";
 
 vi.mock("../../integrations/storage/threadStore", async (importOriginal) => {
@@ -25,6 +26,9 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 vi.mock("./threadAttachments", () => ({
   persistImageAttachments: vi.fn(async () => []),
+}));
+vi.mock("./buildReferencePrompt", () => ({
+  buildReferenceContext: vi.fn(async () => ""),
 }));
 
 const emitFutureEvent = vi.fn();
@@ -94,6 +98,22 @@ describe("runSendPipeline terminal-status handling", () => {
       sessionId: "session-1",
       sessionRecreated: false,
     });
+    vi.mocked(buildReferenceContext).mockResolvedValue("");
+  });
+
+  it("keeps model-only reference context out of the user message", async () => {
+    vi.mocked(getRun).mockResolvedValue(storedRun({ status: "completed", endedAt: 2_000 }));
+    vi.mocked(buildReferenceContext).mockResolvedValue("Referenced FutureOS objects:\n1. file:utils/a.py");
+    const setMessages = vi.fn<(value: SetStateAction<AgentMessage[]>) => void>();
+
+    await runSendPipeline(makeDeps(setMessages), { content: "what is a.py?", attachments: [] });
+
+    expect(sendPromptToFutureAgent).toHaveBeenCalledWith(expect.objectContaining({
+      message: "what is a.py?",
+      modelContext: "Referenced FutureOS objects:\n1. file:utils/a.py",
+    }));
+    const user = foldMessages(setMessages).find(message => message.role === "user");
+    expect(user?.content).toBe("what is a.py?");
   });
 
   it("renders the final bubble without a redundant status write when the backend already settled the run", async () => {
@@ -173,6 +193,7 @@ describe("runSendPipeline terminal-status handling", () => {
 describe("runSendPipeline stream/failure edges", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(buildReferenceContext).mockResolvedValue("");
     vi.mocked(createRun).mockResolvedValue(storedRun());
     vi.mocked(listRunEvents).mockResolvedValue([]);
   });
