@@ -39,7 +39,7 @@ describe("useSessionCatalog", () => {
 
   beforeEach(() => {
     request = jest.fn();
-    clientRef = { current: { request } as unknown as RemoteClient };
+    clientRef = { current: { request, requestRetry: request } as unknown as RemoteClient };
     selectedRef = { current: "s1" };
     result = { current: undefined as unknown as Catalog };
     renderer = null;
@@ -127,7 +127,7 @@ describe("useSessionCatalog", () => {
     expect(request).toHaveBeenCalledTimes(1);
   });
 
-  test("refreshModels retries once after an empty first answer", async () => {
+  test("refreshModels retries in the background after an empty first answer", async () => {
     jest.useFakeTimers();
     try {
       render();
@@ -151,7 +151,7 @@ describe("useSessionCatalog", () => {
     }
   });
 
-  test("refreshModels retries once after a failed first attempt", async () => {
+  test("refreshModels retries in the background after a failed first attempt", async () => {
     jest.useFakeTimers();
     try {
       render();
@@ -197,13 +197,19 @@ describe("useSessionCatalog", () => {
     expect(result.current.workspaces).toEqual([{ id: "w1", name: "W", path: "/w" }]);
   });
 
-  test("refreshWorkspaces clears the list on error", async () => {
+  test("refreshWorkspaces preserves the last snapshot on error", async () => {
     render();
+    request.mockResolvedValueOnce({
+      data: { workspaces: [{ id: "w1", name: "W", path: "/w" }] },
+    });
+    await act(async () => {
+      await result.current.refreshWorkspaces();
+    });
     request.mockRejectedValueOnce(new Error("gone"));
     await act(async () => {
       await result.current.refreshWorkspaces();
     });
-    expect(result.current.workspaces).toEqual([]);
+    expect(result.current.workspaces).toEqual([{ id: "w1", name: "W", path: "/w" }]);
   });
 
   test("reset clears catalogue state", async () => {

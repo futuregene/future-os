@@ -307,6 +307,9 @@ export function SessionsScreen() {
       </View>
       <Text style={styles.emptyTitle}>{t("connection.offline")}</Text>
       <Text style={styles.emptyHint}>{t("connection.offlineHint")}</Text>
+      {remote.phase === "failed" && (
+        <Button compact label={t("connection.retry")} onPress={() => void remote.reconnect()} />
+      )}
     </View>
   );
 

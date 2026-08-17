@@ -6,6 +6,7 @@ export type ConnectionPhase =
   | "connected"
   | "reconnecting"
   | "refreshing"
+  | "failed"
   | "revoked";
 
 export interface PairingCode {
