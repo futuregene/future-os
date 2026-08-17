@@ -1,105 +1,116 @@
-# Loop Control Plane（`future loop`）
+# Loop Control Plane (`future loop`)
 
-> 本地控制面，让长程 AI Agent 工作变得持久、可治理、可验收——目标、门禁、任务、证据与配额在聊天之外稳定存在，Agent 每次只执行一个有界回合，一个确定性内核决定下一步做什么。
+> A local control plane that makes long-running AI agent work durable,
+> governable, and verifiable — objectives, gates, todos, evidence, and quotas
+> persist outside the chat; the agent executes one bounded turn at a time and
+> a deterministic kernel decides what happens next.
 
-## 为什么需要
+## Why it exists
 
-一次对话会丢失上下文；一个"帮我盯一周"的请求不该靠聊天记录撑着。`future loop` 把请求变成一个**持久化目标**：拆成任务图、挂上人工门禁、每步留证据、完成的定义是可验证的——跨会话、跨重启、跨多个并行 worker 都不会丢。
+A conversation loses context; a "keep an eye on this for a week" request
+should not live in chat history. `future loop` turns the request into a
+**durable goal**: a todo graph, human gates, per-step evidence, and a
+verifiable definition of done — surviving sessions, restarts, and parallel
+workers.
 
-## 一张图看懂
+## At a glance
 
 ```
-目标 objective
+objective
    │
-   ├─ 任务图 todos（advancement / user-gate / monitor，--blocks 依赖）
+   ├─ todo graph (advancement / user-gate / monitor, --blocks dependencies)
    │
-   ├─ 需要人拍板？ ──▶ 提出一个具体问题并等待（user gate）
+   ├─ human judgment needed? ──▶ ask one concrete question and wait (user gate)
    │
-   ├─ 可以安全推进？ ──▶ 内核发出决策包：run 这个 todo / wait / replan / terminal
+   ├─ safe to proceed? ──▶ kernel decision packet: run this todo / wait / replan / terminal
    │
    ▼
-Agent 执行一个有界回合（gRPC）→ 写证据 → 内核据此决定下一回合
+agent executes one bounded turn (gRPC) → writes evidence → kernel decides the next turn
 ```
 
-## 核心概念
+## Core concepts
 
-| 概念 | 命令 | 说明 |
+| Concept | Command | What it does |
 |---|---|---|
-| 目标 goal | `goal init` | 项目本地状态 `<cwd>/.future/loop/`，事件溯源 + 可重放 |
-| 任务 todo | `todo add/update/complete/supersede` | 三类：advancement（推进）/ user-gate（人工门禁）/ monitor（监视外部状态）；`--blocks` 依赖链；`--priority` |
-| 证据 evidence | `todo complete --evidence` | **非空强制**：关单必须写明实际落地了什么（路径、attempt id、测量结果），`--force` 是操作者显式覆盖 |
-| 验收契约 acceptance | `todo add --acceptance "tok1,tok2"` | 关单证据必须包含全部 token（大小写不敏感）——"done ≠ delivered" 的硬形式 |
-| 验证器 verify | `todo add --verify "cmd"` | 每个回合后内核执行命令，exit 0 才算完成；上限 `--max-validation-attempts`。空关单的物理阻断器 |
-| 租约 lease | `lease claim/renew/release/status` | 任务被谁租用、多久过期。**租约活性自愈**：记录持有进程 pid，进程死了自动回收——杀掉 worker 后无需手动清理 |
-| 门禁 gate | `gate resolve` | 任何打开的用户门禁冻结全部工作；PLAN_REVIEW 类检查点由 Agent 自行解决 |
-| 交付闭环 delivery | `delivery status/record` | 完成 = `delivered` 待验证态；操作者用 `verified/failed/rework` 结案；3 回合未验证自动派生跟进任务 |
-| 终局 terminal | `frontier show` | 验证式闭环：todos 完成/被取代 + 闭环意图 + 无验收缺口 + 无待决 deferred 工作；`frontier` 给出终局判定与缺口明细 |
-| 配额 quota | `quota should-run/usage/spend/decisions` | 确定性 should-run 内核：每个回合的调度、拒绝原因、花费全部可审计 |
-| 调度器 scheduler | `scheduler tick/show/liveness` | 监视器节奏、宿主故障记录、活性心跳 |
-| 多 agent | `agent contract/recipe/succession/collective` | 一个目标多个 worker：契约（替补关系/交接规则）、命名配方一键上车、离线超时自动替补晋升、唤醒轮值表、集体回合账本 |
-| 前端面 frontier | `frontier show` | 成果连续段（outcome segments）、结构化 replan 规则、有界语义历史（N=50）、终局判定 |
+| Goal | `goal init` | Project-local state at `<cwd>/.future/loop/`, event-sourced and replayable |
+| Todo | `todo add/update/complete/supersede` | Three classes: advancement / user-gate / monitor (external-state watch); `--blocks` dependency chains; `--priority` |
+| Evidence | `todo complete --evidence` | **Non-empty, enforced**: closing a todo must state what actually landed (paths, attempt ids, measurements); `--force` is the explicit operator override |
+| Acceptance contract | `todo add --acceptance "tok1,tok2"` | Completion evidence must contain every token (case-insensitive) — the hard form of "done ≠ delivered" |
+| Verifier | `todo add --verify "cmd"` | The kernel runs the command after each turn; only exit 0 completes the todo (bounded by `--max-validation-attempts`). The physical blocker of empty closures |
+| Lease | `lease claim/renew/release/status` | Who holds a todo and until when. **Lease liveness**: the holder's pid is recorded; a dead process's leases are auto-reclaimed — no manual cleanup after killing a worker |
+| Gate | `gate resolve` | Any open user gate freezes all work; PLAN_REVIEW checkpoints are agent-resolved |
+| Delivery closure | `delivery status/record` | Completion lands in a pending `delivered` state; an operator resolves it as `verified/failed/rework`; unverified deliveries auto-derive a follow-up after 3 turns |
+| Terminal | `frontier show` | Validated closure: todos done/superseded + closure intent + no acceptance gaps + no pending deferred work; `frontier` gives the terminal judgement with gap detail |
+| Quota | `quota should-run/usage/spend/decisions` | The deterministic should-run kernel: scheduling, refusal reasons, and spend are all auditable |
+| Scheduler | `scheduler tick/show/liveness` | Monitor cadence, host-failure records, liveness heartbeats |
+| Multi-agent | `agent contract/recipe/succession/collective` | One goal, several workers: contract (backups / handoff rules), named recipes for one-command onboarding, auto back-up promotion on offline timeout, wake roster, collective turn ledger |
+| Frontier | `frontier show` | Outcome segments, structured replan rules, bounded semantic history (N=50), terminal judgement |
 
-## 用户工作流（从零到闭环）
+## User workflow (zero to closure)
 
 ```bash
-# 1. 创建目标
+# 1. Create the goal
 future loop goal init --objective "..." --cwd DIR
 
-# 2. 拆任务（依赖 + 硬校验一起挂上）
+# 2. Decompose — dependencies and hard checks together
 future loop todo add --goal G --text "..." --priority P0 --verify "cargo check -p X"
 future loop todo add --goal G --text "..." --blocks T1 --acceptance "attempt,scored"
-future loop todo add --goal G --role user --class user_gate --gate-question "是否发布？"
+future loop todo add --goal G --role user --class user_gate --gate-question "Ship it?"
 
-# 3. 驱动回合（一个 worker 一个 --agent-id；回合结束立即重启）
+# 3. Drive turns (one worker per --agent-id; relaunch as soon as a turn exits)
 future loop run --goal G --agent-id mac-worker --model M --thinking-level L --max-turns 1
 
-# 4. 人工拍板
+# 4. Human decisions
 future loop gate resolve --goal G --todo-id GATE --decision "approve"
 
-# 5. 观察与闭环
+# 5. Observe and close
 future loop status --goal G
-future loop frontier show --goal G        # 终局判定 + 缺口明细
+future loop frontier show --goal G        # terminal judgement + gap detail
 future loop delivery record --goal G ...  # verified / failed / rework
 ```
 
-## 硬校验优先（约定靠不住，闸门靠得住）
+## Hard checks first (conventions fail, gates hold)
 
-- 空证据关单会被**拒绝**（默认 fail-closed，`--force` 才放行）
-- `--verify` 让"写完"不等于"能编译/有产物"——每个交付类任务都应挂一个
-- `--acceptance` 把"验收以外部可观测信号为准"变成硬校验
-- 租约活性自愈：死进程的租约自动回收，重启 worker 不再需要手动 release
-- 工作区守卫：多 agent 写冲突自动降级串行
-- 空转回合（15 分钟无写入）会记账；用 `todo update --text` 中途 steering 干预
+- Empty-evidence closures are **refused** (fail-closed by default; `--force` opens)
+- `--verify` makes "wrote it" mean "it compiles / the artifact exists" — attach one to every delivery todo
+- `--acceptance` turns "accepted by an external observable" into a hard check
+- Lease liveness self-heals: dead-process leases are reclaimed automatically — relaunching workers needs no manual release
+- Workspace guard: multi-agent write conflicts degrade to serial automatically
+- Idle turns (15 minutes without writes) are ledgered; steer mid-turn via `todo update --text`
 
-## 三端体验
+## Three-client experience
 
-loop 状态通过 FutureOS 的多个前端随时可见：**终端 TUI / 桌面 GUI / 移动端（Android · iOS）**——同一个 gRPC Agent 服务，多端无缝切换。移动端是 FutureOS 区别于多数同类 Agent 的亮点：`future` 核心在手机上也完整可用，配合桌面端与 TUI 形成全平台闭环。
+Loop state is visible through every FutureOS frontend: **TUI in the terminal,
+the desktop GUI, and the mobile apps (Android · iOS)** — one gRPC agent
+service, seamless across clients. Mobile is a FutureOS differentiator: most
+agent runtimes are desktop-only, while `future` runs natively on your phone,
+completing the all-platform story with desktop and TUI.
 
-## CLI 全景（10 组 43 命令）
+## CLI surface (10 groups, 43 commands)
 
 ```bash
-future loop registry        # 全部命令
-future loop commands        # 按操作者旅程分组视图
+future loop registry        # every command
+future loop commands        # grouped by operator journey
 ```
 
-- **goal 组**：`goal` `status` `models` `diagnose`
-- **todo 组**：`todo` `gate` `replan` `frontier` `lease` `task-graph`
-- **agent 组**：`agent` `scope` `lane` `supervisor`
-- **ops 组**：`version` `doctor` `history` `turn` `todo-event` `evidence-log` `backup` `authority` `profile` `quota` `scheduler` `store` `backfill` `privacy` `runs` `heartbeat-prompt` `worker-bridge` `serve-status` `run`
-- **work-items 组**：`attention` `inbox` `delivery`
-- **handoff 组**：`handoff`
-- **质量组**：`benchmark` `replay` `canary`
+- **goal group**: `goal` `status` `models` `diagnose`
+- **todo group**: `todo` `gate` `replan` `frontier` `lease` `task-graph`
+- **agent group**: `agent` `scope` `lane` `supervisor`
+- **ops group**: `version` `doctor` `history` `turn` `todo-event` `evidence-log` `backup` `authority` `profile` `quota` `scheduler` `store` `backfill` `privacy` `runs` `heartbeat-prompt` `worker-bridge` `serve-status` `run`
+- **work-items group**: `attention` `inbox` `delivery`
+- **handoff group**: `handoff`
+- **quality group**: `benchmark` `replay` `canary`
 
-## 与 FutureOS 其他部件的关系
+## How it fits FutureOS
 
-- **Agent 服务**（`future agent`，gRPC 127.0.0.1:50051）：`run` 通过它执行每个回合
-- **渠道桥**（飞书 / 钉钉）：消息可触发 loop 操作，loop 的门禁与通知可回到聊天里
-- **技能 `/future-loop`**：编排 Agent 使用本控制面的驾驶手册（v3.x 与本文档同步维护）
-- **状态位置**：`<cwd>/.future/loop/`（加入项目 `.gitignore`）
+- **Agent service** (`future agent`, gRPC 127.0.0.1:50051): `run` executes every turn through it
+- **Channel bridges** (Feishu / DingTalk): messages can trigger loop actions; loop gates and alerts flow back into chat
+- **The `/future-loop` skill**: the driving manual for agents (v3.x, kept in sync with this doc)
+- **State location**: `<cwd>/.future/loop/` (add to the project `.gitignore`)
 
-## 更多
+## Further reading
 
-- 安装与构建：[build-and-install.md](build-and-install.md)
-- 证据账本：[long-run-evidence-ledger.md](long-run-evidence-ledger.md)
-- TUI 使用：[tui.md](tui.md)
-- 技能源码：[future-skills/builtin/future-loop](https://github.com/futuregene/future-skills/tree/main/builtin/future-loop)
+- Install & build: [build-and-install.md](build-and-install.md)
+- Evidence ledger: [long-run-evidence-ledger.md](long-run-evidence-ledger.md)
+- TUI usage: [tui.md](tui.md)
+- Skill source: [future-skills/builtin/future-loop](https://github.com/futuregene/future-skills/tree/main/builtin/future-loop)
