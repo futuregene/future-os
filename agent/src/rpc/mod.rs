@@ -366,6 +366,13 @@ static RELOAD_RACE_HOOK: parking_lot::Mutex<
     Option<(String, Box<dyn Fn(&mut ServerSession) + Send>)>,
 > = parking_lot::Mutex::new(None);
 
+/// Serializes the reload-credentials tests: they mutate the process-global
+/// model registry and RELOAD_RACE_HOOK, which races when the suite runs the
+/// tests in parallel (observed: repeated CI failures of
+/// reload_all_credentials_reselects_invalid_model_installed_mid_check).
+#[cfg(test)]
+static TEST_RELOAD_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
 fn get_state_internal(
     state: &AppState,
     session_id: &str,
@@ -941,6 +948,8 @@ mod tests {
 
     #[test]
     fn reload_all_credentials_waits_for_write_locked_session() {
+        let _reload_lock = TEST_RELOAD_LOCK.lock();
+
         let (_dir, state) = bare_app_state();
         let session = crate::rpc::ServerSession::new_with_queue_budget(
             "locked".to_string(),
@@ -1078,6 +1087,21 @@ mod tests {
 
     #[test]
     fn reload_all_credentials_reselects_invalid_model_installed_mid_check() {
+        let _reload_lock = TEST_RELOAD_LOCK.lock();
+
+        // Self-contained credentials: reload rebuilds the registry from the
+        // auth file, so the reselection needs a real model to land on —
+        // without this the test depends on the developer machine's own
+        // ~/.future/agent/auth.json (CI has none and the assertion failed).
+        let _home = crate::test_support::TestHome::new();
+        let auth_path = _home.auth_path();
+        std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &auth_path,
+            r#"{"deepseek": {"type": "api_key", "key": "k"}}"#,
+        )
+        .unwrap();
+
         let (_dir, state) = bare_app_state();
         // Live session with NO model yet → the outer check takes the
         // set-default path; the hook then installs a stale/nonexistent model
@@ -1310,6 +1334,8 @@ mod tests {
 
     #[test]
     fn reload_all_credentials_applies_default_to_model_less_sessions() {
+        let _reload_lock = TEST_RELOAD_LOCK.lock();
+
         let _home = crate::test_support::TestHome::new();
         let auth_path = _home.auth_path();
         std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
