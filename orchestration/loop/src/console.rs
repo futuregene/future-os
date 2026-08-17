@@ -4,7 +4,9 @@
 //!   goal init    — create a durable goal (registry + event ledger)
 //!   todo add     — add an agent/user/gate/monitor todo
 //!   todo claim   — claim a todo (owner identity)
-//!   todo complete — complete a todo; REQUIRES --no-follow-up or --successor
+//!   todo complete — complete a todo; REQUIRES --no-follow-up or --successor,
+//!     non-empty --evidence for advancement todos, and (when declared)
+//!     --acceptance tokens inside the evidence; --force overrides both.
 //!   gate resolve — resolve a user gate with a decision payload
 //!   status       — project the active state (todos, gaps, next action)
 //!   quota should-run — emit the typed ShouldRunPacket (deterministic)
@@ -899,6 +901,28 @@ fn looks_like_code_todo(text: &str) -> bool {
             .any(|tok| CODE_WORDS.contains(&tok))
 }
 
+/// O5: heuristic for the `todo add` advisory hint — does the text look like an
+/// external-delivery task (platform submission, scored attempt, quota-bounded
+/// side effect) whose completion should carry an `--acceptance` contract?
+/// Advisory only; never changes CLI semantics.
+fn looks_like_external_delivery(text: &str) -> bool {
+    const DELIVERY_WORDS: &[&str] = &[
+        "submit",
+        "submission",
+        "attempt",
+        "scored",
+        "acceptance",
+        "quota",
+        "platform",
+    ];
+    const DELIVERY_ZH: &[&str] = &["提交", "评分", "配额", "验收", "排行榜", "上分"];
+    let lower = text.to_lowercase();
+    DELIVERY_ZH.iter().any(|k| text.contains(k))
+        || lower
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|tok| DELIVERY_WORDS.contains(&tok))
+}
+
 fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut role = "agent".to_string();
@@ -924,9 +948,11 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     let mut cadence = None;
     let mut verify: Option<String> = None;
     let mut max_validation_attempts: Option<u32> = None;
+    let mut acceptance: Option<String> = None;
     reject_unknown_flags(
         args,
         &[
+            "--acceptance",
             "--action-kind",
             "--blocks",
             "--cadence",
@@ -970,6 +996,8 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
             cadence = Some(v);
         } else if k == "--verify" {
             verify = Some(v);
+        } else if k == "--acceptance" {
+            acceptance = Some(v);
         } else if k == "--max-validation-attempts" {
             max_validation_attempts = v.parse().ok();
         } else if k == "--goal" {
@@ -1010,6 +1038,9 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     // done by an agent even when the code does not compile. Computed before
     // `verify` is moved into the todo below.
     let wants_verify_hint = verify.is_none() && looks_like_code_todo(&text);
+    // O5: advisory hint — external-delivery todos (submit/提交 …) whose
+    // completion contract is a text convention unless `--acceptance` pins it.
+    let wants_acceptance_hint = acceptance.is_none() && looks_like_external_delivery(&text);
     store
         .replay(&goal_id)?
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
@@ -1098,6 +1129,9 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     if let Some(v) = verify {
         todo.validator = Some(v);
     }
+    if let Some(a) = acceptance {
+        todo.acceptance = Some(a);
+    }
     if let Some(n) = max_validation_attempts {
         todo.max_validation_attempts = n.max(1);
     }
@@ -1142,6 +1176,13 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     // O4: pure reminder after a successful add; no semantic change.
     if wants_verify_hint {
         eprintln!("hint: 实现类 todo 建议挂 --verify \"cargo check -p ...\"，防不编译代码被标完成");
+    }
+    // O5: advisory hint for external-delivery todos (submit/提交 …) — the
+    // completion contract is a text convention unless `--acceptance` pins it.
+    if wants_acceptance_hint {
+        eprintln!(
+            "hint: 外部交付类 todo 建议挂 --acceptance \"attempt,scored\"（关单时 evidence 必须包含全部子串，防空交付）"
+        );
     }
     Ok(())
 }
@@ -2038,10 +2079,12 @@ fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
     let mut no_follow_up = false;
     let mut successor = None;
     let mut evidence = None;
+    let mut force = false;
     reject_unknown_flags(
         args,
         &[
             "--evidence",
+            "--force",
             "--goal",
             "--no-follow-up",
             "--successor",
@@ -2055,6 +2098,8 @@ fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
             todo_id = Some(v);
         } else if k == "--no-follow-up" {
             no_follow_up = true;
+        } else if k == "--force" {
+            force = true;
         } else if k == "--successor" {
             successor = Some(v);
         } else if k == "--evidence" {
@@ -2094,6 +2139,45 @@ fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
         }
     }
     let is_advancement = t.class == TaskClass::Advancement;
+    // O6: completion evidence contract (retrospective: 11/33 completions
+    // shipped <60-char evidence, several fully empty, and every one of those
+    // todos had to be reopened by hand). Advancement todos must carry real,
+    // non-empty evidence of what landed — `--force` is the explicit override
+    // for mechanical closeouts the operator owns.
+    let evidence_trim = evidence.as_deref().map(str::trim).unwrap_or("");
+    if is_advancement && evidence_trim.is_empty() && !force {
+        bail!(
+            "todo {todo_id} needs non-empty --evidence (what actually landed: attempt ids, \
+             paths, outputs, measurements). Add --force only for an explicit operator closeout."
+        );
+    }
+    // O7: acceptance contract (`todo add --acceptance "a,b"`) — evidence must
+    // contain every declared token (case-insensitive) before completion is
+    // accepted; `--force` overrides. Turns the ACCEPTANCE text convention
+    // (e.g. a platform attempt id) into a hard check.
+    if is_advancement {
+        if let Some(acc) = t.acceptance.as_deref() {
+            let tokens: Vec<&str> = acc
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect();
+            let lower = evidence_trim.to_lowercase();
+            let missing: Vec<&str> = tokens
+                .iter()
+                .filter(|tok| !lower.contains(&tok.to_lowercase()))
+                .copied()
+                .collect();
+            if !missing.is_empty() && !force {
+                bail!(
+                    "todo {todo_id} acceptance contract unmet: evidence must contain [{}] \
+                     (missing: [{}]). Declared via `todo add --acceptance`; --force overrides.",
+                    acc,
+                    missing.join(", ")
+                );
+            }
+        }
+    }
     let successors = successor.clone().into_iter().collect::<Vec<_>>();
     store.append(Event::TodoCompleted {
         goal_id: goal_id.clone(),
@@ -4996,6 +5080,7 @@ fn pr_review_verdict(store: &mut Store, args: &[String]) -> Result<()> {
         priority: None,
         resume_when: None,
         blocks: None,
+        acceptance: None,
         ts: now,
     })?;
     store.append(Event::TodoCompleted {
@@ -8646,9 +8731,11 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
     let mut priority = None;
     let mut resume_when = None;
     let mut blocks: Option<Vec<String>> = None;
+    let mut acceptance: Option<String> = None;
     reject_unknown_flags(
         args,
         &[
+            "--acceptance",
             "--blocks",
             "--evidence",
             "--goal",
@@ -8690,6 +8777,8 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
                     .filter(|s| !s.is_empty())
                     .collect()
             });
+        } else if k == "--acceptance" {
+            acceptance = Some(v);
         }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
@@ -8736,6 +8825,7 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
         priority: priority.clone(),
         resume_when: resume_when_parsed,
         blocks: blocks.clone(),
+        acceptance: acceptance.clone(),
         ts: crate::state::now_epoch(),
     })?;
     refresh_next_action(store, &goal_id)?;
@@ -8806,6 +8896,7 @@ mod coverage_tests {
                 priority: None,
                 resume_when: None,
                 blocks: None,
+                acceptance: None,
                 ts: 1,
             },
             Event::GoalCancelled {

@@ -539,6 +539,7 @@ fn todo_complete_contract() {
         "--todo-id",
         &s,
         "--no-follow-up",
+        "--force",
     ]);
     // Unknown todo / goal.
     assert!(cli_err(&[
@@ -563,6 +564,161 @@ fn todo_complete_contract() {
         "--no-follow-up"
     ])
     .contains("not found"));
+}
+
+#[test]
+fn todo_complete_evidence_floor_and_force() {
+    let cr = cli_root();
+    let gid = init_goal(&cr, "evidence floor");
+    let first = first_todo_id(&cr.root, &gid);
+    // Advancement completion without evidence is refused (the empty-closure
+    // failure mode: an agent marks a delivery done with nothing to show).
+    let err = cli_err(&[
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &first,
+        "--no-follow-up",
+    ]);
+    assert!(err.contains("--evidence"), "{err}");
+    // Whitespace-only evidence is refused too.
+    let err = cli_err(&[
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &first,
+        "--no-follow-up",
+        "--evidence",
+        "   ",
+    ]);
+    assert!(err.contains("--evidence"), "{err}");
+    // --force is the explicit operator override for mechanical closeouts.
+    cli_ok(&[
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &first,
+        "--no-follow-up",
+        "--force",
+    ]);
+    // Any non-empty evidence satisfies the floor (strength belongs to
+    // --acceptance / --verify, which are opt-in contracts).
+    let s = add_todo(&cr, &gid, "second task");
+    cli_ok(&[
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &s,
+        "--no-follow-up",
+        "--evidence",
+        "did the thing",
+    ]);
+    {
+        let store = open_store(&cr);
+        let g = store.replay(&gid).unwrap().unwrap();
+        let t = g.todos.iter().find(|t| t.id == s).unwrap();
+        assert_eq!(t.status, TodoStatus::Done);
+        assert_eq!(t.evidence.as_deref(), Some("did the thing"));
+    }
+}
+
+#[test]
+fn todo_complete_acceptance_contract() {
+    let cr = cli_root();
+    let gid = init_goal(&cr, "acceptance contract");
+    let first = first_todo_id(&cr.root, &gid);
+    // `--acceptance` is a todo-add flag; `todo complete` rejects it.
+    let err = cli_err(&[
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &first,
+        "--no-follow-up",
+        "--acceptance",
+        "x",
+    ]);
+    assert!(err.contains("unknown"), "{err}");
+    let t = add_todo(&cr, &gid, "submit the payload");
+    // Declare the acceptance contract: evidence must contain BOTH tokens.
+    cli_ok(&[
+        "todo",
+        "update",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &t,
+        "--acceptance",
+        "attempt,scored",
+    ]);
+    // Evidence missing one token is refused.
+    let err = cli_err(&[
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &t,
+        "--no-follow-up",
+        "--evidence",
+        "created attempt 12345",
+    ]);
+    assert!(err.contains("acceptance contract"), "{err}");
+    assert!(err.contains("scored"), "{err}");
+    // Matching evidence (case-insensitive) completes.
+    cli_ok(&[
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &t,
+        "--no-follow-up",
+        "--evidence",
+        "ATTEMPT 12345 SCORED 99 on the platform",
+    ]);
+    // --force overrides an unmet contract.
+    let t2 = add_todo(&cr, &gid, "submit again");
+    cli_ok(&[
+        "todo",
+        "update",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &t2,
+        "--acceptance",
+        "attempt,scored",
+    ]);
+    cli_ok(&[
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &t2,
+        "--no-follow-up",
+        "--evidence",
+        "operator closeout without a scored attempt",
+        "--force",
+    ]);
+    // The acceptance contract survives the store round-trip.
+    let store = open_store(&cr);
+    let g = store.replay(&gid).unwrap().unwrap();
+    let todo = g.todos.iter().find(|x| x.id == t).unwrap();
+    assert_eq!(todo.acceptance.as_deref(), Some("attempt,scored"));
+    assert_eq!(
+        todo.evidence.as_deref(),
+        Some("ATTEMPT 12345 SCORED 99 on the platform")
+    );
 }
 
 #[test]
@@ -599,6 +755,7 @@ fn todo_complete_gate_class_bypasses_freeze() {
         "--todo-id",
         &a,
         "--no-follow-up",
+        "--force",
     ]);
     let store = open_store(&cr);
     let g = store.replay(&gid).unwrap().unwrap();
@@ -666,6 +823,7 @@ fn todo_archive_supersede_update() {
         "--todo-id",
         &done,
         "--no-follow-up",
+        "--force",
     ]);
     assert!(
         cli_err(&["todo", "supersede", "--goal", &gid, "--todo-id", &done])

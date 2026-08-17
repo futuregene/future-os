@@ -191,6 +191,10 @@ pub enum Event {
         /// events serialized without this field deserialize as `None`.
         #[serde(default)]
         blocks: Option<Vec<String>>,
+        /// Completion acceptance contract (`--acceptance "a,b"`); `Some("")`
+        /// clears it, absent leaves it untouched. See `Todo::acceptance`.
+        #[serde(default)]
+        acceptance: Option<String>,
         ts: u64,
     },
     /// Stop automation while retaining state (the reference: goal cancel).
@@ -1479,6 +1483,7 @@ fn apply(goal: &mut Goal, event: Event) {
             priority,
             resume_when,
             blocks,
+            acceptance,
             ts,
             ..
         } => {
@@ -1491,6 +1496,9 @@ fn apply(goal: &mut Goal, event: Event) {
                 }
                 if let Some(x) = note {
                     t.note = Some(x);
+                }
+                if let Some(a) = acceptance {
+                    t.acceptance = if a.trim().is_empty() { None } else { Some(a) };
                 }
                 if let Some(b) = blocks {
                     // `--blocks a,b` replaces the blocking set; `--blocks ""`

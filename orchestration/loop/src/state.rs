@@ -172,6 +172,13 @@ pub struct Todo {
     /// runs it in the goal cwd after each turn; exit 0 completes the todo
     /// (validated), non-zero keeps it open for bounded repair.
     pub validator: Option<String>,
+    /// Completion acceptance contract (`todo add --acceptance "a,b"`): the
+    /// completion evidence must contain EVERY comma-separated token
+    /// (case-insensitive) — e.g. an external attempt id — else `todo complete`
+    /// refuses unless `--force`. Encodes "done ≠ delivered" acceptance
+    /// criteria as a hard check instead of a text convention.
+    #[serde(default)]
+    pub acceptance: Option<String>,
     /// How many failed validation attempts are tolerated before the kernel
     /// replans and surfaces to the user (default 3).
     #[serde(default = "default_max_validation_attempts")]
@@ -302,6 +309,7 @@ impl Todo {
             capability_binding_ref: None,
             validator: None,
             max_validation_attempts: default_max_validation_attempts(),
+            acceptance: None,
         }
     }
 

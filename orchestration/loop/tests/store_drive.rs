@@ -120,6 +120,7 @@ fn try_claim_ignores_non_lease_events_and_p9_normalizes_to_p1() {
             priority: Some("P9".into()),
             resume_when: None,
             blocks: None,
+            acceptance: None,
             ts: now_epoch(),
         })
         .unwrap();
@@ -521,6 +522,7 @@ fn apply_renew_and_priority_arms() {
             priority: Some("P0".into()),
             resume_when: None,
             blocks: None,
+            acceptance: None,
             ts: now_epoch(),
         })
         .unwrap();
@@ -562,6 +564,7 @@ fn apply_matrix() {
                 priority: None,
                 resume_when: None,
                 blocks: None,
+                acceptance: None,
                 ts: now_epoch(),
             })
             .unwrap();
@@ -577,6 +580,7 @@ fn apply_matrix() {
             priority: Some("P2".into()),
             resume_when: Some("defer:5".into()),
             blocks: Some(vec!["a".into()]),
+            acceptance: None,
             ts: now_epoch(),
         })
         .unwrap();
