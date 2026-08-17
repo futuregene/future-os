@@ -8,9 +8,9 @@
 //! [`SEMANTIC_HISTORY_CAP`] (oldest dropped) so the projection is a pure,
 //! deterministic function of event order.
 //!
-//! The decision-context assembler consumes it through the
-//! `semantic_history` provider (ids/summaries only — summaries are
-//! truncated at write time so the packet stays public-safe).
+//! The semantic event history is a standalone goal-level projection
+//! (ids/summaries only — summaries are truncated at write time so the
+//! packet stays public-safe).
 
 use serde::{Deserialize, Serialize};
 

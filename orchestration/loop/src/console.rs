@@ -169,9 +169,7 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
 }
 
 /// P1-9: operator journey assignments for the statically registered
-/// commands (`future loop commands` grouped view; LoopX `loopx commands`
-/// five-group presentation). Capability command hooks are not listed here —
-/// they keep the maintainer default as ecosystem/adapter surface. A test
+/// commands (`future loop commands` grouped view). A test
 /// (`journey_assignments_cover_every_static_command`) keeps this table in
 /// sync with `build_cli_registry`.
 const JOURNEY_ASSIGNMENTS: &[(&str, Journey)] = &[
@@ -202,7 +200,6 @@ const JOURNEY_ASSIGNMENTS: &[(&str, Journey)] = &[
     ("turn", Journey::Driver),
     ("heartbeat-prompt", Journey::Driver),
     ("worker-bridge", Journey::Driver),
-    ("list", Journey::Driver),
     ("scope", Journey::Driver),
     ("lane", Journey::Driver),
     ("supervisor", Journey::Driver),
@@ -300,12 +297,6 @@ fn build_cli_registry() -> CommandRegistry {
         "agent",
         "register/onboard agents + multi-agent contract/recipe/succession/collective surface (G12)",
         "agent onboard --goal G --agent-id A [--recipe N] | list|contract|recipe|succession|collective --goal G",
-    );
-    r.command(
-        agent,
-        "list",
-        "registered agents + live execution status (leases)",
-        "agent list --goal G [--format json]",
     );
     r.command(
         agent,

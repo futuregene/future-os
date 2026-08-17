@@ -770,7 +770,7 @@ pub struct Goal {
     /// G13 ③: goal-level bounded semantic event history (recent
     /// [`crate::decision::goal_frontier::semantic_history::SEMANTIC_HISTORY_CAP`]
     /// summaries, oldest dropped) — folded from the event ledger during
-    /// replay; consumable by the decision-context `semantic_history` provider.
+    /// replay; a standalone goal-level projection (public-safe summaries).
     #[serde(default)]
     pub semantic_history: Vec<crate::decision::goal_frontier::semantic_history::SemanticEvent>,
     /// G13 ②: explicit replan rule set (folded from `ReplanRuleSetUpdated`;

@@ -12,11 +12,10 @@
 //!    (goal, now, agent_id) and compare the serialized packets field by
 //!    field (recursive JSON equality, volatile fields masked).
 //! 3. The ONLY intended deltas are the G-2/G-11 `scheduler_arbitration`
-//!    record (new field, observe-only) and the per-tool-quota
-//!    `capability_repair_allowed` predicate (LoopX 对比改进项 ②: was a
-//!    constant `false` pre-split, now computed from the goal's capability
-//!    invocation projection): both asserted, then removed from the
-//!    comparison.
+//!    record (new field, observe-only) and the wire-compat
+//!    `capability_repair_allowed` predicate (constant `false` — the
+//!    capability framework was removed): both asserted, then removed from
+//!    the comparison.
 //!
 //! If this test fails, the split drifted from the baseline: either a helper
 //! subdomain changed a field, or the arbitration layer mutated behavior.

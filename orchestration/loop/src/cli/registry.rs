@@ -65,7 +65,7 @@ impl Journey {
                 "todos, gates, replans, leases, quota — the day-to-day control surface"
             }
             Journey::Driver => "per-turn loop execution: run envelopes, heartbeats, agent lanes",
-            Journey::Setup => "one-time configuration: authority, profiles, extensions, automation",
+            Journey::Setup => "one-time configuration: authority, profiles, automation",
             Journey::Maintainer => {
                 "quality gates (benchmark/canary/replay), retention, introspection"
             }
@@ -146,8 +146,7 @@ impl CommandRegistry {
         usage: &str,
         experimental: bool,
     ) -> &mut Self {
-        // Idempotent: re-registering the same name in the same group is a no-op
-        // (extension install may re-declare a manifest that provides commands).
+        // Idempotent: re-registering the same name in the same group is a no-op.
         let already = self
             .commands
             .iter()
