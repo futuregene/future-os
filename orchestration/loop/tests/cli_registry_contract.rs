@@ -3,8 +3,8 @@
 //! temp `FUTURE_LOOP_ROOT`: the registry-driven help must list every
 //! pre-existing command in its group, the pre-existing command BEHAVIOR must
 //! be unchanged (goal init → status → todo add → quota should-run), and the
-//! P3 additions (extension / catalog / scope / supervisor / handoff /
-//! task-graph / attention / registry) must dispatch.
+//! P3 additions (scope / supervisor / handoff / task-graph / attention /
+//! registry) must dispatch.
 
 use std::process::Command;
 
@@ -55,10 +55,6 @@ fn help_lists_all_pre_existing_commands_in_groups() {
         "── agent ──",
         "agent onboard --goal G",
         "agent list --goal G",
-        "── capability ──",
-        "capability list|propose|commands",
-        "── extension ──",
-        "extension install --manifest PATH",
         "── ops ──",
         "quota should-run --goal G",
         "scheduler tick|show|record-host-failure",
@@ -76,15 +72,10 @@ fn help_lists_all_pre_existing_commands_in_groups() {
             "help must contain `{expected}`\n{out}"
         );
     }
-    // Experimental capability hooks are hidden by default…
-    assert!(
-        !out.contains("auto-research --input"),
-        "experimental hook hidden in plain help"
-    );
-    // …and visible with --include-experimental.
-    let (out_x, _, _) = run(&root, &["--help", "--include-experimental"]);
-    assert!(out_x.contains("auto-research --input"));
-    assert!(out_x.contains("pr-review-queue --input"));
+    // The registry keeps the experimental-visibility flag: both plain and
+    // include-experimental help renders exit 0.
+    let (_, _, code_x) = run(&root, &["--help", "--include-experimental"]);
+    assert_eq!(code_x, 0);
 }
 
 /// ── Golden: pre-existing command behavior is unchanged ────────────────────
@@ -138,11 +129,6 @@ fn pre_existing_goal_todo_quota_flow_is_unchanged() {
         out.contains("should-run") || out.contains("decision"),
         "quota renders: {out}"
     );
-
-    // capability list.
-    let (out, err, code) = run(&root, &["capability", "list"]);
-    assert_eq!(code, 0, "capability list failed: {err}");
-    assert!(out.contains("issue_fix"));
 }
 
 /// ── Golden: unknown commands fail with the aggregated-help hint ──────────
@@ -156,109 +142,6 @@ fn unknown_command_fails_closed_with_hint() {
         "stderr: {err}"
     );
     let _ = out;
-}
-
-/// ── P3: capability hook commands dispatch through propose ────────────────
-#[test]
-fn capability_hook_command_runs_propose() {
-    let root = tmp_root("hook");
-    let (out, err, code) = run(
-        &root,
-        &[
-            "issue-fix",
-            "--input",
-            "crash on empty input with a clear stack trace and repro",
-        ],
-    );
-    assert_eq!(code, 0, "hook failed: {err}");
-    assert!(out.contains("capability hook `issue-fix`"));
-    assert!(
-        out.contains("[successor_todo]") || out.contains("[repair]"),
-        "hook output: {out}"
-    );
-}
-
-/// ── P3: extension install/status loop through the CLI ────────────────────
-#[test]
-fn extension_install_status_loop_via_cli() {
-    let root = tmp_root("ext");
-    let manifest = {
-        let dir = std::env::temp_dir().join(format!(
-            "future-loop-p3-cli-ext-manifest-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("ext.json");
-        let m = serde_json::json!({
-            "schema_version": "future_loop_extension_manifest_v0",
-            "id": "ext-cli",
-            "version": "1.0.0",
-            "requires_future_loop_api": ">=1",
-            "permissions": ["shell"],
-            "runtime": {
-                "protocol": "command_json_v0",
-                "entrypoint": "sh",
-                "args": [],
-                "doctor_args": ["-c", "true"],
-                "required_permissions": ["shell"],
-                "timeout_seconds": 30
-            },
-            "provides": [{"id": "ext-cli_cap", "kind": "domain_rule", "visibility": "public"}],
-            "implements": [{"capability_id": "ext-cli_cap", "protocol": "command_json_v0"}]
-        });
-        std::fs::write(&path, serde_json::to_string_pretty(&m).unwrap()).unwrap();
-        path.to_string_lossy().into_owned()
-    };
-    let (out, err, code) = run(
-        &root,
-        &["extension", "install", "--manifest", &manifest, "--execute"],
-    );
-    assert_eq!(code, 0, "install failed: {err}");
-    assert!(
-        out.contains("extension install `ext-cli`"),
-        "install output: {out}"
-    );
-    let (out, _, _) = run(&root, &["extension", "status"]);
-    assert!(out.contains("ext-cli"), "status lists the extension: {out}");
-    let (out, _, _) = run(&root, &["extension", "status", "--id", "ext-cli"]);
-    assert!(out.contains("enabled=true"));
-    // duplicate install fails closed
-    let (_, err, code) = run(
-        &root,
-        &["extension", "install", "--manifest", &manifest, "--execute"],
-    );
-    assert_ne!(code, 0);
-    assert!(err.contains("already installed"));
-    // disable → enable
-    let (_, err, code) = run(
-        &root,
-        &["extension", "disable", "--id", "ext-cli", "--execute"],
-    );
-    assert_eq!(code, 0, "disable failed: {err}");
-    let (out, _, _) = run(&root, &["extension", "status", "--id", "ext-cli"]);
-    assert!(out.contains("enabled=false"));
-    let (_, err, code) = run(
-        &root,
-        &["extension", "enable", "--id", "ext-cli", "--execute"],
-    );
-    assert_eq!(code, 0, "enable failed: {err}");
-}
-
-/// ── P3: catalog is queryable through the CLI ─────────────────────────────
-#[test]
-fn catalog_query_via_cli() {
-    let root = tmp_root("catalog");
-    let (out, err, code) = run(&root, &["catalog"]);
-    assert_eq!(code, 0, "catalog failed: {err}");
-    assert!(out.contains("15 records"));
-    assert!(out.contains("issue_fix"));
-    assert!(out.contains("active-preview"));
-    let (out, _, _) = run(&root, &["catalog", "--name", "issue_fix"]);
-    assert!(out.contains("status   : active-preview"));
-    assert!(out.contains("provider : future-loop-core [builtin]"));
 }
 
 /// ── P3: agent scope / supervisor / handoff / task-graph / attention ─────
@@ -315,16 +198,7 @@ fn p3_multi_agent_and_work_item_commands() {
     );
     run(
         &root,
-        &[
-            "agent",
-            "onboard",
-            "--goal",
-            "g1",
-            "--agent-id",
-            "agent-a",
-            "--capabilities",
-            "shell",
-        ],
+        &["agent", "onboard", "--goal", "g1", "--agent-id", "agent-a"],
     );
     run(
         &root,
@@ -515,16 +389,7 @@ fn two_agent_sessions_hold_disjoint_frontiers() {
     );
     run(
         &root,
-        &[
-            "agent",
-            "onboard",
-            "--goal",
-            "g1",
-            "--agent-id",
-            "agent-a",
-            "--capabilities",
-            "shell",
-        ],
+        &["agent", "onboard", "--goal", "g1", "--agent-id", "agent-a"],
     );
     run(
         &root,

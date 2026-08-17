@@ -92,16 +92,14 @@ fn assert_packet_parity(goal: &Goal, now: SystemTime, agent_id: Option<&str>) ->
         map.remove("scheduler_arbitration");
     }
 
-    // Per-tool quota (LoopX 对比改进项 ②): `capability_repair_allowed` was a
-    // constant `false` in the pre-split kernel; it is now computed from the
-    // goal's capability invocation projection (false only when a tool is
-    // over its quota). These fixtures carry no invocations, so the lane
-    // must read open — assert the intended delta, then normalize both sides.
+    // `capability_repair_allowed` (LoopX 对比改进项 ②) went away with the
+    // capability framework removal: the field remains in the packet schema
+    // (stable wire contract) but is a constant `false` again — assert it is
+    // present, then normalize both sides for the parity diff.
     assert_eq!(
         current_json.get("capability_repair_allowed"),
-        Some(&serde_json::Value::Bool(true)),
-        "fixtures carry no capability invocations — the capability-repair \
-         lane must be open (per-tool quota, 对比改进项 ②)"
+        Some(&serde_json::Value::Bool(false)),
+        "capability framework removed — capability-repair lane stays closed"
     );
     if let serde_json::Value::Object(map) = &mut current_json {
         map.remove("capability_repair_allowed");

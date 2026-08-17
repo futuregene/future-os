@@ -8488,39 +8488,9 @@ mod read_model_repair_cli_tests {
     }
 }
 #[cfg(test)]
-mod reward_memory_cli_tests {
+mod event_touch_filter_tests {
     use super::*;
 
-    fn tmp_store(tag: &str) -> Store {
-        let dir = std::env::temp_dir().join(format!(
-            "future-loop-p15-{tag}-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        Store::open(dir.to_string_lossy().as_ref()).unwrap()
-    }
-
-    fn open_goal(store: &mut Store, goal_id: &str) {
-        let goal = Goal::new(goal_id, "objective", "/tmp");
-        store.register(&goal).unwrap();
-        let ts = goal.created_at;
-        store
-            .append(Event::GoalStarted {
-                goal_id: goal_id.into(),
-                ts,
-            })
-            .unwrap();
-        store
-            .append(Event::TodoAdded {
-                goal_id: goal_id.into(),
-                todo: Todo::advancement("t1", "shared work"),
-                ts,
-            })
-            .unwrap();
-    }
     #[test]
     fn todo_filter_covers_delivery_and_followthrough_events() {
         let delivery = Event::DeliveryOutcomeRecorded {

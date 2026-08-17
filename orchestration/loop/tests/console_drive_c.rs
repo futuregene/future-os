@@ -1,6 +1,6 @@
-//! Coverage drive — console command group C (P3/P4): capability / catalog /
+//! Coverage drive — console command group C (P3/P4): catalog /
 //! scope / lane / supervisor / handoff / task-graph / attention / inbox /
-//! extension / benchmark / replay, plus the per-capability command hooks.
+//! benchmark / replay.
 
 mod common;
 
@@ -13,53 +13,6 @@ fn rt() -> tokio::runtime::Runtime {
         .enable_all()
         .build()
         .unwrap()
-}
-
-// ── capability ─────────────────────────────────────────────────────────────
-
-#[test]
-fn capability_surface() {
-    let _cr = cli_root();
-    cli_ok(&["capability", "list"]);
-    cli_ok(&[
-        "capability",
-        "propose",
-        "--name",
-        "issue_fix",
-        "--input",
-        "crash on startup",
-    ]);
-    cli_ok(&["capability", "propose", "--name", "issue_fix"]);
-    assert!(
-        cli_err(&["capability", "propose", "--name", "no_such_cap"]).contains("unknown capability")
-    );
-    assert!(cli_err(&["capability", "propose"]).contains("--name required"));
-    assert!(cli_err(&["capability", "bogus"]).contains("list"));
-    // commands: full listing, per-name, and an experimental gated name.
-    cli_ok(&["capability", "commands"]);
-    cli_ok(&["capability", "commands", "--include-experimental"]);
-    cli_ok(&["capability", "commands", "--name", "issue_fix"]);
-    cli_ok(&["capability", "commands", "--name", "no_such_cap"]);
-}
-
-#[test]
-fn capability_command_hook() {
-    let _cr = cli_root();
-    // `issue-fix` is a catalog command hook → dispatched via the `other` arm.
-    cli_ok(&["issue-fix", "--input", "panic in parser"]);
-    cli_ok(&["issue-fix"]);
-}
-
-// ── catalog ────────────────────────────────────────────────────────────────
-
-#[test]
-fn catalog_surface() {
-    let _cr = cli_root();
-    cli_ok(&["catalog"]);
-    cli_ok(&["catalog", "--name", "issue_fix"]);
-    cli_ok(&["catalog", "--name", "issue_fix", "--format", "json"]);
-    cli_ok(&["catalog", "--name", "issue_fix", "--json"]);
-    assert!(cli_err(&["catalog", "--name", "no_such_cap"]).contains("unknown capability"));
 }
 
 // ── scope / lane ───────────────────────────────────────────────────────────
@@ -374,59 +327,6 @@ fn inbox_surface() {
         "operator",
     ]);
     cli_ok(&["inbox", "--project", &cr.cwd, "--scope", "mentions"]);
-}
-
-// ── extension ──────────────────────────────────────────────────────────────
-
-fn write_manifest(cr: &common::CliRoot, id: &str, version: &str) -> String {
-    let raw = serde_json::json!({
-        "schema_version": future_loop::extensions::manifest::EXTENSION_MANIFEST_SCHEMA_VERSION,
-        "id": id,
-        "version": version,
-        "requires_future_loop_api": ">=1,<3",
-        "permissions": ["shell"],
-        "runtime": {
-            "protocol": "command_json_v0",
-            "entrypoint": "sh",
-            "args": [],
-            "doctor_args": ["-c", "true"],
-            "required_permissions": ["shell"],
-            "timeout_seconds": 30
-        },
-        "provides": [{"id": format!("{id}_cap"), "kind": "domain_rule", "visibility": "public"}],
-        "implements": [{"capability_id": format!("{id}_cap"), "protocol": "command_json_v0"}]
-    });
-    let path = std::path::Path::new(&cr.cwd).join(format!("manifest-{id}-{version}.json"));
-    std::fs::write(&path, serde_json::to_string_pretty(&raw).unwrap()).unwrap();
-    path.to_string_lossy().into_owned()
-}
-
-#[test]
-fn extension_surface() {
-    let cr = cli_root();
-    // status/capabilities with no extensions installed.
-    cli_ok(&["extension", "status"]);
-    cli_ok(&["extension", "capabilities"]);
-    let m1 = write_manifest(&cr, "ext-a", "1.0.0");
-    // dry-run install, then executed install, then lifecycle.
-    cli_ok(&["extension", "install", "--manifest", &m1]);
-    cli_ok(&["extension", "install", "--manifest", &m1, "--execute"]);
-    cli_ok(&["extension", "status"]);
-    cli_ok(&["extension", "status", "--id", "ext-a"]);
-    cli_ok(&["extension", "capabilities"]);
-    let m2 = write_manifest(&cr, "ext-a", "1.1.0");
-    cli_ok(&["extension", "upgrade", "--manifest", &m2, "--execute"]);
-    cli_ok(&["extension", "disable", "--id", "ext-a", "--execute"]);
-    cli_ok(&["extension", "enable", "--id", "ext-a", "--execute"]);
-    cli_ok(&["extension", "rollback", "--id", "ext-a", "--execute"]);
-    // errors.
-    assert!(cli_err(&["extension", "install"]).contains("--manifest required"));
-    assert!(cli_err(&["extension", "install", "--manifest", "/nonexistent.json"]).contains(""));
-    let bad = std::path::Path::new(&cr.cwd).join("bad-manifest.json");
-    std::fs::write(&bad, "{\"schema_version\":\"nope\"}").unwrap();
-    assert!(cli_err(&["extension", "install", "--manifest", bad.to_str().unwrap()]).contains(""));
-    assert!(cli_err(&["extension", "enable"]).contains("--id required"));
-    assert!(cli_err(&["extension", "bogus"]).contains("install|upgrade"));
 }
 
 // ── benchmark ──────────────────────────────────────────────────────────────
