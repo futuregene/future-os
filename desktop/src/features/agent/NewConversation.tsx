@@ -204,6 +204,9 @@ export function NewConversation({
   function handleDismissGuide() {
     onDismissSkillGuide();
     setGuideDismissNotice(true);
+    // Pulse the left-rail Skills entry so the notice's "reopen from the
+    // Skills page" hint visibly points there.
+    emitFutureEvent("skill-guide-dismissed", undefined);
   }
 
   function handleSend({ attachments, content }: ComposerSendPayload) {

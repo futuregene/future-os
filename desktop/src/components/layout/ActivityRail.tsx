@@ -23,6 +23,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { cn } from "../../lib/cn";
+import { onFutureEvent } from "../../lib/futureEvents";
 import { isMacOS } from "../../lib/platform";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
@@ -159,6 +160,17 @@ export function ActivityRail({
   const [selectedThreadIds, setSelectedThreadIds] = useState<Set<string>>(() => new Set());
   // Chat section header menu.
   const [chatSectionMenuOpen, setChatSectionMenuOpen] = useState(false);
+  // Attention state for the Skills nav entry: pulsed for a few seconds when
+  // the skill-guide banner is dismissed (its notice says the tutorial can be
+  // reopened from the Skills page).
+  const [skillAttention, setSkillAttention] = useState(false);
+  useEffect(() => {
+    if (!skillAttention)
+      return;
+    const timer = window.setTimeout(setSkillAttention, 4000, false);
+    return () => window.clearTimeout(timer);
+  }, [skillAttention]);
+  useEffect(() => onFutureEvent("skill-guide-dismissed", () => setSkillAttention(true)), []);
 
   function toggleWorkspaceCollapsed(workspaceId: string) {
     setCollapsedWorkspaces((current) => {
@@ -334,7 +346,16 @@ export function ActivityRail({
                 <div className="mb-3 shrink-0 space-y-0.5">
                   <NavButton icon={SquarePen} label={t("activityRail.newChat")} onClick={() => onNewChat()} primary />
                   <NavButton icon={Sparkles} label={t("activityRail.models")} onClick={onOpenModels} />
-                  <NavButton icon={Blocks} label={t("activityRail.skills")} active={active === "skill"} onClick={() => onChange("skill")} />
+                  <NavButton
+                    attention={skillAttention}
+                    icon={Blocks}
+                    label={t("activityRail.skills")}
+                    active={active === "skill"}
+                    onClick={() => {
+                      setSkillAttention(false);
+                      onChange("skill");
+                    }}
+                  />
                   {showRemote
                     ? <NavButton icon={Smartphone} indicator={remoteDot} label={t("activityRail.remote")} active={active === "remote"} onClick={() => onChange("remote")} />
                     : null}
@@ -912,6 +933,7 @@ function NavButton({
   active = false,
   primary = false,
   indicator = null,
+  attention = false,
 }: {
   icon: LucideIcon;
   label: string;
@@ -921,6 +943,8 @@ function NavButton({
   primary?: boolean;
   /** Optional dot overlaid on the icon's top-right (e.g. remote connection). */
   indicator?: ReactNode;
+  /** Short accent pulse drawing the eye to this entry (skill-guide dismissal). */
+  attention?: boolean;
 }) {
   return (
     <button
@@ -928,6 +952,7 @@ function NavButton({
         "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium transition-colors hover:bg-surface-subtle",
         primary ? "text-ink" : "text-ink-soft hover:text-ink",
         active && "bg-surface-subtle text-ink",
+        attention && "animate-skill-entry-pulse border-accent/50 bg-accent-soft text-accent",
       )}
       onClick={onClick}
       type="button"
