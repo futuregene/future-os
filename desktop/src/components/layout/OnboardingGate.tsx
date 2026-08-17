@@ -290,7 +290,7 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, ha
   const progressPct = Math.round((progress / INIT_STEPS.length) * 100);
 
   return (
-    <div className="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-6 bg-canvas px-6 text-center">
+    <div className="fixed inset-0 z-60 flex flex-col items-center justify-center gap-6 bg-canvas px-6 text-center">
       {/* Top-right corner: language (always) + environment (dev only) */}
       <div className="absolute right-4 top-4 flex items-center gap-2">
         <Select
