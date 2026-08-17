@@ -43,7 +43,7 @@ export function SkillsView({
   leftPanelExpanded: boolean;
   onToggleLeftPanel: () => void;
   onStartCoachConversation: (content: string) => Promise<void>;
-  onTrySkill: (skillId: string) => void;
+  onTrySkill: (skillName: string) => void;
 }) {
   const { i18n, t } = useTranslation("skills");
   const useChinese = i18n.language !== "en";
@@ -308,7 +308,7 @@ function InstalledTab({
   loading: boolean;
   onFiltersChange: (filters: SkillFilters) => void;
   onRetry: () => void;
-  onTrySkill: (skillId: string) => void;
+  onTrySkill: (skillName: string) => void;
   onUninstall: (id: string) => void;
   onUpgrade: (id: string, version: string) => void;
   onUpgradeAll: () => void;
@@ -389,7 +389,7 @@ function InstalledTab({
             meta={category}
             action={(
               <div className="flex items-center gap-2">
-                <Button onClick={() => onTrySkill(skill.id)} size="sm" variant="secondary">
+                <Button onClick={() => onTrySkill(skill.name)} size="sm" variant="secondary">
                   {t("tryIt")}
                 </Button>
                 <UninstallButton busy={busy[skill.id]} onClick={() => onUninstall(skill.id)} />

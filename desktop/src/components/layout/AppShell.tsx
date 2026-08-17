@@ -349,8 +349,8 @@ export function AppShell() {
 
   // Skills page 「试试」: pre-fill the new-chat composer with the `/skill` token
   // (restored as a pill), then open the new-chat screen.
-  function handleTrySkill(skillId: string) {
-    saveComposerDraft("new", { text: `/${skillId} ` });
+  function handleTrySkill(skillName: string) {
+    saveComposerDraft("new", { text: `/${skillName} ` });
     handleOpenNewChat();
   }
 
