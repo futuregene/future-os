@@ -735,6 +735,16 @@ impl Registry {
         }
     }
 
+    /// Whether the model was explicitly configured by the user in
+    /// models.json (as opposed to coming from the builtin catalog). Used by
+    /// `list_models` to keep user-configured models listed even when they
+    /// carry no API key (e.g. local endpoints like `http://127.0.0.1:8000`).
+    pub fn is_user_defined(&self, model: &Model) -> bool {
+        self.user
+            .iter()
+            .any(|u| u.provider == model.provider && u.id == model.id)
+    }
+
     /// Get all available models (user models override built-in with same ID).
     /// Models with `hide: true` are excluded from the listing but remain callable via `resolve()`.
     pub fn all_models(&self) -> Vec<Model> {

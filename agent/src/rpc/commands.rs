@@ -1004,10 +1004,19 @@ fn list_models_response(
     let auth = crate::AuthStore::load();
 
     // Always return all available models.  Scoping / defaults are client-side.
+    // Builtin catalog models are only listed when they are credential-reachable
+    // (an API key inline or in auth.json) — otherwise the picker would drown
+    // under ~900 unusable entries.  Models the user explicitly configured in
+    // models.json are always listed: they are intentional even when keyless
+    // (e.g. a local Ollama-style endpoint that needs no key at all).
     let mut models: Vec<crate::models::Model> = registry
         .all_models()
         .into_iter()
-        .filter(|model| !model.api_key.is_empty() || auth.get(&model.provider).is_some())
+        .filter(|model| {
+            registry.is_user_defined(model)
+                || !model.api_key.is_empty()
+                || auth.get(&model.provider).is_some()
+        })
         .filter(|model| model.output.iter().any(|o| o == "text"))
         .collect();
 
@@ -5219,6 +5228,39 @@ mod tests {
             .find(|m| m["id"] == "unnamed-model")
             .expect("unnamed model listed");
         assert_eq!(model["label"], "unnamed-model");
+    }
+
+    #[test]
+    fn list_models_lists_keyless_user_models() {
+        // A user model from models.json with no apiKey (e.g. a local endpoint)
+        // must still appear in list_models — the credential filter only
+        // applies to builtin catalog entries.
+        let home = TestHome::new();
+        std::fs::create_dir_all(home.models_path().parent().unwrap()).unwrap();
+        std::fs::write(
+            home.models_path(),
+            r#"{
+              "providers": {
+                "local": {
+                  "api": "openai-completions",
+                  "baseUrl": "http://127.0.0.1:8000/v1",
+                  "models": [
+                    {"id": "local-model", "modalities": ["text"]}
+                  ]
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        let state = make_app_state();
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("list_models")));
+        let models = resp["data"]["models"].as_array().unwrap();
+        let model = models
+            .iter()
+            .find(|m| m["id"] == "local-model")
+            .expect("keyless user model listed");
+        assert_eq!(model["provider"], "local");
+        assert_eq!(model["label"], "local-model");
     }
 
     #[test]
