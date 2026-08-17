@@ -727,12 +727,6 @@ pub struct Goal {
     /// P0-2: per-work-item delivery outcome states (latest event wins —
     /// folded from DeliveryOutcomeRecorded / FollowthroughCreated).
     pub delivery_states: Vec<DeliveryState>,
-    /// Per-tool quota read model (LoopX 对比改进项 ②): (ts, tool) pairs
-    /// folded from accepted `CapabilityInvoked` events — the invocation
-    /// count behind [`crate::quota::tool_quota`]. Rejected invocations are
-    /// ledgered for audit but never folded in. Bounded by
-    /// [`CAPABILITY_INVOCATION_PROJECTION_CAP`] (oldest dropped).
-    pub capability_invocations: Vec<(u64, String)>,
     /// P1-2②: replay-time freshness stamp of the event ledger this state
     /// was rebuilt from (in-memory only — never persisted; `None` for
     /// hand-built goals). The decision kernel copies it onto every
@@ -832,12 +826,6 @@ pub struct DecisionFreshness {
     pub read_at: u64,
 }
 
-/// Safety bound on the per-tool invocation projection folded into
-/// [`Goal::capability_invocations`]. Boundary enforcement already caps
-/// accepted invocations at the per-tool limit, so this only guards against
-/// ledgers written by other means; deterministic (a pure function of event
-/// order — oldest entries drop first).
-pub const CAPABILITY_INVOCATION_PROJECTION_CAP: usize = 4096;
 
 /// Default goal lifecycle status.
 pub fn default_goal_status() -> String {
@@ -865,7 +853,6 @@ impl Goal {
             next_index: 0,
             quota_spent_slots: 0,
             delivery_states: vec![],
-            capability_invocations: vec![],
             decision_freshness: None,
             scheduler_heartbeats: std::collections::BTreeMap::new(),
             liveness_alerts: vec![],

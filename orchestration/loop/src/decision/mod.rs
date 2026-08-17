@@ -500,12 +500,10 @@ fn packet(
         normal_delivery_allowed: mode == TurnMode::BoundedDelivery,
         recovery_delivery_allowed: false,
         self_repair_allowed: mode == TurnMode::Replan,
-        // Per-tool quota (LoopX 对比改进项 ②): the capability-repair lane
-        // stays allowed only while no capability tool is over its quota.
-        capability_repair_allowed: crate::quota::tool_quota::capability_repair_allowed(
-            goal,
-            crate::state::now_epoch(),
-        ),
+        // The capability framework (and its per-tool quota) was removed:
+        // the capability-repair lane is permanently closed. The packet field
+        // stays for wire compatibility with consumers of the legacy packet.
+        capability_repair_allowed: false,
         workspace_repair_allowed: false,
         actionable_by_codex: should_run,
         requires_user_action: mode == TurnMode::AskUser,

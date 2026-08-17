@@ -378,7 +378,7 @@ fn build_cli_registry() -> CommandRegistry {
         ops,
         "quota",
         "quota should-run / usage / spend / tools / decisions",
-        "quota should-run --goal G [--format json] | usage [--goal G] [--all] | spend --goal G | tools --goal G [--format json] | decisions --goal G [--limit N]",
+        "quota should-run --goal G [--format json] | usage [--goal G] [--all] | spend --goal G  | decisions --goal G [--limit N]",
     );
     r.command(
         ops,
@@ -2564,10 +2564,9 @@ fn cmd_quota(store: &Store, args: &[String]) -> Result<()> {
         Some("should-run") => quota_should_run(store, &args[1..]),
         Some("usage") => quota_usage(store, &args[1..]),
         Some("spend") => quota_spend(store, &args[1..]),
-        Some("tools") => quota_tools(store, &args[1..]),
         Some("decisions") => quota_decisions(store, &args[1..]),
         _ => bail!(
-            "quota subcommand must be `should-run`, `usage`, `spend`, `tools`, or `decisions`"
+            "quota subcommand must be `should-run`, `usage`, `spend`, or `decisions`"
         ),
     }
 }
@@ -2736,58 +2735,6 @@ fn quota_spend(store: &Store, args: &[String]) -> Result<()> {
         b.source_count(crate::quota::slot_accounting::SlotSpendSource::Agent),
         b.source_count(crate::quota::slot_accounting::SlotSpendSource::Heartbeat),
     );
-    Ok(())
-}
-
-/// `loopx quota tools --goal G [--format json]` — per-tool quota status at
-/// the capability boundary (LoopX 对比改进项 ②): invocations used / limit /
-/// trailing window per capability tool, plus the resulting
-/// `capability_repair_allowed` packet predicate.
-fn quota_tools(store: &Store, args: &[String]) -> Result<()> {
-    let mut goal_id = None;
-    let mut format_json = false;
-    reject_unknown_flags(args, &["--goal", "--format"])?;
-    parse_pairs(args, |k, v| {
-        if k == "--goal" {
-            goal_id = Some(v);
-        } else if k == "--format" {
-            format_json = v == "json";
-        }
-    });
-    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
-    let goal = store
-        .replay(&goal_id)?
-        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
-    let now = now_epoch();
-    let rows = crate::quota::tool_quota::usage_rows(&goal.capability_invocations, now);
-    let repair_allowed = crate::quota::tool_quota::capability_repair_allowed(&goal, now);
-    if format_json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "goal_id": goal_id,
-                "capability_repair_allowed": repair_allowed,
-                "tools": rows,
-            }))?
-        );
-        return Ok(());
-    }
-    if rows.is_empty() {
-        println!("tool quota: no capability invocations recorded");
-    } else {
-        println!("tool quota (limit/window per capability):");
-        for d in &rows {
-            println!(
-                "  {:<24} used={}/{} window={}s {}",
-                d.tool,
-                d.used,
-                d.limit,
-                d.window_secs,
-                if d.allowed { "ok" } else { "EXCEEDED" }
-            );
-        }
-    }
-    println!("capability_repair_allowed: {repair_allowed}");
     Ok(())
 }
 
@@ -6739,16 +6686,6 @@ fn describe_event(event: &crate::store::Event) -> String {
                 "quota_spent run={run_id} todo={todo_id} source={source} slots={slots}"
             );
         }
-        Event::CapabilityInvoked {
-            capability,
-            command,
-            outcome,
-            ..
-        } => {
-            return format!(
-                "capability_invoked capability={capability} command={command} outcome={outcome}"
-            );
-        }
         Event::EvidenceAttached { todo_id, .. } => {
             return format!("evidence_attached todo={todo_id}");
         }
@@ -7371,14 +7308,6 @@ mod coverage_tests {
                 outcome: "executed".into(),
                 authority_ref: Some("auth".into()),
                 rollback_ref: None,
-                ts: 1,
-            },
-            Event::CapabilityInvoked {
-                goal_id: "g".into(),
-                capability: "issue_fix".into(),
-                command: "propose".into(),
-                outcome: "accepted".into(),
-                invocation_id: "inv-1".into(),
                 ts: 1,
             },
             Event::FollowthroughCreated {
