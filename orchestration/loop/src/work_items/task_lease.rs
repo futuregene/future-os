@@ -96,11 +96,27 @@ pub fn claim(todo: &mut Todo, agent: &str, lease_secs: u64, now: u64) -> Result<
             steal: false,
         }),
         LeaseStatus::Active { .. } => {
+            // Lease liveness: a dead holder's claim is reclaimed
+            // automatically — kill -0 probe on the recorded holder pid
+            // (missing pid = pre-liveness ledger, keep the old hard error).
+            if let Some(pid) = todo.holder_pid {
+                if !crate::compat::pid_alive(pid) {
+                    todo.claimed_by = Some(agent.to_string());
+                    todo.lease_expires_at = Some(now + ttl);
+                    todo.holder_pid = Some(std::process::id());
+                    todo.updated_at = now;
+                    return Ok(ClaimOutcome {
+                        idempotent: false,
+                        steal: true,
+                    });
+                }
+            }
             bail!("todo already has an active lease held by another agent")
         }
         LeaseStatus::Free => {
             todo.claimed_by = Some(agent.to_string());
             todo.lease_expires_at = Some(now + ttl);
+            todo.holder_pid = Some(std::process::id());
             todo.updated_at = now;
             Ok(ClaimOutcome {
                 idempotent: false,
@@ -111,6 +127,7 @@ pub fn claim(todo: &mut Todo, agent: &str, lease_secs: u64, now: u64) -> Result<
             // Steal: the previous lease lapsed; clear it and re-claim.
             todo.claimed_by = Some(agent.to_string());
             todo.lease_expires_at = Some(now + ttl);
+            todo.holder_pid = Some(std::process::id());
             todo.updated_at = now;
             Ok(ClaimOutcome {
                 idempotent: false,
