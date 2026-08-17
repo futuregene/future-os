@@ -6,6 +6,7 @@ import type { ComposerDragState, ComposerSendPayload } from "./Composer";
 import type { WorkspaceCreateRequest, WorkspaceFormMode } from "./useWorkspaceForm";
 import {
   Check,
+  CircleCheck,
   Folder,
   FolderOpen,
   MessageSquare,
@@ -153,6 +154,16 @@ export function NewConversation({
   // modelId is empty and would fall back to the agent default (v4-flash).
   const catalogLoading = modelOptions.length === 0;
   const [guideStarting, setGuideStarting] = useState(false);
+  // Inline "tutorial entry hidden" notice shown in the banner's slot for a
+  // few seconds after the user dismisses it (a top toast would sit far away
+  // from the click and go unnoticed).
+  const [guideDismissNotice, setGuideDismissNotice] = useState(false);
+  useEffect(() => {
+    if (!guideDismissNotice)
+      return;
+    const timer = window.setTimeout(setGuideDismissNotice, 4000, false);
+    return () => window.clearTimeout(timer);
+  }, [guideDismissNotice]);
 
   // "Start learning" → fetch the platform coach prompt, then create a real
   // chat session whose first message is the prompt (auto-sent by the existing
@@ -192,7 +203,7 @@ export function NewConversation({
 
   function handleDismissGuide() {
     onDismissSkillGuide();
-    emitFutureEvent("toast", { message: t("skillGuide.dismissed") });
+    setGuideDismissNotice(true);
   }
 
   function handleSend({ attachments, content }: ComposerSendPayload) {
@@ -363,7 +374,14 @@ export function NewConversation({
             </div>
           </div>
           {skillGuideDismissed
-            ? null
+            ? (guideDismissNotice
+                ? (
+                    <div className="mt-3 flex w-full max-w-3xl items-center gap-2 rounded-lg border border-success-line bg-success-soft px-4 py-2.5">
+                      <CircleCheck className="size-4 shrink-0 text-success" />
+                      <span className="text-sm font-medium text-ink">{t("skillGuide.dismissed")}</span>
+                    </div>
+                  )
+                : null)
             : (
                 <SkillGuideBanner
                   starting={guideStarting}
