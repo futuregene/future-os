@@ -208,7 +208,23 @@ pub async fn get_events_since(
         let response = client
             .execute_command(command)
             .await
-            .map_err(|status| format!("get_events_since failed: {status}"))?
+            .map_err(|status| {
+                // OutOfRange here is the agent rejecting its own oversized
+                // response at the 32 MiB encode cap: it serialized the whole
+                // tail even though this client always requests paged reads, so
+                // the running agent almost certainly predates the
+                // get_events_since paging protocol (proto max_events). Paging
+                // is server-side — only an agent restart on a current build
+                // fixes it. (A single event over ~10 MiB would trip the same
+                // cap even on a current agent.)
+                if status.code() == tonic::Code::OutOfRange {
+                    format!(
+                        "get_events_since failed: {status} — the agent exceeded the 32 MiB gRPC cap on a paged read, so the running agent likely predates get_events_since paging (max_events); rebuild and restart the agent"
+                    )
+                } else {
+                    format!("get_events_since failed: {status}")
+                }
+            })?
             .into_inner()
             .ok_or_rpc_error("get_events_since returned an error")?;
         let page = if response.data.is_empty() {
