@@ -130,5 +130,12 @@
     "balance": "账户余额：{{credits}}",
     "recharge": "充值",
     "upgrade": "升级"
+  },
+  "skillIntro": {
+    "titleWithCount": "已为你安装 {{count}} 个常用技能",
+    "titleEmpty": "你还没有安装技能",
+    "body": "技能可以让 AI 帮你做 PPT、深度调研、分析数据……点这里看看你能用什么。",
+    "go": "去看看",
+    "dismiss": "知道了"
   }
 }

@@ -119,6 +119,68 @@ fn http_client() -> reqwest::Client {
         .expect("default reqwest client config cannot fail to build")
 }
 
+/// A zh/en text pair from the platform guide config.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct LocalizedText {
+    #[serde(default)]
+    pub zh: String,
+    #[serde(default)]
+    pub en: String,
+}
+
+/// `links` section of the guide config: global links shared across features.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuideLinks {
+    #[serde(default)]
+    pub help: String,
+}
+
+/// `skills` section of the guide config: the coach prompt and manual link that
+/// power the skill-onboarding banner.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuideSkills {
+    #[serde(default, alias = "coach_prompt")]
+    pub coach_prompt: LocalizedText,
+    #[serde(default)]
+    pub manual: LocalizedText,
+}
+
+/// The platform skill-guide config (`GET /client/v1/guide`).
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillGuide {
+    #[serde(default)]
+    pub links: GuideLinks,
+    #[serde(default)]
+    pub skills: GuideSkills,
+}
+
+/// The platform skill-guide config (`GET /client/v1/guide`). Unauthenticated,
+/// like the catalogue.
+pub async fn get_skill_guide() -> Result<SkillGuide, AppError> {
+    let url = format!(
+        "{}/client/v1/guide",
+        crate::future_platform::current_platform_url()
+    );
+    let response = http_client()
+        .get(&url)
+        .send()
+        .await
+        .map_err(|error| AppError::Message(format!("Failed to fetch skill guide: {error}")))?;
+    if !response.status().is_success() {
+        return Err(AppError::Message(format!(
+            "Failed to fetch skill guide (HTTP {})",
+            response.status().as_u16()
+        )));
+    }
+    response
+        .json()
+        .await
+        .map_err(|error| AppError::Message(format!("Failed to parse skill guide: {error}")))
+}
+
 /// The platform skill catalogue (`GET /client/v1/skills`). Unauthenticated, like
 /// the CLI's `fetchSkills`.
 pub async fn list_available_skills() -> Result<Vec<SkillInfo>, AppError> {
@@ -543,6 +605,60 @@ mod tests {
         let _home = crate::auth_store::test_support::HomeGuard::new("skills-list-net");
         crate::auth_store::set_future_base_url("http://127.0.0.1:1/api").unwrap();
         let err = list_available_skills().await.unwrap_err();
+        assert!(err.to_string().contains("Failed to fetch"));
+    }
+
+    #[tokio::test]
+    async fn get_skill_guide_parses_config() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("skills-guide");
+        let url = mock_http_server(vec![(
+            200,
+            "application/json",
+            r#"{"links":{"help":"https://example.com/docs"},"skills":{"coach_prompt":{"zh":"教我","en":"Teach me"},"manual":{"zh":"https://example.com/zh","en":"https://example.com/en"}}}"#
+                .as_bytes()
+                .to_vec(),
+        )]);
+        point_auth_at(&url);
+        let guide = get_skill_guide().await.unwrap();
+        assert_eq!(guide.links.help, "https://example.com/docs");
+        assert_eq!(guide.skills.coach_prompt.zh, "教我");
+        assert_eq!(guide.skills.coach_prompt.en, "Teach me");
+        assert_eq!(guide.skills.manual.en, "https://example.com/en");
+    }
+
+    #[tokio::test]
+    async fn get_skill_guide_missing_sections_default_empty() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("skills-guide-empty");
+        let url = mock_http_server(vec![(200, "application/json", br#"{"links":{}}"#.to_vec())]);
+        point_auth_at(&url);
+        let guide = get_skill_guide().await.unwrap();
+        assert_eq!(guide.links.help, "");
+        assert_eq!(guide.skills.coach_prompt.zh, "");
+    }
+
+    #[tokio::test]
+    async fn get_skill_guide_http_error() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("skills-guide-500");
+        let url = mock_http_server(vec![(500, "application/json", b"{}".to_vec())]);
+        point_auth_at(&url);
+        let err = get_skill_guide().await.unwrap_err();
+        assert!(err.to_string().contains("HTTP 500"));
+    }
+
+    #[tokio::test]
+    async fn get_skill_guide_parse_error() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("skills-guide-badjson");
+        let url = mock_http_server(vec![(200, "application/json", b"not json".to_vec())]);
+        point_auth_at(&url);
+        let err = get_skill_guide().await.unwrap_err();
+        assert!(err.to_string().contains("Failed to parse"));
+    }
+
+    #[tokio::test]
+    async fn get_skill_guide_network_error() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("skills-guide-net");
+        crate::auth_store::set_future_base_url("http://127.0.0.1:1/api").unwrap();
+        let err = get_skill_guide().await.unwrap_err();
         assert!(err.to_string().contains("Failed to fetch"));
     }
 

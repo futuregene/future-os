@@ -138,6 +138,15 @@ export function MentionEditor({
           else if (segment.text)
             appendTextWithSkillPills(editor, segment.text);
         }
+        // Focus and park the caret at the end: a bare focus() drops the caret
+        // at the start, which reads as "cursor jumped before the restored text".
+        editor.focus();
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(editor);
+        range.collapse(false);
+        selection?.removeAllRanges();
+        selection?.addRange(range);
       }
       closeMenu();
       syncEmpty();
