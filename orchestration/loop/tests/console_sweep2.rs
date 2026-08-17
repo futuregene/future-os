@@ -43,16 +43,7 @@ fn agent_list_with_lease_events() {
     let cr = cli_root();
     let gid = init_goal(&cr, "agent list lease events");
     let first = first_todo_id(&cr.root, &gid);
-    cli_ok(&[
-        "agent",
-        "onboard",
-        "--goal",
-        &gid,
-        "--agent-id",
-        "w1",
-        "--capability",
-        "shell",
-    ]);
+    cli_ok(&["agent", "onboard", "--goal", &gid, "--agent-id", "w1"]);
     cli_ok(&[
         "todo",
         "claim",
@@ -297,22 +288,6 @@ fn doctor_goal_replay_error_arm() {
 }
 
 #[test]
-fn capability_commands_experimental_note() {
-    let _cr = cli_root();
-    // pr_review_queue ships as active-preview: its commands list with and
-    // without the flag; experimental-gated capabilities still need it.
-    cli_ok(&["capability", "commands", "--name", "pr_review_queue"]);
-    cli_ok(&[
-        "capability",
-        "commands",
-        "--name",
-        "pr_review_queue",
-        "--include-experimental",
-    ]);
-    cli_ok(&["catalog", "--name", "pr_review_queue"]);
-}
-
-#[test]
 fn diagnose_and_doctor_with_projection_gap() {
     let cr = cli_root();
     let gid = init_goal(&cr, "gap surfaces");
@@ -327,6 +302,8 @@ fn diagnose_and_doctor_with_projection_gap() {
         "--todo-id",
         &first,
         "--no-follow-up",
+        "--evidence",
+        "fixture evidence for completion contract",
     ]);
     {
         let store = open_store(&cr);
@@ -345,19 +322,6 @@ fn benchmark_protocol_blind_route() {
         "protocol",
         "--route",
         "raw-codex-autonomous-max5",
-    ]);
-}
-
-#[test]
-fn capability_propose_gate_print_arm() {
-    let _cr = cli_root();
-    cli_ok(&[
-        "capability",
-        "propose",
-        "--name",
-        "issue_fix",
-        "--input",
-        "title: bug\nerror: crash\nrepro: steps\nauthority: read-only",
     ]);
 }
 
@@ -514,6 +478,8 @@ fn run_validator_inconclusive_print() {
         "--todo-id",
         &first,
         "--no-follow-up",
+        "--evidence",
+        "fixture evidence for completion contract",
     ]);
     cli_ok(&[
         "todo",

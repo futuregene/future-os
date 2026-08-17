@@ -95,6 +95,7 @@ fn update_blocks_sets_blocking_set() {
             priority: None,
             resume_when: None,
             blocks: Some(vec!["t3".into()]),
+            acceptance: None,
             ts,
         })
         .unwrap();
@@ -118,6 +119,7 @@ fn update_blocks_replaces_existing_set() {
             priority: None,
             resume_when: None,
             blocks: Some(vec!["t3".into(), "t2".into()]),
+            acceptance: None,
             ts,
         })
         .unwrap();
@@ -141,6 +143,7 @@ fn update_blocks_empty_clears() {
             priority: None,
             resume_when: None,
             blocks: Some(vec![]),
+            acceptance: None,
             ts,
         })
         .unwrap();
@@ -164,6 +167,7 @@ fn update_without_blocks_leaves_set_untouched() {
             priority: None,
             resume_when: None,
             blocks: None,
+            acceptance: None,
             ts,
         })
         .unwrap();
@@ -239,6 +243,7 @@ fn replay_rebuilds_updated_blocks() {
             priority: None,
             resume_when: None,
             blocks: Some(vec!["t2".into(), "t3".into()]),
+            acceptance: None,
             ts,
         })
         .unwrap();

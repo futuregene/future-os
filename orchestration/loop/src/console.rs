@@ -4,7 +4,9 @@
 //!   goal init    — create a durable goal (registry + event ledger)
 //!   todo add     — add an agent/user/gate/monitor todo
 //!   todo claim   — claim a todo (owner identity)
-//!   todo complete — complete a todo; REQUIRES --no-follow-up or --successor
+//!   todo complete — complete a todo; REQUIRES --no-follow-up or --successor,
+//!     non-empty --evidence for advancement todos, and (when declared)
+//!     --acceptance tokens inside the evidence; --force overrides both.
 //!   gate resolve — resolve a user gate with a decision payload
 //!   status       — project the active state (todos, gaps, next action)
 //!   quota should-run — emit the typed ShouldRunPacket (deterministic)
@@ -103,9 +105,7 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
     let registry = build_cli_registry();
     // G-26: the registry is the dispatch validation point — unknown commands
     // fail with a hint (aggregated help) instead of a bare match fallthrough.
-    if registry.find(&args[0], include_experimental).is_none()
-        && resolve_capability_hook(&args[0]).is_none()
-    {
+    if registry.find(&args[0], include_experimental).is_none() {
         bail!("unknown command `{}` (try `{prog} --help`)", args[0]);
     }
     // P0-3②: `<command> --help` / `-h` prints the command's usage from the
@@ -140,13 +140,10 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         "heartbeat-prompt" => cmd_heartbeat(&store, &args[1..]),
         "worker-bridge" => cmd_worker_bridge(&mut store, &args[1..]).await,
         "serve-status" => cmd_serve_status(&store, &args[1..]),
-        "capability" => cmd_capability(&mut store, &args[1..]),
         "models" => cmd_models(&args[1..]).await,
         "diagnose" => cmd_diagnose(&store, &args[1..]),
         "run" => cmd_run(&mut store, &args[1..]).await,
         // ── P3 commands ──────────────────────────────────────────────────
-        "extension" => cmd_extension(&store, &args[1..]),
-        "catalog" => cmd_catalog(&store, &args[1..]),
         "scope" => cmd_scope(&store, &args[1..]),
         "lane" => cmd_lane(&store, &args[1..]),
         "supervisor" => cmd_supervisor(&mut store, &args[1..]),
@@ -155,11 +152,8 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         "attention" => cmd_attention(&store, &args[1..]),
         "inbox" => cmd_inbox(&store, &args[1..]),
         "delivery" => cmd_delivery(&mut store, &args[1..]),
-        "reward-memory" => cmd_reward_memory(&mut store, &args[1..]),
-        "decision-context" => cmd_decision_context(&mut store, &args[1..]),
         "registry" => cmd_registry(&registry, &args[1..]),
         "commands" => cmd_commands(&registry, &args[1..]),
-        "pr-review" => cmd_pr_review(&mut store, &args[1..]),
         // ── P4 commands (G-18 / G-19 / G-20 / G-27) ───────────────────────
         "benchmark" => cmd_benchmark(&store, &args[1..]).await,
         "replay" => cmd_replay(&store, &args[1..]),
@@ -170,15 +164,7 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         "turn" => cmd_turn(&store, &args[1..]),
         "todo-event" => cmd_todo_event(&store, &args[1..]),
         "evidence-log" => cmd_evidence_log(&store, &args[1..]),
-        other => {
-            // G-24 per-capability command hook (e.g. `loopx issue-fix --input ...`).
-            // The registry pre-check above rejected anything that is neither
-            // a known command (all of which have dispatch arms) nor a hook,
-            // so the hook always resolves here.
-            let (capability_id, _purpose) = resolve_capability_hook(other)
-                .expect("registry pre-check guarantees a capability hook");
-            cmd_capability_hook(&mut store, other, &capability_id, &args[1..])
-        }
+        other => bail!("unknown command `{other}` (try `{prog} --help`)"),
     }
 }
 
@@ -206,9 +192,6 @@ const JOURNEY_ASSIGNMENTS: &[(&str, Journey)] = &[
     ("attention", Journey::Daily),
     ("inbox", Journey::Daily),
     ("delivery", Journey::Daily),
-    ("reward-memory", Journey::Daily),
-    ("decision-context", Journey::Daily),
-    ("pr-review", Journey::Daily),
     ("diagnose", Journey::Daily),
     ("evidence-log", Journey::Daily),
     ("todo-event", Journey::Daily),
@@ -230,9 +213,6 @@ const JOURNEY_ASSIGNMENTS: &[(&str, Journey)] = &[
     ("store", Journey::Setup),
     ("backfill", Journey::Setup),
     ("privacy", Journey::Setup),
-    ("extension", Journey::Setup),
-    ("capability", Journey::Setup),
-    ("catalog", Journey::Setup),
     ("serve-status", Journey::Setup),
     // Maintainer & adapter — quality gates, retention, introspection
     ("benchmark", Journey::Maintainer),
@@ -245,10 +225,9 @@ const JOURNEY_ASSIGNMENTS: &[(&str, Journey)] = &[
     ("commands", Journey::Maintainer),
 ];
 
-/// G-26: build the command registry — groups + commands + capability command
-/// hooks (G-24), the aggregated help surface.
+/// G-26: build the command registry — groups + commands, the aggregated
+/// help surface.
 fn build_cli_registry() -> CommandRegistry {
-    use crate::capabilities::catalog::CapabilityCatalog;
     let mut r = CommandRegistry::new();
 
     let goal = r.group("goal", "goal lifecycle");
@@ -320,7 +299,7 @@ fn build_cli_registry() -> CommandRegistry {
         agent,
         "agent",
         "register/onboard agents + multi-agent contract/recipe/succession/collective surface (G12)",
-        "agent onboard --goal G --agent-id A [--capabilities c1,c2] [--recipe N] | list|contract|recipe|succession|collective --goal G",
+        "agent onboard --goal G --agent-id A [--recipe N] | list|contract|recipe|succession|collective --goal G",
     );
     r.command(
         agent,
@@ -346,36 +325,6 @@ fn build_cli_registry() -> CommandRegistry {
         "supervisor proposal/receipt events (G-16)",
         "supervisor propose|receipt|events --goal G ...",
     );
-
-    let capability = r.group("capability", "capability framework");
-    r.command(
-        capability,
-        "capability",
-        "list / propose / commands for capabilities",
-        "capability list|propose|commands [--name X] [--input \"...\"] [--goal G]",
-    );
-    r.command(
-        capability,
-        "catalog",
-        "capability catalog metadata: status/stage/provider (G-23)",
-        "catalog [--name X] [--json]",
-    );
-    // G-24 per-capability command hooks (from the catalog; experimental
-    // commands hidden unless --include-experimental).
-    let catalog = CapabilityCatalog::with_builtin();
-    for record in catalog.records(true) {
-        for c in &record.commands {
-            let usage = format!("{} --input \"...\" [--include-experimental]", c.name);
-            if record.is_experimental() {
-                r.command_experimental(capability, &c.name, &c.purpose, &usage);
-            } else {
-                r.command(capability, &c.name, &c.purpose, &usage);
-            }
-        }
-    }
-
-    let extension = r.group("extension", "extension lifecycle (G-21)");
-    r.command(extension, "extension", "install/upgrade/enable/disable/rollback/status/capabilities", "extension install --manifest PATH [--execute] | enable|disable|rollback --id X [--execute] | status [--id X] | capabilities");
 
     let ops = r.group("ops", "operations / diagnostics");
     r.command(
@@ -430,8 +379,8 @@ fn build_cli_registry() -> CommandRegistry {
     r.command(
         ops,
         "quota",
-        "quota should-run / usage / spend / tools / decisions",
-        "quota should-run --goal G [--format json] | usage [--goal G] [--all] | spend --goal G | tools --goal G [--format json] | decisions --goal G [--limit N]",
+        "quota should-run / usage / spend / decisions",
+        "quota should-run --goal G [--format json] | usage [--goal G] [--all] | spend --goal G  | decisions --goal G [--limit N]",
     );
     r.command(
         ops,
@@ -490,7 +439,7 @@ fn build_cli_registry() -> CommandRegistry {
 
     let work_items = r.group(
         "work-items",
-        "attention / operator inbox (G-15) / delivery outcome closure (P0-2) / reward memory (P1-5)",
+        "attention / operator inbox (G-15) / delivery outcome closure (P0-2)",
     );
     r.command(
         work_items,
@@ -509,18 +458,6 @@ fn build_cli_registry() -> CommandRegistry {
         "delivery",
         "post-delivery outcome closure (P0-2): delivered → verified/failed/rework + follow-through",
         "delivery status --goal G [--format json] | record --goal G --todo-id T --outcome verified|failed|rework [--note N] | followthrough --goal G [--turns N]",
-    );
-    r.command(
-        work_items,
-        "reward-memory",
-        "reward memory (P1-5): validator/delivery/evidence signal ingestion + scoped feedback",
-        "reward-memory query --goal G [--agent-id A] [--todo-id T] [--source S] [--format json] | record --goal G --todo-id T --score 0.0..1.0 [--source evidence] [--note N] [--agent-id A]",
-    );
-    r.command(
-        work_items,
-        "decision-context",
-        "decision context (P1-4): assembler read model + audited outcome-feedback writeback",
-        "decision-context assemble --goal G [--format json] | outcomes --goal G [--format json] | feedback --goal G --turn N --status verified|refuted|inconclusive [--note N] [--agent-id A] [--context-digest D]",
     );
 
     let handoff = r.group("handoff", "project handoff (G-17)");
@@ -545,14 +482,6 @@ fn build_cli_registry() -> CommandRegistry {
         "commands [--format json|--json] [--include-experimental]",
     );
 
-    let pr_review = r.group("pr-review", "pull-request review queue (P2-3)");
-    r.command(
-        pr_review,
-        "pr-review",
-        "PR review queue observation / verdict / reviewer recommendation",
-        "pr-review queue|review|claim|recommend|contract --goal G [--repo owner/repo] [--format json]",
-    );
-
     let benchmark = r.group("benchmark", "benchmark closed loop (G-18)");
     r.command(
         benchmark,
@@ -574,7 +503,7 @@ fn build_cli_registry() -> CommandRegistry {
         canary,
         "canary",
         "run a smoke profile (release gate default) or the premerge CI gate",
-        "canary smoke [--profile core-control-plane|extension-runtime|release-gate|premerge] [--json] | canary premerge [--json]",
+        "canary smoke [--profile core-control-plane|release-gate|premerge] [--json] | canary premerge [--json]",
     );
 
     // P1-9: journey metadata overlay (presentation only — the registry
@@ -584,111 +513,6 @@ fn build_cli_registry() -> CommandRegistry {
     }
 
     r
-}
-
-/// Resolve a top-level command to a capability command hook (G-24). Returns
-/// (capability_id, purpose) when the command matches a catalog command.
-fn resolve_capability_hook(command: &str) -> Option<(String, String)> {
-    let catalog = crate::capabilities::catalog::CapabilityCatalog::with_builtin();
-    for record in catalog.records(true) {
-        for c in &record.commands {
-            if c.name == command {
-                return Some((record.id.clone(), c.purpose.clone()));
-            }
-        }
-    }
-    None
-}
-
-/// Per-tool quota enforcement at the capability boundary (LoopX 对比改进项
-/// ②): with a goal context, the invocation is counted against the tool's
-/// quota (accepted invocations ledgered, over-limit refused + the refusal
-/// ledgered). Without `--goal` there is no ledger to count into — the
-/// invocation proceeds uncounted (back-compat for goal-less exploration).
-fn enforce_capability_quota(
-    store: &mut Store,
-    goal_id: &str,
-    capability_id: &str,
-    command: &str,
-) -> Result<()> {
-    let goal = store
-        .replay(goal_id)?
-        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
-    let now = now_epoch();
-    let decision = crate::quota::tool_quota::evaluate_default(
-        capability_id,
-        &goal.capability_invocations,
-        now,
-    );
-    let outcome = if decision.allowed {
-        crate::quota::tool_quota::OUTCOME_ACCEPTED
-    } else {
-        crate::quota::tool_quota::OUTCOME_REJECTED
-    };
-    store.append(crate::store::Event::CapabilityInvoked {
-        goal_id: goal_id.to_string(),
-        capability: capability_id.to_string(),
-        command: command.to_string(),
-        outcome: outcome.to_string(),
-        invocation_id: uuid::Uuid::new_v4().simple().to_string(),
-        ts: now,
-    })?;
-    if !decision.allowed {
-        bail!(
-            "per-tool quota exceeded: `{capability_id}` used {}/{} invocations in the trailing {}s window — retry after the window slides",
-            decision.used,
-            decision.limit,
-            decision.window_secs
-        );
-    }
-    Ok(())
-}
-
-/// Run a per-capability command hook: `loopx <cap-command> --input "..."` —
-/// the capability's propose pipeline, printed like `capability propose`.
-fn cmd_capability_hook(
-    store: &mut Store,
-    command: &str,
-    capability_id: &str,
-    args: &[String],
-) -> Result<()> {
-    let registry = crate::capabilities::CapabilityRegistry::with_builtin();
-    let mut input = None;
-    let mut goal_id = None;
-    reject_unknown_flags(args, &["--input", "--goal"])?;
-    parse_pairs(args, |k, v| {
-        if k == "--input" {
-            input = Some(v);
-        } else if k == "--goal" {
-            goal_id = Some(v);
-        }
-    });
-    let input = input.unwrap_or_default();
-    let Some(cap) = registry.get(capability_id) else {
-        bail!(
-            "unknown capability `{capability_id}` (see `{} capability list`)",
-            prog()
-        );
-    };
-    if let Some(g) = goal_id.as_deref() {
-        enforce_capability_quota(store, g, capability_id, command)?;
-    }
-    let proposals = cap.propose(&input);
-    println!(
-        "capability hook `{command}` ({capability_id}) → {} proposal(s):",
-        proposals.len()
-    );
-    for p in proposals {
-        let kind = proposal_kind_label(&p.kind);
-        println!("  [{kind}] {}", p.reason);
-        if let Some(t) = p.todo {
-            println!("    → todo: {}", t.text);
-        }
-        if let Some(q) = p.gate_question {
-            println!("    → gate: {q}");
-        }
-    }
-    Ok(())
 }
 
 fn cli_help(registry: &CommandRegistry, include_experimental: bool) -> Result<()> {
@@ -728,10 +552,6 @@ fn render_command_help(
             group.name,
             group.summary,
             prog()
-        )
-    } else if let Some((capability_id, _purpose)) = resolve_capability_hook(command) {
-        format!(
-            "{command} — capability command hook ({capability_id})\n\nusage: {command} [--input TEXT]\n"
         )
     } else {
         // Unreachable: main_from_args validates the command before help.
@@ -899,6 +719,28 @@ fn looks_like_code_todo(text: &str) -> bool {
             .any(|tok| CODE_WORDS.contains(&tok))
 }
 
+/// O5: heuristic for the `todo add` advisory hint — does the text look like an
+/// external-delivery task (platform submission, scored attempt, quota-bounded
+/// side effect) whose completion should carry an `--acceptance` contract?
+/// Advisory only; never changes CLI semantics.
+fn looks_like_external_delivery(text: &str) -> bool {
+    const DELIVERY_WORDS: &[&str] = &[
+        "submit",
+        "submission",
+        "attempt",
+        "scored",
+        "acceptance",
+        "quota",
+        "platform",
+    ];
+    const DELIVERY_ZH: &[&str] = &["提交", "评分", "配额", "验收", "排行榜", "上分"];
+    let lower = text.to_lowercase();
+    DELIVERY_ZH.iter().any(|k| text.contains(k))
+        || lower
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|tok| DELIVERY_WORDS.contains(&tok))
+}
+
 fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut role = "agent".to_string();
@@ -908,13 +750,11 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     let mut blocks: Vec<String> = vec![];
     let mut priority = None;
     let mut action_kind = None;
-    let mut required_capability = None;
     let mut deferred_secs = 0u64;
     let mut title = None;
     let mut task_repository = None;
     let mut continuation_policy = None;
     let mut write_scopes = vec![];
-    let mut capability_binding = None;
     let mut goal_bound = false;
     let mut global_gate = false;
     let mut resume_when_cond = None;
@@ -924,13 +764,14 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     let mut cadence = None;
     let mut verify: Option<String> = None;
     let mut max_validation_attempts: Option<u32> = None;
+    let mut acceptance: Option<String> = None;
     reject_unknown_flags(
         args,
         &[
+            "--acceptance",
             "--action-kind",
             "--blocks",
             "--cadence",
-            "--capability-binding-ref",
             "--class",
             "--continuation-policy",
             "--defer-secs",
@@ -943,7 +784,6 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
             "--monitor-target",
             "--note",
             "--priority",
-            "--required-capability",
             "--required-write-scope",
             "--resume-when",
             "--role",
@@ -970,6 +810,8 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
             cadence = Some(v);
         } else if k == "--verify" {
             verify = Some(v);
+        } else if k == "--acceptance" {
+            acceptance = Some(v);
         } else if k == "--max-validation-attempts" {
             max_validation_attempts = v.parse().ok();
         } else if k == "--goal" {
@@ -988,8 +830,6 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
             priority = Some(v);
         } else if k == "--action-kind" {
             action_kind = Some(v);
-        } else if k == "--required-capability" {
-            required_capability = Some(v);
         } else if k == "--defer-secs" {
             deferred_secs = v.parse().unwrap_or(0);
         } else if k == "--title" {
@@ -1000,8 +840,6 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
             continuation_policy = Some(v);
         } else if k == "--required-write-scope" {
             write_scopes = v.split(',').map(|s| s.trim().to_string()).collect();
-        } else if k == "--capability-binding-ref" {
-            capability_binding = Some(v);
         }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
@@ -1010,6 +848,9 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     // done by an agent even when the code does not compile. Computed before
     // `verify` is moved into the todo below.
     let wants_verify_hint = verify.is_none() && looks_like_code_todo(&text);
+    // O5: advisory hint — external-delivery todos (submit/提交 …) whose
+    // completion contract is a text convention unless `--acceptance` pins it.
+    let wants_acceptance_hint = acceptance.is_none() && looks_like_external_delivery(&text);
     store
         .replay(&goal_id)?
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
@@ -1092,11 +933,11 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     if let Some(a) = action_kind {
         todo.action_kind = Some(a);
     }
-    if let Some(c) = required_capability {
-        todo.required_capability = Some(c);
-    }
     if let Some(v) = verify {
         todo.validator = Some(v);
+    }
+    if let Some(a) = acceptance {
+        todo.acceptance = Some(a);
     }
     if let Some(n) = max_validation_attempts {
         todo.max_validation_attempts = n.max(1);
@@ -1128,9 +969,6 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     if !write_scopes.is_empty() {
         todo.required_write_scope = write_scopes;
     }
-    if let Some(cb) = capability_binding {
-        todo.capability_binding_ref = Some(cb);
-    }
     store.append(Event::TodoAdded {
         goal_id: goal_id.clone(),
         todo,
@@ -1142,6 +980,13 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     // O4: pure reminder after a successful add; no semantic change.
     if wants_verify_hint {
         eprintln!("hint: 实现类 todo 建议挂 --verify \"cargo check -p ...\"，防不编译代码被标完成");
+    }
+    // O5: advisory hint for external-delivery todos (submit/提交 …) — the
+    // completion contract is a text convention unless `--acceptance` pins it.
+    if wants_acceptance_hint {
+        eprintln!(
+            "hint: 外部交付类 todo 建议挂 --acceptance \"attempt,scored\"（关单时 evidence 必须包含全部子串，防空交付）"
+        );
     }
     Ok(())
 }
@@ -1245,7 +1090,7 @@ fn append_workspace_lock(
 }
 
 /// Parse a `--workspace` flag value into normalized absolute paths
-/// (comma-separated, like `--capabilities`; empty entries dropped).
+/// (comma-separated; empty entries dropped).
 fn parse_workspaces(raw: &str) -> Vec<String> {
     raw.split(',')
         .map(|s| s.trim())
@@ -1299,37 +1144,23 @@ fn cmd_agent(store: &mut Store, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// `loopx agent onboard --goal G --agent-id A [--capability shell,github]
-/// [--workspace p1,p2] [--recipe NAME]` — register a peer AND declare its
-/// capabilities (LoopX: agent_profiles; input to the capability gate) plus
-/// the P0-1 workspace-guard write set. `--recipe NAME` applies a recorded
-/// G12 agent recipe (capabilities + workspaces + default priority) — when
-/// given, explicit `--capability`/`--workspace` flags are rejected (the
-/// recipe is the single source).
+/// `loopx agent onboard --goal G --agent-id A [--workspace p1,p2]
+/// [--recipe NAME]` — register a peer and declare the P0-1 workspace-guard
+/// write set. `--recipe NAME` applies a recorded G12 agent recipe
+/// (capabilities + workspaces + default priority, capabilities kept as
+/// descriptive metadata) — when given, an explicit `--workspace` flag is
+/// rejected (the recipe is the single source).
 fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut agent_id = None;
-    let mut capabilities = vec![];
     let mut workspaces = vec![];
     let mut recipe_name = None;
-    reject_unknown_flags(
-        args,
-        &[
-            "--agent-id",
-            "--capabilities",
-            "--capability",
-            "--goal",
-            "--recipe",
-            "--workspace",
-        ],
-    )?;
+    reject_unknown_flags(args, &["--agent-id", "--goal", "--recipe", "--workspace"])?;
     parse_pairs(args, |k, v| {
         if k == "--goal" {
             goal_id = Some(v);
         } else if k == "--agent-id" {
             agent_id = Some(v);
-        } else if k == "--capability" || k == "--capabilities" {
-            capabilities = v.split(',').map(|s| s.trim().to_string()).collect();
         } else if k == "--workspace" {
             workspaces = parse_workspaces(&v);
         } else if k == "--recipe" {
@@ -1342,9 +1173,9 @@ fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
         .replay(&goal_id)?
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
     if let Some(name) = recipe_name {
-        if !capabilities.is_empty() || !workspaces.is_empty() {
+        if !workspaces.is_empty() {
             bail!(
-                "--recipe {name} conflicts with explicit --capability/--workspace flags \
+                "--recipe {name} conflicts with an explicit --workspace flag \
                  (the recipe owns the onboarding profile)"
             );
         }
@@ -1363,13 +1194,11 @@ fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
     store.append(Event::AgentOnboarded {
         goal_id: goal_id.clone(),
         agent_id: agent_id.clone(),
-        capabilities: capabilities.clone(),
+        capabilities: vec![],
         workspaces: workspaces.clone(),
         ts: crate::state::now_epoch(),
     })?;
-    println!(
-        "agent `{agent_id}` onboarded (capabilities={capabilities:?} workspaces={workspaces:?}) ✔"
-    );
+    println!("agent `{agent_id}` onboarded (capabilities=[] workspaces={workspaces:?}) ✔");
     Ok(())
 }
 
@@ -2038,10 +1867,12 @@ fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
     let mut no_follow_up = false;
     let mut successor = None;
     let mut evidence = None;
+    let mut force = false;
     reject_unknown_flags(
         args,
         &[
             "--evidence",
+            "--force",
             "--goal",
             "--no-follow-up",
             "--successor",
@@ -2055,6 +1886,8 @@ fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
             todo_id = Some(v);
         } else if k == "--no-follow-up" {
             no_follow_up = true;
+        } else if k == "--force" {
+            force = true;
         } else if k == "--successor" {
             successor = Some(v);
         } else if k == "--evidence" {
@@ -2094,6 +1927,45 @@ fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
         }
     }
     let is_advancement = t.class == TaskClass::Advancement;
+    // O6: completion evidence contract (retrospective: 11/33 completions
+    // shipped <60-char evidence, several fully empty, and every one of those
+    // todos had to be reopened by hand). Advancement todos must carry real,
+    // non-empty evidence of what landed — `--force` is the explicit override
+    // for mechanical closeouts the operator owns.
+    let evidence_trim = evidence.as_deref().map(str::trim).unwrap_or("");
+    if is_advancement && evidence_trim.is_empty() && !force {
+        bail!(
+            "todo {todo_id} needs non-empty --evidence (what actually landed: attempt ids, \
+             paths, outputs, measurements). Add --force only for an explicit operator closeout."
+        );
+    }
+    // O7: acceptance contract (`todo add --acceptance "a,b"`) — evidence must
+    // contain every declared token (case-insensitive) before completion is
+    // accepted; `--force` overrides. Turns the ACCEPTANCE text convention
+    // (e.g. a platform attempt id) into a hard check.
+    if is_advancement {
+        if let Some(acc) = t.acceptance.as_deref() {
+            let tokens: Vec<&str> = acc
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect();
+            let lower = evidence_trim.to_lowercase();
+            let missing: Vec<&str> = tokens
+                .iter()
+                .filter(|tok| !lower.contains(&tok.to_lowercase()))
+                .copied()
+                .collect();
+            if !missing.is_empty() && !force {
+                bail!(
+                    "todo {todo_id} acceptance contract unmet: evidence must contain [{}] \
+                     (missing: [{}]). Declared via `todo add --acceptance`; --force overrides.",
+                    acc,
+                    missing.join(", ")
+                );
+            }
+        }
+    }
     let successors = successor.clone().into_iter().collect::<Vec<_>>();
     store.append(Event::TodoCompleted {
         goal_id: goal_id.clone(),
@@ -2766,11 +2638,8 @@ fn cmd_quota(store: &Store, args: &[String]) -> Result<()> {
         Some("should-run") => quota_should_run(store, &args[1..]),
         Some("usage") => quota_usage(store, &args[1..]),
         Some("spend") => quota_spend(store, &args[1..]),
-        Some("tools") => quota_tools(store, &args[1..]),
         Some("decisions") => quota_decisions(store, &args[1..]),
-        _ => bail!(
-            "quota subcommand must be `should-run`, `usage`, `spend`, `tools`, or `decisions`"
-        ),
+        _ => bail!("quota subcommand must be `should-run`, `usage`, `spend`, or `decisions`"),
     }
 }
 
@@ -2938,58 +2807,6 @@ fn quota_spend(store: &Store, args: &[String]) -> Result<()> {
         b.source_count(crate::quota::slot_accounting::SlotSpendSource::Agent),
         b.source_count(crate::quota::slot_accounting::SlotSpendSource::Heartbeat),
     );
-    Ok(())
-}
-
-/// `loopx quota tools --goal G [--format json]` — per-tool quota status at
-/// the capability boundary (LoopX 对比改进项 ②): invocations used / limit /
-/// trailing window per capability tool, plus the resulting
-/// `capability_repair_allowed` packet predicate.
-fn quota_tools(store: &Store, args: &[String]) -> Result<()> {
-    let mut goal_id = None;
-    let mut format_json = false;
-    reject_unknown_flags(args, &["--goal", "--format"])?;
-    parse_pairs(args, |k, v| {
-        if k == "--goal" {
-            goal_id = Some(v);
-        } else if k == "--format" {
-            format_json = v == "json";
-        }
-    });
-    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
-    let goal = store
-        .replay(&goal_id)?
-        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
-    let now = now_epoch();
-    let rows = crate::quota::tool_quota::usage_rows(&goal.capability_invocations, now);
-    let repair_allowed = crate::quota::tool_quota::capability_repair_allowed(&goal, now);
-    if format_json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "goal_id": goal_id,
-                "capability_repair_allowed": repair_allowed,
-                "tools": rows,
-            }))?
-        );
-        return Ok(());
-    }
-    if rows.is_empty() {
-        println!("tool quota: no capability invocations recorded");
-    } else {
-        println!("tool quota (limit/window per capability):");
-        for d in &rows {
-            println!(
-                "  {:<24} used={}/{} window={}s {}",
-                d.tool,
-                d.used,
-                d.limit,
-                d.window_secs,
-                if d.allowed { "ok" } else { "EXCEEDED" }
-            );
-        }
-    }
-    println!("capability_repair_allowed: {repair_allowed}");
     Ok(())
 }
 
@@ -4093,11 +3910,6 @@ async fn run_turns(
         // O3: normal turn end — evaluate the no-progress window and ledger
         // the breach (detection + bookkeeping; no auto-injection).
         record_no_progress_if_idle(store, goal_id, &todo_id, agent_id, &progress)?;
-        // P1-5 reward_memory ingestion: the turn's independent validation
-        // receipt (if any) lands in the reward ledger (source `validator`).
-        if ingest_validator_reward(store, goal_id, &todo_id, agent_id, &record)? {
-            println!("   ↳ reward signal ingested (validator)");
-        }
         // G-3: quota spend lands as a durable event alongside the run ledger
         // (source mirrors slot accounting; monitor no-change never spends).
         if monitor_changed != Some(false) {
@@ -4681,574 +4493,6 @@ fn cmd_lease(store: &mut Store, args: &[String]) -> Result<()> {
     }
     Ok(())
 }
-
-// ── pr-review (P2-3) ────────────────────────────────────────────────────
-
-/// `future loop pr-review queue|review|claim|recommend|contract` — the
-/// first-class PR review queue surface: deterministic queue observation
-/// (exact-head candidates + handled cursors), verdict publication through
-/// the review contract (通过/驳回/再修), claim/lease reuse over review work
-/// items, and path-owner reviewer recommendation.
-fn cmd_pr_review(store: &mut Store, args: &[String]) -> Result<()> {
-    let sub = args.first().map(|s| s.as_str()).ok_or_else(|| {
-        anyhow::anyhow!("pr-review requires a subcommand (queue|review|claim|recommend|contract)")
-    })?;
-    match sub {
-        "queue" => pr_review_queue(store, &args[1..]),
-        "review" => pr_review_verdict(store, &args[1..]),
-        "claim" => pr_review_claim(store, &args[1..]),
-        "recommend" => pr_review_recommend(&args[1..]),
-        "contract" => pr_review_contract(&args[1..]),
-        other => bail!("unknown pr-review subcommand `{other}`"),
-    }
-}
-
-/// `pr-review queue` — observe one complete PR queue payload (fixture or
-/// inline JSON) and emit at most one exact-head candidate. Previous
-/// observations and handled `NUMBER@HEAD_OID` cursors drive the rotation.
-fn pr_review_queue(store: &mut Store, args: &[String]) -> Result<()> {
-    let json = wants_json(args);
-    let mut repo = None;
-    let mut fixture = None;
-    let mut input = None;
-    let mut previous_json = None;
-    let mut goal_id = None;
-    let mut handled: Vec<String> = vec![];
-    reject_unknown_flags(
-        args,
-        &[
-            "--fixture",
-            "--format",
-            "--goal",
-            "--handled-exact-head",
-            "--input",
-            "--json",
-            "--previous-observation-json",
-            "--repo",
-        ],
-    )?;
-    parse_pairs(args, |k, v| {
-        if k == "--repo" {
-            repo = Some(v);
-        } else if k == "--fixture" {
-            fixture = Some(v);
-        } else if k == "--input" {
-            input = Some(v);
-        } else if k == "--previous-observation-json" {
-            previous_json = Some(v);
-        } else if k == "--handled-exact-head" {
-            handled.push(v);
-        } else if k == "--goal" {
-            goal_id = Some(v);
-        }
-    });
-    if let Some(g) = goal_id.as_deref() {
-        enforce_capability_quota(store, g, "pr_review_queue", "pr-review queue")?;
-    }
-    let payload: serde_json::Value = if let Some(path) = fixture {
-        serde_json::from_str(&std::fs::read_to_string(&path)?)?
-    } else if let Some(text) = input {
-        serde_json::from_str(&text)?
-    } else {
-        bail!("pr-review queue requires --fixture PATH or --input JSON (a payload with pull_requests)");
-    };
-    let repo = repo.or_else(|| {
-        payload
-            .get("repository")
-            .and_then(serde_json::Value::as_str)
-            .map(|s| s.to_string())
-    });
-    let pull_requests = payload
-        .get("pull_requests")
-        .and_then(serde_json::Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let completeness = payload
-        .get("result_completeness")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!({ "complete": true }));
-    let previous: Option<serde_json::Value> = if let Some(path) = previous_json {
-        Some(serde_json::from_str(&std::fs::read_to_string(&path)?)?)
-    } else {
-        payload
-            .get("previous_observation")
-            .or_else(|| payload.get("autonomous_review"))
-            .cloned()
-    };
-    use crate::capabilities::pr_review_queue as queue;
-    let observation = queue::build_pull_request_review_queue_observation(
-        repo.as_deref(),
-        &pull_requests,
-        &completeness,
-        previous.as_ref(),
-        &handled,
-    )
-    .map_err(|err| anyhow::anyhow!("{err}"))?;
-    if json {
-        println!("{}", serde_json::to_string_pretty(&observation)?);
-        return Ok(());
-    }
-    let repo_label = observation
-        .repository
-        .as_deref()
-        .unwrap_or("(no repository)");
-    println!(
-        "pr-review queue {repo_label}: {} ({})",
-        observation.observation_state, observation.reason
-    );
-    if let Some(size) = observation.queue_size {
-        println!(
-            "  queue size {size} | fingerprint {}",
-            observation.queue_fingerprint.as_deref().unwrap_or("-")
-        );
-    } else {
-        println!("  queue NOT observed (incomplete read)");
-    }
-    if !observation.changed_pr_numbers.is_empty() {
-        println!(
-            "  changed [{}]",
-            join_ids(
-                &observation
-                    .changed_pr_numbers
-                    .iter()
-                    .map(|n| n.map(|n| n.to_string()).unwrap_or_else(|| "?".into()))
-                    .collect::<Vec<_>>()
-            )
-        );
-    }
-    if !observation.removed_pr_numbers.is_empty() {
-        println!(
-            "  removed [{}]",
-            join_ids(
-                &observation
-                    .removed_pr_numbers
-                    .iter()
-                    .map(|n| n.to_string())
-                    .collect::<Vec<_>>()
-            )
-        );
-    }
-    if let Some(candidate) = &observation.candidate {
-        println!(
-            "  candidate: PR #{} at exact head {} [{}] {} — {}",
-            candidate
-                .number
-                .map(|n| n.to_string())
-                .unwrap_or_else(|| "?".into()),
-            candidate.head_oid,
-            candidate.todo_preview.priority,
-            candidate.todo_preview.action_kind,
-            observation
-                .candidate_selection_reason
-                .as_deref()
-                .unwrap_or("candidate")
-        );
-    } else {
-        println!("  candidate: none");
-    }
-    let backlog = &observation.review_backlog;
-    println!(
-        "  backlog: {} actionable unhandled | poll every {}m ({})",
-        backlog.actionable_unhandled_count,
-        backlog.recommended_poll_interval_minutes,
-        backlog.recommended_cadence
-    );
-    if let Some(pending) = &observation.pending_candidate_exact_head {
-        println!("  pending cursor: {pending}");
-    }
-    println!(
-        "  handled {} | projected {} | write authority NOT granted (read-only)",
-        observation.handled_exact_head_count, observation.projected_candidate_count
-    );
-    Ok(())
-}
-
-/// Strictly monotonic event timestamp for a goal ledger: wall-clock is
-/// second-granular, so a burst of commands in one second would otherwise
-/// produce identical ts values and indistinguishable completion stamps.
-fn next_event_ts(store: &Store, goal_id: &str) -> u64 {
-    let last = store
-        .events(goal_id)
-        .ok()
-        .and_then(|events| events.last().map(|e| crate::store::event_ts(&e.event)))
-        .unwrap_or(0);
-    now_epoch().max(last.saturating_add(1))
-}
-
-/// `pr-review review` — publish a verdict (通过/驳回/再修) on the review
-/// work item at an exact head. The item is a first-class advancement todo
-/// (`pr-review-<number>`); a new exact head supersedes the previous item.
-/// Publishing completes the review with evidence — a re-review is driven by
-/// the next material transition in the queue observation.
-fn pr_review_verdict(store: &mut Store, args: &[String]) -> Result<()> {
-    let json = wants_json(args);
-    let mut goal_id = None;
-    let mut number = None;
-    let mut head = None;
-    let mut repo = None;
-    let mut reviewer = None;
-    let mut verdict = None;
-    let mut comment = None;
-    reject_unknown_flags(
-        args,
-        &[
-            "--comment",
-            "--format",
-            "--goal",
-            "--head",
-            "--json",
-            "--number",
-            "--repo",
-            "--reviewer",
-            "--verdict",
-        ],
-    )?;
-    parse_pairs(args, |k, v| {
-        if k == "--goal" {
-            goal_id = Some(v);
-        } else if k == "--number" {
-            number = Some(v);
-        } else if k == "--head" {
-            head = Some(v);
-        } else if k == "--repo" {
-            repo = Some(v);
-        } else if k == "--reviewer" {
-            reviewer = Some(v);
-        } else if k == "--verdict" {
-            verdict = Some(v);
-        } else if k == "--comment" {
-            comment = Some(v);
-        }
-    });
-    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
-    let number: u64 = number
-        .ok_or_else(|| anyhow::anyhow!("--number required"))?
-        .parse()?;
-    let head = head.ok_or_else(|| anyhow::anyhow!("--head required"))?;
-    use crate::capabilities::pr_review_queue::ReviewVerdict;
-    let verdict_token = verdict
-        .ok_or_else(|| anyhow::anyhow!("--verdict required (approve|request-changes|rework)"))?;
-    let verdict = ReviewVerdict::parse(&verdict_token).ok_or_else(|| {
-        anyhow::anyhow!("--verdict must be approve|request-changes|rework (got `{verdict_token}`)")
-    })?;
-    use crate::work_items::review_queue::{apply_verdict, ReviewItem};
-    let item = ReviewItem {
-        number,
-        head_oid: head.clone(),
-        repository: repo,
-        title: format!("PR {number}"),
-        url: None,
-    };
-    if item.exact_head_key().is_none() {
-        bail!("--head must be a full 40- or 64-hex OID (exact-head review contract)");
-    }
-    let goal = store
-        .replay(&goal_id)?
-        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
-    let id = item.todo_id();
-    // Strictly monotonic event ts: wall-clock is second-granular and a
-    // second verdict in the same second must still yield a distinct
-    // completion stamp (contract-tested).
-    let now = next_event_ts(store, &goal_id);
-    // A new exact head for the same PR supersedes the previous item. The
-    // work item is an upsert by PR number: the existing todo (open or done)
-    // is updated in place — no duplicate `pr-review-<number>` ids.
-    let mut superseded = false;
-    let new_item = match goal.todo(&id) {
-        Some(existing) => {
-            if let Some(parsed) = ReviewItem::from_todo(existing) {
-                if parsed.head_oid != item.head_oid {
-                    superseded = true;
-                }
-            }
-            false
-        }
-        None => true,
-    };
-    // Apply the verdict contract on a scratch todo to get note + evidence.
-    let mut todo = item.to_todo(&id);
-    apply_verdict(
-        &mut todo,
-        verdict,
-        reviewer.as_deref(),
-        comment.as_deref(),
-        now,
-    )
-    .map_err(anyhow::Error::msg)?;
-    let note = todo.note.clone();
-    let evidence = todo.evidence.clone().unwrap_or_default();
-    if new_item {
-        store.append(Event::TodoAdded {
-            goal_id: goal_id.clone(),
-            todo: item.to_todo(&id),
-            ts: now,
-        })?;
-    }
-    store.append(Event::TodoUpdated {
-        goal_id: goal_id.clone(),
-        todo_id: id.clone(),
-        // A superseding head must refresh the exact-head text the work item
-        // carries (reviews are exact-head addressed).
-        text: if superseded { Some(item.text()) } else { None },
-        status: None,
-        evidence: None,
-        note,
-        priority: None,
-        resume_when: None,
-        blocks: None,
-        ts: now,
-    })?;
-    store.append(Event::TodoCompleted {
-        goal_id: goal_id.clone(),
-        todo_id: id.clone(),
-        no_follow_up: true,
-        successor_ids: vec![],
-        evidence: Some(evidence.clone()),
-        ts: now,
-    })?;
-    refresh_next_action(store, &goal_id)?;
-    let _ = sync_compat(store, &goal_id);
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "goal": goal_id,
-                "todo_id": id,
-                "number": number,
-                "head_oid": head,
-                "verdict": verdict.key(),
-                "label": verdict.label(),
-                "reviewer": reviewer.as_deref().unwrap_or("reviewer"),
-                "evidence": evidence,
-                "superseded": superseded,
-                "new_item": new_item
-            }))?
-        );
-        return Ok(());
-    }
-    println!(
-        "review PR #{number} at exact head {head} in {goal_id}: {} ({}) by {} ✔",
-        verdict.label(),
-        verdict.key(),
-        reviewer.as_deref().unwrap_or("reviewer")
-    );
-    println!("  evidence: {evidence}");
-    if superseded {
-        println!("  (previous exact head superseded)");
-    }
-    Ok(())
-}
-
-/// `pr-review claim` — claim a review work item: the existing task-lease
-/// state machine with the reviewer as lease owner.
-fn pr_review_claim(store: &mut Store, args: &[String]) -> Result<()> {
-    let mut goal_id = None;
-    let mut number = None;
-    let mut reviewer = None;
-    let mut lease_secs = 0u64;
-    reject_unknown_flags(args, &["--goal", "--lease-secs", "--number", "--reviewer"])?;
-    parse_pairs(args, |k, v| {
-        if k == "--goal" {
-            goal_id = Some(v);
-        } else if k == "--number" {
-            number = Some(v);
-        } else if k == "--reviewer" {
-            reviewer = Some(v);
-        } else if k == "--lease-secs" {
-            lease_secs = v.parse().unwrap_or(0);
-        }
-    });
-    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
-    let number: u64 = number
-        .ok_or_else(|| anyhow::anyhow!("--number required"))?
-        .parse()?;
-    let reviewer = reviewer.unwrap_or_else(|| "default-agent".to_string());
-    let mut goal = store
-        .replay(&goal_id)?
-        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
-    let id = format!("pr-review-{number}");
-    let existing = goal.todo(&id).cloned().ok_or_else(|| {
-        anyhow::anyhow!("review work item {id} not found (add it with `pr-review review` first)")
-    })?;
-    let item = crate::work_items::review_queue::ReviewItem::from_todo(&existing)
-        .ok_or_else(|| anyhow::anyhow!("todo {id} is not a PR review work item"))?;
-    use crate::work_items::review_queue::claim_review;
-    let now = now_epoch();
-    let op =
-        claim_review(&mut goal, &item, &reviewer, lease_secs, now).map_err(anyhow::Error::msg)?;
-    if !op.idempotent {
-        if op.steal {
-            store.append(Event::TodoExpired {
-                goal_id: goal_id.clone(),
-                todo_id: id.clone(),
-                ts: now,
-            })?;
-        }
-        let expires = goal
-            .todo(&id)
-            .and_then(|todo| todo.lease_expires_at)
-            .unwrap_or(now);
-        store.append(Event::TodoClaimed {
-            goal_id: goal_id.clone(),
-            todo_id: id.clone(),
-            agent_id: reviewer.clone(),
-            lease_expires_at: expires,
-            ts: now,
-        })?;
-    }
-    let _ = sync_compat(store, &goal_id);
-    let expires = goal
-        .todo(&id)
-        .and_then(|todo| todo.lease_expires_at)
-        .unwrap_or(now);
-    println!(
-        "review work item {id} lease acquired by {reviewer} until {expires} {}",
-        if op.steal {
-            "(steal after expiry) "
-        } else {
-            ""
-        }
-    );
-    Ok(())
-}
-
-/// `pr-review recommend` — reviewer recommendation from CODEOWNERS/OWNERS
-/// owner mapping plus a recent-commit heuristic over the changed paths.
-fn pr_review_recommend(args: &[String]) -> Result<()> {
-    let json = wants_json(args);
-    let mut paths: Vec<String> = vec![];
-    let mut codeowners_path = None;
-    let mut owners_root = None;
-    let mut repo_dir = None;
-    let mut since_days = 30u32;
-    reject_unknown_flags(
-        args,
-        &[
-            "--codeowners",
-            "--format",
-            "--json",
-            "--owners-root",
-            "--path",
-            "--repo-dir",
-            "--since-days",
-        ],
-    )?;
-    parse_pairs(args, |k, v| {
-        if k == "--path" {
-            paths.extend(
-                v.split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty()),
-            );
-        } else if k == "--codeowners" {
-            codeowners_path = Some(v);
-        } else if k == "--owners-root" {
-            owners_root = Some(v);
-        } else if k == "--repo-dir" {
-            repo_dir = Some(v);
-        } else if k == "--since-days" {
-            since_days = v.parse().unwrap_or(30);
-        }
-    });
-    if paths.is_empty() {
-        bail!("pr-review recommend requires at least one --path (comma-separated or repeatable)");
-    }
-    use crate::work_items::reviewer;
-    let rules = match codeowners_path {
-        Some(path) => reviewer::parse_codeowners(&std::fs::read_to_string(&path)?),
-        None => vec![],
-    };
-    let dir_owners = match owners_root {
-        Some(root) => reviewer::scan_owners_files(std::path::Path::new(&root)),
-        None => std::collections::BTreeMap::new(),
-    };
-    let commits = match repo_dir {
-        Some(dir) => reviewer::git_recent_commits(std::path::Path::new(&dir), since_days, 200),
-        None => vec![],
-    };
-    let candidates = reviewer::recommend_reviewers(
-        &paths,
-        (!rules.is_empty()).then_some(rules.as_slice()),
-        &dir_owners,
-        &commits,
-    );
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "paths": paths,
-                "candidates": candidates,
-            }))?
-        );
-        return Ok(());
-    }
-    println!("reviewer recommendations for {} path(s):", paths.len());
-    if candidates.is_empty() {
-        println!("  (no owner mapping or recent commits matched — add a CODEOWNERS/OWNERS file)");
-        return Ok(());
-    }
-    for candidate in &candidates {
-        println!(
-            "  {:<24} score {}  ({})",
-            candidate.reviewer,
-            candidate.score,
-            candidate.sources.join(", ")
-        );
-    }
-    Ok(())
-}
-
-/// `pr-review contract` — print the shared review execution contract
-/// (evidence requirements, completion gate, verdict policy 通过/驳回/再修).
-fn pr_review_contract(args: &[String]) -> Result<()> {
-    let json = wants_json(args);
-    reject_unknown_flags(args, &["--format", "--json"])?;
-    use crate::capabilities::pr_review_queue as queue;
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&queue::build_agent_response_contract())?
-        );
-        return Ok(());
-    }
-    let contract = queue::build_review_execution_contract();
-    let gate = &contract["completion_gate"];
-    let policy = &contract["verdict_policy"];
-    println!(
-        "PR review execution contract ({})",
-        queue::EXECUTION_CONTRACT_SCHEMA_VERSION
-    );
-    println!("  completion gate:");
-    println!(
-        "    exact-head recheck required: {} | stale-head verdicts allowed: {}",
-        gate["exact_head_recheck_required"], gate["stale_head_verdict_allowed"]
-    );
-    println!(
-        "    code-change symbol minimum: {} | required final sections: {}",
-        gate["code_change_symbol_minimum"],
-        queue::REQUIRED_FINAL_SECTIONS.join(" / ")
-    );
-    println!("  verdict policy:");
-    println!(
-        "    blocking finding  → {}",
-        policy["open_pr_blocking_finding"]
-    );
-    println!(
-        "    non-blocking      → {}",
-        policy["open_pr_non_blocking_finding"]
-    );
-    println!("    no finding        → {}", policy["open_pr_no_finding"]);
-    println!("    merged PR         → {}", policy["merged_pr"]);
-    println!("  CLI verdicts: approve (通过) | request-changes (驳回) | rework (再修)");
-    Ok(())
-}
-
-// ── runs (G-5) ────────────────────────────────────────────────────────────
-
-/// `loopx runs <history|compact|index|retention|stale> --goal G [--keep N]
-/// [--cutoff TS] [--rebuild]` — run-history projection + lifecycle
-/// (compaction archives, never deletes; index dedup/rebuild; retention
-/// policy; stale-latest-run warning).
 fn cmd_runs(store: &Store, args: &[String]) -> Result<()> {
     let sub = args.first().map(|s| s.as_str()).ok_or_else(|| {
         anyhow::anyhow!("runs requires a subcommand (history|compact|index|retention|stale)")
@@ -5503,19 +4747,7 @@ fn backfill_event_label(event: &Event) -> String {
         _ => "?".to_string(),
     }
 }
-
-/// Display label for a proposal kind (capability propose + hook output).
-fn proposal_kind_label(kind: &crate::capabilities::ProposalKind) -> &'static str {
-    match kind {
-        crate::capabilities::ProposalKind::SuccessorTodo => "successor_todo",
-        crate::capabilities::ProposalKind::NoFollowUp => "no_followup",
-        crate::capabilities::ProposalKind::Repair => "repair",
-        crate::capabilities::ProposalKind::Gate => "gate",
-        crate::capabilities::ProposalKind::Monitor => "monitor",
-    }
-}
-
-/// Display label for a validation status (run-loop validation printout).
+/// Print the status projection, rendered for the CLI (G-9).
 fn validation_status_label(status: &crate::state::ValidationStatus) -> &'static str {
     match status {
         crate::state::ValidationStatus::Passed => "passed",
@@ -5674,115 +4906,6 @@ fn cmd_serve_status(store: &Store, args: &[String]) -> Result<()> {
     crate::status_server::serve(store, &format!("127.0.0.1:{port}"))
 }
 
-/// `loopx capability list` / `loopx capability propose --name issue_fix --input "..."`.
-fn cmd_capability(store: &mut Store, args: &[String]) -> Result<()> {
-    let registry = crate::capabilities::CapabilityRegistry::with_builtin();
-    if args.first().map(|s| s.as_str()) == Some("list") {
-        reject_unknown_flags(&args[1..], &[])?;
-        println!("capabilities:");
-        for cap in registry.all() {
-            let n = cap.name();
-            let d = cap.describe();
-            println!("  {n} — {d}");
-        }
-        return Ok(());
-    }
-    // G-24: per-capability command hooks, gated by catalog status/stage
-    // (experimental capability commands hidden unless --include-experimental).
-    if args.first().map(|s| s.as_str()) == Some("commands") {
-        let catalog = crate::capabilities::catalog::CapabilityCatalog::with_builtin();
-        let include_experimental = args.iter().any(|a| a == "--include-experimental");
-        let mut name = None;
-        reject_unknown_flags(&args[1..], &["--input", "--name"])?;
-        parse_pairs(&args[1..], |k, v| {
-            if k == "--name" {
-                name = Some(v)
-            }
-        });
-        match name {
-            Some(n) => {
-                let cmds = catalog.commands_for(&n, include_experimental);
-                if cmds.is_empty() {
-                    println!(
-                        "no registered commands for `{n}`{}",
-                        if catalog
-                            .get(&n)
-                            .map(|r| r.is_experimental())
-                            .unwrap_or(false)
-                        {
-                            " (experimental — pass --include-experimental)"
-                        } else {
-                            ""
-                        }
-                    );
-                } else {
-                    println!("capability `{n}` commands:");
-                    for c in cmds {
-                        println!("  {:<24} {}", c.name, c.purpose);
-                    }
-                }
-            }
-            None => {
-                println!("per-capability command hooks:");
-                for record in catalog.records(true) {
-                    let mark = if record.is_experimental() {
-                        " (experimental)"
-                    } else {
-                        ""
-                    };
-                    let cmds = catalog.commands_for(&record.id, include_experimental);
-                    for c in cmds {
-                        println!("  {:<24} [{}{}] {}", c.name, record.id, mark, c.purpose);
-                    }
-                }
-            }
-        }
-        return Ok(());
-    }
-    if args.first().map(|s| s.as_str()) != Some("propose") {
-        bail!("capability subcommand must be `list`, `commands`, or `propose`");
-    }
-    let mut name = None;
-    let mut input = None;
-    let mut goal_id = None;
-    reject_unknown_flags(&args[1..], &["--input", "--name", "--goal"])?;
-    parse_pairs(&args[1..], |k, v| {
-        if k == "--name" {
-            name = Some(v);
-        } else if k == "--input" {
-            input = Some(v);
-        } else if k == "--goal" {
-            goal_id = Some(v);
-        }
-    });
-    let name = name.ok_or_else(|| anyhow::anyhow!("--name required"))?;
-    let input = input.unwrap_or_default();
-    let Some(cap) = registry.get(&name) else {
-        bail!("unknown capability `{name}` (see `future-loop capability list`)");
-    };
-    // Per-tool quota (LoopX 对比改进项 ②): with a goal context the
-    // invocation is quota-checked and ledgered at the capability boundary.
-    if let Some(g) = goal_id.as_deref() {
-        enforce_capability_quota(store, g, &name, "propose")?;
-    }
-    let proposals = cap.propose(&input);
-    let n = proposals.len();
-    println!("capability `{name}` → {n} proposal(s):");
-    for p in proposals {
-        let kind = proposal_kind_label(&p.kind);
-        let r = &p.reason;
-        println!("  [{kind}] {r}");
-        if let Some(t) = p.todo {
-            let tt = &t.text;
-            println!("    → todo: {tt}");
-        }
-        if let Some(q) = p.gate_question {
-            println!("    → gate: {q}");
-        }
-    }
-    Ok(())
-}
-
 /// Join todo ids for CLI display (empty → "(none)").
 fn join_ids(ids: &[String]) -> String {
     if ids.is_empty() {
@@ -5791,194 +4914,6 @@ fn join_ids(ids: &[String]) -> String {
         ids.join(", ")
     }
 }
-
-// ── extension (G-21) ───────────────────────────────────────────────────────
-
-/// Extension runtime state file (next to goal state under the loop root).
-fn extension_state_file() -> std::path::PathBuf {
-    std::path::PathBuf::from(format!("{}/extensions/state.json", root_dir()))
-}
-
-/// `loopx extension <install|upgrade|enable|disable|rollback|status|capabilities>` —
-/// the declarative extension lifecycle (v1: no native code is executed).
-fn cmd_extension(store: &Store, args: &[String]) -> Result<()> {
-    let state_file = extension_state_file();
-    let sub = args.first().map(|s| s.as_str()).unwrap_or("");
-    match sub {
-        "install" | "upgrade" => {
-            let mut manifest_path = None;
-            let mut execute = false;
-            reject_unknown_flags(&args[1..], &["--execute", "--id", "--manifest"])?;
-            parse_pairs(&args[1..], |k, v| {
-                if k == "--manifest" {
-                    manifest_path = Some(v);
-                } else if k == "--execute" {
-                    execute = true;
-                }
-            });
-            let manifest_path =
-                manifest_path.ok_or_else(|| anyhow::anyhow!("--manifest required"))?;
-            let manifest = crate::extensions::manifest::load_extension_manifest(
-                std::path::Path::new(&manifest_path),
-            )
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-            let op = crate::extensions::runtime::install_extension(
-                &manifest,
-                &state_file,
-                sub,
-                execute,
-            )
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-            println!(
-                "extension {} `{}` → revision {} (dry_run={} changed={})",
-                op.operation,
-                op.extension_id,
-                op.revision.unwrap_or_default(),
-                op.dry_run,
-                op.changed
-            );
-        }
-        "enable" | "disable" | "rollback" => {
-            let mut id = None;
-            let mut execute = false;
-            reject_unknown_flags(&args[1..], &["--execute", "--id", "--manifest"])?;
-            parse_pairs(&args[1..], |k, v| {
-                if k == "--id" {
-                    id = Some(v);
-                } else if k == "--execute" {
-                    execute = true;
-                }
-            });
-            let id = id.ok_or_else(|| anyhow::anyhow!("--id required"))?;
-            let op = match sub {
-                "enable" => crate::extensions::runtime::enable_extension(&id, &state_file, execute),
-                "disable" => crate::extensions::runtime::disable_extension(&id, &state_file, execute),
-                _ => crate::extensions::runtime::rollback_extension(&id, &state_file, execute),
-            }
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-            println!(
-                "extension {} `{}` → revision {} (dry_run={} changed={})",
-                op.operation,
-                op.extension_id,
-                op.revision.unwrap_or_default(),
-                op.dry_run,
-                op.changed
-            );
-        }
-        "status" => {
-            let mut id = None;
-            reject_unknown_flags(&args[1..], &["--execute", "--id", "--manifest"])?;
-            parse_pairs(&args[1..], |k, v| {
-                if k == "--id" {
-                    id = Some(v);
-                }
-            });
-            let rows = crate::extensions::runtime::extension_status(&state_file, id.as_deref())
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-            if rows.is_empty() {
-                println!("no extensions installed");
-            }
-            for r in rows {
-                println!(
-                    "{:<20} enabled={} rev={} rollback={} doctor_verified={} revisions={}",
-                    r.id, r.enabled, r.active_revision, r.rollback_available, r.doctor_verified, r.revision_count
-                );
-            }
-        }
-        "capabilities" => {
-            reject_unknown_flags(&args[1..], &[])?;
-            let entries = crate::extensions::runtime::extension_catalog_entries(&state_file)
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-            if entries.is_empty() {
-                println!("no extensions installed");
-            }
-            for e in entries {
-                println!(
-                    "{} v{} ready={} provides=[{}] implements=[{}]",
-                    e.id,
-                    e.version,
-                    e.lifecycle.ready,
-                    e.provides.join(","),
-                    e.implements.join(",")
-                );
-            }
-        }
-        _ => bail!(
-            "extension subcommand must be install|upgrade|enable|disable|rollback|status|capabilities"
-        ),
-    }
-    let _ = store;
-    Ok(())
-}
-
-// ── catalog (G-23) ─────────────────────────────────────────────────────────
-
-/// `loopx catalog [--name X] [--json]` — query the capability catalog
-/// (status / stage / provider / commands / packets). P3 acceptance: the
-/// catalog is queryable.
-fn cmd_catalog(store: &Store, args: &[String]) -> Result<()> {
-    let catalog = crate::capabilities::catalog::CapabilityCatalog::with_builtin();
-    let mut name = None;
-    let mut json = false;
-    reject_unknown_flags(args, &["--format", "--json", "--name"])?;
-    parse_pairs(args, |k, v| {
-        if k == "--name" {
-            name = Some(v);
-        } else if k == "--format" {
-            json = v == "json";
-        } else if k == "--json" {
-            json = true;
-        }
-    });
-    match name {
-        Some(n) => {
-            let record = catalog
-                .get(&n)
-                .ok_or_else(|| anyhow::anyhow!("unknown capability `{n}`"))?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(record)?);
-                return Ok(());
-            }
-            let lifecycle = catalog
-                .provider_lifecycle_for(&n)
-                .map(|lc| lc.stage().label().to_string())
-                .unwrap_or_else(|| "unknown".to_string());
-            println!("capability `{}`", record.id);
-            println!("  title    : {}", record.title);
-            println!("  status   : {} (stage {})", record.status, record.stage);
-            println!(
-                "  provider : {} [{}] → {lifecycle}",
-                record.provider_id, record.origin
-            );
-            println!("  commands :");
-            for c in &record.commands {
-                println!("    {:<24} {}", c.name, c.purpose);
-            }
-            println!("  packets  :");
-            for p in &record.packets {
-                println!("    {} @ {}", p.schema_version, p.module);
-            }
-            println!("  user_value: {}", record.user_value);
-            println!("  next_real_step: {}", record.next_real_step);
-        }
-        None => {
-            println!(
-                "capability catalog ({} records):",
-                catalog.records(false).len()
-            );
-            for record in catalog.records(false) {
-                println!(
-                    "  {:<24} {:<22} stage={} provider={}",
-                    record.id, record.status, record.stage, record.provider_id
-                );
-            }
-        }
-    }
-    let _ = store;
-    Ok(())
-}
-
-// ── scope / lane / supervisor (G-16) ───────────────────────────────────────
 
 /// `loopx scope --goal G --agent-id A [--exclude X]` — the identity-scoped
 /// frontier. P3 acceptance: two agents under one goal each hold a frontier
@@ -6585,12 +5520,6 @@ fn delivery_record(store: &mut Store, args: &[String]) -> Result<()> {
         seq,
         ts: now_epoch(),
     })?;
-    // P1-5 reward_memory ingestion: a delivery RESOLUTION is a reward
-    // signal (the P0-2 outcome chain is reward_memory's phase-1 signal
-    // source); the pending `delivered` state ingests nothing.
-    if ingest_delivery_reward(store, &goal_id, &todo_id, outcome, note)? {
-        println!("   ↳ reward signal ingested (delivery_outcome/{outcome})");
-    }
     println!("delivery {todo_id} → {outcome} ✔");
     Ok(())
 }
@@ -6661,456 +5590,6 @@ fn run_followthrough_check(
     }
     Ok(created)
 }
-
-// ── reward-memory (P1-5: reward memory phase 1 — ingestion + scoped feedback) ──
-
-/// P1-5 ingestion helper: a turn that carried an independent validation
-/// receipt feeds the reward ledger (source `validator`). Returns true when
-/// a signal was appended (`not_required` / no receipt ingests nothing).
-fn ingest_validator_reward(
-    store: &mut Store,
-    goal_id: &str,
-    todo_id: &str,
-    agent_id: Option<&str>,
-    record: &RunRecord,
-) -> Result<bool> {
-    use crate::capabilities::reward_memory as rm;
-    let Some(v) = &record.validation else {
-        return Ok(false);
-    };
-    let Some((signal, score)) = rm::validator_signal(v) else {
-        return Ok(false);
-    };
-    let seq = rm::next_seq(&store.events(goal_id)?, todo_id);
-    store.append(Event::RewardSignalRecorded {
-        goal_id: goal_id.to_string(),
-        todo_id: todo_id.to_string(),
-        agent_id: agent_id.map(str::to_string),
-        run_id: Some(record.run_id.clone()),
-        source: rm::SOURCE_VALIDATOR.to_string(),
-        signal: signal.to_string(),
-        score,
-        note: Some(v.summary.clone()),
-        seq,
-        ts: now_epoch(),
-    })?;
-    Ok(true)
-}
-
-/// P1-5 ingestion helper: a delivery RESOLUTION (verified/failed/rework) is
-/// a reward signal (source `delivery_outcome`) — the P0-2 outcome chain is
-/// reward_memory's phase-1 signal source. Returns true when appended (the
-/// pending `delivered` state ingests nothing).
-fn ingest_delivery_reward(
-    store: &mut Store,
-    goal_id: &str,
-    todo_id: &str,
-    outcome: &str,
-    note: Option<String>,
-) -> Result<bool> {
-    use crate::capabilities::reward_memory as rm;
-    let Some((signal, score)) = rm::delivery_outcome_signal(outcome) else {
-        return Ok(false);
-    };
-    let seq = rm::next_seq(&store.events(goal_id)?, todo_id);
-    store.append(Event::RewardSignalRecorded {
-        goal_id: goal_id.to_string(),
-        todo_id: todo_id.to_string(),
-        agent_id: None,
-        run_id: None,
-        source: rm::SOURCE_DELIVERY_OUTCOME.to_string(),
-        signal: signal.to_string(),
-        score,
-        note,
-        seq,
-        ts: now_epoch(),
-    })?;
-    Ok(true)
-}
-
-/// `reward-memory <query|record>` — the P1-5 surface: scoped_feedback read
-/// model (query) + manual evidence scoring (record). Validator and
-/// delivery-outcome signals ingest automatically (run path / `delivery
-/// record`); experiment/dogfood are out of scope for phase 1.
-fn cmd_reward_memory(store: &mut Store, args: &[String]) -> Result<()> {
-    match args.first().map(|s| s.as_str()) {
-        Some("query") => reward_memory_query(store, &args[1..]),
-        Some("record") => reward_memory_record(store, &args[1..]),
-        _ => bail!("reward-memory subcommand must be `query` or `record`"),
-    }
-}
-
-/// `reward-memory query --goal G [--agent-id A] [--todo-id T] [--source S]
-/// [--format json]` — the scoped_feedback read model: reward signals from
-/// the goal ledger, filtered by agent / todo / source scope, plus a
-/// deterministic aggregate summary.
-fn reward_memory_query(store: &Store, args: &[String]) -> Result<()> {
-    use crate::capabilities::reward_memory as rm;
-    reject_unknown_flags(
-        args,
-        &[
-            "--agent-id",
-            "--format",
-            "--goal",
-            "--json",
-            "--source",
-            "--todo-id",
-        ],
-    )?;
-    let mut goal_id = None;
-    let mut agent_id = None;
-    let mut todo_id = None;
-    let mut source_raw = None;
-    parse_pairs(args, |k, v| {
-        if k == "--goal" {
-            goal_id = Some(v);
-        } else if k == "--agent-id" {
-            agent_id = Some(v);
-        } else if k == "--todo-id" {
-            todo_id = Some(v);
-        } else if k == "--source" {
-            source_raw = Some(v);
-        }
-    });
-    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
-    let source = match source_raw.as_deref() {
-        None => None,
-        Some(raw) => Some(rm::normalize_source(raw).ok_or_else(|| {
-            anyhow::anyhow!(
-                "--source must be one of: {}",
-                rm::REWARD_SOURCE_CHOICES.join(", ")
-            )
-        })?),
-    };
-    if !store.registered(&goal_id) {
-        bail!("goal {goal_id} not found");
-    }
-    let events = store.events(&goal_id)?;
-    let scope = rm::RewardScope {
-        agent_id: agent_id.as_deref(),
-        todo_id: todo_id.as_deref(),
-        source,
-    };
-    let signals = rm::collect_signals(&events, &scope);
-    let summary = rm::summarize(&signals);
-    if wants_json(args) {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "goal_id": goal_id,
-                "scope": {
-                    "agent_id": agent_id,
-                    "todo_id": todo_id,
-                    "source": source,
-                },
-                "signals": signals,
-                "summary": summary,
-            }))?
-        );
-        return Ok(());
-    }
-    if signals.is_empty() {
-        println!(
-            "no reward signals for goal {goal_id} (signals ingest from validator receipts, delivery resolutions, and `reward-memory record`)"
-        );
-        return Ok(());
-    }
-    let avg = summary
-        .avg_score
-        .map(|a| format!("{a:.2}"))
-        .unwrap_or_else(|| "-".to_string());
-    println!(
-        "reward signals for {goal_id}: {} total (validator passed={} failed={}, scored={}, avg_score={})",
-        summary.total, summary.validator_passed, summary.validator_failed, summary.scored, avg
-    );
-    for s in &signals {
-        let score = s
-            .score
-            .map(|v| format!(" score={v:.2}"))
-            .unwrap_or_default();
-        let agent = s
-            .agent_id
-            .as_deref()
-            .map(|a| format!(" agent={a}"))
-            .unwrap_or_default();
-        let run = s
-            .run_id
-            .as_deref()
-            .map(|r| format!(" run={r}"))
-            .unwrap_or_default();
-        let note = s
-            .note
-            .as_deref()
-            .map(|n| format!(" note={n}"))
-            .unwrap_or_default();
-        println!(
-            "  {} [{}/{}]{}{}{}{}",
-            s.todo_id, s.source, s.signal, score, agent, run, note
-        );
-    }
-    Ok(())
-}
-
-/// `reward-memory record --goal G --todo-id T --score 0.0..1.0 [--source
-/// evidence] [--note N] [--agent-id A]` — manual evidence scoring into the
-/// reward ledger (phase-1 ingestion path for evidence that does not come
-/// from a validator receipt or a delivery resolution).
-fn reward_memory_record(store: &mut Store, args: &[String]) -> Result<()> {
-    use crate::capabilities::reward_memory as rm;
-    reject_unknown_flags(
-        args,
-        &[
-            "--agent-id",
-            "--goal",
-            "--note",
-            "--score",
-            "--source",
-            "--todo-id",
-        ],
-    )?;
-    let mut goal_id = None;
-    let mut todo_id = None;
-    let mut score_raw = None;
-    let mut source_raw = None;
-    let mut note = None;
-    let mut agent_id = None;
-    parse_pairs(args, |k, v| {
-        if k == "--goal" {
-            goal_id = Some(v);
-        } else if k == "--todo-id" {
-            todo_id = Some(v);
-        } else if k == "--score" {
-            score_raw = Some(v);
-        } else if k == "--source" {
-            source_raw = Some(v);
-        } else if k == "--note" {
-            note = Some(v);
-        } else if k == "--agent-id" {
-            agent_id = Some(v);
-        }
-    });
-    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
-    let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
-    let score_raw = score_raw.ok_or_else(|| anyhow::anyhow!("--score required"))?;
-    let score: f64 = score_raw
-        .parse()
-        .map_err(|_| anyhow::anyhow!("--score must be a number in 0.0..=1.0"))?;
-    if !score.is_finite() || !(0.0..=1.0).contains(&score) {
-        bail!("--score must be a number in 0.0..=1.0");
-    }
-    let source = match source_raw.as_deref() {
-        None => rm::SOURCE_EVIDENCE,
-        Some(raw) => rm::normalize_source(raw).ok_or_else(|| {
-            anyhow::anyhow!(
-                "--source must be one of: {}",
-                rm::REWARD_SOURCE_CHOICES.join(", ")
-            )
-        })?,
-    };
-    let goal = store
-        .replay(&goal_id)?
-        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
-    if goal.todo(&todo_id).is_none() {
-        bail!("todo {todo_id} not found in goal {goal_id}");
-    }
-    let seq = rm::next_seq(&store.events(&goal_id)?, &todo_id);
-    store.append(Event::RewardSignalRecorded {
-        goal_id: goal_id.clone(),
-        todo_id: todo_id.clone(),
-        agent_id,
-        run_id: None,
-        source: source.to_string(),
-        signal: "scored".to_string(),
-        score: Some(score),
-        note,
-        seq,
-        ts: now_epoch(),
-    })?;
-    println!("reward signal recorded: {todo_id} [{source}/scored] score={score:.2} ✔");
-    Ok(())
-}
-
-// ── decision-context (P1-4: assembler + outcome feedback) ─────────────────
-
-/// `decision-context <assemble|outcomes|feedback>` — the P1-4 surface:
-/// the decision-context assembler read model plus the audited
-/// outcome-feedback writeback (LoopX `capabilities/decision_context/cli.py`,
-/// compact set).
-fn cmd_decision_context(store: &mut Store, args: &[String]) -> Result<()> {
-    match args.first().map(|s| s.as_str()) {
-        Some("assemble") => decision_context_assemble(store, &args[1..]),
-        Some("outcomes") => decision_context_outcomes(store, &args[1..]),
-        Some("feedback") => decision_context_feedback(store, &args[1..]),
-        _ => bail!("decision-context subcommand must be `assemble`, `outcomes` or `feedback`"),
-    }
-}
-
-/// `decision-context assemble --goal G [--format json]` — assemble the
-/// decision context for the goal's current state (run history / outcome
-/// streak / quota status providers + the goal-boundary header).
-fn decision_context_assemble(store: &Store, args: &[String]) -> Result<()> {
-    use crate::capabilities::decision_context::assembler::assemble_decision_context;
-    let mut goal_id = None;
-    reject_unknown_flags(args, &["--format", "--goal", "--json"])?;
-    parse_pairs(args, |k, v| {
-        if k == "--goal" {
-            goal_id = Some(v)
-        }
-    });
-    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
-    let goal = store
-        .replay(&goal_id)?
-        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
-    let packet = assemble_decision_context(&goal);
-    if wants_json(args) {
-        println!("{}", serde_json::to_string_pretty(&packet)?);
-        return Ok(());
-    }
-    println!(
-        "decision context for {goal_id} (digest {}):",
-        packet.digest()
-    );
-    println!(
-        "  goal_status={} providers=[{}]",
-        packet.goal_status,
-        packet.providers.join(", ")
-    );
-    println!(
-        "  run_history: runs={} material={} recent=[{}]",
-        packet.run_history.run_count,
-        packet.run_history.material_runs,
-        packet.run_history.recent_terminal_states.join(", ")
-    );
-    println!(
-        "  outcome_streak: streak={} threshold={} floor_breached={}",
-        packet.outcome_streak.surface_streak,
-        packet.outcome_streak.threshold,
-        packet.outcome_streak.floor_breached
-    );
-    println!(
-        "  quota: spent={}/{} (projected {})",
-        packet.quota.spent_slots, packet.quota.allowed_slots, packet.quota.projected_spent_slots
-    );
-    print_open_acceptance_gaps(&packet);
-    Ok(())
-}
-
-fn print_open_acceptance_gaps(
-    packet: &crate::capabilities::decision_context::packets::DecisionContextPacket,
-) {
-    if !packet.open_acceptance_gaps.is_empty() {
-        println!(
-            "  open_acceptance_gaps: [{}]",
-            packet.open_acceptance_gaps.join(", ")
-        );
-    }
-}
-
-/// `decision-context outcomes --goal G [--format json]` — the outcome
-/// feedback read model: settled receipts in ledger order.
-fn decision_context_outcomes(store: &Store, args: &[String]) -> Result<()> {
-    use crate::capabilities::decision_context::outcome_feedback::decision_outcomes;
-    let mut goal_id = None;
-    reject_unknown_flags(args, &["--format", "--goal", "--json"])?;
-    parse_pairs(args, |k, v| {
-        if k == "--goal" {
-            goal_id = Some(v);
-        }
-    });
-    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
-    let events = store.events(&goal_id)?;
-    let receipts = decision_outcomes(&events);
-    if wants_json(args) {
-        println!("{}", serde_json::to_string_pretty(&receipts)?);
-        return Ok(());
-    }
-    if receipts.is_empty() {
-        println!(
-            "no decision outcome feedback for goal {goal_id} (settle one via `decision-context feedback`)"
-        );
-        return Ok(());
-    }
-    println!(
-        "decision outcome feedback for {goal_id} ({} receipt(s)):",
-        receipts.len()
-    );
-    for r in receipts {
-        println!(
-            "  {} {} → {} (decision={}, code={}, seq={})",
-            r.receipt_id,
-            r.decision_id,
-            r.verification_status,
-            r.accepted_decision,
-            r.reason_code,
-            r.seq
-        );
-    }
-    Ok(())
-}
-
-/// `decision-context feedback --goal G --turn N --status
-/// verified|refuted|inconclusive [--note N] [--agent-id A]
-/// [--context-digest D]` — settle an outcome against the persisted decision
-/// for turn N. Audited: fails closed when no decision summary anchors the
-/// turn. Decisive outcomes also ingest a `decision_outcome` reward signal.
-fn decision_context_feedback(store: &mut Store, args: &[String]) -> Result<()> {
-    use crate::capabilities::decision_context::outcome_feedback::record_outcome_feedback;
-    let mut goal_id = None;
-    let mut turn_raw = None;
-    let mut status = None;
-    let mut note = None;
-    let mut agent_id = None;
-    let mut context_digest = None;
-    reject_unknown_flags(
-        args,
-        &[
-            "--agent-id",
-            "--context-digest",
-            "--goal",
-            "--note",
-            "--status",
-            "--turn",
-        ],
-    )?;
-    parse_pairs(args, |k, v| {
-        if k == "--goal" {
-            goal_id = Some(v);
-        } else if k == "--turn" {
-            turn_raw = Some(v);
-        } else if k == "--status" {
-            status = Some(v);
-        } else if k == "--note" {
-            note = Some(v);
-        } else if k == "--agent-id" {
-            agent_id = Some(v);
-        } else if k == "--context-digest" {
-            context_digest = Some(v);
-        }
-    });
-    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
-    let turn: u32 = turn_raw
-        .ok_or_else(|| anyhow::anyhow!("--turn required"))?
-        .parse()
-        .map_err(|_| anyhow::anyhow!("--turn must be a run-turn number"))?;
-    let status = status.ok_or_else(|| anyhow::anyhow!("--status required"))?;
-    let receipt = record_outcome_feedback(
-        store,
-        &goal_id,
-        turn,
-        &status,
-        note,
-        agent_id,
-        context_digest.as_deref().unwrap_or(""),
-    )?;
-    println!(
-        "decision outcome recorded: {} turn-{turn} → {} ✔",
-        receipt.receipt_id, receipt.verification_status
-    );
-    Ok(())
-}
-
-// ── registry (G-26) ────────────────────────────────────────────────────────
-
 /// `loopx registry [--format json|--json] [--include-experimental]` — inspect
 /// the CLI registry (groups + commands) — the aggregated help surface.
 fn cmd_registry(registry: &CommandRegistry, args: &[String]) -> Result<()> {
@@ -8135,7 +6614,6 @@ fn event_touches_todo(event: &crate::store::Event, todo_id: &str) -> bool {
         | Event::TodoReleased { todo_id: id, .. }
         | Event::TodoExpired { todo_id: id, .. }
         | Event::WorkspaceLockAcquired { todo_id: id, .. }
-        | Event::RewardSignalRecorded { todo_id: id, .. }
         | Event::DeliveryOutcomeRecorded { todo_id: id, .. }
         | Event::GateResolved { todo_id: id, .. } => id == todo_id,
         Event::FollowthroughCreated {
@@ -8280,16 +6758,6 @@ fn describe_event(event: &crate::store::Event) -> String {
                 "quota_spent run={run_id} todo={todo_id} source={source} slots={slots}"
             );
         }
-        Event::CapabilityInvoked {
-            capability,
-            command,
-            outcome,
-            ..
-        } => {
-            return format!(
-                "capability_invoked capability={capability} command={command} outcome={outcome}"
-            );
-        }
         Event::EvidenceAttached { todo_id, .. } => {
             return format!("evidence_attached todo={todo_id}");
         }
@@ -8319,16 +6787,6 @@ fn describe_event(event: &crate::store::Event) -> String {
             return format!(
                 "followthrough_created source={source_todo_id} followup={followup_todo_id}"
             );
-        }
-        Event::RewardSignalRecorded {
-            todo_id,
-            source,
-            signal,
-            score,
-            ..
-        } => {
-            let score = score.map(|v| format!(" score={v:.2}")).unwrap_or_default();
-            return format!("reward_signal todo={todo_id} source={source} signal={signal}{score}");
         }
         Event::DecisionSummaryRecorded { summary, .. } => {
             return format!(
@@ -8404,12 +6862,6 @@ fn describe_event(event: &crate::store::Event) -> String {
         } => {
             return format!(
                 "projection_repaired projection={projection} drift={drift_count} rows_written={rows_written}"
-            );
-        }
-        Event::DecisionOutcomeRecorded { receipt, .. } => {
-            return format!(
-                "decision_outcome {} {} → {}",
-                receipt.receipt_id, receipt.decision_id, receipt.verification_status
             );
         }
         Event::MultiAgentContractSet { contract, .. } => {
@@ -8646,9 +7098,11 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
     let mut priority = None;
     let mut resume_when = None;
     let mut blocks: Option<Vec<String>> = None;
+    let mut acceptance: Option<String> = None;
     reject_unknown_flags(
         args,
         &[
+            "--acceptance",
             "--blocks",
             "--evidence",
             "--goal",
@@ -8690,6 +7144,8 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
                     .filter(|s| !s.is_empty())
                     .collect()
             });
+        } else if k == "--acceptance" {
+            acceptance = Some(v);
         }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
@@ -8736,6 +7192,7 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
         priority: priority.clone(),
         resume_when: resume_when_parsed,
         blocks: blocks.clone(),
+        acceptance: acceptance.clone(),
         ts: crate::state::now_epoch(),
     })?;
     refresh_next_action(store, &goal_id)?;
@@ -8806,6 +7263,7 @@ mod coverage_tests {
                 priority: None,
                 resume_when: None,
                 blocks: None,
+                acceptance: None,
                 ts: 1,
             },
             Event::GoalCancelled {
@@ -8930,14 +7388,6 @@ mod coverage_tests {
                 rollback_ref: None,
                 ts: 1,
             },
-            Event::CapabilityInvoked {
-                goal_id: "g".into(),
-                capability: "issue_fix".into(),
-                command: "propose".into(),
-                outcome: "accepted".into(),
-                invocation_id: "inv-1".into(),
-                ts: 1,
-            },
             Event::FollowthroughCreated {
                 goal_id: "g".into(),
                 source_todo_id: todo_id.into(),
@@ -9001,25 +7451,6 @@ mod coverage_tests {
                 elapsed_secs: 3600,
                 threshold_secs: 900,
                 consecutive: 1,
-                ts: 1,
-            },
-            Event::DecisionOutcomeRecorded {
-                goal_id: "g".into(),
-                receipt: crate::capabilities::decision_context::packets::DecisionOutcomeReceipt {
-                    schema_version: "decision_outcome_receipt_v0".into(),
-                    receipt_id: "r1".into(),
-                    goal_id: "g".into(),
-                    decision_id: "turn-1".into(),
-                    agent_id: None,
-                    accepted_decision: "bounded_delivery".into(),
-                    reason_code: "runnable".into(),
-                    context_digest: "".into(),
-                    verification_status: "verified".into(),
-                    note: None,
-                    seq: 1,
-                    recorded_at: 1,
-                    settled_at: None,
-                },
                 ts: 1,
             },
         ]
@@ -9262,18 +7693,7 @@ mod coverage_tests {
 
     #[test]
     fn label_fns_cover_every_variant() {
-        use crate::capabilities::ProposalKind;
         use crate::state::ValidationStatus;
-        let kinds = [
-            (ProposalKind::SuccessorTodo, "successor_todo"),
-            (ProposalKind::NoFollowUp, "no_followup"),
-            (ProposalKind::Repair, "repair"),
-            (ProposalKind::Gate, "gate"),
-            (ProposalKind::Monitor, "monitor"),
-        ];
-        for (kind, label) in kinds {
-            assert_eq!(proposal_kind_label(&kind), label);
-        }
         let statuses = [
             (ValidationStatus::Passed, "passed"),
             (ValidationStatus::Progress, "progress"),
@@ -9363,22 +7783,6 @@ mod coverage_tests {
         let id = gen_id("todo");
         assert!(id.starts_with("todo_"), "{id}");
         assert_eq!(id.len(), "todo_".len() + 12);
-    }
-
-    #[test]
-    fn capability_hook_unknown_capability_bails() {
-        let dir = std::env::temp_dir().join(format!(
-            "future-loop-caphook-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let root = dir.to_string_lossy().into_owned();
-        let mut store = Store::open(&root).unwrap();
-        let err = cmd_capability_hook(&mut store, "ghost-cmd", "ghost_cap", &[]).unwrap_err();
-        assert!(format!("{err:#}").contains("unknown capability"));
     }
 
     #[test]
@@ -9540,25 +7944,6 @@ mod cli_quirks_tests {
     }
 
     #[test]
-    fn render_command_help_marks_experimental_and_capability_hooks() {
-        let registry = build_cli_registry();
-        let catalog = crate::capabilities::catalog::CapabilityCatalog::with_builtin();
-        // An experimental capability command renders the "(experimental)" suffix.
-        let name = catalog
-            .records(true)
-            .iter()
-            .filter(|r| r.is_experimental())
-            .find_map(|r| r.commands.first().map(|c| c.name.clone()))
-            .expect("catalog carries an experimental command");
-        let help = render_command_help(&registry, &name, true);
-        assert!(help.contains("(experimental)"), "got: {help}");
-        // With include_experimental=false the hook is hidden from the
-        // registry, so render_command_help falls back to the hook form.
-        let help2 = render_command_help(&registry, &name, false);
-        assert!(help2.contains("capability command hook"), "got: {help2}");
-    }
-
-    #[test]
     fn shorten_home_contracts_the_home_prefix() {
         let home = std::env::var("HOME").expect("HOME is set in the test environment");
         assert_eq!(shorten_home(&format!("{home}/sub/dir")), "~/sub/dir");
@@ -9572,19 +7957,8 @@ mod cli_quirks_tests {
     fn journey_assignments_cover_every_static_command() {
         use std::collections::HashSet;
         let registry = build_cli_registry();
-        // Capability command hooks are registered dynamically from the
-        // catalog and intentionally keep the maintainer default.
-        let hook_names: HashSet<String> =
-            crate::capabilities::catalog::CapabilityCatalog::with_builtin()
-                .records(true)
-                .iter()
-                .flat_map(|r| r.commands.iter().map(|c| c.name.clone()))
-                .collect();
         let assigned: HashSet<&str> = JOURNEY_ASSIGNMENTS.iter().map(|(n, _)| *n).collect();
         for c in registry.commands(true) {
-            if hook_names.contains(&c.name) {
-                continue;
-            }
             assert!(
                 assigned.contains(c.name.as_str()),
                 "registered command `{}` has no journey assignment",
@@ -9692,349 +8066,6 @@ mod cli_quirks_tests {
         // rows serialize (the --format json path)
         let json = serde_json::to_string(&rows).unwrap();
         assert!(json.contains("\"status\":\"running\""));
-    }
-
-    // ── pr-review (P2-3) CLI contract tests ─────────────────────────────
-
-    fn pr_fixture(number: u64, head: &str) -> serde_json::Value {
-        serde_json::json!({
-            "number": number,
-            "title": format!("PR {number}"),
-            "url": format!("https://github.com/owner/repo/pull/{number}"),
-            "state": "OPEN",
-            "head_oid": head,
-            "review_decision": "REVIEW_REQUIRED",
-            "is_draft": false,
-            "merge_state": "CLEAN",
-            "checks": {"counts": {"success": 1, "failure": 0, "pending": 0, "unknown": 0}, "failures": [], "pending": []}
-        })
-    }
-
-    fn pr_review_store() -> (tempfile::TempDir, Store) {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_string_lossy().into_owned();
-        let mut store = Store::open(&root).unwrap();
-        let goal = Goal::new("g", "review PRs", "/tmp");
-        store.register(&goal).unwrap();
-        store
-            .append(Event::GoalStarted {
-                goal_id: "g".into(),
-                ts: 1,
-            })
-            .unwrap();
-        (dir, store)
-    }
-
-    #[test]
-    fn pr_review_queue_projects_the_observation() {
-        let (_dir, mut store) = pr_review_store();
-        let fixture = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(
-            fixture.path(),
-            serde_json::json!({
-                "repository": "owner/repo",
-                "pull_requests": [pr_fixture(1, &"a".repeat(40)), pr_fixture(2, &"b".repeat(40))]
-            })
-            .to_string(),
-        )
-        .unwrap();
-        let args = vec![
-            "queue".to_string(),
-            "--fixture".to_string(),
-            fixture.path().to_string_lossy().into_owned(),
-            "--format".to_string(),
-            "json".to_string(),
-        ];
-        // capture stdout is not wired here; assert the observation instead
-        let payload: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(fixture.path()).unwrap()).unwrap();
-        let observation =
-            crate::capabilities::pr_review_queue::build_pull_request_review_queue_observation(
-                Some("owner/repo"),
-                payload["pull_requests"].as_array().unwrap(),
-                &serde_json::json!({"complete": true}),
-                None,
-                &[],
-            )
-            .unwrap();
-        assert_eq!(observation.candidate.as_ref().unwrap().number, Some(1));
-        assert_eq!(observation.queue_size, Some(2));
-        // the CLI path accepts the same flags without panicking
-        pr_review_queue(&mut store, &args).unwrap();
-    }
-
-    #[test]
-    fn pr_review_queue_requires_a_payload_source() {
-        let (_dir, mut store) = pr_review_store();
-        let err = pr_review_queue(&mut store, &["queue".to_string()]).unwrap_err();
-        assert!(format!("{err}").contains("--fixture"), "{err}");
-    }
-
-    #[test]
-    fn pr_review_verdict_creates_and_completes_the_work_item() {
-        let (dir, mut store) = pr_review_store();
-        let args = vec![
-            "review".to_string(),
-            "--goal".to_string(),
-            "g".to_string(),
-            "--number".to_string(),
-            "7".to_string(),
-            "--head".to_string(),
-            "a".repeat(40),
-            "--repo".to_string(),
-            "owner/repo".to_string(),
-            "--reviewer".to_string(),
-            "alice".to_string(),
-            "--verdict".to_string(),
-            "request-changes".to_string(),
-            "--comment".to_string(),
-            "missing regression test".to_string(),
-        ];
-        pr_review_verdict(&mut store, &args).unwrap();
-        let goal = store.replay("g").unwrap().unwrap();
-        let todo = goal.todo("pr-review-7").unwrap();
-        assert_eq!(todo.status, TodoStatus::Done);
-        assert!(todo.no_follow_up);
-        assert_eq!(todo.action_kind.as_deref(), Some("github_pr_review"));
-        assert_eq!(
-            todo.task_repository.as_deref(),
-            Some("git:github.com/owner/repo")
-        );
-        let evidence = todo.evidence.as_deref().unwrap();
-        assert!(evidence.contains("驳回"), "{evidence}");
-        assert!(evidence.contains("alice"));
-        assert!(evidence.contains("missing regression test"));
-        // the active-state projection is in sync
-        let active = std::fs::read_to_string(dir.path().join("goals/g/ACTIVE_GOAL_STATE.md"))
-            .unwrap_or_default();
-        assert!(active.contains("PR #7"), "{active}");
-        // a fresh verdict at the SAME head opens a new item (review completes)
-        pr_review_verdict(&mut store, &args).unwrap();
-        let goal = store.replay("g").unwrap().unwrap();
-        assert_eq!(goal.todo("pr-review-7").unwrap().status, TodoStatus::Done);
-    }
-
-    #[test]
-    fn pr_review_verdict_supersedes_on_a_new_exact_head() {
-        let (_dir, mut store) = pr_review_store();
-        let base = |head: String| {
-            vec![
-                "review".to_string(),
-                "--goal".to_string(),
-                "g".to_string(),
-                "--number".to_string(),
-                "3".to_string(),
-                "--head".to_string(),
-                head,
-                "--verdict".to_string(),
-                "approve".to_string(),
-            ]
-        };
-        pr_review_verdict(&mut store, &base("a".repeat(40))).unwrap();
-        let first_ts = store
-            .replay("g")
-            .unwrap()
-            .unwrap()
-            .todo("pr-review-3")
-            .unwrap()
-            .completed_at;
-        pr_review_verdict(&mut store, &base("b".repeat(40))).unwrap();
-        let goal = store.replay("g").unwrap().unwrap();
-        let todo = goal.todo("pr-review-3").unwrap();
-        assert_eq!(todo.status, TodoStatus::Done);
-        assert!(
-            todo.completed_at > first_ts,
-            "new head completes a fresh item"
-        );
-        let evidence = todo.evidence.as_deref().unwrap();
-        assert!(evidence.contains(&"b".repeat(40)), "{evidence}");
-        assert!(evidence.contains("通过"));
-    }
-
-    #[test]
-    fn pr_review_verdict_rejects_bad_heads_and_verdicts() {
-        let (_dir, mut store) = pr_review_store();
-        let bad_head = pr_review_verdict(
-            &mut store,
-            &[
-                "review".to_string(),
-                "--goal".to_string(),
-                "g".to_string(),
-                "--number".to_string(),
-                "1".to_string(),
-                "--head".to_string(),
-                "short".to_string(),
-                "--verdict".to_string(),
-                "approve".to_string(),
-            ],
-        )
-        .unwrap_err();
-        assert!(format!("{bad_head}").contains("40- or 64-hex"));
-        let bad_verdict = pr_review_verdict(
-            &mut store,
-            &[
-                "review".to_string(),
-                "--goal".to_string(),
-                "g".to_string(),
-                "--number".to_string(),
-                "1".to_string(),
-                "--head".to_string(),
-                "a".repeat(40),
-                "--verdict".to_string(),
-                "meh".to_string(),
-            ],
-        )
-        .unwrap_err();
-        assert!(format!("{bad_verdict}").contains("approve|request-changes|rework"));
-        // no todo materialized on the failed paths
-        let goal = store.replay("g").unwrap().unwrap();
-        assert!(goal.todo("pr-review-1").is_none());
-    }
-
-    #[test]
-    fn pr_review_claim_reuses_the_task_lease_events() {
-        let (_dir, mut store) = pr_review_store();
-        let args = |verdict: &str| {
-            vec![
-                "review".to_string(),
-                "--goal".to_string(),
-                "g".to_string(),
-                "--number".to_string(),
-                "5".to_string(),
-                "--head".to_string(),
-                "c".repeat(40),
-                "--verdict".to_string(),
-                verdict.to_string(),
-            ]
-        };
-        pr_review_verdict(&mut store, &args("approve")).unwrap();
-        // the completed item cannot be claimed (task_lease requires open)
-        let err = pr_review_claim(
-            &mut store,
-            &[
-                "claim".to_string(),
-                "--goal".to_string(),
-                "g".to_string(),
-                "--number".to_string(),
-                "5".to_string(),
-                "--reviewer".to_string(),
-                "bob".to_string(),
-            ],
-        )
-        .unwrap_err();
-        assert!(format!("{err:#}").contains("open todo"), "{err:#}");
-        // claim an OPEN review item: lease events land in the ledger
-        let open = vec![
-            "review".to_string(),
-            "--goal".to_string(),
-            "g".to_string(),
-            "--number".to_string(),
-            "6".to_string(),
-            "--head".to_string(),
-            "d".repeat(40),
-            "--verdict".to_string(),
-            "rework".to_string(),
-        ];
-        // add an open review item via the work-item builder directly
-        let goal = store.replay("g").unwrap().unwrap();
-        let item = crate::work_items::review_queue::ReviewItem {
-            number: 6,
-            head_oid: "d".repeat(40),
-            repository: Some("owner/repo".to_string()),
-            title: "PR 6".to_string(),
-            url: None,
-        };
-        let todo = item.to_todo("pr-review-6");
-        store
-            .append(Event::TodoAdded {
-                goal_id: "g".into(),
-                todo,
-                ts: 2,
-            })
-            .unwrap();
-        let _ = goal;
-        pr_review_claim(
-            &mut store,
-            &[
-                "claim".to_string(),
-                "--goal".to_string(),
-                "g".to_string(),
-                "--number".to_string(),
-                "6".to_string(),
-                "--reviewer".to_string(),
-                "bob".to_string(),
-                "--lease-secs".to_string(),
-                "60".to_string(),
-            ],
-        )
-        .unwrap();
-        let goal = store.replay("g").unwrap().unwrap();
-        let claimed = goal.todo("pr-review-6").unwrap();
-        assert_eq!(claimed.claimed_by.as_deref(), Some("bob"));
-        assert!(claimed.lease_expires_at.is_some());
-        let _ = open;
-    }
-
-    #[test]
-    fn pr_review_recommend_ranks_from_codeowners_and_owners_files() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("src/deep")).unwrap();
-        std::fs::write(
-            dir.path().join("CODEOWNERS"),
-            "src/** @core\n*.md docs-team\n",
-        )
-        .unwrap();
-        std::fs::write(dir.path().join("src/OWNERS"), "alice\n").unwrap();
-        std::fs::write(dir.path().join("src/deep/OWNERS"), "deep-owner\n").unwrap();
-        let args = vec![
-            "recommend".to_string(),
-            "--path".to_string(),
-            "src/deep/core.rs".to_string(),
-            "--codeowners".to_string(),
-            dir.path().join("CODEOWNERS").to_string_lossy().into_owned(),
-            "--owners-root".to_string(),
-            dir.path().to_string_lossy().into_owned(),
-            "--format".to_string(),
-            "json".to_string(),
-        ];
-        pr_review_recommend(&args).unwrap();
-        // the pure scorer is the contract; assert its deterministic ranking
-        let rules = crate::work_items::reviewer::parse_codeowners("src/** @core\n");
-        let dirs = crate::work_items::reviewer::scan_owners_files(dir.path());
-        let candidates = crate::work_items::reviewer::recommend_reviewers(
-            &["src/deep/core.rs".to_string()],
-            Some(&rules),
-            &dirs,
-            &[],
-        );
-        let names: Vec<&str> = candidates.iter().map(|c| c.reviewer.as_str()).collect();
-        assert_eq!(names, vec!["@core", "deep-owner"]);
-        // no paths → error
-        assert!(pr_review_recommend(&["recommend".to_string()]).is_err());
-    }
-
-    #[test]
-    fn pr_review_contract_prints_the_verdict_policy() {
-        pr_review_contract(&["contract".to_string()]).unwrap();
-        pr_review_contract(&[
-            "contract".to_string(),
-            "--format".to_string(),
-            "json".to_string(),
-        ])
-        .unwrap();
-        let err = pr_review_contract(&["contract".to_string(), "--nope".to_string()]).unwrap_err();
-        assert!(format!("{err}").contains("unknown flag"), "{err}");
-    }
-
-    #[test]
-    fn pr_review_registered_and_journey_assigned() {
-        let registry = build_cli_registry();
-        let (group, def) = registry.find("pr-review", false).unwrap();
-        assert_eq!(group.name, "pr-review");
-        assert_eq!(def.journey, Journey::Daily);
-        assert!(registry
-            .render_help(false)
-            .contains("pr-review queue|review|claim"));
     }
 
     #[test]
@@ -10546,284 +8577,9 @@ mod read_model_repair_cli_tests {
         assert!(!event_touches_todo(&event, "t1"));
     }
 }
-
 #[cfg(test)]
-mod reward_memory_cli_tests {
+mod event_touch_filter_tests {
     use super::*;
-    use crate::state::{task_validation_receipt, RecoveryKind, ValidationStatus};
-
-    fn tmp_store(tag: &str) -> Store {
-        let dir = std::env::temp_dir().join(format!(
-            "future-loop-p15-{tag}-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        Store::open(dir.to_string_lossy().as_ref()).unwrap()
-    }
-
-    fn open_goal(store: &mut Store, goal_id: &str) {
-        let goal = Goal::new(goal_id, "objective", "/tmp");
-        store.register(&goal).unwrap();
-        let ts = goal.created_at;
-        store
-            .append(Event::GoalStarted {
-                goal_id: goal_id.into(),
-                ts,
-            })
-            .unwrap();
-        store
-            .append(Event::TodoAdded {
-                goal_id: goal_id.into(),
-                todo: Todo::advancement("t1", "shared work"),
-                ts,
-            })
-            .unwrap();
-    }
-
-    fn record_with_validation(validation: Option<crate::state::TaskValidation>) -> RunRecord {
-        RunRecord {
-            turn: 1,
-            todo_id: "t1".into(),
-            run_id: "r1".into(),
-            terminal_state: "completed".into(),
-            error: None,
-            tokens_in_delta: 0,
-            tokens_out_delta: 0,
-            cost_delta: 0.0,
-            tools: vec![],
-            evidence: "ev".into(),
-            recorded_at: 0,
-            spend_source: None,
-            validation,
-        }
-    }
-
-    fn signals(
-        store: &Store,
-        goal_id: &str,
-    ) -> Vec<crate::capabilities::reward_memory::RewardSignal> {
-        crate::capabilities::reward_memory::collect_signals(
-            &store.events(goal_id).unwrap(),
-            &crate::capabilities::reward_memory::RewardScope::default(),
-        )
-    }
-
-    #[test]
-    fn validator_ingestion_appends_signal_with_run_and_agent() {
-        let mut store = tmp_store("validator");
-        open_goal(&mut store, "g1");
-        // No receipt → nothing ingested.
-        let rec = record_with_validation(None);
-        assert!(!ingest_validator_reward(&mut store, "g1", "t1", Some("a1"), &rec).unwrap());
-        // not_required = no independent validation happened → nothing ingested.
-        let rec = record_with_validation(Some(task_validation_receipt(
-            ValidationStatus::NotRequired,
-            "shell",
-            "no validator",
-            None,
-            None,
-        )));
-        assert!(!ingest_validator_reward(&mut store, "g1", "t1", Some("a1"), &rec).unwrap());
-        assert!(signals(&store, "g1").is_empty());
-        // A passed receipt ingests score 1.0 with run/agent provenance.
-        let rec = record_with_validation(Some(task_validation_receipt(
-            ValidationStatus::Passed,
-            "shell",
-            "tests green",
-            None,
-            Some(0),
-        )));
-        assert!(ingest_validator_reward(&mut store, "g1", "t1", Some("a1"), &rec).unwrap());
-        let got = signals(&store, "g1");
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].source, "validator");
-        assert_eq!(got[0].signal, "passed");
-        assert_eq!(got[0].score, Some(1.0));
-        assert_eq!(got[0].agent_id.as_deref(), Some("a1"));
-        assert_eq!(got[0].run_id.as_deref(), Some("r1"));
-        assert_eq!(got[0].note.as_deref(), Some("tests green"));
-        assert_eq!(got[0].seq, 1);
-        // A failed receipt ingests score 0.0 with the next sequence number.
-        let rec = record_with_validation(Some(task_validation_receipt(
-            ValidationStatus::Failed,
-            "shell",
-            "tests red",
-            Some(RecoveryKind::RepairRequired),
-            Some(1),
-        )));
-        assert!(ingest_validator_reward(&mut store, "g1", "t1", None, &rec).unwrap());
-        let got = signals(&store, "g1");
-        assert_eq!(got.len(), 2);
-        assert_eq!(got[1].signal, "failed");
-        assert_eq!(got[1].score, Some(0.0));
-        assert_eq!(got[1].agent_id, None);
-        assert_eq!(got[1].seq, 2);
-    }
-
-    #[test]
-    fn delivery_ingestion_appends_only_for_resolutions() {
-        let mut store = tmp_store("delivery");
-        open_goal(&mut store, "g1");
-        // Pending state and garbage ingest nothing.
-        assert!(!ingest_delivery_reward(&mut store, "g1", "t1", "delivered", None).unwrap());
-        assert!(!ingest_delivery_reward(&mut store, "g1", "t1", "bogus", None).unwrap());
-        assert!(signals(&store, "g1").is_empty());
-        // Resolutions ingest their phase-1 scores.
-        assert!(ingest_delivery_reward(
-            &mut store,
-            "g1",
-            "t1",
-            "verified",
-            Some("confirmed".into())
-        )
-        .unwrap());
-        assert!(ingest_delivery_reward(&mut store, "g1", "t1", "rework", None).unwrap());
-        let got = signals(&store, "g1");
-        assert_eq!(got.len(), 2);
-        assert_eq!(got[0].source, "delivery_outcome");
-        assert_eq!(got[0].signal, "verified");
-        assert_eq!(got[0].score, Some(1.0));
-        assert_eq!(got[0].note.as_deref(), Some("confirmed"));
-        assert_eq!(got[1].signal, "rework");
-        assert_eq!(got[1].score, Some(0.5));
-        assert_eq!(got[1].seq, 2);
-    }
-
-    #[test]
-    fn record_command_validates_inputs() {
-        let mut store = tmp_store("record-validate");
-        open_goal(&mut store, "g1");
-        let args = |extra: &[&str]| extra.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        // Missing --goal / --todo-id / --score each fail fast.
-        assert!(
-            reward_memory_record(&mut store, &args(&["--todo-id", "t1", "--score", "0.5"]))
-                .is_err()
-        );
-        assert!(
-            reward_memory_record(&mut store, &args(&["--goal", "g1", "--score", "0.5"])).is_err()
-        );
-        assert!(
-            reward_memory_record(&mut store, &args(&["--goal", "g1", "--todo-id", "t1"])).is_err()
-        );
-        // Score must be a finite number in 0.0..=1.0.
-        for bad in ["abc", "1.5", "-0.1", "NaN"] {
-            assert!(
-                reward_memory_record(
-                    &mut store,
-                    &args(&["--goal", "g1", "--todo-id", "t1", "--score", bad])
-                )
-                .is_err(),
-                "score {bad} must be rejected"
-            );
-        }
-        // Unknown todo / goal fail closed.
-        assert!(reward_memory_record(
-            &mut store,
-            &args(&["--goal", "g1", "--todo-id", "nope", "--score", "0.5"])
-        )
-        .is_err());
-        assert!(reward_memory_record(
-            &mut store,
-            &args(&["--goal", "nope", "--todo-id", "t1", "--score", "0.5"])
-        )
-        .is_err());
-        // Unknown source is rejected; unknown flags are rejected.
-        assert!(reward_memory_record(
-            &mut store,
-            &args(&[
-                "--goal",
-                "g1",
-                "--todo-id",
-                "t1",
-                "--score",
-                "0.5",
-                "--source",
-                "nope"
-            ])
-        )
-        .is_err());
-        assert!(reward_memory_record(
-            &mut store,
-            &args(&[
-                "--goal",
-                "g1",
-                "--todo-id",
-                "t1",
-                "--score",
-                "0.5",
-                "--bogus"
-            ])
-        )
-        .is_err());
-        assert!(signals(&store, "g1").is_empty());
-    }
-
-    #[test]
-    fn record_command_appends_evidence_signal() {
-        let mut store = tmp_store("record-ok");
-        open_goal(&mut store, "g1");
-        let args = |extra: &[&str]| extra.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        reward_memory_record(
-            &mut store,
-            &args(&[
-                "--goal",
-                "g1",
-                "--todo-id",
-                "t1",
-                "--score",
-                "0.8",
-                "--note",
-                "solid evidence",
-                "--agent-id",
-                "a9",
-            ]),
-        )
-        .unwrap();
-        let got = signals(&store, "g1");
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].source, "evidence");
-        assert_eq!(got[0].signal, "scored");
-        assert_eq!(got[0].score, Some(0.8));
-        assert_eq!(got[0].note.as_deref(), Some("solid evidence"));
-        assert_eq!(got[0].agent_id.as_deref(), Some("a9"));
-        // Boundary scores are legal.
-        reward_memory_record(
-            &mut store,
-            &args(&["--goal", "g1", "--todo-id", "t1", "--score", "0"]),
-        )
-        .unwrap();
-        reward_memory_record(
-            &mut store,
-            &args(&["--goal", "g1", "--todo-id", "t1", "--score", "1"]),
-        )
-        .unwrap();
-        assert_eq!(signals(&store, "g1").len(), 3);
-    }
-
-    #[test]
-    fn describe_event_and_todo_filter_cover_reward_signals() {
-        let event = Event::RewardSignalRecorded {
-            goal_id: "g1".into(),
-            todo_id: "t1".into(),
-            agent_id: Some("a1".into()),
-            run_id: None,
-            source: "validator".into(),
-            signal: "passed".into(),
-            score: Some(1.0),
-            note: None,
-            seq: 1,
-            ts: 1,
-        };
-        let text = describe_event(&event);
-        assert!(text.contains("reward_signal"), "got: {text}");
-        assert!(text.contains("validator"), "got: {text}");
-        assert!(text.contains("score=1.00"), "got: {text}");
-        assert!(event_touches_todo(&event, "t1"));
-        assert!(!event_touches_todo(&event, "t2"));
-    }
 
     #[test]
     fn todo_filter_covers_delivery_and_followthrough_events() {
@@ -10931,50 +8687,6 @@ mod residual_branch_tests {
         );
     }
 
-    // ── pr_review_claim: idempotent re-claim skips the append block ────────
-    #[test]
-    fn pr_review_claim_idempotent_reclaim_skips_append() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_string_lossy().into_owned();
-        let mut store = Store::open(&root).unwrap();
-        let goal = Goal::new("g", "obj", "/tmp");
-        store.register(&goal).unwrap();
-        store
-            .append(Event::GoalStarted {
-                goal_id: "g".into(),
-                ts: 1,
-            })
-            .unwrap();
-        let item = crate::work_items::review_queue::ReviewItem {
-            number: 7,
-            head_oid: "a".repeat(40),
-            repository: Some("o/r".into()),
-            title: "PR 7".into(),
-            url: None,
-        };
-        store
-            .append(Event::TodoAdded {
-                goal_id: "g".into(),
-                todo: item.to_todo("pr-review-7"),
-                ts: 2,
-            })
-            .unwrap();
-        let args = vec![
-            "claim".to_string(),
-            "--goal".to_string(),
-            "g".to_string(),
-            "--number".to_string(),
-            "7".to_string(),
-            "--reviewer".to_string(),
-            "bob".to_string(),
-            "--lease-secs".to_string(),
-            "60".to_string(),
-        ];
-        pr_review_claim(&mut store, &args).unwrap();
-        // Same reviewer re-claims the live lease → idempotent (no append).
-        pr_review_claim(&mut store, &args).unwrap();
-    }
-
     // ── print_run_index_self_heal: empty + non-empty backup ────────────────
     #[test]
     fn run_index_self_heal_prints_both_backup_variants() {
@@ -11024,16 +8736,6 @@ mod residual_branch_tests {
         let goal = store.replay("g").unwrap().unwrap();
         assert!(goal.delivery_state("t1").is_some());
         assert!(goal.delivery_state("m1").is_none());
-    }
-
-    // ── print_open_acceptance_gaps: non-empty packet ───────────────────────
-    #[test]
-    fn print_open_acceptance_gaps_non_empty() {
-        let goal = Goal::new("g", "obj", "/tmp").with_acceptance(vec![("A1", "match")]);
-        let packet =
-            crate::capabilities::decision_context::assembler::assemble_decision_context(&goal);
-        assert!(!packet.open_acceptance_gaps.is_empty());
-        print_open_acceptance_gaps(&packet);
     }
 
     // ── run_index_self_heal: drifted index drives the repair summary ────────

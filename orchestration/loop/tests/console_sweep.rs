@@ -67,11 +67,6 @@ fn unknown_flags_hard_error_everywhere() {
         vec!["runs", "retention", "--goal", &gid, "--zz", "1"],
         vec!["runs", "stale", "--goal", &gid, "--zz", "1"],
         vec!["heartbeat-prompt", "--goal", &gid, "--zz", "1"],
-        vec!["capability", "list", "--zz", "1"],
-        vec!["capability", "commands", "--zz", "1"],
-        vec!["capability", "propose", "--name", "issue_fix", "--zz", "1"],
-        vec!["catalog", "--zz", "1"],
-        vec!["catalog", "--name", "issue_fix", "--zz", "1"],
         vec!["scope", "--goal", &gid, "--agent-id", "w1", "--zz", "1"],
         vec!["lane", "--goal", &gid, "--agent-id", "w1", "--zz", "1"],
         vec!["supervisor", "events", "--goal", &gid, "--zz", "1"],
@@ -99,8 +94,6 @@ fn unknown_flags_hard_error_everywhere() {
         vec!["benchmark", "protocol", "--route", "r", "--zz", "1"],
         vec!["benchmark", "ledger", "--zz", "1"],
         vec!["agent", "list", "--goal", &gid, "--zz", "1"],
-        vec!["extension", "status", "--zz", "1"],
-        vec!["extension", "capabilities", "--zz", "1"],
         vec!["replan", "obligations", "--goal", &gid, "--zz", "1"],
     ];
     for args in &cases {
@@ -153,6 +146,8 @@ fn unknown_flags_hard_error_everywhere() {
         "--todo-id",
         &first,
         "--no-follow-up",
+        "--evidence",
+        "fixture evidence for completion contract",
         "--zz",
         "1",
     ]);
@@ -349,6 +344,7 @@ fn steer_poll_once_arms() {
                 priority: None,
                 resume_when: None,
                 blocks: None,
+                acceptance: None,
                 ts: now_epoch(),
             })
             .unwrap();
@@ -510,6 +506,8 @@ fn status_closure_and_gap_arms() {
         "--todo-id",
         &first,
         "--no-follow-up",
+        "--evidence",
+        "fixture evidence for completion contract",
     ]);
     cli_ok(&["status", "--goal", &gid]);
     // Projection gap → the ⚠ line.
@@ -558,26 +556,6 @@ fn scheduler_tick_single_execution_arm() {
         st::write_scheduler_state(&store.goal_dir(&gid), &state).unwrap();
     }
     cli_ok(&["scheduler", "tick", "--goal", &gid]);
-}
-
-// ── capability hook proposal-kind arms ─────────────────────────────────────
-
-#[test]
-fn capability_hook_kind_arms() {
-    let _cr = cli_root();
-    // NoFollowUp via empty input; Gate via read-only authority (prints the
-    // gate question line).
-    cli_ok(&["issue-fix"]);
-    cli_ok(&[
-        "issue-fix",
-        "--input",
-        "title: bug\nerror: crash\nrepro: steps\nauthority: read-only",
-    ]);
-    cli_ok(&[
-        "issue-fix",
-        "--input",
-        "title: crash\nerror: panicked\nrepro: run it\nexpected: works fine\nscope: cli",
-    ]);
 }
 
 // ── runs index duplicate-group print arms ──────────────────────────────────

@@ -120,6 +120,7 @@ fn try_claim_ignores_non_lease_events_and_p9_normalizes_to_p1() {
             priority: Some("P9".into()),
             resume_when: None,
             blocks: None,
+            acceptance: None,
             ts: now_epoch(),
         })
         .unwrap();
@@ -521,6 +522,7 @@ fn apply_renew_and_priority_arms() {
             priority: Some("P0".into()),
             resume_when: None,
             blocks: None,
+            acceptance: None,
             ts: now_epoch(),
         })
         .unwrap();
@@ -562,6 +564,7 @@ fn apply_matrix() {
                 priority: None,
                 resume_when: None,
                 blocks: None,
+                acceptance: None,
                 ts: now_epoch(),
             })
             .unwrap();
@@ -577,6 +580,7 @@ fn apply_matrix() {
             priority: Some("P2".into()),
             resume_when: Some("defer:5".into()),
             blocks: Some(vec!["a".into()]),
+            acceptance: None,
             ts: now_epoch(),
         })
         .unwrap();
@@ -850,6 +854,60 @@ fn read_ledger_tolerates_unknown_kind_lines() {
     assert_eq!(report.skipped_unknown_kinds, 2);
     assert_eq!(report.unknown_kinds, vec!["kind_from_the_future_v99"]);
     assert!(report.ok);
+}
+
+/// Fixture: ledgers written by pre-removal binaries carry the deleted
+/// capability-specific event kinds (`capability_invoked`,
+/// `decision_outcome_recorded`, `reward_signal_recorded`). The read path
+/// must skip them via the same O1 unknown-kind tolerance and keep replaying
+/// the remaining events.
+#[test]
+fn read_ledger_skips_removed_capability_event_kinds() {
+    let (_d, root) = fresh_store("s-o1-cap-removed");
+    let mut store = Store::open(&root).unwrap();
+    registered_goal(&mut store, "g1"); // goal_started
+    add(&mut store, "g1", "t1"); // todo_added
+
+    let events_path = store.goal_dir("g1").join("events.jsonl");
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&events_path)
+        .unwrap();
+    for line in [
+        serde_json::json!({"event_id":"c1","kind":"capability_invoked","goal_id":"g1","capability":"issue_fix","command":"issue-fix","outcome":"accepted","invocation_id":"i1","ts":42}),
+        serde_json::json!({"event_id":"c2","kind":"decision_outcome_recorded","goal_id":"g1","ts":43}),
+        serde_json::json!({"event_id":"c3","kind":"reward_signal_recorded","goal_id":"g1","todo_id":"t1","source":"validator","signal":"passed","seq":1,"ts":44}),
+    ] {
+        writeln!(f, "{line}").unwrap();
+    }
+    drop(f);
+
+    // The three removed kinds are skipped; the pre-existing events survive.
+    let events = store.events("g1").unwrap();
+    let kinds: Vec<String> = events.iter().map(kind_of).collect();
+    assert_eq!(kinds, vec!["goal_started", "todo_added"]);
+
+    // Replay still rebuilds the goal from the kept events.
+    let goal = store.replay("g1").unwrap().expect("replay succeeds");
+    assert_eq!(goal.todos.len(), 1);
+
+    let diag = store
+        .ledger_read_diagnostics("g1")
+        .expect("sidecar written");
+    assert_eq!(diag["skipped_unknown_kinds"], 3);
+    assert_eq!(
+        diag["unknown_kinds"],
+        serde_json::json!([
+            "capability_invoked",
+            "decision_outcome_recorded",
+            "reward_signal_recorded"
+        ])
+    );
+
+    // store verify stays green under the tolerance.
+    let report = store.verify("g1").unwrap();
+    assert!(report.ok);
+    assert_eq!(report.skipped_unknown_kinds, 3);
 }
 
 #[test]

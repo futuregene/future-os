@@ -225,6 +225,8 @@ fn cli_complete_blocked_by_open_gate_rejected() {
             "--todo-id",
             &t1_id,
             "--no-follow-up",
+            "--evidence",
+            "fixture evidence for completion contract",
         ])
         .expect_err("completing a gate-blocked todo must be rejected");
         assert!(
@@ -353,6 +355,8 @@ fn cli_complete_unblocked_todo_ok() {
             "--todo-id",
             &t1_id,
             "--no-follow-up",
+            "--evidence",
+            "fixture evidence for completion contract",
         ])
         .unwrap();
         let store = Store::open(root).unwrap();

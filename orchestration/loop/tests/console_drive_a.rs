@@ -186,8 +186,6 @@ fn todo_add_flag_matrix() {
         "P0",
         "--action-kind",
         "deploy",
-        "--required-capability",
-        "shell",
         "--title",
         "Sink",
         "--task-repository",
@@ -196,8 +194,6 @@ fn todo_add_flag_matrix() {
         "resume",
         "--required-write-scope",
         "src, tests",
-        "--capability-binding-ref",
-        "bind-1",
         "--note",
         "a note",
         "--goal-bound",
@@ -323,14 +319,12 @@ fn todo_add_flag_matrix() {
     assert!(sink.text.starts_with("[P0] "), "{}", sink.text);
     assert_eq!(sink.title, "Sink", "custom title is kept");
     assert_eq!(sink.action_kind.as_deref(), Some("deploy"));
-    assert_eq!(sink.required_capability.as_deref(), Some("shell"));
     assert_eq!(sink.task_repository.as_deref(), Some("repo-1"));
     assert_eq!(sink.continuation_policy.as_deref(), Some("resume"));
     assert_eq!(
         sink.required_write_scope,
         vec!["src".to_string(), "tests".to_string()]
     );
-    assert_eq!(sink.capability_binding_ref.as_deref(), Some("bind-1"));
     assert_eq!(sink.note.as_deref(), Some("a note"));
     assert!(sink.goal_bound);
     assert_eq!(sink.validator.as_deref(), Some("exit 0"));
@@ -514,6 +508,8 @@ fn todo_complete_contract() {
         "--todo-id",
         &s,
         "--no-follow-up",
+        "--evidence",
+        "fixture evidence for completion contract",
     ]);
     assert!(err.contains("open gate"), "{err}");
     // Resolve the gate, then completion succeeds (a gate's text IS the
@@ -539,6 +535,9 @@ fn todo_complete_contract() {
         "--todo-id",
         &s,
         "--no-follow-up",
+        "--evidence",
+        "fixture evidence for completion contract",
+        "--force",
     ]);
     // Unknown todo / goal.
     assert!(cli_err(&[
@@ -563,6 +562,165 @@ fn todo_complete_contract() {
         "--no-follow-up"
     ])
     .contains("not found"));
+}
+
+#[test]
+fn todo_complete_evidence_floor_and_force() {
+    let cr = cli_root();
+    let gid = init_goal(&cr, "evidence floor");
+    let first = first_todo_id(&cr.root, &gid);
+    // Advancement completion without evidence is refused (the empty-closure
+    // failure mode: an agent marks a delivery done with nothing to show).
+    let err = cli_err(&[
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &first,
+        "--no-follow-up",
+    ]);
+    assert!(err.contains("--evidence"), "{err}");
+    // Whitespace-only evidence is refused too.
+    let err = cli_err(&[
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &first,
+        "--no-follow-up",
+        "--evidence",
+        "   ",
+    ]);
+    assert!(err.contains("--evidence"), "{err}");
+    // --force is the explicit operator override for mechanical closeouts.
+    cli_ok(&[
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &first,
+        "--no-follow-up",
+        "--evidence",
+        "fixture evidence for completion contract",
+        "--force",
+    ]);
+    // Any non-empty evidence satisfies the floor (strength belongs to
+    // --acceptance / --verify, which are opt-in contracts).
+    let s = add_todo(&cr, &gid, "second task");
+    cli_ok(&[
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &s,
+        "--no-follow-up",
+        "--evidence",
+        "did the thing",
+    ]);
+    {
+        let store = open_store(&cr);
+        let g = store.replay(&gid).unwrap().unwrap();
+        let t = g.todos.iter().find(|t| t.id == s).unwrap();
+        assert_eq!(t.status, TodoStatus::Done);
+        assert_eq!(t.evidence.as_deref(), Some("did the thing"));
+    }
+}
+
+#[test]
+fn todo_complete_acceptance_contract() {
+    let cr = cli_root();
+    let gid = init_goal(&cr, "acceptance contract");
+    let first = first_todo_id(&cr.root, &gid);
+    // `--acceptance` is a todo-add flag; `todo complete` rejects it.
+    let err = cli_err(&[
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &first,
+        "--no-follow-up",
+        "--evidence",
+        "fixture evidence for completion contract",
+        "--acceptance",
+        "x",
+    ]);
+    assert!(err.contains("unknown"), "{err}");
+    let t = add_todo(&cr, &gid, "submit the payload");
+    // Declare the acceptance contract: evidence must contain BOTH tokens.
+    cli_ok(&[
+        "todo",
+        "update",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &t,
+        "--acceptance",
+        "attempt,scored",
+    ]);
+    // Evidence missing one token is refused.
+    let err = cli_err(&[
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &t,
+        "--no-follow-up",
+        "--evidence",
+        "created attempt 12345",
+    ]);
+    assert!(err.contains("acceptance contract"), "{err}");
+    assert!(err.contains("scored"), "{err}");
+    // Matching evidence (case-insensitive) completes.
+    cli_ok(&[
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &t,
+        "--no-follow-up",
+        "--evidence",
+        "ATTEMPT 12345 SCORED 99 on the platform",
+    ]);
+    // --force overrides an unmet contract.
+    let t2 = add_todo(&cr, &gid, "submit again");
+    cli_ok(&[
+        "todo",
+        "update",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &t2,
+        "--acceptance",
+        "attempt,scored",
+    ]);
+    cli_ok(&[
+        "todo",
+        "complete",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &t2,
+        "--no-follow-up",
+        "--evidence",
+        "operator closeout without a scored attempt",
+        "--force",
+    ]);
+    // The acceptance contract survives the store round-trip.
+    let store = open_store(&cr);
+    let g = store.replay(&gid).unwrap().unwrap();
+    let todo = g.todos.iter().find(|x| x.id == t).unwrap();
+    assert_eq!(todo.acceptance.as_deref(), Some("attempt,scored"));
+    assert_eq!(
+        todo.evidence.as_deref(),
+        Some("ATTEMPT 12345 SCORED 99 on the platform")
+    );
 }
 
 #[test]
@@ -599,6 +757,9 @@ fn todo_complete_gate_class_bypasses_freeze() {
         "--todo-id",
         &a,
         "--no-follow-up",
+        "--evidence",
+        "fixture evidence for completion contract",
+        "--force",
     ]);
     let store = open_store(&cr);
     let g = store.replay(&gid).unwrap().unwrap();
@@ -666,6 +827,9 @@ fn todo_archive_supersede_update() {
         "--todo-id",
         &done,
         "--no-follow-up",
+        "--evidence",
+        "fixture evidence for completion contract",
+        "--force",
     ]);
     assert!(
         cli_err(&["todo", "supersede", "--goal", &gid, "--todo-id", &done])
@@ -964,26 +1128,8 @@ fn agent_registry_surface() {
     // list with no agents.
     cli_ok(&["agent", "list", "--goal", &gid]);
     cli_ok(&["agent", "register", "--goal", &gid, "--agent-id", "w1"]);
-    cli_ok(&[
-        "agent",
-        "onboard",
-        "--goal",
-        &gid,
-        "--agent-id",
-        "w2",
-        "--capability",
-        "shell,github",
-    ]);
-    cli_ok(&[
-        "agent",
-        "onboard",
-        "--goal",
-        &gid,
-        "--agent-id",
-        "w3",
-        "--capabilities",
-        "web",
-    ]);
+    cli_ok(&["agent", "onboard", "--goal", &gid, "--agent-id", "w2"]);
+    cli_ok(&["agent", "onboard", "--goal", &gid, "--agent-id", "w3"]);
     // w1 holds a live lease → running row in `agent list`.
     let t = first_todo_id(&cr.root, &gid);
     cli_ok(&[

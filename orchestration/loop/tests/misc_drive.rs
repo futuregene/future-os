@@ -1,5 +1,5 @@
 //! Coverage drive — the long tail across agents/, benchmark/loop_protocol,
-//! capabilities parsing, cli/registry, compat, decision/, heartbeat,
+//! cli/registry, compat, decision/, heartbeat,
 //! migration, quota/, runtime/, work_items/ and cli_projection.
 
 mod common;
@@ -55,53 +55,6 @@ fn scope_frontier_arms() {
     assert!(!todo_matches_agent(&claimed, "w1"));
 }
 
-// ── agents/capability_gate ─────────────────────────────────────────────────
-
-#[test]
-fn capability_gate_arms() {
-    use future_loop::agents::capability_gate as cg;
-    // available_capabilities_with_defaults merges declared over defaults.
-    let avail = cg::available_capabilities_with_defaults(&["custom-cap".to_string()]);
-    assert!(avail.contains(&"custom-cap".to_string()));
-    // missing_required_capabilities on a todo with/without requirements.
-    let mut t = Todo::advancement("t1", "x");
-    t.required_capability = Some("shell".into());
-    assert!(cg::missing_required_capabilities(&t, &avail).is_empty());
-    assert_eq!(
-        cg::missing_required_capabilities(&t, &[]),
-        vec!["shell".to_string()]
-    );
-    let plain = Todo::advancement("t2", "y");
-    assert!(cg::missing_required_capabilities(&plain, &[]).is_empty());
-    // todo_is_runnable (note: the DEFAULT available set includes shell, so
-    // only a custom capability blocks).
-    assert!(cg::todo_is_runnable(&plain, &[]));
-    assert!(cg::todo_is_runnable(&t, &[]), "shell is in the default set");
-    let mut custom = Todo::advancement("t4", "z");
-    custom.required_capability = Some("custom-xyz".into());
-    assert!(!cg::todo_is_runnable(&custom, &[]));
-    // build_capability_gate with blocked todos across owner classes.
-    let mut needs_shell = Todo::advancement("t1", "needs shell");
-    needs_shell.required_capability = Some("shell".into());
-    let mut needs_custom = Todo::advancement("t2", "needs custom");
-    needs_custom.required_capability = Some("custom-xyz".into());
-    let todos = vec![needs_shell, needs_custom, Todo::advancement("t3", "free")];
-    let gate = cg::build_capability_gate(&todos, &[]).expect("gate with blocked todos");
-    assert!(gate.runnable_todo_ids.contains(&"t3".to_string()));
-    assert!(
-        gate.runnable_todo_ids.contains(&"t1".to_string()),
-        "shell is default-available"
-    );
-    assert!(
-        gate.blocked_todo_ids.contains(&"t2".to_string()),
-        "custom-xyz missing"
-    );
-    // Everything runnable → None.
-    let free = vec![Todo::advancement("t9", "free")];
-    assert!(cg::build_capability_gate(&free, &[]).is_none());
-    let _ = gate;
-}
-
 // ── agents/lane ────────────────────────────────────────────────────────────
 
 #[test]
@@ -151,58 +104,6 @@ fn loop_protocol_comparison_contract() {
     // Route classifiers.
     assert!(!lp::blind_loop_routes().is_empty());
     assert!(!lp::product_mode_routes().is_empty());
-}
-
-// ── capabilities parsing (auto_research / periodic_report) ─────────────────
-
-#[test]
-fn auto_research_parse_arms() {
-    use future_loop::capabilities::CapabilityRegistry;
-    let registry = CapabilityRegistry::with_builtin();
-    let cap = registry.get("auto_research").unwrap();
-    // Structured with all keys.
-    let ps =
-        cap.propose("question: does X beat Y on metric Z?\nhypothesis: X wins\nmethod: ablation");
-    assert!(!ps.is_empty());
-    // A non-question → clarify successor.
-    let ps = cap.propose("question: just a statement");
-    assert!(
-        ps.iter()
-            .any(|p| p.reason.contains("not shaped as a research question")
-                || p.reason.contains("Clarify")),
-        "{ps:?}"
-    );
-    // Empty.
-    assert!(!cap.propose("").is_empty());
-}
-
-#[test]
-fn periodic_report_parse_arms() {
-    use future_loop::capabilities::periodic_report::parse_report_profile;
-    let p = parse_report_profile("cadence: daily\nscope: team\naudience: ops\nnotes: n");
-    assert_eq!(p.cadence, "daily");
-    assert_eq!(p.scope, "team");
-    assert_eq!(p.audience, "ops");
-    // Free text becomes the cadence when no key is present.
-    let p = parse_report_profile("every friday\nwith details");
-    assert_eq!(p.cadence, "every friday with details");
-    // Cadence tokens → (class, seconds).
-    use future_loop::capabilities::periodic_report::cadence_due_secs;
-    assert_eq!(
-        cadence_due_secs("hourly"),
-        Some(("hourly".to_string(), 3600))
-    );
-    assert_eq!(
-        cadence_due_secs("every-6h"),
-        Some(("every-6h".to_string(), 21600))
-    );
-    assert_eq!(
-        cadence_due_secs("every-2d"),
-        Some(("every-2d".to_string(), 172800))
-    );
-    assert_eq!(cadence_due_secs("every-0h"), None);
-    assert_eq!(cadence_due_secs("fortnightly"), None);
-    let _ = &p;
 }
 
 // ── cli/registry ───────────────────────────────────────────────────────────
@@ -711,6 +612,7 @@ fn store_projection_gap_and_guard_arms() {
                 priority: Some("p2".into()),
                 resume_when: None,
                 blocks: None,
+                acceptance: None,
                 ts: now_epoch(),
             })
             .unwrap();
