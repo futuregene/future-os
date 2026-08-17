@@ -123,7 +123,7 @@ future loop commands        # grouped by operator journey
 - **agent group**: `agent` `scope` `lane` `supervisor`
 - **ops group**: `version` `doctor` `history` `turn` `todo-event` `evidence-log` `backup` `authority` `profile` `quota` `scheduler` `store` `backfill` `privacy` `runs` `heartbeat-prompt` `worker-bridge` `run`
 - **work-items group**: `attention` `inbox` `delivery`
-- **quality group**: `benchmark` `replay` `canary`
+- **quality group**: `benchmark` `canary`
 
 ## How it fits FutureOS
 

@@ -581,99 +581,6 @@ fn p4_benchmark_closed_loop_via_cli() {
     );
 }
 
-/// ── P4: replay record → run and corpus build → run through the CLI ───────
-#[test]
-fn p4_replay_and_corpus_via_cli() {
-    let root = tmp_root("p4replay");
-    let (_, err, code) = run(
-        &root,
-        &[
-            "goal",
-            "init",
-            "--objective",
-            "obj",
-            "--goal-id",
-            "g1",
-            "--cwd",
-            "/tmp",
-        ],
-    );
-    assert_eq!(code, 0, "goal init: {err}");
-    run(
-        &root,
-        &[
-            "todo",
-            "add",
-            "--goal",
-            "g1",
-            "--role",
-            "agent",
-            "--class",
-            "advancement",
-            "--text",
-            "implement feature",
-        ],
-    );
-
-    let replay_file = format!("{root}/replay.json");
-    let (out, err, code) = run(
-        &root,
-        &[
-            "replay",
-            "record",
-            "--goal",
-            "g1",
-            "--case-id",
-            "case-1",
-            "--out",
-            &replay_file,
-        ],
-    );
-    assert_eq!(code, 0, "replay record: {err}");
-    assert!(out.contains("appended to"), "record: {out}");
-
-    let (out, err, code) = run(&root, &["replay", "run", "--case", &replay_file]);
-    assert_eq!(code, 0, "replay run: {err}");
-    assert!(out.contains("MATCHED"), "replay run: {out}");
-
-    let corpus_file = format!("{root}/corpus.json");
-    let (out, err, code) = run(
-        &root,
-        &[
-            "replay",
-            "corpus",
-            "build",
-            "--goal",
-            "g1",
-            "--patch",
-            r#"{"quota":{"state":"tight","allowed_slots":1}}"#,
-            "--ablate",
-            "scheduler_hint.cadence_class",
-            "--out",
-            &corpus_file,
-        ],
-    );
-    assert_eq!(code, 0, "corpus build: {err}");
-    assert!(out.contains("2 case(s)"), "corpus build: {out}");
-
-    let (out, err, code) = run(
-        &root,
-        &[
-            "replay",
-            "corpus",
-            "run",
-            "--corpus",
-            &corpus_file,
-            "--repeats",
-            "2",
-            "--seed",
-            "0",
-        ],
-    );
-    assert_eq!(code, 0, "corpus run: {err}");
-    assert!(out.contains("corpus_gate_passed=true"), "corpus run: {out}");
-}
-
 /// ── P4: canary smoke through the CLI (release gate) ──────────────────────
 #[test]
 fn p4_canary_smoke_via_cli() {
@@ -737,8 +644,6 @@ fn p4_help_lists_new_groups_and_commands() {
     for expected in [
         "── benchmark ──",
         "benchmark protocol --route R",
-        "── replay ──",
-        "replay record --goal G",
         "── canary ──",
         "canary smoke [--profile",
         "── ops ──",

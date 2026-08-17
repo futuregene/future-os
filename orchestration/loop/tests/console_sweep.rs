@@ -282,10 +282,6 @@ fn unknown_flags_hard_error_everywhere() {
         "--zz",
         "1",
     ]);
-    assert_unknown_flag(&["replay", "record", "--goal", &gid, "--zz", "1"]);
-    assert_unknown_flag(&[
-        "replay", "corpus", "build", "--goal", &gid, "--patch", "{}", "--zz", "1",
-    ]);
 }
 
 // ── steer poll seam ────────────────────────────────────────────────────────

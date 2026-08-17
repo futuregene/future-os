@@ -13,38 +13,18 @@ fn parse_catch_all_arms_reject_unknown_flags() {
     let gid = init_goal(&cr, "parse catch-alls");
 
     // P0-3①: unknown flags are a hard error everywhere (never swallowed).
-    for args in [
-        vec![
-            "agent",
-            "register",
-            "--goal",
-            &gid,
-            "--agent-id",
-            "a1",
-            "--bogus",
-            "x",
-        ],
-        vec![
-            "replay",
-            "run",
-            "--case",
-            "/nonexistent.json",
-            "--bogus",
-            "y",
-        ],
-        vec![
-            "replay",
-            "corpus",
-            "run",
-            "--corpus",
-            "/nonexistent.json",
-            "--bogus",
-            "y",
-        ],
-    ] {
-        let err = cli_err(&args);
-        assert!(err.contains("unknown flag `--bogus`"), "{args:?}: {err}");
-    }
+    let args = vec![
+        "agent",
+        "register",
+        "--goal",
+        &gid,
+        "--agent-id",
+        "a1",
+        "--bogus",
+        "x",
+    ];
+    let err = cli_err(&args);
+    assert!(err.contains("unknown flag `--bogus`"), "{args:?}: {err}");
     // Known-flags-only invocations still work.
     cli_ok(&["authority", "--goal", &gid, "--require-approval", "publish"]);
     cli_ok(&["profile", "set", "--goal", &gid]);
@@ -89,16 +69,6 @@ fn benchmark_run_rejects_unknown_flag_and_adapter_failure() {
         "127.0.0.1:1",
     ]);
     assert!(!err.is_empty());
-}
-
-#[test]
-fn replay_corpus_build_with_trailing_patch_flag() {
-    let cr = cli_root();
-    let gid = init_goal(&cr, "corpus build trailing patch");
-    // `--patch` with no following value is skipped (None arm) — no patches,
-    // no ablations → the corpus build fails closed (empty corpus).
-    let err = cli_err(&["replay", "corpus", "build", "--goal", &gid, "--patch"]);
-    assert!(err.contains("at least one case"), "{err}");
 }
 
 #[test]

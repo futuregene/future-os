@@ -109,7 +109,7 @@ future loop commands        # 按操作者旅程分组视图
 - **agent 组**：`agent` `scope` `lane` `supervisor`
 - **ops 组**：`version` `doctor` `history` `turn` `todo-event` `evidence-log` `backup` `authority` `profile` `quota` `scheduler` `store` `backfill` `privacy` `runs` `heartbeat-prompt` `worker-bridge` `run`
 - **work-items 组**：`attention` `inbox` `delivery`
-- **质量组**：`benchmark` `replay` `canary`
+- **质量组**：`benchmark` `canary`
 
 ## 与 FutureOS 其他部件的关系
 
