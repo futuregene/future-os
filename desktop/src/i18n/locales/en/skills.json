@@ -47,6 +47,7 @@
   },
   "tryIt": "Try it",
   "guide": {
+    "trigger": "How to use skills",
     "hint": "How do skills work? Type / in the chat input to invoke one — or let the skill coach walk you through it in 5 minutes.",
     "teachMe": "Teach me to use skills",
     "manual": "User manual",
