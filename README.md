@@ -24,7 +24,6 @@ phone in your pocket.
 | Category | Details |
 |---|---|
 | **Multi-Interface** | Terminal UI (TUI), desktop app (GUI), mobile apps (Android & iOS), CLI, IM bots — one agent, everywhere |
-| **Mobile Apps (Android & iOS)** | A phone-native agent experience — most agent runtimes are desktop-only; FutureOS ships Android (APK) and iOS (TestFlight) builds from CI, driven by the same gRPC agent service |
 | **Model Flexibility** | 3800+ built-in models across 140+ providers ([catalog](docs/wiki/en/Models.md)); custom providers via `models.json`; scoped model lists |
 | **Agent Service** | The agent runs as a standalone gRPC service — the runtime is decoupled from the TUI, desktop app, mobile app, channel bridge, and loop control plane, leaving room for new clients and extensions |
 | **Minimalist Tool Execution** | read, write, edit, shell with approval gating; sandbox tiers (off / manual / macOS Seatbelt) — Pi-style minimalism: a lean tool set, no prompt bloat |
