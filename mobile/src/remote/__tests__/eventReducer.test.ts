@@ -108,6 +108,25 @@ describe("entry reducer", () => {
     ]);
   });
 
+  test("projects authoritative run outcomes from remote history", () => {
+    const timeline = timelineFromEntries([
+      { id: "u1", role: "user", content: "try", meta: { run_id: "run-failed" } },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "partial",
+        meta: { run_id: "run-failed" },
+        run_status: "failed",
+      },
+    ]);
+    expect(timeline.items[1]).toMatchObject({
+      kind: "message",
+      role: "assistant",
+      runId: "run-failed",
+      failed: true,
+    });
+  });
+
   test("keeps attachment-only user entries and drops malformed attachments", () => {
     const timeline = timelineFromEntries([
       {
@@ -681,7 +700,7 @@ describe("stream event reducer", () => {
 });
 
 describe("shared-projection semantic flags", () => {
-  test("a shell exit-code footer marks the tool row failed (G1)", () => {
+  test("a shell exit-code marks only the tool row failed (G1)", () => {
     let state = applyStreamEvent(emptyTimeline(), {
       type: "tool_start",
       data: JSON.stringify({
@@ -704,7 +723,7 @@ describe("shared-projection semantic flags", () => {
     });
     const reply = state.items.find(item => item.kind === "message");
     if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
-    expect(reply.failed).toBe(true);
+    expect(reply.failed).toBeUndefined();
     const toolSegment = reply.segments?.find(segment => segment.kind === "tool");
     expect(toolSegment && toolSegment.kind === "tool" && toolSegment.tool.status).toBe("failed");
   });
@@ -766,6 +785,26 @@ describe("shared-projection semantic flags", () => {
     const reply = state.items.find(item => item.kind === "message" && item.role === "assistant");
     if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
     expect(reply.truncated).toBe(true);
+    expect(reply.failed).toBe(true);
+    expect(reply.stopped).toBeUndefined();
+  });
+
+  test("an agent error marks the run failed", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "text_chunk",
+      data: JSON.stringify({ text: "partial" }),
+      runId: "run-1",
+      idx: 0,
+    });
+    state = applyStreamEvent(state, {
+      type: "agent_end",
+      data: JSON.stringify({ state: "error", error: "provider failed" }),
+      runId: "run-1",
+      idx: 1,
+    });
+    const reply = state.items.find(item => item.kind === "message" && item.role === "assistant");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    expect(reply.failed).toBe(true);
     expect(reply.stopped).toBeUndefined();
   });
 

@@ -52,7 +52,7 @@ function imageSize(uri: string): Promise<{ width: number; height: number }> {
   });
 }
 
-function mimeFor(name: string, fallback = "application/octet-stream"): string {
+export function mimeFor(name: string, fallback = "application/octet-stream"): string {
   // Only extensions that can actually reach this helper are mapped. Image
   // inputs that are re-encoded to JPEG (jpg/jpeg/bmp/heic/heif) always set
   // their mime to "image/jpeg" directly, so mimeFor is never consulted for

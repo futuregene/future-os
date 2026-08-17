@@ -169,6 +169,8 @@ export interface HistoryEntry {
   output_tokens?: number;
   /** Reply wall-clock duration in ms — paired with `output_tokens`. */
   duration_ms?: number;
+  /** Desktop-store run outcome, added by the remote bridge for recovery parity. */
+  run_status?: "completed" | "failed" | "cancelled" | string;
   /** RFC3339 entry time; preserved across re-saves so history keeps real times. */
   timestamp?: string;
 }
@@ -252,8 +254,7 @@ export type TimelineItem =
        * back to `text` when absent (optimistic, legacy, plain history).
        */
       segments?: TimelineSegment[];
-      /** A tool row in this reply failed (shell non-zero exit / error) — the
-       *  bubble gets a danger affordance. */
+      /** The owning run failed. A handled tool error alone is not recoverable. */
       failed?: boolean;
       /** The user cancelled this run (agent_end state "cancelled"). */
       stopped?: boolean;
