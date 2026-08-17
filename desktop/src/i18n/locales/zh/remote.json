@@ -1,5 +1,5 @@
 {
-  "title": "Remote 远程控制",
+  "title": "手机远程控制",
   "description": "让手机/网页远程接管本机会话（工具在本机执行）。开启后，本地对话会镜像给手机，手机也可驱动同一会话。",
   "webClient": "Web 客户端",
   "webClientLan": "手机 / 局域网访问：",

@@ -1,5 +1,5 @@
 {
-  "title": "Remote control",
+  "title": "Phone Remote Control",
   "description": "Let a phone/web client remotely take over this machine's session (tools still run locally). Once enabled, local conversations are mirrored to the phone, and the phone can drive the same session.",
   "webClient": "Web client",
   "webClientLan": "Phone / LAN:",

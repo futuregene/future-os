@@ -894,12 +894,9 @@ fn install_rustls_provider() {
 /// task can be scheduled before the process runtime is ready and never obtain
 /// a lasting NATS connection.
 fn spawn_remote_auto_connect() {
-    // The Remote UI is deliberately dev-only. Keep auto-connect on the same
-    // channel so a release build never starts a bridge the user cannot stop.
-    let enabled = !build_info::is_release()
-        && store::get_app_settings()
-            .map(|settings| settings.auto_connect_remote)
-            .unwrap_or(false)
+    let enabled = store::get_app_settings()
+        .map(|settings| settings.auto_connect_remote)
+        .unwrap_or(false)
         && remote::pairing::load_creds().is_some();
     if !enabled {
         return;

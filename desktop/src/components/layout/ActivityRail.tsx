@@ -23,7 +23,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { SkillIntroBubble } from "../../features/skills/SkillIntroBubble";
 import { listInstalledSkills } from "../../integrations/skills/skillsClient";
-import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { cn } from "../../lib/cn";
 import { onFutureEvent } from "../../lib/futureEvents";
 import { isMacOS } from "../../lib/platform";
@@ -66,7 +65,7 @@ interface ActivityRailProps {
   onSelectThread: (thread: StoredThread) => void;
   onTogglePinThread: (thread: StoredThread) => void;
   onToggleExpanded: () => void;
-  /** Remote bridge connection state for the nav indicator dot (dev-only). */
+  /** Remote bridge connection state for the nav indicator dot. */
   remoteIndicator?: RemoteIndicator;
   /** FutureOS credit balance (null when signed out). */
   futureBalance?: number | null;
@@ -132,15 +131,10 @@ export function ActivityRail({
   const pendingApprovalCounts = usePendingApprovalCounts();
   // Shared overlay scrollbar for the conversation list, matching the chat view.
   const listScrollbar = useFloatingScrollbar();
-  // The Remote (phone) feature is still under development — show its nav entry
-  // only in dev builds. Hidden while build info is loading so it never flashes
-  // into a release build.
-  const build = useBuildInfo();
-  const showRemote = build.data ? !build.data.isRelease : false;
   // Connection indicator overlaid on the Remote nav icon: blue when connected,
   // amber while recovery is in progress, red for an actionable bridge error,
   // and nothing when disconnected.
-  const remoteDot = showRemote && remoteIndicator
+  const remoteDot = remoteIndicator
     ? (
         <span
           className={cn(
@@ -408,9 +402,7 @@ export function ActivityRail({
                         )
                       : null}
                   </div>
-                  {showRemote
-                    ? <NavButton icon={Smartphone} indicator={remoteDot} label={t("activityRail.remote")} active={active === "remote"} onClick={() => onChange("remote")} />
-                    : null}
+                  <NavButton icon={Smartphone} indicator={remoteDot} label={t("activityRail.remote")} active={active === "remote"} onClick={() => onChange("remote")} />
                 </div>
                 {featureItems.length > 0
                   ? (
@@ -696,21 +688,17 @@ export function ActivityRail({
                   active={false}
                   onClick={onOpenModels}
                 />
-                {showRemote
-                  ? (
-                      <IconButton
-                        icon={(
-                          <span className="relative inline-flex">
-                            <Smartphone className="size-4" />
-                            {remoteDot}
-                          </span>
-                        )}
-                        label={t("activityRail.remote")}
-                        active={active === "remote"}
-                        onClick={() => onChange("remote")}
-                      />
-                    )
-                  : null}
+                <IconButton
+                  icon={(
+                    <span className="relative inline-flex">
+                      <Smartphone className="size-4" />
+                      {remoteDot}
+                    </span>
+                  )}
+                  label={t("activityRail.remote")}
+                  active={active === "remote"}
+                  onClick={() => onChange("remote")}
+                />
                 {featureItems.map((item) => {
                   const Icon = item.icon;
                   return (
