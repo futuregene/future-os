@@ -116,7 +116,10 @@ fn atomic_claim_path_reclaims_dead_holder() {
 
     // The atomic check+append claim path must reclaim the dead holder too.
     let store = Store::open(root).unwrap();
-    let ok = store.try_claim_todo("g1", "t1", "successor", 3600).unwrap();
+    let ok = store
+        .try_claim_todo("g1", "t1", "successor", 3600)
+        .unwrap()
+        .claimed;
     assert!(ok, "dead holder must not block the atomic claim path");
     let g = store.replay("g1").unwrap().unwrap();
     assert_eq!(g.todos[0].claimed_by.as_deref(), Some("successor"));

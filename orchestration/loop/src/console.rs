@@ -1014,7 +1014,7 @@ fn todo_claim(store: &mut Store, args: &[String]) -> Result<()> {
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let todo_id = todo_id.ok_or_else(|| anyhow::anyhow!("--todo-id required"))?;
-    let mut goal = store
+    let goal = store
         .replay(&goal_id)?
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
     let agent = agent_id.unwrap_or_else(|| "default-agent".to_string());
@@ -1032,22 +1032,26 @@ fn todo_claim(store: &mut Store, args: &[String]) -> Result<()> {
             crate::agents::workspace_guard::render_conflicts(&conflicts, now)
         );
     }
-    let claimed = goal
-        .todo_mut(&todo_id)
-        .map(|t| t.claim(&agent, lease_secs, now))
-        .unwrap_or(false);
+    // Existence + status gate (replayed state): unknown todos and done/
+    // superseded todos refuse before the atomic claim below. The atomic
+    // path itself only evaluates the lease chain.
+    let t = goal
+        .todo(&todo_id)
+        .ok_or_else(|| anyhow::anyhow!("todo {todo_id} not found in goal {goal_id}"))?;
+    if t.status != TodoStatus::Open {
+        bail!("todo {todo_id} cannot be claimed: not open");
+    }
+    // Atomic claim: check + append under ONE exclusive ledger lock
+    // (try_claim_todo), closing the replay→claim→append TOCTOU window that
+    // previously let concurrent `todo claim` processes all win the same
+    // todo. Dead holders are reclaimed inside via the pid probe.
+    let claimed = store
+        .try_claim_todo(&goal_id, &todo_id, &agent, lease_secs)?
+        .claimed;
     if !claimed {
-        bail!("todo {todo_id} cannot be claimed: not open, or another agent holds a live lease");
+        bail!("todo {todo_id} cannot be claimed: another agent holds a live lease");
     }
     let expires = now + lease_secs;
-    store.append(Event::TodoClaimed {
-        goal_id: goal_id.clone(),
-        todo_id: todo_id.clone(),
-        agent_id: agent.clone(),
-        lease_expires_at: expires,
-        holder_pid: Some(std::process::id()),
-        ts: now,
-    })?;
     append_workspace_lock(store, &goal_id, &agent, &todo_id, &goal, force)?;
     refresh_next_action(store, &goal_id)?;
     sync_compat(store, &goal_id)?;
@@ -3662,7 +3666,10 @@ fn claim_selected_with_lease(
         };
         match &agent_id {
             Some(aid) => {
-                if store.try_claim_todo(goal_id, &tid, aid, lease_secs)? {
+                if store
+                    .try_claim_todo(goal_id, &tid, aid, lease_secs)?
+                    .claimed
+                {
                     todo_id_opt = Some(tid);
                     break;
                 }
@@ -4428,36 +4435,29 @@ fn cmd_lease(store: &mut Store, args: &[String]) -> Result<()> {
         }
     }
 
-    let todo = goal
-        .todo_mut(&todo_id)
-        .ok_or_else(|| anyhow::anyhow!("todo {todo_id} not found"))?;
+    let todo_status_open = goal
+        .todo(&todo_id)
+        .ok_or_else(|| anyhow::anyhow!("todo {todo_id} not found"))?
+        .status
+        == TodoStatus::Open;
     match sub {
         "claim" => {
-            let op = lease::claim(todo, &agent, lease_secs, now)?;
-            let expires = todo.lease_expires_at.unwrap_or(now);
-            if !op.idempotent {
-                if op.steal {
-                    store.append(Event::TodoExpired {
-                        goal_id: goal_id.clone(),
-                        todo_id: todo_id.clone(),
-                        ts: now,
-                    })?;
-                }
-                store.append(Event::TodoClaimed {
-                    goal_id: goal_id.clone(),
-                    todo_id: todo_id.clone(),
-                    agent_id: agent.clone(),
-                    lease_expires_at: expires,
-                    holder_pid: Some(std::process::id()),
-                    ts: now,
-                })?;
-                // P0-1: advisory workspace write lock (audit for agent list).
-                append_workspace_lock(store, &goal_id, &agent, &todo_id, &goal, force)?;
+            if !todo_status_open {
+                bail!("task lease requires an open todo");
             }
+            // Atomic claim (same TOCTOU-safe path as `todo claim`): check +
+            // append under one ledger lock; steals record TodoExpired first.
+            let outcome = store.try_claim_todo(&goal_id, &todo_id, &agent, lease_secs)?;
+            if !outcome.claimed {
+                bail!("todo already has an active lease held by another agent");
+            }
+            let expires = now + crate::work_items::task_lease::normalize_ttl(lease_secs)?;
+            // P0-1: advisory workspace write lock (audit for agent list).
+            append_workspace_lock(store, &goal_id, &agent, &todo_id, &goal, force)?;
             let _ = sync_compat(store, &goal_id);
             println!(
                 "todo {todo_id} lease acquired by {agent} until {expires} {}✔",
-                if op.steal {
+                if outcome.stolen {
                     "(steal after expiry) "
                 } else {
                     ""
@@ -4465,6 +4465,9 @@ fn cmd_lease(store: &mut Store, args: &[String]) -> Result<()> {
             );
         }
         "renew" => {
+            let todo = goal
+                .todo_mut(&todo_id)
+                .ok_or_else(|| anyhow::anyhow!("todo {todo_id} not found"))?;
             let _ = lease::renew(todo, &agent, lease_secs, now)?;
             let expires = todo.lease_expires_at.unwrap_or(now);
             store.append(Event::TodoRenewed {
@@ -4478,6 +4481,9 @@ fn cmd_lease(store: &mut Store, args: &[String]) -> Result<()> {
             println!("todo {todo_id} lease renewed by {agent} until {expires} ✔");
         }
         "release" => {
+            let todo = goal
+                .todo_mut(&todo_id)
+                .ok_or_else(|| anyhow::anyhow!("todo {todo_id} not found"))?;
             let op = lease::release(todo, &agent, now)?;
             if !matches!(op, lease::LeaseOp::Released { missing: true }) {
                 store.append(Event::TodoReleased {
@@ -4491,6 +4497,9 @@ fn cmd_lease(store: &mut Store, args: &[String]) -> Result<()> {
             println!("todo {todo_id} lease released by {agent} ✔");
         }
         "expire" => {
+            let todo = goal
+                .todo_mut(&todo_id)
+                .ok_or_else(|| anyhow::anyhow!("todo {todo_id} not found"))?;
             let op = lease::expire(todo, now)?;
             if matches!(op, lease::LeaseOp::Expired { had_lease: true }) {
                 store.append(Event::TodoExpired {

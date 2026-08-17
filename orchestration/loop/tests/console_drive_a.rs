@@ -469,7 +469,7 @@ fn todo_claim_paths() {
         "--agent-id",
         "w1"
     ])
-    .contains("cannot be claimed"));
+    .contains("not found"));
     assert!(
         cli_err(&["todo", "claim", "--goal", "goal_nope", "--todo-id", &t]).contains("not found")
     );
