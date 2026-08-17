@@ -179,6 +179,10 @@ function ComposerImpl({
   // Last known editor text (getContent markdown) — a fallback for when the
   // editor ref is gone (e.g. reading during unmount).
   const lastTextRef = useRef("");
+  // The markdown most recently restored from storage. Used to re-run the
+  // skill-pill upgrade once the installed-skills list loads (a draft's `/name`
+  // tokens can't become pills until the skills are known).
+  const restoredTextRef = useRef("");
   // Set while applying a restore, so the attachments effect below doesn't
   // re-persist the just-loaded draft with values that haven't settled yet.
   const restoringRef = useRef(false);
@@ -201,9 +205,23 @@ function ComposerImpl({
     const text = draft?.text ?? "";
     editorRef.current?.restore(text);
     lastTextRef.current = text;
+    restoredTextRef.current = text;
     setAttachments(draft?.attachments ?? []);
     setAttachError(null);
   }, [draftKey]);
+
+  // The `/`-menu skills load after mount, so a freshly restored draft with a
+  // `/name` token (e.g. the Skills page 「试试」 prefill) first renders as plain
+  // text. Re-run the restore once skills arrive — but only while the editor
+  // still holds the untouched restored text, so user edits are never clobbered.
+  useEffect(() => {
+    if (skills.length === 0)
+      return;
+    const current = editorRef.current?.getContent() ?? "";
+    if (!restoredTextRef.current || current !== restoredTextRef.current)
+      return;
+    editorRef.current?.restore(restoredTextRef.current);
+  }, [skills]);
 
   // Persist attachment edits (skip the restore-driven update, which the effect
   // above already loaded from storage).

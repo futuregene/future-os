@@ -343,6 +343,7 @@ impl AgentClient {
                 event_types: vec![],
                 after_idx,
                 atomic_attach: true,
+                global_events: false,
             });
             let mut stream = match self.inner.stream_events(request).await {
                 Ok(resp) => resp.into_inner(),

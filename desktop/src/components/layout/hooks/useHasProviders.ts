@@ -30,6 +30,7 @@ export function useHasProviders() {
   );
 
   useEffect(() => onFutureEvent("future-auth-changed", reload), [reload]);
+  useEffect(() => onFutureEvent("providers-changed", reload), [reload]);
 
   const [byokMode, setByokMode] = useState(false);
   // True while the post-login init runs (models + skills + agent readiness).

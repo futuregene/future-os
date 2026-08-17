@@ -7,12 +7,11 @@ import {
   deleteCustomProvider,
   listAgentProviders,
   logoutFutureProvider,
-  setBuiltinProviderBaseUrl,
-  updateBuiltinProviderKey,
+  updateBuiltinProvider,
   upsertCustomProvider,
 } from "../../integrations/agent/providers";
 import { errorMessage } from "../../lib/errors";
-import { emitFutureEvent } from "../../lib/futureEvents";
+import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 import { BuiltinProviderKeyDialog } from "./BuiltinProviderKeyDialog";
 import { CustomProviderDialog } from "./CustomProviderDialog";
@@ -40,7 +39,7 @@ export function ProvidersPage({
   onProvidersChanged?: () => void;
 } = {}) {
   const { t } = useTranslation("settings");
-  const { data: loadedProviders, loading, error } = useAsyncResource<ProvidersView | null>(
+  const { data: loadedProviders, loading, error, reload } = useAsyncResource<ProvidersView | null>(
     listAgentProviders,
     [],
     null,
@@ -62,6 +61,7 @@ export function ProvidersPage({
     if (loadedProviders)
       setProviders(loadedProviders);
   }, [loadedProviders]);
+  useEffect(() => onFutureEvent("providers-changed", reload), [reload]);
 
   async function handleDelete(id: string) {
     setActionError(null);
@@ -94,14 +94,12 @@ export function ProvidersPage({
     provider: BuiltinProvider,
     payload: { apiKey?: string | null; baseUrl?: string },
   ) {
-    // Base URL first, then key; apply each step's fresh view as it lands so a
-    // failure in the second step can't leave a persisted first step invisible.
-    if (payload.baseUrl !== undefined) {
-      setProviders(await setBuiltinProviderBaseUrl({ baseUrl: payload.baseUrl, id: provider.id }));
-    }
-    if (payload.apiKey !== undefined) {
-      setProviders(await updateBuiltinProviderKey({ apiKey: payload.apiKey, id: provider.id }));
-    }
+    setProviders(await updateBuiltinProvider({
+      apiKey: payload.apiKey,
+      baseUrl: payload.baseUrl,
+      id: provider.id,
+      updateApiKey: payload.apiKey !== undefined,
+    }));
     setEditingBuiltinKey(null);
     const cleared = payload.apiKey === null;
     setHint(

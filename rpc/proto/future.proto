@@ -293,7 +293,9 @@ message ProviderUpsert {
   // Remove the "baseUrl" override; the entry is dropped if nothing remains.
   bool clear_base_url = 5;
 
-  // Non-empty: replace the "models" list.
+  // Replacement model list. `replace_models` carries presence so an empty
+  // repeated field can explicitly clear every model instead of meaning
+  // "leave unchanged".
   repeated ProviderModel models = 6;
 
   // Fail when the provider already exists (create mode; edits must not
@@ -302,6 +304,13 @@ message ProviderUpsert {
 
   // Non-empty: also store as this provider's auth.json "key".
   string api_key = 8;
+
+  // Apply `models`, including an empty list, as a full replacement.
+  bool replace_models = 9;
+
+  // Remove this provider's auth.json key in the same transaction as the
+  // models.json/baseUrl mutation.
+  bool clear_api_key = 10;
 }
 
 // A model entry under a custom provider, persisted to models.json.
@@ -1070,6 +1079,11 @@ message StreamRequest {
   string run_id = 3;
   int64 after_idx = 4;
   bool atomic_attach = 5;
+
+  // Subscribe to process-wide Agent control-plane events instead of one
+  // session. When true, session_id/run_id must be empty and atomic_attach
+  // false. The initial ping carries the current config revision.
+  bool global_events = 6;
 }
 
 // ── StreamEvent ─────────────────────────────────────────────────────────────
@@ -1092,6 +1106,7 @@ message StreamEvent {
   //   usage                        token accounting
   //   error                        run error
   //   tool_sandboxed / persistence_error / compaction_end   sideband signals
+  //   provider_config_changed  global provider/auth configuration committed
   //
   // Provider-specific aliases are normalized inside the Agent and never cross
   // this RPC boundary.
