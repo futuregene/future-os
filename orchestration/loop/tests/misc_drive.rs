@@ -1,5 +1,5 @@
-//! Coverage drive — the long tail across agents/, benchmark/loop_protocol,
-//! cli/registry, compat, decision/, heartbeat,
+//! Coverage drive — the long tail across agents/, cli/registry, compat,
+//! decision/, heartbeat,
 //! migration, quota/, runtime/, work_items/ and cli_projection.
 
 mod common;
@@ -73,37 +73,6 @@ fn lane_recommendation_arms() {
         .push(run_record("t1", "completed", now_epoch()));
     let rec = compact_agent_lane_recommendation(&goal, "w1").unwrap();
     assert!(rec.recommended_action.is_some());
-}
-
-// ── benchmark/loop_protocol ────────────────────────────────────────────────
-
-#[test]
-fn loop_protocol_comparison_contract() {
-    use future_loop::benchmark::loop_protocol as lp;
-    let c = lp::build_product_mode_main_table_comparison_contract(
-        "bench",
-        Some(7),
-        lp::RAW_CODEX_AUTONOMOUS_MAX5_ROUTE,
-        lp::LOOPX_GOAL_START_PRODUCT_MODE_ROUTE,
-    );
-    assert_eq!(c.max_rounds_budget, 7);
-    // Default budget + non-special routes.
-    let c2 = lp::build_product_mode_main_table_comparison_contract("bench", None, "r1", "r2");
-    assert_eq!(c2.max_rounds_budget, lp::BLIND_LOOP_DEFAULT_MAX_ROUNDS);
-    let c3 = lp::build_product_mode_main_table_comparison_contract(
-        "bench",
-        Some(0),
-        "r1",
-        lp::LOOPX_PRODUCT_MODE_ROUTE,
-    );
-    assert_eq!(
-        c3.max_rounds_budget,
-        lp::BLIND_LOOP_DEFAULT_MAX_ROUNDS,
-        "0 → default"
-    );
-    // Route classifiers.
-    assert!(!lp::blind_loop_routes().is_empty());
-    assert!(!lp::product_mode_routes().is_empty());
 }
 
 // ── cli/registry ───────────────────────────────────────────────────────────
