@@ -1,7 +1,7 @@
 import type { AgentMessage, MessageAttachment } from "@future-os/thread-projection";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { FileText, GitBranch, Paperclip, RotateCcw, StepForward } from "lucide-react";
-import { memo, useState } from "react";
+import { Fragment, memo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CopyButton } from "../../components/ui/CopyButton";
 import { useCopyState } from "../../components/ui/useCopyState";
@@ -14,7 +14,9 @@ import { useNow } from "../../lib/useNow";
 import { FilePreviewOverlay } from "../filepreview/FilePreviewOverlay";
 import { previewKindForPath } from "../filepreview/previewKind";
 import { MarkdownContent } from "../markdown/MarkdownContent";
+import { SafeLink } from "../markdown/renderers/SafeLink";
 import { AgentActivityLine, AgentActivityList } from "./AgentActivityList";
+import { splitExternalLinkSegments } from "./externalLinks";
 import { parseMentionSegments } from "./mentionMarkdown";
 import { MessageMeta } from "./MessageMeta";
 import { ThinkingBlock } from "./ThinkingBlock";
@@ -297,7 +299,8 @@ function MessageBlockImpl({
 /**
  * User messages render as plain text (never markdown — the user's `*`/`#`/`1.`
  * stay literal), except `@` file mentions, which show in the accent color like
- * the composer pill. Everything else is verbatim.
+ * the composer pill, and `[label](http…)` links (e.g. the coach prompt's manual
+ * link), which render clickable via SafeLink. Everything else is verbatim.
  */
 function UserMessageText({ content }: { content: string }) {
   const segments = parseMentionSegments(content);
@@ -307,7 +310,19 @@ function UserMessageText({ content }: { content: string }) {
       {segments.map(segment =>
         segment.mention
           ? <span key={segment.key} className="font-medium text-accent">{segment.text}</span>
-          : <span key={segment.key}>{segment.text}</span>,
+          : (
+              <Fragment key={segment.key}>
+                {splitExternalLinkSegments(segment.text).map(linkSegment =>
+                  linkSegment.link
+                    ? (
+                        <SafeLink href={linkSegment.href ?? ""} key={linkSegment.key}>
+                          {linkSegment.text}
+                        </SafeLink>
+                      )
+                    : <span key={linkSegment.key}>{linkSegment.text}</span>,
+                )}
+              </Fragment>
+            ),
       )}
     </p>
   );

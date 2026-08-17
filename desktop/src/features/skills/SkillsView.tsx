@@ -21,6 +21,7 @@ import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
 import { startWindowDrag } from "../../lib/windowDrag";
 import { computeSkillUpgrades } from "./autoUpgrade";
+import { SkillGuideStrip } from "./SkillGuideStrip";
 import {
   allCategoriesValue,
   categoryOptions,
@@ -33,7 +34,17 @@ type SkillsTab = "installed" | "all";
 
 const emptyFilters: SkillFilters = { category: allCategoriesValue, query: "" };
 
-export function SkillsView({ leftPanelExpanded, onToggleLeftPanel }: { leftPanelExpanded: boolean; onToggleLeftPanel: () => void }) {
+export function SkillsView({
+  leftPanelExpanded,
+  onToggleLeftPanel,
+  onStartCoachConversation,
+  onTrySkill,
+}: {
+  leftPanelExpanded: boolean;
+  onToggleLeftPanel: () => void;
+  onStartCoachConversation: (content: string) => Promise<void>;
+  onTrySkill: (skillName: string) => void;
+}) {
   const { i18n, t } = useTranslation("skills");
   const useChinese = i18n.language !== "en";
   const [tab, setTab] = useState<SkillsTab>("installed");
@@ -197,12 +208,15 @@ export function SkillsView({ leftPanelExpanded, onToggleLeftPanel }: { leftPanel
         </div>
       </header>
 
-      <header className="border-b border-line-soft px-8 pb-3 pt-4">
-        <p className="text-sm text-ink-muted">{t("subtitle")}</p>
-        <div className="mt-3 grid w-64 grid-cols-2 gap-1 rounded-md bg-surface-subtle p-1">
-          <TabButton active={tab === "installed"} label={t("tab.installed")} onClick={() => setTab("installed")} />
-          <TabButton active={tab === "all"} label={t("tab.all")} onClick={() => setTab("all")} />
+      <header className="flex flex-wrap items-end justify-between gap-3 border-b border-line-soft px-8 pb-3 pt-4">
+        <div>
+          <p className="text-sm text-ink-muted">{t("subtitle")}</p>
+          <div className="mt-3 grid w-64 grid-cols-2 gap-1 rounded-md bg-surface-subtle p-1">
+            <TabButton active={tab === "installed"} label={t("tab.installed")} onClick={() => setTab("installed")} />
+            <TabButton active={tab === "all"} label={t("tab.all")} onClick={() => setTab("all")} />
+          </div>
         </div>
+        <SkillGuideStrip onStartCoachConversation={onStartCoachConversation} />
       </header>
 
       <div className="floating-scrollbar min-h-0 flex-1 overflow-auto px-8 py-5">
@@ -221,6 +235,7 @@ export function SkillsView({ leftPanelExpanded, onToggleLeftPanel }: { leftPanel
                   busy={busy}
                   catalogue={available}
                   upgradeCount={skillUpgrades.length}
+                  onTrySkill={onTrySkill}
                   onUninstall={id => void runAction(id, () => uninstallSkill(id))}
                   onUpgrade={(id, version) => void runAction(id, () => installSkill(id, version))}
                   onUpgradeAll={() => void upgradeAll()}
@@ -276,6 +291,7 @@ function InstalledTab({
   loading,
   onFiltersChange,
   onRetry,
+  onTrySkill,
   onUninstall,
   onUpgrade,
   onUpgradeAll,
@@ -292,6 +308,7 @@ function InstalledTab({
   loading: boolean;
   onFiltersChange: (filters: SkillFilters) => void;
   onRetry: () => void;
+  onTrySkill: (skillName: string) => void;
   onUninstall: (id: string) => void;
   onUpgrade: (id: string, version: string) => void;
   onUpgradeAll: () => void;
@@ -372,6 +389,9 @@ function InstalledTab({
             meta={category}
             action={(
               <div className="flex items-center gap-2">
+                <Button onClick={() => onTrySkill(skill.name)} size="sm" variant="secondary">
+                  {t("tryIt")}
+                </Button>
                 <UninstallButton busy={busy[skill.id]} onClick={() => onUninstall(skill.id)} />
                 {canUpgrade && latest
                   ? (
