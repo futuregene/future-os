@@ -1,5 +1,7 @@
 import type { Language } from "../../i18n";
 import type { SkillGuide } from "../../integrations/skills/skillsClient";
+import { getLanguage } from "../../i18n";
+import { getSkillGuide } from "../../integrations/skills/skillsClient";
 
 /**
  * The coach prompt references the skill manual with a bare `@name` token that
@@ -41,4 +43,17 @@ export function buildCoachPrompt(guide: SkillGuide, language: Language): string 
   if (!prompt.includes(placeholder))
     return prompt;
   return prompt.replace(placeholder, `[${MANUAL_LINK_TEXT[promptLanguage]}](${manual})`);
+}
+
+/** Fetch the platform coach prompt for the UI language, ready to send. */
+export async function fetchCoachPrompt(): Promise<string> {
+  const guide = await getSkillGuide();
+  return buildCoachPrompt(guide, getLanguage());
+}
+
+/** The skill manual URL for the UI language, or null when unset/non-URL. */
+export async function fetchSkillManualUrl(): Promise<string | null> {
+  const guide = await getSkillGuide();
+  const manual = guide.skills.manual[getLanguage()];
+  return isWebUrl(manual) ? manual : null;
 }

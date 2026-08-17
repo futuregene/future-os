@@ -45,5 +45,13 @@
     "cancel": "取消",
     "confirm": "确认卸载"
   },
+  "tryIt": "试试",
+  "guide": {
+    "hint": "技能怎么用？在对话输入框敲 / 即可唤起技能；不确定从哪开始，让技能教练 5 分钟带你上手。",
+    "teachMe": "教我使用技能",
+    "manual": "使用手册",
+    "coachFailed": "教学配置加载失败：{{message}}",
+    "manualUnavailable": "手册链接暂不可用"
+  },
   "loading": "加载中…"
 }

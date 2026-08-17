@@ -45,5 +45,13 @@
     "cancel": "Cancel",
     "confirm": "Confirm uninstall"
   },
+  "tryIt": "Try it",
+  "guide": {
+    "hint": "How do skills work? Type / in the chat input to invoke one — or let the skill coach walk you through it in 5 minutes.",
+    "teachMe": "Teach me to use skills",
+    "manual": "User manual",
+    "coachFailed": "Failed to load tutorial configuration: {{message}}",
+    "manualUnavailable": "Manual link unavailable"
+  },
   "loading": "Loading..."
 }

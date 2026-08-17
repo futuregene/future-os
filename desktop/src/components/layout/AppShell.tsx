@@ -5,11 +5,12 @@ import type { ContextTab } from "./ContextPanel";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AgentThread } from "../../features/agent/AgentThread";
+import { saveComposerDraft } from "../../features/agent/composerDraft";
 import { NewConversation } from "../../features/agent/NewConversation";
 import { RemoteView } from "../../features/remote/RemoteView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
 import { SkillsView } from "../../features/skills/SkillsView";
-import { modelOption, readLastUsedModel } from "../../integrations/agent/agentClient";
+import { defaultAgentModelId, modelOption, readLastUsedModel } from "../../integrations/agent/agentClient";
 import { installAgentEventListener, revalidateAgentState } from "../../integrations/agent/agentStateCache";
 import { getFutureEnvironment } from "../../integrations/agent/providers";
 import { refreshSkills } from "../../integrations/skills/skillsClient";
@@ -346,6 +347,24 @@ export function AppShell() {
     setCenterMode("new-chat");
   }
 
+  // Skills page 「试试」: pre-fill the new-chat composer with the `/skill` token
+  // (restored as a pill), then open the new-chat screen.
+  function handleTrySkill(skillId: string) {
+    saveComposerDraft("new", { text: `/${skillId} ` });
+    handleOpenNewChat();
+  }
+
+  // Skills page 「教我使用技能」: create the coach conversation (same flow as
+  // the banner) with the platform coach prompt as the first message.
+  function handleStartCoachConversation(content: string) {
+    return startNewConversation({
+      content,
+      mode: "chat",
+      modelId: selectedModelId || defaultAgentModelId,
+      thinkingLevel: selectedThinkingLevel,
+    });
+  }
+
   // Workspace header "+" → always (re)open the create-workspace dialog, even if
   // we're already on the new-conversation view. The nonce forces a remount so a
   // previously-cancelled dialog reopens.
@@ -492,7 +511,7 @@ export function AppShell() {
             )
           : section === "skill"
             ? (
-                <SkillsView leftPanelExpanded={leftExpanded} onToggleLeftPanel={handleToggleLeftPanel} />
+                <SkillsView leftPanelExpanded={leftExpanded} onToggleLeftPanel={handleToggleLeftPanel} onStartCoachConversation={handleStartCoachConversation} onTrySkill={handleTrySkill} />
               )
             : section === "remote"
               ? (

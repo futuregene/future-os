@@ -14,16 +14,14 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
-import { getLanguage } from "../../i18n";
 import { defaultAgentModelId } from "../../integrations/agent/agentClient";
-import { getSkillGuide } from "../../integrations/skills/skillsClient";
 import { cn } from "../../lib/cn";
 import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { startWindowDrag } from "../../lib/windowDrag";
 import { SkillGuideBanner } from "../skills/SkillGuideBanner";
-import { buildCoachPrompt } from "../skills/skillGuidePrompt";
+import { fetchCoachPrompt } from "../skills/skillGuidePrompt";
 import { Composer } from "./Composer";
 import { WorkspaceModal } from "./NewConversationWorkspaceForm";
 import { useWorkspaceForm } from "./useWorkspaceForm";
@@ -174,8 +172,7 @@ export function NewConversation({
     setGuideStarting(true);
     let prompt: string;
     try {
-      const guide = await getSkillGuide();
-      prompt = buildCoachPrompt(guide, getLanguage());
+      prompt = await fetchCoachPrompt();
     }
     catch (error) {
       emitFutureEvent("toast", {
