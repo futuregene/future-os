@@ -38,6 +38,28 @@ fn goal_init_variants_and_errors() {
     let doc = std::path::Path::new(&cr.cwd).join("GOAL.md");
     assert_eq!(std::fs::read_to_string(doc).unwrap(), "# Hello\n");
     let _ = gid;
+
+    // Re-init with the same --goal-id is idempotent: it must NOT append a
+    // duplicate onboarding bootstrap todo.
+    cli_ok(&[
+        "goal",
+        "init",
+        "--objective",
+        "with doc again",
+        "--goal-id",
+        "goal_withdoc",
+    ]);
+    let store = open_store(&cr);
+    let g = store.replay("goal_withdoc").unwrap().unwrap();
+    let onboarding_count = g
+        .todos
+        .iter()
+        .filter(|t| t.action_kind.as_deref() == Some("onboarding_connection_validation"))
+        .count();
+    assert_eq!(
+        onboarding_count, 1,
+        "re-init must not duplicate the onboarding todo"
+    );
 }
 
 #[test]
@@ -968,9 +990,10 @@ fn gate_resolve_errors() {
         "x"
     ])
     .contains("not found"));
-    // Resolving a non-gate todo still records the decision (no class check).
+    // Resolving a non-gate todo is rejected fail-closed (no phantom
+    // GateResolved event); resolving an unknown id also errors.
     let first = first_todo_id(&cr.root, &gid);
-    cli_ok(&[
+    assert!(cli_err(&[
         "gate",
         "resolve",
         "--goal",
@@ -979,10 +1002,53 @@ fn gate_resolve_errors() {
         &first,
         "--decision",
         "fine",
+    ])
+    .contains("not a user_gate"));
+    assert!(cli_err(&[
+        "gate",
+        "resolve",
+        "--goal",
+        &gid,
+        "--todo-id",
+        "todo_ghost",
+        "--decision",
+        "fine",
+    ])
+    .contains("not found"));
+    // A real user_gate still resolves.
+    cli_ok(&[
+        "todo",
+        "add",
+        "--goal",
+        &gid,
+        "--text",
+        "gate q",
+        "--role",
+        "user",
+        "--class",
+        "user_gate",
+    ]);
+    let g2 = open_store(&cr).replay(&gid).unwrap().unwrap();
+    let gate_id = g2
+        .todos
+        .iter()
+        .find(|t| t.class == future_loop::state::TaskClass::UserGate)
+        .unwrap()
+        .id
+        .clone();
+    cli_ok(&[
+        "gate",
+        "resolve",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &gate_id,
+        "--decision",
+        "fine",
     ]);
     let store = open_store(&cr);
     let g = store.replay(&gid).unwrap().unwrap();
-    let t = g.todos.iter().find(|t| t.id == first).unwrap();
+    let t = g.todos.iter().find(|t| t.id == gate_id).unwrap();
     assert_eq!(t.status, TodoStatus::Done);
     assert_eq!(t.decision.as_deref(), Some("fine"));
 }
