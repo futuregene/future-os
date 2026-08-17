@@ -302,6 +302,8 @@ fn diagnose_and_doctor_with_projection_gap() {
         "--todo-id",
         &first,
         "--no-follow-up",
+        "--evidence",
+        "fixture evidence for completion contract",
     ]);
     {
         let store = open_store(&cr);
@@ -476,6 +478,8 @@ fn run_validator_inconclusive_print() {
         "--todo-id",
         &first,
         "--no-follow-up",
+        "--evidence",
+        "fixture evidence for completion contract",
     ]);
     cli_ok(&[
         "todo",

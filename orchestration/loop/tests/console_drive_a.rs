@@ -508,6 +508,8 @@ fn todo_complete_contract() {
         "--todo-id",
         &s,
         "--no-follow-up",
+        "--evidence",
+        "fixture evidence for completion contract",
     ]);
     assert!(err.contains("open gate"), "{err}");
     // Resolve the gate, then completion succeeds (a gate's text IS the
@@ -533,6 +535,8 @@ fn todo_complete_contract() {
         "--todo-id",
         &s,
         "--no-follow-up",
+        "--evidence",
+        "fixture evidence for completion contract",
         "--force",
     ]);
     // Unknown todo / goal.
@@ -599,6 +603,8 @@ fn todo_complete_evidence_floor_and_force() {
         "--todo-id",
         &first,
         "--no-follow-up",
+        "--evidence",
+        "fixture evidence for completion contract",
         "--force",
     ]);
     // Any non-empty evidence satisfies the floor (strength belongs to
@@ -638,6 +644,8 @@ fn todo_complete_acceptance_contract() {
         "--todo-id",
         &first,
         "--no-follow-up",
+        "--evidence",
+        "fixture evidence for completion contract",
         "--acceptance",
         "x",
     ]);
@@ -749,6 +757,8 @@ fn todo_complete_gate_class_bypasses_freeze() {
         "--todo-id",
         &a,
         "--no-follow-up",
+        "--evidence",
+        "fixture evidence for completion contract",
         "--force",
     ]);
     let store = open_store(&cr);
@@ -817,6 +827,8 @@ fn todo_archive_supersede_update() {
         "--todo-id",
         &done,
         "--no-follow-up",
+        "--evidence",
+        "fixture evidence for completion contract",
         "--force",
     ]);
     assert!(
