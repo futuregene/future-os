@@ -1,7 +1,7 @@
 //! Coverage sweep 2 for console.rs — the surgical remainder: default-cwd
 //! goal init, delete-force errors, agent-list lease events, the run-loop
 //! replan self-repair arm, backfill claim print, stale status cache, scoped
-//! gates, benchmark adapter connect error, failing
+//! gates, failing
 //! canary/doctor CLI paths.
 
 mod common;
@@ -191,25 +191,6 @@ fn scope_with_open_gate() {
 }
 
 #[test]
-fn benchmark_run_unreachable_agent() {
-    let cr = cli_root();
-    let err = cli_err(&[
-        "benchmark",
-        "run",
-        "--benchmark-id",
-        "b",
-        "--case-id",
-        "c",
-        "--task",
-        "t",
-        "--agent-addr",
-        "127.0.0.1:1",
-    ]);
-    assert!(err.contains(""), "{err}");
-    let _ = cr;
-}
-
-#[test]
 fn canary_cli_failing_checks() {
     let cr = cli_root();
     let gid = init_goal(&cr, "canary cli fail");
@@ -278,17 +259,6 @@ fn diagnose_and_doctor_with_projection_gap() {
 }
 
 #[test]
-fn benchmark_protocol_blind_route() {
-    let _cr = cli_root();
-    cli_ok(&[
-        "benchmark",
-        "protocol",
-        "--route",
-        "raw-codex-autonomous-max5",
-    ]);
-}
-
-#[test]
 fn privacy_private_fields_print_arm() {
     let cr = cli_root();
     let home = std::env::var("HOME").unwrap_or_default();
@@ -334,17 +304,6 @@ fn runs_retention_with_candidates() {
 }
 
 #[test]
-fn benchmark_protocol_blind_route_print() {
-    let _cr = cli_root();
-    cli_ok(&[
-        "benchmark",
-        "protocol",
-        "--route",
-        "future-loop-blind-loop-treatment",
-    ]);
-}
-
-#[test]
 fn runs_retention_candidates_print() {
     let cr = cli_root();
     let gid = init_goal(&cr, "retention print");
@@ -376,25 +335,6 @@ fn runs_retention_candidates_print() {
     // The retention projection reads the rebuilt index.
     cli_ok(&["runs", "index", "--goal", &gid, "--rebuild"]);
     cli_ok(&["runs", "retention", "--goal", &gid, "--keep", "1"]);
-}
-
-#[test]
-fn benchmark_run_stub_flag() {
-    let cr = cli_root();
-    let ledger_dir = std::path::Path::new(&cr.cwd).join("bench-stub");
-    cli_ok(&[
-        "benchmark",
-        "run",
-        "--benchmark-id",
-        "bs",
-        "--case-id",
-        "cs",
-        "--task",
-        "t",
-        "--stub",
-        "--ledger-dir",
-        ledger_dir.to_str().unwrap(),
-    ]);
 }
 
 #[test]

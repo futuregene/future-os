@@ -448,7 +448,6 @@ fn p4_diagnostics_commands() {
     let (out, err, code) = run(&root, &["version"]);
     assert_eq!(code, 0, "version: {err}");
     assert!(out.contains("future-loop 0.1.0"));
-    assert!(out.contains("benchmark_run_ledger_v0"));
 
     let (_, err, code) = run(
         &root,
@@ -531,56 +530,6 @@ fn p4_diagnostics_commands() {
     );
 }
 
-/// ── P4: benchmark closed loop through the CLI ────────────────────────────
-#[test]
-fn p4_benchmark_closed_loop_via_cli() {
-    let root = tmp_root("p4bench");
-    let (out, err, code) = run(
-        &root,
-        &[
-            "benchmark",
-            "protocol",
-            "--route",
-            "future-loop-product-mode",
-        ],
-    );
-    assert_eq!(code, 0, "protocol: {err}");
-    assert!(out.contains("protocol_id  : product_mode_max5_no_feedback"));
-    assert!(out.contains("strict_claim : allowed"));
-
-    // scripted dry-run (no agent) with a ledger dir under the temp root.
-    let ledger_dir = format!("{root}/benchmarks");
-    let (out, err, code) = run(
-        &root,
-        &[
-            "benchmark",
-            "run",
-            "--benchmark-id",
-            "skillsbench@1.1",
-            "--case-id",
-            "case-1",
-            "--task",
-            "implement fizzbuzz",
-            "--ledger-dir",
-            &ledger_dir,
-        ],
-    );
-    assert_eq!(code, 0, "benchmark run: {err}");
-    assert!(out.contains("passed=true"), "benchmark run: {out}");
-    assert!(
-        out.contains("failure : class=success"),
-        "benchmark run: {out}"
-    );
-
-    let (out, err, code) = run(&root, &["benchmark", "ledger", "--dir", &ledger_dir]);
-    assert_eq!(code, 0, "benchmark ledger: {err}");
-    assert!(out.contains("1 run(s)"), "ledger: {out}");
-    assert!(
-        out.contains("bench-"),
-        "ledger has content-addressed run id: {out}"
-    );
-}
-
 /// ── P4: canary smoke through the CLI (release gate) ──────────────────────
 #[test]
 fn p4_canary_smoke_via_cli() {
@@ -642,8 +591,6 @@ fn p4_help_lists_new_groups_and_commands() {
     let (out, _, code) = run(&root, &["--help"]);
     assert_eq!(code, 0);
     for expected in [
-        "── benchmark ──",
-        "benchmark protocol --route R",
         "── canary ──",
         "canary smoke [--profile",
         "── ops ──",

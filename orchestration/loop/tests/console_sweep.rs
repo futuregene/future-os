@@ -90,8 +90,6 @@ fn unknown_flags_hard_error_everywhere() {
             "1",
         ],
         vec!["evidence-log", "--goal", &gid, "--zz", "1"],
-        vec!["benchmark", "protocol", "--route", "r", "--zz", "1"],
-        vec!["benchmark", "ledger", "--zz", "1"],
         vec!["agent", "list", "--goal", &gid, "--zz", "1"],
         vec!["replan", "obligations", "--goal", &gid, "--zz", "1"],
     ];

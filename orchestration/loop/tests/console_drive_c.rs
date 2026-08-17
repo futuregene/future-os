@@ -1,19 +1,10 @@
 //! Coverage drive — console command group C (P3/P4): catalog /
-//! scope / lane / supervisor / task-graph / attention / inbox /
-//! benchmark.
+//! scope / lane / supervisor / task-graph / attention / inbox.
 
 mod common;
 
-use common::mock_agent::{completed_events, spawn_mock, MockState};
 use common::{cli_err, cli_ok, cli_root, first_todo_id, init_goal, open_store};
 use future_loop::state::now_epoch;
-
-fn rt() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-}
 
 // ── scope / lane ───────────────────────────────────────────────────────────
 
@@ -306,136 +297,4 @@ fn inbox_surface() {
         "operator",
     ]);
     cli_ok(&["inbox", "--project", &cr.cwd, "--scope", "mentions"]);
-}
-
-// ── benchmark ──────────────────────────────────────────────────────────────
-
-#[test]
-fn benchmark_protocol_and_ledger() {
-    let cr = cli_root();
-    cli_ok(&[
-        "benchmark",
-        "protocol",
-        "--route",
-        "future-loop-product-mode",
-    ]);
-    cli_ok(&[
-        "benchmark",
-        "protocol",
-        "--route",
-        "future-loop-product-mode",
-        "--json",
-    ]);
-    cli_ok(&[
-        "benchmark",
-        "protocol",
-        "--route",
-        "custom-route",
-        "--max-rounds",
-        "3",
-    ]);
-    assert!(cli_err(&["benchmark", "protocol"]).contains("--route required"));
-    // Empty ledger (text + json), then seeded via a scripted run below.
-    cli_ok(&["benchmark", "ledger"]);
-    cli_ok(&["benchmark", "ledger", "--json"]);
-    cli_ok(&[
-        "benchmark",
-        "ledger",
-        "--benchmark-id",
-        "b1",
-        "--case-id",
-        "c1",
-    ]);
-    // errors.
-    assert!(cli_err(&["benchmark"]).contains("protocol|run|ledger"));
-    assert!(cli_err(&["benchmark", "bogus"]).contains("protocol|run|ledger"));
-    let _ = cr;
-}
-
-#[test]
-fn benchmark_run_scripted_dry_run() {
-    let cr = cli_root();
-    let ledger_dir = std::path::Path::new(&cr.cwd).join("bench-ledger");
-    // No --agent-addr → deterministic scripted adapter.
-    cli_ok(&[
-        "benchmark",
-        "run",
-        "--benchmark-id",
-        "b1",
-        "--case-id",
-        "c1",
-        "--task",
-        "do the thing",
-        "--ledger-dir",
-        ledger_dir.to_str().unwrap(),
-        "--expected-evidence",
-        "completed",
-    ]);
-    // Ledger now has an entry → text render with rows.
-    cli_ok(&["benchmark", "ledger", "--dir", ledger_dir.to_str().unwrap()]);
-    // goal-start route picks the other default arm id.
-    cli_ok(&[
-        "benchmark",
-        "run",
-        "--benchmark-id",
-        "b2",
-        "--case-id",
-        "c2",
-        "--task",
-        "t",
-        "--route",
-        "future-loop-goal-start-product-mode",
-        "--ledger-dir",
-        ledger_dir.to_str().unwrap(),
-    ]);
-    cli_ok(&[
-        "benchmark",
-        "run",
-        "--benchmark-id",
-        "b3",
-        "--case-id",
-        "c3",
-        "--task",
-        "t",
-        "--arm-id",
-        "custom_arm",
-        "--max-rounds",
-        "2",
-        "--ledger-dir",
-        ledger_dir.to_str().unwrap(),
-    ]);
-    // errors.
-    assert!(cli_err(&["benchmark", "run"]).contains("--benchmark-id required"));
-    assert!(cli_err(&["benchmark", "run", "--benchmark-id", "b"]).contains("--case-id required"));
-    assert!(
-        cli_err(&["benchmark", "run", "--benchmark-id", "b", "--case-id", "c"])
-            .contains("--task required")
-    );
-}
-
-#[test]
-fn benchmark_run_grpc_adapter() {
-    let cr = cli_root();
-    let rt = rt();
-    let (addr, _shared) = rt.block_on(spawn_mock(MockState {
-        events: completed_events("mock-run-1"),
-        ..Default::default()
-    }));
-    let ledger_dir = std::path::Path::new(&cr.cwd).join("bench-ledger-grpc");
-    cli_ok(&[
-        "benchmark",
-        "run",
-        "--benchmark-id",
-        "bg",
-        "--case-id",
-        "cg",
-        "--task",
-        "write the artifact",
-        "--agent-addr",
-        &addr,
-        "--expected-evidence",
-        "artifact",
-        "--ledger-dir",
-        ledger_dir.to_str().unwrap(),
-    ]);
 }

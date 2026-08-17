@@ -7,7 +7,6 @@
 pub mod agent_client;
 pub mod agents;
 pub mod backfill;
-pub mod benchmark;
 pub mod canary;
 pub mod cli;
 pub mod cli_projection;

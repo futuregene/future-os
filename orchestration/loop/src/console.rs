@@ -152,8 +152,7 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         "delivery" => cmd_delivery(&mut store, &args[1..]),
         "registry" => cmd_registry(&registry, &args[1..]),
         "commands" => cmd_commands(&registry, &args[1..]),
-        // ── P4 commands (G-18 / G-19 / G-20 / G-27) ───────────────────────
-        "benchmark" => cmd_benchmark(&store, &args[1..]).await,
+        // ── P4 commands (G-20 / G-27) ───────────────────────────────────
         "canary" => cmd_canary(&store, &args[1..]),
         "version" => cmd_version(&store, &args[1..]),
         "doctor" => cmd_doctor(&store, &args[1..]).await,
@@ -207,7 +206,6 @@ const JOURNEY_ASSIGNMENTS: &[(&str, Journey)] = &[
     ("backfill", Journey::Setup),
     ("privacy", Journey::Setup),
     // Maintainer & adapter — quality gates, retention, introspection
-    ("benchmark", Journey::Maintainer),
     ("canary", Journey::Maintainer),
     ("runs", Journey::Maintainer),
     ("backup", Journey::Maintainer),
@@ -451,14 +449,6 @@ fn build_cli_registry() -> CommandRegistry {
         "commands",
         "grouped operator command reference (P1-9 journey view)",
         "commands [--format json|--json] [--include-experimental]",
-    );
-
-    let benchmark = r.group("benchmark", "benchmark closed loop (G-18)");
-    r.command(
-        benchmark,
-        "benchmark",
-        "benchmark protocol|run|ledger — loop protocol, qualification run, run ledger",
-        "benchmark protocol --route R | run --benchmark-id X --case-id Y --task \"...\" [--agent-addr A] | ledger [--benchmark-id X]",
     );
 
     let canary = r.group("canary", "canary smoke (G-20)");
@@ -5578,263 +5568,6 @@ fn cmd_commands(registry: &CommandRegistry, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-// ── P4: benchmark (G-18) ──────────────────────────────────────────────────
-
-/// `loopx benchmark protocol --route R [--json]` — the loop protocol
-/// contract for a route (blind / product-mode / packet-only classification).
-fn cmd_benchmark_protocol(store: &Store, args: &[String]) -> Result<()> {
-    let mut route = None;
-    let mut max_rounds = None;
-    let mut json = false;
-    reject_unknown_flags(args, &["--json", "--max-rounds", "--route"])?;
-    parse_pairs(args, |k, v| {
-        if k == "--route" {
-            route = Some(v);
-        } else if k == "--max-rounds" {
-            max_rounds = v.parse::<u32>().ok();
-        } else if k == "--json" {
-            json = true;
-        }
-    });
-    let route = route.ok_or_else(|| anyhow::anyhow!("--route required"))?;
-    let contract =
-        crate::benchmark::loop_protocol::build_benchmark_loop_contract(&route, max_rounds, None);
-    if json {
-        println!("{}", serde_json::to_string_pretty(&contract)?);
-        return Ok(());
-    }
-    println!("route        : {}", contract.route);
-    println!("protocol_id  : {}", contract.protocol_id);
-    println!("max_rounds   : {}", contract.max_rounds_budget);
-    println!(
-        "classification: {}",
-        if contract.product_mode {
-            "product_mode"
-        } else if contract.blind_loop {
-            "blind_loop"
-        } else {
-            "custom_or_legacy"
-        }
-    );
-    println!(
-        "feedback     : blinded={} forwarded={}",
-        contract.official_feedback_blinded, contract.official_feedback_forwarded
-    );
-    println!(
-        "strict_claim : {}",
-        if contract.strict_treatment_claim_allowed {
-            "allowed".to_string()
-        } else {
-            format!("blocked ({})", contract.claim_blocker)
-        }
-    );
-    let _ = store;
-    Ok(())
-}
-
-/// `loopx benchmark ledger [--benchmark-id X] [--case-id Y] [--json]
-/// [--dir DIR]` — query the benchmark run ledger (default dir:
-/// `<cwd>/.future/loop/benchmarks`).
-fn cmd_benchmark_ledger(store: &Store, args: &[String]) -> Result<()> {
-    let mut benchmark_id = None;
-    let mut case_id = None;
-    let mut json = false;
-    let mut dir = None;
-    reject_unknown_flags(args, &["--benchmark-id", "--case-id", "--dir", "--json"])?;
-    parse_pairs(args, |k, v| {
-        if k == "--benchmark-id" {
-            benchmark_id = Some(v);
-        } else if k == "--case-id" {
-            case_id = Some(v);
-        } else if k == "--json" {
-            json = true;
-        } else if k == "--dir" {
-            dir = Some(v);
-        }
-    });
-    let dir = dir.unwrap_or_else(|| format!("{}/benchmarks", store.root_path()));
-    let dir = std::path::PathBuf::from(&dir);
-    std::fs::create_dir_all(&dir).ok();
-    let ledger = crate::benchmark::ledger::BenchmarkLedger::open(&dir)?;
-    if json {
-        let entries: Vec<serde_json::Value> = ledger
-            .query(benchmark_id.as_deref(), case_id.as_deref(), None)
-            .iter()
-            .map(|e| serde_json::to_value(e).unwrap_or(serde_json::Value::Null))
-            .collect();
-        println!("{}", serde_json::to_string_pretty(&entries)?);
-        return Ok(());
-    }
-    let matched = ledger.query(benchmark_id.as_deref(), case_id.as_deref(), None);
-    println!(
-        "benchmark ledger {} ({} run(s)):",
-        dir.display(),
-        matched.len()
-    );
-    for e in &matched {
-        println!(
-            "  {} {} {} case={} score={} passed={} class={}",
-            e.run_id,
-            e.benchmark_id,
-            e.arm_id,
-            e.case_ids.join(","),
-            e.score,
-            e.passed,
-            e.failure_class
-        );
-    }
-    let agg = ledger.aggregate(benchmark_id.as_deref());
-    println!(
-        "aggregate: {} run(s), {} passed, avg best score {:.3}",
-        agg["run_count"], agg["passed"], agg["avg_best_score"]
-    );
-    let _ = store;
-    Ok(())
-}
-
-/// `loopx benchmark run --benchmark-id X --case-id Y --task "..." ...` —
-/// the minimal closed loop: preflight → rounds → ledger. Uses the gRPC
-/// adapter when `--agent-addr` is given, else a deterministic scripted
-/// adapter (dry-run).
-async fn cmd_benchmark_run(store: &Store, args: &[String]) -> Result<()> {
-    use crate::benchmark::adapter::BenchmarkAdapter;
-    let mut benchmark_id = None;
-    let mut case_id = None;
-    let mut task = None;
-    let mut route = None;
-    let mut arm_id = None;
-    let mut max_rounds = 5u32;
-    let mut expected_evidence = None;
-    let mut agent_addr = None;
-    let mut ledger_dir = None;
-    let mut stub = false;
-    reject_unknown_flags(
-        args,
-        &[
-            "--agent-addr",
-            "--arm-id",
-            "--benchmark-id",
-            "--case-id",
-            "--expected-evidence",
-            "--ledger-dir",
-            "--max-rounds",
-            "--route",
-            "--stub",
-            "--task",
-        ],
-    )?;
-    parse_pairs(args, |k, v| {
-        if k == "--benchmark-id" {
-            benchmark_id = Some(v);
-        } else if k == "--case-id" {
-            case_id = Some(v);
-        } else if k == "--task" {
-            task = Some(v);
-        } else if k == "--route" {
-            route = Some(v);
-        } else if k == "--arm-id" {
-            arm_id = Some(v);
-        } else if k == "--max-rounds" {
-            max_rounds = v.parse::<u32>().unwrap_or(5);
-        } else if k == "--expected-evidence" {
-            expected_evidence = Some(v);
-        } else if k == "--agent-addr" {
-            agent_addr = Some(v);
-        } else if k == "--ledger-dir" {
-            ledger_dir = Some(v);
-        } else if k == "--stub" {
-            stub = true;
-        }
-    });
-    let benchmark_id = benchmark_id.ok_or_else(|| anyhow::anyhow!("--benchmark-id required"))?;
-    let case_id = case_id.ok_or_else(|| anyhow::anyhow!("--case-id required"))?;
-    let task = task.ok_or_else(|| anyhow::anyhow!("--task required"))?;
-    let route = route.unwrap_or_else(|| "future-loop-product-mode".to_string());
-    let mut case = crate::benchmark::qualification::QualificationCase::new(
-        &benchmark_id,
-        &case_id,
-        &task,
-        max_rounds,
-    );
-    case.route = route.clone();
-    if let Some(arm) = arm_id {
-        case.arm_id = arm;
-    } else {
-        case.arm_id = if route == "future-loop-goal-start-product-mode" {
-            "future_loop_goal_start_product_mode".to_string()
-        } else {
-            "future_loop_product_mode".to_string()
-        };
-    }
-    case.expected_evidence = expected_evidence;
-
-    let ledger_dir = ledger_dir.map(std::path::PathBuf::from);
-    let mut adapter: Box<dyn BenchmarkAdapter> = match (&agent_addr, stub) {
-        (Some(addr), _) => {
-            let model = std::env::var("FUTURE_LOOP_MODEL")
-                .unwrap_or_else(|_| "future/deepseek-v4-flash".to_string());
-            Box::new(
-                crate::benchmark::adapter::GrpcLoopxAdapter::connect(addr, "/tmp")
-                    .await?
-                    .with_model(&model),
-            )
-        }
-        (None, _) => {
-            println!("(no --agent-addr: deterministic scripted dry-run)");
-            Box::new(crate::benchmark::adapter::ScriptedAdapter::new(vec![
-                "completed".to_string(),
-            ]))
-        }
-    };
-    let result = crate::benchmark::qualification::run_qualification_case(
-        &mut *adapter,
-        &case,
-        ledger_dir.as_deref(),
-    )?;
-    println!(
-        "benchmark run {} {} (route={}, arm={}): passed={} rounds={}/{}",
-        result.benchmark_id,
-        result.case_id,
-        result.route,
-        result.arm_id,
-        result.passed,
-        result.rounds_used,
-        result.max_rounds
-    );
-    println!(
-        "headline: best={} final={} first_success={:?} declared_done={}",
-        result.headline.best_score,
-        result.headline.final_score,
-        result.headline.first_success_round,
-        result.headline.declared_done_score
-    );
-    println!(
-        "failure : class={} scope={}",
-        result.failure_class, result.failure_scope
-    );
-    for record in &result.round_reward_trace.records {
-        println!(
-            "  round {}: passed={} reward={}",
-            record.agent_round, record.passed, record.reward
-        );
-    }
-    let _ = store;
-    Ok(())
-}
-
-/// `loopx benchmark protocol|run|ledger ...`
-async fn cmd_benchmark(store: &Store, args: &[String]) -> Result<()> {
-    match args.first().map(|s| s.as_str()) {
-        Some("protocol") => cmd_benchmark_protocol(store, &args[1..]),
-        Some("ledger") => cmd_benchmark_ledger(store, &args[1..]),
-        Some("run") => cmd_benchmark_run(store, &args[1..]).await,
-        Some(other) => {
-            anyhow::bail!("unknown benchmark subcommand `{other}` (protocol|run|ledger)")
-        }
-        None => anyhow::bail!("benchmark requires a subcommand (protocol|run|ledger)"),
-    }
-}
-
 // ── P4: canary smoke (G-20) ────────────────────────────────────────────────
 
 /// `loopx canary smoke [--profile X] [--json]` — run a smoke profile
@@ -5955,9 +5688,6 @@ fn cmd_version(store: &Store, args: &[String]) -> Result<()> {
     println!("future-loop {}", env!("CARGO_PKG_VERSION"));
     println!("crate  : future-loop");
     println!("schemas:");
-    println!("  benchmark_run_ledger_v0 (G-18)");
-    println!("  public_safe_decision_replay_v0 (G-19)");
-    println!("  model_behavior_corpus_v0 (G-19)");
     println!("  canary_smoke_run_v0 (G-20)");
     println!("  canary_premerge_gate_v0 (P1-6)");
     println!("  future_loop_turn_envelope_v0 (G-9)");

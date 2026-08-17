@@ -39,39 +39,6 @@ fn runs_compact_cutoff_without_index_errors() {
 }
 
 #[test]
-fn benchmark_run_rejects_unknown_flag_and_adapter_failure() {
-    let _cr = cli_root();
-    // P0-3①: unknown flag is a hard error before the run starts.
-    let err = cli_err(&[
-        "benchmark",
-        "run",
-        "--benchmark-id",
-        "b",
-        "--case-id",
-        "c",
-        "--task",
-        "t",
-        "--bogus",
-        "x",
-    ]);
-    assert!(err.contains("unknown flag `--bogus`"), "{err}");
-    // A dead agent address makes the gRPC adapter fail → the run errors.
-    let err = cli_err(&[
-        "benchmark",
-        "run",
-        "--benchmark-id",
-        "b",
-        "--case-id",
-        "c2",
-        "--task",
-        "t",
-        "--agent-addr",
-        "127.0.0.1:1",
-    ]);
-    assert!(!err.is_empty());
-}
-
-#[test]
 fn attention_all_tolerates_goals_without_ledgers() {
     let cr = cli_root();
     // Registry entry without any events → replay yields None → skipped.
@@ -177,34 +144,6 @@ fn supervisor_propose_append_fails_on_read_only_goal_dir() {
     let mut perms = std::fs::metadata(&events).unwrap().permissions();
     perms.set_mode(0o644);
     std::fs::set_permissions(&events, perms).unwrap();
-}
-
-#[test]
-fn benchmark_run_qualification_error_propagates() {
-    let _cr = cli_root();
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    // The session state call fails (preflight errors INSIDE
-    // run_qualification_case — unlike a dead --agent-addr, which fails at
-    // adapter construction).
-    let (addr, _shared) = rt.block_on(common::mock_agent::spawn_mock(
-        common::mock_agent::MockState::fail("get_state"),
-    ));
-    let err = cli_err(&[
-        "benchmark",
-        "run",
-        "--benchmark-id",
-        "b",
-        "--case-id",
-        "c",
-        "--task",
-        "t",
-        "--agent-addr",
-        &addr,
-    ]);
-    assert!(!err.is_empty());
 }
 
 #[test]
