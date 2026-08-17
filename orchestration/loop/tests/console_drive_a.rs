@@ -169,7 +169,9 @@ fn todo_add_class_matrix() {
         "--monitor-policy",
         "exists",
     ]);
-    cli_ok(&[
+    // Unknown class is rejected fail-closed (was: silently fell back to
+    // advancement and polluted the ledger).
+    assert!(cli_err(&[
         "todo",
         "add",
         "--goal",
@@ -178,7 +180,8 @@ fn todo_add_class_matrix() {
         "bogus-class",
         "--text",
         "falls back",
-    ]);
+    ])
+    .contains("unknown --role/--class combo"));
     let store = open_store(&cr);
     let g = store.replay(&gid).unwrap().unwrap();
     let b = g.todos.iter().find(|t| t.id == blocker).unwrap();
@@ -247,8 +250,8 @@ fn todo_add_flag_matrix() {
         "--title",
         "Custom Title",
     ]);
-    // Bogus priority falls back to P1.
-    cli_ok(&[
+    // Bogus priority is rejected fail-closed (previously remapped to P1).
+    assert!(cli_err(&[
         "todo",
         "add",
         "--goal",
@@ -257,7 +260,8 @@ fn todo_add_flag_matrix() {
         "odd priority",
         "--priority",
         "P9",
-    ]);
+    ])
+    .contains("unknown --priority"));
     // Defer paths: numeric --resume-when, textual --resume-when, --defer-secs.
     cli_ok(&[
         "todo",
@@ -369,12 +373,8 @@ fn todo_add_flag_matrix() {
         .find(|t| t.text.contains("titled P0"))
         .unwrap();
     assert_eq!(titled.title, "Custom Title");
-    let odd = g
-        .todos
-        .iter()
-        .find(|t| t.text.contains("odd priority"))
-        .unwrap();
-    assert_eq!(odd.priority, future_loop::state::Priority::P1);
+    // "odd priority" (P9) is now rejected at the CLI, so it never lands in
+    // the ledger — nothing to assert about its projected state.
     for needle in ["deferred num", "deferred text", "deferred secs"] {
         let t = g.todos.iter().find(|t| t.text.contains(needle)).unwrap();
         assert_eq!(t.status, TodoStatus::Deferred, "{needle}");

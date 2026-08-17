@@ -804,6 +804,31 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
     let text = text.ok_or_else(|| anyhow::anyhow!("--text required"))?;
+    // Input validation — previously the CLI silently accepted garbage: empty
+    // text, unknown classes/roles (which fell through to `advancement`), and
+    // bogus priorities (silently remapped to P1). All of that enters the
+    // ledger and only explodes much later.
+    if text.trim().is_empty() {
+        bail!("--text must be non-empty");
+    }
+    let valid_combo = matches!(
+        (role.as_str(), class.as_str()),
+        ("agent", "advancement")
+            | ("agent", "monitor")
+            | ("agent", "blocker")
+            | (_, "user_gate")
+            | ("user", "user_action")
+    );
+    if !valid_combo {
+        bail!(
+            "unknown --role/--class combo `{role}`/`{class}` (agent: advancement|monitor|blocker; user_gate: any role; user: user_action)"
+        );
+    }
+    if let Some(p) = &priority {
+        if !matches!(p.to_uppercase().as_str(), "P0" | "P1" | "P2") {
+            bail!("unknown --priority `{p}` (P0|P1|P2)");
+        }
+    }
     // Bare `--blocks` at end-of-line is parsed as the literal "true" by
     // parse_pairs' value-less flag convention; no generated todo id is ever
     // "true", so reject it loudly instead of writing a dangling dependency
@@ -1872,6 +1897,16 @@ fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
     let t = goal
         .todo(&todo_id)
         .ok_or_else(|| anyhow::anyhow!("todo {todo_id} not found"))?;
+    // Idempotency: re-completing an already-done todo is a no-op (writes
+    // nothing) — previously each repeat double-appended TodoCompleted +
+    // DeliveryOutcomeRecorded events, silently fattening the ledger.
+    if t.status == TodoStatus::Done {
+        println!("todo {todo_id} is already done — nothing to do");
+        return Ok(());
+    }
+    if t.status == TodoStatus::Superseded {
+        bail!("todo {todo_id} was superseded — nothing to complete");
+    }
     if t.class == TaskClass::Advancement && !no_follow_up && successor.is_none() {
         bail!(
             "agent todo completion must declare --no-follow-up or --successor \
@@ -6575,6 +6610,11 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
     if let Some(ids) = &blocks {
         if ids.iter().any(|b| b == "true") {
             bail!("--blocks requires a comma-separated todo id list (bare `--blocks` reads as `true`)");
+        }
+    }
+    if let Some(p) = &priority {
+        if !matches!(p.to_uppercase().as_str(), "P0" | "P1" | "P2") {
+            bail!("unknown --priority `{p}` (P0|P1|P2)");
         }
     }
     let goal = store
