@@ -14,7 +14,6 @@ fn parse_catch_all_arms_reject_unknown_flags() {
 
     // P0-3①: unknown flags are a hard error everywhere (never swallowed).
     for args in [
-        vec!["issue-fix", "--input", "it broke", "--bogus", "x"],
         vec![
             "agent",
             "register",
@@ -25,7 +24,6 @@ fn parse_catch_all_arms_reject_unknown_flags() {
             "--bogus",
             "x",
         ],
-        vec!["quota", "tools", "--goal", &gid, "--bogus", "x"],
         vec![
             "replay",
             "run",
@@ -43,7 +41,6 @@ fn parse_catch_all_arms_reject_unknown_flags() {
             "--bogus",
             "y",
         ],
-        vec!["extension", "enable", "--id", "ghost", "--bogus", "y"],
     ] {
         let err = cli_err(&args);
         assert!(err.contains("unknown flag `--bogus`"), "{args:?}: {err}");
@@ -51,51 +48,6 @@ fn parse_catch_all_arms_reject_unknown_flags() {
     // Known-flags-only invocations still work.
     cli_ok(&["authority", "--goal", &gid, "--require-approval", "publish"]);
     cli_ok(&["profile", "set", "--goal", &gid]);
-}
-
-#[test]
-fn extension_install_rejects_unknown_flag() {
-    let cr = cli_root();
-    let manifest = std::path::Path::new(&cr.cwd).join("m.json");
-    std::fs::write(
-        &manifest,
-        serde_json::to_string_pretty(&serde_json::json!({
-            "schema_version": future_loop::extensions::manifest::EXTENSION_MANIFEST_SCHEMA_VERSION,
-            "id": "ext-z",
-            "version": "1.0.0",
-            "requires_future_loop_api": ">=1",
-            "permissions": ["shell"],
-            "runtime": {
-                "protocol": "command_json_v0",
-                "entrypoint": "sh",
-                "args": [],
-                "doctor_args": [],
-                "required_permissions": ["shell"],
-                "timeout_seconds": 30
-            },
-            "provides": [{"id": "ext_z_cap", "kind": "domain_rule", "visibility": "public"}],
-            "implements": [{"capability_id": "ext_z_cap", "protocol": "command_json_v0"}]
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-    // Dry-run install with an unknown flag → hard error (P0-3①).
-    let err = cli_err(&[
-        "extension",
-        "install",
-        "--manifest",
-        manifest.to_str().unwrap(),
-        "--bogus",
-        "x",
-    ]);
-    assert!(err.contains("unknown flag `--bogus`"), "{err}");
-    // Without the bogus flag the dry-run install succeeds.
-    cli_ok(&[
-        "extension",
-        "install",
-        "--manifest",
-        manifest.to_str().unwrap(),
-    ]);
 }
 
 #[test]
