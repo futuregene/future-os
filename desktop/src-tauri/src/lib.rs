@@ -837,6 +837,7 @@ pub fn run() {
             agent_prompt,
             list_installed_skills,
             list_available_skills,
+            get_skill_guide,
             install_skill,
             uninstall_skill,
             refresh_skills,
