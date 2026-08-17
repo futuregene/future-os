@@ -20,7 +20,8 @@ export interface RemoteStatus {
   webLanUrl: string | null;
   /**
    * Machine-readable reason the bridge isn't healthy (`network` / `revoked` /
-   * `server` / `reconnect_required` / `web_bind`). Localized via `error.<code>`; preferred
+   * `server` / `service_config` / `reconnect_required` / `web_bind`). Localized via
+   * `error.<code>`; preferred
    * over `error` when present.
    */
   errorCode: string | null;

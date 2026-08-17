@@ -1,5 +1,7 @@
+import type { InlineNode, ListItemNode, MarkdownNode } from "@future-os/markdown";
+import type { ReactNode } from "react";
+import { basename, localFilePath, parseFutureMarkdown } from "@future-os/markdown";
 import { Linking, StyleSheet, Text, View } from "react-native";
-import { basename, localFilePath } from "../remote/localPath";
 import { colors, radius, spacing } from "../theme/tokens";
 
 interface MarkdownTextProps {
@@ -8,382 +10,235 @@ interface MarkdownTextProps {
   onOpenFile?(path: string): void;
 }
 
-type Align = "left" | "center" | "right" | null;
+type OpenFile = ((path: string) => void) | undefined;
 
-type ListItem = { text: string; checked: boolean | null };
-
-type Block =
-  | { kind: "paragraph"; text: string }
-  | { kind: "heading"; level: number; text: string }
-  | { kind: "code"; text: string }
-  | { kind: "list"; ordered: boolean; items: ListItem[] }
-  | { kind: "rule" }
-  | { kind: "quote"; text: string }
-  | { kind: "table"; headers: string[]; aligns: Align[]; rows: string[][] };
-
-// Placeholder used while splitting table cells so an escaped pipe (`\|`) inside a
-// cell is not treated as a column separator. Picked to never occur in real text.
-const CELL_PIPE = "§PIPE§";
-
-const TABLE_SEP_RE = /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/;
-const QUOTE_RE = /^\s*>\s?(.*)$/;
-const HEADING_RE = /^\s{0,3}(#{1,6})\s+(.+)$/;
-const LIST_RE = /^\s*([-*+]|\d+\.)\s+(.+)$/;
-const RULE_RE = /^\s{0,3}([-*_])\1\1+\s*$/;
-const TASK_RE = /^\[([ xX])\]\s+(.*)$/;
-
-function isTableSep(line: string): boolean {
-  return line.includes("|") && TABLE_SEP_RE.test(line);
-}
-
-function splitCells(line: string): string[] {
-  let s = line.trim().replace(/\\\|/g, CELL_PIPE);
-  if (s.startsWith("|")) s = s.slice(1);
-  if (s.endsWith("|")) s = s.slice(0, -1);
-  return s.split("|").map(cell => cell.split(CELL_PIPE).join("|").trim());
-}
-
-function parseAligns(sepLine: string, columnCount: number): Align[] {
-  const cells = splitCells(sepLine);
-  const aligns: Align[] = [];
-  for (let i = 0; i < columnCount; i += 1) {
-    const cell = (cells[i] ?? "").trim();
-    if (/^:-+:$/.test(cell)) aligns.push("center");
-    else if (/^:-+$/.test(cell)) aligns.push("left");
-    else if (/^-+:$/.test(cell)) aligns.push("right");
-    else aligns.push(null);
+function openTarget(target: string, onOpenFile: OpenFile) {
+  const path = localFilePath(target);
+  if (path && onOpenFile) {
+    onOpenFile(path);
+    return;
   }
-  return aligns;
+  void Linking.openURL(target);
 }
 
-// GFM normalises every row to the header's column count: extra cells are dropped,
-// missing cells are padded with empty strings (mirrors the desktop's tableToFutureNode).
-function normalizeRow(cells: string[], columnCount: number): string[] {
-  if (cells.length >= columnCount) return cells.slice(0, columnCount);
-  return [...cells, ...Array.from({ length: columnCount - cells.length }, () => "")];
-}
-
-// Used inside the paragraph-merge loop so a table/quote/etc. that follows a
-// paragraph without a blank line still breaks the paragraph out correctly.
-function isBlockStart(line: string, lineAfter: string | undefined): boolean {
-  if (line.trimStart().startsWith("```")) return true;
-  if (RULE_RE.test(line)) return true;
-  if (HEADING_RE.test(line)) return true;
-  if (LIST_RE.test(line)) return true;
-  if (QUOTE_RE.test(line)) return true;
-  if (line.includes("|") && lineAfter !== undefined && isTableSep(lineAfter)) return true;
-  return false;
-}
-
-export function blocksFromMarkdown(text: string): Block[] {
-  const lines = text.replace(/\r\n/g, "\n").split("\n");
-  const blocks: Block[] = [];
-  let index = 0;
-
-  while (index < lines.length) {
-    const line = lines[index] ?? "";
-    if (!line.trim()) {
-      index += 1;
-      continue;
-    }
-    if (line.trimStart().startsWith("```")) {
-      const code: string[] = [];
-      index += 1;
-      while (index < lines.length && !(lines[index] ?? "").trimStart().startsWith("```")) {
-        code.push(lines[index] ?? "");
-        index += 1;
+function renderInline(nodes: InlineNode[], onOpenFile: OpenFile, parentKey: string): ReactNode[] {
+  return nodes.map((node, index) => {
+    const key = `${parentKey}:in${index}`;
+    switch (node.type) {
+      case "strong":
+        return (
+          <Text key={key} style={styles.bold}>
+            {renderInline(node.children, onOpenFile, key)}
+          </Text>
+        );
+      case "italic":
+        return (
+          <Text key={key} style={styles.italic}>
+            {renderInline(node.children, onOpenFile, key)}
+          </Text>
+        );
+      case "delete":
+        return (
+          <Text key={key} style={styles.strike}>
+            {renderInline(node.children, onOpenFile, key)}
+          </Text>
+        );
+      case "code":
+        return (
+          <Text key={key} style={styles.inlineCode}>
+            {node.code}
+          </Text>
+        );
+      case "break":
+        return "\n";
+      case "link":
+        return (
+          <Text key={key} onPress={() => openTarget(node.href, onOpenFile)} style={styles.link}>
+            {renderInline(node.children, onOpenFile, key)}
+          </Text>
+        );
+      case "image": {
+        const path = localFilePath(node.src);
+        const label = node.alt || (path ? basename(path) : node.src);
+        return (
+          <Text key={key} onPress={() => openTarget(node.src, onOpenFile)} style={styles.link}>
+            {label}
+          </Text>
+        );
       }
-      if (index < lines.length) index += 1;
-      blocks.push({ kind: "code", text: code.join("\n") });
-      continue;
-    }
-    if (RULE_RE.test(line)) {
-      blocks.push({ kind: "rule" });
-      index += 1;
-      continue;
-    }
-    const heading = line.match(HEADING_RE);
-    if (heading) {
-      blocks.push({ kind: "heading", level: heading[1]?.length ?? 1, text: heading[2] ?? "" });
-      index += 1;
-      continue;
-    }
-    const list = line.match(LIST_RE);
-    if (list) {
-      const ordered = /\d+\./.test(list[1] ?? "");
-      const items: ListItem[] = [];
-      while (index < lines.length) {
-        const item = (lines[index] ?? "").match(LIST_RE);
-        if (!item || /\d+\./.test(item[1] ?? "") !== ordered) break;
-        const content = item[2] ?? "";
-        if (!ordered) {
-          const task = content.match(TASK_RE);
-          if (task) {
-            items.push({ text: task[2] ?? "", checked: (task[1] ?? "").toLowerCase() === "x" });
-            index += 1;
-            continue;
-          }
-        }
-        items.push({ text: content, checked: null });
-        index += 1;
-      }
-      blocks.push({ kind: "list", ordered, items });
-      continue;
-    }
-    if (line.includes("|") && isTableSep(lines[index + 1] ?? "")) {
-      const headers = splitCells(line);
-      const columnCount = headers.length;
-      const aligns = parseAligns(lines[index + 1] ?? "", columnCount);
-      index += 2;
-      const rows: string[][] = [];
-      while (index < lines.length) {
-        const row = lines[index] ?? "";
-        if (!row.trim() || !row.includes("|")) break;
-        rows.push(normalizeRow(splitCells(row), columnCount));
-        index += 1;
-      }
-      blocks.push({ kind: "table", headers: normalizeRow(headers, columnCount), aligns, rows });
-      continue;
-    }
-    const quote = line.match(QUOTE_RE);
-    if (quote) {
-      const inner: string[] = [quote[1] ?? ""];
-      index += 1;
-      while (index < lines.length) {
-        const next = (lines[index] ?? "").match(QUOTE_RE);
-        if (!next) break;
-        inner.push(next[1] ?? "");
-        index += 1;
-      }
-      blocks.push({ kind: "quote", text: inner.join("\n") });
-      continue;
-    }
-    const paragraph = [line];
-    index += 1;
-    while (index < lines.length && (lines[index] ?? "").trim()) {
-      const nextLine = lines[index] ?? "";
-      if (isBlockStart(nextLine, lines[index + 1])) break;
-      paragraph.push(nextLine);
-      index += 1;
-    }
-    blocks.push({ kind: "paragraph", text: paragraph.join("\n") });
-  }
-  return blocks;
-}
-
-// CommonMark lets the link destination be wrapped in `<...>` (models use it
-// when the target contains spaces). The hand-rolled inline parser doesn't strip
-// it the way remark does on desktop, so unwrap it here.
-function unwrapLinkTarget(href: string): string {
-  return href.length >= 2 && href.startsWith("<") && href.endsWith(">") ? href.slice(1, -1) : href;
-}
-
-function InlineMarkdown({
-  text,
-  onOpenFile,
-}: {
-  text: string;
-  onOpenFile?: (path: string) => void;
-}) {
-  const parts = text.split(
-    /(!\[[^\]]+\]\((?:<[^>]*>|[^)\s]+)\)|\*\*[^*]+\*\*|~~[^~]+~~|`[^`]+`|\*[^*]+\*|\[[^\]]+\]\((?:<[^>]*>|[^)\s]+)\))/g,
-  );
-  return (
-    <>
-      {parts.map((part, index) => {
-        if (/^\*\*[^*]+\*\*$/.test(part)) {
-          return (
-            <Text key={index} style={styles.bold}>
-              {part.slice(2, -2)}
-            </Text>
-          );
-        }
-        if (/^~~[^~]+~~$/.test(part)) {
-          return (
-            <Text key={index} style={styles.strike}>
-              {part.slice(2, -2)}
-            </Text>
-          );
-        }
-        if (/^`[^`]+`$/.test(part)) {
-          return (
-            <Text key={index} style={styles.inlineCode}>
-              {part.slice(1, -1)}
-            </Text>
-          );
-        }
-        if (/^\*[^*]+\*$/.test(part)) {
-          return (
-            <Text key={index} style={styles.italic}>
-              {part.slice(1, -1)}
-            </Text>
-          );
-        }
-        const image = part.match(/^!\[([^\]]+)\]\((<[^>]*>|[^)\s]+)\)$/);
-        if (image) {
-          const alt = image[1] ?? "";
-          const target = unwrapLinkTarget(image[2] ?? "");
-          const path = localFilePath(target);
-          if (path && onOpenFile) {
-            return (
-              <Text key={index} onPress={() => onOpenFile(path)} style={styles.link}>
-                {alt || basename(path)}
-              </Text>
-            );
-          }
-          // Remote image (or no preview handler): open in the browser like any
-          // other external link — there is no inline remote-image rendering.
-          return (
-            <Text key={index} onPress={() => void Linking.openURL(target)} style={styles.link}>
-              {alt || target}
-            </Text>
-          );
-        }
-        const link = part.match(/^\[([^\]]+)\]\((<[^>]*>|[^)\s]+)\)$/);
-        if (link) {
-          const target = unwrapLinkTarget(link[2] ?? "");
-          const path = localFilePath(target);
-          return (
-            <Text
-              key={index}
-              onPress={() => (path && onOpenFile ? onOpenFile(path) : void Linking.openURL(target))}
-              style={styles.link}
-            >
-              {link[1] ?? ""}
-            </Text>
-          );
-        }
-        return part;
-      })}
-    </>
-  );
-}
-
-function renderBlock(
-  block: Block,
-  index: number,
-  isLast = false,
-  onOpenFile?: (path: string) => void,
-) {
-  if (block.kind === "rule")
-    return <View key={index} style={[styles.rule, isLast && styles.noBottom]} />;
-  if (block.kind === "code") {
-    return (
-      <Text key={index} selectable style={[styles.code, isLast && styles.noBottom]}>
-        {block.text}
-      </Text>
-    );
-  }
-  if (block.kind === "heading") {
-    return (
-      <Text
-        key={index}
-        selectable
-        style={[
-          styles.heading,
-          block.level <= 2 ? styles.headingLarge : null,
-          isLast && styles.noBottom,
-        ]}
-      >
-        <InlineMarkdown text={block.text} onOpenFile={onOpenFile} />
-      </Text>
-    );
-  }
-  if (block.kind === "quote") {
-    return (
-      <View key={index} style={[styles.quote, isLast && styles.noBottom]}>
-        {blocksFromMarkdown(block.text).map((child, childIndex, all) =>
-          renderBlock(child, childIndex, childIndex === all.length - 1, onOpenFile),
-        )}
-      </View>
-    );
-  }
-  if (block.kind === "table") {
-    return (
-      <View key={index} style={[styles.table, isLast && styles.noBottom]}>
-        <View style={[styles.tableRow, styles.tableHead]}>
-          {block.headers.map((header, columnIndex) => (
-            <Text
-              key={columnIndex}
-              selectable
-              style={[
-                styles.th,
-                columnIndex > 0 ? styles.cellBorderLeft : null,
-                { textAlign: block.aligns[columnIndex] ?? "left" },
-              ]}
-            >
-              <InlineMarkdown text={header} onOpenFile={onOpenFile} />
-            </Text>
-          ))}
-        </View>
-        {block.rows.map((row, rowIndex) => (
-          <View
-            key={rowIndex}
-            style={[
-              styles.tableRow,
-              styles.tableBodyRow,
-              rowIndex % 2 === 1 ? styles.tableRowZebra : null,
-            ]}
+      case "futureReference": {
+        const { reference } = node;
+        const label = reference.label || basename(reference.targetId);
+        if (reference.targetType !== "file") return label;
+        return (
+          <Text
+            key={key}
+            onPress={() => openTarget(reference.targetId, onOpenFile)}
+            style={styles.link}
           >
-            {row.map((cell, columnIndex) => (
-              <Text
-                key={columnIndex}
-                selectable
-                style={[
-                  styles.td,
-                  columnIndex > 0 ? styles.cellBorderLeft : null,
-                  { textAlign: block.aligns[columnIndex] ?? "left" },
-                ]}
-              >
-                <InlineMarkdown text={cell} onOpenFile={onOpenFile} />
-              </Text>
-            ))}
-          </View>
-        ))}
-      </View>
-    );
-  }
-  if (block.kind === "list") {
-    return (
-      <View key={index} style={[styles.list, isLast && styles.noBottom]}>
-        {block.items.map((item, itemIndex) => (
-          <View key={itemIndex} style={styles.listRow}>
-            {item.checked === null ? (
-              <Text style={styles.listBullet}>{block.ordered ? `${itemIndex + 1}.` : "•"}</Text>
-            ) : (
-              <View style={[styles.checkbox, item.checked ? styles.checkboxChecked : null]}>
-                {item.checked ? <Text style={styles.checkMark}>✓</Text> : null}
-              </View>
-            )}
-            <Text selectable style={styles.listItemText}>
-              <InlineMarkdown text={item.text} onOpenFile={onOpenFile} />
-            </Text>
-          </View>
-        ))}
-      </View>
-    );
-  }
-  return (
-    <Text key={index} selectable style={[styles.paragraph, isLast && styles.noBottom]}>
-      <InlineMarkdown text={block.text} onOpenFile={onOpenFile} />
-    </Text>
-  );
+            {label}
+          </Text>
+        );
+      }
+      default:
+        return node.text;
+    }
+  });
 }
 
-export function MarkdownText({ text, onOpenFile }: MarkdownTextProps) {
+function renderListItem(
+  item: ListItemNode,
+  itemIndex: number,
+  ordered: boolean,
+  onOpenFile: OpenFile,
+  parentKey: string,
+) {
+  const key = `${parentKey}:item${itemIndex}`;
   return (
-    <View>
-      {blocksFromMarkdown(text).map((block, index, all) =>
-        renderBlock(block, index, index === all.length - 1, onOpenFile),
+    <View key={key} style={styles.listRow}>
+      {item.checked === undefined ? (
+        <Text style={styles.listBullet}>{ordered ? `${itemIndex + 1}.` : "•"}</Text>
+      ) : (
+        <View style={[styles.checkbox, item.checked ? styles.checkboxChecked : null]}>
+          {item.checked ? <Text style={styles.checkMark}>✓</Text> : null}
+        </View>
       )}
+      <View style={styles.listItemBody}>
+        {item.children.length > 0 ? (
+          <Text selectable style={styles.listItemText}>
+            {renderInline(item.children, onOpenFile, key)}
+          </Text>
+        ) : null}
+        {item.blocks?.length ? (
+          <View style={styles.nestedBlocks}>
+            {renderBlocks(item.blocks, onOpenFile, `${key}:blocks`)}
+          </View>
+        ) : null}
+      </View>
     </View>
   );
 }
 
+function renderBlock(
+  node: MarkdownNode,
+  onOpenFile: OpenFile,
+  key: string,
+  isLast: boolean,
+): ReactNode {
+  switch (node.type) {
+    case "heading":
+      return (
+        <Text
+          key={key}
+          selectable
+          style={[
+            styles.heading,
+            node.level <= 2 ? styles.headingLarge : null,
+            isLast ? styles.noBottom : null,
+          ]}
+        >
+          {renderInline(node.children, onOpenFile, key)}
+        </Text>
+      );
+    case "code":
+      return (
+        <Text key={key} selectable style={[styles.code, isLast ? styles.noBottom : null]}>
+          {node.code}
+        </Text>
+      );
+    case "blockquote":
+      return (
+        <View key={key} style={[styles.quote, isLast ? styles.noBottom : null]}>
+          {renderBlocks(node.children, onOpenFile, `${key}:quote`)}
+        </View>
+      );
+    case "list":
+      return (
+        <View key={key} style={[styles.list, isLast ? styles.noBottom : null]}>
+          {node.items.map((item, index) =>
+            renderListItem(item, index, node.ordered, onOpenFile, key),
+          )}
+        </View>
+      );
+    case "table":
+      return (
+        <View key={key} style={[styles.table, isLast ? styles.noBottom : null]}>
+          <View style={[styles.tableRow, styles.tableHead]}>
+            {node.headers.map((header, columnIndex) => (
+              <Text
+                key={`${key}:h${columnIndex}`}
+                selectable
+                style={[
+                  styles.th,
+                  columnIndex > 0 ? styles.cellBorderLeft : null,
+                  { textAlign: node.alignments[columnIndex] ?? "left" },
+                ]}
+              >
+                {renderInline(header, onOpenFile, `${key}:h${columnIndex}`)}
+              </Text>
+            ))}
+          </View>
+          {node.rows.map((row, rowIndex) => (
+            <View
+              key={`${key}:r${rowIndex}`}
+              style={[
+                styles.tableRow,
+                styles.tableBodyRow,
+                rowIndex % 2 === 1 ? styles.tableRowZebra : null,
+              ]}
+            >
+              {row.map((cell, columnIndex) => (
+                <Text
+                  key={`${key}:r${rowIndex}:c${columnIndex}`}
+                  selectable
+                  style={[
+                    styles.td,
+                    columnIndex > 0 ? styles.cellBorderLeft : null,
+                    { textAlign: node.alignments[columnIndex] ?? "left" },
+                  ]}
+                >
+                  {renderInline(cell, onOpenFile, `${key}:r${rowIndex}:c${columnIndex}`)}
+                </Text>
+              ))}
+            </View>
+          ))}
+        </View>
+      );
+    case "thematicBreak":
+      return <View key={key} style={[styles.rule, isLast ? styles.noBottom : null]} />;
+    case "futureEmbed": {
+      const label = node.reference.label || basename(node.reference.targetId);
+      return (
+        <Text key={key} selectable style={[styles.paragraph, isLast ? styles.noBottom : null]}>
+          <Text onPress={() => openTarget(node.reference.targetId, onOpenFile)} style={styles.link}>
+            {label}
+          </Text>
+        </Text>
+      );
+    }
+    default:
+      return (
+        <Text key={key} selectable style={[styles.paragraph, isLast ? styles.noBottom : null]}>
+          {renderInline(node.children, onOpenFile, key)}
+        </Text>
+      );
+  }
+}
+
+function renderBlocks(nodes: MarkdownNode[], onOpenFile: OpenFile, parentKey: string): ReactNode[] {
+  return nodes.map((node, index) =>
+    renderBlock(node, onOpenFile, `${parentKey}:b${index}`, index === nodes.length - 1),
+  );
+}
+
+export function MarkdownText({ text, onOpenFile }: MarkdownTextProps) {
+  const document = parseFutureMarkdown(text);
+  return <View>{renderBlocks(document.nodes, onOpenFile, "markdown")}</View>;
+}
+
 const styles = StyleSheet.create({
   // The last block of a message drops its bottom margin — the surrounding
-  // bubble/segment layout owns outer spacing (otherwise every bubble ends
-  // with a stray gap after its final row).
+  // bubble/segment layout owns outer spacing.
   noBottom: { marginBottom: 0 },
   paragraph: { color: colors.ink, fontSize: 17, lineHeight: 26, marginBottom: spacing.md },
   heading: {
@@ -398,7 +253,6 @@ const styles = StyleSheet.create({
   italic: { fontStyle: "italic" },
   strike: { textDecorationLine: "line-through" },
   inlineCode: {
-    // Parity with the desktop inline <code>: rounded, subtle bg, ~0.92em, text-ink.
     color: colors.ink,
     backgroundColor: colors.surfaceSubtle,
     fontFamily: "monospace",
@@ -435,7 +289,9 @@ const styles = StyleSheet.create({
     fontSize: 17,
     lineHeight: 26,
   },
-  listItemText: { flex: 1, color: colors.ink, fontSize: 17, lineHeight: 26 },
+  listItemBody: { flex: 1 },
+  listItemText: { color: colors.ink, fontSize: 17, lineHeight: 26 },
+  nestedBlocks: { marginTop: spacing.xs },
   checkbox: {
     width: 18,
     height: 18,

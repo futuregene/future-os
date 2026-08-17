@@ -33,7 +33,7 @@ export const resources = {
         noModels: "No models available",
         noModelsHint:
           "The desktop is connected, but no model is configured. Set one up in FutureOS Desktop.",
-        failed: "Connection failed",
+        failed: "Remote service unavailable",
         retry: "Retry",
         errorService: "The remote service is temporarily unavailable. Please retry in a moment.",
         errorRateLimit: "Too many requests — please slow down and retry.",
@@ -233,7 +233,7 @@ export const resources = {
         offlineHint: "桌面可能正在睡眠或断网。请唤醒电脑并保持 FutureOS 运行。",
         noModels: "没有可用模型",
         noModelsHint: "已连接桌面端，但还没有配置模型。请在 FutureOS 桌面端配置模型后再回来。",
-        failed: "连接失败",
+        failed: "远程服务暂时不可用",
         retry: "重试",
         errorService: "远程服务暂时不可用，请稍后重试。",
         errorRateLimit: "请求过于频繁，请稍后再试。",

@@ -23,6 +23,10 @@ use std::sync::{
 
 /// Port for the embedded web client HTTP server.
 const WEB_PORT: u16 = 8022;
+/// A shutdown notification is advisory: never delay closing the desktop for a
+/// slow or unreachable broker, but give a healthy connection a short window to
+/// flush the packet before its tasks are torn down.
+const DISCONNECT_NOTICE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(750);
 
 /// Bound on the event publish queue; on overflow the newest event is dropped
 /// (logged) rather than blocking the agent event loop. The client recovers the
@@ -111,11 +115,70 @@ struct EventPublish {
     payload: Vec<u8>,
 }
 
+/// Generation-local health reported by async-nats. Keeping this beside the
+/// client prevents a late callback from an old credential generation from
+/// poisoning the currently active bridge.
+#[derive(Default)]
+struct NatsHealth {
+    reconnect_required: AtomicBool,
+    service_config_error: AtomicBool,
+}
+
+impl NatsHealth {
+    fn handle_event(&self, event: &async_nats::Event) {
+        use async_nats::{ClientError, Event, ServerError};
+        match event {
+            Event::Connected => {
+                self.reconnect_required.store(false, Ordering::Release);
+                eprintln!("remote: NATS connected");
+            }
+            Event::Disconnected => eprintln!("remote: NATS disconnected; reconnecting"),
+            Event::ServerError(ServerError::AuthorizationViolation) => {
+                self.service_config_error.store(true, Ordering::Release);
+                eprintln!(
+                    "remote: NATS authorization violation; check the Remote service account and permissions"
+                );
+            }
+            Event::ClientError(ClientError::MaxReconnects) => {
+                self.reconnect_required.store(true, Ordering::Release);
+                eprintln!("remote: NATS reconnect budget exhausted; rebuilding bridge generation");
+            }
+            Event::Closed => {
+                self.reconnect_required.store(true, Ordering::Release);
+                eprintln!("remote: NATS connection closed; rebuilding bridge generation");
+            }
+            Event::SlowConsumer(subscription) => eprintln!(
+                "remote: NATS slow consumer on subscription {subscription}; client backfill will heal event gaps"
+            ),
+            Event::ServerError(ServerError::SlowConsumer(subscription)) => eprintln!(
+                "remote: NATS server reported slow consumer {subscription}; client backfill will heal event gaps"
+            ),
+            Event::ServerError(error) => eprintln!("remote: NATS server event: {error}"),
+            Event::ClientError(error) => eprintln!("remote: NATS client event: {error}"),
+            other => eprintln!("remote: NATS event: {other}"),
+        }
+    }
+
+    fn needs_reconnect(&self) -> bool {
+        self.reconnect_required.load(Ordering::Acquire)
+    }
+
+    fn is_terminal(&self) -> bool {
+        self.service_config_error.load(Ordering::Acquire)
+    }
+}
+
+struct ConnectedNats {
+    client: async_nats::Client,
+    health: Arc<NatsHealth>,
+}
+
 /// Active remote connection. Holds async-nats client + command/event tasks;
 /// on stop, aborts the tasks and drops the client.
 struct RemoteState {
     /// Raw client, kept to derive real connection state for [`status`].
     client: async_nats::Client,
+    nats_health: Arc<NatsHealth>,
     nats_url: String,
     pair_id: String,
     desktop_id: String,
@@ -173,6 +236,10 @@ static START_RETRY_RUNNING: AtomicBool = AtomicBool::new(false);
 static RUNTIME_RECONNECT_RUNNING: AtomicBool = AtomicBool::new(false);
 static RUNTIME_RECONNECT_ATTEMPTS: AtomicU8 = AtomicU8::new(0);
 const MAX_RUNTIME_RECONNECT_ATTEMPTS: u8 = 3;
+/// Do not forgive a crash-loop merely because a replacement generation stayed
+/// alive for one poll. Only a sustained healthy minute resets the budget.
+#[cfg(not(test))]
+const RUNTIME_HEALTHY_RESET_SECS: u8 = 60;
 static WEB_RECONNECT_RUNNING: AtomicBool = AtomicBool::new(false);
 static WEB_RECONNECT_ATTEMPTS: AtomicU8 = AtomicU8::new(0);
 const MAX_WEB_RECONNECT_ATTEMPTS: u8 = 3;
@@ -204,8 +271,9 @@ pub struct RemoteStatus {
     /// Web client URL a phone on the same LAN can reach; `None` if unavailable.
     pub web_lan_url: Option<String>,
     /// Machine-readable reason the bridge isn't healthy (e.g. `network`,
-    /// `revoked`, `server`, `reconnect_required`, `web_bind`). The UI localizes this via
-    /// `error.<code>`; it is the preferred signal over [`Self::error`].
+    /// `revoked`, `server`, `service_config`, `reconnect_required`,
+    /// `web_bind`). The UI localizes this via `error.<code>`; it is the
+    /// preferred signal over [`Self::error`].
     pub error_code: Option<String>,
     /// Human-readable error text, used only when [`Self::error_code`] is `None`
     /// (an uncategorized local failure). When a code is present the UI shows
@@ -279,13 +347,15 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
     if !START_REQUESTED.load(Ordering::Acquire) {
         return Ok(empty());
     }
-    let client = match connect_nats(&creds).await {
-        Ok(client) => client,
+    let connected_nats = match connect_nats(&creds).await {
+        Ok(connection) => connection,
         Err(error) => {
             eprintln!("remote: start failed at connect_nats: {error}");
             return start_failure(error);
         }
     };
+    let client = connected_nats.client;
+    let nats_health = connected_nats.health;
     if !START_REQUESTED.load(Ordering::Acquire) {
         return Ok(empty());
     }
@@ -363,11 +433,12 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
     };
     *STATE.lock().unwrap() = Some(RemoteState {
         client,
+        nats_health,
         nats_url: creds.nats_url,
         pair_id,
         desktop_id: creds.desktop_id,
         desktop_public_key,
-        bridge_instance_id,
+        bridge_instance_id: bridge_instance_id.clone(),
         event_tx,
         event_task,
         cmd_task,
@@ -381,6 +452,7 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
         pairing_code_expires_at,
         pairing_confirmed,
     });
+    spawn_runtime_supervisor(bridge_instance_id);
     if web_bind_failed {
         spawn_web_reconnect(status.pair_id.clone());
     }
@@ -432,6 +504,7 @@ fn spawn_start_retry() {
 /// Rebuild the whole bridge generation when a subscription task itself dies.
 /// Ordinary NATS disconnects are handled inside the task; reaching this path
 /// means the task exited or panicked and cannot resubscribe on its own.
+#[cfg_attr(test, allow(dead_code))]
 fn spawn_runtime_reconnect() {
     #[cfg(test)]
     return;
@@ -458,6 +531,62 @@ fn spawn_runtime_reconnect() {
             RUNTIME_RECONNECT_RUNNING.store(false, Ordering::Release);
         });
     }
+}
+
+/// Watch the active bridge from the process runtime, independently of any UI
+/// status polling. This is essential for Remote clients: a phone must recover
+/// even when the desktop window is hidden or no frontend has mounted yet.
+fn spawn_runtime_supervisor(bridge_instance_id: String) {
+    #[cfg(test)]
+    {
+        let _ = bridge_instance_id;
+    }
+
+    #[cfg(not(test))]
+    tauri::async_runtime::spawn(async move {
+        let mut healthy_secs = 0u8;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            if !START_REQUESTED.load(Ordering::Acquire) {
+                return;
+            }
+            let unhealthy = {
+                let guard = STATE.lock().unwrap();
+                let Some(state) = guard
+                    .as_ref()
+                    .filter(|state| state.bridge_instance_id == bridge_instance_id)
+                else {
+                    return;
+                };
+                if state.nats_health.is_terminal() {
+                    return;
+                }
+                state.nats_health.needs_reconnect()
+                    || state.cmd_task.is_finished()
+                    || state.transfer_task.is_finished()
+                    || state.event_task.is_finished()
+                    || state.heartbeat_task.is_finished()
+                    || state.refresh_task.is_finished()
+            };
+            if !unhealthy {
+                healthy_secs = healthy_secs.saturating_add(1);
+                if healthy_secs >= RUNTIME_HEALTHY_RESET_SECS {
+                    RUNTIME_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
+                }
+                continue;
+            }
+            if RUNTIME_RECONNECT_RUNNING.load(Ordering::Acquire) {
+                continue;
+            }
+            if RUNTIME_RECONNECT_ATTEMPTS.load(Ordering::Acquire) >= MAX_RUNTIME_RECONNECT_ATTEMPTS
+            {
+                *LAST_ERROR_CODE.lock().unwrap() = Some("reconnect_required".to_string());
+                return;
+            }
+            spawn_runtime_reconnect();
+            return;
+        }
+    });
 }
 
 /// Retry only the optional local Web listener. A busy port must not tear down
@@ -565,25 +694,35 @@ fn start_failure(error: crate::AppError) -> Result<RemoteStatus, crate::AppError
 /// and the web server's own URL construction). Do NOT reintroduce a `wss://`
 /// assertion on this hop: the platform hands the desktop a `nats://` URL by
 /// design.
-async fn connect_nats(
-    creds: &pairing::PairingCreds,
-) -> Result<async_nats::Client, crate::AppError> {
+async fn connect_nats(creds: &pairing::PairingCreds) -> Result<ConnectedNats, crate::AppError> {
     let key_pair = std::sync::Arc::new(
         nkeys::KeyPair::from_seed(&creds.nkey_seed)
             .map_err(|error| crate::AppError::Message(format!("Invalid desktop NKey: {error}")))?,
     );
+    let health = Arc::new(NatsHealth::default());
+    let event_health = health.clone();
     let options = async_nats::ConnectOptions::with_jwt(creds.user_jwt.clone(), move |nonce| {
         let key_pair = key_pair.clone();
         async move { key_pair.sign(&nonce).map_err(async_nats::AuthError::new) }
     })
-    .custom_inbox_prefix(format!("p.{}.rep.{}", creds.pair_id, creds.desktop_id));
-    options.connect(&creds.nats_url).await.map_err(|error| {
+    .custom_inbox_prefix(format!("p.{}.rep.{}", creds.pair_id, creds.desktop_id))
+    .event_callback(move |event| {
+        let health = event_health.clone();
+        async move { health.handle_event(&event) }
+    });
+    let client = options.connect(&creds.nats_url).await.map_err(|error| {
         crate::AppError::RemoteTransport(format!("Failed to connect to NATS: {error}"))
-    })
+    })?;
+    Ok(ConnectedNats { client, health })
 }
 
 /// Drop the persisted pairing and stop the bridge (the desktop "unpair").
 pub async fn unpair() -> Result<RemoteStatus, crate::AppError> {
+    // Give an online phone an immediate, authenticated signal before the
+    // server-side revoke invalidates the shared NATS credentials. Revocation
+    // remains the authoritative fallback when this at-most-once message cannot
+    // be delivered (phone offline, broker outage, older client, etc.).
+    notify_mobile_unpair().await;
     if let Some(creds) = pairing::load_creds() {
         pairing::revoke_pairing(&creds).await?;
     }
@@ -592,11 +731,74 @@ pub async fn unpair() -> Result<RemoteStatus, crate::AppError> {
     Ok(status)
 }
 
+async fn notify_mobile_unpair() {
+    let Some((client, pair_id, bridge_instance_id)) = STATE.lock().unwrap().as_ref().map(|state| {
+        (
+            state.client.clone(),
+            state.pair_id.clone(),
+            state.bridge_instance_id.clone(),
+        )
+    }) else {
+        return;
+    };
+    let payload = serde_json::to_vec(&json!({
+        "online": false,
+        "unpaired": true,
+        "pairId": pair_id,
+        "bridgeInstanceId": bridge_instance_id,
+        "lastHeartbeatTs": unix_timestamp(),
+    }))
+    .unwrap_or_default();
+    let _ = client
+        .publish(format!("p.{pair_id}.presence"), payload.into())
+        .await;
+    let _ = client.flush().await;
+}
+
 pub fn stop() -> RemoteStatus {
     START_REQUESTED.store(false, Ordering::Release);
     RUNTIME_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
     WEB_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
     stop_runtime()
+}
+
+/// Notify an online mobile client before an intentional desktop disconnect.
+/// The mobile client treats this as immediate offline state; heartbeat expiry
+/// remains the fallback for crashes, forced power-off, and any lost packet.
+pub async fn stop_gracefully(reason: &str) -> RemoteStatus {
+    notify_mobile_disconnect(reason).await;
+    stop()
+}
+
+pub async fn notify_mobile_disconnect(reason: &str) {
+    let Some((client, pair_id, bridge_instance_id)) = STATE.lock().unwrap().as_ref().map(|state| {
+        (
+            state.client.clone(),
+            state.pair_id.clone(),
+            state.bridge_instance_id.clone(),
+        )
+    }) else {
+        return;
+    };
+    let payload = serde_json::to_vec(&json!({
+        "online": false,
+        "disconnected": true,
+        "reason": reason,
+        "pairId": pair_id,
+        "bridgeInstanceId": bridge_instance_id,
+        "lastHeartbeatTs": unix_timestamp(),
+    }))
+    .unwrap_or_default();
+    let send = async {
+        if client
+            .publish(format!("p.{pair_id}.presence"), payload.into())
+            .await
+            .is_ok()
+        {
+            let _ = client.flush().await;
+        }
+    };
+    let _ = tokio::time::timeout(DISCONNECT_NOTICE_TIMEOUT, send).await;
 }
 
 fn stop_runtime() -> RemoteStatus {
@@ -642,20 +844,18 @@ pub fn status() -> RemoteStatus {
                 || s.event_task.is_finished()
                 || s.heartbeat_task.is_finished()
                 || s.refresh_task.is_finished();
-            if !critical_task_dead {
-                RUNTIME_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
-            }
+            let terminal_service_error = s.nats_health.is_terminal();
+            let generation_unhealthy = critical_task_dead || s.nats_health.needs_reconnect();
+            let nats_reconnecting =
+                s.client.connection_state() != async_nats::connection::State::Connected;
             let reconnect_in_flight = RUNTIME_RECONNECT_RUNNING.load(Ordering::Acquire);
             let can_auto_reconnect =
                 RUNTIME_RECONNECT_ATTEMPTS.load(Ordering::Acquire) < MAX_RUNTIME_RECONNECT_ATTEMPTS;
-            let reconnecting = critical_task_dead
+            let reconnecting = (generation_unhealthy || nats_reconnecting)
+                && !terminal_service_error
                 && START_REQUESTED.load(Ordering::Acquire)
-                && (reconnect_in_flight || can_auto_reconnect);
-            if reconnecting && !reconnect_in_flight {
-                spawn_runtime_reconnect();
-            }
-            let connected = !critical_task_dead
-                && s.client.connection_state() == async_nats::connection::State::Connected;
+                && (!generation_unhealthy || reconnect_in_flight || can_auto_reconnect);
+            let connected = !generation_unhealthy && !terminal_service_error && !nats_reconnecting;
 
             // The local Web listener is optional and retries independently so
             // a busy port never disrupts the healthy phone bridge.
@@ -695,7 +895,9 @@ pub fn status() -> RemoteStatus {
                 desktop_public_key: s.desktop_public_key.clone(),
                 web_url: s.web_url.clone(),
                 web_lan_url: s.web_lan_url.clone(),
-                error_code: if critical_task_dead && !reconnecting {
+                error_code: if terminal_service_error {
+                    Some("service_config".to_string())
+                } else if generation_unhealthy && !reconnecting {
                     Some("reconnect_required".to_string())
                 } else if web_reconnect_exhausted {
                     Some("web_bind".to_string())
@@ -1041,7 +1243,20 @@ fn spawn_credential_refresh(
             let mut unhealthy_ticks = 0u8;
             loop {
                 tokio::time::sleep(refresh_tick()).await;
-                if status().connected {
+                let generation_active = STATE.lock().unwrap().as_ref().is_some_and(|state| {
+                    state.pair_id == pair_id
+                        && Arc::ptr_eq(&state.pairing_confirmed, &pairing_confirmed)
+                });
+                if !generation_active {
+                    return;
+                }
+                let current = status();
+                if current.error_code.as_deref() == Some("service_config") {
+                    // A deterministic authorization/configuration failure does
+                    // not improve by rotating the same credentials forever.
+                    return;
+                }
+                if current.connected {
                     unhealthy_ticks = 0;
                 } else {
                     unhealthy_ticks += 1;
@@ -1070,6 +1285,13 @@ fn spawn_credential_refresh(
                     // shows "running": drop the dead credential, record why,
                     // and stop the bridge. `stop()` aborts this very task, but
                     // abort only lands at the next await and we return here.
+                    let generation_active = STATE.lock().unwrap().as_ref().is_some_and(|state| {
+                        state.pair_id == pair_id
+                            && Arc::ptr_eq(&state.pairing_confirmed, &pairing_confirmed)
+                    });
+                    if !generation_active {
+                        return;
+                    }
                     eprintln!("remote: pairing was revoked on the server; stopping bridge");
                     *LAST_ERROR_CODE.lock().unwrap() = Some("revoked".to_string());
                     let _ = pairing::clear_creds();
@@ -1082,14 +1304,16 @@ fn spawn_credential_refresh(
                     continue;
                 }
             };
-            let client = match connect_nats(&refreshed).await {
-                Ok(client) => client,
+            let connected_nats = match connect_nats(&refreshed).await {
+                Ok(connection) => connection,
                 Err(error) => {
                     eprintln!("remote: reconnect with refreshed credential failed: {error}");
                     tokio::time::sleep(refresh_tick()).await;
                     continue;
                 }
             };
+            let client = connected_nats.client;
+            let nats_health = connected_nats.health;
             let (event_tx, event_rx) = tokio::sync::mpsc::channel(EVENT_QUEUE_CAPACITY);
             let new_event = spawn_event_publisher(client.clone(), event_rx);
             let new_cmd = tokio::spawn(commands::command_loop(
@@ -1112,7 +1336,10 @@ fn spawn_credential_refresh(
             // save: saving outside the lock raced `unpair()` (stop → clear
             // creds) and could resurrect a just-revoked credential file.
             let mut guard = STATE.lock().unwrap();
-            let Some(state) = guard.as_mut().filter(|state| state.pair_id == pair_id) else {
+            let Some(state) = guard.as_mut().filter(|state| {
+                state.pair_id == pair_id
+                    && Arc::ptr_eq(&state.pairing_confirmed, &pairing_confirmed)
+            }) else {
                 new_event.abort();
                 new_cmd.abort();
                 new_transfer.abort();
@@ -1128,6 +1355,7 @@ fn spawn_credential_refresh(
             let old_event = std::mem::replace(&mut state.event_task, new_event);
             state.event_tx = event_tx;
             state.client = client;
+            state.nats_health = nats_health;
             state.nats_url = refreshed.nats_url;
             old_cmd.abort();
             old_transfer.abort();
@@ -1596,6 +1824,7 @@ mod runtime_tests {
         let event_task = spawn_event_publisher(client.clone(), event_rx);
         RemoteState {
             client,
+            nats_health: Arc::new(NatsHealth::default()),
             nats_url: nats.url().to_string(),
             pair_id: pair_id.to_string(),
             desktop_id: format!("desktop_{}", unique("rt")),
@@ -1625,6 +1854,28 @@ mod runtime_tests {
             .unwrap_or_else(|poison| poison.into_inner())
             .replace(state);
         assert!(previous.is_none(), "previous test leaked STATE");
+    }
+
+    #[test]
+    fn nats_health_classifies_recoverable_and_terminal_events() {
+        let health = NatsHealth::default();
+        health.handle_event(&async_nats::Event::ClientError(
+            async_nats::ClientError::MaxReconnects,
+        ));
+        assert!(health.needs_reconnect());
+        assert!(!health.is_terminal());
+
+        health.handle_event(&async_nats::Event::Connected);
+        assert!(!health.needs_reconnect());
+
+        health.handle_event(&async_nats::Event::ServerError(
+            async_nats::ServerError::AuthorizationViolation,
+        ));
+        health.handle_event(&async_nats::Event::Connected);
+        assert!(
+            health.is_terminal(),
+            "reconnect must not hide an auth failure"
+        );
     }
 
     /// Wait until WEB_PORT is bindable again (stop() aborts the web task
@@ -1736,6 +1987,31 @@ mod runtime_tests {
         let current = status();
         assert!(!current.reconnecting);
         assert_eq!(current.error_code.as_deref(), Some("reconnect_required"));
+
+        // Authorization/configuration failures are terminal for this
+        // generation: do not spend the reconnect budget on the same invalid
+        // service configuration.
+        {
+            let guard = STATE.lock().unwrap();
+            let state = guard.as_ref().unwrap();
+            state
+                .nats_health
+                .service_config_error
+                .store(true, Ordering::Release);
+        }
+        RUNTIME_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
+        let current = status();
+        assert!(!current.connected);
+        assert!(!current.reconnecting);
+        assert_eq!(current.error_code.as_deref(), Some("service_config"));
+        STATE
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .nats_health
+            .service_config_error
+            .store(false, Ordering::Release);
 
         // The optional Web listener retries silently, then becomes actionable
         // only after its own reconnect budget is exhausted.
@@ -2476,8 +2752,9 @@ mod runtime_tests {
         pairing::save_creds(&creds).unwrap();
         platform.respond_refresh(nats.url());
 
-        // STATE belongs to another pairing → the swap is abandoned.
-        let state = fake_state(&nats, "pair_someone_else").await;
+        // STATE has the same pairing id but belongs to a newer bridge
+        // generation → the old refresh worker must not overwrite it.
+        let state = fake_state(&nats, "pair_gen").await;
         install_state(state);
         let handshake = commands::HandshakeState::new(
             creds,
@@ -2510,16 +2787,14 @@ mod runtime_tests {
         platform.respond_refresh(nats2.url());
 
         let state = fake_state(&nats, "pair_sick").await;
+        let confirmed = state.pairing_confirmed.clone();
         install_state(state);
-        let handshake = commands::HandshakeState::new(
-            creds,
-            Arc::new(AtomicBool::new(true)),
-            "bridge_sick".into(),
-        );
+        let handshake =
+            commands::HandshakeState::new(creds, confirmed.clone(), "bridge_sick".into());
         let handle = spawn_credential_refresh(
             "pair_sick".to_string(),
             commands::new_reply_slots(),
-            Arc::new(AtomicBool::new(true)),
+            confirmed,
             handshake,
         );
         // Kill the broker: two unhealthy ticks trigger the generation swap.

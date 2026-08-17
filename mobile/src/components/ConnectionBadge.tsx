@@ -12,15 +12,18 @@ export function ConnectionBadge({
 }) {
   const { t } = useTranslation();
   const revoked = phase === "revoked";
+  const failed = phase === "failed";
   const connected = phase === "connected" && desktopOnline;
   const reconnecting = phase === "connecting" || phase === "reconnecting" || phase === "refreshing";
   const label = revoked
     ? t("connection.revoked")
-    : connected
-      ? t("connection.connected")
-      : reconnecting
-        ? t("connection.reconnecting")
-        : t("connection.offline");
+    : failed
+      ? t("connection.failed")
+      : connected
+        ? t("connection.connected")
+        : reconnecting
+          ? t("connection.reconnecting")
+          : t("connection.offline");
 
   return (
     <View

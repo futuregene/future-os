@@ -7,11 +7,11 @@ import { usePolling } from "../../../lib/usePolling";
  * Live connection state for the left-nav Remote indicator dot:
  * - `"connected"` — bridge is up and healthy (blue dot).
  * - `"reconnecting"` — bridge is reconnecting a failed generation (yellow dot).
- * - `"error"` — bridge reports a problem, e.g. network/revoked (yellow dot).
+ * - `"error"` — bridge reports a problem, e.g. network/revoked (red dot).
  * - `null` — not connected / not running (no dot).
  *
- * Remote control is a dev-only feature, so the caller gates `enabled` to
- * non-release builds; when disabled the poll never runs.
+ * The caller currently gates this while Remote is still pre-release; the
+ * backend supervisor remains independent of this poll.
  */
 export type RemoteIndicator = "connected" | "reconnecting" | "error" | null;
 
