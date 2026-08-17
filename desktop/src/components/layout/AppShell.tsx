@@ -172,6 +172,13 @@ export function AppShell() {
   // directly so its blue dot always matches the sidebar indicator.
   const { status: remoteStatus, indicator: remoteIndicator, refresh: refreshRemote } = useRemoteStatus(true);
   const { balance: futureBalance, email: futureEmail } = useFutureAccount();
+  // Remote needs a FutureOS sign-in (its pairing code comes from the service);
+  // if the user signs out while on it, drop back to the chat section.
+  useEffect(() => {
+    if (!futureEmail && section === "remote") {
+      setSection("chat");
+    }
+  }, [futureEmail, section]);
 
   const handleRecharge = () => {
     getFutureEnvironment().then(env => openExternalUrl(`${env.platformUrl}/platform/#recharge`)).catch(() => {});

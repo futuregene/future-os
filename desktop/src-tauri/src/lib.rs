@@ -894,9 +894,12 @@ fn install_rustls_provider() {
 /// task can be scheduled before the process runtime is ready and never obtain
 /// a lasting NATS connection.
 fn spawn_remote_auto_connect() {
-    let enabled = store::get_app_settings()
-        .map(|settings| settings.auto_connect_remote)
-        .unwrap_or(false)
+    // Pairing codes are issued by the FutureOS service, so auto-connect needs a
+    // sign-in even when the feature is enabled and credentials are persisted.
+    let enabled = future_login::future_api_key().is_ok()
+        && store::get_app_settings()
+            .map(|settings| settings.auto_connect_remote)
+            .unwrap_or(false)
         && remote::pairing::load_creds().is_some();
     if !enabled {
         return;

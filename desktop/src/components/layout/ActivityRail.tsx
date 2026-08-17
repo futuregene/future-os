@@ -131,6 +131,9 @@ export function ActivityRail({
   const pendingApprovalCounts = usePendingApprovalCounts();
   // Shared overlay scrollbar for the conversation list, matching the chat view.
   const listScrollbar = useFloatingScrollbar();
+  // Remote pairing issues its code through the FutureOS service, so it needs a
+  // sign-in. Hide the nav entry while signed out.
+  const showRemote = userEmail != null;
   // Connection indicator overlaid on the Remote nav icon: blue when connected,
   // amber while recovery is in progress, red for an actionable bridge error,
   // and nothing when disconnected.
@@ -402,7 +405,9 @@ export function ActivityRail({
                         )
                       : null}
                   </div>
-                  <NavButton icon={Smartphone} indicator={remoteDot} label={t("activityRail.remote")} active={active === "remote"} onClick={() => onChange("remote")} />
+                  {showRemote
+                    ? <NavButton icon={Smartphone} indicator={remoteDot} label={t("activityRail.remote")} active={active === "remote"} onClick={() => onChange("remote")} />
+                    : null}
                 </div>
                 {featureItems.length > 0
                   ? (
@@ -688,17 +693,21 @@ export function ActivityRail({
                   active={false}
                   onClick={onOpenModels}
                 />
-                <IconButton
-                  icon={(
-                    <span className="relative inline-flex">
-                      <Smartphone className="size-4" />
-                      {remoteDot}
-                    </span>
-                  )}
-                  label={t("activityRail.remote")}
-                  active={active === "remote"}
-                  onClick={() => onChange("remote")}
-                />
+                {showRemote
+                  ? (
+                      <IconButton
+                        icon={(
+                          <span className="relative inline-flex">
+                            <Smartphone className="size-4" />
+                            {remoteDot}
+                          </span>
+                        )}
+                        label={t("activityRail.remote")}
+                        active={active === "remote"}
+                        onClick={() => onChange("remote")}
+                      />
+                    )
+                  : null}
                 {featureItems.map((item) => {
                   const Icon = item.icon;
                   return (
