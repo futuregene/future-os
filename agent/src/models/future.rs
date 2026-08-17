@@ -179,6 +179,25 @@ fn platform_url_from_auth(auth: &serde_json::Value) -> Option<String> {
         .map(|url| url.trim_end_matches('/').to_string())
 }
 
+/// Future model API URL shown by provider-management clients. This consumes
+/// the already-locked auth snapshot instead of re-reading the file.
+pub(crate) fn display_base_url_from_auth(auth: &serde_json::Value) -> String {
+    let platform =
+        platform_url_from_auth(auth).unwrap_or_else(|| DEFAULT_FUTURE_PLATFORM_URL.to_string());
+    format!("{}/api/v1", platform.trim_end_matches('/'))
+}
+
+/// Count the last successfully cached Future model catalogue for the provider
+/// settings view, independent of whether the current key is present.
+pub(crate) fn cached_model_count() -> usize {
+    let path = crate::utils::default_config_dir().join(".future-models-cache.json");
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|contents| serde_json::from_str::<FutureModelsCache>(&contents).ok())
+        .map(|cache| cache.models.len())
+        .unwrap_or(0)
+}
+
 fn resolve_future_platform_url() -> String {
     // Try to read base_url or platform_base_url from auth.json
     let auth_path = dirs::home_dir()

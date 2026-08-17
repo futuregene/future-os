@@ -3,6 +3,7 @@
 //! before — and separate from — the locked models.json read-modify-write in
 //! [`super::write`].
 
+#[cfg(test)]
 use serde_json::{json, Value};
 
 use crate::auth_store::FUTURE_PROVIDER_ID;
@@ -33,6 +34,7 @@ pub(super) struct ValidatedModel {
 }
 
 /// Serialize validated models to the models.json entry shape.
+#[cfg(test)]
 pub(super) fn model_json_values(models: &[ValidatedModel]) -> Vec<Value> {
     models
         .iter()

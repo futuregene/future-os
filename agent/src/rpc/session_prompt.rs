@@ -116,6 +116,11 @@ impl ServerSession {
         client_request_id: &str,
         busy_policy: crate::runtime::BusyPolicy,
     ) -> Result<crate::runtime::RunAck> {
+        // auth.json is authoritative. Refresh immediately before freezing the
+        // run snapshot so a UI/catalog view and the actual request can never
+        // disagree about which key is in use. Failure rejects admission rather
+        // than silently running with stale credentials.
+        self.reload_credentials()?;
         if self.deleting {
             return Err(crate::runtime::RunQueueError::Deleting.into());
         }

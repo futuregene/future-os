@@ -242,6 +242,13 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     (event: StreamEvent, sessionId: string) => {
       const sid = sessionId || "";
       if (!sid) return;
+      if (event.type === "provider_config_changed") {
+        // Process-wide Agent completion mirrored on the `_global` subject.
+        // Re-read the catalogue from the authority; never project this as chat
+        // content or retain an endpoint-local optimistic model list.
+        void refreshModels();
+        return;
+      }
       // Side effects that read event payloads directly (not timeline writes):
       // these stay outside the lane because they don't mutate the session
       // timeline — the lane only receives pure timeline events.
@@ -303,7 +310,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       syncEngineRef.current?.event(sid, event);
       if (event.type === "agent_end") void refreshSessions();
     },
-    [reconcileSession, refreshSessions, setTitleOverrides],
+    [reconcileSession, refreshModels, refreshSessions, setTitleOverrides],
   );
 
   const closeConversation = useCallback(() => {

@@ -58,6 +58,7 @@ pub(crate) fn resolve_future_platform_url(auth: &Value) -> String {
 
 /// Resolve the FutureGene **model API** base URL: `{platform}/api/v1`. This is
 /// what the Providers page shows and what model calls use.
+#[cfg(test)]
 pub(crate) fn resolve_future_base_url(auth: &Value) -> String {
     format!("{}/api/v1", resolve_future_platform_url(auth))
 }

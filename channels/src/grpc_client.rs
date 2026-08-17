@@ -500,6 +500,7 @@ impl AgentClient {
             event_types: vec![],
             after_idx: -1,
             atomic_attach: true,
+            global_events: false,
         });
         let inner = self
             .inner

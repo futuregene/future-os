@@ -30,6 +30,12 @@ const EVENTS_PAGE_BYTE_BUDGET: usize = 8 * 1024 * 1024;
 /// timestamp, idx…), approximating the journal line.
 const EVENT_WIRE_OVERHEAD: usize = 320;
 
+/// Serializes provider snapshots with config mutations through the registry
+/// refresh. The lower config lock protects file RMWs; this command-level lock
+/// additionally prevents readers from observing committed files before the
+/// matching in-memory registry revision has landed.
+static PROVIDER_COMMAND_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Cut `events` to one page for a paging caller (`max_events > 0`): at most
 /// `max_events` entries, and at most [`EVENTS_PAGE_BYTE_BUDGET`] of estimated
 /// serialized size, whichever comes first. The first event always goes out —
@@ -117,16 +123,27 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             cmd.include_builtin_providers,
         );
     }
+    if cmd_type == "list_providers" {
+        return list_providers_response(state, id);
+    }
 
     // Credential refresh operates on every session, not one — handle it before
     // resolving a target session (which would needlessly create/load one).
     if cmd_type == "reload_auth" {
+        let _provider_guard = PROVIDER_COMMAND_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         // Rebuild the shared model registry FIRST so runtime-added/
         // removed providers and models.json edits become visible to every
         // session — set_model now resolves against this cache instead of
         // constructing a fresh Registry per call.
         refresh_registry_and_credentials(state);
-        return RpcResponse::ok(id, "reload_auth", serde_json::json!({}));
+        let revision = crate::rpc::publish_provider_config_changed("*", "reload", true, true);
+        return RpcResponse::ok(
+            id,
+            "reload_auth",
+            serde_json::json!({ "revision": revision }),
+        );
     }
 
     // ── Config writes (audit item 2): the agent is the sole writer of
@@ -1005,14 +1022,14 @@ fn list_models_response(
     // Use the same default-model resolution as cmd_new_session so the list
     // and actual session creation agree on which model is the default.
     let effective_default = crate::models::get_default_model_with(registry)
-        .and_then(|full| full.rsplit_once('/').map(|(_, id)| id.to_string()))
-        .or_else(|| models.first().map(|m| m.id.clone()))
+        .or_else(|| models.first().map(|m| format!("{}/{}", m.provider, m.id)))
         .unwrap_or_default();
 
     let payload_models: Vec<serde_json::Value> = models
         .into_iter()
         .map(|model| {
             let id = model.id;
+            let qualified_id = format!("{}/{}", model.provider, id);
             let label = if model.name.is_empty() {
                 id.clone()
             } else {
@@ -1026,7 +1043,7 @@ fn list_models_response(
                 "supportsImages": model.input.iter().any(|input| input == "image"),
                 "thinkingLevel": thinking_level.to_string(),
                 "contextWindow": model.context_window,
-                "isDefault": id == effective_default,
+                "isDefault": qualified_id == effective_default,
                 "description": model.description,
                 "descriptionEn": model.description_en,
                 "recommended": model.recommended,
@@ -1048,6 +1065,126 @@ fn list_models_response(
     RpcResponse::ok(id, "list_models", payload)
 }
 
+fn list_providers_response(state: &AppState, id: &str) -> String {
+    let _provider_guard = PROVIDER_COMMAND_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    match provider_view(state) {
+        Ok(view) => RpcResponse::ok(id, "list_providers", view),
+        Err(error) => RpcResponse::build_fail(id, "list_providers", &error),
+    }
+}
+
+fn provider_view(state: &AppState) -> Result<serde_json::Value, String> {
+    let (models, auth) = crate::config::providers::read_provider_documents()?;
+    let models = serde_json::Value::Object(models);
+    let auth = serde_json::Value::Object(auth);
+    let provider_entries = models
+        .get("providers")
+        .and_then(serde_json::Value::as_object);
+    let has_key = |provider: &str| {
+        auth.get(provider)
+            .and_then(|entry| entry.get("key"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|key| !key.trim().is_empty())
+    };
+    let is_override_only = |config: &serde_json::Value| {
+        let has_text = |field: &str| {
+            config
+                .get(field)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| !value.trim().is_empty())
+        };
+        let has_models = config
+            .get("models")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|items| !items.is_empty());
+        !has_text("name") && !has_text("api") && !has_models
+    };
+
+    let custom_ids: std::collections::HashSet<&str> = provider_entries
+        .into_iter()
+        .flat_map(|providers| providers.iter())
+        .filter(|(_, config)| !is_override_only(config))
+        .map(|(provider_id, _)| provider_id.as_str())
+        .collect();
+
+    let registry = state.model_registry.read();
+    let mut builtin = vec![serde_json::json!({
+        "id": "future",
+        "name": "Future",
+        "baseUrl": crate::models::display_base_url_from_auth(&auth),
+        "hasApiKey": has_key("future"),
+        "modelCount": crate::models::cached_model_count(),
+        "requiresBaseUrl": false,
+    })];
+    for (provider_id, summary) in registry.builtin_provider_summaries() {
+        if custom_ids.contains(provider_id.as_str()) {
+            continue;
+        }
+        let override_url = provider_entries
+            .and_then(|providers| providers.get(&provider_id))
+            .and_then(|config| config.get("baseUrl"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        builtin.push(serde_json::json!({
+            "id": provider_id,
+            "name": summary.name,
+            "baseUrl": override_url.unwrap_or(&summary.base_url),
+            "hasApiKey": has_key(&provider_id),
+            "modelCount": summary.model_count,
+            "requiresBaseUrl": summary.base_url.contains("YOUR_RESOURCE"),
+        }));
+    }
+
+    let mut custom = provider_entries
+        .into_iter()
+        .flat_map(|providers| providers.iter())
+        .filter(|(provider_id, config)| provider_id.as_str() != "future" && !is_override_only(config))
+        .map(|(provider_id, config)| {
+            let name = config
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or(provider_id);
+            let provider_models = config
+                .get("models")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|model| {
+                    let model_id = model.get("id")?.as_str()?;
+                    let model_name = model
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|name| !name.trim().is_empty())
+                        .unwrap_or(model_id);
+                    let supports_images = model
+                        .get("modalities")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|items| items.iter().any(|item| item.as_str() == Some("image")));
+                    Some(serde_json::json!({
+                        "id": model_id,
+                        "name": model_name,
+                        "supportsImages": supports_images,
+                    }))
+                })
+                .collect::<Vec<_>>();
+            serde_json::json!({
+                "id": provider_id,
+                "name": name,
+                "api": config.get("api").and_then(serde_json::Value::as_str).unwrap_or_default(),
+                "baseUrl": config.get("baseUrl").and_then(serde_json::Value::as_str).unwrap_or_default(),
+                "hasApiKey": has_key(provider_id),
+                "models": provider_models,
+            })
+        })
+        .collect::<Vec<_>>();
+    custom.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
+    Ok(serde_json::json!({ "builtin": builtin, "custom": custom }))
+}
+
 /// Rebuild the shared model registry so provider/models.json changes become
 /// visible to every session, then refresh each live session's cached
 /// credentials. Shared by `reload_auth` and the config-write commands, which
@@ -1059,6 +1196,9 @@ fn refresh_registry_and_credentials(state: &AppState) {
 
 /// Apply one auth.json mutation and refresh live state (see dispatch comment).
 fn cmd_set_auth(state: &AppState, id: &str, cmd: &RpcCommand) -> String {
+    let _provider_guard = PROVIDER_COMMAND_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     let Some(mutation) = cmd.auth_update.as_ref() else {
         return RpcResponse::build_fail(id, "set_auth", "missing auth_update payload");
     };
@@ -1078,16 +1218,25 @@ fn cmd_set_auth(state: &AppState, id: &str, cmd: &RpcCommand) -> String {
         return RpcResponse::build_fail(id, "set_auth", &error);
     }
     refresh_registry_and_credentials(state);
+    let revision = crate::rpc::publish_provider_config_changed(
+        &mutation.provider,
+        "auth_updated",
+        true,
+        false,
+    );
     RpcResponse::ok(
         id,
         "set_auth",
-        serde_json::json!({ "provider": mutation.provider }),
+        serde_json::json!({ "provider": mutation.provider, "revision": revision }),
     )
 }
 
 /// Create/update a models.json provider (plus optional auth.json key) and
 /// refresh live state (see dispatch comment).
 fn cmd_upsert_provider(state: &AppState, id: &str, cmd: &RpcCommand) -> String {
+    let _provider_guard = PROVIDER_COMMAND_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     let Some(spec) = cmd.provider_config.as_ref() else {
         return RpcResponse::build_fail(id, "upsert_provider", "missing provider_config payload");
     };
@@ -1098,8 +1247,10 @@ fn cmd_upsert_provider(state: &AppState, id: &str, cmd: &RpcCommand) -> String {
         || spec.api.is_some()
         || spec.base_url.is_some()
         || spec.clear_base_url
+        || spec.replace_models
         || !spec.models.is_empty()
-        || spec.api_key.is_some();
+        || spec.api_key.is_some()
+        || spec.clear_api_key;
     if !carries_change {
         return RpcResponse::build_fail(id, "upsert_provider", "provider_config carries no change");
     }
@@ -1111,10 +1262,8 @@ fn cmd_upsert_provider(state: &AppState, id: &str, cmd: &RpcCommand) -> String {
     // here (not only in the GUI) keeps the invariant correct no matter which
     // client issues the write and whether any client-side catalog is stale or
     // temporarily unavailable.
-    let defines_custom_provider = spec.name.is_some()
-        || spec.api.is_some()
-        || !spec.models.is_empty()
-        || spec.api_key.is_some();
+    let defines_custom_provider =
+        spec.name.is_some() || spec.api.is_some() || spec.replace_models || !spec.models.is_empty();
     if defines_custom_provider
         && state
             .model_registry
@@ -1135,12 +1284,29 @@ fn cmd_upsert_provider(state: &AppState, id: &str, cmd: &RpcCommand) -> String {
         return RpcResponse::build_fail(id, "upsert_provider", &error);
     }
     refresh_registry_and_credentials(state);
-    RpcResponse::ok(id, "upsert_provider", serde_json::json!({ "id": spec.id }))
+    let revision = crate::rpc::publish_provider_config_changed(
+        &spec.id,
+        if spec.create_only {
+            "created"
+        } else {
+            "updated"
+        },
+        spec.api_key.is_some() || spec.clear_api_key,
+        true,
+    );
+    RpcResponse::ok(
+        id,
+        "upsert_provider",
+        serde_json::json!({ "id": spec.id, "revision": revision }),
+    )
 }
 
 /// Remove a provider's models.json entry AND auth.json entry, then refresh
 /// live state (see dispatch comment).
 fn cmd_delete_provider(state: &AppState, id: &str, cmd: &RpcCommand) -> String {
+    let _provider_guard = PROVIDER_COMMAND_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     let Some(spec) = cmd.provider_config.as_ref() else {
         return RpcResponse::build_fail(id, "delete_provider", "missing provider_config payload");
     };
@@ -1173,10 +1339,11 @@ fn cmd_delete_provider(state: &AppState, id: &str, cmd: &RpcCommand) -> String {
         return RpcResponse::build_fail(id, "delete_provider", &error);
     }
     refresh_registry_and_credentials(state);
+    let revision = crate::rpc::publish_provider_config_changed(provider_id, "deleted", true, true);
     RpcResponse::ok(
         id,
         "delete_provider",
-        serde_json::json!({ "id": provider_id }),
+        serde_json::json!({ "id": provider_id, "revision": revision }),
     )
 }
 

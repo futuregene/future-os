@@ -168,6 +168,10 @@ export function useAgentConnection(hiddenModels: string[]): UseAgentConnectionRe
     () => onFutureEvent("future-models-synced", () => void refreshAgentModels()),
     [refreshAgentModels],
   );
+  useEffect(
+    () => onFutureEvent("providers-changed", () => void refreshAgentModels()),
+    [refreshAgentModels],
+  );
 
   const visibleModelOptions = useMemo(
     () => modelOptions.filter(model => !hiddenModels.includes(modelKey(model))),
