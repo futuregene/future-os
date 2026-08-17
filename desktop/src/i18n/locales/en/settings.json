@@ -24,7 +24,7 @@
   },
   "remote": {
     "autoConnect": {
-      "title": "Auto-connect remote device on launch",
+      "title": "Auto-connect phone on launch",
       "description": "When a phone is already paired, connect to it automatically each time the app opens. You can still disconnect by hand."
     }
   },
@@ -57,7 +57,7 @@
     },
     "tabs": {
       "general": "General",
-      "remote": "Remote",
+      "remote": "Phone Control",
       "account": "Account",
       "update": "Check for updates",
       "about": "About",

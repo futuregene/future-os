@@ -10,7 +10,6 @@ import { cn } from "../../lib/cn";
 import { usePolling } from "../../lib/usePolling";
 import { startWindowDrag } from "../../lib/windowDrag";
 import {
-  openUrl,
   startRemote,
   stopRemote,
   unpairRemote,
@@ -288,20 +287,6 @@ export function RemoteView({
             : null}
 
           <p className="text-xs text-ink-muted">{t("note")}</p>
-          {running && remoteStatus?.webUrl
-            ? (
-                <p className="flex items-center gap-1 text-xs text-ink-muted">
-                  <span>{t("webClient")}</span>
-                  <button
-                    className="text-accent underline"
-                    onClick={() => void openUrl(remoteStatus.webUrl!)}
-                    type="button"
-                  >
-                    {remoteStatus.webUrl}
-                  </button>
-                </p>
-              )
-            : null}
         </div>
       </div>
 

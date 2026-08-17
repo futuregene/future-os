@@ -430,7 +430,7 @@ jobs:
 
   publish:
     name: Publish complete release
-    needs: [version, macos, windows, linux, android]
+    needs: [version, macos, windows, linux, android, ios]
     runs-on: ubuntu-latest
     concurrency:
       group: futureos-release-publish
