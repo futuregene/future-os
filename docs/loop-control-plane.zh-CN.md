@@ -39,6 +39,28 @@ Agent 执行一个有界回合（gRPC）→ 写证据 → 内核据此决定下�
 | 多 agent | `agent contract/recipe/succession/collective` | 一个目标多个 worker：契约（替补关系/交接规则）、命名配方一键上车、离线超时自动替补晋升、唤醒轮值表、集体回合账本 |
 | 前端面 frontier | `frontier show` | 成果连续段（outcome segments）、结构化 replan 规则、有界语义历史（N=50）、终局判定 |
 
+## 用技能驱动 loop（推荐入口）
+
+绝大多数情况下，你不需要手敲下面的 CLI——**用 `/future-loop` 技能让 Agent 自己驾驶**：
+
+```
+你（用户）说 "/future-loop 帮我盯着 X 一周"
+   │
+   ▼
+Agent 加载 future-loop 技能（v3.x 驾驶手册）
+   ├─ 1. 先 `future loop status` 查是否已有同类目标（有则续做，不重复建）
+   ├─ 2. 与你确认计划（步骤/模型/thinking level）——除非你的指令已含完整目标与约束
+   ├─ 3. `goal init` + 拆 todos（依赖 --blocks、硬校验 --verify/--acceptance 一起挂）
+   ├─ 4. 逐回合驱动：`run --max-turns 1 --agent-id <唯一名>`，回合结束立即重启
+   ├─ 5. 用 `todo update --text` 中途 steering 纠正跑偏的 worker
+   ├─ 6. 遇到不可逆/昂贵/用户专属决策 → 挂 user gate 等你拍板（gate 冻结一切）
+   └─ 7. 收尾：验收 todo 拷贝交付物到项目根 → validated closure（terminal）
+```
+
+**技能与 CLI 的分工**：技能负责"何时该做什么、如何拆解、如何驾驶"（编排层）；
+CLI 是底层机制（状态内核 + 硬校验 + 决策）。技能是 v3.x 持续维护的驾驶手册，
+与本页同步更新；完整语义见 [future-skills/builtin/future-loop](https://github.com/futuregene/future-skills/tree/main/builtin/future-loop)。
+
 ## 用户工作流（从零到闭环）
 
 ```bash
