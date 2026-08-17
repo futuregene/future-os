@@ -25,7 +25,7 @@ const NAV_GROUPS = [
   {
     items: [
       { icon: Settings2, labelKey: "dialog.tabs.general", value: "general" as const },
-      { icon: Smartphone, labelKey: "dialog.tabs.remote", value: "remote" as const, devOnly: true },
+      { icon: Smartphone, labelKey: "dialog.tabs.remote", value: "remote" as const },
       { icon: UserRound, labelKey: "dialog.tabs.account", value: "account" as const },
       { icon: RefreshCw, labelKey: "dialog.tabs.update", value: "update" as const },
       { icon: Info, labelKey: "dialog.tabs.about", value: "about" as const },
@@ -101,9 +101,9 @@ export function SettingsDialog({
     }
   }, [open, initialTab]);
 
-  // Never strand on a dev-only tab (environment / remote) on a release build.
+  // Never strand on the dev-only environment tab on a release build.
   useEffect(() => {
-    if (!showEnvironment && (tab === "environment" || tab === "remote")) {
+    if (!showEnvironment && tab === "environment") {
       setTab("general");
     }
   }, [showEnvironment, tab]);
@@ -177,7 +177,7 @@ export function SettingsDialog({
                   />
                 )
               : null}
-            {tab === "remote" && showEnvironment
+            {tab === "remote"
               ? (
                   <RemotePage
                     autoConnectRemote={appSettings.autoConnectRemote}

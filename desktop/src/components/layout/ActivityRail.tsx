@@ -23,7 +23,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { SkillIntroBubble } from "../../features/skills/SkillIntroBubble";
 import { listInstalledSkills } from "../../integrations/skills/skillsClient";
-import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { cn } from "../../lib/cn";
 import { onFutureEvent } from "../../lib/futureEvents";
 import { isMacOS } from "../../lib/platform";
@@ -66,7 +65,7 @@ interface ActivityRailProps {
   onSelectThread: (thread: StoredThread) => void;
   onTogglePinThread: (thread: StoredThread) => void;
   onToggleExpanded: () => void;
-  /** Remote bridge connection state for the nav indicator dot (dev-only). */
+  /** Remote bridge connection state for the nav indicator dot. */
   remoteIndicator?: RemoteIndicator;
   /** FutureOS credit balance (null when signed out). */
   futureBalance?: number | null;
@@ -132,15 +131,13 @@ export function ActivityRail({
   const pendingApprovalCounts = usePendingApprovalCounts();
   // Shared overlay scrollbar for the conversation list, matching the chat view.
   const listScrollbar = useFloatingScrollbar();
-  // The Remote (phone) feature is still under development — show its nav entry
-  // only in dev builds. Hidden while build info is loading so it never flashes
-  // into a release build.
-  const build = useBuildInfo();
-  const showRemote = build.data ? !build.data.isRelease : false;
+  // Remote pairing issues its code through the FutureOS service, so it needs a
+  // sign-in. Hide the nav entry while signed out.
+  const showRemote = userEmail != null;
   // Connection indicator overlaid on the Remote nav icon: blue when connected,
   // amber while recovery is in progress, red for an actionable bridge error,
   // and nothing when disconnected.
-  const remoteDot = showRemote && remoteIndicator
+  const remoteDot = remoteIndicator
     ? (
         <span
           className={cn(
