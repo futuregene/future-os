@@ -377,7 +377,7 @@ fn build_cli_registry() -> CommandRegistry {
     r.command(
         ops,
         "quota",
-        "quota should-run / usage / spend / tools / decisions",
+        "quota should-run / usage / spend / decisions",
         "quota should-run --goal G [--format json] | usage [--goal G] [--all] | spend --goal G  | decisions --goal G [--limit N]",
     );
     r.command(
