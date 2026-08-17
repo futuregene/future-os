@@ -304,6 +304,27 @@ describe("RemoteClient terminal iterator recovery", () => {
     expect(recovery).toHaveBeenCalledWith(
       expect.objectContaining({ message: expect.stringContaining("remote_service_misconfigured") }),
     );
+    expect(recovery).toHaveBeenCalledTimes(1);
+  });
+
+  test("a protocol status fails its generation once without exhaustion fallback", async () => {
+    const { client } = recoveryClient();
+    const failGeneration = jest.fn();
+    const testClient = client as unknown as {
+      watchStatus(connection: unknown, generation: number): void;
+      failGeneration(error: unknown, generation: number): void;
+    };
+    testClient.failGeneration = failGeneration;
+    async function* statuses() {
+      yield { type: "error", data: ErrorCode.ProtocolError };
+    }
+    testClient.watchStatus({ status: statuses }, 0);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(failGeneration).toHaveBeenCalledTimes(1);
+    expect(failGeneration).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining("nats_protocol_error") }),
+      0,
+    );
   });
 
   test("a throwing NATS status iterator enters the outer recovery path", async () => {

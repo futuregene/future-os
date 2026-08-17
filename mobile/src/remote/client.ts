@@ -609,11 +609,9 @@ export class RemoteClient {
               code === ErrorCode.AuthorizationViolation
             ) {
               this.handleFailure(new Error(`remote_service_misconfigured: ${code}`));
-              exitedNaturally = false;
               return;
             } else if (code === ErrorCode.ProtocolError) {
               this.failGeneration(new Error(`nats_protocol_error: ${code}`), generation);
-              exitedNaturally = false;
               return;
             }
           }
