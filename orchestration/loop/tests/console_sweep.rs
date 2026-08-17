@@ -146,6 +146,8 @@ fn unknown_flags_hard_error_everywhere() {
         "--todo-id",
         &first,
         "--no-follow-up",
+        "--evidence",
+        "fixture evidence for completion contract",
         "--zz",
         "1",
     ]);
@@ -342,6 +344,7 @@ fn steer_poll_once_arms() {
                 priority: None,
                 resume_when: None,
                 blocks: None,
+                acceptance: None,
                 ts: now_epoch(),
             })
             .unwrap();
@@ -503,6 +506,8 @@ fn status_closure_and_gap_arms() {
         "--todo-id",
         &first,
         "--no-follow-up",
+        "--evidence",
+        "fixture evidence for completion contract",
     ]);
     cli_ok(&["status", "--goal", &gid]);
     // Projection gap → the ⚠ line.

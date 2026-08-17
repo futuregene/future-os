@@ -235,6 +235,8 @@ fn delivery_status_display_and_subcommands() {
         "--todo-id",
         &tid,
         "--no-follow-up",
+        "--evidence",
+        "delivered: fixture output files written and verified",
     ]);
     cli_ok(&["delivery", "status", "--goal", &gid]);
     cli_ok(&["delivery", "status", "--goal", &gid, "--format", "json"]);
@@ -349,6 +351,8 @@ fn delivery_record_verified_and_empty_projection() {
         "--todo-id",
         &tid,
         "--no-follow-up",
+        "--evidence",
+        "delivered: fixture output files written and verified",
     ]);
     // Resolve the delivered signal → verified (non-pending age rendering).
     cli_ok(&[

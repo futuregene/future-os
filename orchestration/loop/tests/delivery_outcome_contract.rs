@@ -105,6 +105,8 @@ fn completion_records_delivered_and_record_resolves() {
             "--todo-id",
             &todo_id,
             "--no-follow-up",
+            "--evidence",
+            "fixture evidence for completion contract",
         ])
         .unwrap();
 
@@ -202,6 +204,8 @@ fn failed_delivery_allows_redelivery_cycle() {
             "--todo-id",
             &todo_id,
             "--no-follow-up",
+            "--evidence",
+            "fixture evidence for completion contract",
         ])
         .unwrap();
         cli(&[
@@ -261,6 +265,8 @@ fn followthrough_fires_once_for_overdue_delivery() {
             "--todo-id",
             &todo_id,
             "--no-follow-up",
+            "--evidence",
+            "fixture evidence for completion contract",
         ])
         .unwrap();
         // Push the run-turn counter past the threshold (delivered at turn 0).
@@ -320,6 +326,8 @@ fn followthrough_respects_threshold() {
             "--todo-id",
             &todo_id,
             "--no-follow-up",
+            "--evidence",
+            "fixture evidence for completion contract",
         ])
         .unwrap();
         // Turn 2 < default threshold 3 → nothing derived.
@@ -355,6 +363,8 @@ fn delivery_status_projects_read_model() {
             "--todo-id",
             &todo_id,
             "--no-follow-up",
+            "--evidence",
+            "fixture evidence for completion contract",
         ])
         .unwrap();
         // JSON read model carries the delivery with its age + pending flag.
