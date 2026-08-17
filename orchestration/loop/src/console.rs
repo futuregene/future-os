@@ -1053,6 +1053,7 @@ fn todo_claim(store: &mut Store, args: &[String]) -> Result<()> {
         todo_id: todo_id.clone(),
         agent_id: agent.clone(),
         lease_expires_at: expires,
+        holder_pid: Some(std::process::id()),
         ts: now,
     })?;
     append_workspace_lock(store, &goal_id, &agent, &todo_id, &goal, force)?;
@@ -4436,6 +4437,7 @@ fn cmd_lease(store: &mut Store, args: &[String]) -> Result<()> {
                     todo_id: todo_id.clone(),
                     agent_id: agent.clone(),
                     lease_expires_at: expires,
+                    holder_pid: Some(std::process::id()),
                     ts: now,
                 })?;
                 // P0-1: advisory workspace write lock (audit for agent list).
@@ -7293,6 +7295,7 @@ mod coverage_tests {
                 todo_id: todo_id.into(),
                 agent_id: "a".into(),
                 lease_expires_at: 9,
+                holder_pid: None,
                 ts: 1,
             },
             Event::AgentRegistered {
@@ -7629,6 +7632,7 @@ mod coverage_tests {
                 todo_id: "t1".into(),
                 agent_id: "other".into(),
                 lease_expires_at: crate::state::now_epoch() + 3600,
+                holder_pid: None,
                 ts: 3,
             })
             .unwrap();

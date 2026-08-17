@@ -426,6 +426,7 @@ fn run_monitor_claim_race_stops_without_selection() {
                 goal_id: goal.clone(),
                 todo_id: "mon_raced".into(),
                 agent_id: "other-agent".into(),
+                holder_pid: None,
                 lease_expires_at: now_epoch() + 3600,
                 ts: now_epoch(),
             })

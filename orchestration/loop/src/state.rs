@@ -148,6 +148,12 @@ pub struct Todo {
     /// when the lease expires. Expired leases return the todo to the frontier.
     pub claimed_by: Option<String>,
     pub lease_expires_at: Option<u64>,
+    /// Lease liveness: pid of the run process that holds the current claim
+    /// (written at claim time). A dead holder's lease is reclaimed
+    /// automatically by the claim path (`task_lease` + `try_claim_todo`),
+    /// eliminating the manual `lease release` dance after killing a run.
+    #[serde(default)]
+    pub holder_pid: Option<u32>,
     /// Gate scope flags (LoopX: goal_bound / global_gate — set by bootstrap
     /// flows, not by plain todo add).
     pub goal_bound: bool,
@@ -292,6 +298,7 @@ impl Todo {
             evidence: None,
             claimed_by: None,
             lease_expires_at: None,
+            holder_pid: None,
             goal_bound: false,
             global_gate: false,
             updated_at: now,

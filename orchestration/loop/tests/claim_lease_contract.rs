@@ -145,6 +145,7 @@ fn workspace_guard_survives_replay_and_detects_conflicts() {
             goal_id: "g1".into(),
             todo_id: "t1".into(),
             agent_id: "alice".into(),
+            holder_pid: None,
             lease_expires_at: now + 3600,
             ts: now,
         })
@@ -211,6 +212,7 @@ fn claim_survives_replay() {
             goal_id: "g1".into(),
             todo_id: "t1".into(),
             agent_id: "alice".into(),
+            holder_pid: None,
             lease_expires_at: ts + 3600,
             ts,
         })
