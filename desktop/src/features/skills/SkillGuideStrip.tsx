@@ -78,6 +78,7 @@ export function SkillGuideStrip({ onStartCoachConversation }: SkillGuideStripPro
   return (
     <div className="relative shrink-0" ref={layerRef}>
       <Button
+        className="border-accent/30 bg-accent-soft text-accent hover:brightness-95"
         leftIcon={<GraduationCap className="size-3.5" />}
         onClick={() => setOpen(value => !value)}
         size="sm"
