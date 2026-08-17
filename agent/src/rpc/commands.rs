@@ -306,8 +306,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 cmd.client_request_id.clone()
             };
             match sess.enqueue_prompt_with_model_context(
-                &cmd.message,
-                &cmd.model_context,
+                super::session_prompt::PromptText::new(&cmd.message, &cmd.model_context),
                 &cmd.images,
                 &cmd.attachments,
                 (!cmd.requested_run_id.is_empty()).then_some(cmd.requested_run_id.as_str()),
