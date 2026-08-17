@@ -39,6 +39,7 @@ interface LiveRunState {
   startedAt: number;
   streaming: boolean;
   durationMs?: number;
+  failed: boolean;
 }
 
 export function emptyTimeline(): TimelineState {
@@ -106,7 +107,7 @@ export function messageToItems(message: AgentMessage): TimelineItem[] {
     ...(message.stopped ? { stopped: true } : {}),
     ...(message.truncated ? { truncated: true } : {}),
   };
-  if (message.activityItems?.some(activity => activity.status === "failed")) item.failed = true;
+  if (message.status === "failed") item.failed = true;
   return [item];
 }
 
@@ -154,7 +155,28 @@ function toSessionEntries(entries: HistoryEntry[]): SessionEntry[] {
  * shared package (`entriesToMessages`), then mapped to the render contract. */
 export function timelineFromEntries(entries: HistoryEntry[]): TimelineState {
   const messages = entriesToMessages(toSessionEntries(entries));
-  return { ...emptyTimeline(), items: messages.flatMap(messageToItems) };
+  const runStatuses = new Map(
+    entries
+      .filter(
+        entry => typeof entry.meta?.run_id === "string" && typeof entry.run_status === "string",
+      )
+      .map(entry => [entry.meta!.run_id!, entry.run_status!] as const),
+  );
+  const items = messages.flatMap(message => {
+    const projected = messageToItems(message);
+    const status = message.runId ? runStatuses.get(message.runId) : undefined;
+    if (!status) return projected;
+    return projected.map(item =>
+      item.kind === "message" && item.role === "assistant"
+        ? {
+            ...item,
+            ...(status === "failed" ? { failed: true } : {}),
+            ...(status === "cancelled" ? { stopped: true } : {}),
+          }
+        : item,
+    );
+  });
+  return { ...emptyTimeline(), items };
 }
 
 /** Message-shaped history fallback (old desktops without get_session_entries). */
@@ -445,6 +467,7 @@ function applyLiveEvent(
       assistantId: `assistant:${runKey}`,
       startedAt: 0,
       streaming: false,
+      failed: false,
     };
     liveRuns.set(runKey, acc);
   }
@@ -462,6 +485,13 @@ function applyLiveEvent(
   let durationMs = acc.durationMs;
   if (event.type === "agent_end") {
     acc.streaming = false;
+    const terminalState = textValue(data.state);
+    acc.failed =
+      terminalState === "error" ||
+      terminalState === "failed" ||
+      terminalState === "incomplete" ||
+      data.reason === "incomplete" ||
+      typeof data.error === "string";
     durationMs = runDurationMs(data) ?? (acc.startedAt ? Date.now() - acc.startedAt : undefined);
     acc.durationMs = durationMs;
   }
@@ -536,7 +566,7 @@ function buildLiveAssistantItem(
     ...(projection.stopped ? { stopped: true } : {}),
     ...(projection.truncated ? { truncated: true } : {}),
   };
-  if (projection.activityItems.some(activity => activity.status === "failed")) item.failed = true;
+  if (acc.failed) item.failed = true;
   return item;
 }
 

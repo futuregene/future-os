@@ -474,11 +474,12 @@ async fn handle_command(
             };
             match crate::agent_bridge::get_session_entries(cmd.session_id.clone()).await {
                 Ok(data) => {
+                    let entries = entries_with_run_status(&cmd.session_id, entries_vec(data));
                     reply(
                         client,
                         &msg,
                         true,
-                        paginate_items(entries_vec(data), offset, limit, "entries"),
+                        paginate_items(entries, offset, limit, "entries"),
                         None,
                     )
                     .await;
@@ -1241,6 +1242,34 @@ fn entries_vec(data: Value) -> Vec<Value> {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default()
+}
+
+/// Add the GUI store's authoritative run outcome to Agent-owned history rows.
+/// The Agent journal deliberately contains conversation content only; mobile
+/// needs this outcome to use the same recovery predicate as the desktop UI.
+fn entries_with_run_status(session_id: &str, mut entries: Vec<Value>) -> Vec<Value> {
+    let statuses: HashMap<String, String> = crate::store::find_thread_by_agent_session(session_id)
+        .ok()
+        .flatten()
+        .and_then(|thread| crate::store::list_runs(&thread.id).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|run| (run.id, run.status))
+        .collect();
+    if statuses.is_empty() {
+        return entries;
+    }
+    for entry in &mut entries {
+        let status = entry
+            .pointer("/meta/run_id")
+            .and_then(Value::as_str)
+            .and_then(|run_id| statuses.get(run_id))
+            .cloned();
+        if let (Some(status), Some(object)) = (status, entry.as_object_mut()) {
+            object.insert("run_status".to_string(), Value::String(status));
+        }
+    }
+    entries
 }
 
 fn paginate_messages(messages: Vec<Value>, offset: usize, limit: usize) -> Value {
@@ -2234,6 +2263,30 @@ mod bridge_tests {
         let agent = ensure_mock_agent();
         agent.clear_scripts();
         let session = unique("sess");
+        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some("History".to_string()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some(session.clone()),
+        })
+        .unwrap();
+        let history_run = crate::store::create_run(crate::store::CreateRunInput {
+            id: Some(unique("run-history")),
+            thread_id: thread.id,
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .unwrap();
+        crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
+            run_id: history_run.id.clone(),
+            status: "failed".to_string(),
+            error_message: None,
+            error_type: None,
+        })
+        .unwrap();
 
         let reply = bridge
             .call(json!({ "id": unique("cmd"), "type": "get_messages", "sessionId": session }))
@@ -2270,7 +2323,11 @@ mod bridge_tests {
         // Entries page through too.
         agent.set_session_entries(
             &session,
-            json!({ "entries": [{ "entryType": "user", "content": "hi" }] }),
+            json!({ "entries": [{
+                "entryType": "assistant",
+                "content": "partial",
+                "meta": { "run_id": history_run.id }
+            }] }),
         );
         let reply = bridge
             .call(
@@ -2279,6 +2336,7 @@ mod bridge_tests {
             .await;
         assert_eq!(reply["success"], json!(true));
         assert_eq!(reply["data"]["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(reply["data"]["entries"][0]["run_status"], json!("failed"));
 
         // Entries honor an explicit positive limit too.
         let reply = bridge
