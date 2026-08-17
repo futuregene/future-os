@@ -1114,15 +1114,7 @@ fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
     let mut agent_id = None;
     let mut workspaces = vec![];
     let mut recipe_name = None;
-    reject_unknown_flags(
-        args,
-        &[
-            "--agent-id",
-            "--goal",
-            "--recipe",
-            "--workspace",
-        ],
-    )?;
+    reject_unknown_flags(args, &["--agent-id", "--goal", "--recipe", "--workspace"])?;
     parse_pairs(args, |k, v| {
         if k == "--goal" {
             goal_id = Some(v);
@@ -1165,9 +1157,7 @@ fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
         workspaces: workspaces.clone(),
         ts: crate::state::now_epoch(),
     })?;
-    println!(
-        "agent `{agent_id}` onboarded (capabilities=[] workspaces={workspaces:?}) ✔"
-    );
+    println!("agent `{agent_id}` onboarded (capabilities=[] workspaces={workspaces:?}) ✔");
     Ok(())
 }
 
@@ -2565,9 +2555,7 @@ fn cmd_quota(store: &Store, args: &[String]) -> Result<()> {
         Some("usage") => quota_usage(store, &args[1..]),
         Some("spend") => quota_spend(store, &args[1..]),
         Some("decisions") => quota_decisions(store, &args[1..]),
-        _ => bail!(
-            "quota subcommand must be `should-run`, `usage`, `spend`, or `decisions`"
-        ),
+        _ => bail!("quota subcommand must be `should-run`, `usage`, `spend`, or `decisions`"),
     }
 }
 
@@ -8535,7 +8523,6 @@ mod reward_memory_cli_tests {
     }
     #[test]
     fn todo_filter_covers_delivery_and_followthrough_events() {
-
         let delivery = Event::DeliveryOutcomeRecorded {
             goal_id: "g1".into(),
             todo_id: "t1".into(),

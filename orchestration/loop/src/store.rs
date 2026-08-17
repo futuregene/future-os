@@ -1,4 +1,4 @@
-        // P1-1 + G-16 + G12 projection-only events: read from
+// P1-1 + G-16 + G12 projection-only events: read from
 //!
 //!   registry.json    — known goals (id, objective, cwd, status, authority)
 //!   <goal>/events.jsonl   — append-only event ledger (the canonical truth)
@@ -1799,7 +1799,7 @@ fn apply(goal: &mut Goal, event: Event) {
         // P1-1 + G-16 + G12 projection-only events: read from
         // the event log by their read models; goal state is unchanged on
         // replay.
-        | Event::DecisionSummaryRecorded { .. }
+        Event::DecisionSummaryRecorded { .. }
         | Event::HeartbeatReceiptRecorded { .. }
         | Event::SchedulerAcked { .. }
         | Event::SupervisorProposed { .. }

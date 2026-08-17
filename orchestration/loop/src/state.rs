@@ -826,7 +826,6 @@ pub struct DecisionFreshness {
     pub read_at: u64,
 }
 
-
 /// Default goal lifecycle status.
 pub fn default_goal_status() -> String {
     "active".to_string()

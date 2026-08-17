@@ -558,14 +558,7 @@ mod tests {
         let profiles = smoke_suite_profiles();
         assert_eq!(profiles.len(), 3);
         let ids: Vec<&str> = profiles.iter().map(|p| p.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            vec![
-                "core-control-plane",
-                "release-gate",
-                "premerge"
-            ]
-        );
+        assert_eq!(ids, vec!["core-control-plane", "release-gate", "premerge"]);
         assert!(resolve_smoke_profile("release-gate").is_ok());
         assert!(resolve_smoke_profile("premerge").is_ok());
         assert!(resolve_smoke_profile("nope").is_err());
