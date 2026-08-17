@@ -321,21 +321,58 @@ fn store_with_todo(tag: &str) -> (String, Store) {
 #[test]
 fn atomic_claim_conflict_is_reported() {
     let (_root, store) = store_with_todo("atomic-conflict");
-    assert!(store.try_claim_todo("g1", "t1", "alice", 3600).unwrap());
+    assert!(
+        store
+            .try_claim_todo("g1", "t1", "alice", 3600)
+            .unwrap()
+            .claimed
+    );
     // A different agent loses atomically (no overwrite in the ledger).
-    assert!(!store.try_claim_todo("g1", "t1", "bob", 3600).unwrap());
+    assert!(
+        !store
+            .try_claim_todo("g1", "t1", "bob", 3600)
+            .unwrap()
+            .claimed
+    );
     // The holder reclaiming (renewal) succeeds.
-    assert!(store.try_claim_todo("g1", "t1", "alice", 3600).unwrap());
+    assert!(
+        store
+            .try_claim_todo("g1", "t1", "alice", 3600)
+            .unwrap()
+            .claimed
+    );
 }
 
 #[test]
 fn atomic_claim_after_expiry_or_release() {
     let (_root, mut store) = store_with_todo("atomic-expiry");
-    // Lease of 0s is immediately expired → another agent may claim.
-    assert!(store.try_claim_todo("g1", "t1", "alice", 0).unwrap());
-    assert!(store.try_claim_todo("g1", "t1", "bob", 3600).unwrap());
+    // An explicit expiry marker frees the lease for another agent.
+    assert!(
+        store
+            .try_claim_todo("g1", "t1", "alice", 3600)
+            .unwrap()
+            .claimed
+    );
+    store
+        .append(Event::TodoExpired {
+            goal_id: "g1".into(),
+            todo_id: "t1".into(),
+            ts: now_epoch(),
+        })
+        .unwrap();
+    assert!(
+        store
+            .try_claim_todo("g1", "t1", "bob", 3600)
+            .unwrap()
+            .claimed
+    );
     // A third agent cannot claim while bob's lease is live.
-    assert!(!store.try_claim_todo("g1", "t1", "carol", 3600).unwrap());
+    assert!(
+        !store
+            .try_claim_todo("g1", "t1", "carol", 3600)
+            .unwrap()
+            .claimed
+    );
     // An explicit release frees the todo immediately.
     store
         .append(Event::TodoReleased {
@@ -345,5 +382,10 @@ fn atomic_claim_after_expiry_or_release() {
             ts: now_epoch(),
         })
         .unwrap();
-    assert!(store.try_claim_todo("g1", "t1", "carol", 3600).unwrap());
+    assert!(
+        store
+            .try_claim_todo("g1", "t1", "carol", 3600)
+            .unwrap()
+            .claimed
+    );
 }
