@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { buildReferencePrompt } from "./buildReferencePrompt";
+import { buildReferenceContext } from "./buildReferencePrompt";
 
 const resolveMock = vi.fn<(w: string, refs: unknown[]) => Promise<Array<Record<string, unknown>>>>();
 
@@ -12,22 +12,22 @@ beforeEach(() => {
   resolveMock.mockReset();
 });
 
-describe("buildReferencePrompt", () => {
-  it("returns the prompt unchanged when there are no references", async () => {
-    await expect(buildReferencePrompt("w", "plain text", "do it")).resolves.toBe("do it");
+describe("buildReferenceContext", () => {
+  it("returns no context when there are no references", async () => {
+    await expect(buildReferenceContext("w", "plain text")).resolves.toBe("");
     expect(resolveMock).not.toHaveBeenCalled();
   });
 
-  it("returns the prompt unchanged when resolution fails", async () => {
+  it("returns no context when resolution fails", async () => {
     resolveMock.mockRejectedValue(new Error("ipc"));
-    await expect(buildReferencePrompt("w", "[r](/abs/a.md)", "do it")).resolves.toBe("do it");
+    await expect(buildReferenceContext("w", "[r](/abs/a.md)")).resolves.toBe("");
   });
 
   it("marks unresolved references as unavailable", async () => {
     resolveMock.mockResolvedValue([
       { targetType: "file", targetId: "/abs/a.md", status: "missing" },
     ]);
-    const out = await buildReferencePrompt("w", "[r](/abs/a.md)", "do it");
+    const out = await buildReferenceContext("w", "[r](/abs/a.md)");
     expect(out).toContain("file:/abs/a.md - unavailable");
     expect(out).toContain("Referenced FutureOS objects");
   });
@@ -36,7 +36,7 @@ describe("buildReferencePrompt", () => {
     resolveMock.mockResolvedValue([
       { targetType: "file", targetId: "/abs/a.md", status: "resolved", data: null },
     ]);
-    const out = await buildReferencePrompt("w", "[r](/abs/a.md)", "do it");
+    const out = await buildReferenceContext("w", "[r](/abs/a.md)");
     expect(out).toContain("unavailable");
   });
 
@@ -44,9 +44,9 @@ describe("buildReferencePrompt", () => {
     resolveMock.mockResolvedValue([
       { targetType: "file", targetId: "/abs/a.md", status: "resolved", data: { path: "/abs/a.md", name: "a.md", insideWorkspace: false } },
     ]);
-    const out = await buildReferencePrompt("w", "[a](/abs/a.md) and [b](/abs/b.md)", "do it");
+    const out = await buildReferenceContext("w", "[a](/abs/a.md) and [b](/abs/b.md)");
     expect(out).toContain("1. file:/abs/a.md");
     expect(out).toContain("2. file:/abs/b.md - unavailable");
-    expect(out).toMatch(/^do it\n\nReferenced FutureOS objects/);
+    expect(out).toMatch(/^Referenced FutureOS objects/);
   });
 });

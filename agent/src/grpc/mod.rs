@@ -222,6 +222,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             id: cmd.id,
             cmd_type: cmd.r#type,
             message: cmd.message,
+            model_context: cmd.model_context,
             images: internal_images,
             attachments: internal_attachments,
             parent_session: cmd.parent_session,

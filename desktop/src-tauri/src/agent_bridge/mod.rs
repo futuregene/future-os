@@ -475,12 +475,36 @@ pub async fn agent_prompt(
     model_id: Option<String>,
     thinking_level: Option<String>,
 ) -> Result<AgentPromptResponse, crate::AppError> {
+    agent_prompt_with_model_context(
+        message,
+        String::new(),
+        attachments,
+        thread_id,
+        session_id,
+        run_id,
+        model_id,
+        thinking_level,
+    )
+    .await
+}
+
+pub async fn agent_prompt_with_model_context(
+    message: String,
+    model_context: String,
+    attachments: Option<Vec<AttachmentInput>>,
+    thread_id: String,
+    session_id: Option<String>,
+    run_id: Option<String>,
+    model_id: Option<String>,
+    thinking_level: Option<String>,
+) -> Result<AgentPromptResponse, crate::AppError> {
     let effective_session_id = session_id
         .clone()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| thread_id.clone());
     let result = agent_prompt_inner(
         message,
+        model_context,
         attachments,
         thread_id.clone(),
         session_id,
@@ -553,6 +577,7 @@ pub async fn agent_prompt(
 
 async fn agent_prompt_inner(
     message: String,
+    model_context: String,
     attachments: Option<Vec<AttachmentInput>>,
     thread_id: String,
     session_id: Option<String>,
@@ -664,6 +689,7 @@ async fn agent_prompt_inner(
     let prompt_response = command_client
         .execute_command(prompt_command(
             message,
+            model_context,
             session_id.clone(),
             attachments.unwrap_or_default(),
             Some(run_id.clone()),
@@ -2323,8 +2349,9 @@ mod pipeline_tests {
             None,
         ));
 
-        let response = agent_prompt(
+        let response = agent_prompt_with_model_context(
             message.clone(),
+            "Referenced FutureOS objects:\n1. file:utils/a.py".to_string(),
             None,
             thread_id.clone(),
             None,
@@ -2368,6 +2395,10 @@ mod pipeline_tests {
         );
         let prompt = &fixture.mock.requests_of("prompt")[0];
         assert_eq!(prompt.message, message);
+        assert_eq!(
+            prompt.model_context,
+            "Referenced FutureOS objects:\n1. file:utils/a.py"
+        );
         assert_eq!(prompt.requested_run_id, run_id);
         assert_eq!(prompt.session_id, "sess-p1");
         // The observer was registered before the prompt reached the agent.

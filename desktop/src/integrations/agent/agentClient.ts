@@ -45,18 +45,31 @@ interface AgentPromptResponse {
 export const defaultAgentModelId = "";
 export const defaultThinkingLevel: ThinkingLevel = "off";
 
-export async function sendPromptToFutureAgent(
-  message: string,
-  threadId: string,
-  sessionId?: string | null,
-  runId?: string | null,
-  modelId?: string | null,
-  attachments?: AttachmentInput[],
-  thinkingLevel?: string | null,
-) {
+export interface AgentPromptInput {
+  message: string;
+  modelContext?: string;
+  threadId: string;
+  sessionId?: string | null;
+  runId?: string | null;
+  modelId?: string | null;
+  attachments?: AttachmentInput[];
+  thinkingLevel?: string | null;
+}
+
+export async function sendPromptToFutureAgent({
+  message,
+  modelContext,
+  threadId,
+  sessionId,
+  runId,
+  modelId,
+  attachments,
+  thinkingLevel,
+}: AgentPromptInput) {
   const response = await invokeCommand<AgentPromptResponse>("agent_prompt", {
     attachments: attachments ?? [],
     message,
+    modelContext: modelContext ?? "",
     sessionId: sessionId ?? null,
     threadId,
     runId: runId ?? null,

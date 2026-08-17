@@ -25,6 +25,7 @@ pub async fn set_default_model(model_id: String) -> Result<(), crate::AppError> 
 #[tauri::command]
 pub async fn agent_prompt(
     message: String,
+    model_context: Option<String>,
     attachments: Option<Vec<agent_bridge::AttachmentInput>>,
     thread_id: String,
     session_id: Option<String>,
@@ -32,8 +33,9 @@ pub async fn agent_prompt(
     model_id: Option<String>,
     thinking_level: Option<String>,
 ) -> Result<agent_bridge::AgentPromptResponse, crate::AppError> {
-    agent_bridge::agent_prompt(
+    agent_bridge::agent_prompt_with_model_context(
         message,
+        model_context.unwrap_or_default(),
         attachments,
         thread_id,
         session_id,
@@ -126,6 +128,7 @@ mod tests {
         // wrapper's job is just to forward the error (and the message).
         let error = agent_prompt(
             "hi".to_string(),
+            None,
             None,
             "ghost".to_string(),
             None,

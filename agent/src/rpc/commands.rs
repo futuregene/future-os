@@ -305,8 +305,9 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             } else {
                 cmd.client_request_id.clone()
             };
-            match sess.enqueue_prompt(
+            match sess.enqueue_prompt_with_model_context(
                 &cmd.message,
+                &cmd.model_context,
                 &cmd.images,
                 &cmd.attachments,
                 (!cmd.requested_run_id.is_empty()).then_some(cmd.requested_run_id.as_str()),
