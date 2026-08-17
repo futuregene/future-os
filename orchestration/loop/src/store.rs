@@ -235,10 +235,13 @@ pub enum Event {
         workspaces: Vec<String>,
         ts: u64,
     },
-    /// Onboard an agent with declared capabilities (LoopX: agent_profiles).
+    /// Onboard an agent with declared capabilities (descriptive metadata —
+    /// kept on the event for recipe/agent-list surfaces; the runnability
+    /// gate is gone). Old events without the field deserialize as empty.
     AgentOnboarded {
         goal_id: String,
         agent_id: String,
+        #[serde(default)]
         capabilities: Vec<String>,
         #[serde(default)]
         workspaces: Vec<String>,
