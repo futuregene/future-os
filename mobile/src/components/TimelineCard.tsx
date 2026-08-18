@@ -14,9 +14,11 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Alert, Linking, Pressable, StyleSheet, Text, View } from "react-native";
 import { approvalCommand, approvalDeletes, approvalPaths } from "@future-os/thread-projection";
+import { friendlyRunError } from "./errorMessage";
 import { MarkdownText } from "./MarkdownText";
+import { splitUserTextSegments } from "./userTextSegments";
 import type {
   ApprovalPayload,
   HistoryAttachment,
@@ -405,6 +407,51 @@ function SegmentBlock({
   return <CompactionDivider tokensBefore={segment.tokensBefore} />;
 }
 
+/**
+ * User messages render as plain text (never markdown — the user's `*`/`#`/`1.`
+ * stay literal), except `[name](./path)` file mentions and `[label](https://…)`
+ * links, recognized exactly like the desktop UserMessageText. The bubble is
+ * accent-blue, so both render white: mentions medium-weight, links underlined
+ * and tappable (file mentions open like assistant file links, external links in
+ * the browser).
+ */
+function UserMessageText({ text, onOpenFile }: { text: string; onOpenFile?(path: string): void }) {
+  const { t } = useTranslation();
+  return (
+    <Text selectable style={[styles.messageText, styles.userText]}>
+      {splitUserTextSegments(text).map(segment => {
+        if (segment.kind === "mention") {
+          return (
+            <Text
+              key={segment.key}
+              onPress={onOpenFile && segment.href ? () => onOpenFile(segment.href!) : undefined}
+              style={styles.userMention}
+            >
+              {segment.text}
+            </Text>
+          );
+        }
+        if (segment.kind === "link") {
+          return (
+            <Text
+              key={segment.key}
+              onPress={() => {
+                void Linking.openURL(segment.href ?? "").catch(() => {
+                  Alert.alert(t("attachment.title"), t("attachment.linkOpenFailed"));
+                });
+              }}
+              style={styles.userLink}
+            >
+              {segment.text}
+            </Text>
+          );
+        }
+        return <Text key={segment.key}>{segment.text}</Text>;
+      })}
+    </Text>
+  );
+}
+
 export function TimelineCard({
   item,
   isLatestAssistant,
@@ -436,6 +483,14 @@ export function TimelineCard({
       // copy footer, mirroring the desktop's MessageBlock special case.
       const dividerOnly =
         !item.streaming && item.segments?.length === 1 && item.segments[0]?.kind === "compaction";
+      // A failed run with no visible content renders the friendly failure text
+      // as the bubble body (desktop parity: the failure text IS the assistant
+      // content) — the copy button copies what the user reads.
+      const hasVisibleContent =
+        (item.segments != null && item.segments.length > 0) || item.text.trim().length > 0;
+      const failureText =
+        !hasVisibleContent && item.failed ? friendlyRunError(item.error, t) : null;
+      const copyableText = failureText ?? item.text;
       return (
         <View style={styles.assistantMessage}>
           {item.segments && item.segments.length > 0 ? (
@@ -451,7 +506,29 @@ export function TimelineCard({
             </View>
           ) : item.text.trim().length > 0 ? (
             <MarkdownText text={item.text} onOpenFile={onOpenFile} />
+          ) : failureText ? (
+            <Text selectable style={styles.failureText}>
+              {failureText}
+            </Text>
           ) : null}
+          {/* Desktop parity: the retry/continue row sits right below the bubble
+              content, above the copy/stats footer. */}
+          {canRecoverMessage(item, isLatestAssistant ? item.id : null) && (
+            <View style={styles.recoveryRow}>
+              <Button
+                compact
+                label={t("chat.retry")}
+                onPress={() => onRetry?.(item)}
+                variant="secondary"
+              />
+              <Button
+                compact
+                label={t("chat.continue")}
+                onPress={() => onContinue?.(item)}
+                variant="secondary"
+              />
+            </View>
+          )}
           {dividerOnly ? null : item.streaming && item.startedAt != null ? (
             // In-flight: the generating indicator occupies the same footer slot
             // the copy button uses once settled (desktop parity), so a streaming
@@ -470,7 +547,7 @@ export function TimelineCard({
                 accessibilityRole="button"
                 hitSlop={8}
                 onPress={() => {
-                  Clipboard.setStringAsync(item.text)
+                  Clipboard.setStringAsync(copyableText)
                     .then(() => copy())
                     .catch(() => {});
                 }}
@@ -485,22 +562,6 @@ export function TimelineCard({
               {footerStats.length > 0 && <Text style={styles.messageDuration}>{footerStats}</Text>}
             </View>
           )}
-          {canRecoverMessage(item, isLatestAssistant ? item.id : null) && (
-            <View style={styles.recoveryRow}>
-              <Button
-                compact
-                label={t("chat.retry")}
-                onPress={() => onRetry?.(item)}
-                variant="secondary"
-              />
-              <Button
-                compact
-                label={t("chat.continue")}
-                onPress={() => onContinue?.(item)}
-                variant="secondary"
-              />
-            </View>
-          )}
         </View>
       );
     }
@@ -508,9 +569,7 @@ export function TimelineCard({
       <View style={styles.userBlock}>
         {item.text.trim().length > 0 && (
           <View style={[styles.message, styles.userMessage]}>
-            <Text style={[styles.messageText, styles.userText]} selectable>
-              {item.text}
-            </Text>
+            <UserMessageText onOpenFile={onOpenFile} text={item.text} />
           </View>
         )}
         {item.attachments && item.attachments.length > 0 && (
@@ -581,11 +640,19 @@ export function TimelineCard({
 
   if (item.kind === "notice") {
     const warning = item.tone === "warning";
+    // Danger notices carry raw agent/relay error blobs — surface the friendly
+    // classification, never the developer-oriented dump.
+    const noticeText =
+      item.text === "truncated"
+        ? t("chat.truncated")
+        : warning
+          ? item.text
+          : friendlyRunError(item.text, t);
     return (
       <View style={[styles.notice, warning ? styles.warningNotice : styles.dangerNotice]}>
         <CircleAlert color={warning ? colors.warning : colors.danger} size={17} />
         <Text style={[styles.noticeText, { color: warning ? colors.warning : colors.danger }]}>
-          {item.text === "truncated" ? t("chat.truncated") : item.text}
+          {noticeText}
         </Text>
       </View>
     );
@@ -629,6 +696,9 @@ const styles = StyleSheet.create({
   assistantMessage: { alignSelf: "stretch", paddingHorizontal: spacing.xs },
   messageText: { color: colors.ink, fontSize: 15, lineHeight: 22 },
   userText: { color: colors.surface },
+  userMention: { color: colors.surface, fontWeight: "600" },
+  userLink: { color: colors.surface, fontWeight: "600", textDecorationLine: "underline" },
+  failureText: { color: colors.ink, fontSize: 17, lineHeight: 26 },
   messageFooter: {
     flexDirection: "row",
     alignItems: "center",
