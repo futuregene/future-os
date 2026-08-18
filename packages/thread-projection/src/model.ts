@@ -80,6 +80,14 @@ export interface AgentMessage {
   durationMs?: number | null;
   /** Tokens this reply generated (summed completion tokens across the run). */
   outputTokens?: number | null;
+  /**
+   * Prompt (input) tokens of the run (provider-billed side). Present once the
+   * run settles and the session journal carries usage; absent on legacy
+   * sessions, where the footer falls back to output-only display.
+   */
+  inputTokens?: number | null;
+  /** Cache-read tokens of the run (discounted subset of inputTokens). */
+  cacheReadTokens?: number | null;
   /** The reply was interrupted by the user (its run was cancelled mid-stream). */
   stopped?: boolean;
   /**

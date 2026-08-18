@@ -247,6 +247,10 @@ export type TimelineItem =
       durationMs?: number;
       /** Output tokens for the reply (real provider usage). */
       outputTokens?: number;
+      /** Prompt (input) tokens of the run (billed side); absent on legacy. */
+      inputTokens?: number;
+      /** Cache-read tokens of the run (informational subset of input). */
+      cacheReadTokens?: number;
       attachments?: HistoryAttachment[];
       /**
        * Ordered inline slices of an assistant reply — thinking/tool rows and

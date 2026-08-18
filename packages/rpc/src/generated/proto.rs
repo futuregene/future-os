@@ -1081,6 +1081,16 @@ pub struct SessionEntry {
     /// into the exact original JSON value.
     #[prost(bool, tag = "12")]
     pub content_is_object: bool,
+    /// Prompt (input) tokens of the run this reply concluded — the run's delta of
+    /// the session's cumulative tokens_in. Footer shows in+out so the total
+    /// matches the provider's billed usage; absent on legacy sessions.
+    #[prost(int64, optional, tag = "13")]
+    pub input_tokens: ::core::option::Option<i64>,
+    /// Cache-read tokens of that run (delta of cumulative tokens_cache_r) —
+    /// informational: on most providers these are a discounted subset of
+    /// input_tokens, not an addition to them.
+    #[prost(int64, optional, tag = "14")]
+    pub cache_read_tokens: ::core::option::Option<i64>,
 }
 /// One event as replayed by get_events_since. Field names mirror the
 /// StreamEvent envelope.
