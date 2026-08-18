@@ -292,11 +292,6 @@ function MessageBlockImpl({
 }
 
 /**
- * Live "generating" marker shown in place of the copy button while a reply
- * streams: a small amber dot with a pulsing ping halo (no brain icon — the
- * motion is the signal). `label` is exposed to assistive tech only.
- */
-/**
  * User messages render as plain text (never markdown — the user's `*`/`#`/`1.`
  * stay literal), except `@` file mentions, which show in the accent color like
  * the composer pill, and `[label](http…)` links (e.g. the coach prompt's manual
@@ -350,6 +345,11 @@ function CompactionDivider({ tokensBefore }: { tokensBefore?: number }) {
   );
 }
 
+/**
+ * Live "generating" marker shown in place of the copy button while a reply
+ * streams: a small amber dot with a pulsing ping halo (no brain icon — the
+ * motion is the signal). `label` is exposed to assistive tech only.
+ */
 function StreamingIndicator({ label }: { label: string }) {
   return (
     <div aria-label={label} className="flex items-center px-1 py-1.5" role="status">

@@ -411,6 +411,8 @@ pub(crate) fn session_entry_from_proto(entry: &proto::SessionEntry) -> SessionEn
         tool_calls: entry.tool_calls.as_ref().map(|raw| inflate_json_value(raw)),
         output_tokens: entry.output_tokens,
         duration_ms: entry.duration_ms,
+        input_tokens: entry.input_tokens,
+        cache_read_tokens: entry.cache_read_tokens,
     }
 }
 

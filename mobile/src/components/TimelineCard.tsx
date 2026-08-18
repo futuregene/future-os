@@ -420,14 +420,24 @@ export function TimelineCard({
   if (item.kind === "message") {
     if (item.role === "assistant") {
       // Single "time · N tokens" line, joined like the desktop MessageMeta
-      // footer (which renders `parts.join(" · ")`).
-      const footerStats = [
-        item.durationMs != null ? formatDuration(item.durationMs) : null,
-        item.outputTokens != null && item.outputTokens > 0
+      // footer (which renders `parts.join(" · ")`). When the run's input side
+      // is known, show the provider-aligned total (in + out); cache reads are a
+      // discounted subset of input and are not added on top.
+      const outputTokens = item.outputTokens ?? 0;
+      const usage = item.inputTokens != null
+        ? t("chat.tokensUsage", {
+            formattedTotal: new Intl.NumberFormat(i18n.language).format(item.inputTokens + outputTokens),
+            formattedIn: new Intl.NumberFormat(i18n.language).format(item.inputTokens),
+            formattedOut: new Intl.NumberFormat(i18n.language).format(outputTokens),
+          })
+        : item.outputTokens != null && item.outputTokens > 0
           ? t("chat.tokens", {
               formattedCount: new Intl.NumberFormat(i18n.language).format(item.outputTokens),
             })
-          : null,
+          : null;
+      const footerStats = [
+        item.durationMs != null ? formatDuration(item.durationMs) : null,
+        usage,
       ]
         .filter((part): part is string => !!part)
         .join(" · ");
@@ -524,57 +534,6 @@ export function TimelineCard({
             ))}
           </View>
         )}
-      </View>
-    );
-  }
-
-  if (item.kind === "thinking") {
-    return (
-      <View style={styles.secondaryCard}>
-        <Pressable onPress={() => setExpanded(value => !value)} style={styles.cardHeader}>
-          <Text style={styles.cardLabel}>
-            {t(item.complete ? "chat.thoughtCompleted" : "chat.thinking")}
-          </Text>
-          {expanded ? (
-            <ChevronUp color={colors.inkMuted} size={17} />
-          ) : (
-            <ChevronDown color={colors.inkMuted} size={17} />
-          )}
-        </Pressable>
-        {expanded && <Text style={styles.secondaryText}>{item.text}</Text>}
-      </View>
-    );
-  }
-
-  if (item.kind === "tool") {
-    const kind = toolKind(item.name);
-    // Desktop parity (AgentActivityList): the row carries the call's target —
-    // the command for shell, the file path otherwise — but keeps it hidden
-    // until tapped; the chevron signals the row is expandable.
-    const detail = item.detail?.trim() ? item.detail.trim() : null;
-    return (
-      <View style={styles.tool}>
-        <Pressable
-          accessibilityRole="button"
-          disabled={!detail}
-          onPress={() => setExpanded(value => !value)}
-          style={styles.toolHeader}
-        >
-          <ToolGlyph kind={kind} />
-          <Text style={styles.toolText}>{toolLabel(t, kind, item.complete)}</Text>
-          {detail ? (
-            expanded ? (
-              <ChevronUp color={colors.inkMuted} size={15} />
-            ) : (
-              <ChevronDown color={colors.inkMuted} size={15} />
-            )
-          ) : null}
-        </Pressable>
-        {detail && expanded ? (
-          <Text selectable style={styles.toolDetailText}>
-            {detail}
-          </Text>
-        ) : null}
       </View>
     );
   }

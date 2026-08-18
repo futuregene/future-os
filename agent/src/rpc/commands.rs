@@ -1851,11 +1851,31 @@ fn cmd_get_session_entries(session: &Arc<parking_lot::RwLock<ServerSession>>, id
             // a marker keeps a terminal of a reply-less run (cancel/error before
             // any assistant entry) from overwriting the previous run's stats.
             let mut last_assistant_id: Option<String> = None;
-            let mut run_stats: std::collections::HashMap<String, (i64, i64)> =
+            let mut run_stats: std::collections::HashMap<String, (i64, i64, i64, i64)> =
                 std::collections::HashMap::new();
+            // Per-run usage deltas from the cumulative session_info snapshots
+            // (tokens_in / tokens_cache_r): the snapshot written just before a
+            // run_terminal marker is the post-run state, and the one captured at
+            // the previous run_terminal (or session start) is the pre-run state,
+            // so consecutive-snapshot deltas are exactly this run's billed usage.
+            let mut prev_snapshot: (i64, i64) = (0, 0);
+            let mut current_snapshot: (i64, i64) = (0, 0);
             for marker in &s.entries {
                 if marker.entry_type == crate::session::ENTRY_TYPE_ASSISTANT {
                     last_assistant_id = Some(marker.id.clone());
+                } else if marker.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO {
+                    if let Some(content) = marker.content.as_ref() {
+                        current_snapshot = (
+                            content
+                                .get("tokens_in")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(current_snapshot.0),
+                            content
+                                .get("tokens_cache_r")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(current_snapshot.1),
+                        );
+                    }
                 } else if marker.entry_type == crate::session::ENTRY_TYPE_RUN_TERMINAL {
                     if let (Some(aid), Some(content)) =
                         (last_assistant_id.as_deref(), marker.content.as_ref())
@@ -1868,9 +1888,13 @@ fn cmd_get_session_entries(session: &Arc<parking_lot::RwLock<ServerSession>>, id
                             .get("run_duration_ms")
                             .and_then(|v| v.as_i64())
                             .unwrap_or(0);
-                        run_stats.insert(aid.to_string(), (tokens, duration));
+                        let delta_in = (current_snapshot.0 - prev_snapshot.0).max(0);
+                        let delta_cache = (current_snapshot.1 - prev_snapshot.1).max(0);
+                        run_stats
+                            .insert(aid.to_string(), (tokens, duration, delta_in, delta_cache));
                     }
                     last_assistant_id = None;
+                    prev_snapshot = current_snapshot;
                 }
             }
             s.entries
@@ -1947,6 +1971,8 @@ fn cmd_get_session_entries(session: &Arc<parking_lot::RwLock<ServerSession>>, id
                         tool_calls: None,
                         output_tokens: None,
                         duration_ms: None,
+                        input_tokens: None,
+                        cache_read_tokens: None,
                     };
                     // Include thinking and tool_calls for the new agent-based
                     // message display (entryProjection.ts).
@@ -1968,12 +1994,20 @@ fn cmd_get_session_entries(session: &Arc<parking_lot::RwLock<ServerSession>>, id
                     // a reload — entriesToMessages / the mobile reducer read these
                     // top-level fields.
                     if e.entry_type == crate::session::ENTRY_TYPE_ASSISTANT {
-                        if let Some((tokens, duration)) = run_stats.get(&e.id) {
+                        if let Some((tokens, duration, delta_in, delta_cache)) =
+                            run_stats.get(&e.id)
+                        {
                             if *tokens > 0 {
                                 payload.output_tokens = Some(*tokens);
                             }
                             if *duration > 0 {
                                 payload.duration_ms = Some(*duration);
+                            }
+                            if *delta_in > 0 {
+                                payload.input_tokens = Some(*delta_in);
+                            }
+                            if *delta_cache > 0 {
+                                payload.cache_read_tokens = Some(*delta_cache);
                             }
                         }
                     }

@@ -5,7 +5,7 @@ export const resources = {
       remote: "Remote",
       pairing: {
         title: "Connect to your desktop",
-        description: "Open Remote in FutureOS Desktop, choose Pair & start, then scan the QR code.",
+        description: "Open Phone Control in FutureOS Desktop, choose Pair & start, then scan the QR code.",
         permission: "Camera access is required to scan the desktop pairing code.",
         grant: "Allow camera",
         scanning: "Point the camera at the QR code",
@@ -86,6 +86,7 @@ export const resources = {
         copy: "Copy",
         copyResponse: "Copy response",
         tokens: "{{formattedCount}} tokens",
+        tokensUsage: "{{formattedTotal}} tokens (in {{formattedIn}} · out {{formattedOut}})",
         loadFailed: "Could not load the conversation.",
         sendFailed: "Message failed to send.",
         promptTooLarge: "That message is too long to send. Please shorten it to under 512 KB.",
@@ -229,7 +230,7 @@ export const resources = {
       remote: "远程控制",
       pairing: {
         title: "连接桌面端",
-        description: "在 FutureOS 桌面端打开远程控制，点击“配对并启动”，然后扫描二维码。",
+        description: "在 FutureOS 桌面端打开“手机遥控”，点击“配对并启动”，然后扫描二维码。",
         permission: "需要相机权限来扫描桌面端配对二维码。",
         grant: "允许相机",
         scanning: "将二维码放入取景框",
@@ -305,6 +306,7 @@ export const resources = {
         copy: "复制",
         copyResponse: "复制回复",
         tokens: "{{formattedCount}} tokens",
+        tokensUsage: "{{formattedTotal}} tokens（入 {{formattedIn}} · 出 {{formattedOut}}）",
         loadFailed: "无法加载会话。",
         sendFailed: "消息发送失败。",
         promptTooLarge: "这条消息太长了，无法发送。请将其缩短到 512 KB 以内。",

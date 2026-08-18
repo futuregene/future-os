@@ -19,15 +19,30 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Button } from "../components/Button";
 import { pairingCodeFromQr } from "../remote/codec";
+import { RemoteApiError } from "../remote/connectionState";
 import { useRemote } from "../remote/RemoteContext";
 import { colors, radius, spacing } from "../theme/tokens";
 import { VERSION } from "../version.generated";
 
 function pairingErrorMessage(error: unknown, t: TFunction): string {
+  if (error instanceof RemoteApiError) {
+    // The server returned a machine `code` + HTTP status; map those rather than
+    // the human message (the old `HTTP 401/403/404` message sniff is gone).
+    if (/invalid_pairing_code|invalid_jwt|expired/.test(error.code ?? "")) {
+      return t("pairing.invalid");
+    }
+    if (error.status === 401 || error.status === 403 || error.status === 404) {
+      return t("pairing.invalid");
+    }
+    if (error.status === 429 || error.status >= 500) {
+      return t("pairing.service");
+    }
+    return t("pairing.failed");
+  }
   const rawMessage = error instanceof Error ? error.message : error;
   const message = (typeof rawMessage === "string" ? rawMessage.trim() : "") || "unknown error";
   if (message === "unexpected_pairing_host") return t("pairing.host");
-  if (/invalid_pairing_code|invalid_jwt|expired|HTTP\s*(401|403|404)/i.test(message)) {
+  if (/invalid_pairing_code|invalid_jwt|expired/.test(message)) {
     return t("pairing.invalid");
   }
   if (message === "nats_ws_not_tls") return t("pairing.secureEndpoint");

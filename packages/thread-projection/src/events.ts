@@ -30,6 +30,11 @@ export interface SessionEntry {
   output_tokens?: number;
   /** Run wall-clock duration in ms — paired with `output_tokens`. */
   duration_ms?: number;
+  /** Prompt (input) tokens of the run — the session's cumulative tokens_in
+   * delta for this run. Absent on legacy sessions. */
+  input_tokens?: number;
+  /** Cache-read tokens of the run (informational subset of input_tokens). */
+  cache_read_tokens?: number;
   /** Structured per-entry metadata; user entries carry attached files here. */
   meta?: {
     /** Canonical Agent run identity (new entries; absent in legacy JSONL). */

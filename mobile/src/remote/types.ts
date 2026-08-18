@@ -247,6 +247,10 @@ export type TimelineItem =
       durationMs?: number;
       /** Output tokens for the reply (real provider usage). */
       outputTokens?: number;
+      /** Prompt (input) tokens of the run (billed side); absent on legacy. */
+      inputTokens?: number;
+      /** Cache-read tokens of the run (informational subset of input). */
+      cacheReadTokens?: number;
       attachments?: HistoryAttachment[];
       /**
        * Ordered inline slices of an assistant reply — thinking/tool rows and
@@ -262,24 +266,6 @@ export type TimelineItem =
       /** The stream ended before the model finished (agent_end reason
        *  "incomplete") — the text is a truncated prefix, not a clean answer. */
       truncated?: boolean;
-    }
-  | {
-      id: string;
-      kind: "thinking";
-      text: string;
-      complete: boolean;
-      runId?: string;
-    }
-  | {
-      id: string;
-      kind: "tool";
-      toolId: string;
-      name: string;
-      complete: boolean;
-      runId?: string;
-      /** The call's display target (desktop parity): the shell command or
-       *  file path, shown on the row and expandable on tap. */
-      detail?: string;
     }
   | {
       id: string;

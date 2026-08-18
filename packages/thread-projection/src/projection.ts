@@ -34,6 +34,8 @@ interface ExchangeAcc {
   assistantEntryId?: string;
   /** Per-reply usage/timing carried on the final assistant entry. */
   outputTokens?: number;
+  inputTokens?: number;
+  cacheReadTokens?: number;
   durationMs?: number;
   /** Set only from an assistant entry finalized by the Agent. */
   runId?: string;
@@ -163,6 +165,10 @@ function foldAssistantEntry(acc: ExchangeAcc, entry: SessionEntry) {
     acc.assistantCreatedAt = entry.timestamp;
   if (typeof entry.output_tokens === "number")
     acc.outputTokens = entry.output_tokens;
+  if (typeof entry.input_tokens === "number")
+    acc.inputTokens = entry.input_tokens;
+  if (typeof entry.cache_read_tokens === "number")
+    acc.cacheReadTokens = entry.cache_read_tokens;
   if (typeof entry.duration_ms === "number")
     acc.durationMs = entry.duration_ms;
   if (typeof entry.meta?.run_id === "string" && entry.meta.run_id)
@@ -246,6 +252,8 @@ function flushAcc(messages: AgentMessage[], acc: ExchangeAcc) {
       // `now`, which would re-stamp the reply "just now" on every reload.
       createdAt: acc.assistantCreatedAt ?? acc.userMessage.createdAt,
       outputTokens: acc.outputTokens,
+      inputTokens: acc.inputTokens,
+      cacheReadTokens: acc.cacheReadTokens,
       durationMs: acc.durationMs,
       runId: acc.runId,
     });

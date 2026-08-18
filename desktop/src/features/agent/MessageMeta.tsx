@@ -33,10 +33,25 @@ export function MessageMeta({ message, visible }: MessageMetaProps) {
     ? (typeof message.runStartedAt === "number" ? now - message.runStartedAt : null)
     : (message.durationMs ?? null);
 
-  const tokens = message.outputTokens ?? 0;
+  const outputTokens = message.outputTokens ?? 0;
+  // Aligned with the provider's billed usage: total = input + output. Cache
+  // reads are a discounted subset of input on most providers, so they are not
+  // added on top (inputTokens is absent on legacy sessions → output-only).
+  const usage = message.inputTokens != null
+    ? t("message.tokensUsage", {
+        formattedTotal: formatNumber(message.inputTokens + outputTokens, i18n.language),
+        formattedIn: formatNumber(message.inputTokens, i18n.language),
+        formattedOut: formatNumber(outputTokens, i18n.language),
+      })
+    : outputTokens > 0
+      ? t("message.tokens", {
+          count: outputTokens,
+          formattedCount: formatNumber(outputTokens, i18n.language),
+        })
+      : null;
   const parts = [
     elapsedMs != null ? formatDuration(elapsedMs) : null,
-    tokens > 0 ? t("message.tokens", { count: tokens, formattedCount: formatNumber(tokens, i18n.language) }) : null,
+    usage,
   ].filter((part): part is string => !!part);
 
   if (parts.length === 0)
