@@ -5,7 +5,7 @@ export const resources = {
       remote: "Remote",
       pairing: {
         title: "Connect to your desktop",
-        description: "Open Remote in FutureOS Desktop, choose Pair & start, then scan the QR code.",
+        description: "Open Phone Control in FutureOS Desktop, choose Pair & start, then scan the QR code.",
         permission: "Camera access is required to scan the desktop pairing code.",
         grant: "Allow camera",
         scanning: "Point the camera at the QR code",
@@ -229,7 +229,7 @@ export const resources = {
       remote: "远程控制",
       pairing: {
         title: "连接桌面端",
-        description: "在 FutureOS 桌面端打开远程控制，点击“配对并启动”，然后扫描二维码。",
+        description: "在 FutureOS 桌面端打开“手机遥控”，点击“配对并启动”，然后扫描二维码。",
         permission: "需要相机权限来扫描桌面端配对二维码。",
         grant: "允许相机",
         scanning: "将二维码放入取景框",
