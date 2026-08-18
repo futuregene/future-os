@@ -11,6 +11,7 @@ import {
   cachedPreviewForAttachment,
   deleteTemporaryAttachment,
   downloadPrepared,
+  namedExternalFile,
   pickAttachments,
   pickFromAlbum,
   prepareDownload,
@@ -61,6 +62,11 @@ jest.mock("expo-file-system", () => {
     }
     async bytes(): Promise<Uint8Array> {
       return store.get(this.uri)?.bytes ?? new Uint8Array(0);
+    }
+    async copy(destination: MockFile, _options?: { overwrite?: boolean }): Promise<void> {
+      const source = store.get(this.uri);
+      if (!source) throw new Error("source_missing");
+      store.set(destination.uri, { ...source });
     }
   }
 
@@ -762,6 +768,13 @@ describe("download & preview cache", () => {
     // Wrong size → treated as not cached.
     mockFS.__set(cacheUri(info), { bytes: new Uint8Array(7) });
     expect(cachedDownload(info)).toBeNull();
+  });
+
+  test("uses the original name when materializing a file for the system share sheet", async () => {
+    const source = fsFile(cacheUri(info), { bytes: new Uint8Array([1, 2, 3]) });
+    const named = await namedExternalFile(source, "/workspace/results/experiment.csv");
+    expect(named.uri).toBe("/mock/cache/futureos-exports/experiment.csv");
+    expect(await named.bytes()).toEqual(new Uint8Array([1, 2, 3]));
   });
 
   test("rememberPreparedPreview + cachedPreviewForAttachment round-trip", () => {

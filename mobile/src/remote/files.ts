@@ -6,6 +6,7 @@ import { Image } from "react-native";
 import type { RemoteClient } from "./client";
 import type { DownloadInfo, HistoryAttachment, MobileAttachment } from "./types";
 import { mobileFileType } from "./fileTypes";
+import { basename } from "./localPath";
 
 export const MAX_FILE_BYTES = 10 * 1024 * 1024;
 export const MAX_MESSAGE_BYTES = 20 * 1024 * 1024;
@@ -533,6 +534,20 @@ function cacheFile(info: DownloadInfo): File {
   if (!directory.exists) directory.create({ intermediates: true, idempotent: true });
   const ext = extension(info.name);
   return new File(directory, `${info.contentHash}${ext ? `.${ext}` : ""}`);
+}
+
+/**
+ * The content-addressed cache deliberately uses its SHA-256 as the filename.
+ * Before handing a file to the OS (share sheet / another app), materialize a
+ * named copy so the receiving app and the user's Files destination retain the
+ * original attachment name rather than seeing the cache key.
+ */
+export async function namedExternalFile(file: File, name: string): Promise<File> {
+  const directory = new Directory(Paths.cache, "futureos-exports");
+  if (!directory.exists) directory.create({ intermediates: true, idempotent: true });
+  const target = new File(directory, basename(name));
+  await file.copy(target, { overwrite: true });
+  return target;
 }
 
 function prunePreviewCache(requiredBytes: number): void {

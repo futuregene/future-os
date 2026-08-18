@@ -58,6 +58,7 @@ import {
   pickFromAlbum,
   takePhoto,
   TransferCancelledError,
+  namedExternalFile,
 } from "../remote/files";
 import { basename } from "../remote/localPath";
 import { mobileFileType, mobilePreviewRoute } from "../remote/fileTypes";
@@ -801,7 +802,8 @@ export function ChatScreen() {
         }
         if (!save && Platform.OS === "android") {
           updateDownload(handle, { phase: "opening" });
-          await openAndroidFile(file.uri, openMimeType);
+          const namedFile = await namedExternalFile(file, info.name);
+          await openAndroidFile(namedFile.uri, openMimeType);
           return;
         }
         if (!(await Sharing.isAvailableAsync())) {
@@ -809,7 +811,8 @@ export function ChatScreen() {
           return;
         }
         updateDownload(handle, { phase: save ? "saving" : "opening" });
-        await Sharing.shareAsync(file.uri, {
+        const namedFile = await namedExternalFile(file, info.name);
+        await Sharing.shareAsync(namedFile.uri, {
           mimeType: save ? info.mimeType : openMimeType,
           dialogTitle: save ? t("attachment.save") : t("attachment.open"),
         });
