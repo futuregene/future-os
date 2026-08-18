@@ -1,8 +1,12 @@
 import type { ReactTestRenderer } from "react-test-renderer";
 import React from "react";
-import { Text } from "react-native";
+import { Alert, Image, Linking, Text } from "react-native";
 import TestRenderer, { act } from "react-test-renderer";
 import { MarkdownText } from "../MarkdownText";
+
+jest.mock("react-i18next", () => ({
+  useTranslation: () => ({ t: (key: string) => key }),
+}));
 
 describe("MarkdownText", () => {
   test("renders a bold local-file link without exposing markdown syntax", () => {
@@ -25,6 +29,8 @@ describe("MarkdownText", () => {
       .findAllByType(Text)
       .find(node => typeof node.props.onPress === "function");
     expect(linkedText).toBeDefined();
+    expect(linkedText?.props.style).toMatchObject({ textDecorationLine: "underline" });
+    expect(linkedText?.props.style).not.toHaveProperty("backgroundColor");
     act(() => linkedText?.props.onPress());
     expect(onOpenFile).toHaveBeenCalledWith("gomoku.html");
   });
@@ -43,5 +49,66 @@ describe("MarkdownText", () => {
     expect(output).toContain("bold");
     expect(output).toContain("old");
     expect(output).toContain("done");
+  });
+
+  test("renders a local Markdown image as a file chip in a message", () => {
+    const onOpenFile = jest.fn();
+    let renderer: ReactTestRenderer | undefined;
+    act(() => {
+      renderer = TestRenderer.create(
+        React.createElement(MarkdownText, {
+          text: "![diagram](assets/pic.png)",
+          onOpenFile,
+        }),
+      );
+    });
+    const chip = renderer?.root.findAllByType(Text).find(node => node.props.onPress);
+    act(() => chip?.props.onPress());
+    expect(onOpenFile).toHaveBeenCalledWith("assets/pic.png");
+  });
+
+  test("prompts for a local image from a Markdown file preview", () => {
+    const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    let renderer: ReactTestRenderer | undefined;
+    act(() => {
+      renderer = TestRenderer.create(
+        React.createElement(MarkdownText, {
+          mode: "file-preview",
+          text: "![diagram](assets/pic.png)",
+        }),
+      );
+    });
+    const chip = renderer?.root.findAllByType(Text).find(node => node.props.onPress);
+    act(() => chip?.props.onPress());
+    expect(alert).toHaveBeenCalledTimes(1);
+    alert.mockRestore();
+  });
+
+  test("renders only http(s) Markdown images as remote images", () => {
+    let renderer: ReactTestRenderer | undefined;
+    act(() => {
+      renderer = TestRenderer.create(
+        React.createElement(MarkdownText, {
+          text: "![remote](https://example.com/pic.png) ![blocked](data:image/png;base64,x)",
+        }),
+      );
+    });
+    const images = renderer?.root.findAllByType(Image) ?? [];
+    expect(images).toHaveLength(1);
+    expect(images[0]?.props.source).toEqual({ uri: "https://example.com/pic.png" });
+  });
+
+  test("does not send blocked link protocols to the OS", () => {
+    const open = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
+    let renderer: ReactTestRenderer | undefined;
+    act(() => {
+      renderer = TestRenderer.create(
+        React.createElement(MarkdownText, { text: "[bad](javascript:alert(1))" }),
+      );
+    });
+    const pressable = renderer?.root.findAllByType(Text).find(node => node.props.onPress);
+    expect(pressable).toBeUndefined();
+    expect(open).not.toHaveBeenCalled();
+    open.mockRestore();
   });
 });

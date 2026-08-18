@@ -17,6 +17,7 @@
     "desktop:package": "tauri build"
   },
   "dependencies": {
+    "@future-os/json-preview": "*",
     "@future-os/markdown": "*",
     "@future-os/thread-projection": "*",
     "@tauri-apps/api": "^2.11.1",

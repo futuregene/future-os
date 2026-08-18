@@ -451,6 +451,10 @@ pub async fn prepare_download_variant(
             (source, requested_path.to_string())
         }
     };
+    // Markdown links are agent-produced input. Keep the remote-download path
+    // behind the same credential-file boundary as desktop preview/open, even
+    // for canonical paths reached through `..` or a symlink.
+    crate::commands::ensure_path_allowed(&source)?;
     if !source.is_file() {
         return Err("The attachment is no longer available.".to_string().into());
     }
@@ -1582,6 +1586,21 @@ mod flow_tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("no longer available"));
+
+        // Remote Markdown links must not bypass the desktop credential guard.
+        let home_dir = PathBuf::from(std::env::var("HOME").unwrap());
+        let agent_dir = home_dir.join(".future/agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let credential = agent_dir.join("auth.json");
+        std::fs::write(&credential, b"{\"api_key\":\"secret\"}").unwrap();
+        agent.set_session_entries(
+            &session,
+            json!({"entries":[{"meta":{"attachments":[{"path": credential.to_string_lossy(),"name":"auth.json"}]}}]}),
+        );
+        let error = prepare_download(&session, &credential.to_string_lossy())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("protected FutureOS credential"));
 
         // A real text file gets a preview + a download record.
         let notes = dir.join("notes.txt");

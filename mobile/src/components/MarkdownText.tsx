@@ -1,46 +1,47 @@
 import type { InlineNode, ListItemNode, MarkdownNode } from "@future-os/markdown";
 import type { ReactNode } from "react";
-import { basename, localFilePath, parseFutureMarkdown } from "@future-os/markdown";
-import { Linking, StyleSheet, Text, View } from "react-native";
+import {
+  basename,
+  classifyMarkdownTarget,
+  localFilePath,
+  parseFutureMarkdown,
+  remoteMarkdownImageUrl,
+} from "@future-os/markdown";
+import { useState } from "react";
+import { useTranslation } from "react-i18next";
+import { Alert, Image, Linking, StyleSheet, Text, View } from "react-native";
 import { colors, radius, spacing } from "../theme/tokens";
 
 interface MarkdownTextProps {
+  /** Message links can fetch local files; file previews never nest previews. */
+  mode?: "message" | "file-preview";
   text: string;
   /** Route local-file markdown links/images to the caller's preview flow. */
   onOpenFile?(path: string): void;
 }
 
-type OpenFile = ((path: string) => void) | undefined;
+type OpenTarget = (target: string) => void;
 
-function openTarget(target: string, onOpenFile: OpenFile) {
-  const path = localFilePath(target);
-  if (path && onOpenFile) {
-    onOpenFile(path);
-    return;
-  }
-  void Linking.openURL(target);
-}
-
-function renderInline(nodes: InlineNode[], onOpenFile: OpenFile, parentKey: string): ReactNode[] {
+function renderInline(nodes: InlineNode[], openTarget: OpenTarget, parentKey: string): ReactNode[] {
   return nodes.map((node, index) => {
     const key = `${parentKey}:in${index}`;
     switch (node.type) {
       case "strong":
         return (
           <Text key={key} style={styles.bold}>
-            {renderInline(node.children, onOpenFile, key)}
+            {renderInline(node.children, openTarget, key)}
           </Text>
         );
       case "italic":
         return (
           <Text key={key} style={styles.italic}>
-            {renderInline(node.children, onOpenFile, key)}
+            {renderInline(node.children, openTarget, key)}
           </Text>
         );
       case "delete":
         return (
           <Text key={key} style={styles.strike}>
-            {renderInline(node.children, onOpenFile, key)}
+            {renderInline(node.children, openTarget, key)}
           </Text>
         );
       case "code":
@@ -51,17 +52,32 @@ function renderInline(nodes: InlineNode[], onOpenFile: OpenFile, parentKey: stri
         );
       case "break":
         return "\n";
-      case "link":
+      case "link": {
+        const target = classifyMarkdownTarget(node.href);
+        if (target.kind === "blocked" || target.kind === "document-anchor")
+          return <Text key={key}>{renderInline(node.children, openTarget, key)}</Text>;
         return (
-          <Text key={key} onPress={() => openTarget(node.href, onOpenFile)} style={styles.link}>
-            {renderInline(node.children, onOpenFile, key)}
+          <Text key={key} onPress={() => openTarget(node.href)} style={styles.link}>
+            {renderInline(node.children, openTarget, key)}
           </Text>
         );
+      }
       case "image": {
         const path = localFilePath(node.src);
+        const remoteUrl = remoteMarkdownImageUrl(node.src);
         const label = node.alt || (path ? basename(path) : node.src);
+        if (remoteUrl) {
+          return (
+            <RemoteMarkdownImage
+              alt={node.alt}
+              key={key}
+              url={remoteUrl}
+            />
+          );
+        }
+        if (!path) return label;
         return (
-          <Text key={key} onPress={() => openTarget(node.src, onOpenFile)} style={styles.link}>
+          <Text key={key} onPress={() => openTarget(node.src)} style={styles.fileChip}>
             {label}
           </Text>
         );
@@ -73,7 +89,7 @@ function renderInline(nodes: InlineNode[], onOpenFile: OpenFile, parentKey: stri
         return (
           <Text
             key={key}
-            onPress={() => openTarget(reference.targetId, onOpenFile)}
+            onPress={() => openTarget(reference.targetId)}
             style={styles.link}
           >
             {label}
@@ -86,11 +102,26 @@ function renderInline(nodes: InlineNode[], onOpenFile: OpenFile, parentKey: stri
   });
 }
 
+function RemoteMarkdownImage({ alt, url }: { alt: string; url: string }) {
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const failed = failedUrl === url;
+  if (failed) return <Text style={styles.imageFallback}>{alt || url}</Text>;
+  return (
+    <Image
+      accessibilityLabel={alt}
+      onError={() => setFailedUrl(url)}
+      resizeMode="contain"
+      source={{ uri: url }}
+      style={styles.remoteImage}
+    />
+  );
+}
+
 function renderListItem(
   item: ListItemNode,
   itemIndex: number,
   ordered: boolean,
-  onOpenFile: OpenFile,
+  openTarget: OpenTarget,
   parentKey: string,
 ) {
   const key = `${parentKey}:item${itemIndex}`;
@@ -106,12 +137,12 @@ function renderListItem(
       <View style={styles.listItemBody}>
         {item.children.length > 0 ? (
           <Text selectable style={styles.listItemText}>
-            {renderInline(item.children, onOpenFile, key)}
+            {renderInline(item.children, openTarget, key)}
           </Text>
         ) : null}
         {item.blocks?.length ? (
           <View style={styles.nestedBlocks}>
-            {renderBlocks(item.blocks, onOpenFile, `${key}:blocks`)}
+            {renderBlocks(item.blocks, openTarget, `${key}:blocks`)}
           </View>
         ) : null}
       </View>
@@ -121,7 +152,7 @@ function renderListItem(
 
 function renderBlock(
   node: MarkdownNode,
-  onOpenFile: OpenFile,
+  openTarget: OpenTarget,
   key: string,
   isLast: boolean,
 ): ReactNode {
@@ -137,7 +168,7 @@ function renderBlock(
             isLast ? styles.noBottom : null,
           ]}
         >
-          {renderInline(node.children, onOpenFile, key)}
+          {renderInline(node.children, openTarget, key)}
         </Text>
       );
     case "code":
@@ -149,14 +180,14 @@ function renderBlock(
     case "blockquote":
       return (
         <View key={key} style={[styles.quote, isLast ? styles.noBottom : null]}>
-          {renderBlocks(node.children, onOpenFile, `${key}:quote`)}
+          {renderBlocks(node.children, openTarget, `${key}:quote`)}
         </View>
       );
     case "list":
       return (
         <View key={key} style={[styles.list, isLast ? styles.noBottom : null]}>
           {node.items.map((item, index) =>
-            renderListItem(item, index, node.ordered, onOpenFile, key),
+            renderListItem(item, index, node.ordered, openTarget, key),
           )}
         </View>
       );
@@ -174,7 +205,7 @@ function renderBlock(
                   { textAlign: node.alignments[columnIndex] ?? "left" },
                 ]}
               >
-                {renderInline(header, onOpenFile, `${key}:h${columnIndex}`)}
+                {renderInline(header, openTarget, `${key}:h${columnIndex}`)}
               </Text>
             ))}
           </View>
@@ -197,7 +228,7 @@ function renderBlock(
                     { textAlign: node.alignments[columnIndex] ?? "left" },
                   ]}
                 >
-                  {renderInline(cell, onOpenFile, `${key}:r${rowIndex}:c${columnIndex}`)}
+                  {renderInline(cell, openTarget, `${key}:r${rowIndex}:c${columnIndex}`)}
                 </Text>
               ))}
             </View>
@@ -210,7 +241,7 @@ function renderBlock(
       const label = node.reference.label || basename(node.reference.targetId);
       return (
         <Text key={key} selectable style={[styles.paragraph, isLast ? styles.noBottom : null]}>
-          <Text onPress={() => openTarget(node.reference.targetId, onOpenFile)} style={styles.link}>
+          <Text onPress={() => openTarget(node.reference.targetId)} style={styles.fileChip}>
             {label}
           </Text>
         </Text>
@@ -219,21 +250,37 @@ function renderBlock(
     default:
       return (
         <Text key={key} selectable style={[styles.paragraph, isLast ? styles.noBottom : null]}>
-          {renderInline(node.children, onOpenFile, key)}
+          {renderInline(node.children, openTarget, key)}
         </Text>
       );
   }
 }
 
-function renderBlocks(nodes: MarkdownNode[], onOpenFile: OpenFile, parentKey: string): ReactNode[] {
+function renderBlocks(nodes: MarkdownNode[], openTarget: OpenTarget, parentKey: string): ReactNode[] {
   return nodes.map((node, index) =>
-    renderBlock(node, onOpenFile, `${parentKey}:b${index}`, index === nodes.length - 1),
+    renderBlock(node, openTarget, `${parentKey}:b${index}`, index === nodes.length - 1),
   );
 }
 
-export function MarkdownText({ text, onOpenFile }: MarkdownTextProps) {
+export function MarkdownText({ text, onOpenFile, mode = "message" }: MarkdownTextProps) {
+  const { t } = useTranslation();
   const document = parseFutureMarkdown(text);
-  return <View>{renderBlocks(document.nodes, onOpenFile, "markdown")}</View>;
+  const openTarget: OpenTarget = (rawTarget) => {
+    const target = classifyMarkdownTarget(rawTarget);
+    if (target.kind === "local-file") {
+      if (mode === "file-preview") {
+        Alert.alert(t("attachment.title"), t("attachment.localLinkDesktopOnly"));
+      } else {
+        onOpenFile?.(target.path);
+      }
+      return;
+    }
+    if (target.kind !== "external-url") return;
+    void Linking.openURL(target.url).catch(() => {
+      Alert.alert(t("attachment.title"), t("attachment.linkOpenFailed"));
+    });
+  };
+  return <View>{renderBlocks(document.nodes, openTarget, "markdown")}</View>;
 }
 
 const styles = StyleSheet.create({
@@ -263,6 +310,22 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   link: { color: colors.accent, textDecorationLine: "underline" },
+  fileChip: {
+    color: colors.accent,
+    backgroundColor: colors.surfaceSubtle,
+    borderRadius: radius.sm,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    overflow: "hidden",
+  },
+  remoteImage: {
+    width: 240,
+    height: 160,
+    marginVertical: spacing.sm,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceSubtle,
+  },
+  imageFallback: { color: colors.inkMuted },
   rule: { height: 1, marginVertical: spacing.md, backgroundColor: colors.line },
   code: {
     marginBottom: spacing.md,
