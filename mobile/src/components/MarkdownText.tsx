@@ -67,13 +67,7 @@ function renderInline(nodes: InlineNode[], openTarget: OpenTarget, parentKey: st
         const remoteUrl = remoteMarkdownImageUrl(node.src);
         const label = node.alt || (path ? basename(path) : node.src);
         if (remoteUrl) {
-          return (
-            <RemoteMarkdownImage
-              alt={node.alt}
-              key={key}
-              url={remoteUrl}
-            />
-          );
+          return <RemoteMarkdownImage alt={node.alt} key={key} url={remoteUrl} />;
         }
         if (!path) return label;
         return (
@@ -87,11 +81,7 @@ function renderInline(nodes: InlineNode[], openTarget: OpenTarget, parentKey: st
         const label = reference.label || basename(reference.targetId);
         if (reference.targetType !== "file") return label;
         return (
-          <Text
-            key={key}
-            onPress={() => openTarget(reference.targetId)}
-            style={styles.link}
-          >
+          <Text key={key} onPress={() => openTarget(reference.targetId)} style={styles.link}>
             {label}
           </Text>
         );
@@ -256,7 +246,11 @@ function renderBlock(
   }
 }
 
-function renderBlocks(nodes: MarkdownNode[], openTarget: OpenTarget, parentKey: string): ReactNode[] {
+function renderBlocks(
+  nodes: MarkdownNode[],
+  openTarget: OpenTarget,
+  parentKey: string,
+): ReactNode[] {
   return nodes.map((node, index) =>
     renderBlock(node, openTarget, `${parentKey}:b${index}`, index === nodes.length - 1),
   );
@@ -265,7 +259,7 @@ function renderBlocks(nodes: MarkdownNode[], openTarget: OpenTarget, parentKey: 
 export function MarkdownText({ text, onOpenFile, mode = "message" }: MarkdownTextProps) {
   const { t } = useTranslation();
   const document = parseFutureMarkdown(text);
-  const openTarget: OpenTarget = (rawTarget) => {
+  const openTarget: OpenTarget = rawTarget => {
     const target = classifyMarkdownTarget(rawTarget);
     if (target.kind === "local-file") {
       if (mode === "file-preview") {

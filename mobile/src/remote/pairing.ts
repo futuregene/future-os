@@ -32,12 +32,19 @@ function assertSecureNatsUrl(url: string): void {
 }
 
 async function responseJson<T>(response: Response): Promise<T> {
-  const body = (await response.json().catch(() => ({}))) as { error?: string; message?: string } & T;
+  const body = (await response.json().catch(() => ({}))) as {
+    error?: string;
+    message?: string;
+  } & T;
   if (!response.ok) {
     // Preserve the server's machine-readable `error` code alongside the human
     // message, so a revocation (`invalid_remote_credential`) is distinguishable
     // from a transient failure instead of being sniffed from prose.
-    throw new RemoteApiError(body.message ?? `HTTP ${response.status}`, body.error, response.status);
+    throw new RemoteApiError(
+      body.message ?? `HTTP ${response.status}`,
+      body.error,
+      response.status,
+    );
   }
   return body;
 }

@@ -812,6 +812,19 @@ export function ChatScreen() {
         }
         updateDownload(handle, { phase: save ? "saving" : "opening" });
         const namedFile = await namedExternalFile(file, info.name);
+        if (Platform.OS === "ios") {
+          // UIActivityViewController cannot be presented reliably while the
+          // React Native download Modal is still on screen. Dismiss it first
+          // and wait for Modal.onDismiss before handing the file to UIKit.
+          // Once handed off, the system share sheet owns cancellation.
+          handoffDownloadModal(handle, () => {
+            void Sharing.shareAsync(namedFile.uri, {
+              mimeType: save ? info.mimeType : openMimeType,
+              dialogTitle: save ? t("attachment.save") : t("attachment.open"),
+            }).catch(() => Alert.alert(t("attachment.title"), t("attachment.downloadFailed")));
+          });
+          return;
+        }
         await Sharing.shareAsync(namedFile.uri, {
           mimeType: save ? info.mimeType : openMimeType,
           dialogTitle: save ? t("attachment.save") : t("attachment.open"),
@@ -823,7 +836,7 @@ export function ChatScreen() {
         finishDownload(handle);
       }
     },
-    [beginDownload, fetchDownload, finishDownload, t, updateDownload],
+    [beginDownload, fetchDownload, finishDownload, handoffDownloadModal, t, updateDownload],
   );
 
   const downloadOriginal = useCallback(

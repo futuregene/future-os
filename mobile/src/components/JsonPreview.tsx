@@ -1,8 +1,4 @@
-import {
-  formatJsonForPreview,
-  rawJsonLines,
-  tokenizeJsonLine,
-} from "@future-os/json-preview";
+import { formatJsonForPreview, rawJsonLines, tokenizeJsonLine } from "@future-os/json-preview";
 import { useMemo } from "react";
 import { FlatList, StyleSheet, Text, View } from "react-native";
 import { colors, spacing } from "../theme/tokens";
