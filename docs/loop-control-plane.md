@@ -5,6 +5,13 @@
 > persist outside the chat; the agent executes one bounded turn at a time and
 > a deterministic kernel decides what happens next.
 
+> **Attribution.** `future loop` contains code derived from
+> [LoopX](https://github.com/huangruiteng/loopx) (Apache-2.0) — see
+> `orchestration/loop/NOTICE` and `orchestration/loop/UPSTREAM.md`. Future
+> Loop is an independent downstream implementation maintained by FutureGene,
+> not an official LoopX release, and not certified or endorsed by the LoopX
+> project.
+
 ## Why it exists
 
 A conversation loses context; a "keep an eye on this for a week" request

@@ -158,4 +158,13 @@ future tui        # 终端界面
 
 ## License
 
-MIT
+FutureOS 基于 [MIT License](LICENSE) 发布，**唯一例外**是
+[`orchestration/loop/`](orchestration/loop/) 中的 Future Loop 控制平面——该目录包含派生自
+[LoopX](https://github.com/huangruiteng/loopx) 的代码，按
+[Apache License 2.0](orchestration/loop/LICENSE) 分发——见
+[`orchestration/loop/NOTICE`](orchestration/loop/NOTICE)、
+[`orchestration/loop/UPSTREAM.md`](orchestration/loop/UPSTREAM.md) 与
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+Future Loop 是 FutureGene 独立维护的 downstream 实现，**不是** LoopX 官方发行版，
+也未经 LoopX 项目认证或背书。

@@ -17,4 +17,8 @@ FutureOS 使用说明（macOS）
 · 个人数据保存在 ~/.future ；退出应用时后台 agent 会一并关闭。
 · 已附带命令行工具 future（位于 FutureOS.app/Contents/MacOS/）。
 
+【许可】
+FutureOS 主体按 MIT 许可发布；内置的 future loop 组件派生自 LoopX，
+按 Apache-2.0 许可发布。许可证全文与归属声明见 licenses/ 目录。
+
 如遇问题，请把报错弹窗截图反馈给我们。

@@ -164,4 +164,14 @@ future tui       # terminal UI
 
 ## License
 
-MIT
+FutureOS is distributed under the [MIT License](LICENSE), **except** the
+Future Loop control plane in [`orchestration/loop/`](orchestration/loop/),
+which contains code derived from [LoopX](https://github.com/huangruiteng/loopx)
+and is distributed under the [Apache License, Version 2.0](orchestration/loop/LICENSE)
+— see [`orchestration/loop/NOTICE`](orchestration/loop/NOTICE),
+[`orchestration/loop/UPSTREAM.md`](orchestration/loop/UPSTREAM.md), and
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+Future Loop is an independent downstream implementation maintained by
+FutureGene. It is **not** an official LoopX release and has not been
+certified or endorsed by the LoopX project.

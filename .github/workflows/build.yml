@@ -235,6 +235,10 @@ jobs:
           hdiutil attach "$work" -mountpoint "$mnt" -nobrowse -noverify
           app=$(ls -d "$mnt"/*.app | head -n1)
           cp "docs/dist/readme-macos.txt" "$mnt/Readme.txt"
+          # License & attribution notices (MIT + Apache-2.0 LoopX-derived loop).
+          mkdir -p "$mnt/licenses/loop"
+          cp LICENSE "$mnt/licenses/"
+          cp orchestration/loop/LICENSE orchestration/loop/NOTICE orchestration/loop/UPSTREAM.md "$mnt/licenses/loop/"
           codesign --force --sign - "$app"
           hdiutil detach "$mnt"
           hdiutil convert "$work" -format UDZO -o "$out"
@@ -265,6 +269,10 @@ jobs:
           Copy-Item "desktop/src-tauri/target/release/futureos.exe" "$dir/FutureOS.exe"
           Copy-Item "target/release/future.exe" "$dir/future.exe"
           Copy-Item "docs/dist/readme-windows.txt" "$dir/Readme.txt"
+          # License & attribution notices (MIT + Apache-2.0 LoopX-derived loop).
+          New-Item -ItemType Directory -Force -Path "$dir/licenses/loop" | Out-Null
+          Copy-Item "LICENSE" "$dir/licenses/"
+          Copy-Item "orchestration/loop/LICENSE", "orchestration/loop/NOTICE", "orchestration/loop/UPSTREAM.md" "$dir/licenses/loop/"
           Compress-Archive -Path "$dir/*" -DestinationPath "FutureOS-portable-windows.zip" -Force
 
       - name: Upload Windows portable
@@ -290,6 +298,10 @@ jobs:
           cp "target/$(uname -m)-unknown-linux-musl/release/future" "$dir/future"
           chmod +x "$dir"/*
           cp "docs/dist/readme-linux.txt" "$dir/Readme.txt"
+          # License & attribution notices (MIT + Apache-2.0 LoopX-derived loop).
+          mkdir -p "$dir/licenses/loop"
+          cp LICENSE "$dir/licenses/"
+          cp orchestration/loop/LICENSE orchestration/loop/NOTICE orchestration/loop/UPSTREAM.md "$dir/licenses/loop/"
           tar -czf FutureOS-portable-linux.tar.gz -C "$dir" .
 
       - name: Upload Linux portable

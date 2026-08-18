@@ -25,4 +25,9 @@ you can still use ./future directly (CLI / `future tui`).
 · The background agent stops automatically when you quit the app.
 · The command-line tool future is included in the same directory.
 
+[License]
+FutureOS is distributed under the MIT License; the bundled future loop
+component is derived from LoopX and distributed under Apache-2.0.
+Full license texts and attribution notices: see the licenses/ directory.
+
 If you encounter any issues, please send us a screenshot of the error message.
