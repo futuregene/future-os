@@ -313,3 +313,44 @@ README.md L105-118（zh L100-113）列出 12 个命令，源码（tui/src/app.ts
 | FAQ | 「FutureGene → Connect」→「FutureGene → Sign in」（EF5） |
 
 核验过程另见 fact-inventory.md：EH3/EQ1/EQ5/EU1/EU2/EU9/ES3/ES4/ESK3/EF5 已更新；§14a H14/H15 关闭。
+
+---
+
+## H. 2026-08-18 复核：loop 文档、技能数、目录布局（branch `docs/claude-md-improvements`）
+
+> 对照当前工作树源码（loop 控制面已删 capability/extension 生态、默认状态根改
+> 为项目本地 `<cwd>/.future/loop/`；skills/builtin 含 15 个 future-* 技能）逐条核验。
+
+### H1. 已修正（本轮）
+
+| 条目 | 修正内容 | 源码依据 |
+|---|---|---|
+| loop 文档 todo 类别「三类」过时 | 五类：advancement / user-gate / user-action / monitor / blocker（en/zh 核心概念表） | state.rs `TaskClass` 枚举 5 变体；console.rs L824 `--role/--class` 校验文案 |
+| loop 文档「PLAN_REVIEW checkpoints are agent-resolved」无源码依据 | 删除；改为 user-action 语义（`user_action` 展示给用户但**不冻结** agent，decision/mod.rs L111-114 注释 + UserChannel 分支） | 全库 grep `PLAN_REVIEW` 0 命中 |
+| loop 文档「三端体验」（TUI/GUI/移动端可见 loop 状态）与代码不符 | 改为「loop 状态以 CLI 为准」：状态项目本地、TUI/GUI/移动端/IM 无内置 loop 视图，经 `/future-loop` 技能编排 `future loop` 命令驱动 | desktop/src、mobile/src、tui/src 均无 future_loop 引用（grep 0 命中）；loop 状态仅 CLI 可读 |
+| loop 文档「渠道桥消息可触发 loop 操作、门禁回聊天」无集成代码 | 改为「任何客户端可经技能驱动；桥与 loop 无原生集成」 | channels/src 无 loop 集成（grep 0 命中） |
+| loop 文档 CLI 分组清单过时 | 按 `future loop registry` 实测输出修正：agent 组补 `list`、ops 组补 `serve-status`、删除「质量组」改为 handoff / cli / benchmark / replay / canary 五组（10 组 43 命令数不变） | `./target/debug/future loop registry` 实测；cli/registry.rs |
+| loop 文档 gate 示例缺必填 `--text` | 补 `--text`（`--gate-question` 默认为 `--text`） | console.rs `--text required` |
+| directory-layout 声称 loop 状态根默认 `~/.future/loop/` | 实际默认 `<cwd>/.future/loop/`（项目本地），`FUTURE_LOOP_ROOT` 覆盖；`~/.future/loop/` 不再使用。已改章节标题与正文、从 `~/.future/` 目录树删除 `loop/` 行 | console.rs `root_dir()` L56-66（无 home 回退） |
+| console.rs 模块注释「State lives under `--root` (default `~/.future/loop/`)」 | 改为项目本地 `<cwd>/.future/loop/`（`--root` 旗标亦不存在） | console.rs `root_dir()` |
+| build-and-install「install all future-* skills (14)」 | → 15（skills/builtin 现含 future-loop） | `ls skills/builtin/` 15 目录 |
+| build-and-install「开发（源码方式）」节重复两份（第二份为过时版：make test=cargo test (agent)、lint 少 GUI/mobile） | 删除过时副本；`make fmt` 注释改为 `cargo fmt --all (workspace) + desktop/src-tauri + mobile`（en/zh） | Makefile `fmt:` = cargo fmt --all + src-tauri + fmt-mobile |
+| wiki Skills.md 内置技能表缺 Loop（14 项） | 补 **Loop** 行（en/zh），技能总数 15 | skills/builtin/future-loop（v3.0.2） |
+| wiki-prompt 内置技能示例清单含 3 个不存在技能（Hand-drawn posters/slides、Subagent） | 替换为实际 15 个（含 Loop） | skills/builtin/ 目录实测 |
+| README「14+ skills」、docs/README loop 行「extensions」 | README → 15+ 并补 `/future-loop` 例子；docs/README loop 行「扩展与多 agent」→「交付闭环、多 agent」（extension/capability 命令已删，`future loop extension status` 报 unknown command） | 实测 CLI 0 命中 extension/capability |
+
+### H2. 核验无误（供后继跳过）
+
+- loop 注册表「10 组 43 命令」、`quota should-run/usage/spend/decisions`、`scheduler tick|show|record-host-failure|ack|liveness`、`delivery status|record|followthrough`、`agent onboard|list|contract|recipe|succession|collective`、`lease claim|renew|release|expire|status`、`frontier show`、`run --goal/--agent-id/--model/--thinking-level/--max-turns` 与实测 registry 输出一致。
+- 语义历史 N=50（goal_frontier/semantic_history.rs `SEMANTIC_HISTORY_CAP`）；交付 3 回合未验证派生跟进（work_items/delivery_outcome.rs）；空转 15 分钟记账（state.rs `TURN_NO_PROGRESS_IDLE_SECS_DEFAULT = 15 * 60`）；租约 pid 活性回收（state.rs claim → compat::pid_alive）。
+- channels-config.md 全部字段与默认值 ↔ channels/src/config.rs 逐字段一致。
+- TUI 斜杠命令 19 个（17 可用 + /export /import stub）与 tui.md/README 一致；9 个快捷键与 help_screen.rs 一致；README 沙箱三档与 future.proto L251 注释一致；Models.md 3826/143 与 README「3800+/140+」一致；`future init` 链接 future + future-agent 到 ~/.future/bin 与 init.rs 一致。
+- wiki CLI.md 命令组与 `future --help` 实测一致（init/auth/account/run/skills/tools/models/session/doctor + agent/tui/channel/loop）。
+
+### H3. 技能仓库遗留 → 已解决（future-skills#14，v3.0.3）
+
+- skills 子模块 future-loop/SKILL.md 的「PLAN_REVIEW checkpoints are agent-resolved」
+  已在上游修正（future-skills#14，squash 合入，b045032），同批还修了
+  `agent register`（实际为 `onboard|list|contract|recipe|succession|collective`）
+  与 `canary [--premerge]`（实际为 `canary smoke [--profile …] | canary premerge`）；
+  版本 3.0.2 → 3.0.3。主仓库指针 bump 随本 round 一起提交。

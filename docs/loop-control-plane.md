@@ -33,12 +33,12 @@ agent executes one bounded turn (gRPC) → writes evidence → kernel decides th
 | Concept | Command | What it does |
 |---|---|---|
 | Goal | `goal init` | Project-local state at `<cwd>/.future/loop/`, event-sourced and replayable |
-| Todo | `todo add/update/complete/supersede` | Three classes: advancement / user-gate / monitor (external-state watch); `--blocks` dependency chains; `--priority` |
+| Todo | `todo add/update/complete/supersede` | Five classes: advancement / user-gate / user-action / monitor (external-state watch) / blocker; `--blocks` dependency chains; `--priority` |
 | Evidence | `todo complete --evidence` | **Non-empty, enforced**: closing a todo must state what actually landed (paths, attempt ids, measurements); `--force` is the explicit operator override |
 | Acceptance contract | `todo add --acceptance "tok1,tok2"` | Completion evidence must contain every token (case-insensitive) — the hard form of "done ≠ delivered" |
 | Verifier | `todo add --verify "cmd"` | The kernel runs the command after each turn; only exit 0 completes the todo (bounded by `--max-validation-attempts`). The physical blocker of empty closures |
 | Lease | `lease claim/renew/release/status` | Who holds a todo and until when. **Lease liveness**: the holder's pid is recorded; a dead process's leases are auto-reclaimed — no manual cleanup after killing a worker |
-| Gate | `gate resolve` | Any open user gate freezes all work; PLAN_REVIEW checkpoints are agent-resolved |
+| Gate | `gate resolve` | Any open user gate freezes all work until resolved; user-actions (non-blocking human to-dos) surface to the user without freezing the agent |
 | Delivery closure | `delivery status/record` | Completion lands in a pending `delivered` state; an operator resolves it as `verified/failed/rework`; unverified deliveries auto-derive a follow-up after 3 turns |
 | Terminal | `frontier show` | Validated closure: todos done/superseded + closure intent + no acceptance gaps + no pending deferred work; `frontier` gives the terminal judgement with gap detail |
 | Quota | `quota should-run/usage/spend/decisions` | The deterministic should-run kernel: scheduling, refusal reasons, and spend are all auditable |
@@ -80,7 +80,7 @@ future loop goal init --objective "..." --cwd DIR
 # 2. Decompose — dependencies and hard checks together
 future loop todo add --goal G --text "..." --priority P0 --verify "cargo check -p X"
 future loop todo add --goal G --text "..." --blocks T1 --acceptance "attempt,scored"
-future loop todo add --goal G --role user --class user_gate --gate-question "Ship it?"
+future loop todo add --goal G --role user --class user_gate --text "Release gate" --gate-question "Ship it?"
 
 # 3. Drive turns (one worker per --agent-id; relaunch as soon as a turn exits)
 future loop run --goal G --agent-id mac-worker --model M --thinking-level L --max-turns 1
@@ -103,13 +103,16 @@ future loop delivery record --goal G ...  # verified / failed / rework
 - Workspace guard: multi-agent write conflicts degrade to serial automatically
 - Idle turns (15 minutes without writes) are ledgered; steer mid-turn via `todo update --text`
 
-## Three-client experience
+## Loop state is CLI-first
 
-Loop state is visible through every FutureOS frontend: **TUI in the terminal,
-the desktop GUI, and the mobile apps (Android · iOS)** — one gRPC agent
-service, seamless across clients. Mobile is a FutureOS differentiator: most
-agent runtimes are desktop-only, while `future` runs natively on your phone,
-completing the all-platform story with desktop and TUI.
+The control plane is driven and observed through the **`future loop` CLI** —
+goal state is project-local (`<cwd>/.future/loop/`), not attached to any one
+client. The TUI, desktop GUI, mobile apps, and IM bots have no built-in loop
+views; they drive the same control plane through the **`/future-loop`
+skill**, which orchestrates `future loop` commands on the agent's behalf.
+Because the state lives in the project and the skill runs through the agent
+service, a goal started in one client (e.g. the TUI) can be steered from any
+other (e.g. a Feishu chat).
 
 ## CLI surface (10 groups, 43 commands)
 
@@ -120,15 +123,19 @@ future loop commands        # grouped by operator journey
 
 - **goal group**: `goal` `status` `models` `diagnose`
 - **todo group**: `todo` `gate` `replan` `frontier` `lease` `task-graph`
-- **agent group**: `agent` `scope` `lane` `supervisor`
-- **ops group**: `version` `doctor` `history` `turn` `todo-event` `evidence-log` `backup` `authority` `profile` `quota` `scheduler` `store` `backfill` `privacy` `runs` `heartbeat-prompt` `worker-bridge` `run`
+- **agent group**: `agent` `list` `scope` `lane` `supervisor`
+- **ops group**: `version` `doctor` `history` `turn` `todo-event` `evidence-log` `backup` `authority` `profile` `quota` `scheduler` `store` `backfill` `privacy` `runs` `heartbeat-prompt` `worker-bridge` `serve-status` `run`
 - **work-items group**: `attention` `inbox` `delivery`
-- **quality group**: `canary`
+- **handoff group**: `handoff`
+- **cli group**: `registry` `commands`
+- **benchmark group**: `benchmark`
+- **replay group**: `replay`
+- **canary group**: `canary`
 
 ## How it fits FutureOS
 
 - **Agent service** (`future agent`, gRPC 127.0.0.1:50051): `run` executes every turn through it
-- **Channel bridges** (Feishu / DingTalk): messages can trigger loop actions; loop gates and alerts flow back into chat
+- **Any client through the skill** (TUI, desktop, mobile, Feishu / DingTalk): loop goals are driven by the `/future-loop` skill orchestrating `future loop` commands — there is no native bridge↔loop integration; gates surface as agent messages asking one concrete question
 - **The `/future-loop` skill**: the driving manual for agents (v3.x, kept in sync with this doc)
 - **State location**: `<cwd>/.future/loop/` (add to the project `.gitignore`)
 

@@ -12,8 +12,9 @@
 //!   quota should-run — emit the typed ShouldRunPacket (deterministic)
 //!   run          — drive one bounded gRPC turn + writeback (needs agent)
 //!
-//! State lives under `--root` (default `~/.future/loop/`), one goal per
-//! directory, event-sourced: `loop status` replays the ledger each time.
+//! State is project-local under `<cwd>/.future/loop/` (override with the
+//! `FUTURE_LOOP_ROOT` env var), one goal per directory, event-sourced:
+//! `loop status` replays the ledger each time.
 
 use std::collections::HashMap;
 use std::time::SystemTime;
