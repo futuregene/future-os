@@ -455,9 +455,11 @@ pub async fn prepare_download_variant(
         return Err("The attachment is no longer available.".to_string().into());
     }
     if !is_mobile_download_allowed(&display_name) {
-        return Err("This file type is not available on mobile; view it on desktop."
-            .to_string()
-            .into());
+        return Err(
+            "This file type is not available on mobile; view it on desktop."
+                .to_string()
+                .into(),
+        );
     }
     let prepared = match requested_variant {
         "original" => prepare_original(&source, &display_name)?,
@@ -1107,22 +1109,34 @@ mod tests {
         let json_below_limit = dir.join("below-limit.json");
         std::fs::write(
             &json_below_limit,
-            format!("\"{}\"", "x".repeat(MAX_JSON_RICH_PREVIEW_BYTES as usize - 3)),
+            format!(
+                "\"{}\"",
+                "x".repeat(MAX_JSON_RICH_PREVIEW_BYTES as usize - 3)
+            ),
         )
         .unwrap();
         let preview = prepare_preview(&json_below_limit, "below-limit.json").unwrap();
-        assert_eq!(std::fs::metadata(&json_below_limit).unwrap().len(), 1024 * 1024 - 1);
+        assert_eq!(
+            std::fs::metadata(&json_below_limit).unwrap().len(),
+            1024 * 1024 - 1
+        );
         assert_eq!(preview.preview_kind, "json");
         std::fs::remove_file(preview.path).unwrap();
 
         let json_at_limit = dir.join("at-limit.json");
         std::fs::write(
             &json_at_limit,
-            format!("\"{}\"", "x".repeat(MAX_JSON_RICH_PREVIEW_BYTES as usize - 2)),
+            format!(
+                "\"{}\"",
+                "x".repeat(MAX_JSON_RICH_PREVIEW_BYTES as usize - 2)
+            ),
         )
         .unwrap();
         let preview = prepare_preview(&json_at_limit, "at-limit.json").unwrap();
-        assert_eq!(std::fs::metadata(&json_at_limit).unwrap().len(), 1024 * 1024);
+        assert_eq!(
+            std::fs::metadata(&json_at_limit).unwrap().len(),
+            1024 * 1024
+        );
         assert_eq!(preview.preview_kind, "text");
         assert_eq!(preview.mime_type, "application/json");
         std::fs::remove_file(preview.path).unwrap();
