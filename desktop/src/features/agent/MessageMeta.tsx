@@ -30,22 +30,24 @@ export function MessageMeta({ message, visible }: MessageMetaProps) {
   const now = useNow(1000, streaming);
 
   const elapsedMs = streaming
-    ? (typeof message.runStartedAt === "number" ? now - message.runStartedAt : null)
+    ? typeof message.runStartedAt === "number"
+      ? now - message.runStartedAt
+      : null
     : (message.durationMs ?? null);
 
   const outputTokens = message.outputTokens ?? 0;
-  const usage = outputTokens > 0
-    ? t("message.tokens", {
-        formattedCount: formatNumber(outputTokens, i18n.language),
-      })
-    : null;
+  const usage =
+    outputTokens > 0
+      ? t("message.tokens", {
+          formattedCount: formatNumber(outputTokens, i18n.language),
+        })
+      : null;
   const parts = [
     elapsedMs != null ? formatDuration(elapsedMs) : null,
     usage,
   ].filter((part): part is string => !!part);
 
-  if (parts.length === 0)
-    return null;
+  if (parts.length === 0) return null;
 
   return (
     <div

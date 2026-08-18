@@ -469,15 +469,13 @@ export function TimelineCard({
       // Single "time · N tokens" line, joined like the desktop MessageMeta
       // footer (which renders `parts.join(" · ")`).
       const outputTokens = item.outputTokens ?? 0;
-      const usage = outputTokens > 0
-        ? t("chat.tokens", {
-            formattedCount: new Intl.NumberFormat(i18n.language).format(outputTokens),
-          })
-        : null;
-      const footerStats = [
-        item.durationMs != null ? formatDuration(item.durationMs) : null,
-        usage,
-      ]
+      const usage =
+        outputTokens > 0
+          ? t("chat.tokens", {
+              formattedCount: new Intl.NumberFormat(i18n.language).format(outputTokens),
+            })
+          : null;
+      const footerStats = [item.durationMs != null ? formatDuration(item.durationMs) : null, usage]
         .filter((part): part is string => !!part)
         .join(" · ");
       // A compaction-only message is a standalone divider (the agent replaced

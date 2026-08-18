@@ -5,7 +5,8 @@ export const resources = {
       remote: "Remote",
       pairing: {
         title: "Connect to your desktop",
-        description: "Open Phone Control in FutureOS Desktop, choose Pair & start, then scan the QR code.",
+        description:
+          "Open Phone Control in FutureOS Desktop, choose Pair & start, then scan the QR code.",
         permission: "Camera access is required to scan the desktop pairing code.",
         grant: "Allow camera",
         scanning: "Point the camera at the QR code",
