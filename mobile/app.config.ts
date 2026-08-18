@@ -52,6 +52,18 @@ const config: ExpoConfig = {
     ],
     "expo-localization",
     [
+      "expo-splash-screen",
+      {
+        // Match the app's first-frame canvas color so the launch screen fades
+        // into the booting spinner with no visible seam. Android 12+ requires a
+        // splash icon (it defaults to the launcher icon if none is set), so we
+        // pass a fully transparent image — visually a bare background on both
+        // platforms, no logo.
+        backgroundColor: "#f6f7f9",
+        image: "./assets/splash.png",
+      },
+    ],
+    [
       "expo-build-properties",
       {
         android: {
