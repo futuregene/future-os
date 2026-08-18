@@ -1,0 +1,15 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'cn.future_os'
+version = '1.0.0'
+
+android {
+  namespace "cn.future_os.filehandler"
+}
+
+dependencies {
+  implementation "androidx.core:core-ktx:1.17.0"
+}

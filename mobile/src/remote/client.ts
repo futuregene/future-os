@@ -705,6 +705,10 @@ export class RemoteClient {
       }, 15_000);
       this.downloadWaiters.set(key, { resolve, reject, timer });
     });
+    // The binary chunk may time out before the pull ACK settles. Attach a
+    // handler immediately so React Native never reports that early rejection
+    // as unhandled; the original promise is still awaited and rethrows below.
+    void pending.catch(() => undefined);
     try {
       const message = await connection.request(
         `p.${this.credentials.pairId}.xfer.up.${transferId}.pull.${index}`,

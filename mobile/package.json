@@ -24,6 +24,7 @@
     "expo-status-bar": "~57.0.1",
     "expo-system-ui": "~57.0.1",
     "fast-text-encoding": "^1.0.6",
+    "future-file-handler": "file:modules/future-file-handler",
     "i18next": "^26.3.6",
     "lucide-react-native": "^1.27.0",
     "nats.ws": "^1.30.3",

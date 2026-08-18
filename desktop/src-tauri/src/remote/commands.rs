@@ -561,7 +561,13 @@ async fn handle_command(
             .await
         }
         "download_prepare" => {
-            match super::transfer::prepare_download(&cmd.session_id, &cmd.file_path).await {
+            match super::transfer::prepare_download_variant(
+                &cmd.session_id,
+                &cmd.file_path,
+                &cmd.mode,
+            )
+            .await
+            {
                 Ok(data) => {
                     reply(
                         client,
@@ -1022,7 +1028,7 @@ async fn handle_pair_handshake_confirm(
             "bridgeInstanceId": state.bridge_instance_id,
             "deviceId": cmd.device_id,
             "desktopNonce": cmd.desktop_nonce,
-            "features": ["file_transfer_v1", "approval_tier_v1", "continue_run_v1"],
+            "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1"],
             "presence": super::build_presence_payload(
                 &state.creds.pair_id,
                 &state.bridge_instance_id,
@@ -2063,7 +2069,12 @@ mod bridge_tests {
         assert_eq!(reply["data"]["confirmed"], json!(true));
         assert_eq!(
             reply["data"]["features"],
-            json!(["file_transfer_v1", "approval_tier_v1", "continue_run_v1"])
+            json!([
+                "file_transfer_v1",
+                "file_download_v2",
+                "approval_tier_v1",
+                "continue_run_v1"
+            ])
         );
         assert!(bridge.handshake.active_flag().load(Ordering::Acquire));
         assert!(crate::remote::pairing::load_creds().is_some());
