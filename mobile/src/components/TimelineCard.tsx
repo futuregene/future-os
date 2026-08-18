@@ -467,21 +467,13 @@ export function TimelineCard({
   if (item.kind === "message") {
     if (item.role === "assistant") {
       // Single "time · N tokens" line, joined like the desktop MessageMeta
-      // footer (which renders `parts.join(" · ")`). When the run's input side
-      // is known, show the provider-aligned total (in + out); cache reads are a
-      // discounted subset of input and are not added on top.
+      // footer (which renders `parts.join(" · ")`).
       const outputTokens = item.outputTokens ?? 0;
-      const usage = item.inputTokens != null
-        ? t("chat.tokensUsage", {
-            formattedTotal: new Intl.NumberFormat(i18n.language).format(item.inputTokens + outputTokens),
-            formattedIn: new Intl.NumberFormat(i18n.language).format(item.inputTokens),
-            formattedOut: new Intl.NumberFormat(i18n.language).format(outputTokens),
+      const usage = outputTokens > 0
+        ? t("chat.tokens", {
+            formattedCount: new Intl.NumberFormat(i18n.language).format(outputTokens),
           })
-        : item.outputTokens != null && item.outputTokens > 0
-          ? t("chat.tokens", {
-              formattedCount: new Intl.NumberFormat(i18n.language).format(item.outputTokens),
-            })
-          : null;
+        : null;
       const footerStats = [
         item.durationMs != null ? formatDuration(item.durationMs) : null,
         usage,
