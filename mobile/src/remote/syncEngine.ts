@@ -44,7 +44,7 @@ import {
   upsertTruncationNotice,
   type ReplayEventWire,
   type TimelineState,
-} from "./eventReducer";
+} from "./timeline";
 import {
   advanceCursor,
   cursorHighWater,

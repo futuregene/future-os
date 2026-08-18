@@ -66,21 +66,49 @@ export function backoffDelayMs(attempt: number, random = Math.random): number {
 }
 
 /**
+ * An HTTP failure from the remote control plane (claim / token refresh).
+ * Carries the server's machine-readable `error` code separately from the human
+ * `message`, so classification never has to sniff prose — mirroring the
+ * desktop's `AppError::Remote { code, .. }`.
+ */
+export class RemoteApiError extends Error {
+  readonly code?: string;
+  readonly status: number;
+  constructor(message: string, code: string | undefined, status: number) {
+    super(message);
+    this.name = "RemoteApiError";
+    this.code = code;
+    this.status = status;
+  }
+}
+
+/**
  * Classify a connect/handshake/refresh failure into a lifecycle category.
  *   authTerminal — the device was revoked; stop every network action (M1).
  *   auth         — the token/pairing is broken but not revoked (refreshable).
  *   transport    — transient; retry with backoff.
  */
 export function classifyError(error: unknown): "authTerminal" | "auth" | "fatal" | "transport" {
+  // Control-plane HTTP errors carry the machine `code`; match that, never the
+  // human message (mirrors the desktop's error_code classifier).
+  if (error instanceof RemoteApiError) {
+    if (error.code === "invalid_remote_credential" || error.code === "credentials_revoked") {
+      return "authTerminal";
+    }
+    if (error.code === "pairing_signature_invalid" || error.code === "pairing_confirmation_mismatch") {
+      return "auth";
+    }
+    if (error.code === "remote_service_misconfigured") {
+      return "fatal";
+    }
+    // Unknown server code — treat as retryable transport, matching the
+    // desktop's generic "server" category.
+    return "transport";
+  }
   const message = error instanceof Error ? error.message : String(error);
-  if (
-    message.includes("invalid_remote_credential") ||
-    message.includes("401") ||
-    message.includes("credentials_revoked") ||
-    // A JWT with no readable exp is permanently malformed — refreshing can't
-    // fix it, only re-pairing can (mirrors the desktop's hard reject).
-    message.includes("invalid_jwt")
-  ) {
+  // A JWT with no readable exp is permanently malformed — refreshing can't
+  // fix it, only re-pairing can (mirrors the desktop's hard reject).
+  if (message.includes("invalid_jwt")) {
     return "authTerminal";
   }
   if (

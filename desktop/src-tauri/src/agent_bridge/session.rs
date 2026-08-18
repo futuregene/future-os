@@ -256,9 +256,8 @@ pub async fn fork_agent_session(
             .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or_default();
 
-    // The agent's fork_session sets these in the session_info entry.
     // The agent's fork_session writes metadata into a session_info entry
-    // (role = "system").  Find it — get_session_entries now includes it.
+    // (role = "system"); find it — get_session_entries now includes it.
     let session_info = fork_entries
         .iter()
         .find(|e| e.get("role").and_then(|r| r.as_str()) == Some("system"));

@@ -292,9 +292,11 @@ async fn handle_command_singleflight(
 }
 
 // SECURITY: NATS admits this bridge with a short-lived user JWT whose server-
-// enforced ACL is scoped to this pair. Session/approval ownership is still
-// checked in the command handlers because subject isolation and application
-// authorization are separate boundaries.
+// enforced ACL is scoped to this pair, and every non-handshake command is gated
+// on a completed pairing handshake above. Only `approval_decision` additionally
+// re-checks per-session ownership (that an approval belongs to the requesting
+// session); the other handlers trust the pair-scoped ACL because the paired
+// device is authorized to operate on all of this desktop's sessions.
 async fn handle_command(
     client: &async_nats::Client,
     msg: async_nats::Message,

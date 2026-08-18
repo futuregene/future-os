@@ -9,7 +9,7 @@ import {
   timelineFromEntries,
   timelineFromHistory,
   timelineFromProjection,
-} from "../eventReducer";
+} from "../timeline";
 
 describe("history reducer", () => {
   test("keeps optimistic attachment chips for an attachment-only prompt", () => {
@@ -250,14 +250,6 @@ describe("projection reducer", () => {
           kind: "message" as const,
           role: "assistant" as const,
           text: "run-1 reply",
-          runId: "run-1",
-        },
-        {
-          id: "t1",
-          kind: "tool" as const,
-          toolId: "t1",
-          name: "read" as const,
-          complete: true,
           runId: "run-1",
         },
         {

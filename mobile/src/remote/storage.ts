@@ -1,9 +1,12 @@
 import * as SecureStore from "expo-secure-store";
 import type { RemoteCredentials } from "./types";
 
-const CREDENTIAL_KEYS: { [Key in keyof RemoteCredentials]: string } = {
+// `deviceId` is deliberately excluded from the credential bundle: it is the
+// stable device identity that must survive an unpair, so it lives under
+// DEVICE_ID_KEY alone (single source of truth) rather than being duplicated
+// inside the credential set.
+const CREDENTIAL_KEYS: { [Key in Exclude<keyof RemoteCredentials, "deviceId">]: string } = {
   pairId: "futureos.remote.pair-id.v1",
-  deviceId: "futureos.remote.credential-device-id.v1",
   seed: "futureos.remote.seed.v1",
   userJwt: "futureos.remote.user-jwt.v1",
   refreshToken: "futureos.remote.refresh-token.v1",
@@ -33,15 +36,25 @@ export async function loadCredentials(): Promise<RemoteCredentials | null> {
     await clearCredentials();
     return null;
   }
-  return Object.fromEntries(entries) as unknown as RemoteCredentials;
+  const deviceId = await loadDeviceId();
+  if (deviceId == null) {
+    // A credential bundle without its device identity is corrupt; clear it so a
+    // fresh pair re-establishes both.
+    await clearCredentials();
+    return null;
+  }
+  return { ...Object.fromEntries(entries), deviceId } as unknown as RemoteCredentials;
 }
 
 export async function saveCredentials(credentials: RemoteCredentials): Promise<void> {
-  await Promise.all(
-    (Object.keys(CREDENTIAL_KEYS) as (keyof RemoteCredentials)[]).map(field =>
-      SecureStore.setItemAsync(CREDENTIAL_KEYS[field], credentials[field], secureOptions),
+  const { deviceId, ...rest } = credentials;
+  const fields = Object.keys(CREDENTIAL_KEYS) as (keyof typeof rest)[];
+  await Promise.all([
+    ...fields.map(field =>
+      SecureStore.setItemAsync(CREDENTIAL_KEYS[field], rest[field], secureOptions),
     ),
-  );
+    saveDeviceId(deviceId),
+  ]);
 }
 
 export async function clearCredentials(): Promise<void> {

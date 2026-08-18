@@ -43,7 +43,11 @@ function WorkspaceLocalImage({
   workspaceId?: string | null;
 }) {
   const resolved = useFutureReference(workspaceId, { targetId: target, targetType: "file" });
-  const file = resolved?.status === "resolved" && resolved.targetType === "file" && isStoredFile(resolved.data)
+  // Only inline images that live inside the workspace: a model-authored absolute
+  // path (e.g. `![x](/etc/passwd)`) must not become a read-arbitrary-file channel
+  // through readFileBase64. Out-of-workspace targets render as a fallback chip.
+  const file = resolved?.status === "resolved" && resolved.targetType === "file"
+    && isStoredFile(resolved.data) && resolved.data.insideWorkspace
     ? resolved.data
     : null;
   return file

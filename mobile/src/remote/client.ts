@@ -87,6 +87,8 @@ export class RemoteClient {
   private state: ConnectionState = "unpaired";
   private confirmedBridgeInstanceId = "";
   private handshakePromise: Promise<HandshakeConfirmation> | null = null;
+  /** Guards against overlapping token refresh (timer + auth failure racing). */
+  private refreshInFlight = false;
   private downloadWaiters = new Map<
     string,
     {
@@ -198,8 +200,10 @@ export class RemoteClient {
 
   /** Rotate the JWT in place and resume the connection (M1's refreshable class). */
   private async refreshToken(): Promise<void> {
-    this.signal({ type: "auth_failed" }); // moves to refreshing
+    if (this.refreshInFlight) return;
+    this.refreshInFlight = true;
     try {
+      this.signal({ type: "auth_failed" }); // moves to refreshing
       const fresh = await refreshCredentials(this.credentials);
       if (this.stopped) return;
       this.credentials = fresh;
@@ -221,6 +225,8 @@ export class RemoteClient {
       }
       this.callbacks.onError(error instanceof Error ? error : new Error(String(error)));
       this.scheduleRetry();
+    } finally {
+      this.refreshInFlight = false;
     }
   }
 
@@ -304,7 +310,7 @@ export class RemoteClient {
       // RTT per cycle (no backoff): the second consecutive auth failure takes
       // the shared retry path instead.
       this.authRetryCount += 1;
-      if (this.authRetryCount === 1) {
+      if (this.authRetryCount === 1 && !this.refreshInFlight) {
         void this.refreshToken();
         return;
       }

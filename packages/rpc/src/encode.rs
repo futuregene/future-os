@@ -302,6 +302,8 @@ pub(crate) fn session_entry_to_proto(entry: &SessionEntryPayload) -> proto::Sess
             .map(|value| serde_json::to_string(value).unwrap_or_default()),
         output_tokens: entry.output_tokens,
         duration_ms: entry.duration_ms,
+        input_tokens: entry.input_tokens,
+        cache_read_tokens: entry.cache_read_tokens,
     }
 }
 

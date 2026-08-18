@@ -106,6 +106,12 @@ export function messageToItems(message: AgentMessage): TimelineItem[] {
     ...(message.outputTokens != null && message.outputTokens > 0
       ? { outputTokens: message.outputTokens }
       : {}),
+    ...(message.inputTokens != null && message.inputTokens > 0
+      ? { inputTokens: message.inputTokens }
+      : {}),
+    ...(message.cacheReadTokens != null && message.cacheReadTokens > 0
+      ? { cacheReadTokens: message.cacheReadTokens }
+      : {}),
     ...(message.stopped ? { stopped: true } : {}),
     ...(message.truncated ? { truncated: true } : {}),
   };

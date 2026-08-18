@@ -60,7 +60,7 @@ describe("credential storage", () => {
     mockedStore.getItemAsync.mockImplementation(async key => {
       const byKey: Record<string, string> = {
         "futureos.remote.pair-id.v1": "pair_1",
-        "futureos.remote.credential-device-id.v1": "dev_1",
+        "futureos.remote.device-id.v1": "dev_1",
         "futureos.remote.seed.v1": "seed",
         "futureos.remote.user-jwt.v1": "jwt",
         "futureos.remote.refresh-token.v1": "refresh",
@@ -84,9 +84,9 @@ describe("credential storage", () => {
     );
   });
 
-  test("clearCredentials deletes every field", async () => {
+  test("clearCredentials deletes every credential field but keeps the device id", async () => {
     await clearCredentials();
-    expect(mockedStore.deleteItemAsync).toHaveBeenCalledTimes(9);
+    expect(mockedStore.deleteItemAsync).toHaveBeenCalledTimes(8);
   });
 });
 
