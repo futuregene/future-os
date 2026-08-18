@@ -205,7 +205,7 @@
   "skillGuide": {
     "title": "5分钟技能上手",
     "subtitle": "互动式教学，教练带着你边学边练，快速学会用技能",
-    "start": "开始学习",
+    "start": "技能教学",
     "dismiss": "收起教学入口",
     "dismissed": "已收起教学入口 · 随时可在左侧「技能」页重新打开教程",
     "loadFailed": "教学配置加载失败：{{message}}"
