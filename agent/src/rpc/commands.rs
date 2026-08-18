@@ -1890,7 +1890,8 @@ fn cmd_get_session_entries(session: &Arc<parking_lot::RwLock<ServerSession>>, id
                             .unwrap_or(0);
                         let delta_in = (current_snapshot.0 - prev_snapshot.0).max(0);
                         let delta_cache = (current_snapshot.1 - prev_snapshot.1).max(0);
-                        run_stats.insert(aid.to_string(), (tokens, duration, delta_in, delta_cache));
+                        run_stats
+                            .insert(aid.to_string(), (tokens, duration, delta_in, delta_cache));
                     }
                     last_assistant_id = None;
                     prev_snapshot = current_snapshot;
@@ -1993,7 +1994,8 @@ fn cmd_get_session_entries(session: &Arc<parking_lot::RwLock<ServerSession>>, id
                     // a reload — entriesToMessages / the mobile reducer read these
                     // top-level fields.
                     if e.entry_type == crate::session::ENTRY_TYPE_ASSISTANT {
-                        if let Some((tokens, duration, delta_in, delta_cache)) = run_stats.get(&e.id)
+                        if let Some((tokens, duration, delta_in, delta_cache)) =
+                            run_stats.get(&e.id)
                         {
                             if *tokens > 0 {
                                 payload.output_tokens = Some(*tokens);
