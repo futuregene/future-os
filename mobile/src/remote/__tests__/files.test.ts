@@ -15,6 +15,7 @@ import {
   pickAttachments,
   pickFromAlbum,
   prepareDownload,
+  recoverPendingImagePickerAttachments,
   rememberPreparedPreview,
   takePhoto,
   uploadAttachments,
@@ -145,6 +146,7 @@ jest.mock("expo-image-picker", () => ({
   launchCameraAsync: jest.fn(),
   requestMediaLibraryPermissionsAsync: jest.fn(),
   launchImageLibraryAsync: jest.fn(),
+  getPendingResultAsync: jest.fn(),
 }));
 
 jest.mock("expo-crypto", () => ({
@@ -195,6 +197,7 @@ const mockedRequestCamera = ImagePicker.requestCameraPermissionsAsync as jest.Mo
 const mockedLaunchCamera = ImagePicker.launchCameraAsync as jest.Mock;
 const mockedRequestLibrary = ImagePicker.requestMediaLibraryPermissionsAsync as jest.Mock;
 const mockedLaunchLibrary = ImagePicker.launchImageLibraryAsync as jest.Mock;
+const mockedPendingResult = ImagePicker.getPendingResultAsync as jest.Mock;
 const mockedDigest = Crypto.digest as jest.Mock;
 const mockedGetSize = Image.getSize as jest.Mock;
 
@@ -588,6 +591,34 @@ describe("pickFromAlbum", () => {
       mimeType: "image/png",
       name: "photo.png",
     });
+  });
+});
+
+describe("recoverPendingImagePickerAttachments", () => {
+  test("returns existing attachments when Android has no pending result", async () => {
+    mockedPendingResult.mockResolvedValue(null);
+    const existing = [attachment()];
+    expect(await recoverPendingImagePickerAttachments(existing)).toBe(existing);
+  });
+
+  test("prepares a pending image after MainActivity reconstruction", async () => {
+    mockedPendingResult.mockResolvedValue({
+      canceled: false,
+      assets: [{ uri: "file:///pending/photo.png", mimeType: "image/png" }],
+    });
+    mockFS.__set("file:///pending/photo.png", { bytes: new Uint8Array(10), type: "image/png" });
+
+    const result = await recoverPendingImagePickerAttachments([]);
+    expect(result[0]).toMatchObject({
+      kind: "image",
+      mimeType: "image/png",
+      name: "photo.png",
+    });
+  });
+
+  test("surfaces a pending native picker error", async () => {
+    mockedPendingResult.mockResolvedValue({ code: "E_PICKER", message: "picker failed" });
+    await expect(recoverPendingImagePickerAttachments([])).rejects.toThrow("attachment_failed");
   });
 });
 
