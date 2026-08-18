@@ -5,7 +5,8 @@ export const resources = {
       remote: "Remote",
       pairing: {
         title: "Connect to your desktop",
-        description: "Open Phone Control in FutureOS Desktop, choose Pair & start, then scan the QR code.",
+        description:
+          "Open Phone Control in FutureOS Desktop, choose Pair & start, then scan the QR code.",
         permission: "Camera access is required to scan the desktop pairing code.",
         grant: "Allow camera",
         scanning: "Point the camera at the QR code",
@@ -86,7 +87,6 @@ export const resources = {
         copy: "Copy",
         copyResponse: "Copy response",
         tokens: "{{formattedCount}} tokens",
-        tokensUsage: "{{formattedTotal}} tokens (in {{formattedIn}} · out {{formattedOut}})",
         loadFailed: "Could not load the conversation.",
         sendFailed: "Message failed to send.",
         promptTooLarge: "That message is too long to send. Please shorten it to under 512 KB.",
@@ -106,6 +106,23 @@ export const resources = {
         continue: "Continue",
         compacted: "Context compacted",
         compactedTokens: "Context compacted · {{formattedCount}} tokens",
+      },
+      failure: {
+        connect:
+          "Couldn't connect to the FutureOS background service.\n\nPlease quit FutureOS completely, reopen it, and try again.",
+        run: "Run failed: {{message}}",
+        unknown: "The run failed. Please try again later.",
+        insufficientCredit:
+          "Insufficient account balance, so this run could not finish. Please top up at https://future-os.cn/platform/#recharge and try again — if you are on a team account, ask your admin to recharge.",
+        auth: "Model authentication failed: the API key is invalid or expired. Check your model provider settings and try again.",
+        rateLimited:
+          "Too many requests — the model service is rate limiting. Please wait a moment and try again.",
+        serverError:
+          "The model service is temporarily unavailable (HTTP {{status}}). Please try again later.",
+        contextLimit:
+          "The conversation exceeds the model's context length limit. Start a new conversation or compact the current context, then try again.",
+        network:
+          "Network error — the model service is unreachable. Check your connection and try again.",
       },
       approval: {
         title: "Approval required",
@@ -177,7 +194,8 @@ export const resources = {
         jsonInvalid: "Invalid JSON: {{detail}}",
         jsonTooComplex:
           "This JSON is too deeply nested or has too many lines to render safely. Download the original file to inspect it.",
-        localLinkDesktopOnly: "Local files linked from a Markdown preview can only be opened in the desktop app.",
+        localLinkDesktopOnly:
+          "Local files linked from a Markdown preview can only be opened in the desktop app.",
         linkOpenFailed: "This link couldn't be opened.",
         errors: {
           attachment_file_too_large: "A file exceeds the 10 MB original-size limit.",
@@ -306,7 +324,6 @@ export const resources = {
         copy: "复制",
         copyResponse: "复制回复",
         tokens: "{{formattedCount}} tokens",
-        tokensUsage: "{{formattedTotal}} tokens（入 {{formattedIn}} · 出 {{formattedOut}}）",
         loadFailed: "无法加载会话。",
         sendFailed: "消息发送失败。",
         promptTooLarge: "这条消息太长了，无法发送。请将其缩短到 512 KB 以内。",
@@ -326,6 +343,18 @@ export const resources = {
         continue: "继续",
         compacted: "上下文已压缩",
         compactedTokens: "上下文已压缩 · {{formattedCount}} tokens",
+      },
+      failure: {
+        connect: "无法连接 FutureOS 后台服务。\n\n请完全退出 FutureOS 后重新打开，然后再试一次。",
+        run: "运行失败：{{message}}",
+        unknown: "运行失败，请稍后重试。",
+        insufficientCredit:
+          "账户余额不足，本次对话未能完成。请前往 https://future-os.cn/platform/#recharge 充值后重试；如果您使用的是团队账户，请联系管理员充值。",
+        auth: "模型服务验证失败：密钥无效或已过期。请检查模型提供商配置后重试。",
+        rateLimited: "请求过于频繁，模型服务已触发限流。请稍等片刻后重试。",
+        serverError: "模型服务暂时不可用（HTTP {{status}}）。请稍后重试。",
+        contextLimit: "对话内容超出模型的上下文长度限制。建议开启新对话，或压缩当前上下文后重试。",
+        network: "网络连接异常，无法访问模型服务。请检查网络连接后重试。",
       },
       approval: {
         title: "需要审批",

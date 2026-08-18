@@ -40,6 +40,8 @@ interface LiveRunState {
   streaming: boolean;
   durationMs?: number;
   failed: boolean;
+  /** Raw agent error of a failed run — the bubble renders the friendly text. */
+  error?: string;
 }
 
 export function emptyTimeline(): TimelineState {
@@ -161,27 +163,89 @@ function toSessionEntries(entries: HistoryEntry[]): SessionEntry[] {
  * shared package (`entriesToMessages`), then mapped to the render contract. */
 export function timelineFromEntries(entries: HistoryEntry[]): TimelineState {
   const messages = entriesToMessages(toSessionEntries(entries));
-  const runStatuses = new Map(
+  // The desktop store's authoritative run outcome, mirrored onto entries by the
+  // remote bridge (`run_status`, plus `run_error` for failed runs).
+  const runOutcomes = new Map(
     entries
       .filter(
         entry => typeof entry.meta?.run_id === "string" && typeof entry.run_status === "string",
       )
-      .map(entry => [entry.meta!.run_id!, entry.run_status!] as const),
+      .map(
+        entry =>
+          [
+            entry.meta!.run_id!,
+            {
+              status: entry.run_status!,
+              error:
+                typeof entry.run_error === "string" && entry.run_error.trim()
+                  ? entry.run_error
+                  : undefined,
+            },
+          ] as const,
+      ),
   );
-  const items = messages.flatMap(message => {
-    const projected = messageToItems(message);
-    const status = message.runId ? runStatuses.get(message.runId) : undefined;
-    if (!status) return projected;
-    return projected.map(item =>
+  const projected = messages.flatMap(message => {
+    const projectedItems = messageToItems(message);
+    const outcome = message.runId ? runOutcomes.get(message.runId) : undefined;
+    if (!outcome) return projectedItems;
+    return projectedItems.map(item =>
       item.kind === "message" && item.role === "assistant"
         ? {
             ...item,
-            ...(status === "failed" ? { failed: true } : {}),
-            ...(status === "cancelled" ? { stopped: true } : {}),
+            ...(outcome.status === "failed" ? { failed: true } : {}),
+            ...(outcome.status === "cancelled" ? { stopped: true } : {}),
           }
         : item,
     );
   });
+  // A run whose first LLM call failed left NO assistant entry in the journal —
+  // the desktop rebuilds its failure bubble from the runs table on reload
+  // (recoverFailedRuns); mobile splices the same bubble right after the user
+  // turn that triggered the run, so the failure survives a re-open.
+  const assistantRunIds = new Set(
+    projected
+      .filter(
+        (item): item is Extract<TimelineItem, { kind: "message" }> =>
+          item.kind === "message" && item.role === "assistant" && typeof item.runId === "string",
+      )
+      .map(item => item.runId!),
+  );
+  // User entries open exchanges 1:1 in journal order (entriesToMessages) and
+  // the shared projection ids them `m_<entry id>` — the same id this file's
+  // toSessionEntries assigns — so a failed run's bubble anchors after its user
+  // item without re-deriving the exchange grouping.
+  const failuresByAnchor = new Map<string, { runId: string; error?: string }>();
+  const unanchored: { runId: string; error?: string }[] = [];
+  entries.forEach((entry, index) => {
+    if (entry.role !== "user") return;
+    const runId = typeof entry.meta?.run_id === "string" ? entry.meta.run_id : null;
+    if (!runId) return;
+    const outcome = runOutcomes.get(runId);
+    if (outcome?.status !== "failed" || assistantRunIds.has(runId)) return;
+    const failure = { runId, error: outcome.error };
+    const text = typeof entry.content === "string" ? entry.content : "";
+    if (text.trim() || (entry.meta?.attachments?.length ?? 0) > 0) {
+      failuresByAnchor.set(`m_${entry.id ?? `entry_${index}`}`, failure);
+    } else {
+      unanchored.push(failure);
+    }
+  });
+  const toFailureBubble = (failure: { runId: string; error?: string }): TimelineItem => ({
+    id: `failed_${failure.runId}`,
+    kind: "message",
+    role: "assistant",
+    text: "",
+    runId: failure.runId,
+    failed: true,
+    ...(failure.error ? { error: failure.error } : {}),
+  });
+  const items: TimelineItem[] = [];
+  for (const item of projected) {
+    items.push(item);
+    const failure = failuresByAnchor.get(item.id);
+    if (failure) items.push(toFailureBubble(failure));
+  }
+  for (const failure of unanchored) items.push(toFailureBubble(failure));
   return { ...emptyTimeline(), items };
 }
 
@@ -344,6 +408,7 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
   const data = eventData(event);
   let items = state.items;
   let streaming = state.streaming;
+  let liveRuns = state.liveRuns;
   // A `_truncated` marker (text_chunk with no text) short-circuits the run
   // projection — see the text_chunk case below.
   let runEvents = true;
@@ -392,20 +457,44 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
       }
       break;
     }
-    case "error":
-      items = [
-        ...items,
-        {
-          id: `error:${runId ?? "none"}:${event.idx ?? items.length}`,
-          kind: "notice",
-          tone: "danger",
-          // A `_truncated` relay-cap marker arrives as an error event too —
-          // render the friendly sentinel, never the raw JSON blob.
-          text: data._truncated === true ? "truncated" : textValue(data.error) || event.data,
-          runId,
-        },
-      ];
+    case "error": {
+      // A `_truncated` relay-cap marker arrives as an error event too —
+      // render the friendly sentinel, never the raw JSON blob.
+      if (data._truncated === true) {
+        items = [
+          ...items,
+          {
+            id: `error:${runId ?? "none"}:${event.idx ?? items.length}`,
+            kind: "notice",
+            tone: "danger",
+            text: "truncated",
+            runId,
+          },
+        ];
+        break;
+      }
+      // A run error settles the run as failed and pins the raw error onto its
+      // assistant bubble, which renders the friendly failure text (desktop
+      // parity: the failure text is the assistant content, not a banner).
+      const raw = textValue(data.error) || event.data;
+      if (runId) {
+        const result = applyRunError(state, liveRuns, runId, raw);
+        items = result.items;
+        streaming = result.streaming;
+        liveRuns = result.liveRuns;
+      } else {
+        items = [
+          ...items,
+          {
+            id: `error:none:${event.idx ?? items.length}`,
+            kind: "notice",
+            tone: "danger",
+            text: raw,
+          },
+        ];
+      }
       break;
+    }
     case "text_chunk": {
       // A relay-payload-cap truncation marker (`_truncated`, no text) must not
       // be folded into the projection — surface it as a friendly notice and
@@ -421,7 +510,6 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
   }
 
   // Run events flow through the shared projector.
-  let liveRuns = state.liveRuns;
   if (runEvents && isRunEvent(event.type)) {
     const result = applyLiveEvent(state, runId, event, data);
     items = result.items;
@@ -498,6 +586,11 @@ function applyLiveEvent(
       terminalState === "incomplete" ||
       data.reason === "incomplete" ||
       typeof data.error === "string";
+    // Some bridges carry the raw error on the terminal event itself — keep it
+    // so the bubble can render the friendly failure text.
+    if (typeof data.error === "string" && data.error.trim() && !acc.error) {
+      acc.error = data.error;
+    }
     durationMs = runDurationMs(data) ?? (acc.startedAt ? Date.now() - acc.startedAt : undefined);
     acc.durationMs = durationMs;
   }
@@ -573,7 +666,52 @@ function buildLiveAssistantItem(
     ...(projection.truncated ? { truncated: true } : {}),
   };
   if (acc.failed) item.failed = true;
+  if (acc.error) item.error = acc.error;
   return item;
+}
+
+/**
+ * Settle a run as failed from its terminal `error` event and pin the raw error
+ * onto the assistant bubble (which renders the friendly failure text, desktop
+ * parity). Mirrors {@link applyLiveEvent}'s accumulator handling so an error
+ * before any other run event still produces the bubble.
+ */
+function applyRunError(
+  state: TimelineState,
+  liveRuns: Map<string, LiveRunState> | undefined,
+  runId: string,
+  raw: string,
+): { items: TimelineItem[]; streaming: boolean; liveRuns: Map<string, LiveRunState> } {
+  const runs = liveRuns ?? new Map<string, LiveRunState>();
+  const runKey = runId;
+  let acc = runs.get(runKey);
+  if (!acc) {
+    acc = {
+      projector: createRunProjector({ preferEndTokens: true }),
+      assistantId: `assistant:${runKey}`,
+      startedAt: 0,
+      streaming: false,
+      failed: false,
+    };
+    runs.set(runKey, acc);
+  }
+  acc.error = raw;
+  acc.failed = true;
+  acc.streaming = false;
+  if (acc.durationMs == null && acc.startedAt > 0) acc.durationMs = Date.now() - acc.startedAt;
+  const assistantItem = buildLiveAssistantItem(
+    acc,
+    runId,
+    acc.projector.ingest([]),
+    acc.durationMs,
+  );
+  const items = upsertItem(
+    state.items,
+    acc.assistantId,
+    () => assistantItem,
+    () => assistantItem,
+  );
+  return { items, streaming: acc.streaming, liveRuns: runs };
 }
 
 /** Map a shared MessageSegment onto the mobile bubble's inline segment union.

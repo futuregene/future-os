@@ -1255,26 +1255,33 @@ fn entries_vec(data: Value) -> Vec<Value> {
 /// Add the GUI store's authoritative run outcome to Agent-owned history rows.
 /// The Agent journal deliberately contains conversation content only; mobile
 /// needs this outcome to use the same recovery predicate as the desktop UI.
+/// Failed runs additionally carry `run_error` (the stored raw error) so mobile
+/// can rebuild the same friendly failure bubble the desktop shows on reload.
 fn entries_with_run_status(session_id: &str, mut entries: Vec<Value>) -> Vec<Value> {
-    let statuses: HashMap<String, String> = crate::store::find_thread_by_agent_session(session_id)
-        .ok()
-        .flatten()
-        .and_then(|thread| crate::store::list_runs(&thread.id).ok())
-        .unwrap_or_default()
-        .into_iter()
-        .map(|run| (run.id, run.status))
-        .collect();
-    if statuses.is_empty() {
+    let outcomes: HashMap<String, (String, Option<String>)> =
+        crate::store::find_thread_by_agent_session(session_id)
+            .ok()
+            .flatten()
+            .and_then(|thread| crate::store::list_runs(&thread.id).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|run| (run.id, (run.status, run.error_message)))
+            .collect();
+    if outcomes.is_empty() {
         return entries;
     }
     for entry in &mut entries {
-        let status = entry
+        let outcome = entry
             .pointer("/meta/run_id")
             .and_then(Value::as_str)
-            .and_then(|run_id| statuses.get(run_id))
-            .cloned();
-        if let (Some(status), Some(object)) = (status, entry.as_object_mut()) {
-            object.insert("run_status".to_string(), Value::String(status));
+            .and_then(|run_id| outcomes.get(run_id));
+        if let (Some((status, error_message)), Some(object)) = (outcome, entry.as_object_mut()) {
+            object.insert("run_status".to_string(), Value::String(status.clone()));
+            if status == "failed" {
+                if let Some(message) = error_message.as_ref().filter(|m| !m.trim().is_empty()) {
+                    object.insert("run_error".to_string(), Value::String(message.clone()));
+                }
+            }
         }
     }
     entries

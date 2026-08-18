@@ -57,7 +57,15 @@ pub(super) fn canonical_stream_event(
     mut event: crate::types::StreamEvent,
 ) -> Option<crate::types::StreamEvent> {
     match event.event_type.as_str() {
-        "text" | "text_delta" | "text_start" | "text_end" | "toolcall_end" | "tool_call" => None,
+        "text" | "text_delta" | "text_start" | "text_end" => None,
+        // Tool-call terminal frames are internal, but providers attach per-call
+        // usage to them (usage + finish_reason "tool_calls" in one chunk) —
+        // promote to `usage` like `stop` so clients summing per-call usage
+        // agree with the run total instead of only seeing the last call.
+        "toolcall_end" | "tool_call" => event.usage.is_some().then(|| {
+            event.event_type = "usage".to_string();
+            event
+        }),
         "toolcall_start" => {
             event.event_type = "tool_start".to_string();
             if let Some(tool_call) = event.tool_call.as_ref() {
@@ -374,6 +382,33 @@ mod tests {
             ..Default::default()
         })
         .is_none());
+    }
+
+    #[test]
+    fn canonical_toolcall_terminal_with_usage_becomes_usage_event() {
+        // Intermediate LLM calls end with finish_reason "tool_calls"; the chunk
+        // carries that call's usage. It must surface as `usage` so per-call
+        // sums match the run total.
+        for terminal in ["toolcall_end", "tool_call"] {
+            let event = canonical_stream_event(StreamEvent {
+                event_type: terminal.to_string(),
+                usage: Some(crate::types::Usage {
+                    prompt_tokens: 10,
+                    completion_tokens: 20,
+                    total_tokens: 30,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .expect("tool-call terminal with usage is surfaced as usage");
+            assert_eq!(event.event_type, "usage");
+            // Without usage the terminal frame stays internal.
+            assert!(canonical_stream_event(StreamEvent {
+                event_type: terminal.to_string(),
+                ..Default::default()
+            })
+            .is_none());
+        }
     }
 
     #[test]
