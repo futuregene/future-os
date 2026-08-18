@@ -643,6 +643,17 @@ function collectInlineReferences(
   for (const node of nodes) {
     if (node.type === "futureReference") {
       references.push(node.reference);
+    } else if (node.type === "image") {
+      const path = localFilePath(node.src);
+      if (path) {
+        references.push({
+          label: node.alt || undefined,
+          source: "inline",
+          targetId: path,
+          targetType: "file",
+          view: "chip",
+        });
+      }
     } else if (
       node.type === "strong" ||
       node.type === "italic" ||

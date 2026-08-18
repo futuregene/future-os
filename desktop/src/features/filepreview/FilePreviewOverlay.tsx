@@ -6,10 +6,11 @@ import { IconButton } from "../../components/ui/IconButton";
 import { Overlay } from "../../components/ui/Overlay";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { ImagePreview } from "./ImagePreview";
+import { JsonPreview } from "./JsonPreview";
 import { MarkdownPreview } from "./MarkdownPreview";
 
 /**
- * Fullscreen preview for a local image / markdown file: a dimmed backdrop
+ * Fullscreen preview for a local image / markdown / JSON file: a dimmed backdrop
  * (click or Esc dismisses, via `Overlay`) with a close button pinned top-right,
  * and the auto-sized content centered. When a preview can't load (missing,
  * too large, unreadable) it toasts and closes; if `onOpenExternal` is given it
@@ -67,6 +68,13 @@ export function FilePreviewOverlay({
         ? (
             <div className="relative z-10 max-h-full w-full max-w-3xl overflow-y-auto rounded-lg bg-surface shadow-panel">
               <MarkdownPreview onError={handleError} path={path} />
+            </div>
+          )
+        : null}
+      {kind === "json"
+        ? (
+            <div className="relative z-10 w-full max-w-5xl overflow-hidden rounded-lg bg-surface shadow-panel">
+              <JsonPreview onError={handleError} path={path} />
             </div>
           )
         : null}

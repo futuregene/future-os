@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "main": "index.ts",
   "dependencies": {
+    "@future-os/json-preview": "*",
     "@future-os/markdown": "*",
     "@future-os/thread-projection": "*",
     "@react-native-async-storage/async-storage": "2.2.0",

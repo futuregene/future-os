@@ -11,6 +11,7 @@ const resolveReferencesMock = vi.fn<(w: string, refs: unknown[]) => Promise<Arra
   () => Promise.resolve([]),
 );
 const resolvePreviewLinkMock = vi.fn<(base: string, target: string) => Promise<{ path: string; name: string }>>();
+const readFileBase64Mock = vi.fn<(path: string) => Promise<string>>(() => Promise.resolve("QUJD"));
 
 vi.mock("../../integrations/storage/markdownReferences", () => ({
   resolveMarkdownReferences: (w: string, refs: unknown[]) => resolveReferencesMock(w, refs),
@@ -19,7 +20,7 @@ vi.mock("../../integrations/storage/markdownReferences", () => ({
 vi.mock("../../integrations/storage/files", () => ({
   openPath: () => Promise.resolve(),
   openExternalUrl: () => Promise.resolve(),
-  readFileBase64: () => Promise.resolve(""),
+  readFileBase64: ({ path }: { path: string }) => readFileBase64Mock(path),
   readTextFilePreview: () => Promise.resolve({ content: "", size: 0, truncated: false }),
   resolvePreviewLinkPath: (base: string, target: string) => resolvePreviewLinkMock(base, target),
 }));
@@ -165,6 +166,36 @@ describe("markdownContent reference resolution", () => {
     await flushAsync();
     const anchor = container.querySelector("a");
     expect(anchor?.getAttribute("href")).toBe("file:///w/dir/pic.md");
+    cleanup();
+  });
+
+  it("renders a workspace-relative local Markdown image", async () => {
+    resolveReferencesMock.mockResolvedValue([{
+      targetType: "file",
+      targetId: "assets/pic.png",
+      status: "resolved",
+      data: { path: "/w/assets/pic.png", name: "pic.png", insideWorkspace: true, relativePath: "assets/pic.png" },
+    }]);
+    const { container, cleanup } = mount(createElement(MarkdownContent, {
+      content: "![diagram](assets/pic.png)",
+      workspaceId: "w-local-image",
+    }));
+    await flushStore();
+    await flushAsync();
+    expect(container.querySelector("img")?.getAttribute("src")).toBe("data:image/png;base64,QUJD");
+    expect(readFileBase64Mock).toHaveBeenCalledWith("/w/assets/pic.png");
+    cleanup();
+  });
+
+  it("renders a local Markdown image relative to the previewed file", async () => {
+    resolvePreviewLinkMock.mockResolvedValue({ path: "/w/assets/pic.png", name: "pic.png" });
+    const { container, cleanup } = mount(createElement(MarkdownContent, {
+      content: "![diagram](assets/pic.png)",
+      basePath: "/w/doc.md",
+    }));
+    await flushAsync();
+    await flushAsync();
+    expect(container.querySelector("img")?.getAttribute("src")).toBe("data:image/png;base64,QUJD");
     cleanup();
   });
 

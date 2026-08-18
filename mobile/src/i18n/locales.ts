@@ -176,6 +176,8 @@ export const resources = {
         jsonInvalid: "Invalid JSON: {{detail}}",
         jsonTooComplex:
           "This JSON is too deeply nested or has too many lines to render safely. Download the original file to inspect it.",
+        localLinkDesktopOnly: "Local files linked from a Markdown preview can only be opened in the desktop app.",
+        linkOpenFailed: "This link couldn't be opened.",
         errors: {
           attachment_file_too_large: "A file exceeds the 10 MB original-size limit.",
           attachment_compressed_too_large: "The compressed image still exceeds 10 MB.",
@@ -388,6 +390,8 @@ export const resources = {
         jsonTruncated: "仅格式化并高亮前 2 MB 内容，可下载原文件查看完整内容。",
         jsonInvalid: "JSON 格式无效：{{detail}}",
         jsonTooComplex: "JSON 嵌套过深或行数过多，无法安全渲染，可下载原文件查看。",
+        localLinkDesktopOnly: "Markdown 预览中的本地文件链接请在桌面端查看。",
+        linkOpenFailed: "无法打开这个链接。",
         errors: {
           attachment_file_too_large: "文件原始大小超过 10 MB。",
           attachment_compressed_too_large: "图片压缩后仍超过 10 MB。",

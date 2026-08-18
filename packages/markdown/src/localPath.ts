@@ -33,8 +33,15 @@ export function localFilePath(href: string): string | null {
   // `file://` URI — decode to its plain path.
   if (/^file:\/\//i.test(raw)) {
     try {
-      const decoded = decodeURIComponent(new URL(raw).pathname);
-      return decoded || null;
+      const url = new URL(raw);
+      const decoded = decodeURIComponent(url.pathname);
+      if (url.hostname && url.hostname.toLowerCase() !== "localhost") {
+        const sharePath = decoded.replace(/^\/+/, "").replace(/\//g, "\\");
+        return sharePath ? `\\\\${url.hostname}\\${sharePath}` : null;
+      }
+      // WHATWG file URLs expose Windows drives as `/C:/path`; turn that back
+      // into the drive-absolute spelling expected by the desktop host.
+      return decoded.match(/^\/[a-z]:\//i) ? decoded.slice(1) : decoded || null;
     } catch {
       return null;
     }
@@ -45,6 +52,10 @@ export function localFilePath(href: string): string | null {
   // (`C:`) from being mistaken for a scheme so it falls through to the drive
   // check below.
   if (/^[a-z][a-z0-9+.-]+:/i.test(raw)) return null;
+
+  // A scheme-relative web URL is neither a trustworthy implicit HTTPS URL nor
+  // a POSIX path. Keep it blocked instead of treating `//host/path` as local.
+  if (raw.startsWith("//")) return null;
 
   // POSIX absolute.
   if (raw.startsWith("/")) return raw;
@@ -74,6 +85,46 @@ export function localFilePath(href: string): string | null {
   if (hasKnownFileExtension(raw)) return raw;
 
   return null;
+}
+
+export type MarkdownTarget =
+  | { kind: "external-url"; protocol: "http:" | "https:" | "mailto:"; url: string }
+  | { kind: "local-file"; path: string }
+  | { anchor: string; kind: "document-anchor" }
+  | { kind: "blocked" };
+
+/** One security policy for link activation across desktop and mobile. */
+export function classifyMarkdownTarget(value: string): MarkdownTarget {
+  const raw = value.trim();
+  if (!raw) return { kind: "blocked" };
+  if (raw.startsWith("#"))
+    return raw.length > 1 ? { anchor: raw, kind: "document-anchor" } : { kind: "blocked" };
+
+  const path = localFilePath(raw);
+  if (path) return { kind: "local-file", path };
+
+  try {
+    const url = new URL(raw);
+    if (url.protocol === "http:" || url.protocol === "https:" || url.protocol === "mailto:") {
+      return {
+        kind: "external-url",
+        protocol: url.protocol,
+        url: raw,
+      };
+    }
+  }
+  catch {
+    // Malformed and scheme-less destinations remain inert.
+  }
+  return { kind: "blocked" };
+}
+
+/** Remote Markdown images are intentionally restricted to http(s). */
+export function remoteMarkdownImageUrl(value: string): string | null {
+  const target = classifyMarkdownTarget(value);
+  return target.kind === "external-url" && target.protocol !== "mailto:"
+    ? target.url
+    : null;
 }
 
 /**

@@ -45,7 +45,7 @@ fn best_effort_canonical(path: &Path) -> PathBuf {
 /// file elsewhere — is allowed: the webview already reaches all of that through
 /// typed store/session commands, so the raw bytes aren't a new exposure. The
 /// only thing it never legitimately needs as raw bytes is the credentials.
-fn ensure_path_allowed(path: &Path) -> Result<(), crate::AppError> {
+pub(crate) fn ensure_path_allowed(path: &Path) -> Result<(), crate::AppError> {
     let resolved = best_effort_canonical(path);
     if let Some(home) = crate::home_dir() {
         if let Ok(future_dir) = PathBuf::from(home).join(".future").canonicalize() {
@@ -85,6 +85,7 @@ pub struct TextFilePreview {
     content: String,
     size: u64,
     truncated: bool,
+    valid_utf8: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -438,9 +439,10 @@ fn open_external_url_with(
     opener: impl Fn(&str) -> Result<(), crate::AppError>,
 ) -> Result<(), crate::AppError> {
     let trimmed = url.trim();
-    if !(trimmed.starts_with("http://")
-        || trimmed.starts_with("https://")
-        || trimmed.starts_with("mailto:"))
+    let normalized = trimmed.to_ascii_lowercase();
+    if !(normalized.starts_with("http://")
+        || normalized.starts_with("https://")
+        || normalized.starts_with("mailto:"))
     {
         return Err("Only http(s) or mailto URLs can be opened."
             .to_string()
@@ -508,10 +510,12 @@ pub fn read_text_file_preview(
     let truncated = read > limit || size > limit as u64;
     buffer.truncate(read.min(limit));
 
+    let valid_utf8 = std::str::from_utf8(&buffer).is_ok();
     Ok(TextFilePreview {
         content: String::from_utf8_lossy(&buffer).to_string(),
         size,
         truncated,
+        valid_utf8,
     })
 }
 
@@ -973,7 +977,13 @@ mod tests {
         fs::write(&file, b"0123456789abcdef").unwrap();
         let preview = read_text_file_preview(file.display().to_string(), Some(4)).unwrap();
         assert!(preview.truncated);
+        assert!(preview.valid_utf8);
         assert_eq!(preview.content, "0123");
+
+        let invalid = root.join("invalid.json");
+        fs::write(&invalid, [0xff, 0xfe]).unwrap();
+        let preview = read_text_file_preview(invalid.display().to_string(), None).unwrap();
+        assert!(!preview.valid_utf8);
     }
 
     #[test]

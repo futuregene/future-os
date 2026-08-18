@@ -19,7 +19,7 @@ export function MarkdownPreview({
   onError: () => void;
 }) {
   const { t } = useTranslation("markdown");
-  const { data: result, error, loading } = useAsyncResource<{ content: string; size: number; truncated: boolean } | null>(
+  const { data: result, error, loading } = useAsyncResource<{ content: string; size: number; truncated: boolean; validUtf8: boolean } | null>(
     () => readTextFilePreview({ path }),
     [path],
     null,
