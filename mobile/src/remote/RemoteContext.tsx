@@ -109,11 +109,21 @@ interface RemoteContextValue {
     attachments?: MobileAttachment[],
     onUploadProgress?: (completedBytes: number, totalBytes: number) => void,
   ): Promise<void>;
-  prepareAttachment(attachment: HistoryAttachment): Promise<DownloadInfo>;
-  cachedAttachment(attachment: HistoryAttachment): { info: DownloadInfo; file: File } | null;
+  prepareAttachment(
+    attachment: HistoryAttachment,
+    variant?: "preview" | "original",
+    signal?: AbortSignal,
+    onWaiting?: () => void,
+  ): Promise<DownloadInfo>;
+  cachedAttachment(
+    attachment: HistoryAttachment,
+    variant?: "preview" | "original",
+  ): { info: DownloadInfo; file: File } | null;
   downloadAttachment(
     info: DownloadInfo,
     onProgress?: (completedBytes: number, totalBytes: number) => void,
+    signal?: AbortSignal,
+    onWaiting?: () => void,
   ): Promise<File>;
   abort(): Promise<void>;
   setModel(modelId: string): Promise<void>;
@@ -1034,17 +1044,26 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     ],
   );
 
-  const prepareAttachment = useCallback(async (attachment: HistoryAttachment) => {
-    const client = clientRef.current;
-    const sessionId = selectedRef.current;
-    if (!client || !sessionId) throw new Error("attachment_no_session");
-    const info = await prepareDownload(client, sessionId, attachment);
-    rememberPreparedPreview(attachment, info);
-    return info;
-  }, []);
+  const prepareAttachment = useCallback(
+    async (
+      attachment: HistoryAttachment,
+      variant: "preview" | "original" = "preview",
+      signal?: AbortSignal,
+      onWaiting?: () => void,
+    ) => {
+      const client = clientRef.current;
+      const sessionId = selectedRef.current;
+      if (!client || !sessionId) throw new Error("attachment_no_session");
+      const info = await prepareDownload(client, sessionId, attachment, variant, signal, onWaiting);
+      rememberPreparedPreview(attachment, info);
+      return info;
+    },
+    [],
+  );
 
   const cachedAttachment = useCallback(
-    (attachment: HistoryAttachment) => cachedPreviewForAttachment(attachment),
+    (attachment: HistoryAttachment, variant: "preview" | "original" = "preview") =>
+      cachedPreviewForAttachment(attachment, variant),
     [],
   );
 
@@ -1052,10 +1071,12 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     async (
       info: DownloadInfo,
       onProgress?: (completedBytes: number, totalBytes: number) => void,
+      signal?: AbortSignal,
+      onWaiting?: () => void,
     ) => {
       const client = clientRef.current;
       if (!client) throw new Error("attachment_not_connected");
-      return downloadPrepared(client, info, onProgress);
+      return downloadPrepared(client, info, onProgress, signal, onWaiting);
     },
     [],
   );
