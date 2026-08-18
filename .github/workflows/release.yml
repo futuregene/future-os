@@ -173,6 +173,11 @@ jobs:
           cp "target/${{ matrix.arch }}-unknown-linux-musl/release/future" "$dir/future"
           chmod +x "$dir"/*
           cp "docs/dist/readme-linux.txt" "$dir/Readme.txt"
+          # License & attribution notices: root MIT, plus the Apache-2.0
+          # LoopX-derived future-loop component (LICENSE/NOTICE/UPSTREAM).
+          mkdir -p "$dir/licenses/loop"
+          cp LICENSE "$dir/licenses/"
+          cp orchestration/loop/LICENSE orchestration/loop/NOTICE orchestration/loop/UPSTREAM.md "$dir/licenses/loop/"
           tar -czf "${{ matrix.portable_name }}" -C "$dir" .
 
       - name: Stage release assets

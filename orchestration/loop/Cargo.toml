@@ -2,6 +2,9 @@
 name = "future-loop"
 version = "0.1.0"
 edition = "2021"
+# Contains code derived from LoopX (https://github.com/huangruiteng/loopx),
+# Apache-2.0 — see LICENSE, NOTICE, and UPSTREAM.md in this directory.
+license = "Apache-2.0"
 description = "FutureOS loop control plane: durable goal/todo/gate/quota state, a deterministic should-run decision kernel, and a gRPC executor bridge (LoopX-style, implemented natively)."
 
 [lib]
