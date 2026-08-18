@@ -960,6 +960,36 @@ describe("download & preview cache", () => {
     );
   });
 
+  test("downloadPrepared cancels an in-flight chunk request immediately", async () => {
+    const i: DownloadInfo = { ...info, size: 4, chunkBytes: 4, contentHash: "x" };
+    const client = mockClient();
+    const controller = new AbortController();
+    let resolveChunk: ((value: Uint8Array) => void) | undefined;
+    client.downloadChunk.mockImplementation(
+      () =>
+        new Promise<Uint8Array>(resolve => {
+          resolveChunk = resolve;
+        }),
+    );
+    client.request.mockResolvedValue({ success: true, data: {} });
+
+    const download = downloadPrepared(
+      client as unknown as RemoteClient,
+      i,
+      undefined,
+      controller.signal,
+    );
+    await Promise.resolve();
+    controller.abort();
+
+    await expect(download).rejects.toThrow("transfer_cancelled");
+    expect(client.request).toHaveBeenCalledWith(
+      { type: "download_cancel", transferId: "t1" },
+      "transfer",
+    );
+    resolveChunk?.(new Uint8Array([1, 2, 3, 4]));
+  });
+
   test("downloadPrepared prunes the preview cache when over budget", async () => {
     const fileBytes = new Uint8Array([1, 2, 3, 4]);
     const i: DownloadInfo = { ...info, size: 4, chunkBytes: 4, contentHash: sha256Hex(fileBytes) };

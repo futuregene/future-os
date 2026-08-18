@@ -374,8 +374,11 @@ export function ChatScreen() {
     const handle = activeDownloadRef.current;
     if (!handle) return;
     handle.controller.abort();
-    updateDownload(handle, { phase: "cancelling" });
-  }, [updateDownload]);
+    // Local cancellation must be immediate even while an underlying NATS
+    // request is waiting for its transport timeout. Late callbacks are scoped
+    // to this handle and are ignored once it has been released.
+    finishDownload(handle);
+  }, [finishDownload]);
 
   // Approvals live docked above the composer (not inline in the transcript), and
   // only while undecided — once a decision lands the card disappears.
@@ -408,6 +411,11 @@ export function ChatScreen() {
   // The first content render snaps to the end without animation; only later
   // appends (streaming, new messages) scroll animated.
   const landedRef = useRef(false);
+  // A FlatList emits scroll events while iOS/Android are measuring its first
+  // content and viewport. Those are layout side effects, not a user decision
+  // to read earlier messages, so they must not disable the initial snap.
+  const initialScrollPendingRef = useRef(true);
+  const initialScrollFrameRef = useRef<number | null>(null);
   const decideApproval = useCallback(
     async (id: string, decision: "approved" | "rejected") => {
       setApprovalSubmitting(id);
@@ -811,6 +819,14 @@ export function ChatScreen() {
             );
             if (!accepted) return;
           }
+          // Metadata is intentionally silent. Once we know this is a cache
+          // miss and have the real byte size, show 0 / total before the first
+          // (possibly only) chunk arrives.
+          showDownload(handle, {
+            phase: "downloading",
+            completedBytes: 0,
+            totalBytes: info.size,
+          });
         }
         file = await remote.downloadAttachment(
           info,
@@ -899,6 +915,15 @@ export function ChatScreen() {
           t("attachment.download"),
         );
         if (!accepted) return null;
+      }
+      if (handle && !cachedFile) {
+        const patch = {
+          phase: "downloading",
+          completedBytes: 0,
+          totalBytes: info.size,
+        } as const;
+        if (handle.visible) updateDownload(handle, patch);
+        else showDownload(handle, patch);
       }
       return remote.downloadAttachment(
         info,
@@ -1155,6 +1180,51 @@ export function ChatScreen() {
   // composer (bottom padding) and content grow.
   const maxScrollOffset = () => Math.max(0, contentHeightRef.current - layoutHeightRef.current);
 
+  // Opening a conversation may lay out the list, its remote history and the
+  // floating composer in separate commits. Wait one frame, then repeat on the
+  // next frame with the final measurements: this avoids both Android's stale
+  // first content size and iOS applying its safe-area/composer inset late.
+  const scheduleInitialScroll = () => {
+    if (
+      !initialScrollPendingRef.current ||
+      contentHeightRef.current <= 0 ||
+      layoutHeightRef.current <= 0 ||
+      composerHeight <= 0
+    ) {
+      return;
+    }
+    if (initialScrollFrameRef.current != null) return;
+    initialScrollFrameRef.current = requestAnimationFrame(() => {
+      initialScrollFrameRef.current = null;
+      if (!initialScrollPendingRef.current) return;
+      listRef.current?.scrollToOffset({ animated: false, offset: maxScrollOffset() });
+      initialScrollFrameRef.current = requestAnimationFrame(() => {
+        initialScrollFrameRef.current = null;
+        if (!initialScrollPendingRef.current) return;
+        listRef.current?.scrollToOffset({ animated: false, offset: maxScrollOffset() });
+        initialScrollPendingRef.current = false;
+        landedRef.current = true;
+        setAtLatest(true);
+      });
+    });
+  };
+
+  // Reset the opening contract if the mounted screen switches between the
+  // draft and an established session. In the usual navigation path ChatScreen
+  // unmounts, but this also covers a send binding a draft to its new session.
+  useEffect(() => {
+    landedRef.current = false;
+    initialScrollPendingRef.current = true;
+    contentHeightRef.current = 0;
+    layoutHeightRef.current = 0;
+    return () => {
+      if (initialScrollFrameRef.current != null) {
+        cancelAnimationFrame(initialScrollFrameRef.current);
+        initialScrollFrameRef.current = null;
+      }
+    };
+  }, [remote.selectedSessionId]);
+
   // scrollToEnd is unreliable on Android for the first layout of a large
   // history (it can no-op or use a stale content size, leaving a gap). An
   // explicit offset computed from the measured content size is deterministic;
@@ -1237,6 +1307,10 @@ export function ChatScreen() {
             }
             onContentSizeChange={(_w, h) => {
               contentHeightRef.current = h;
+              if (initialScrollPendingRef.current) {
+                scheduleInitialScroll();
+                return;
+              }
               if (!atLatest) return;
               if (!landedRef.current && transcriptItems.length === 0) return;
               listRef.current?.scrollToOffset({
@@ -1247,8 +1321,12 @@ export function ChatScreen() {
             }}
             onLayout={event => {
               layoutHeightRef.current = event.nativeEvent.layout.height;
+              scheduleInitialScroll();
             }}
             onScroll={event => {
+              // Ignore first-layout offsets; the two-frame snap above owns the
+              // initial position on both platforms.
+              if (initialScrollPendingRef.current) return;
               const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
               setAtLatest(
                 contentOffset.y + layoutMeasurement.height >=

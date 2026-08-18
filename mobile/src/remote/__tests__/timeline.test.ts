@@ -988,6 +988,7 @@ describe("run failure parity with the desktop", () => {
         meta: { run_id: "run-1" },
         run_status: "failed",
         run_error: "Authentication failed (401). Check your API key.",
+        run_duration_ms: 15_000,
       },
     ]);
     expect(timeline.items).toEqual([
@@ -998,6 +999,7 @@ describe("run failure parity with the desktop", () => {
         role: "assistant",
         failed: true,
         error: "Authentication failed (401). Check your API key.",
+        durationMs: 15_000,
       }),
     ]);
   });

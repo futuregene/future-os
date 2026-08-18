@@ -363,8 +363,11 @@ interface UploadComplete {
   contentHash: string;
 }
 
-async function cancelDownload(client: RemoteClient, transferId: string): Promise<void> {
-  await client.request({ type: "download_cancel", transferId }, "transfer").catch(() => {});
+function cancelDownload(client: RemoteClient, transferId: string): void {
+  // Cancellation is best-effort cleanup on the desktop. Never await it: when
+  // the network is down, waiting for this command's timeout would keep the
+  // phone's progress dialog and download lock stuck after the user cancelled.
+  void client.request({ type: "download_cancel", transferId }, "transfer").catch(() => {});
 }
 
 const TRANSFER_RETRY_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000, 15_000, 15_000];
@@ -378,6 +381,33 @@ export class TransferCancelledError extends Error {
 
 function throwIfCancelled(signal?: AbortSignal): void {
   if (signal?.aborted) throw new TransferCancelledError();
+}
+
+/** Race an in-flight NATS request with cancellation. NATS requests themselves
+ * don't accept AbortSignal, so their transport timeout may finish later; this
+ * wrapper releases the UI path immediately while still observing that late
+ * result/rejection. */
+function abortable<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  throwIfCancelled(signal);
+  if (!signal) return operation;
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      cleanup();
+      reject(new TransferCancelledError());
+    };
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    signal.addEventListener("abort", onAbort, { once: true });
+    operation.then(
+      value => {
+        cleanup();
+        resolve(value);
+      },
+      error => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
 }
 
 function isPermanentTransferError(error: unknown): boolean {
@@ -419,7 +449,7 @@ async function withTransferRetry<T>(
   for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
     throwIfCancelled(signal);
     try {
-      return await operation();
+      return await abortable(operation(), signal);
     } catch (error) {
       lastError = error;
       if (error instanceof TransferCancelledError || isPermanentTransferError(error)) throw error;
@@ -516,15 +546,15 @@ export async function prepareDownload(
   // compatible, so normalize the response to the variant we requested.
   const info = response.data.variant ? response.data : { ...response.data, variant };
   if (signal?.aborted) {
-    await cancelDownload(client, info.transferId);
+    cancelDownload(client, info.transferId);
     throw new TransferCancelledError();
   }
   try {
     if (await verifiedCachedDownload(info, signal)) {
-      await cancelDownload(client, info.transferId);
+      cancelDownload(client, info.transferId);
     }
   } catch (error) {
-    await cancelDownload(client, info.transferId);
+    cancelDownload(client, info.transferId);
     throw error;
   }
   return info;
@@ -639,11 +669,11 @@ export async function downloadPrepared(
   try {
     cached = await verifiedCachedDownload(info, signal);
   } catch (error) {
-    await cancelDownload(client, info.transferId);
+    cancelDownload(client, info.transferId);
     throw error;
   }
   if (cached) {
-    await cancelDownload(client, info.transferId);
+    cancelDownload(client, info.transferId);
     return cached;
   }
   prunePreviewCache(info.size);
@@ -669,18 +699,18 @@ export async function downloadPrepared(
   } catch (error) {
     handle.close();
     if (file.exists) file.delete();
-    await cancelDownload(client, info.transferId);
+    cancelDownload(client, info.transferId);
     throw error;
   }
   handle.close();
   if (signal?.aborted) {
     file.delete();
-    await cancelDownload(client, info.transferId);
+    cancelDownload(client, info.transferId);
     throw new TransferCancelledError();
   }
   if (file.size !== info.size) {
     file.delete();
-    await cancelDownload(client, info.transferId);
+    cancelDownload(client, info.transferId);
     throw new Error("download_size_mismatch");
   }
   let hash: string;
@@ -689,14 +719,14 @@ export async function downloadPrepared(
     throwIfCancelled(signal);
   } catch (error) {
     file.delete();
-    await cancelDownload(client, info.transferId);
+    cancelDownload(client, info.transferId);
     throw error;
   }
   if (hash !== info.contentHash) {
     file.delete();
-    await cancelDownload(client, info.transferId);
+    cancelDownload(client, info.transferId);
     throw new Error("download_hash_mismatch");
   }
-  await cancelDownload(client, info.transferId);
+  cancelDownload(client, info.transferId);
   return file;
 }
