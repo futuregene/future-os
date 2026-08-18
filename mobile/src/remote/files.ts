@@ -312,17 +312,11 @@ export async function takePhoto(existing: MobileAttachment[]): Promise<MobileAtt
   return combined;
 }
 
-export async function pickFromAlbum(existing: MobileAttachment[]): Promise<MobileAttachment[]> {
-  const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-  if (!permission.granted) throw new Error("attachment_album_permission");
-  const result = await ImagePicker.launchImageLibraryAsync({
-    mediaTypes: ["images"],
-    allowsMultipleSelection: true,
-    quality: 1,
-    exif: false,
-  });
-  if (result.canceled || result.assets.length === 0) return existing;
-  const selected = result.assets.map(asset => ({
+async function prepareImagePickerAssets(
+  existing: MobileAttachment[],
+  assets: ImagePicker.ImagePickerAsset[],
+): Promise<MobileAttachment[]> {
+  const selected = assets.map(asset => ({
     file: new File(asset.uri),
     mimeType: asset.mimeType ?? "image/jpeg",
   }));
@@ -333,6 +327,30 @@ export async function pickFromAlbum(existing: MobileAttachment[]): Promise<Mobil
   const combined = [...existing, ...prepared];
   validateBatch(combined);
   return combined;
+}
+
+export async function pickFromAlbum(existing: MobileAttachment[]): Promise<MobileAttachment[]> {
+  const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+  if (!permission.granted) throw new Error("attachment_album_permission");
+  const result = await ImagePicker.launchImageLibraryAsync({
+    mediaTypes: ["images"],
+    allowsMultipleSelection: true,
+    quality: 1,
+    exif: false,
+  });
+  if (result.canceled || result.assets.length === 0) return existing;
+  return prepareImagePickerAssets(existing, result.assets);
+}
+
+/** Recover a camera/library result after Android reconstructs MainActivity. */
+export async function recoverPendingImagePickerAttachments(
+  existing: MobileAttachment[],
+): Promise<MobileAttachment[]> {
+  const result = await ImagePicker.getPendingResultAsync();
+  if (!result) return existing;
+  if ("code" in result) throw new Error("attachment_failed");
+  if (result.canceled || result.assets.length === 0) return existing;
+  return prepareImagePickerAssets(existing, result.assets);
 }
 
 interface UploadInit {

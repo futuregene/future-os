@@ -1,0 +1,6 @@
+{
+  "platforms": ["android"],
+  "android": {
+    "modules": ["cn.future_os.nativeui.NativeUiModule"]
+  }
+}

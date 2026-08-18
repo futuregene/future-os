@@ -1,32 +1,30 @@
 import {
-  Check,
   ChevronDown,
   CircleAlert,
   Folder,
   LogOut,
   MessageCircle,
-  Pencil,
   Pin,
-  PinOff,
   Plus,
   Settings,
-  Trash2,
   Unplug,
   X,
 } from "lucide-react-native";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { showActionSheet as showAndroidActionSheet } from "future-native-ui";
 import {
   ActivityIndicator,
+  ActionSheetIOS,
   Alert,
   FlatList,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
-  TouchableWithoutFeedback,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -46,6 +44,12 @@ type Tab = "workspace" | "chat";
 // Persist the selected tab across screen transitions (SessionsScreen is
 // unmounted when entering a chat and remounted when returning).
 let lastTab: Tab = "chat";
+
+function deferPresentation(action: () => void): void {
+  // Let the native action sheet finish dismissing before presenting another
+  // alert. InteractionManager can remain pending during native transitions.
+  setTimeout(action, Platform.OS === "ios" ? 350 : 0);
+}
 
 function SessionStatusIndicator({
   status,
@@ -110,10 +114,8 @@ export function SessionsScreen() {
   const [newMode, setNewMode] = useState<Tab>("chat");
   const [workspaceId, setWorkspaceId] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [approvalMenuOpen, setApprovalMenuOpen] = useState(false);
   const [approvalSaving, setApprovalSaving] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
-  const [menuSession, setMenuSession] = useState<RemoteSession | null>(null);
   const [renameTarget, setRenameTarget] = useState<RemoteSession | null>(null);
   const [renameValue, setRenameValue] = useState("");
 
@@ -170,16 +172,8 @@ export function SessionsScreen() {
   );
   const approvalDisabled = !remote.desktopOnline || approvalSaving;
 
-  useEffect(() => {
-    // Connection state is external to this screen; transient menus must close
-    // immediately when that external state invalidates their actions.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (!remote.desktopOnline) setApprovalMenuOpen(false);
-  }, [remote.desktopOnline]);
-
   const selectApprovalTier = async (tier: (typeof approvalTiers)[number]) => {
     if (approvalDisabled) return;
-    setApprovalMenuOpen(false);
     if (tier === remote.approvalTier) return;
     setApprovalSaving(true);
     try {
@@ -191,13 +185,66 @@ export function SessionsScreen() {
     }
   };
 
+  const openApprovalMenu = () => {
+    if (approvalDisabled) return;
+    const options = [...approvalTiers.map(tier => t(`approvalTier.${tier}`)), t("chat.cancel")];
+    if (Platform.OS === "ios") {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          title: t("approvalTier.title"),
+          options,
+          cancelButtonIndex: approvalTiers.length,
+        },
+        index => {
+          const tier = approvalTiers[index];
+          if (tier) deferPresentation(() => void selectApprovalTier(tier));
+        },
+      );
+      return;
+    }
+    void showAndroidActionSheet(options, t("approvalTier.title"))
+      .then(index => {
+        const tier = index === null ? undefined : approvalTiers[index];
+        if (tier) deferPresentation(() => void selectApprovalTier(tier));
+      })
+      .catch(() => Alert.alert(t("common.error")));
+  };
+
   const startConversation = () => {
     if (newMode === "workspace" && !workspaceId) return;
     setNewOpen(false);
     void remote.newConversation(newMode, workspaceId);
   };
 
+  const renameSession = async (session: RemoteSession, rawName: string) => {
+    const name = rawName.trim();
+    if (!name) return;
+    try {
+      await remote.rename(session.sessionId, name);
+    } catch {
+      Alert.alert(t("common.error"));
+    }
+  };
+
   const openRename = (session: RemoteSession) => {
+    if (Platform.OS === "ios") {
+      Alert.prompt(
+        t("chat.renameTitle"),
+        undefined,
+        [
+          { text: t("chat.cancel"), style: "cancel" },
+          {
+            text: t("chat.save"),
+            onPress: (value?: string) => {
+              if (value?.trim()) void renameSession(session, value);
+            },
+          },
+        ],
+        "plain-text",
+        session.title || "",
+      );
+      return;
+    }
     setRenameTarget(session);
     setRenameValue(session.title || "");
   };
@@ -207,22 +254,16 @@ export function SessionsScreen() {
     const name = renameValue.trim();
     if (!session || !name) return;
     setRenameTarget(null);
-    try {
-      await remote.rename(session.sessionId, name);
-    } catch {
-      Alert.alert(t("common.error"));
-    }
+    await renameSession(session, name);
   };
 
   const togglePin = (session: RemoteSession) => {
-    setMenuSession(null);
     void remote
       .setSessionPinned(session.sessionId, session.threadId, !session.pinned)
       .catch(() => Alert.alert(t("common.error")));
   };
 
   const confirmDelete = (session: RemoteSession) => {
-    setMenuSession(null);
     Alert.alert(
       t("sessions.delete"),
       t("sessions.deleteConfirm", {
@@ -243,6 +284,36 @@ export function SessionsScreen() {
     );
   };
 
+  const openSessionMenu = (session: RemoteSession) => {
+    const options = [
+      session.pinned ? t("sessions.unpin") : t("sessions.pin"),
+      t("chat.rename"),
+      t("sessions.delete"),
+      t("chat.cancel"),
+    ];
+    const title = session.title || t("sessions.unnamed");
+    const handleSelection = (index: number | null) => {
+      if (index === 0) deferPresentation(() => togglePin(session));
+      if (index === 1) deferPresentation(() => openRename(session));
+      if (index === 2) deferPresentation(() => confirmDelete(session));
+    };
+    if (Platform.OS === "ios") {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          title,
+          options,
+          destructiveButtonIndex: 2,
+          cancelButtonIndex: 3,
+        },
+        handleSelection,
+      );
+      return;
+    }
+    void showAndroidActionSheet(options, title)
+      .then(handleSelection)
+      .catch(() => Alert.alert(t("common.error")));
+  };
+
   const renderSession = (item: RemoteSession, inWorkspace = false) => (
     <Pressable
       accessibilityRole="button"
@@ -250,7 +321,7 @@ export function SessionsScreen() {
       onLongPress={() => {
         // Session management goes through the desktop bridge — with the link
         // down every action would just fail, so don't offer the menu.
-        if (remote.desktopOnline) setMenuSession(item);
+        if (remote.desktopOnline) openSessionMenu(item);
       }}
       onPress={() => {
         // Opening a conversation needs the desktop for state/history — a tap
@@ -493,10 +564,7 @@ export function SessionsScreen() {
 
         <Modal
           animationType="fade"
-          onRequestClose={() => {
-            setApprovalMenuOpen(false);
-            setSettingsOpen(false);
-          }}
+          onRequestClose={() => setSettingsOpen(false)}
           transparent
           visible={settingsOpen}
         >
@@ -506,10 +574,7 @@ export function SessionsScreen() {
                 <Text style={styles.dialogTitle}>{t("sessions.settings")}</Text>
                 <Pressable
                   accessibilityLabel={t("common.close")}
-                  onPress={() => {
-                    setApprovalMenuOpen(false);
-                    setSettingsOpen(false);
-                  }}
+                  onPress={() => setSettingsOpen(false)}
                 >
                   <X color={colors.inkMuted} size={20} />
                 </Pressable>
@@ -518,9 +583,9 @@ export function SessionsScreen() {
               <View style={styles.tierDropdown}>
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityState={{ disabled: approvalDisabled, expanded: approvalMenuOpen }}
+                  accessibilityState={{ disabled: approvalDisabled }}
                   disabled={approvalDisabled}
-                  onPress={() => setApprovalMenuOpen(open => !open)}
+                  onPress={openApprovalMenu}
                   style={({ pressed }) => [
                     styles.tierTrigger,
                     approvalDisabled && styles.tierTriggerDisabled,
@@ -541,35 +606,6 @@ export function SessionsScreen() {
                     <ChevronDown color={colors.inkMuted} size={18} />
                   )}
                 </Pressable>
-                {approvalMenuOpen && !approvalDisabled && (
-                  <View style={styles.tierMenu}>
-                    {approvalTiers.map(tier => {
-                      const active = remote.approvalTier === tier;
-                      return (
-                        <Pressable
-                          accessibilityRole="button"
-                          key={tier}
-                          onPress={() => void selectApprovalTier(tier)}
-                          style={({ pressed }) => [
-                            styles.tierMenuOption,
-                            active && styles.tierMenuOptionActive,
-                            pressed && styles.pressed,
-                          ]}
-                        >
-                          <Text
-                            style={[
-                              styles.tierMenuOptionText,
-                              active && styles.tierMenuOptionTextActive,
-                            ]}
-                          >
-                            {t(`approvalTier.${tier}`)}
-                          </Text>
-                          {active && <Check color={colors.accent} size={17} />}
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                )}
               </View>
               <View style={styles.updateRow}>
                 <Text style={styles.updateVersion}>
@@ -595,80 +631,9 @@ export function SessionsScreen() {
 
         <Modal
           animationType="fade"
-          onRequestClose={() => setMenuSession(null)}
-          transparent
-          visible={menuSession !== null}
-        >
-          <TouchableWithoutFeedback onPress={() => setMenuSession(null)}>
-            <View style={styles.menuOverlay}>
-              <TouchableWithoutFeedback>
-                <View style={styles.menu}>
-                  <Text numberOfLines={1} style={styles.menuTitle}>
-                    {menuSession?.title || t("sessions.unnamed")}
-                  </Text>
-                  <Pressable
-                    accessibilityRole="button"
-                    onPress={() => {
-                      if (menuSession) togglePin(menuSession);
-                    }}
-                    style={({ pressed }) => [styles.menuOption, pressed && styles.pressed]}
-                  >
-                    {menuSession?.pinned ? (
-                      <PinOff color={colors.ink} size={18} />
-                    ) : (
-                      <Pin color={colors.ink} size={18} />
-                    )}
-                    <Text style={styles.menuOptionText}>
-                      {menuSession?.pinned ? t("sessions.unpin") : t("sessions.pin")}
-                    </Text>
-                  </Pressable>
-                  <Pressable
-                    accessibilityRole="button"
-                    onPress={() => {
-                      if (menuSession) {
-                        openRename(menuSession);
-                        setMenuSession(null);
-                      }
-                    }}
-                    style={({ pressed }) => [styles.menuOption, pressed && styles.pressed]}
-                  >
-                    <Pencil color={colors.ink} size={18} />
-                    <Text style={styles.menuOptionText}>{t("chat.rename")}</Text>
-                  </Pressable>
-                  <Pressable
-                    accessibilityRole="button"
-                    onPress={() => {
-                      if (menuSession) confirmDelete(menuSession);
-                    }}
-                    style={({ pressed }) => [styles.menuOption, pressed && styles.pressed]}
-                  >
-                    <Trash2 color={colors.danger} size={18} />
-                    <Text style={[styles.menuOptionText, styles.menuOptionDanger]}>
-                      {t("sessions.delete")}
-                    </Text>
-                  </Pressable>
-                  <Pressable
-                    accessibilityRole="button"
-                    onPress={() => setMenuSession(null)}
-                    style={({ pressed }) => [
-                      styles.menuOption,
-                      styles.menuOptionCancel,
-                      pressed && styles.pressed,
-                    ]}
-                  >
-                    <Text style={styles.menuOptionCancelText}>{t("chat.cancel")}</Text>
-                  </Pressable>
-                </View>
-              </TouchableWithoutFeedback>
-            </View>
-          </TouchableWithoutFeedback>
-        </Modal>
-
-        <Modal
-          animationType="fade"
           onRequestClose={() => setRenameTarget(null)}
           transparent
-          visible={renameTarget !== null}
+          visible={Platform.OS !== "ios" && renameTarget !== null}
         >
           <View style={styles.overlay}>
             <View style={styles.dialog}>
@@ -913,63 +878,6 @@ const styles = StyleSheet.create({
   tierTriggerDisabled: { backgroundColor: colors.surfaceSubtle, opacity: 0.55 },
   tierTriggerText: { flex: 1, color: colors.ink, fontSize: 14, fontWeight: "600" },
   tierTriggerTextDisabled: { color: colors.inkMuted },
-  tierMenu: {
-    position: "absolute",
-    top: 52,
-    left: 0,
-    right: 0,
-    zIndex: 20,
-    elevation: 6,
-    overflow: "hidden",
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: radius.md,
-    backgroundColor: colors.surface,
-  },
-  tierMenuOption: {
-    minHeight: 44,
-    paddingHorizontal: spacing.md,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: spacing.md,
-  },
-  tierMenuOptionActive: { backgroundColor: colors.accentSoft },
-  tierMenuOptionText: { flex: 1, color: colors.ink, fontSize: 14, fontWeight: "600" },
-  tierMenuOptionTextActive: { color: colors.accent },
-  menuOverlay: {
-    flex: 1,
-    justifyContent: "flex-end",
-    backgroundColor: colors.overlay,
-  },
-  menu: {
-    gap: spacing.xs,
-    paddingHorizontal: spacing.md,
-    paddingTop: spacing.md,
-    paddingBottom: spacing.xl,
-    backgroundColor: colors.surface,
-    borderTopLeftRadius: radius.lg,
-    borderTopRightRadius: radius.lg,
-  },
-  menuTitle: {
-    color: colors.inkMuted,
-    fontSize: 16,
-    fontWeight: "600",
-    paddingHorizontal: spacing.md,
-    paddingTop: spacing.xs,
-    paddingBottom: spacing.sm,
-  },
-  menuOption: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
-    padding: spacing.md,
-    borderRadius: radius.md,
-  },
-  menuOptionText: { color: colors.ink, fontSize: 16, fontWeight: "500" },
-  menuOptionDanger: { color: colors.danger, fontWeight: "600" },
-  menuOptionCancel: { justifyContent: "center" },
-  menuOptionCancelText: { color: colors.inkSoft, fontSize: 16, fontWeight: "600" },
   nameInput: {
     borderWidth: 1,
     borderColor: colors.line,
