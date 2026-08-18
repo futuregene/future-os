@@ -95,7 +95,10 @@ export function classifyError(error: unknown): "authTerminal" | "auth" | "fatal"
     if (error.code === "invalid_remote_credential" || error.code === "credentials_revoked") {
       return "authTerminal";
     }
-    if (error.code === "pairing_signature_invalid" || error.code === "pairing_confirmation_mismatch") {
+    if (
+      error.code === "pairing_signature_invalid" ||
+      error.code === "pairing_confirmation_mismatch"
+    ) {
       return "auth";
     }
     if (error.code === "remote_service_misconfigured") {
