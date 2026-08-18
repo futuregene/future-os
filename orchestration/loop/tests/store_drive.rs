@@ -124,7 +124,12 @@ fn try_claim_ignores_non_lease_events_and_p9_normalizes_to_p1() {
             ts: now_epoch(),
         })
         .unwrap();
-    assert!(store.try_claim_todo("g1", "t1", "alice", 3600).unwrap());
+    assert!(
+        store
+            .try_claim_todo("g1", "t1", "alice", 3600)
+            .unwrap()
+            .claimed
+    );
     let g = store.replay("g1").unwrap().unwrap();
     assert_eq!(
         g.todo("t1").unwrap().priority,
@@ -173,11 +178,26 @@ fn try_claim_todo_lease_reconstruction() {
     registered_goal(&mut store, "g1");
     add(&mut store, "g1", "t1");
     // Free todo → claim succeeds.
-    assert!(store.try_claim_todo("g1", "t1", "alice", 3600).unwrap());
+    assert!(
+        store
+            .try_claim_todo("g1", "t1", "alice", 3600)
+            .unwrap()
+            .claimed
+    );
     // Live lease held by alice → bob loses the race (Ok(false)).
-    assert!(!store.try_claim_todo("g1", "t1", "bob", 3600).unwrap());
+    assert!(
+        !store
+            .try_claim_todo("g1", "t1", "bob", 3600)
+            .unwrap()
+            .claimed
+    );
     // Alice re-claims (same holder) → succeeds.
-    assert!(store.try_claim_todo("g1", "t1", "alice", 3600).unwrap());
+    assert!(
+        store
+            .try_claim_todo("g1", "t1", "alice", 3600)
+            .unwrap()
+            .claimed
+    );
     // Release → free → bob claims.
     store
         .append(Event::TodoReleased {
@@ -187,10 +207,15 @@ fn try_claim_todo_lease_reconstruction() {
             ts: now_epoch(),
         })
         .unwrap();
-    assert!(store.try_claim_todo("g1", "t1", "bob", 1).unwrap());
+    assert!(store.try_claim_todo("g1", "t1", "bob", 1).unwrap().claimed);
     // Let bob's 1s lease lapse → carol steals (expired arm).
     std::thread::sleep(std::time::Duration::from_millis(1200));
-    assert!(store.try_claim_todo("g1", "t1", "carol", 3600).unwrap());
+    assert!(
+        store
+            .try_claim_todo("g1", "t1", "carol", 3600)
+            .unwrap()
+            .claimed
+    );
     // Expire event clears the lease → free.
     store
         .append(Event::TodoExpired {
@@ -199,7 +224,12 @@ fn try_claim_todo_lease_reconstruction() {
             ts: now_epoch(),
         })
         .unwrap();
-    assert!(store.try_claim_todo("g1", "t1", "dave", 3600).unwrap());
+    assert!(
+        store
+            .try_claim_todo("g1", "t1", "dave", 3600)
+            .unwrap()
+            .claimed
+    );
     // A garbage line in the ledger is skipped during reconstruction.
     let events_path = store.goal_dir("g1").join("events.jsonl");
     std::fs::OpenOptions::new()

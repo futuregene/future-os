@@ -592,6 +592,13 @@ pub fn event_ts(event: &Event) -> u64 {
 
 // ── Store ──────────────────────────────────────────────────────────────────
 
+/// Outcome of an atomic claim: whether the claim was appended, and
+/// whether it stole an expired/dead holder's lease (for audit output).
+pub struct AtomicClaimOutcome {
+    pub claimed: bool,
+    pub stolen: bool,
+}
+
 pub struct Store {
     root: PathBuf,
     /// In-memory registry: goal_id → (objective, cwd).
@@ -724,17 +731,20 @@ impl Store {
     /// decide→claim TOCTOU race between concurrent `run --agent-id` processes
     /// (previously both could pass the free-lease check and the last claim
     /// won in the ledger → the same todo got executed twice).
-    /// Returns Ok(true) when the claim was appended, Ok(false) when another
-    /// agent holds a live lease.
     pub fn try_claim_todo(
         &self,
         goal_id: &str,
         todo_id: &str,
         agent_id: &str,
         lease_secs: u64,
-    ) -> Result<bool> {
+    ) -> Result<AtomicClaimOutcome> {
         use std::io::Write;
         let now = crate::state::now_epoch();
+        // Normalize the TTL here (0 → default, >max → error) so every
+        // caller gets identical expiry semantics to the non-atomic
+        // task_lease path — previously a 0 default on the manual
+        // `lease claim` path minted an already-expired lease.
+        let lease_secs = crate::work_items::task_lease::normalize_ttl(lease_secs)?;
         let dir = self.ensure_goal_dir(goal_id)?;
         let path = dir.join(EVENTS_FILE);
         let mut file = fs::OpenOptions::new()
@@ -743,7 +753,7 @@ impl Store {
             .append(true)
             .open(&path)?;
         file.lock_exclusive()?;
-        let result = (|| -> Result<bool> {
+        let result = (|| -> Result<AtomicClaimOutcome> {
             let existing = fs::read_to_string(&path).unwrap_or_default();
             // Reconstruct the current lease for this todo from the ledger
             // (StoredEvent flattens the Event payload to top level).
@@ -788,15 +798,30 @@ impl Store {
                         .map(|p| !crate::compat::pid_alive(p))
                         .unwrap_or(false);
                     if !holder_dead {
-                        return Ok(false);
+                        return Ok(AtomicClaimOutcome {
+                            claimed: false,
+                            stolen: false,
+                        });
                     }
                 }
             }
+            // Steal when the prior lease belongs to another agent: a live
+            // lease with a live holder already returned `claimed=false`
+            // above, so reaching here means the lease lapsed or its holder
+            // is dead. We do NOT append a TodoExpired marker — the fresh
+            // TodoClaimed supersedes the old claim in replay order, and a
+            // content-derived TodoExpired id would collide with any manual
+            // expiry appended in the same second (idempotent dedup would
+            // silently drop one of them).
+            let stolen = lease
+                .as_ref()
+                .is_some_and(|(holder, _, _)| holder != agent_id);
+            let expires_at = now + lease_secs;
             let event = Event::TodoClaimed {
                 goal_id: goal_id.to_string(),
                 todo_id: todo_id.to_string(),
                 agent_id: agent_id.to_string(),
-                lease_expires_at: now + lease_secs,
+                lease_expires_at: expires_at,
                 holder_pid: Some(std::process::id()),
                 ts: now,
             };
@@ -812,7 +837,10 @@ impl Store {
             };
             let line = format!("{}\n", serde_json::to_string(&stored)?);
             file.write_all(line.as_bytes())?;
-            Ok(true)
+            Ok(AtomicClaimOutcome {
+                claimed: true,
+                stolen,
+            })
         })();
         let _ = file.unlock();
         result

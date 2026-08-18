@@ -38,6 +38,28 @@ fn goal_init_variants_and_errors() {
     let doc = std::path::Path::new(&cr.cwd).join("GOAL.md");
     assert_eq!(std::fs::read_to_string(doc).unwrap(), "# Hello\n");
     let _ = gid;
+
+    // Re-init with the same --goal-id is idempotent: it must NOT append a
+    // duplicate onboarding bootstrap todo.
+    cli_ok(&[
+        "goal",
+        "init",
+        "--objective",
+        "with doc again",
+        "--goal-id",
+        "goal_withdoc",
+    ]);
+    let store = open_store(&cr);
+    let g = store.replay("goal_withdoc").unwrap().unwrap();
+    let onboarding_count = g
+        .todos
+        .iter()
+        .filter(|t| t.action_kind.as_deref() == Some("onboarding_connection_validation"))
+        .count();
+    assert_eq!(
+        onboarding_count, 1,
+        "re-init must not duplicate the onboarding todo"
+    );
 }
 
 #[test]
@@ -147,7 +169,9 @@ fn todo_add_class_matrix() {
         "--monitor-policy",
         "exists",
     ]);
-    cli_ok(&[
+    // Unknown class is rejected fail-closed (was: silently fell back to
+    // advancement and polluted the ledger).
+    assert!(cli_err(&[
         "todo",
         "add",
         "--goal",
@@ -156,7 +180,8 @@ fn todo_add_class_matrix() {
         "bogus-class",
         "--text",
         "falls back",
-    ]);
+    ])
+    .contains("unknown --role/--class combo"));
     let store = open_store(&cr);
     let g = store.replay(&gid).unwrap().unwrap();
     let b = g.todos.iter().find(|t| t.id == blocker).unwrap();
@@ -225,8 +250,8 @@ fn todo_add_flag_matrix() {
         "--title",
         "Custom Title",
     ]);
-    // Bogus priority falls back to P1.
-    cli_ok(&[
+    // Bogus priority is rejected fail-closed (previously remapped to P1).
+    assert!(cli_err(&[
         "todo",
         "add",
         "--goal",
@@ -235,7 +260,8 @@ fn todo_add_flag_matrix() {
         "odd priority",
         "--priority",
         "P9",
-    ]);
+    ])
+    .contains("unknown --priority"));
     // Defer paths: numeric --resume-when, textual --resume-when, --defer-secs.
     cli_ok(&[
         "todo",
@@ -347,12 +373,8 @@ fn todo_add_flag_matrix() {
         .find(|t| t.text.contains("titled P0"))
         .unwrap();
     assert_eq!(titled.title, "Custom Title");
-    let odd = g
-        .todos
-        .iter()
-        .find(|t| t.text.contains("odd priority"))
-        .unwrap();
-    assert_eq!(odd.priority, future_loop::state::Priority::P1);
+    // "odd priority" (P9) is now rejected at the CLI, so it never lands in
+    // the ledger — nothing to assert about its projected state.
     for needle in ["deferred num", "deferred text", "deferred secs"] {
         let t = g.todos.iter().find(|t| t.text.contains(needle)).unwrap();
         assert_eq!(t.status, TodoStatus::Deferred, "{needle}");
@@ -447,7 +469,7 @@ fn todo_claim_paths() {
         "--agent-id",
         "w1"
     ])
-    .contains("cannot be claimed"));
+    .contains("not found"));
     assert!(
         cli_err(&["todo", "claim", "--goal", "goal_nope", "--todo-id", &t]).contains("not found")
     );
@@ -968,9 +990,10 @@ fn gate_resolve_errors() {
         "x"
     ])
     .contains("not found"));
-    // Resolving a non-gate todo still records the decision (no class check).
+    // Resolving a non-gate todo is rejected fail-closed (no phantom
+    // GateResolved event); resolving an unknown id also errors.
     let first = first_todo_id(&cr.root, &gid);
-    cli_ok(&[
+    assert!(cli_err(&[
         "gate",
         "resolve",
         "--goal",
@@ -979,10 +1002,53 @@ fn gate_resolve_errors() {
         &first,
         "--decision",
         "fine",
+    ])
+    .contains("not a user_gate"));
+    assert!(cli_err(&[
+        "gate",
+        "resolve",
+        "--goal",
+        &gid,
+        "--todo-id",
+        "todo_ghost",
+        "--decision",
+        "fine",
+    ])
+    .contains("not found"));
+    // A real user_gate still resolves.
+    cli_ok(&[
+        "todo",
+        "add",
+        "--goal",
+        &gid,
+        "--text",
+        "gate q",
+        "--role",
+        "user",
+        "--class",
+        "user_gate",
+    ]);
+    let g2 = open_store(&cr).replay(&gid).unwrap().unwrap();
+    let gate_id = g2
+        .todos
+        .iter()
+        .find(|t| t.class == future_loop::state::TaskClass::UserGate)
+        .unwrap()
+        .id
+        .clone();
+    cli_ok(&[
+        "gate",
+        "resolve",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &gate_id,
+        "--decision",
+        "fine",
     ]);
     let store = open_store(&cr);
     let g = store.replay(&gid).unwrap().unwrap();
-    let t = g.todos.iter().find(|t| t.id == first).unwrap();
+    let t = g.todos.iter().find(|t| t.id == gate_id).unwrap();
     assert_eq!(t.status, TodoStatus::Done);
     assert_eq!(t.decision.as_deref(), Some("fine"));
 }
