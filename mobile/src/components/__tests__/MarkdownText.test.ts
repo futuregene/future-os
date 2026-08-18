@@ -29,6 +29,8 @@ describe("MarkdownText", () => {
       .findAllByType(Text)
       .find(node => typeof node.props.onPress === "function");
     expect(linkedText).toBeDefined();
+    expect(linkedText?.props.style).toMatchObject({ textDecorationLine: "underline" });
+    expect(linkedText?.props.style).not.toHaveProperty("backgroundColor");
     act(() => linkedText?.props.onPress());
     expect(onOpenFile).toHaveBeenCalledWith("gomoku.html");
   });

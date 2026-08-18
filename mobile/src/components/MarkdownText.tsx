@@ -90,7 +90,7 @@ function renderInline(nodes: InlineNode[], openTarget: OpenTarget, parentKey: st
           <Text
             key={key}
             onPress={() => openTarget(reference.targetId)}
-            style={styles.fileChip}
+            style={styles.link}
           >
             {label}
           </Text>
