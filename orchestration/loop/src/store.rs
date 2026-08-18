@@ -1,4 +1,4 @@
-//! The state substrate — LoopX's durable bottom layer, natively implemented.
+// P1-1 + G-16 + G12 projection-only events: read from
 //!
 //!   registry.json    — known goals (id, objective, cwd, status, authority)
 //!   <goal>/events.jsonl   — append-only event ledger (the canonical truth)
@@ -191,6 +191,10 @@ pub enum Event {
         /// events serialized without this field deserialize as `None`.
         #[serde(default)]
         blocks: Option<Vec<String>>,
+        /// Completion acceptance contract (`--acceptance "a,b"`); `Some("")`
+        /// clears it, absent leaves it untouched. See `Todo::acceptance`.
+        #[serde(default)]
+        acceptance: Option<String>,
         ts: u64,
     },
     /// Stop automation while retaining state (the reference: goal cancel).
@@ -222,6 +226,8 @@ pub enum Event {
         todo_id: String,
         agent_id: String,
         lease_expires_at: u64,
+        /// Pid of the claiming run process (lease liveness — see Todo.holder_pid).
+        holder_pid: Option<u32>,
         ts: u64,
     },
     /// Register an agent peer for the goal (LoopX: coordination.registered_agents).
@@ -235,10 +241,13 @@ pub enum Event {
         workspaces: Vec<String>,
         ts: u64,
     },
-    /// Onboard an agent with declared capabilities (LoopX: agent_profiles).
+    /// Onboard an agent with declared capabilities (descriptive metadata —
+    /// kept on the event for recipe/agent-list surfaces; the runnability
+    /// gate is gone). Old events without the field deserialize as empty.
     AgentOnboarded {
         goal_id: String,
         agent_id: String,
+        #[serde(default)]
         capabilities: Vec<String>,
         #[serde(default)]
         workspaces: Vec<String>,
@@ -322,24 +331,6 @@ pub enum Event {
         slots: u32,
         ts: u64,
     },
-    /// Per-tool quota ledger (LoopX 对比改进项 ②): a capability-boundary
-    /// tool invocation. Appended at the capability invocation boundary
-    /// (`capability propose` / per-capability command hooks) when a goal
-    /// context is present. `outcome` is `accepted` (counted against the
-    /// tool's quota, folded into the goal's invocation projection) or
-    /// `rejected` (over-limit refusal — audit trail only, never counted).
-    /// `invocation_id` makes each invocation's content unique: every CLI
-    /// call is a distinct logical invocation (non-retryable side-effect
-    /// boundary), so content-derived-id idempotency must NOT collapse two
-    /// invocations that land in the same second.
-    CapabilityInvoked {
-        goal_id: String,
-        capability: String,
-        command: String,
-        outcome: String,
-        invocation_id: String,
-        ts: u64,
-    },
     /// G-3: evidence attached to a todo independently of completion (LoopX
     /// EVIDENCE_ATTACHED).
     EvidenceAttached {
@@ -401,41 +392,6 @@ pub enum Event {
         turns_overdue: u32,
         ts: u64,
     },
-    /// P1-5: reward_memory ingestion (phase 1) — one scoped reward signal
-    /// in the ledger (LoopX `capabilities/reward_memory/ingestion.py`,
-    /// compact set). Sources: `validator` (auto-recorded by the run path
-    /// when a turn carries an independent task-validation receipt),
-    /// `delivery_outcome` (auto-recorded when a P0-2 delivery is resolved
-    /// verified/failed/rework), `evidence` (manual score via
-    /// `reward-memory record`). Projection-only: goal state is unchanged;
-    /// the scoped-feedback query (`reward-memory query`) reads the ledger.
-    RewardSignalRecorded {
-        goal_id: String,
-        todo_id: String,
-        #[serde(default)]
-        agent_id: Option<String>,
-        #[serde(default)]
-        run_id: Option<String>,
-        source: String,
-        signal: String,
-        #[serde(default)]
-        score: Option<f64>,
-        #[serde(default)]
-        note: Option<String>,
-        /// Per-todo ingestion sequence (1-based, from the ledger at append
-        /// time). Distinguishes otherwise-identical signals appended within
-        /// the same second (G-3 content-id dedupe anchor, mirroring
-        /// DeliveryOutcomeRecorded.seq). Old events without the field
-        /// deserialize as 0.
-        #[serde(default)]
-        seq: u32,
-        ts: u64,
-    },
-    /// P1-1②: decision_summary projection — one compact quota decision
-    /// persisted per executed turn (LoopX `decision_summary.py` /
-    /// `compact_quota_decision`). Projection-only: replay ignores it; the
-    /// read model (`quota::decision_summary`) serves status/TUI/desktop and
-    /// `quota decisions` without re-running the kernel.
     DecisionSummaryRecorded {
         goal_id: String,
         summary: crate::quota::decision_summary::DecisionSummary,
@@ -542,23 +498,6 @@ pub enum Event {
         backup_path: String,
         ts: u64,
     },
-    /// P1-4: decision_context outcome feedback — one settled outcome
-    /// receipt against an anchored decision (LoopX
-    /// `capabilities/decision_context/outcome_feedback.py`). Recorded via
-    /// `decision-context feedback`; the receipt's `seq` is the G-3 dedupe
-    /// anchor for same-second repeat settles. Projection-only: replay
-    /// ignores it; the read model (`decision-context outcomes`) and the
-    /// reward-memory `decision_outcome` source read the ledger.
-    DecisionOutcomeRecorded {
-        goal_id: String,
-        receipt: crate::capabilities::decision_context::packets::DecisionOutcomeReceipt,
-        ts: u64,
-    },
-    /// G12: multi-agent contract set — the declarative peer/handoff/
-    /// collective topology for a goal (full replace; the latest event wins).
-    /// Projection-only: goal state is unchanged; the multi_agent read model
-    /// (`agent contract show`) reads the ledger. Validation fails closed at
-    /// the command layer before append.
     MultiAgentContractSet {
         goal_id: String,
         contract: crate::agents::multi_agent::MultiAgentContract,
@@ -618,14 +557,12 @@ impl Event {
             | Event::MonitorPolled { goal_id, .. }
             | Event::TurnNoProgress { goal_id, .. }
             | Event::QuotaSpent { goal_id, .. }
-            | Event::CapabilityInvoked { goal_id, .. }
             | Event::EvidenceAttached { goal_id, .. }
             | Event::TodoRenewed { goal_id, .. }
             | Event::TodoReleased { goal_id, .. }
             | Event::TodoExpired { goal_id, .. }
             | Event::DeliveryOutcomeRecorded { goal_id, .. }
             | Event::FollowthroughCreated { goal_id, .. }
-            | Event::RewardSignalRecorded { goal_id, .. }
             | Event::DecisionSummaryRecorded { goal_id, .. }
             | Event::HeartbeatReceiptRecorded { goal_id, .. }
             | Event::SchedulerAcked { goal_id, .. }
@@ -634,7 +571,6 @@ impl Event {
             | Event::SupervisorProposed { goal_id, .. }
             | Event::SupervisorReceiptRecorded { goal_id, .. }
             | Event::ProjectionRepaired { goal_id, .. }
-            | Event::DecisionOutcomeRecorded { goal_id, .. }
             | Event::MultiAgentContractSet { goal_id, .. }
             | Event::AgentRecipeAdded { goal_id, .. }
             | Event::SuccessionOccurred { goal_id, .. }
@@ -655,6 +591,13 @@ pub fn event_ts(event: &Event) -> u64 {
 }
 
 // ── Store ──────────────────────────────────────────────────────────────────
+
+/// Outcome of an atomic claim: whether the claim was appended, and
+/// whether it stole an expired/dead holder's lease (for audit output).
+pub struct AtomicClaimOutcome {
+    pub claimed: bool,
+    pub stolen: bool,
+}
 
 pub struct Store {
     root: PathBuf,
@@ -788,17 +731,20 @@ impl Store {
     /// decide→claim TOCTOU race between concurrent `run --agent-id` processes
     /// (previously both could pass the free-lease check and the last claim
     /// won in the ledger → the same todo got executed twice).
-    /// Returns Ok(true) when the claim was appended, Ok(false) when another
-    /// agent holds a live lease.
     pub fn try_claim_todo(
         &self,
         goal_id: &str,
         todo_id: &str,
         agent_id: &str,
         lease_secs: u64,
-    ) -> Result<bool> {
+    ) -> Result<AtomicClaimOutcome> {
         use std::io::Write;
         let now = crate::state::now_epoch();
+        // Normalize the TTL here (0 → default, >max → error) so every
+        // caller gets identical expiry semantics to the non-atomic
+        // task_lease path — previously a 0 default on the manual
+        // `lease claim` path minted an already-expired lease.
+        let lease_secs = crate::work_items::task_lease::normalize_ttl(lease_secs)?;
         let dir = self.ensure_goal_dir(goal_id)?;
         let path = dir.join(EVENTS_FILE);
         let mut file = fs::OpenOptions::new()
@@ -807,11 +753,11 @@ impl Store {
             .append(true)
             .open(&path)?;
         file.lock_exclusive()?;
-        let result = (|| -> Result<bool> {
+        let result = (|| -> Result<AtomicClaimOutcome> {
             let existing = fs::read_to_string(&path).unwrap_or_default();
             // Reconstruct the current lease for this todo from the ledger
             // (StoredEvent flattens the Event payload to top level).
-            let mut lease: Option<(String, u64)> = None;
+            let mut lease: Option<(String, u64, Option<u32>)> = None;
             for line in existing.lines().filter(|l| !l.trim().is_empty()) {
                 let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
                     continue;
@@ -830,7 +776,11 @@ impl Store {
                             .get("lease_expires_at")
                             .and_then(|e| e.as_u64())
                             .unwrap_or(0);
-                        lease = Some((agent, exp));
+                        let pid = v
+                            .get("holder_pid")
+                            .and_then(|p| p.as_u64())
+                            .map(|p| p as u32);
+                        lease = Some((agent, exp, pid));
                     }
                     "todo_released" => lease = None,
                     // Mirror replay (apply): an expiry record clears the
@@ -840,16 +790,39 @@ impl Store {
                     _ => {}
                 }
             }
-            if let Some((holder, exp)) = &lease {
+            if let Some((holder, exp, holder_pid)) = &lease {
                 if *exp > now && holder != agent_id {
-                    return Ok(false);
+                    // Lease liveness: a dead holder's claim is reclaimed
+                    // automatically (mirrors the task_lease steal path).
+                    let holder_dead = holder_pid
+                        .map(|p| !crate::compat::pid_alive(p))
+                        .unwrap_or(false);
+                    if !holder_dead {
+                        return Ok(AtomicClaimOutcome {
+                            claimed: false,
+                            stolen: false,
+                        });
+                    }
                 }
             }
+            // Steal when the prior lease belongs to another agent: a live
+            // lease with a live holder already returned `claimed=false`
+            // above, so reaching here means the lease lapsed or its holder
+            // is dead. We do NOT append a TodoExpired marker — the fresh
+            // TodoClaimed supersedes the old claim in replay order, and a
+            // content-derived TodoExpired id would collide with any manual
+            // expiry appended in the same second (idempotent dedup would
+            // silently drop one of them).
+            let stolen = lease
+                .as_ref()
+                .is_some_and(|(holder, _, _)| holder != agent_id);
+            let expires_at = now + lease_secs;
             let event = Event::TodoClaimed {
                 goal_id: goal_id.to_string(),
                 todo_id: todo_id.to_string(),
                 agent_id: agent_id.to_string(),
-                lease_expires_at: now + lease_secs,
+                lease_expires_at: expires_at,
+                holder_pid: Some(std::process::id()),
                 ts: now,
             };
             let stored = StoredEvent {
@@ -864,7 +837,10 @@ impl Store {
             };
             let line = format!("{}\n", serde_json::to_string(&stored)?);
             file.write_all(line.as_bytes())?;
-            Ok(true)
+            Ok(AtomicClaimOutcome {
+                claimed: true,
+                stolen,
+            })
         })();
         let _ = file.unlock();
         result
@@ -1479,6 +1455,7 @@ fn apply(goal: &mut Goal, event: Event) {
             priority,
             resume_when,
             blocks,
+            acceptance,
             ts,
             ..
         } => {
@@ -1491,6 +1468,9 @@ fn apply(goal: &mut Goal, event: Event) {
                 }
                 if let Some(x) = note {
                     t.note = Some(x);
+                }
+                if let Some(a) = acceptance {
+                    t.acceptance = if a.trim().is_empty() { None } else { Some(a) };
                 }
                 if let Some(b) = blocks {
                     // `--blocks a,b` replaces the blocking set; `--blocks ""`
@@ -1597,11 +1577,13 @@ fn apply(goal: &mut Goal, event: Event) {
             todo_id,
             agent_id,
             lease_expires_at,
+            holder_pid,
             ..
         } => {
             if let Some(t) = goal.todo_mut(&todo_id) {
                 t.claimed_by = Some(agent_id);
                 t.lease_expires_at = Some(lease_expires_at);
+                t.holder_pid = holder_pid;
             }
         }
         Event::AgentRegistered {
@@ -1716,22 +1698,6 @@ fn apply(goal: &mut Goal, event: Event) {
         }
         Event::QuotaSpent { slots, .. } => {
             goal.quota_spent_slots = goal.quota_spent_slots.saturating_add(slots);
-        }
-        Event::CapabilityInvoked {
-            capability,
-            outcome,
-            ts,
-            ..
-        } => {
-            // Only accepted invocations consume quota; rejected ones stay in
-            // the ledger as the enforcement audit trail.
-            if outcome == crate::quota::tool_quota::OUTCOME_ACCEPTED {
-                let invocations = &mut goal.capability_invocations;
-                if invocations.len() >= crate::state::CAPABILITY_INVOCATION_PROJECTION_CAP {
-                    invocations.remove(0);
-                }
-                invocations.push((ts, capability));
-            }
         }
         Event::EvidenceAttached {
             todo_id,
@@ -1882,17 +1848,15 @@ fn apply(goal: &mut Goal, event: Event) {
                 ts,
             );
         }
-        // P1-5 + P1-1 + P1-4 + G-16 + G12 projection-only events: read from
+        // P1-1 + G-16 + G12 projection-only events: read from
         // the event log by their read models; goal state is unchanged on
         // replay.
-        Event::RewardSignalRecorded { .. }
-        | Event::DecisionSummaryRecorded { .. }
+        Event::DecisionSummaryRecorded { .. }
         | Event::HeartbeatReceiptRecorded { .. }
         | Event::SchedulerAcked { .. }
         | Event::SupervisorProposed { .. }
         | Event::SupervisorReceiptRecorded { .. }
         | Event::ProjectionRepaired { .. }
-        | Event::DecisionOutcomeRecorded { .. }
         | Event::MultiAgentContractSet { .. }
         | Event::AgentRecipeAdded { .. } => {}
         Event::SuccessionOccurred {

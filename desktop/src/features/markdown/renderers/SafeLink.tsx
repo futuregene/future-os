@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { classifyMarkdownTarget, remoteMarkdownImageUrl } from "@future-os/markdown";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { openExternalUrl } from "../../../integrations/storage/files";
@@ -28,10 +29,11 @@ export function SafeLink({
   const { t } = useTranslation("markdown");
   const menu = useLinkContextMenu();
   const preview = usePreviewMarkdown();
-  const safeHref = safeExternalUrl(href, ["http:", "https:", "mailto:"]);
-  if (!safeHref) {
+  const target = classifyMarkdownTarget(href);
+  if (target.kind !== "external-url") {
     return <span className="font-medium text-ink-soft" title={href}>{children}</span>;
   }
+  const safeHref = target.url;
 
   const open = () => void openExternalUrl(safeHref).catch(() => {});
 
@@ -76,7 +78,7 @@ export function SafeImage({
 }) {
   const { t } = useTranslation("markdown");
   const [failed, setFailed] = useState(false);
-  const safeSrc = safeExternalUrl(src, ["http:", "https:"]);
+  const safeSrc = remoteMarkdownImageUrl(src);
   if (!safeSrc || failed) {
     return (
       <span
@@ -97,14 +99,4 @@ export function SafeImage({
       title={title}
     />
   );
-}
-
-function safeExternalUrl(value: string, allowedProtocols: string[]) {
-  try {
-    const url = new URL(value);
-    return allowedProtocols.includes(url.protocol) ? value : null;
-  }
-  catch {
-    return null;
-  }
 }

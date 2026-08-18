@@ -62,6 +62,7 @@ fn todo_update_event_applies_field_edits() {
             priority: Some("P0".into()),
             resume_when: None,
             blocks: None,
+            acceptance: None,
             ts: now_epoch(),
         })
         .unwrap();
@@ -98,6 +99,7 @@ fn todo_update_status_done_is_rejected_by_apply() {
             priority: None,
             resume_when: None,
             blocks: None,
+            acceptance: None,
             ts: now_epoch(),
         })
         .unwrap();

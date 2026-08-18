@@ -1,4 +1,6 @@
 import {
+  Check,
+  ChevronDown,
   CircleAlert,
   Folder,
   LogOut,
@@ -12,7 +14,7 @@ import {
   Unplug,
   X,
 } from "lucide-react-native";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
@@ -108,6 +110,8 @@ export function SessionsScreen() {
   const [newMode, setNewMode] = useState<Tab>("chat");
   const [workspaceId, setWorkspaceId] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [approvalMenuOpen, setApprovalMenuOpen] = useState(false);
+  const [approvalSaving, setApprovalSaving] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [menuSession, setMenuSession] = useState<RemoteSession | null>(null);
   const [renameTarget, setRenameTarget] = useState<RemoteSession | null>(null);
@@ -158,6 +162,32 @@ export function SessionsScreen() {
       Alert.alert(t("update.checkFailed"));
     } finally {
       setCheckingUpdate(false);
+    }
+  };
+
+  const approvalTiers = (["manual", "sandbox", "off"] as const).filter(
+    tier => tier !== "sandbox" || remote.sandboxAvailable,
+  );
+  const approvalDisabled = !remote.desktopOnline || approvalSaving;
+
+  useEffect(() => {
+    // Connection state is external to this screen; transient menus must close
+    // immediately when that external state invalidates their actions.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (!remote.desktopOnline) setApprovalMenuOpen(false);
+  }, [remote.desktopOnline]);
+
+  const selectApprovalTier = async (tier: (typeof approvalTiers)[number]) => {
+    if (approvalDisabled) return;
+    setApprovalMenuOpen(false);
+    if (tier === remote.approvalTier) return;
+    setApprovalSaving(true);
+    try {
+      await remote.setApprovalTier(tier);
+    } catch {
+      Alert.alert(t("common.error"));
+    } finally {
+      setApprovalSaving(false);
     }
   };
 
@@ -277,6 +307,9 @@ export function SessionsScreen() {
       </View>
       <Text style={styles.emptyTitle}>{t("connection.offline")}</Text>
       <Text style={styles.emptyHint}>{t("connection.offlineHint")}</Text>
+      {remote.phase === "failed" && (
+        <Button compact label={t("connection.retry")} onPress={() => void remote.reconnect()} />
+      )}
     </View>
   );
 
@@ -460,7 +493,10 @@ export function SessionsScreen() {
 
         <Modal
           animationType="fade"
-          onRequestClose={() => setSettingsOpen(false)}
+          onRequestClose={() => {
+            setApprovalMenuOpen(false);
+            setSettingsOpen(false);
+          }}
           transparent
           visible={settingsOpen}
         >
@@ -470,33 +506,71 @@ export function SessionsScreen() {
                 <Text style={styles.dialogTitle}>{t("sessions.settings")}</Text>
                 <Pressable
                   accessibilityLabel={t("common.close")}
-                  onPress={() => setSettingsOpen(false)}
+                  onPress={() => {
+                    setApprovalMenuOpen(false);
+                    setSettingsOpen(false);
+                  }}
                 >
                   <X color={colors.inkMuted} size={20} />
                 </Pressable>
               </View>
               <Text style={styles.settingsLabel}>{t("approvalTier.title")}</Text>
-              {(["manual", "sandbox", "off"] as const)
-                .filter(tier => tier !== "sandbox" || remote.sandboxAvailable)
-                .map(tier => {
-                  const active = remote.approvalTier === tier;
-                  return (
-                    <Pressable
-                      accessibilityRole="button"
-                      key={tier}
-                      onPress={() =>
-                        void remote
-                          .setApprovalTier(tier)
-                          .catch(() => Alert.alert(t("common.error")))
-                      }
-                      style={[styles.tierOption, active && styles.tierOptionActive]}
-                    >
-                      <Text style={[styles.tierOptionText, active && styles.tierOptionTextActive]}>
-                        {t(`approvalTier.${tier}`)}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
+              <View style={styles.tierDropdown}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ disabled: approvalDisabled, expanded: approvalMenuOpen }}
+                  disabled={approvalDisabled}
+                  onPress={() => setApprovalMenuOpen(open => !open)}
+                  style={({ pressed }) => [
+                    styles.tierTrigger,
+                    approvalDisabled && styles.tierTriggerDisabled,
+                    pressed && !approvalDisabled && styles.pressed,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.tierTriggerText,
+                      approvalDisabled && styles.tierTriggerTextDisabled,
+                    ]}
+                  >
+                    {t(`approvalTier.${remote.approvalTier}`)}
+                  </Text>
+                  {approvalSaving ? (
+                    <ActivityIndicator color={colors.inkMuted} size={16} />
+                  ) : (
+                    <ChevronDown color={colors.inkMuted} size={18} />
+                  )}
+                </Pressable>
+                {approvalMenuOpen && !approvalDisabled && (
+                  <View style={styles.tierMenu}>
+                    {approvalTiers.map(tier => {
+                      const active = remote.approvalTier === tier;
+                      return (
+                        <Pressable
+                          accessibilityRole="button"
+                          key={tier}
+                          onPress={() => void selectApprovalTier(tier)}
+                          style={({ pressed }) => [
+                            styles.tierMenuOption,
+                            active && styles.tierMenuOptionActive,
+                            pressed && styles.pressed,
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.tierMenuOptionText,
+                              active && styles.tierMenuOptionTextActive,
+                            ]}
+                          >
+                            {t(`approvalTier.${tier}`)}
+                          </Text>
+                          {active && <Check color={colors.accent} size={17} />}
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                )}
+              </View>
               <View style={styles.updateRow}>
                 <Text style={styles.updateVersion}>
                   {t("common.version", { version: VERSION })}
@@ -823,15 +897,46 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   updateVersion: { color: colors.inkMuted, fontSize: 13 },
-  tierOption: {
-    padding: spacing.md,
+  tierDropdown: { position: "relative", zIndex: 10 },
+  tierTrigger: {
+    minHeight: 48,
+    paddingHorizontal: spacing.md,
     borderWidth: 1,
     borderColor: colors.line,
     borderRadius: radius.md,
+    backgroundColor: colors.surface,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.md,
   },
-  tierOptionActive: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
-  tierOptionText: { color: colors.ink, fontSize: 14, fontWeight: "600" },
-  tierOptionTextActive: { color: colors.accent },
+  tierTriggerDisabled: { backgroundColor: colors.surfaceSubtle, opacity: 0.55 },
+  tierTriggerText: { flex: 1, color: colors.ink, fontSize: 14, fontWeight: "600" },
+  tierTriggerTextDisabled: { color: colors.inkMuted },
+  tierMenu: {
+    position: "absolute",
+    top: 52,
+    left: 0,
+    right: 0,
+    zIndex: 20,
+    elevation: 6,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: colors.line,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface,
+  },
+  tierMenuOption: {
+    minHeight: 44,
+    paddingHorizontal: spacing.md,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.md,
+  },
+  tierMenuOptionActive: { backgroundColor: colors.accentSoft },
+  tierMenuOptionText: { flex: 1, color: colors.ink, fontSize: 14, fontWeight: "600" },
+  tierMenuOptionTextActive: { color: colors.accent },
   menuOverlay: {
     flex: 1,
     justifyContent: "flex-end",

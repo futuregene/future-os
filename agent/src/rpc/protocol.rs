@@ -16,6 +16,8 @@ pub struct RpcCommand {
     #[serde(default)]
     pub message: String,
     #[serde(default)]
+    pub model_context: String,
+    #[serde(default)]
     pub images: Vec<crate::types::ImageContent>,
     #[serde(default)]
     pub attachments: Vec<crate::types::Attachment>,
@@ -878,6 +880,7 @@ fn is_session_scoped_event(event_type: &str) -> bool {
             | "tools_changed"
             | "config_reloaded"
             | "skills_reloaded"
+            | "provider_config_changed"
     )
 }
 
@@ -905,11 +908,13 @@ mod tests {
             "id": "cmd2",
             "type": "prompt",
             "sessionId": "s1",
-            "message": "hello"
+            "message": "hello",
+            "modelContext": "reference summary"
         }"#;
         let cmd: RpcCommand = serde_json::from_str(json).unwrap();
         assert_eq!(cmd.cmd_type, "prompt");
         assert_eq!(cmd.message, "hello");
+        assert_eq!(cmd.model_context, "reference summary");
         assert!(cmd.busy_policy.is_empty());
     }
 

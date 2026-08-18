@@ -34,6 +34,12 @@
     "close": "Close preview",
     "unavailable": "Can't preview {{name}} — opening it with the default app instead."
   },
+  "jsonPreview": {
+    "truncated": "Rich formatting is limited to JSON files smaller than 1 MB. Showing the available source text instead.",
+    "invalid": "Invalid JSON: {{detail}}",
+    "invalidEncoding": "This file is not valid UTF-8. Showing a replacement-character view of the available bytes.",
+    "tooComplex": "This JSON is too deeply nested or has too many lines to render completely."
+  },
   "link": {
     "visit": "Visit",
     "copyLink": "Copy link"

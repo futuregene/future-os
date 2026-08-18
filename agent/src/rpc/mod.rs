@@ -14,13 +14,48 @@ pub(crate) use future_rpc::payloads;
 use crate::models::Registry as ModelRegistry;
 use parking_lot::RwLock;
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::{Arc, LazyLock};
 
 pub use approval::{ApprovalDecision, ApprovalDecisionStatus, ApprovalGate};
 pub use commands::handle_command_internal;
 pub use protocol::{RpcCommand, RpcResponse, SseBroadcaster, SseEvent};
 pub use session::ServerSession;
+
+/// Provider/auth configuration is process-wide Agent state, not chat state.
+/// This broadcaster gives every client one authoritative completion stream.
+static GLOBAL_CONFIG_BROADCASTER: LazyLock<Arc<SseBroadcaster>> =
+    LazyLock::new(|| Arc::new(SseBroadcaster::new()));
+static CONFIG_REVISION: AtomicI64 = AtomicI64::new(0);
+
+pub fn global_config_broadcaster() -> Arc<SseBroadcaster> {
+    GLOBAL_CONFIG_BROADCASTER.clone()
+}
+
+pub fn current_config_revision() -> i64 {
+    CONFIG_REVISION.load(Ordering::Acquire)
+}
+
+/// Publish only after the mutation is durable and live Agent state refreshed.
+pub fn publish_provider_config_changed(
+    provider_id: &str,
+    operation: &str,
+    auth_changed: bool,
+    models_changed: bool,
+) -> i64 {
+    let revision = CONFIG_REVISION.fetch_add(1, Ordering::AcqRel) + 1;
+    GLOBAL_CONFIG_BROADCASTER.broadcast(SseEvent::new(
+        "provider_config_changed",
+        serde_json::json!({
+            "revision": revision,
+            "providerId": provider_id,
+            "operation": operation,
+            "authChanged": auth_changed,
+            "modelsChanged": models_changed,
+        }),
+    ));
+    revision
+}
 
 /// Map one broadcaster/journal event into its replay payload carrier. The
 /// wire type lives in the future-rpc crate; the mapping needs the
@@ -207,22 +242,26 @@ impl AppState {
     /// the config-write commands (`set_auth` / `upsert_provider` /
     /// `delete_provider`) after the agent writes its own auth.json/models.json
     /// — FutureGene login/logout, custom-provider key edits — so no running
-    /// session keeps using a stale key. Sessions actively streaming are
-    /// skipped by `reload_credentials` and pick up the new key on their next
-    /// `set_model`.
+    /// session keeps using a stale key. Active runs own independent snapshots;
+    /// the short shared control-plane lock is waited out rather than skipped.
     ///
     /// Sessions that were created before any credentials existed (model is empty)
     /// get a default model resolved and applied, so the user can prompt immediately
     /// after login without switching threads.
     pub fn reload_all_credentials(&self) {
-        let sessions = self.sessions.read();
-        for sess in sessions.values() {
-            let model_is_empty = { sess.read().model.is_empty() };
-            if model_is_empty {
+        let sessions = self.sessions.read().values().cloned().collect::<Vec<_>>();
+        for sess in &sessions {
+            let model_needs_reselection = {
+                let session = sess.read();
+                session.model.is_empty()
+                    || self.model_registry.read().resolve(&session.model).is_none()
+            };
+            if model_needs_reselection {
                 // Session created before login — resolve and apply default model.
                 // Re-check emptiness inside the write lock to avoid TOCTOU: another
                 // thread may have set a model between our read and write locks.
-                if let Some(mut session) = sess.try_write() {
+                {
+                    let mut session = sess.write();
                     #[cfg(test)]
                     {
                         // Id-gated; the hook receives the held write guard so it
@@ -235,20 +274,73 @@ impl AppState {
                             }
                         }
                     }
-                    if session.model.is_empty() {
+                    let still_needs_reselection = session.model.is_empty()
+                        || self.model_registry.read().resolve(&session.model).is_none();
+                    if still_needs_reselection {
                         let registry = self.model_registry.read();
                         let default_model =
                             crate::models::get_default_model_with(&registry).unwrap_or_default();
-                        if !default_model.is_empty() {
-                            let _ = session.set_model(&default_model);
+                        drop(registry);
+                        loop {
+                            match session.set_model(&default_model) {
+                                Ok(()) => break,
+                                Err(error)
+                                    if error
+                                        .to_string()
+                                        .contains("session configuration is busy") =>
+                                {
+                                    // Config writes only complete after every
+                                    // live session observes the new registry.
+                                    // Ordinary /model remains non-blocking,
+                                    // but this control-plane reconciliation
+                                    // waits out its short loop lock.
+                                    std::thread::yield_now();
+                                }
+                                Err(error) => {
+                                    tracing::error!(
+                                        session_id = %session.session_id,
+                                        model = %default_model,
+                                        "failed to persist provider-removal model reconciliation: {error:#}"
+                                    );
+                                    break;
+                                }
+                            }
                         }
+                        if default_model.is_empty() {
+                            reload_credentials_wait(&session);
+                        }
+                        session.broadcaster.broadcast(SseEvent::new(
+                            "model_changed",
+                            serde_json::json!({"model": session.model}),
+                        ));
                     } else {
                         // Model was set concurrently — just refresh credentials
-                        session.reload_credentials();
+                        reload_credentials_wait(&session);
                     }
                 }
             } else {
-                sess.read().reload_credentials();
+                reload_credentials_wait(&sess.read());
+            }
+        }
+    }
+}
+
+/// Provider config commits are synchronization barriers: unlike an ordinary
+/// prompt (which reports a transient busy error), they wait until every live
+/// session has installed the authoritative credential revision.
+fn reload_credentials_wait(session: &ServerSession) {
+    loop {
+        match session.reload_credentials() {
+            Ok(()) => return,
+            Err(error) if error.to_string().contains("configuration is busy") => {
+                std::thread::yield_now();
+            }
+            Err(error) => {
+                tracing::error!(
+                    session_id = %session.session_id,
+                    "failed to refresh live session credentials: {error:#}"
+                );
+                return;
             }
         }
     }
@@ -273,6 +365,13 @@ static GET_SESSION_PRE_INSERT_HOOK: parking_lot::Mutex<
 static RELOAD_RACE_HOOK: parking_lot::Mutex<
     Option<(String, Box<dyn Fn(&mut ServerSession) + Send>)>,
 > = parking_lot::Mutex::new(None);
+
+/// Serializes the reload-credentials tests: they mutate the process-global
+/// model registry and RELOAD_RACE_HOOK, which races when the suite runs the
+/// tests in parallel (observed: repeated CI failures of
+/// reload_all_credentials_reselects_invalid_model_installed_mid_check).
+#[cfg(test)]
+static TEST_RELOAD_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 fn get_state_internal(
     state: &AppState,
@@ -848,7 +947,9 @@ mod tests {
     }
 
     #[test]
-    fn reload_all_credentials_skips_write_locked_session() {
+    fn reload_all_credentials_waits_for_write_locked_session() {
+        let _reload_lock = TEST_RELOAD_LOCK.lock();
+
         let (_dir, state) = bare_app_state();
         let session = crate::rpc::ServerSession::new_with_queue_budget(
             "locked".to_string(),
@@ -864,15 +965,25 @@ mod tests {
             state.queue_budget.clone(),
         );
         state.create_session(session);
+        let state = std::sync::Arc::new(state);
         let session = state.get_session("locked").unwrap();
-        // A held READ guard makes reload's try_write fail without blocking
-        // its own read — the model-less session is skipped entirely.
+        // A held read guard temporarily prevents reconciliation, but the
+        // refresh must wait rather than acknowledge with stale session state.
         let guard = session.read();
-        state.reload_all_credentials();
-        assert!(
-            guard.model.is_empty(),
-            "write-locked session left untouched"
-        );
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let reload_state = state.clone();
+        let worker = std::thread::spawn(move || {
+            reload_state.reload_all_credentials();
+            done_tx.send(()).unwrap();
+        });
+        assert!(done_rx
+            .recv_timeout(std::time::Duration::from_millis(20))
+            .is_err());
+        drop(guard);
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("refresh completes after the session lock is released");
+        worker.join().unwrap();
     }
 
     // ─── coverage batch 16: hydrate/reload/get_state residuals ─────────────
@@ -975,11 +1086,27 @@ mod tests {
     }
 
     #[test]
-    fn reload_all_credentials_refreshes_session_that_gained_a_model_mid_check() {
+    fn reload_all_credentials_reselects_invalid_model_installed_mid_check() {
+        let _reload_lock = TEST_RELOAD_LOCK.lock();
+
+        // Self-contained credentials: reload rebuilds the registry from the
+        // auth file, so the reselection needs a real model to land on —
+        // without this the test depends on the developer machine's own
+        // ~/.future/agent/auth.json (CI has none and the assertion failed).
+        let _home = crate::test_support::TestHome::new();
+        let auth_path = _home.auth_path();
+        std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &auth_path,
+            r#"{"deepseek": {"type": "api_key", "key": "k"}}"#,
+        )
+        .unwrap();
+
         let (_dir, state) = bare_app_state();
         // Live session with NO model yet → the outer check takes the
-        // set-default path; the hook then installs a model before the inner
-        // re-check, so only credentials are refreshed.
+        // set-default path; the hook then installs a stale/nonexistent model
+        // before the inner re-check. It must still be reconciled rather than
+        // preserving a model removed by a concurrent provider mutation.
         let session = crate::rpc::ServerSession::new_with_queue_budget(
             "modeless".to_string(),
             std::sync::Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
@@ -1003,7 +1130,9 @@ mod tests {
         state.reload_all_credentials();
         assert!(RELOAD_RACE_HOOK.lock().is_none());
         let session = state.get_session("modeless").unwrap();
-        assert_eq!(session.read().model, "concurrent-model");
+        let selected = session.read().model.clone();
+        assert_ne!(selected, "concurrent-model");
+        assert!(state.model_registry.read().resolve(&selected).is_some());
     }
 
     #[test]
@@ -1205,6 +1334,8 @@ mod tests {
 
     #[test]
     fn reload_all_credentials_applies_default_to_model_less_sessions() {
+        let _reload_lock = TEST_RELOAD_LOCK.lock();
+
         let _home = crate::test_support::TestHome::new();
         let auth_path = _home.auth_path();
         std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();

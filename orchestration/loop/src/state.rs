@@ -106,8 +106,8 @@ pub struct Todo {
     pub role: TodoRole,
     /// Ordering / identity-stability index within the goal (LoopX: index).
     pub index: u32,
-    /// Action kind token (LoopX: shell/github/... — capability routing and
-    /// quota re-entry input).
+    /// Action kind token (LoopX: shell/github/... — quota re-entry routing
+    /// input).
     pub action_kind: Option<String>,
     /// Concrete question a UserGate poses (never a vague "waiting for owner").
     pub gate_question: Option<String>,
@@ -148,9 +148,12 @@ pub struct Todo {
     /// when the lease expires. Expired leases return the todo to the frontier.
     pub claimed_by: Option<String>,
     pub lease_expires_at: Option<u64>,
-    /// Capability required to run this todo (reference capability gate: a todo is
-    /// runnable only for agents declaring the capability).
-    pub required_capability: Option<String>,
+    /// Lease liveness: pid of the run process that holds the current claim
+    /// (written at claim time). A dead holder's lease is reclaimed
+    /// automatically by the claim path (`task_lease` + `try_claim_todo`),
+    /// eliminating the manual `lease release` dance after killing a run.
+    #[serde(default)]
+    pub holder_pid: Option<u32>,
     /// Gate scope flags (LoopX: goal_bound / global_gate — set by bootstrap
     /// flows, not by plain todo add).
     pub goal_bound: bool,
@@ -166,12 +169,17 @@ pub struct Todo {
     pub continuation_policy: Option<String>,
     /// Required write scopes (LoopX: required_write_scope).
     pub required_write_scope: Vec<String>,
-    /// Capability binding (LoopX: capability_binding_ref).
-    pub capability_binding_ref: Option<String>,
     /// Independent validator command (`todo add --verify "cmd"`): the kernel
     /// runs it in the goal cwd after each turn; exit 0 completes the todo
     /// (validated), non-zero keeps it open for bounded repair.
     pub validator: Option<String>,
+    /// Completion acceptance contract (`todo add --acceptance "a,b"`): the
+    /// completion evidence must contain EVERY comma-separated token
+    /// (case-insensitive) — e.g. an external attempt id — else `todo complete`
+    /// refuses unless `--force`. Encodes "done ≠ delivered" acceptance
+    /// criteria as a hard check instead of a text convention.
+    #[serde(default)]
+    pub acceptance: Option<String>,
     /// How many failed validation attempts are tolerated before the kernel
     /// replans and surfaces to the user (default 3).
     #[serde(default = "default_max_validation_attempts")]
@@ -290,7 +298,7 @@ impl Todo {
             evidence: None,
             claimed_by: None,
             lease_expires_at: None,
-            required_capability: None,
+            holder_pid: None,
             goal_bound: false,
             global_gate: false,
             updated_at: now,
@@ -299,9 +307,9 @@ impl Todo {
             task_repository: None,
             continuation_policy: None,
             required_write_scope: vec![],
-            capability_binding_ref: None,
             validator: None,
             max_validation_attempts: default_max_validation_attempts(),
+            acceptance: None,
         }
     }
 
@@ -335,12 +343,6 @@ impl Todo {
         self
     }
 
-    /// Capability binding ref (LoopX: capability_binding_ref).
-    pub fn with_capability_binding(mut self, ref_: &str) -> Self {
-        self.capability_binding_ref = Some(ref_.to_string());
-        self
-    }
-
     /// Archive the todo (LoopX: archive_state "archived").
     pub fn archive(&mut self) {
         self.archive_state = "archived".to_string();
@@ -353,8 +355,8 @@ impl Todo {
         self
     }
 
-    /// Declare the action kind (LoopX: shell/github/...) for capability
-    /// routing and quota re-entry.
+    /// Declare the action kind (LoopX: shell/github/...) for quota
+    /// re-entry routing.
     pub fn with_action_kind(mut self, kind: &str) -> Self {
         self.action_kind = Some(kind.to_string());
         self
@@ -370,12 +372,6 @@ impl Todo {
     pub fn with_gate_scope(mut self, goal_bound: bool, global_gate: bool) -> Self {
         self.goal_bound = goal_bound;
         self.global_gate = global_gate;
-        self
-    }
-
-    /// Mark this todo as requiring a capability (capability gate).
-    pub fn requiring(mut self, capability: &str) -> Self {
-        self.required_capability = Some(capability.to_string());
         self
     }
 
@@ -399,13 +395,23 @@ impl Todo {
     /// Claim a slice: succeeds only when open AND (unclaimed OR the previous
     /// lease expired). Returns false if another agent holds a live lease
     /// (LoopX: claim is not ownership; lease is the bounded execution window).
+    ///
+    /// Lease liveness: a live lease held by a DEAD holder is reclaimed
+    /// automatically (kill -0 probe on the recorded holder pid, mirroring
+    /// the run-path claim in `work_items::task_lease`). A lease from a
+    /// pre-liveness ledger (no pid) keeps the old hard error.
     pub fn claim(&mut self, agent_id: &str, lease_secs: u64, now_epoch: u64) -> bool {
         if self.status != TodoStatus::Open {
             return false;
         }
         if let Some(expires) = self.lease_expires_at {
             if expires > now_epoch && self.claimed_by.as_deref() != Some(agent_id) {
-                return false;
+                // Dead holder → reclaim instead of refusing (killed runs
+                // leave orphaned leases behind; pid probe recycles them).
+                match self.holder_pid {
+                    Some(pid) if !crate::compat::pid_alive(pid) => {}
+                    _ => return false,
+                }
             }
         }
         self.claimed_by = Some(agent_id.to_string());
@@ -615,7 +621,6 @@ pub fn delta_kind_changes_frontier(kind: &str) -> bool {
             | "runnable_todo_set"
             | "user_gate"
             | "blocker"
-            | "capability_gate"
             | "monitor_target"
             | "active_state_next_action"
             | "goal_boundary_projection"
@@ -645,9 +650,9 @@ pub struct DeliveryState {
 }
 
 /// Agent peer profile (LoopX: coordination.agent_profiles — a registered
-/// peer plus the capabilities it declares; the capability gate uses these to
-/// decide which todos an agent may run). `workspaces` is the P0-1 workspace
-/// guard declaration: the normalized absolute path set this agent writes
+/// peer plus the capabilities it declares, kept as descriptive metadata).
+/// `workspaces` is the P0-1 workspace guard declaration: the normalized
+/// absolute path set this agent writes
 /// into (empty = undeclared → the guard is fail-open for this agent).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AgentProfile {
@@ -730,7 +735,8 @@ pub struct Goal {
     pub next_action: Option<String>,
     /// Registered agent peers (LoopX: coordination.registered_agents).
     pub registered_agents: Vec<String>,
-    /// Registered peers with declared capabilities (capability gate input).
+    /// Registered peers with declared capabilities (descriptive metadata;
+    /// `workspaces` feeds the workspace guard).
     pub agent_profiles: Vec<AgentProfile>,
     pub execution_profile: ExecutionProfile,
     /// Consecutive turns without a material outcome (outcome floor).
@@ -746,12 +752,6 @@ pub struct Goal {
     /// P0-2: per-work-item delivery outcome states (latest event wins —
     /// folded from DeliveryOutcomeRecorded / FollowthroughCreated).
     pub delivery_states: Vec<DeliveryState>,
-    /// Per-tool quota read model (LoopX 对比改进项 ②): (ts, tool) pairs
-    /// folded from accepted `CapabilityInvoked` events — the invocation
-    /// count behind [`crate::quota::tool_quota`]. Rejected invocations are
-    /// ledgered for audit but never folded in. Bounded by
-    /// [`CAPABILITY_INVOCATION_PROJECTION_CAP`] (oldest dropped).
-    pub capability_invocations: Vec<(u64, String)>,
     /// P1-2②: replay-time freshness stamp of the event ledger this state
     /// was rebuilt from (in-memory only — never persisted; `None` for
     /// hand-built goals). The decision kernel copies it onto every
@@ -780,7 +780,7 @@ pub struct Goal {
     /// G13 ③: goal-level bounded semantic event history (recent
     /// [`crate::decision::goal_frontier::semantic_history::SEMANTIC_HISTORY_CAP`]
     /// summaries, oldest dropped) — folded from the event ledger during
-    /// replay; consumable by the decision-context `semantic_history` provider.
+    /// replay; a standalone goal-level projection (public-safe summaries).
     #[serde(default)]
     pub semantic_history: Vec<crate::decision::goal_frontier::semantic_history::SemanticEvent>,
     /// G13 ②: explicit replan rule set (folded from `ReplanRuleSetUpdated`;
@@ -851,13 +851,6 @@ pub struct DecisionFreshness {
     pub read_at: u64,
 }
 
-/// Safety bound on the per-tool invocation projection folded into
-/// [`Goal::capability_invocations`]. Boundary enforcement already caps
-/// accepted invocations at the per-tool limit, so this only guards against
-/// ledgers written by other means; deterministic (a pure function of event
-/// order — oldest entries drop first).
-pub const CAPABILITY_INVOCATION_PROJECTION_CAP: usize = 4096;
-
 /// Default goal lifecycle status.
 pub fn default_goal_status() -> String {
     "active".to_string()
@@ -884,7 +877,6 @@ impl Goal {
             next_index: 0,
             quota_spent_slots: 0,
             delivery_states: vec![],
-            capability_invocations: vec![],
             decision_freshness: None,
             scheduler_heartbeats: std::collections::BTreeMap::new(),
             liveness_alerts: vec![],
@@ -993,30 +985,19 @@ impl Goal {
 
     /// Identity-scoped frontier (LoopX: registered peers see their own slice;
     /// unclaimed work wakes every eligible peer; a live lease held by another
-    /// agent hides the todo from this frontier). Also applies the capability
-    /// gate: a todo requiring a capability the agent did not declare is
-    /// hidden for that agent.
+    /// agent hides the todo from this frontier).
     pub fn runnable_advancement_for<'a>(
         &'a self,
         agent_id: Option<&'a str>,
     ) -> impl Iterator<Item = &'a Todo> + 'a {
         let now_sys = SystemTime::now();
         let now = now_epoch();
-        let caps = agent_id.map(|a| self.agent_capabilities(a));
         self.todos.iter().filter(move |t| {
             // Open OR due-deferred (returns to the frontier) advancement.
             (t.class == TaskClass::Advancement
                 && (t.status == TodoStatus::Open || t.is_due_deferred(now_sys)))
                 && !t.claimed_by_other(agent_id, now)
                 && !self.is_blocked(t)
-                && t.required_capability
-                    .as_deref()
-                    .map(|cap| {
-                        caps.as_ref()
-                            .map(|c| c.iter().any(|x| x == cap))
-                            .unwrap_or(true) // anonymous path: not gated
-                    })
-                    .unwrap_or(true)
         })
     }
 

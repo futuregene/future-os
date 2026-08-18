@@ -154,7 +154,7 @@ struct FutureModelsCache {
 }
 
 /// Resolve the Future **platform root** (no `/api`) from `auth.json`,
-/// following the shared contract in `rpc/proto/future.proto` ("Future Platform URL
+/// following the shared contract in `packages/rpc/proto/future.proto` ("Future Platform URL
 /// Resolution") — keep aligned with the GUI implementation in
 /// `desktop/src-tauri/src/future_platform.rs`:
 ///   1. `future.base_url`, with a trailing `/api` stripped (the storage format
@@ -177,6 +177,25 @@ fn platform_url_from_auth(auth: &serde_json::Value) -> Option<String> {
         .and_then(serde_json::Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .map(|url| url.trim_end_matches('/').to_string())
+}
+
+/// Future model API URL shown by provider-management clients. This consumes
+/// the already-locked auth snapshot instead of re-reading the file.
+pub(crate) fn display_base_url_from_auth(auth: &serde_json::Value) -> String {
+    let platform =
+        platform_url_from_auth(auth).unwrap_or_else(|| DEFAULT_FUTURE_PLATFORM_URL.to_string());
+    format!("{}/api/v1", platform.trim_end_matches('/'))
+}
+
+/// Count the last successfully cached Future model catalogue for the provider
+/// settings view, independent of whether the current key is present.
+pub(crate) fn cached_model_count() -> usize {
+    let path = crate::utils::default_config_dir().join(".future-models-cache.json");
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|contents| serde_json::from_str::<FutureModelsCache>(&contents).ok())
+        .map(|cache| cache.models.len())
+        .unwrap_or(0)
 }
 
 fn resolve_future_platform_url() -> String {
@@ -338,10 +357,19 @@ pub(super) fn derive_thinking_compat(
         || has("include_reasoning")
     {
         // DeepSeek / Doubao / Kimi K2.6 / Anthropic Claude:
-        // thinking toggle + reasoning_effort for depth
+        // thinking toggle + reasoning_effort for depth.
+        // 各 provider 对 reasoning_effort 的"最高档"取值不同：
+        //   DeepSeek → "max"
+        //   豆包(火山引擎) → 不认 max/xhigh，退化为 "high"
+        //   kimi(moonshot) → 枚举就是 none/minimal/low/medium/high/xhigh
+        let xhigh_value = match tokenizer.map(|t| t.to_ascii_lowercase()).as_deref() {
+            Some("doubao") => "high",
+            Some("kimi") => "xhigh",
+            _ => "max",
+        };
         compat.insert("thinkingFormat".into(), serde_json::json!("deepseek"));
         tlm.insert("high".into(), serde_json::json!("high"));
-        tlm.insert("xhigh".into(), serde_json::json!("max"));
+        tlm.insert("xhigh".into(), serde_json::json!(xhigh_value));
     }
     // else: no thinking parameters → empty compat (model doesn't support thinking)
 
@@ -734,6 +762,48 @@ mod tests {
     }
 
     #[test]
+    fn doubao_xhigh_maps_to_high_not_max() {
+        // 豆包支持 reasoning_effort 的 low/medium/high，但不认 "max"。
+        // xhigh 必须退化为 high，而不是 DeepSeek 的 max。
+        let params: Vec<String> = vec!["include_reasoning".to_string(), "reasoning".to_string()];
+        let (compat, tlm) = derive_thinking_compat(&params, Some("Doubao"));
+        assert_eq!(
+            compat.get("thinkingFormat").unwrap(),
+            &serde_json::json!("deepseek")
+        );
+        assert_eq!(tlm.get("high").unwrap(), &serde_json::json!("high"));
+        assert_eq!(tlm.get("xhigh").unwrap(), &serde_json::json!("high"));
+    }
+
+    #[test]
+    fn doubao_case_insensitive_xhigh_still_high() {
+        let params: Vec<String> = vec!["reasoning".to_string()];
+        let (_, tlm) = derive_thinking_compat(&params, Some("doubao"));
+        assert_eq!(tlm.get("xhigh").unwrap(), &serde_json::json!("high"));
+    }
+
+    #[test]
+    fn kimi_xhigh_maps_to_xhigh() {
+        // kimi(moonshot) 的 reasoning_effort 枚举是
+        // none/minimal/low/medium/high/xhigh，认 "xhigh" 字面值但不认 "max"。
+        let params: Vec<String> = vec!["thinking".to_string(), "reasoning".to_string()];
+        let (compat, tlm) = derive_thinking_compat(&params, Some("Kimi"));
+        assert_eq!(
+            compat.get("thinkingFormat").unwrap(),
+            &serde_json::json!("deepseek")
+        );
+        assert_eq!(tlm.get("xhigh").unwrap(), &serde_json::json!("xhigh"));
+    }
+
+    #[test]
+    fn deepseek_xhigh_maps_to_max() {
+        // DeepSeek 用 "max" 作为最高档，保持不变。
+        let params: Vec<String> = vec!["reasoning".to_string()];
+        let (_, tlm) = derive_thinking_compat(&params, Some("DeepSeek"));
+        assert_eq!(tlm.get("xhigh").unwrap(), &serde_json::json!("max"));
+    }
+
+    #[test]
     fn no_thinking_params_empty_compat() {
         let params: Vec<String> = vec!["temperature".to_string()];
         let (compat, tlm) = derive_thinking_compat(&params, None);
@@ -791,7 +861,7 @@ mod tests {
 
     #[test]
     fn base_url_wins_over_platform_base_url() {
-        // Same precedence as the desktop (rpc/proto/future.proto contract): the stored
+        // Same precedence as the desktop (packages/rpc/proto/future.proto contract): the stored
         // `base_url` beats a stale `platform_base_url`.
         let auth = auth_with(serde_json::json!({
             "base_url": "https://future-os.cn/api",

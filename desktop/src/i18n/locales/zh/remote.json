@@ -1,8 +1,6 @@
 {
-  "title": "Remote 远程控制",
-  "description": "让手机/网页远程接管本机会话（工具在本机执行）。开启后，本地对话会镜像给手机，手机也可驱动同一会话。",
-  "webClient": "Web 客户端",
-  "webClientLan": "手机 / 局域网访问：",
+  "title": "手机远程控制",
+  "description": "让手机远程接管本机会话（工具在本机执行）。开启后，本地对话会镜像给手机，手机也可驱动同一会话。",
   "connect": "连接",
   "reconnect": "重新连接",
   "disconnect": "断开",
@@ -21,11 +19,12 @@
   "copy": "复制",
   "copied": "已复制",
   "copyFailed": "复制失败，请手动复制配对码。",
-  "note": "注：远程依赖桌面（GUI + Agent）在线且未睡眠。桌面和 Web 使用各自的 NKey 私钥与短期 JWT；NATS 在服务端按 pairId 强制 subject 隔离。",
+  "note": "注：远程依赖桌面在线且未睡眠。",
   "error": {
     "network": "无法连接到 Future 服务器，请检查网络连接后重试。",
     "revoked": "该配对已被撤销或已失效，请重新配对。",
     "server": "Future 服务器返回错误，请稍后重试。",
+    "service_config": "Remote 授权失败，请重新连接；若问题持续，请稍后再试或联系支持。",
     "reconnect_required": "自动重连失败，请重新连接。",
     "web_bind": "网页版暂时无法连接，手机端不受影响。你可以重新连接后再试。",
     "generic": "远程操作失败，请重试。"

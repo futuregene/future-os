@@ -30,6 +30,7 @@ The catalogue is updated over time, so the exact list you see may differ from th
 | **Document** | Turns PDF and Word files into structured Markdown. |
 | **Experimental design** | Designs experiments and research protocols before data collection. |
 | **Image** | Generates, edits, and analyzes images — including reading text in an image. |
+| **Loop** | Turns long-running goals into durable, verifiable plans — objectives, todos, gates, monitors, and validated completion (`/future-loop`). |
 | **Paper** | Finds papers (PubMed / ArXiv / DOI) and retrieves full text. |
 | **Peer review** | Structured manuscript/grant review with a checklist-based evaluation. |
 | **Scientific writing** | Writes scientific manuscripts in full paragraphs (IMRAD structure, citations). |

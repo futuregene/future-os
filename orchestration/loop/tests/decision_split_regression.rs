@@ -12,11 +12,10 @@
 //!    (goal, now, agent_id) and compare the serialized packets field by
 //!    field (recursive JSON equality, volatile fields masked).
 //! 3. The ONLY intended deltas are the G-2/G-11 `scheduler_arbitration`
-//!    record (new field, observe-only) and the per-tool-quota
-//!    `capability_repair_allowed` predicate (LoopX 对比改进项 ②: was a
-//!    constant `false` pre-split, now computed from the goal's capability
-//!    invocation projection): both asserted, then removed from the
-//!    comparison.
+//!    record (new field, observe-only) and the wire-compat
+//!    `capability_repair_allowed` predicate (constant `false` — the
+//!    capability framework was removed): both asserted, then removed from
+//!    the comparison.
 //!
 //! If this test fails, the split drifted from the baseline: either a helper
 //! subdomain changed a field, or the arbitration layer mutated behavior.
@@ -92,16 +91,14 @@ fn assert_packet_parity(goal: &Goal, now: SystemTime, agent_id: Option<&str>) ->
         map.remove("scheduler_arbitration");
     }
 
-    // Per-tool quota (LoopX 对比改进项 ②): `capability_repair_allowed` was a
-    // constant `false` in the pre-split kernel; it is now computed from the
-    // goal's capability invocation projection (false only when a tool is
-    // over its quota). These fixtures carry no invocations, so the lane
-    // must read open — assert the intended delta, then normalize both sides.
+    // `capability_repair_allowed` (LoopX 对比改进项 ②) went away with the
+    // capability framework removal: the field remains in the packet schema
+    // (stable wire contract) but is a constant `false` again — assert it is
+    // present, then normalize both sides for the parity diff.
     assert_eq!(
         current_json.get("capability_repair_allowed"),
-        Some(&serde_json::Value::Bool(true)),
-        "fixtures carry no capability invocations — the capability-repair \
-         lane must be open (per-tool quota, 对比改进项 ②)"
+        Some(&serde_json::Value::Bool(false)),
+        "capability framework removed — capability-repair lane stays closed"
     );
     if let serde_json::Value::Object(map) = &mut current_json {
         map.remove("capability_repair_allowed");

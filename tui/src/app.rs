@@ -1297,7 +1297,11 @@ impl<T: TerminalIo> App<T> {
             }
             UiCmd::KeyAction(action) => self.handle_key_action(action),
             UiCmd::AcItems(items) => {
-                if items.is_empty() {
+                // Never open the popup while the user is browsing history:
+                // a recalled `/…` entry fires InputChanged like a typed one,
+                // and the popup would then swallow further up/down/enter
+                // presses meant for history navigation.
+                if items.is_empty() || self.input.is_browsing_history() {
                     self.autocomplete.hide();
                 } else {
                     self.autocomplete.show(items);
@@ -2199,6 +2203,15 @@ impl<T: TerminalIo> App<T> {
     fn handle_input_changed(&mut self, value: &str) {
         // TS: the AutocompleteManager debounces 20 ms internally; the sync
         // port defers the debounce to the app loop.
+        // History browsing skips autocomplete entirely: recalling a `/…`
+        // command via up-arrow must not pop the completion menu (its
+        // up/down/enter handling would hijack further history navigation).
+        if self.input.is_browsing_history() {
+            self.pending_ac_query = None;
+            self.ac_query_deadline = None;
+            self.autocomplete.hide();
+            return;
+        }
         self.pending_ac_query = Some((value.to_string(), value.len()));
         self.ac_query_deadline = Some(Instant::now() + Duration::from_millis(20));
     }
@@ -4731,6 +4744,44 @@ mod tests {
         assert!(ok);
         app.on_tick();
         assert!(!app.terminal.writes.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn autocomplete_stays_down_while_browsing_history() {
+        let (mut app, _rx) = make_app(100, 30);
+        // Submit a slash command so up-arrow can recall it.
+        app.input.set_value("/model deepseek", None);
+        app.handle_key("enter");
+        app.input.set_value("", None);
+        app.handle_key("up"); // recall → browsing history
+        assert!(app.input.is_browsing_history());
+
+        // The loop delivers the InputChanged the recall fired: the debounced
+        // autocomplete query must be suppressed (a `/…` popup would swallow
+        // further up/down/enter presses).
+        app.handle_cmd(UiCmd::InputChanged("/model deepseek".into()));
+        assert!(app.pending_ac_query.is_none());
+        assert!(app.ac_query_deadline.is_none());
+
+        // Even a late AcItems result must not open the popup mid-browse.
+        app.handle_cmd(UiCmd::AcItems(vec![
+            crate::components::autocomplete::AutocompleteItem {
+                value: "/model".into(),
+                label: "/model".into(),
+                description: None,
+            },
+        ]));
+        assert!(!app.autocomplete.is_visible());
+
+        // Second up press: history advances (popup never intercepted it).
+        app.handle_key("up");
+        assert!(app.input.is_browsing_history());
+
+        // Down past the draft exits browsing; autocomplete resumes normally.
+        app.handle_key("down");
+        assert!(!app.input.is_browsing_history());
+        app.handle_cmd(UiCmd::InputChanged("/mod".into()));
+        assert!(app.pending_ac_query.is_some());
     }
 
     #[tokio::test]

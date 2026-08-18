@@ -10,7 +10,6 @@ import { cn } from "../../lib/cn";
 import { usePolling } from "../../lib/usePolling";
 import { startWindowDrag } from "../../lib/windowDrag";
 import {
-  openUrl,
   startRemote,
   stopRemote,
   unpairRemote,
@@ -184,7 +183,9 @@ export function RemoteView({
                           ? "bg-accent"
                           : reconnecting
                             ? "animate-pulse bg-warning"
-                            : "bg-ink-muted/60",
+                            : showError
+                              ? "bg-danger"
+                              : "bg-ink-muted/60",
                       )}
                     />
                     <span className="min-w-0 truncate text-sm font-medium text-ink">
@@ -217,7 +218,9 @@ export function RemoteView({
             ? (
                 <div className="flex items-center gap-3 rounded-md border border-danger-line bg-danger-soft px-3 py-2 text-sm text-danger">
                   <span className="min-w-0 flex-1">{errorText}</span>
-                  {activeErrorCode === "reconnect_required" || activeErrorCode === "web_bind"
+                  {activeErrorCode === "reconnect_required"
+                    || activeErrorCode === "service_config"
+                    || activeErrorCode === "web_bind"
                     ? (
                         <Button disabled={busy} onClick={() => void handleStart()} size="sm" variant="secondary">
                           {t("reconnect")}
@@ -284,20 +287,6 @@ export function RemoteView({
             : null}
 
           <p className="text-xs text-ink-muted">{t("note")}</p>
-          {running && remoteStatus?.webUrl
-            ? (
-                <p className="flex items-center gap-1 text-xs text-ink-muted">
-                  <span>{t("webClient")}</span>
-                  <button
-                    className="text-accent underline"
-                    onClick={() => void openUrl(remoteStatus.webUrl!)}
-                    type="button"
-                  >
-                    {remoteStatus.webUrl}
-                  </button>
-                </p>
-              )
-            : null}
         </div>
       </div>
 

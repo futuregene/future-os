@@ -21,7 +21,6 @@ import {
   restoreThread,
 } from "../../integrations/storage/threadStore";
 import { invokeCommand } from "../../integrations/tauri/invoke";
-import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
 import { useTauriEvent } from "../../lib/useTauriEvent";
 import { ToastHost } from "../ui/ToastHost";
@@ -168,14 +167,18 @@ export function AppShell() {
     [visibleModelOptions, setSelectedModelId],
   );
 
-  // Remote control is dev-only: poll its status (for the sidebar indicator dot)
-  // only on non-release builds, and never while build info is still loading.
-  // Returns { status, indicator, refresh } — RemoteView reads `status` directly
-  // so its blue dot always matches the sidebar indicator.
-  const build = useBuildInfo();
-  const showRemote = Boolean(build.data && !build.data.isRelease);
-  const { status: remoteStatus, indicator: remoteIndicator, refresh: refreshRemote } = useRemoteStatus(showRemote);
+  // Poll the remote bridge status (for the sidebar indicator dot) at the app
+  // level. Returns { status, indicator, refresh } — RemoteView reads `status`
+  // directly so its blue dot always matches the sidebar indicator.
+  const { status: remoteStatus, indicator: remoteIndicator, refresh: refreshRemote } = useRemoteStatus(true);
   const { balance: futureBalance, email: futureEmail } = useFutureAccount();
+  // Remote needs a FutureOS sign-in (its pairing code comes from the service);
+  // if the user signs out while on it, drop back to the chat section.
+  useEffect(() => {
+    if (!futureEmail && section === "remote") {
+      setSection("chat");
+    }
+  }, [futureEmail, section]);
 
   const handleRecharge = () => {
     getFutureEnvironment().then(env => openExternalUrl(`${env.platformUrl}/platform/#recharge`)).catch(() => {});

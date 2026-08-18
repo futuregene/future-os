@@ -1,290 +1,135 @@
-# Loop 控制面（`future-loop`）
+# Loop 控制面（`future loop`）
 
-> 面向长期 AI agent 工作的本地控制面——在 agent 执行有界回合期间，保持目标、门禁、todos、证据、额度和交接的稳定。
+> 本地控制面，让长程 AI Agent 工作变得持久、可治理、可验收——目标、门禁、任务、证据与配额在聊天之外稳定存在，Agent 每次只执行一个有界回合，一个确定性内核决定下一步做什么。
 
-FutureOS 在 `orchestration/loop` 内置了原生 loop 控制面，提供 `future-loop` CLI 与 `/future-loop` agent 技能。它把一段对话变成一个持久、可复盘、可长期运行的目标：目标、todos、人工门禁、监控、证据与完成状态都持久化在聊天之外，由确定性内核决定下一步该做什么——一次一个回合。
+## 为什么需要
 
-> `future-loop` 是基于 [loopx](https://github.com/huangruiteng/loopx) 的 Rust 改写版，针对 FutureOS 做了适配与扩展（项目本地状态、gRPC 执行桥、quota 内核、扩展与多 agent）。
+一次对话会丢失上下文；一个"帮我盯一周"的请求不该靠聊天记录撑着。`future loop` 把请求变成一个**持久化目标**：拆成任务图、挂上人工门禁、每步留证据、完成的定义是可验证的——跨会话、跨重启、跨多个并行 worker 都不会丢。
 
-主要调用方式是 `future loop <command>`；独立二进制 `future-loop` 与其等价且仍会安装（安装脚本与 `make run-loop` 使用它）。
-
+## 一张图看懂
 
 ```
-objective / issue / project
+目标 objective
+   │
+   ├─ 任务图 todos（advancement / user-gate / monitor，--blocks 依赖）
+   │
+   ├─ 需要人拍板？ ──▶ 提出一个具体问题并等待（user gate）
+   │
+   ├─ 可以安全推进？ ──▶ 内核发出决策包：run 这个 todo / wait / replan / terminal
    │
    ▼
-loop 状态：目标 + 门禁 + todos + 范围 + 证据 + 额度
-   │
-   ├─ 需要人工判断？──────────▶ 提出具体问题并等待
-   │
-   ├─ 有安全回退？────────────▶ 执行一个有界 agent 切片
+Agent 执行一个有界回合（gRPC）→ 写证据 → 内核据此决定下一回合
+```
+
+## 核心概念
+
+| 概念 | 命令 | 说明 |
+|---|---|---|
+| 目标 goal | `goal init` | 项目本地状态 `<cwd>/.future/loop/`，事件溯源 + 可重放 |
+| 任务 todo | `todo add/update/complete/supersede` | 五类：advancement（推进）/ user-gate（人工门禁）/ user-action（不冻结的人待办）/ monitor（监视外部状态）/ blocker（外部阻塞）；`--blocks` 依赖链；`--priority` |
+| 证据 evidence | `todo complete --evidence` | **非空强制**：关单必须写明实际落地了什么（路径、attempt id、测量结果），`--force` 是操作者显式覆盖 |
+| 验收契约 acceptance | `todo add --acceptance "tok1,tok2"` | 关单证据必须包含全部 token（大小写不敏感）——"done ≠ delivered" 的硬形式 |
+| 验证器 verify | `todo add --verify "cmd"` | 每个回合后内核执行命令，exit 0 才算完成；上限 `--max-validation-attempts`。空关单的物理阻断器 |
+| 租约 lease | `lease claim/renew/release/status` | 任务被谁租用、多久过期。**租约活性自愈**：记录持有进程 pid，进程死了自动回收——杀掉 worker 后无需手动清理 |
+| 门禁 gate | `gate resolve` | 任何打开的用户门禁冻结全部工作直到解决；user-action（不冻结的人待办）会展示给用户但不阻塞 agent |
+| 交付闭环 delivery | `delivery status/record` | 完成 = `delivered` 待验证态；操作者用 `verified/failed/rework` 结案；3 回合未验证自动派生跟进任务 |
+| 终局 terminal | `frontier show` | 验证式闭环：todos 完成/被取代 + 闭环意图 + 无验收缺口 + 无待决 deferred 工作；`frontier` 给出终局判定与缺口明细 |
+| 配额 quota | `quota should-run/usage/spend/decisions` | 确定性 should-run 内核：每个回合的调度、拒绝原因、花费全部可审计 |
+| 调度器 scheduler | `scheduler tick/show/liveness` | 监视器节奏、宿主故障记录、活性心跳 |
+| 多 agent | `agent contract/recipe/succession/collective` | 一个目标多个 worker：契约（替补关系/交接规则）、命名配方一键上车、离线超时自动替补晋升、唤醒轮值表、集体回合账本 |
+| 前端面 frontier | `frontier show` | 成果连续段（outcome segments）、结构化 replan 规则、有界语义历史（N=50）、终局判定 |
+
+## 用技能驱动 loop（推荐入口）
+
+绝大多数情况下，你不需要手敲下面的 CLI——**用 `/future-loop` 技能让 Agent 自己驾驶**：
+
+```
+你（用户）说 "/future-loop 帮我盯着 X 一周"
    │
    ▼
-agent 执行一个回合（gRPC）→ 写入证据 + 交接 + 下一个 todo
-   │
-   ▼
-额度决定下一次 tick
+Agent 加载 future-loop 技能（v3.x 驾驶手册）
+   ├─ 1. 先 `future loop status` 查是否已有同类目标（有则续做，不重复建）
+   ├─ 2. 与你确认计划（步骤/模型/thinking level）——除非你的指令已含完整目标与约束
+   ├─ 3. `goal init` + 拆 todos（依赖 --blocks、硬校验 --verify/--acceptance 一起挂）
+   ├─ 4. 逐回合驱动：`run --max-turns 1 --agent-id <唯一名>`，回合结束立即重启
+   ├─ 5. 用 `todo update --text` 中途 steering 纠正跑偏的 worker
+   ├─ 6. 遇到不可逆/昂贵/用户专属决策 → 挂 user gate 等你拍板（gate 冻结一切）
+   └─ 7. 收尾：验收 todo 拷贝交付物到项目根 → validated closure（terminal）
 ```
 
-## 亮点
+**技能与 CLI 的分工**：技能负责"何时该做什么、如何拆解、如何驾驶"（编排层）；
+CLI 是底层机制（状态内核 + 硬校验 + 决策）。技能是 v3.x 持续维护的驾驶手册，
+与本页同步更新；完整语义见 [future-skills/builtin/future-loop](https://github.com/futuregene/future-skills/tree/main/builtin/future-loop)。
 
-### 持久化目标与 todo 工作图
-
-- **目标**（`goal init / cancel / delete`）：项目本地状态位于 `<cwd>/.future/loop/`，以事件账本 + 重放持久化。
-- **Todos**（`todo add / claim / complete / supersede / update / archive`）：advancement / user-gate / monitor / blocker 类别、优先级、依赖链（`--blocks`）、claim + 租约生命周期，以及与参考实现兼容的完成契约（每个完成的 todo 必须声明后继或显式 no-follow-up）。
-- **人工门禁**（`gate resolve`）：todo 阻塞在一个具体问题上，直到人工决策落地——绝不"模糊等待"。
-- **监控**（`--class monitor --cadence ...`）：定时观察外部状态（CI、PR、文件），无变化时退避，陈旧目标绝不消耗额度。
-
-### 确定性 should-run 决策内核
-
-`future loop run` 让一个纯函数、可注入时钟的内核决定：是否运行、为什么、运行哪个 todo——identity 范围边界、人工门禁优先级、修复预算、成果底线、后继 replan 义务、接受度缺口，以及一个把每次决策归入九种 disposition 之一的调度仲裁层（terminal / monitor-wait / active work / consistency repair / human gate / quiet wait / …）。执行是 fail-closed 的：已取消的目标永不运行；状态歧义时停止而不是继续消耗。
-
-### 额度与调度
-
-- 跨 `run` / `agent` / `heartbeat` 三来源的 slot 记账、24h/7d 用量汇总、以及检测"仅表面进展"循环的 stall repair。
-- 调度状态机：节奏归一化（`once / hourly / daily / weekly` 或 `15m / 1h / 2d`）、原子持久化、host 失败跟踪。
-- 监控 poll 以可重放事件（`MonitorPolled`）落账，写回精确。
-
-### 事件溯源与投影
-
-- 内容寻址事件 id + 幂等追加 + fail-closed 冲突检测；`QuotaSpent` / `EvidenceAttached` 事件；markdown 回填进账本。
-- 按目标 schema 迁移桥（verify / migrate / bridge）、隐私分级投影（public-safe / local-private / private-pointer）、run 生命周期（history / compaction / index / retention / stale 检测）。
-
-### 独立验证
-
-`todo add --verify "cargo test" --max-validation-attempts 5` 挂载独立验证器：内核在每次回合后在目标 cwd 运行它，仅当退出码为 0 时才完成 todo，重试预算耗尽时触发 replan——闭环是"已验证"而非"自评"。
-
-### 扩展与多 agent
-
-- 能力框架：provider 生命周期（declared → installed → enabled → ready）、可查询 catalog、能力门禁（run / ask-owner / repair-bridge / skip）、按能力注册的命令钩子。
-- 扩展：声明式 manifest + install / enable / disable / rollback（保留修订版本）+ readiness doctor——v1 为声明式，绝不执行扩展代码。
-- Identity 范围的多 agent：agent 范围边界、lane 推荐、supervisor 提案/回执事件、任务租约、带交付契约的交接文档、todo 依赖图、注意力队列 / operator inbox——由 `agent` 命令组驱动（见[多 agent 工作流](#多-agent-工作流)）。
-
-### 评估与诊断
-
-- benchmark 闭环（protocol / run / ledger，复用同一 gRPC 通道）、decision replay + model-behavior corpus、canary 冒烟套件（`core-control-plane` / `extension-runtime` / `release-gate`）。
-- `version` / `doctor` / `history` / `turn` / `todo-event` / `evidence-log` 诊断，以及 `backup` / 恢复。
-
-## CLI 一览
-
-```text
-goal          goal 生命周期（init / cancel / delete）· status · models · diagnose
-todo          add | claim | complete | supersede | update | archive
-              gate resolve · replan ack · lease · task-graph
-agent         onboard · scope · lane · supervisor
-capability    list | propose | commands · catalog · 按能力钩子
-extension     install | upgrade | enable | disable | rollback | status | capabilities
-ops           version · doctor · history · turn · todo-event · evidence-log
-              backup · authority · profile · quota · scheduler · store
-              backfill · privacy · runs · heartbeat-prompt · worker-bridge
-              serve-status · run
-work-items    attention · inbox
-handoff       handoff [--write]
-benchmark     protocol | run | ledger
-replay        record | run · corpus build | run
-canary        smoke [--profile ...]
-cli           registry [--json] [--include-experimental]
-```
-
-不带参数运行 `future-loop` 查看完整分组帮助。
-
-## 快速开始（技能模式）
-
-在会话中向 agent 输入：
-
-```
-/future-loop 把这个长期目标拆成 goal 和 todos，持续推进到完成
-```
-
-技能加载后：创建持久化目标 → 把工作拆成 todos（含依赖链与最终交付复制 todo）→ 用 `future loop run --max-turns 1` 逐回合推进，每步汇报状态与成本。
-
-也可以直接在终端驱动：
+## 用户工作流（从零到闭环）
 
 ```bash
-future loop goal init --objective "..." --cwd /path/to/project
-future loop todo add --goal <id> --text "collect data" --priority P0
-future loop todo add --goal <id> --text "write report" --priority P0 \
-  --blocks <collect-todo-id> --verify "test -f report.md"
-future loop status --goal <id>
-future loop run --goal <id> --model future/deepseek-v4-flash --max-turns 1
+# 1. 创建目标
+future loop goal init --objective "..." --cwd DIR
+
+# 2. 拆任务（依赖 + 硬校验一起挂上）
+future loop todo add --goal G --text "..." --priority P0 --verify "cargo check -p X"
+future loop todo add --goal G --text "..." --blocks T1 --acceptance "attempt,scored"
+future loop todo add --goal G --role user --class user_gate --text "发布门禁" --gate-question "是否发布？"
+
+# 3. 驱动回合（一个 worker 一个 --agent-id；回合结束立即重启）
+future loop run --goal G --agent-id mac-worker --model M --thinking-level L --max-turns 1
+
+# 4. 人工拍板
+future loop gate resolve --goal G --todo-id GATE --decision "approve"
+
+# 5. 观察与闭环
+future loop status --goal G
+future loop frontier show --goal G        # 终局判定 + 缺口明细
+future loop delivery record --goal G ...  # verified / failed / rework
 ```
 
-## 多 agent 工作流
+## 硬校验优先（约定靠不住，闸门靠得住）
 
-`agent` 命令组用于建模由多个 agent 共享的目标。每个 agent 以 `--agent-id`
-标识、界定自己的工作范围，并通过交接文档移交——这样 supervisor（或人）
-就能判断谁负责什么、下一个 agent 需要知道什么。
+- 空证据关单会被**拒绝**（默认 fail-closed，`--force` 才放行）
+- `--verify` 让"写完"不等于"能编译/有产物"——每个交付类任务都应挂一个
+- `--acceptance` 把"验收以外部可观测信号为准"变成硬校验
+- 租约活性自愈：死进程的租约自动回收，重启 worker 不再需要手动 release
+- 工作区守卫：多 agent 写冲突自动降级串行
+- 空转回合（15 分钟无写入）会记账；用 `todo update --text` 中途 steering 干预
 
-> 下面的命令都是**扁平顶层命令**——`future-loop` 把 `agent`、`scope`、
-> `lane`、`supervisor`、`handoff`、`task-graph`、`attention`、`inbox` 全部
-> 在顶层分发。帮助输出里的 `agent` / `todo` / `work-items` 分组只是展示用
-> 分组。
+## loop 状态以 CLI 为准
 
-### 1. 注册 agent（登记 + 能力声明）
+控制面通过 **`future loop` CLI** 驱动与观察——目标状态是项目本地的
+（`<cwd>/.future/loop/`），不属于任何一个客户端。TUI、桌面 GUI、移动端 App
+与 IM 机器人目前没有内置的 loop 视图；它们通过 **`/future-loop` 技能**驱动
+同一控制面（技能替 agent 编排 `future loop` 命令）。因为状态在项目里、技能
+经 agent 服务运行，所以在一个客户端（如 TUI）启动的目标可以在任何其他客户端
+（如飞书聊天）继续驾驶。
+
+## CLI 全景（10 组 43 命令）
 
 ```bash
-# 仅注册（quota --agent-id 的前置条件）
-future loop agent --goal <id> --agent-id codex
-
-# 注册并声明能力（能力门禁的输入）
-future loop agent onboard --goal <id> --agent-id codex --capability shell,github
+future loop registry        # 全部命令
+future loop commands        # 按操作者旅程分组视图
 ```
 
-`onboard` 会记录一条带能力声明的 `AgentOnboarded` 事件。
+- **goal 组**：`goal` `status` `models` `diagnose`
+- **todo 组**：`todo` `gate` `replan` `frontier` `lease` `task-graph`
+- **agent 组**：`agent` `list` `scope` `lane` `supervisor`
+- **ops 组**：`version` `doctor` `history` `turn` `todo-event` `evidence-log` `backup` `authority` `profile` `quota` `scheduler` `store` `backfill` `privacy` `runs` `heartbeat-prompt` `worker-bridge` `serve-status` `run`
+- **work-items 组**：`attention` `inbox` `delivery`
+- **handoff 组**：`handoff`
+- **cli 组**：`registry` `commands`
+- **benchmark 组**：`benchmark`
+- **replay 组**：`replay`
+- **canary 组**：`canary`
 
-### 2. 范围与 lane
+## 与 FutureOS 其他部件的关系
 
-```bash
-# identity 范围边界：该 agent 可见/可认领的 todos，以及属于他人（边界外）的认领
-future loop scope --goal <id> --agent-id codex [--exclude docs,build]
+- **Agent 服务**（`future agent`，gRPC 127.0.0.1:50051）：`run` 通过它执行每个回合
+- **任何客户端都可经技能驱动**（TUI、桌面、移动端、飞书 / 钉钉）：loop 目标由 `/future-loop` 技能编排 `future loop` 命令驱动——桥与 loop 之间没有原生集成；门禁以 agent 消息形式提出一个具体问题
+- **技能 `/future-loop`**：编排 Agent 使用本控制面的驾驶手册（v3.x 与本文档同步维护）
+- **状态位置**：`<cwd>/.future/loop/`（加入项目 `.gitignore`）
 
-# 该 agent 的紧凑 lane 推荐（分类 + 建议动作）
-future loop lane --goal <id> --agent-id codex
-```
+## 更多
 
-frontier 输出列出 `visible agent todos`、`claimed by self`、`other agent
-claims`、`open user gates` 与 `unclaimed advancement` 计数；`lane` 汇总该
-agent 的进展范围与建议的下一步动作。
-
-### 3. Supervisor 决策
-
-```bash
-# 提案一个决策：observe（默认）或 execute（带能力）
-future loop supervisor propose --goal <id> --agent-id super --decision-id d1 \
-  --target-agent-id codex --kind execute --capabilities shell --summary "run tests"
-
-# 记录宿主的回执（executed | failed | rejected）
-future loop supervisor receipt --goal <id> --decision-id d1 \
-  --receipt-id r1 --adapter-id host --outcome executed
-
-# 以 JSON 投影全部 supervisor 事件
-future loop supervisor events --goal <id>
-```
-
-### 4. 交接
-
-```bash
-# 打印交付契约（降级模式 + 摘要）与交接文档
-future loop handoff --goal <id>
-
-# 同时写入 .future/loop/goals/<id>/HANDOFF.md
-future loop handoff --goal <id> --write
-```
-
-交付契约由 run 历史推导（新的在前）；交接文档渲染为 markdown，下一个
-agent 无需重读整个账本即可接续上下文。
-
-### 5. 协调
-
-```bash
-# todo 依赖图（拓扑序；有环则 fail closed）
-future loop task-graph --goal <id>
-
-# 单个目标或全部目标的注意力队列
-future loop attention --goal <id>
-future loop attention --all
-
-# operator inbox 紧急度投影
-future loop inbox --project .
-```
-
-## 部署拓扑（推荐）
-
-控制面刻意保持**无守护进程**（daemonless）：每个 `future loop` 命令都是短生命周期进程——加载账本、做一件有界的事、持久化、退出。因此可用性来自**外部调度器**按你选定的节奏调用 `future loop run`，而不是一个需要你维持存活的常驻 loop 进程。
-
-```
-cron / systemd timer / CI 定时流水线        （可用性来源）
-   │  每次 tick 一次调用
-   ▼
-future loop run --goal <id> --agent-id <name> --max-turns 1
-   │  有界切片：决策 → 执行一个回合 → 写回 → 退出
-   ▼
-<cwd>/.future/loop/                         （事件账本——唯一状态）
-```
-
-为什么可以安全地用外部方式驱动：
-
-- **有界调用**——每次 tick 受 `--max-turns` / `--max-turn-secs` 上限约束；卡住的回合会优雅停止而不是占住目标，下一次 tick 从账本继续。
-- **重启安全的状态**——事件账本采用内容寻址、幂等追加；崩溃或重叠的 tick 重放后仍然干净，冲突时 fail-closed，而不是重复消耗额度。
-- **租约协调**——`run` 在租约下认领 todo（默认 4 小时，`--lease-secs`），两个调度器不会静默抢占同一个 todo。务必传稳定的 `--agent-id`（首次使用自动注册）；`--anonymous` 放弃协调、可能发生竞争。
-- **fail-closed 内核**——已取消的目标永不运行；状态歧义时停止而不是继续消耗。
-
-示例驱动方式：
-
-```cron
-# cron——每 15 分钟一个有界回合
-*/15 * * * * cd /path/to/project && future loop run --goal <id> --agent-id cron-worker --max-turns 1 >> .future/loop/cron.log 2>&1
-```
-
-```ini
-# /etc/systemd/system/loop-worker.service
-[Service]
-Type=oneshot
-WorkingDirectory=/path/to/project
-ExecStart=/usr/local/bin/future loop run --goal <id> --agent-id systemd-worker --max-turns 1
-
-# /etc/systemd/system/loop-worker.timer
-[Timer]
-OnCalendar=*:0/15
-Persistent=true
-```
-
-```yaml
-# CI 定时 tick（GitHub Actions）。CI runner 是临时的：跨运行持久化
-# .future/loop/（例如 actions/cache），否则每次 tick 都从空账本重新开始。
-on:
-  schedule: [{ cron: "*/30 * * * *" }]
-  workflow_dispatch:
-jobs:
-  tick:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: future loop run --goal <id> --agent-id ci-worker --max-turns 1
-```
-
-调度状态机是对外部驱动器的补充：`future loop scheduler tick|show`
-维护重启安全的节奏递进（驱动器需要退避状态时有用），
-`future loop scheduler record-host-failure` 记录宿主错过/延迟的 tick，
-让存活缺口浮现在状态里而不是无声消失。
-
-### 可选：常驻 runner
-
-守护进程从不是必需的，但有两个常驻便利设施：
-
-- **包装循环**（工作站）：`while true; do future loop run --goal <id>
-  --agent-id local-runner --max-turns 1; sleep 300; done`——与 cron 相同
-  的有界回合语义，只是不依赖 cron。
-- **`future loop serve-status [--port 8791]`**——零依赖、仅 GET 的 HTTP
-  仪表盘（`GET /`、`GET /goals.json`）。它是只读投影，永远不是第二真相
-  源；可与任何拓扑并行运行，用于可观测性。
-
-完全自定义的 runner 可以用 `future loop worker-bridge`——参考 stdio
-契约：bridge 每 tick 向 stdout 输出一行带类型的回合数据包，你的 worker
-在自己的运行时里执行有界回合，再写回一行 JSON 结果。每个目标选择
-**一个驱动器**（多 agent 场景下每个 `(goal, agent-id)` 一个）——租约
-让重叠安全，但单一驱动器让节奏与额度记账可预测。
-
-## 状态布局
-
-```
-<cwd>/.future/loop/registry.json                        — 注册表（真相源）
-<cwd>/.future/loop/goals/<id>/events.jsonl              — 每目标事件账本
-<cwd>/.future/loop/goals/<id>/ACTIVE_GOAL_STATE.md      — 参考兼容投影
-<cwd>/.future/loop/runs/                                — run 历史
-```
-
-运行时状态绝不写进项目之外；把 `.future/loop/` 加入 `.gitignore`。
-
-## 安装
-
-```bash
-make install-skills                      # 首选：链接 /future-loop 技能（无需构建——
-                                          # `future loop` 通过统一 CLI 运行）
-# 可选：独立二进制（开发用途）
-bash scripts/install-future-loop.sh      # CLI → ~/.local/bin/future-loop，技能 → ~/.future/agent/skills/
-# 或在 workspace 中构建：
-cargo build -p future-loop
-```
-
-环境要求与完整产品构建/安装步骤见 [构建与安装](build-and-install.zh-CN.md)。
+- 安装与构建：[build-and-install.zh-CN.md](build-and-install.zh-CN.md)
+- 证据账本：[long-run-evidence-ledger.zh-CN.md](long-run-evidence-ledger.zh-CN.md)
+- TUI 使用：[tui.zh-CN.md](tui.zh-CN.md)
+- 技能源码：[future-skills/builtin/future-loop](https://github.com/futuregene/future-skills/tree/main/builtin/future-loop)

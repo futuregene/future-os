@@ -16,10 +16,11 @@ from primary sources, not from memory.
 
 Data sources (all local, all verifiable):
 
-- **Turns / wall clock / spend** — the goal's run-history files under
-  `.future/loop/goals/<goal-id>/runs/*.json` (per-run `terminal_state`,
-  `tokens_in`, `tokens_out`, `cost`, tool-call count) and the compact
-  projection from `future loop runs history --goal <id> --format json` /
+- **Turns / wall clock / spend** — the goal's run-history ledger
+  `.future/loop/goals/<goal-id>/runs.jsonl` (per-run `terminal_state`,
+  token deltas, `cost`, tool-call count; live per-run logs under
+  `.future/loop/runs/<run-id>.live.jsonl`) and the compact projection from
+  `future loop runs history --goal <id> --format json` /
   `future loop quota usage --goal <id>`.
 - **Validation** — the goal's official measurement (name the tool, command,
   commit, and date), plus `future loop evidence-log --goal <id>`.

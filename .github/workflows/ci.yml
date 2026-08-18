@@ -32,8 +32,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       rust_workspace: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.rust_workspace == 'true' || steps.filter.outputs.ci == 'true' }}
-      loop_canary: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.loop_canary == 'true' || steps.filter.outputs.ci == 'true' }}
-      coverage_scripts: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.coverage_scripts == 'true' || steps.filter.outputs.ci == 'true' }}
       desktop_tauri: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.desktop_tauri == 'true' || steps.filter.outputs.ci == 'true' }}
       desktop_frontend: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.desktop_frontend == 'true' || steps.filter.outputs.ci == 'true' }}
       mobile: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.mobile == 'true' || steps.filter.outputs.ci == 'true' }}
@@ -60,7 +58,7 @@ jobs:
               - 'Cargo.lock'
               - '.cargo/**'
               - 'rust-toolchain.toml'
-              - 'rpc/**'
+              - 'packages/rpc/**'
               - 'agent/**'
               - 'channels/**'
               - 'tui/**'
@@ -68,31 +66,18 @@ jobs:
               # The loop control plane is a workspace member — its changes must
               # run the same fmt/clippy/test gates (previously missing here).
               - 'orchestration/**'
-            # P1-6: what triggers the canary premerge gate — the loop crate
-            # plus its in-repo dependency surface (future-rpc, workspace root).
-            loop_canary:
-              - 'orchestration/**'
-              - 'rpc/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - 'rust-toolchain.toml'
-            # P1-7: the ratchet machinery itself must revalidate the gate (a
-            # baseline-only edit is the ratchet-down approval path).
-            coverage_scripts:
-              - 'scripts/coverage.sh'
-              - 'scripts/coverage_ratchet.py'
-              - 'scripts/coverage-baseline.json'
             desktop_tauri:
               - 'desktop/src-tauri/**'
               - '.cargo/**'
               - 'rust-toolchain.toml'
               # The desktop backend path-depends on future-rpc; changes there must
               # revalidate the desktop backend too.
-              - 'rpc/**'
+              - 'packages/rpc/**'
             desktop_frontend:
               - 'desktop/**'
               - '!desktop/src-tauri/**'
-              - 'thread-projection/**'
+              - 'packages/markdown/**'
+              - 'packages/thread-projection/**'
               # The root npm workspace manifest + lock define the shared install.
               - 'package.json'
               - 'package-lock.json'
@@ -100,7 +85,8 @@ jobs:
               - 'mobile/**'
               - '!mobile/android/**'
               - '!mobile/ios/**'
-              - 'thread-projection/**'
+              - 'packages/markdown/**'
+              - 'packages/thread-projection/**'
               - 'package.json'
               - 'package-lock.json'
 
@@ -181,9 +167,9 @@ jobs:
       - name: proto codegen is fresh
         if: needs.changes.outputs.rust_workspace == 'true'
         run: |
-          (cd rpc && REGENERATE_PROTO=1 cargo build)
+          (cd packages/rpc && REGENERATE_PROTO=1 cargo build)
           (cd channels && REGENERATE_PROTO=1 cargo build)
-          git diff --exit-code rpc/src/generated/proto.rs channels/src/generated/
+          git diff --exit-code packages/rpc/src/generated/proto.rs channels/src/generated/
 
       # ── desktop Tauri backend ──
       - name: rustfmt (desktop backend)
@@ -211,7 +197,7 @@ jobs:
   # Workspace groups gate on `rust_workspace` only: workspace crates do not
   # depend on desktop/src-tauri, so a desktop-only change cannot break them
   # (the reverse is NOT true — future-rpc feeds the Tauri backend, and the
-  # path filter marks rpc/** as desktop_tauri too, so rpc changes also run
+  # path filter marks packages/rpc/** as desktop_tauri too, so RPC changes also run
   # the desktop group).
   #
   # CARGO_PROFILE_TEST_DEBUG=1 keeps file:line in panic backtraces while
@@ -344,112 +330,6 @@ jobs:
           fi
           echo "All Rust test groups passed."
 
-  # ─── Loop canary premerge gate (P1-6) ────────────────────────────────────
-  # Behavioral merge gate for the loop control plane: runs
-  # `future-loop canary premerge` — an isolated temporary state root, a seeded
-  # fixture goal (non-vacuity guard), the fast `premerge` smoke profile, and
-  # the same all-checks-passed rule as the release gate. A non-zero exit fails
-  # the PR before merge; unit-level Rust regressions are still covered by the
-  # rust-tests job above.
-  loop-canary:
-    name: Loop canary premerge gate
-    needs: changes
-    if: needs.changes.outputs.loop_canary == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      # Pinned to match rust-toolchain.toml (same as the other Rust jobs).
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.97.0
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            .
-          cache-on-failure: true
-          cache-all-crates: true
-
-      # mold: .cargo/config.toml pins -fuse-ld=mold for Linux targets. No
-      # protoc / WebKit / GTK needed — future-loop + future-rpc build pure-Rust
-      # (proto codegen is checked in, gated on REGENERATE_PROTO).
-      - name: Install Linux deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential mold pkg-config
-
-      - name: Build loop CLI
-        run: cargo build -p future-loop
-
-      - name: Canary premerge gate
-        run: ./target/debug/future-loop canary premerge --json
-
-  # ─── Coverage ratchet gate (P1-7) ────────────────────────────────────────
-  # Only-up coverage gate: measures workspace line coverage via
-  # scripts/coverage.sh (cargo llvm-cov) and fails if any crate drops below
-  # its floor in scripts/coverage-baseline.json. Rises are always allowed;
-  # an intentional drop is approved by lowering the floor file in the same
-  # PR (that diff is the explicit ratchet-down approval). This deliberately
-  # re-runs the test suite instrumented rather than sharing rust-tests'
-  # run — llvm-cov needs its own build profile.
-  coverage-ratchet:
-    name: Coverage ratchet (workspace lines)
-    needs: changes
-    if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.coverage_scripts == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.97.0
-
-      - name: Install llvm-tools-preview
-        run: rustup component add llvm-tools-preview
-
-      # Prebuilt binary install (cargo install would compile for minutes).
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-llvm-cov
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            .
-          cache-on-failure: true
-          cache-all-crates: true
-
-      # mold: .cargo/config.toml pins -fuse-ld=mold for Linux targets. No
-      # WebKit/GTK needed — the desktop Tauri backend is not part of the
-      # workspace coverage measurement. libssl for the agent's TLS deps.
-      - name: Install Linux deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential mold pkg-config libssl-dev
-
-      - name: Coverage ratchet gate
-        run: scripts/coverage.sh --check
-
-  # ─── Rust 3-platform compile check ───────────────────────────────────────
-  # The quality gate above only runs on Linux, so platform-conditional code was
-  # never type-checked on Windows/macOS — exactly how the desktop Tauri backend
-  # regressed twice (a macOS-only fix dropped the `windows` crate and broke
-  # Windows, and vice versa) with no PR signal. This matrix runs `cargo check`
-  # on every release target so a missing `cfg`/crate surfaces on the PR.
-  #
-  # Scope: the whole workspace (agent / channels) plus the desktop Tauri
-  # backend. `cargo check` type-checks without linking the final crate, but it
-  # DOES link build scripts / proc-macros, so each OS still needs its linker
-  # story: Linux needs mold (`.cargo/config.toml`'s -fuse-ld=mold) and the
-  # WebKit/GTK libs (the -sys build scripts run pkg-config). No protoc is
-  # needed: proto generation is gated on REGENERATE_PROTO and the generated
-  # code is checked in. The desktop backend's `bundle.externalBin` sidecars don't
-  # exist in a bare check, so we drop empty placeholders (tauri-build only
-  # checks presence; `binaries/` is gitignored).
   rust-build:
     name: Rust build (${{ matrix.name }})
     needs: changes

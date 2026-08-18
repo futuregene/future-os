@@ -84,13 +84,28 @@ fn agent_list_shows_registered_ids_only() {
         &root,
         &[
             "agent",
+            "recipe",
+            "add",
+            "--goal",
+            "g1",
+            "--name",
+            "scientist",
+            "--capabilities",
+            "lammps,abacus",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    let (_o, err, code) = run(
+        &root,
+        &[
+            "agent",
             "onboard",
             "--goal",
             "g1",
             "--agent-id",
             "bob",
-            "--capabilities",
-            "lammps,abacus",
+            "--recipe",
+            "scientist",
         ],
     );
     assert_eq!(code, 0, "{err}");

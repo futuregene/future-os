@@ -63,6 +63,7 @@ fn lease_lifecycle_claim_renew_steal_release_replays() {
             goal_id: "g1".into(),
             todo_id: "t1".into(),
             agent_id: "alice".into(),
+            holder_pid: None,
             lease_expires_at: now + 100,
             ts: now,
         })
@@ -108,6 +109,7 @@ fn lease_lifecycle_claim_renew_steal_release_replays() {
             goal_id: "g1".into(),
             todo_id: "t1".into(),
             agent_id: "bob".into(),
+            holder_pid: None,
             lease_expires_at: now + 600,
             ts: now + 500,
         })
@@ -153,6 +155,7 @@ fn steal_after_expiry_replays_to_new_owner() {
             goal_id: "g1".into(),
             todo_id: "t1".into(),
             agent_id: "alice".into(),
+            holder_pid: None,
             lease_expires_at: now + 100,
             ts: now,
         })
@@ -170,6 +173,7 @@ fn steal_after_expiry_replays_to_new_owner() {
             goal_id: "g1".into(),
             todo_id: "t1".into(),
             agent_id: "bob".into(),
+            holder_pid: None,
             lease_expires_at: now + 600,
             ts: now + 500,
         })

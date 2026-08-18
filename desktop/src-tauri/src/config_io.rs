@@ -86,6 +86,7 @@ pub fn read_json_object(path: &Path) -> Result<Value, AppError> {
 /// Lenient read for best-effort *cache* files where a corrupt file should not
 /// surface an error to the user (e.g. a model-count cache): missing or
 /// unparseable → an empty object.
+#[cfg(test)]
 pub fn read_json_lenient(path: &Path) -> Value {
     std::fs::read_to_string(path)
         .ok()
@@ -154,6 +155,7 @@ pub fn write_bytes_atomic(path: &Path, bytes: &[u8], owner_only: bool) -> Result
 /// it). Any OTHER read error (permission, transient I/O) surfaces as `Err` —
 /// it must never be confused with "did not exist", which would make rollback
 /// DELETE an existing file.
+#[cfg(test)]
 pub fn snapshot_file(path: &Path) -> Result<Option<Vec<u8>>, AppError> {
     match std::fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
@@ -165,6 +167,7 @@ pub fn snapshot_file(path: &Path) -> Result<Option<Vec<u8>>, AppError> {
 /// Best-effort restore of a snapshot taken by [`snapshot_file`]. Used only on
 /// the error path, so a failed restore is logged to stderr rather than
 /// shadowing the original error being returned to the caller.
+#[cfg(test)]
 pub fn restore_file(path: &Path, snapshot: Option<&[u8]>, owner_only: bool) {
     let result = match snapshot {
         Some(bytes) => write_bytes_atomic(path, bytes, owner_only),

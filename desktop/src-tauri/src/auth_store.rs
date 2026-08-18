@@ -86,6 +86,7 @@ fn upsert_provider_entry(
 
 /// Set a provider's API key, preserving any other fields on the entry (e.g. the
 /// FutureGene entry's `base_url`). Defaults `type` to `api_key` when absent.
+#[cfg(test)]
 pub(crate) fn set_provider_key(id: &str, key: &str) -> Result<(), AppError> {
     upsert_provider_entry(id, |object| {
         object.insert("key".to_string(), Value::String(key.to_string()));
@@ -94,6 +95,7 @@ pub(crate) fn set_provider_key(id: &str, key: &str) -> Result<(), AppError> {
 
 /// Remove a provider's API key but keep the rest of the entry (e.g. FutureGene
 /// logout retains `base_url`). Returns whether a key was present.
+#[cfg(test)]
 pub(crate) fn remove_provider_key(id: &str) -> Result<bool, AppError> {
     let path = auth_json_path()?;
     config_io::with_config_lock(&path, || {
@@ -115,6 +117,7 @@ pub(crate) fn remove_provider_key(id: &str) -> Result<bool, AppError> {
 /// `future` entry. Mirrors the CLI's `saveAuth` (which writes
 /// `base_url = {platform}/api`) so a GUI login and a CLI login leave identical
 /// `auth.json` state — and the agent/Providers page resolve the same platform.
+#[cfg(test)]
 pub(crate) fn set_future_login(key: &str, base_url: &str) -> Result<(), AppError> {
     upsert_provider_entry(FUTURE_PROVIDER_ID, |object| {
         object.insert("key".to_string(), Value::String(key.to_string()));
@@ -123,6 +126,7 @@ pub(crate) fn set_future_login(key: &str, base_url: &str) -> Result<(), AppError
 }
 
 /// FutureGene logout: drop the key, keep `base_url`. Returns whether removed.
+#[cfg(test)]
 pub(crate) fn clear_future_key() -> Result<bool, AppError> {
     remove_provider_key(FUTURE_PROVIDER_ID)
 }

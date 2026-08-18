@@ -43,7 +43,7 @@ export async function readTextFilePreview(input: {
   path: string;
   maxBytes?: number | null;
 }) {
-  return invokeCommand<{ content: string; size: number; truncated: boolean }>("read_text_file_preview", {
+  return invokeCommand<{ content: string; size: number; truncated: boolean; validUtf8: boolean }>("read_text_file_preview", {
     maxBytes: input.maxBytes ?? null,
     path: input.path,
   });

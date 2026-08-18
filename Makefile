@@ -51,7 +51,7 @@ CARGO_PINNED := rustup run $(RUST_TOOLCHAIN) cargo
 # in PREFIX: `future` and `future-desktop`.
 
 # One-time developer bootstrap for a fresh clone. Installs the workspace JS
-# deps (thread-projection, desktop, mobile), the skills submodule, and an empty
+# deps (shared packages, desktop, mobile), the skills submodule, and an empty
 # sidecar placeholder — so any build / run / lint / test target below works
 # without knowing which one installs what.
 setup:
@@ -127,7 +127,7 @@ build: build-cli build-desktop
 build-cli:
 	cargo build --release -p future-cli
 
-# Workspace install: desktop/mobile/thread-projection are npm workspaces, so all
+# Workspace install: shared packages, desktop, and mobile are npm workspaces, so all
 # deps hoist to the root node_modules and one `npm install` at the repo root
 # installs everything. Run it when any manifest is newer than the install stamp
 # (on Windows npm install is idempotent — just run it).
@@ -357,9 +357,9 @@ endif
 generate-models:
 	python3 scripts/generate_models.py
 
-# Wire codegen owners: rpc (future.proto) + channels (feishu_ws pbbp2).
+# Wire codegen owners: packages/rpc (future.proto) + channels (feishu_ws pbbp2).
 generate-proto:
-	cd rpc && REGENERATE_PROTO=1 cargo build
+	cd packages/rpc && REGENERATE_PROTO=1 cargo build
 	cd channels && REGENERATE_PROTO=1 cargo build
 
 # ─── Clean ──────────────────────────────────────────────────────────────────
@@ -397,7 +397,7 @@ help:
 	@echo "  run-desktop / run-mobile-android / run-mobile-ios   Run an app in dev mode"
 	@echo "  profile-agent / profile-quick / profile-heap  CPU/heap profiling (PROFILE_SECS=30)"
 	@echo "  generate-models                     Fetch model data, regenerate Rust catalog + wiki docs"
-	@echo "  generate-proto                      Regenerate wire code (rpc future.proto + channels feishu_ws)"
+	@echo "  generate-proto                      Regenerate wire code (packages/rpc future.proto + channels feishu_ws)"
 	@echo "  install / install-cli / install-desktop / install-skills   Install to $(PREFIX)"
 	@echo "  setup                               Bootstrap a fresh clone (JS deps + skills + sidecar)"
 	@echo "  uninstall                           Remove installed binaries from $(PREFIX)"

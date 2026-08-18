@@ -42,15 +42,7 @@ fn healthy_store(root: &str) -> Store {
 fn profile_manifest_is_stable() {
     let profiles = smoke_suite_profiles();
     let ids: Vec<&str> = profiles.iter().map(|p| p.id.as_str()).collect();
-    assert_eq!(
-        ids,
-        vec![
-            "core-control-plane",
-            "extension-runtime",
-            "release-gate",
-            "premerge"
-        ]
-    );
+    assert_eq!(ids, vec!["core-control-plane", "release-gate", "premerge"]);
     assert!(future_loop::canary::resolve_smoke_profile("release-gate").is_ok());
     assert!(future_loop::canary::resolve_smoke_profile("premerge").is_ok());
     assert!(future_loop::canary::resolve_smoke_profile("nope").is_err());
@@ -106,7 +98,6 @@ fn healthy_root_passes_release_gate() {
     assert_eq!(result.profile_id, "release-gate");
     assert!(result.all_passed, "{:?}", result.checks);
     assert!(result.checks.iter().any(|c| c.id == "ledger_integrity"));
-    assert!(result.checks.iter().any(|c| c.id == "capability_catalog"));
     assert!(result.checks.iter().any(|c| c.id == "canary_self"));
     let _ = std::fs::remove_dir_all(&root);
 }

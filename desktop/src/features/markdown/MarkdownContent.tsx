@@ -10,9 +10,10 @@ import { CodeBlock } from "./renderers/CodeBlock";
 import { FileLink } from "./renderers/FileLink";
 import { renderFileReference } from "./renderers/fileReference";
 import { FutureEmbed } from "./renderers/FutureEmbed";
+import { MarkdownImage } from "./renderers/MarkdownImage";
 import { PendingReference } from "./renderers/PendingReference";
 import { ReferenceChip } from "./renderers/ReferenceChip";
-import { SafeImage, SafeLink } from "./renderers/SafeLink";
+import { SafeLink } from "./renderers/SafeLink";
 import { usePreviewLinkPath } from "./usePreviewLinkPath";
 
 interface MarkdownContentProps {
@@ -164,7 +165,7 @@ function renderInline(nodes: InlineNode[], workspaceId: string | null | undefine
       case "link":
         return <SafeLink href={node.href} key={key}>{renderInline(node.children, workspaceId, key)}</SafeLink>;
       case "image":
-        return <SafeImage alt={node.alt} key={key} src={node.src} title={node.title} />;
+        return <MarkdownImage alt={node.alt} key={key} src={node.src} title={node.title} workspaceId={workspaceId} />;
       case "futureReference":
         return <FutureReferenceChip key={key} reference={node.reference} workspaceId={workspaceId} />;
       default:

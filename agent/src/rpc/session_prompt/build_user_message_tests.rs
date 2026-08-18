@@ -1,4 +1,4 @@
-use super::build_user_message;
+use super::{build_user_message, build_user_message_with_model_context};
 use crate::types::{Attachment, ContentBlock, ImageContent};
 
 fn image_att(name: &str, path: &str) -> Attachment {
@@ -27,6 +27,25 @@ fn ok_loader(_path: &str) -> Option<String> {
 
 fn none_loader(_path: &str) -> Option<String> {
     None
+}
+
+#[test]
+fn model_context_is_not_part_of_the_visible_user_text() {
+    let msg = build_user_message_with_model_context(
+        "vcf_filter_client.py 是干嘛的",
+        "Referenced FutureOS objects:\n1. file:utils/vcf_filter_client.py",
+        &[],
+        &[],
+        true,
+        &none_loader,
+    );
+
+    assert_eq!(msg.display_text(), "vcf_filter_client.py 是干嘛的");
+    assert_eq!(
+        msg.text(),
+        "vcf_filter_client.py 是干嘛的\n\nReferenced FutureOS objects:\n1. file:utils/vcf_filter_client.py"
+    );
+    assert_eq!(msg.content.len(), 2);
 }
 
 fn image_urls(msg: &crate::types::AgentMessage) -> Vec<String> {

@@ -1,7 +1,7 @@
 //! gRPC Server for FutureAgent
 //!
 //! This module implements the FutureAgent gRPC service using tonic.
-//! The proto definition is in the rpc/proto/ directory.
+//! The proto definition is in the packages/rpc/proto/ directory.
 //!
 //! HTTP endpoints:
 //! - POST / - RPC commands (JSON)
@@ -222,6 +222,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             id: cmd.id,
             cmd_type: cmd.r#type,
             message: cmd.message,
+            model_context: cmd.model_context,
             images: internal_images,
             attachments: internal_attachments,
             parent_session: cmd.parent_session,
@@ -280,8 +281,10 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                             modalities: model.modalities,
                         })
                         .collect(),
+                    replace_models: config.replace_models,
                     create_only: config.create_only,
                     api_key: nonempty(config.api_key),
+                    clear_api_key: config.clear_api_key,
                 }
             }),
         };
@@ -362,6 +365,44 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
         let atomic_attach = req.atomic_attach;
         let requested_run_id = req.run_id;
         let after_idx = req.after_idx;
+
+        if req.global_events {
+            if !session_id.is_empty() || atomic_attach || !requested_run_id.is_empty() {
+                return Err(tonic::Status::invalid_argument(
+                    "global_events cannot be combined with session/run attachment fields",
+                ));
+            }
+            let broadcaster = crate::rpc::global_config_broadcaster();
+            let rx = broadcaster.subscribe();
+            let revision = crate::rpc::current_config_revision();
+            let mut initial = vec![proto::StreamEvent {
+                r#type: "ping".to_string(),
+                data: serde_json::json!({
+                    "type": "ping",
+                    "configRevision": revision,
+                })
+                .to_string(),
+                session_idx: -1,
+                run_sequence: -1,
+                ..Default::default()
+            }];
+            if filter_enabled {
+                initial.retain(|event| event_types.contains(&event.r#type));
+            }
+            let filter_types = event_types.clone();
+            let snapshot = tokio_stream::iter(initial.into_iter().map(Ok));
+            let lag_broadcaster = broadcaster.clone();
+            let events = BroadcastStream::new(rx)
+                .filter(move |result| {
+                    !filter_enabled
+                        || result
+                            .as_ref()
+                            .map(|event| filter_types.contains(&event.event_type))
+                            .unwrap_or(true)
+                })
+                .map(move |result| map_broadcast_event(result, &lag_broadcaster, ""));
+            return Ok(tonic::Response::new(Box::pin(snapshot.chain(events))));
+        }
 
         // Sessions are equal peers — every subscription must name its
         // session.  An empty id previously subscribed to a global/default
@@ -679,8 +720,10 @@ mod tests {
                     name: "Model One".to_string(),
                     modalities: vec!["text".to_string()],
                 }],
+                replace_models: true,
                 create_only: false,
                 api_key: "k".to_string(),
+                clear_api_key: false,
             }),
             message: "hello".to_string(),
             ..Default::default()
@@ -762,6 +805,28 @@ mod tests {
             .map(|_| ())
             .expect_err("expected an error");
         assert_eq!(err.code(), tonic::Code::NotFound);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn global_stream_reports_committed_provider_revision() {
+        let service = FutureAgentService {
+            state: grpc_app_state(false),
+        };
+        let response = service
+            .stream_events(tonic::Request::new(proto::StreamRequest {
+                event_types: vec!["provider_config_changed".to_string()],
+                global_events: true,
+                ..Default::default()
+            }))
+            .await
+            .expect("global subscription succeeds");
+        let mut stream = response.into_inner();
+        let revision = crate::rpc::publish_provider_config_changed("custom", "updated", true, true);
+        let event = stream.next().await.unwrap().unwrap();
+        assert_eq!(event.r#type, "provider_config_changed");
+        let data: serde_json::Value = serde_json::from_str(&event.data).unwrap();
+        assert_eq!(data["revision"], revision);
+        assert_eq!(data["providerId"], "custom");
     }
 
     #[tokio::test(flavor = "current_thread")]

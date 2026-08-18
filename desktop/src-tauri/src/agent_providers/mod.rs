@@ -5,7 +5,7 @@
 //! its built-in catalog) and API keys from `~/.future/agent/auth.json`. The
 //! built-in "FutureGene" provider is dynamic (its base URL is resolved from
 //! the `future` entry in `auth.json` — legacy `base_url` first, then
-//! `platform_base_url`, per the shared contract in `rpc/proto/future.proto` —
+//! `platform_base_url`, per the shared contract in `packages/rpc/proto/future.proto` —
 //! defaulting to the Future API host) and is
 //! presented read-only; user-defined providers live under
 //! `models.json.providers` and are fully editable here.
@@ -14,12 +14,16 @@
 //! `validate` (custom-provider field validation), `write` (the mutating command
 //! paths). This module owns the public DTOs and the read-only `list` view.
 
+#[cfg(test)]
 use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use serde_json::Value;
 
+#[cfg(test)]
 use crate::auth_store::FUTURE_PROVIDER_ID;
+#[cfg(test)]
 use crate::config_io;
 
 mod catalog;
@@ -29,13 +33,13 @@ mod validate;
 mod write;
 
 pub use write::{
-    delete_custom_provider, set_builtin_provider_base_url, update_builtin_provider_key,
-    upsert_custom_provider,
+    delete_custom_provider, set_builtin_provider_base_url, update_builtin_provider,
+    update_builtin_provider_key, upsert_custom_provider,
 };
 
-use catalog::{
-    builtin_catalog_providers, future_model_count, models_json_path, CatalogProviderSummary,
-};
+#[cfg(test)]
+use catalog::{future_model_count, models_json_path, CatalogProviderSummary};
+#[cfg(test)]
 use write::{is_override_only, provider_base_url_override};
 
 /// Display name of the built-in Future provider. Shared with `write` so the
@@ -48,14 +52,14 @@ pub(super) const FUTURE_PROVIDER_NAME: &str = "Future";
 /// Base URL in the Providers page, stored as a `models.json` `baseUrl` override.
 pub(super) const BASE_URL_PLACEHOLDER: &str = "YOUR_RESOURCE";
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProvidersView {
     pub builtin: Vec<BuiltinProvider>,
     pub custom: Vec<CustomProvider>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BuiltinProvider {
     pub id: String,
@@ -69,7 +73,7 @@ pub struct BuiltinProvider {
     pub requires_base_url: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CustomProvider {
     pub id: String,
@@ -134,21 +138,28 @@ pub struct SetBuiltinProviderBaseUrlInput {
     pub base_url: String,
 }
 
+/// Atomic built-in provider form submission. Presence is explicit so a single
+/// Agent transaction can update Base URL and set/clear/keep the key.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateBuiltinProviderInput {
+    pub id: String,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub update_api_key: bool,
+}
+
 pub async fn list_agent_providers() -> Result<ProvidersView, crate::AppError> {
-    // Display path stays lenient: a corrupt models.json shouldn't fail the whole
-    // Providers page — show built-ins and let the user fix the file. Write paths
-    // read strictly (see the upsert/delete functions) so they never clobber it.
-    let models = config_io::read_json_lenient(&models_json_path()?);
-    // Display path: a corrupt auth.json shouldn't blank the providers list, so
-    // fall back to empty (key badges show "Not Configured"); write paths stay strict.
-    let auth = Value::Object(crate::auth_store::read().unwrap_or_default());
-    let catalog = builtin_catalog_providers().await;
-    Ok(build_providers_view(&models, &auth, &catalog))
+    crate::agent_bridge::config::list_providers().await
 }
 
 /// Re-read the config files and rebuild the view with an already-fetched
 /// catalog. Used by the write paths so each command fetches the catalog once
 /// (for validation and for the view) instead of twice.
+#[cfg(test)]
 pub(super) fn refresh_view_with_catalog(
     catalog: &BTreeMap<String, CatalogProviderSummary>,
 ) -> Result<ProvidersView, crate::AppError> {
@@ -161,6 +172,7 @@ pub(super) fn refresh_view_with_catalog(
 /// Pure view assembly over the current config files and the agent-provided
 /// built-in catalog. Split out so the write paths can rebuild the view with
 /// the catalog they already fetched, and so tests can inject a fixture catalog.
+#[cfg(test)]
 fn build_providers_view(
     models: &Value,
     auth: &Value,
@@ -283,6 +295,7 @@ fn build_providers_view(
     ProvidersView { builtin, custom }
 }
 
+#[cfg(test)]
 fn auth_has_key(auth: &Value, id: &str) -> bool {
     auth.get(id)
         .and_then(|entry| entry.get("key"))

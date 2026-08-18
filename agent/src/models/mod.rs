@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod builtin;
 mod future;
+pub(crate) use future::{cached_model_count, display_base_url_from_auth};
 use future::{
     derive_thinking_compat, get_future_models_with_cache, resolve_future_base_url,
     sync_future_models_cache as sync_future_models_cache_inner,
@@ -734,12 +735,24 @@ impl Registry {
         }
     }
 
+    /// Whether the model was explicitly configured by the user in
+    /// models.json (as opposed to coming from the builtin catalog). Used by
+    /// `list_models` to keep user-configured models listed even when they
+    /// carry no API key (e.g. local endpoints like `http://127.0.0.1:8000`).
+    pub fn is_user_defined(&self, model: &Model) -> bool {
+        self.user
+            .iter()
+            .any(|u| u.provider == model.provider && u.id == model.id)
+    }
+
     /// Get all available models (user models override built-in with same ID).
     /// Models with `hide: true` are excluded from the listing but remain callable via `resolve()`.
     pub fn all_models(&self) -> Vec<Model> {
         let mut models = self.builtin.as_ref().clone();
         for user_model in &self.user {
-            if let Some(idx) = models.iter().position(|m| m.id == user_model.id) {
+            if let Some(idx) = models.iter().position(|model| {
+                model.provider == user_model.provider && model.id == user_model.id
+            }) {
                 models[idx] = user_model.clone();
             } else {
                 models.push(user_model.clone());
@@ -1863,6 +1876,27 @@ mod tests {
         let models = reg.all_models();
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].name, "User Override");
+    }
+
+    #[test]
+    fn all_models_keeps_same_id_from_different_providers() {
+        let builtin = make_model("shared-id", "provider-a");
+        let user = make_model("shared-id", "provider-b");
+        let reg = Registry {
+            builtin: std::sync::Arc::new(vec![builtin]),
+            user: vec![user],
+            provider_overrides: HashMap::new(),
+        };
+        let models = reg.all_models();
+        assert_eq!(models.len(), 2);
+        assert_eq!(
+            reg.resolve("provider-a/shared-id").unwrap().provider,
+            "provider-a"
+        );
+        assert_eq!(
+            reg.resolve("provider-b/shared-id").unwrap().provider,
+            "provider-b"
+        );
     }
 
     #[test]

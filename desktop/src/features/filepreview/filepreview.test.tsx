@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { flushAsync } from "../../test/renderHook";
 import { FilePreviewOverlay } from "./FilePreviewOverlay";
 import { ImagePreview } from "./ImagePreview";
+import { JsonPreview } from "./JsonPreview";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { imageMimeForPath, previewKindForPath } from "./previewKind";
 import { PreviewNotice } from "./PreviewNotice";
@@ -45,6 +46,8 @@ describe("previewKind", () => {
     expect(previewKindForPath("/a/b.PNG")).toBe("image");
     expect(previewKindForPath("/a/b.md")).toBe("markdown");
     expect(previewKindForPath("/a/b.markdown")).toBe("markdown");
+    expect(previewKindForPath("/a/b.JSON")).toBe("json");
+    expect(previewKindForPath("/a/b.jsonl")).toBeNull();
     expect(previewKindForPath("/a/b.pdf")).toBeNull();
     expect(previewKindForPath("/a/b")).toBeNull();
   });
@@ -130,6 +133,38 @@ describe("markdownPreview", () => {
   });
 });
 
+describe("jsonPreview", () => {
+  it("formats and tokenizes a valid JSON file", async () => {
+    invokeMock.mockResolvedValue({
+      content: "{\"id\":900719925474099312345,\"ok\":true}",
+      size: 41,
+      truncated: false,
+      validUtf8: true,
+    });
+    const { container, cleanup } = mount(createElement(JsonPreview, {
+      path: "/w/data.json",
+      onError: vi.fn(),
+    }));
+    await flushAsync();
+    expect(container.textContent).toContain("900719925474099312345");
+    expect(container.textContent).toContain("true");
+    expect(container.querySelector(".text-accent")?.textContent).toBe("\"id\"");
+    cleanup();
+  });
+
+  it("shows raw source and an error for invalid JSON", async () => {
+    invokeMock.mockResolvedValue({ content: "{bad", size: 4, truncated: false, validUtf8: true });
+    const { container, cleanup } = mount(createElement(JsonPreview, {
+      path: "/w/bad.json",
+      onError: vi.fn(),
+    }));
+    await flushAsync();
+    expect(container.textContent).toContain("Invalid JSON");
+    expect(container.textContent).toContain("{bad");
+    cleanup();
+  });
+});
+
 describe("filePreviewOverlay", () => {
   it("renders nothing when closed", () => {
     const { container, cleanup } = mount(createElement(FilePreviewOverlay, {
@@ -174,6 +209,20 @@ describe("filePreviewOverlay", () => {
     }));
     await flushAsync();
     expect(container.textContent).toContain("hello");
+    cleanup();
+  });
+
+  it("renders the JSON preview", async () => {
+    invokeMock.mockResolvedValue({ content: "{\"ok\":true}", size: 11, truncated: false, validUtf8: true });
+    const { container, cleanup } = mount(createElement(FilePreviewOverlay, {
+      path: "/w/a.json",
+      name: "a.json",
+      kind: "json",
+      open: true,
+      onClose: vi.fn(),
+    }));
+    await flushAsync();
+    expect(container.textContent).toContain("\"ok\"");
     cleanup();
   });
 

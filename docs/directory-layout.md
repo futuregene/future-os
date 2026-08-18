@@ -27,7 +27,6 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 │   └── review/                # per-workspace shadow git review repos
 ├── workspaces/
 │   └── chat/                  # per-thread chat workspaces (agent session / thread id)
-├── loop/                      # loop control plane state root (future-loop)
 └── bin/                       # CLI / agent links: `future`, `future-agent` (see below)
 ```
 
@@ -83,14 +82,13 @@ Per-thread chat workspaces for the GUI, one subdir per agent session id (when
 known, e.g. from an import) or GUI thread id. User-chosen workspaces live
 elsewhere and are never touched by reclamation of this directory.
 
-## `~/.future/loop/` — loop control plane
+## Loop control plane — project-local, not under `~/.future/`
 
-State root for `future-loop` (the `~/.future/loop/` default can be overridden
-with `FUTURE_LOOP_ROOT`). Note that in normal use the loop state is
-**project-local**: run `future-loop` from the project directory and goals live
-under `<cwd>/.future/loop/` (`registry.json`, `goals/<id>/events.jsonl`,
-`goals/<id>/ACTIVE_GOAL_STATE.md`, `runs/`) — see
-[loop-control-plane.md](loop-control-plane.md).
+The `future-loop` state is **project-local**: run it from the project
+directory and goals live under `<cwd>/.future/loop/` (`registry.json`,
+`goals/<id>/events.jsonl`, `goals/<id>/ACTIVE_GOAL_STATE.md`, `runs/`).
+`FUTURE_LOOP_ROOT` overrides the root for special setups; `~/.future/loop/`
+is not used — see [loop-control-plane.md](loop-control-plane.md).
 
 ## `~/.future/bin/` — CLI links
 

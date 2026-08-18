@@ -566,6 +566,7 @@ async fn run_observer(
                     run_id: run_id.clone(),
                     after_idx: cursor,
                     atomic_attach: true,
+                    global_events: false,
                 })
                 .await
             {

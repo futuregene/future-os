@@ -24,11 +24,13 @@ import type {
   TimelineSegment,
   TimelineToolRow,
 } from "../remote/types";
+import { canRecoverMessage } from "../remote/recovery";
 import { colors, radius, spacing } from "../theme/tokens";
 import { Button } from "./Button";
 
 interface TimelineCardProps {
   item: TimelineItem;
+  isLatestAssistant?: boolean;
   onOpenAttachment?(attachment: HistoryAttachment): void;
   onOpenFile?(path: string): void;
   onRetry?(item: TimelineItem): void;
@@ -405,6 +407,7 @@ function SegmentBlock({
 
 export function TimelineCard({
   item,
+  isLatestAssistant,
   onOpenAttachment,
   onOpenFile,
   onRetry,
@@ -482,7 +485,7 @@ export function TimelineCard({
               {footerStats.length > 0 && <Text style={styles.messageDuration}>{footerStats}</Text>}
             </View>
           )}
-          {(item.failed || item.truncated) && (
+          {canRecoverMessage(item, isLatestAssistant ? item.id : null) && (
             <View style={styles.recoveryRow}>
               <Button
                 compact

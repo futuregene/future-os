@@ -2,7 +2,24 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-FutureOS: Rust agent (gRPC backend) + TypeScript TUI/CLI + Tauri/React GUI + React Native Mobile. For architecture, module breakdown, build/install, and configuration, read `README.md` (Architecture / Configuration sections) and the code directly.
+FutureOS: one AI agent everywhere — terminal (TUI), desktop (GUI), mobile (Android/iOS), CLI, and IM bots. The core is Rust: a gRPC agent backend plus a channel bridge, loop control plane, CLI, and TUI that all connect to it. The desktop app is Tauri + React (TypeScript) and mobile is React Native (Expo). For architecture and module breakdown read `docs/README.md` (the docs index), `docs/directory-layout.md` (what lives under `~/.future/`), and the code directly.
+
+## Workspace layout
+
+The Rust workspace (`Cargo.toml`) members and their slice of `~/.future/` (see `docs/directory-layout.md`):
+
+- `agent/` — `future-agent`, the gRPC backend. Owns `~/.future/agent/` (settings, models, auth, JSONL sessions, skills).
+- `channels/` — `future-channel`, the Feishu / DingTalk IM bridge. Owns `~/.future/channels/config.json`.
+- `orchestration/loop/` — `future-loop`, the loop control plane (durable goals/todos/gates, deterministic should-run kernel, event-sourced state). Owns `~/.future/loop/`; see `docs/loop-control-plane.md`.
+- `tui/` — `future-tui`, the terminal UI (a gRPC client of the agent). Owns `~/.future/tui/`.
+- `cli/` — `future-cli`, builds the unified `future` binary that embeds agent/tui/channel/loop.
+- `packages/rpc/` — `future-rpc`, the protobuf wire-contract crate (single source of truth; see proto notes below).
+
+`desktop/src-tauri` is deliberately **not** a workspace member (excluded): it builds on its own schedule via npm/tauri, and membership would pull it into every root cargo invocation. `packages/` also holds shared npm packages (`markdown`, `thread-projection`) consumed by desktop/mobile; the repo-root `package.json` declares npm workspaces `["packages/*", "desktop", "mobile"]`, so a single `npm install` at the root hoists all deps.
+
+## Project memory
+
+`FUTURE.md` is a workspace memory index → `.future/memory/*.md` (institutional gotchas: testing on Linux CI vs macOS, Rust toolchain quirks, GitHub CI/PR flow, `future loop` CLI operation, llvm-cov coverage measurement). Read the relevant entries before working in those areas — they encode hard-won, non-obvious constraints not visible in the code.
 
 ## Development workflow
 
@@ -14,16 +31,15 @@ Development happens in an isolated git worktree (this repo uses `.claude/worktre
 
 ### Before opening a PR
 
-Run the full pre-PR pass in the worktree, then verify on the CI toolchain (the repo pins `rust-toolchain.toml`; use the same clippy flags CI uses):
+Run the full pre-PR pass in the worktree on the CI toolchain (the repo pins `rust-toolchain.toml`; `make lint-rust` uses the same clippy flags CI uses):
 
-1. `git fetch origin main` then merge `origin/main` into the worktree branch (resolving any conflicts here).
-2. `cargo fmt --check` (workspace + `desktop/src-tauri`) — apply `cargo fmt` if needed.
-3. `cargo clippy --workspace --all-targets --manifest-path Cargo.toml -- -D warnings` — CI fails on warnings, and `--all-targets` is required to lint test code (a bare `--lib` misses it).
-4. Desktop: `tsc --noEmit`, `eslint "src/**/*.{ts,tsx}"`, `vitest run`; plus `cargo fmt --check` / `cargo clippy` under `desktop/src-tauri`.
-5. Run the test suites: `cargo test` for agent, `cargo test --lib` for `desktop/src-tauri`.
-6. Commit any fmt/clippy fixes, push, then create the PR.
+1. `git fetch origin main` then merge `origin/main` into the worktree branch (resolve conflicts here).
+2. `make lint-rust` — CI's Rust fmt + clippy (workspace + `desktop/src-tauri`, `--all-targets` included).
+3. Desktop: `tsc --noEmit`, `eslint "src/**/*.{ts,tsx}"`, `vitest run`; plus `cargo fmt --check` / `cargo clippy` under `desktop/src-tauri`.
+4. `make test` — all unit suites (Rust crates + desktop + mobile).
+5. Commit any fmt/clippy fixes, push, then create the PR.
 
-Do not skip steps or use narrower flags than CI — a green local check on a smaller scope does not guarantee CI passes.
+Do not skip steps or use narrower flags than CI — a green local check on a smaller scope does not guarantee CI passes (e.g. clippy without `--all-targets` misses test code). `make help` lists every target.
 
 During normal development you don't need to run this full suite every time — iterate on targeted checks (`cargo check`, a single test, `tsc`) to save time. The full pass is only mandatory right before a PR; without it the PR cannot merge.
 
@@ -31,23 +47,12 @@ During normal development you don't need to run this full suite every time — i
 
 `desktop/src-tauri/tauri.conf.json` declares `externalBin: ["binaries/future"]`, and `tauri-build`'s build script **aborts** with `resource path ... doesn't exist` if those files are missing. They are build artifacts — present in the main worktree but absent from a fresh worktree, so `cargo check`/`clippy`/`test` under `desktop/src-tauri` fails for environmental reasons, not your code.
 
-CI solves this by creating **empty placeholder sidecars** (`.github/workflows/ci.yml`):
-
-```bash
-triple=$(rustc -Vv | sed -n 's/^host: //p')
-mkdir -p desktop/src-tauri/binaries
-: > "desktop/src-tauri/binaries/future-$triple"
-```
-
-The placeholders are empty files and are gitignored — they only satisfy the build script's existence check. Do the same in a worktree before running GUI Rust checks.
+CI works around this with **empty placeholder sidecars** (`.github/workflows/ci.yml`). Do the same before running GUI Rust checks in a worktree: `make desktop-sidecar-placeholder` creates the empty `future-$triple` file (gitignored); `make setup` bootstraps a fresh clone entirely (JS deps + skills submodule + placeholder).
 
 ## Design principles
 
 - **Don't add features, refactors, or abstractions beyond what the task requires.** A bug fix doesn't need surrounding cleanup; a one-shot operation doesn't need a helper. Don't design for hypothetical future requirements. Three similar lines beat a premature abstraction.
 - **Cross-platform from the start.** Code must work on Windows, macOS, and Linux, on both x86-64 and arm64. Don't assume POSIX: paths can use `\` separators and `.exe` suffixes, filesystems are case-insensitive on some platforms, and shell runs differ (PowerShell on Windows). Never hard-code `/`, `~`, or shell-specific syntax when a platform-neutral form exists.
-- **Prefer editing existing files** to creating new ones. Reuse existing functions/utilities rather than duplicating logic.
-- **Security**: don't introduce OWASP top-10 vulnerabilities (command injection, XSS, SQL injection). If you notice insecure code you wrote, fix it immediately.
-- **Executing actions with care**: for destructive/hard-to-reverse/shared-state actions (deleting files, force-push, sending messages, modifying CI), confirm with the user first. Match scope to what was requested.
 
 ## Conventions and gotchas
 
@@ -55,7 +60,7 @@ The placeholders are empty files and are gitignored — they only satisfy the bu
 
 - Prefer `make` targets from repo root (`make build`, `make test`, `make lint`, ...). `make help` lists them all. For more control, use cargo/npm directly. See `README.md` Quick Start for the common flows.
 - The Rust binary `future-agent` is the backend, always a gRPC server at `127.0.0.1:50051`. The TUI, GUI Tauri backend, and channel bridge all connect to it via gRPC. `future <cmd>` is the unified entry point for every Rust component (`future agent|tui|channel|loop <args>` — each runs the same code as the standalone `future-agent` / `future-tui` / `future-channel` / `future-loop` binaries, which remain buildable (`cargo build -p <crate>`) but are no longer installed by default; `make run-*` targets also still work).
-- Proto codegen is owned by the `future-rpc` crate (single source of truth): `make generate-proto` regenerates `rpc/src/generated/proto.rs` (server + all clients). It is opt-in (`REGENERATE_PROTO=1`), checked into git, and CI fails if it goes stale. The old per-crate generated copies (`agent/`, `channels/`, `desktop/src-tauri/`) are gone — every Rust consumer depends on `future-rpc`.
+- Proto codegen is owned by the `future-rpc` crate (single source of truth): `make generate-proto` regenerates `packages/rpc/src/generated/proto.rs` (server + all clients). It is opt-in (`REGENERATE_PROTO=1`), checked into git, and CI fails if it goes stale. The old per-crate generated copies (`agent/`, `channels/`, `desktop/src-tauri/`) are gone — every Rust consumer depends on `future-rpc`.
 - Typed-RPC wire contract: `RpcResponse.payload` / `StreamEvent.payload` (field 20) carry typed `oneof` payloads for Tier-1 commands/events. The agent **dual-writes** the typed `payload` and the legacy JSON `data` string during the migration window. Decoding: Rust clients (`future_rpc::decode`) are typed-first with a JSON `data` fallback. The former TypeScript clients (`@future-os/rpc` in `future-rpc/ts`) were removed when the TUI/CLI were ported to Rust. Do not retire the `data` dual-write until every released client reads the typed payload. Field numbers are stable / never reused; `optional` marks fields whose JSON distinguishes null/absent.
 
 ### Config

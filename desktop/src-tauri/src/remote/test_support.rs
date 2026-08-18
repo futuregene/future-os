@@ -286,6 +286,35 @@ fn default_answer(
                 },
             },
         })),
+        "list_providers" => ok(json!({
+            "builtin": [
+                {
+                    "id": "future",
+                    "name": "Future",
+                    "baseUrl": "https://future-os.cn/api/v1",
+                    "hasApiKey": false,
+                    "modelCount": 9,
+                    "requiresBaseUrl": false
+                },
+                {
+                    "id": "deepseek",
+                    "name": "DeepSeek",
+                    "baseUrl": "https://api.deepseek.com/v1",
+                    "hasApiKey": false,
+                    "modelCount": 3,
+                    "requiresBaseUrl": false
+                },
+                {
+                    "id": "azure-openai-responses",
+                    "name": "Azure OpenAI Responses",
+                    "baseUrl": "https://YOUR_RESOURCE.openai.azure.com/openai",
+                    "hasApiKey": false,
+                    "modelCount": 1,
+                    "requiresBaseUrl": true
+                }
+            ],
+            "custom": []
+        })),
         "get_messages" => ok(json!({
             "messages": [
                 { "role": "user", "content": "hi" },

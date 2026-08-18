@@ -22,12 +22,7 @@ import { RemoteClient } from "./client";
 import { MAX_PROMPT_MESSAGE_BYTES, utf8Bytes } from "./codec";
 import type { ConnectionState } from "./connectionState";
 import { classifyError } from "./connectionState";
-import {
-  attemptPendingRevoke,
-  claimPairingCode,
-  ensureFreshCredentials,
-  serverRevoke,
-} from "./pairing";
+import { attemptPendingRevoke, claimPairingCode, serverRevoke } from "./pairing";
 import {
   INITIAL_PRESENCE_STATE,
   isDesktopOnline,
@@ -114,11 +109,21 @@ interface RemoteContextValue {
     attachments?: MobileAttachment[],
     onUploadProgress?: (completedBytes: number, totalBytes: number) => void,
   ): Promise<void>;
-  prepareAttachment(attachment: HistoryAttachment): Promise<DownloadInfo>;
-  cachedAttachment(attachment: HistoryAttachment): { info: DownloadInfo; file: File } | null;
+  prepareAttachment(
+    attachment: HistoryAttachment,
+    variant?: "preview" | "original",
+    signal?: AbortSignal,
+    onWaiting?: () => void,
+  ): Promise<DownloadInfo>;
+  cachedAttachment(
+    attachment: HistoryAttachment,
+    variant?: "preview" | "original",
+  ): { info: DownloadInfo; file: File } | null;
   downloadAttachment(
     info: DownloadInfo,
     onProgress?: (completedBytes: number, totalBytes: number) => void,
+    signal?: AbortSignal,
+    onWaiting?: () => void,
   ): Promise<File>;
   abort(): Promise<void>;
   setModel(modelId: string): Promise<void>;
@@ -247,6 +252,13 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     (event: StreamEvent, sessionId: string) => {
       const sid = sessionId || "";
       if (!sid) return;
+      if (event.type === "provider_config_changed") {
+        // Process-wide Agent completion mirrored on the `_global` subject.
+        // Re-read the catalogue from the authority; never project this as chat
+        // content or retain an endpoint-local optimistic model list.
+        void refreshModels();
+        return;
+      }
       // Side effects that read event payloads directly (not timeline writes):
       // these stay outside the lane because they don't mutate the session
       // timeline — the lane only receives pure timeline events.
@@ -308,7 +320,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       syncEngineRef.current?.event(sid, event);
       if (event.type === "agent_end") void refreshSessions();
     },
-    [reconcileSession, refreshSessions, setTitleOverrides],
+    [reconcileSession, refreshModels, refreshSessions, setTitleOverrides],
   );
 
   const closeConversation = useCallback(() => {
@@ -334,7 +346,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       const entries: HistoryEntry[] = [];
       let offset = 0;
       for (;;) {
-        const response = await client.request<EntriesData>(
+        const response = await client.requestRetry<EntriesData>(
           { type: "get_session_entries", sessionId, offset },
           sessionId,
         );
@@ -351,7 +363,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     const history: HistoryMessage[] = [];
     let offset = 0;
     for (;;) {
-      const response = await client.request<HistoryData>(
+      const response = await client.requestRetry<HistoryData>(
         { type: "get_messages", sessionId, offset },
         sessionId,
       );
@@ -373,7 +385,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       requestGetState: async sessionId => {
         const client = clientRef.current;
         if (!client) throw new Error("not_connected");
-        const response = await client.request<RemoteSessionState>(
+        const response = await client.requestRetry<RemoteSessionState>(
           { type: "get_state", sessionId },
           sessionId,
         );
@@ -424,18 +436,48 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       // Dispose any previous client first — it owns its own reconnect timer,
       // which must not keep running under a new pairing.
       await clientRef.current?.close();
-      const fresh = await ensureFreshCredentials(nextCredentials);
-      credentialsRef.current = fresh;
-      setCredentials(fresh);
+      // Let RemoteClient own refresh failures too. Pre-refreshing here used to
+      // throw a transient token-endpoint outage past the client's backoff and
+      // incorrectly send a stored pairing back to the unpaired screen.
+      credentialsRef.current = nextCredentials;
+      setCredentials(nextCredentials);
       setError(null);
       setCapabilities(new Set());
-      const client = new RemoteClient(fresh, {
+      const client = new RemoteClient(nextCredentials, {
         onCredentials: next => {
           setCredentials(next);
           void saveCredentials(next);
         },
         onEvent: handleEvent,
+        onEventDecodeFailure: (sessionId, decodeError) => {
+          console.warn("[remote] malformed live event; reconciling session", {
+            sessionId,
+            error: decodeError,
+          });
+          reconcileSession(sessionId, "resend");
+        },
         onPresence: nextPresence => {
+          if (nextPresence.unpaired) {
+            // The desktop sent an authenticated unpair notice before revoking
+            // the server credentials. Clear locally at once instead of waiting
+            // for the next token refresh to discover the revocation.
+            credentialsRef.current = null;
+            void clientRef.current?.close("Unpair");
+            clientRef.current = null;
+            syncEngineRef.current?.clear();
+            void clearCredentials();
+            setCredentials(null);
+            setPresence(null);
+            resetCatalog();
+            setSelectedSessionId("");
+            setDraft(false);
+            setTimelines({});
+            cursorsRef.current = {};
+            streamingRef.current = {};
+            setPhase("unpaired");
+            setError(null);
+            return;
+          }
           lastPresenceReceiptRef.current = Date.now();
           setPresence(nextPresence);
         },
@@ -497,6 +539,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
             setPhase("unpaired");
           } else if (state === "refreshing") {
             setPhase("refreshing");
+          } else if (state === "failed") {
+            setPhase("failed");
           } else if (state === "connecting") {
             setPhase("connecting");
           } else {
@@ -543,6 +587,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       handleEvent,
       recordError,
       reconcileSession,
+      resetCatalog,
       refreshModels,
       refreshSessions,
       refreshWorkspaces,
@@ -717,6 +762,13 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     // Local deregistration — ALWAYS succeeds (M7). Even an offline unpair
     // must free the device; only the server-side revoke is best-effort.
     credentialsRef.current = null;
+    // If the desktop is online, ask it to unpair too. Do not let an unavailable
+    // desktop hold the local action hostage: the server revoke below remains
+    // the authoritative offline fallback.
+    const remoteUnpair = clientRef.current?.request({ type: "unpair" }).catch(() => undefined);
+    if (remoteUnpair) {
+      await Promise.race([remoteUnpair, new Promise<void>(resolve => setTimeout(resolve, 750))]);
+    }
     await clientRef.current?.close();
     clientRef.current = null;
     // Stop and discard every pairing-owned network stream, but keep the
@@ -803,7 +855,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         // Model + thinking come from the durable session state; the timeline
         // itself reconciles on the lane (replay from the cursor / from -1 for
         // a run whose prefix isn't proven).
-        const state = await client.request<RemoteSessionState>(
+        const state = await client.requestRetry<RemoteSessionState>(
           { type: "get_state", sessionId },
           sessionId,
         );
@@ -992,17 +1044,26 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     ],
   );
 
-  const prepareAttachment = useCallback(async (attachment: HistoryAttachment) => {
-    const client = clientRef.current;
-    const sessionId = selectedRef.current;
-    if (!client || !sessionId) throw new Error("attachment_no_session");
-    const info = await prepareDownload(client, sessionId, attachment);
-    rememberPreparedPreview(attachment, info);
-    return info;
-  }, []);
+  const prepareAttachment = useCallback(
+    async (
+      attachment: HistoryAttachment,
+      variant: "preview" | "original" = "preview",
+      signal?: AbortSignal,
+      onWaiting?: () => void,
+    ) => {
+      const client = clientRef.current;
+      const sessionId = selectedRef.current;
+      if (!client || !sessionId) throw new Error("attachment_no_session");
+      const info = await prepareDownload(client, sessionId, attachment, variant, signal, onWaiting);
+      rememberPreparedPreview(attachment, info);
+      return info;
+    },
+    [],
+  );
 
   const cachedAttachment = useCallback(
-    (attachment: HistoryAttachment) => cachedPreviewForAttachment(attachment),
+    (attachment: HistoryAttachment, variant: "preview" | "original" = "preview") =>
+      cachedPreviewForAttachment(attachment, variant),
     [],
   );
 
@@ -1010,10 +1071,12 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     async (
       info: DownloadInfo,
       onProgress?: (completedBytes: number, totalBytes: number) => void,
+      signal?: AbortSignal,
+      onWaiting?: () => void,
     ) => {
       const client = clientRef.current;
       if (!client) throw new Error("attachment_not_connected");
-      return downloadPrepared(client, info, onProgress);
+      return downloadPrepared(client, info, onProgress, signal, onWaiting);
     },
     [],
   );

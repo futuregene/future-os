@@ -5,7 +5,7 @@
 //! ② ReplanRules — disposition → replan decision + obligation across the
 //!    ordered rule table; `ReplanRuleSetUpdated` custom set + reset;
 //! ③ SemanticHistory — bounded (N=50) goal-level semantic history folded
-//!    from the event ledger; decision-context consumability;
+//!    from the event ledger as a standalone goal-scoped projection;
 //! ④ TerminalJudgement — terminal closure tightened with acceptance-gap
 //!    semantics and explicit gap detail, aligned with the closure proof.
 
@@ -269,7 +269,7 @@ fn replan_rule_set_updated_event_customizes_and_resets() {
     );
 }
 
-// ── ③ SemanticHistory: bounded fold + decision-context consumption ─────────
+// ── ③ SemanticHistory: bounded goal-scoped fold ────────────────────────────
 
 #[test]
 fn semantic_history_is_bounded_to_cap() {
@@ -356,18 +356,23 @@ fn replay_folds_semantic_events_from_the_ledger() {
 }
 
 #[test]
-fn decision_context_packet_consumes_semantic_history() {
+fn semantic_history_projection_folds_goal_scoped_events() {
     let mut g = Goal::new("g", "o", "/tmp");
     g.record_semantic_event(KIND_RUN_LANDED, Some("T1"), "completed", 42);
-    let packet =
-        future_loop::capabilities::decision_context::assembler::assemble_decision_context(&g);
-    let section = packet.semantic_history.expect("section attached");
-    assert_eq!(section.schema_version, SEMANTIC_HISTORY_SCHEMA_VERSION);
-    assert_eq!(section.cap, SEMANTIC_HISTORY_CAP);
-    assert_eq!(section.events.len(), 1);
-    assert_eq!(section.events[0].kind, KIND_RUN_LANDED);
-    assert_eq!(section.events[0].ts, 42);
-    assert!(packet.providers.iter().any(|p| p == "semantic_history"));
+    // The projection is goal-scoped and replay-folded; the schema version
+    // contract stays pinned so downstream readers can detect drift.
+    assert_eq!(SEMANTIC_HISTORY_SCHEMA_VERSION, "goal_semantic_history_v0");
+    assert_eq!(g.semantic_history.len(), 1);
+    assert_eq!(g.semantic_history[0].kind, KIND_RUN_LANDED);
+    assert_eq!(g.semantic_history[0].todo_id.as_deref(), Some("T1"));
+    assert_eq!(g.semantic_history[0].ts, 42);
+    assert_eq!(g.semantic_history[0].summary, "completed");
+    // Bounded ring: oldest events drop past the cap.
+    for i in 0..(SEMANTIC_HISTORY_CAP + 3) as u64 {
+        g.record_semantic_event(KIND_RUN_LANDED, None, "more", 100 + i);
+    }
+    assert_eq!(g.semantic_history.len(), SEMANTIC_HISTORY_CAP);
+    assert_eq!(g.semantic_history.first().unwrap().ts, 103);
 }
 
 // ── ④ TerminalJudgement: tightened terminal closure with gap detail ────────

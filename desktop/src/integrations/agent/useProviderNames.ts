@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+import { onFutureEvent } from "../../lib/futureEvents";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 import { listAgentProviders } from "./providers";
 
@@ -7,7 +9,7 @@ import { listAgentProviders } from "./providers";
  * back to the id. Best-effort: errors leave the map empty.
  */
 export function useProviderNames(): Record<string, string> {
-  const { data } = useAsyncResource<Record<string, string>>(
+  const { data, reload } = useAsyncResource<Record<string, string>>(
     async () => {
       const view = await listAgentProviders();
       const map: Record<string, string> = {};
@@ -19,6 +21,8 @@ export function useProviderNames(): Record<string, string> {
     [],
     {},
   );
+
+  useEffect(() => onFutureEvent("providers-changed", reload), [reload]);
 
   return data;
 }

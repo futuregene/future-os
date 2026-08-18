@@ -3,8 +3,10 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+#[cfg(test)]
+use super::prompt_helpers::build_user_message;
 use super::prompt_helpers::{
-    approve_tool_path_if_present, build_user_message, canonical_stream_event,
+    approve_tool_path_if_present, build_user_message_with_model_context, canonical_stream_event,
     prepare_session_tool_call, stream_event_to_sse_data,
 };
 use super::ServerSession;
@@ -12,6 +14,8 @@ use super::ServerSession;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ScheduledPromptPayload {
     message: String,
+    #[serde(default)]
+    model_context: String,
     images: Vec<crate::types::ImageContent>,
     attachments: Vec<QueuedAttachmentSnapshot>,
     settings: ScheduledSettingsSnapshot,
@@ -38,6 +42,27 @@ struct ScheduledSettingsSnapshot {
 pub(super) struct AcceptedRunSnapshot {
     run_loop: crate::agent::Loop,
     settings: ScheduledSettingsSnapshot,
+}
+
+/// Textual parts of one user turn. `message` is the exact user-authored text;
+/// `model_context` is a non-display sidecar that remains at user-role trust.
+#[derive(Clone, Copy)]
+pub(super) struct PromptText<'a> {
+    message: &'a str,
+    model_context: &'a str,
+}
+
+impl<'a> PromptText<'a> {
+    pub(super) fn new(message: &'a str, model_context: &'a str) -> Self {
+        Self {
+            message,
+            model_context,
+        }
+    }
+
+    fn user_only(message: &'a str) -> Self {
+        Self::new(message, "")
+    }
 }
 
 /// Test-only hook fired by `start_next_scheduled` right after it peeks the
@@ -116,6 +141,30 @@ impl ServerSession {
         client_request_id: &str,
         busy_policy: crate::runtime::BusyPolicy,
     ) -> Result<crate::runtime::RunAck> {
+        self.enqueue_prompt_with_model_context(
+            PromptText::user_only(msg),
+            images,
+            attachments,
+            requested_run_id,
+            client_request_id,
+            busy_policy,
+        )
+    }
+
+    pub(super) fn enqueue_prompt_with_model_context(
+        &mut self,
+        prompt: PromptText<'_>,
+        images: &[crate::types::ImageContent],
+        attachments: &[crate::types::Attachment],
+        requested_run_id: Option<&str>,
+        client_request_id: &str,
+        busy_policy: crate::runtime::BusyPolicy,
+    ) -> Result<crate::runtime::RunAck> {
+        // auth.json is authoritative. Refresh immediately before freezing the
+        // run snapshot so a UI/catalog view and the actual request can never
+        // disagree about which key is in use. Failure rejects admission rather
+        // than silently running with stale credentials.
+        self.reload_credentials()?;
         if self.deleting {
             return Err(crate::runtime::RunQueueError::Deleting.into());
         }
@@ -197,7 +246,8 @@ impl ServerSession {
             .map_err(|_| anyhow::anyhow!("session run configuration is busy"))?
             .independent_copy();
         let payload = serde_json::to_value(ScheduledPromptPayload {
-            message: msg.to_string(),
+            message: prompt.message.to_string(),
+            model_context: prompt.model_context.to_string(),
             images: images.to_vec(),
             attachments: attachment_snapshots,
             settings: settings.clone(),
@@ -297,7 +347,7 @@ impl ServerSession {
         let materialized_attachments =
             self.materialize_queued_attachments(&request.run_id, &payload.attachments)?;
         let lease = self.prompt_internal(
-            &payload.message,
+            PromptText::new(&payload.message, &payload.model_context),
             &payload.images,
             &materialized_attachments,
             Some(&request.run_id),
@@ -362,11 +412,28 @@ impl ServerSession {
         requested_run_id: Option<&str>,
         client_request_id: Option<&str>,
     ) -> Result<crate::runtime::RunLease> {
+        self.prompt_with_model_context(
+            PromptText::user_only(msg),
+            images,
+            attachments,
+            requested_run_id,
+            client_request_id,
+        )
+    }
+
+    fn prompt_with_model_context(
+        &mut self,
+        prompt: PromptText<'_>,
+        images: &[crate::types::ImageContent],
+        attachments: &[crate::types::Attachment],
+        requested_run_id: Option<&str>,
+        client_request_id: Option<&str>,
+    ) -> Result<crate::runtime::RunLease> {
         if let Some(error) = self.broadcaster.persistence_error() {
             return Err(crate::runtime::RunQueueError::PersistenceUnavailable(error).into());
         }
         self.prompt_internal(
-            msg,
+            prompt,
             images,
             attachments,
             requested_run_id,
@@ -379,7 +446,7 @@ impl ServerSession {
     #[allow(clippy::too_many_arguments)]
     fn prompt_internal(
         &mut self,
-        msg: &str,
+        prompt: PromptText<'_>,
         images: &[crate::types::ImageContent],
         attachments: &[crate::types::Attachment],
         requested_run_id: Option<&str>,
@@ -478,8 +545,9 @@ impl ServerSession {
             crate::models::model_accepts_images_with(&self.model_registry.read(), &run_model);
         // Images are read + (down)encoded to base64 here, on the agent, from the
         // local path the GUI sent — the base64 never crosses the wire.
-        let mut user_message = build_user_message(
-            msg,
+        let mut user_message = build_user_message_with_model_context(
+            prompt.message,
+            prompt.model_context,
             images,
             attachments,
             model_supports_images,

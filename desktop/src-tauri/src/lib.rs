@@ -12,6 +12,10 @@ mod future_login;
 mod future_platform;
 mod git_diff_parse;
 mod git_review;
+#[cfg(target_os = "linux")]
+mod linux_power;
+#[cfg(target_os = "macos")]
+mod macos_power;
 #[cfg(target_os = "macos")]
 mod menu;
 mod proc;
@@ -21,6 +25,8 @@ mod shadow_review;
 mod skills;
 mod skills_bootstrap;
 mod store;
+#[cfg(target_os = "windows")]
+mod windows_power;
 
 use commands::*;
 use error::AppError;
@@ -614,6 +620,12 @@ pub fn run() {
         })
         .setup(|app| {
             let _ = APP_HANDLE.set(app.handle().clone());
+            #[cfg(target_os = "macos")]
+            macos_power::install_disconnect_notifier();
+            #[cfg(target_os = "windows")]
+            windows_power::install_disconnect_notifier(app.handle());
+            #[cfg(target_os = "linux")]
+            linux_power::install_disconnect_notifier();
             // Replace Tauri's default macOS menu so the brand name always reads
             // "FutureOS" (the default falls back to the lowercase executable name
             // in dev/unbundled runs) and to add the About/Restart Webview items.
@@ -679,6 +691,9 @@ pub fn run() {
             // pipeline collector owns, NATS mirroring). Attach/retry happens
             // inside each observer task, so a down agent never blocks startup.
             agent_bridge::seed_observers_from_store();
+            // Global provider/auth completion stream. This is independent of
+            // chat observers and fans committed revisions to WebView + Mobile.
+            agent_bridge::spawn_provider_config_observer();
             // Discovery: conversations created by other clients (TUI/CLI) get
             // a thread stub + an observer — streaming ones within ~1s, idle
             // ones on the 60s import pass.
@@ -753,6 +768,7 @@ pub fn run() {
             list_agent_providers,
             upsert_custom_provider,
             update_builtin_provider_key,
+            update_builtin_provider,
             set_builtin_provider_base_url,
             delete_custom_provider,
             start_future_login,
@@ -856,6 +872,11 @@ pub fn run() {
                 }
             }
             tauri::RunEvent::Exit => {
+                // A normal app/window exit still has a live runtime. Flush a
+                // short disconnect notice so the phone disables sending at
+                // once instead of waiting for heartbeat expiry. Crashes and
+                // power loss cannot run this handler and remain timeout-based.
+                tauri::async_runtime::block_on(remote::stop_gracefully("app_exit"));
                 agent_supervisor::shutdown_agent();
             }
             _ => {}
@@ -873,9 +894,9 @@ fn install_rustls_provider() {
 /// task can be scheduled before the process runtime is ready and never obtain
 /// a lasting NATS connection.
 fn spawn_remote_auto_connect() {
-    // The Remote UI is deliberately dev-only. Keep auto-connect on the same
-    // channel so a release build never starts a bridge the user cannot stop.
-    let enabled = !build_info::is_release()
+    // Pairing codes are issued by the FutureOS service, so auto-connect needs a
+    // sign-in even when the feature is enabled and credentials are persisted.
+    let enabled = future_login::future_api_key().is_ok()
         && store::get_app_settings()
             .map(|settings| settings.auto_connect_remote)
             .unwrap_or(false)

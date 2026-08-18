@@ -1,5 +1,5 @@
+import { classifyMarkdownTarget, localFilePath, remoteMarkdownImageUrl } from "@future-os/markdown";
 import { describe, expect, it } from "vitest";
-import { localFilePath } from "./localPath";
 
 describe("localFilePath", () => {
   it("treats POSIX absolute paths as local", () => {
@@ -30,6 +30,12 @@ describe("localFilePath", () => {
     expect(localFilePath("http://example.com")).toBeNull();
     expect(localFilePath("mailto:a@b.com")).toBeNull();
     expect(localFilePath("futureos://run/run_123")).toBeNull();
+    expect(localFilePath("//example.com/path")).toBeNull();
+  });
+
+  it("normalizes Windows and UNC file URLs", () => {
+    expect(localFilePath("file:///C:/Users/tao/a%20b.txt")).toBe("C:/Users/tao/a b.txt");
+    expect(localFilePath("file://server/share/a.txt")).toBe("\\\\server\\share\\a.txt");
   });
 
   it("treats a bare relative path with a separator as local (non-domain first segment)", () => {
@@ -54,6 +60,32 @@ describe("localFilePath", () => {
     expect(localFilePath("README")).toBeNull();
     expect(localFilePath("some.unknownext")).toBeNull();
     expect(localFilePath("")).toBeNull();
+  });
+});
+
+describe("classifyMarkdownTarget", () => {
+  it("allows only the shared external URL protocols", () => {
+    expect(classifyMarkdownTarget("HTTPS://example.com/a")).toMatchObject({
+      kind: "external-url",
+      protocol: "https:",
+    });
+    expect(classifyMarkdownTarget("mailto:a@example.com").kind).toBe("external-url");
+    expect(classifyMarkdownTarget("javascript:alert(1)").kind).toBe("blocked");
+    expect(classifyMarkdownTarget("data:text/plain,x").kind).toBe("blocked");
+    expect(classifyMarkdownTarget("futureos://run/1").kind).toBe("blocked");
+    expect(classifyMarkdownTarget("//example.com/a").kind).toBe("blocked");
+  });
+
+  it("separates local files and document anchors", () => {
+    expect(classifyMarkdownTarget("../pic.png")).toEqual({ kind: "local-file", path: "../pic.png" });
+    expect(classifyMarkdownTarget("#chapter")).toEqual({ anchor: "#chapter", kind: "document-anchor" });
+  });
+
+  it("allows only http(s) sources for remote images", () => {
+    expect(remoteMarkdownImageUrl("https://example.com/a.png")).toBe("https://example.com/a.png");
+    expect(remoteMarkdownImageUrl("mailto:a@example.com")).toBeNull();
+    expect(remoteMarkdownImageUrl("data:image/png;base64,x")).toBeNull();
+    expect(remoteMarkdownImageUrl("./a.png")).toBeNull();
   });
 });
 

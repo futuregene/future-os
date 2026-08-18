@@ -4,13 +4,7 @@
 //! The registry is the ecosystem injection point: a command group is
 //! declared once, commands register into it with a one-line summary and a
 //! usage line, and `--help` aggregates everything by group instead of a
-//! hard-coded help string. Consumers register through the same API:
-//!
-//! - capability command hooks (G-24) register per-capability commands
-//!   (hidden for `experimental` capabilities unless `--include-experimental`);
-//! - extension manifests (G-21) register declared commands as provider
-//!   metadata (v1 is declarative — no native code dispatch, so those commands
-//!   surface in help/catalog but execution is a P4 runtime concern).
+//! hard-coded help string.
 //!
 //! Dispatch stays in the binary: the registry validates `args[0]` against the
 //! registered command set (unknown command → error with a hint) and the
@@ -71,7 +65,7 @@ impl Journey {
                 "todos, gates, replans, leases, quota — the day-to-day control surface"
             }
             Journey::Driver => "per-turn loop execution: run envelopes, heartbeats, agent lanes",
-            Journey::Setup => "one-time configuration: authority, profiles, extensions, automation",
+            Journey::Setup => "one-time configuration: authority, profiles, automation",
             Journey::Maintainer => {
                 "quality gates (benchmark/canary/replay), retention, introspection"
             }
@@ -85,8 +79,7 @@ pub struct CommandDef {
     pub name: String,
     pub summary: String,
     pub usage: String,
-    /// True for commands surfaced only with `--include-experimental`
-    /// (capability hooks from `experimental` capabilities).
+    /// True for commands surfaced only with `--include-experimental`.
     pub experimental: bool,
     /// Operator journey (P1-9). Defaults to maintainer; the CLI builder
     /// reassigns statically known commands via `set_journey`.
@@ -94,7 +87,7 @@ pub struct CommandDef {
 }
 
 /// One registered command group (LoopX command groups: goal / todo / agent /
-/// capability / extension / ops / multi-agent / work-items / cli).
+/// ops / multi-agent / work-items / cli).
 #[derive(Debug, Clone)]
 pub struct GroupDef {
     pub name: String,
@@ -153,8 +146,7 @@ impl CommandRegistry {
         usage: &str,
         experimental: bool,
     ) -> &mut Self {
-        // Idempotent: re-registering the same name in the same group is a no-op
-        // (extension install may re-declare a manifest that provides commands).
+        // Idempotent: re-registering the same name in the same group is a no-op.
         let already = self
             .commands
             .iter()
@@ -175,8 +167,7 @@ impl CommandRegistry {
     }
 
     /// Assign the operator journey (P1-9) for an already-registered
-    /// command. No-op for unknown names — dynamically registered commands
-    /// (extension manifests, capability hooks) keep the maintainer default.
+    /// command. No-op for unknown names.
     pub fn set_journey(&mut self, command: &str, journey: Journey) -> &mut Self {
         for (_, c) in &mut self.commands {
             if c.name == command {

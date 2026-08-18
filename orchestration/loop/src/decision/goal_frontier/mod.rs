@@ -11,8 +11,7 @@
 //!     (disposition → replan decision + obligation), an ordered policy
 //!     table with a default rule set and a `ReplanRuleSetUpdated` event;
 //!   - [`semantic_history`]: the goal-level bounded semantic event history
-//!     (recent N=50 semantic summaries folded from the event ledger),
-//!     consumable by the decision-context assembler;
+//!     (recent N=50 semantic summaries folded from the event ledger);
 //!   - [`terminal`]: terminal judgement — closure validation that
 //!     enumerates acceptance-gap semantics and every remaining blocker as
 //!     explicit gap entries, aligned with the existing

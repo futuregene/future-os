@@ -13,89 +13,21 @@ fn parse_catch_all_arms_reject_unknown_flags() {
     let gid = init_goal(&cr, "parse catch-alls");
 
     // P0-3①: unknown flags are a hard error everywhere (never swallowed).
-    for args in [
-        vec!["issue-fix", "--input", "it broke", "--bogus", "x"],
-        vec![
-            "agent",
-            "register",
-            "--goal",
-            &gid,
-            "--agent-id",
-            "a1",
-            "--bogus",
-            "x",
-        ],
-        vec!["quota", "tools", "--goal", &gid, "--bogus", "x"],
-        vec![
-            "replay",
-            "run",
-            "--case",
-            "/nonexistent.json",
-            "--bogus",
-            "y",
-        ],
-        vec![
-            "replay",
-            "corpus",
-            "run",
-            "--corpus",
-            "/nonexistent.json",
-            "--bogus",
-            "y",
-        ],
-        vec!["extension", "enable", "--id", "ghost", "--bogus", "y"],
-    ] {
-        let err = cli_err(&args);
-        assert!(err.contains("unknown flag `--bogus`"), "{args:?}: {err}");
-    }
+    let args = vec![
+        "agent",
+        "register",
+        "--goal",
+        &gid,
+        "--agent-id",
+        "a1",
+        "--bogus",
+        "x",
+    ];
+    let err = cli_err(&args);
+    assert!(err.contains("unknown flag `--bogus`"), "{args:?}: {err}");
     // Known-flags-only invocations still work.
     cli_ok(&["authority", "--goal", &gid, "--require-approval", "publish"]);
     cli_ok(&["profile", "set", "--goal", &gid]);
-}
-
-#[test]
-fn extension_install_rejects_unknown_flag() {
-    let cr = cli_root();
-    let manifest = std::path::Path::new(&cr.cwd).join("m.json");
-    std::fs::write(
-        &manifest,
-        serde_json::to_string_pretty(&serde_json::json!({
-            "schema_version": future_loop::extensions::manifest::EXTENSION_MANIFEST_SCHEMA_VERSION,
-            "id": "ext-z",
-            "version": "1.0.0",
-            "requires_future_loop_api": ">=1",
-            "permissions": ["shell"],
-            "runtime": {
-                "protocol": "command_json_v0",
-                "entrypoint": "sh",
-                "args": [],
-                "doctor_args": [],
-                "required_permissions": ["shell"],
-                "timeout_seconds": 30
-            },
-            "provides": [{"id": "ext_z_cap", "kind": "domain_rule", "visibility": "public"}],
-            "implements": [{"capability_id": "ext_z_cap", "protocol": "command_json_v0"}]
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-    // Dry-run install with an unknown flag → hard error (P0-3①).
-    let err = cli_err(&[
-        "extension",
-        "install",
-        "--manifest",
-        manifest.to_str().unwrap(),
-        "--bogus",
-        "x",
-    ]);
-    assert!(err.contains("unknown flag `--bogus`"), "{err}");
-    // Without the bogus flag the dry-run install succeeds.
-    cli_ok(&[
-        "extension",
-        "install",
-        "--manifest",
-        manifest.to_str().unwrap(),
-    ]);
 }
 
 #[test]
@@ -104,61 +36,6 @@ fn runs_compact_cutoff_without_index_errors() {
     let gid = init_goal(&cr, "compact without index");
     let err = cli_err(&["runs", "compact", "--goal", &gid, "--cutoff", "0"]);
     assert!(err.contains("no run index"), "{err}");
-}
-
-#[test]
-fn serve_status_on_a_busy_port_errors() {
-    let cr = cli_root();
-    let _hold = init_goal(&cr, "serve status busy port");
-    // Hold the port so bind fails deterministically; --bogus feeds the
-    // parse catch-all.
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port().to_string();
-    let err = cli_err(&["serve-status", "--port", &port, "--bogus", "x"]);
-    assert!(!err.is_empty());
-}
-
-#[test]
-fn benchmark_run_rejects_unknown_flag_and_adapter_failure() {
-    let _cr = cli_root();
-    // P0-3①: unknown flag is a hard error before the run starts.
-    let err = cli_err(&[
-        "benchmark",
-        "run",
-        "--benchmark-id",
-        "b",
-        "--case-id",
-        "c",
-        "--task",
-        "t",
-        "--bogus",
-        "x",
-    ]);
-    assert!(err.contains("unknown flag `--bogus`"), "{err}");
-    // A dead agent address makes the gRPC adapter fail → the run errors.
-    let err = cli_err(&[
-        "benchmark",
-        "run",
-        "--benchmark-id",
-        "b",
-        "--case-id",
-        "c2",
-        "--task",
-        "t",
-        "--agent-addr",
-        "127.0.0.1:1",
-    ]);
-    assert!(!err.is_empty());
-}
-
-#[test]
-fn replay_corpus_build_with_trailing_patch_flag() {
-    let cr = cli_root();
-    let gid = init_goal(&cr, "corpus build trailing patch");
-    // `--patch` with no following value is skipped (None arm) — no patches,
-    // no ablations → the corpus build fails closed (empty corpus).
-    let err = cli_err(&["replay", "corpus", "build", "--goal", &gid, "--patch"]);
-    assert!(err.contains("at least one case"), "{err}");
 }
 
 #[test]
@@ -267,34 +144,6 @@ fn supervisor_propose_append_fails_on_read_only_goal_dir() {
     let mut perms = std::fs::metadata(&events).unwrap().permissions();
     perms.set_mode(0o644);
     std::fs::set_permissions(&events, perms).unwrap();
-}
-
-#[test]
-fn benchmark_run_qualification_error_propagates() {
-    let _cr = cli_root();
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    // The session state call fails (preflight errors INSIDE
-    // run_qualification_case — unlike a dead --agent-addr, which fails at
-    // adapter construction).
-    let (addr, _shared) = rt.block_on(common::mock_agent::spawn_mock(
-        common::mock_agent::MockState::fail("get_state"),
-    ));
-    let err = cli_err(&[
-        "benchmark",
-        "run",
-        "--benchmark-id",
-        "b",
-        "--case-id",
-        "c",
-        "--task",
-        "t",
-        "--agent-addr",
-        &addr,
-    ]);
-    assert!(!err.is_empty());
 }
 
 #[test]

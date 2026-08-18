@@ -86,8 +86,9 @@ pub(super) fn canonical_stream_event(
 
 /// Assemble the user message the model sees, plus its stored metadata.
 ///
-/// Content blocks: the prompt text, then legacy `images` (always image_url,
-/// back-compat for TUI/channels), then structured `attachments`. An image
+/// Content blocks: the exact user-authored prompt, optional client-supplied
+/// model-only context, then legacy `images` (always image_url, back-compat for
+/// TUI/channels), then structured `attachments`. An image
 /// attachment becomes an image_url block when `model_supports_images` and it
 /// carries base64; every other file — and any image the model can't take —
 /// degrades to an absolute path listed in one trailing text block. We only list
@@ -96,6 +97,7 @@ pub(super) fn canonical_stream_event(
 /// platform-dependent). The attachment list is also recorded on the message
 /// `metadata` (original paths, not copies) so it survives reload and is
 /// available to the UI/transcript without re-parsing the model-visible text.
+#[cfg(test)]
 pub(super) fn build_user_message(
     msg: &str,
     images: &[crate::types::ImageContent],
@@ -103,8 +105,35 @@ pub(super) fn build_user_message(
     model_supports_images: bool,
     load_image: &dyn Fn(&str) -> Option<String>,
 ) -> crate::types::AgentMessage {
+    build_user_message_with_model_context(
+        msg,
+        "",
+        images,
+        attachments,
+        model_supports_images,
+        load_image,
+    )
+}
+
+/// Build a user message whose first text block is the exact user-authored
+/// text and whose optional second block is model-only client context. Display
+/// projections deliberately expose only the first text block.
+pub(super) fn build_user_message_with_model_context(
+    msg: &str,
+    model_context: &str,
+    images: &[crate::types::ImageContent],
+    attachments: &[crate::types::Attachment],
+    model_supports_images: bool,
+    load_image: &dyn Fn(&str) -> Option<String>,
+) -> crate::types::AgentMessage {
     let mut content: Vec<serde_json::Value> = Vec::new();
     content.push(serde_json::json!({"type": "text", "text": msg}));
+    if !model_context.is_empty() {
+        content.push(serde_json::json!({
+            "type": "text",
+            "text": format!("\n\n{model_context}")
+        }));
+    }
 
     for img in images {
         let url = img.data.as_deref().unwrap_or("");

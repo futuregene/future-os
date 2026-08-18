@@ -98,6 +98,41 @@ fn claim_rejects_live_lease_from_other_agent() {
     assert_eq!(g.todo("t1").unwrap().claimed_by.as_deref(), Some("alice"));
 }
 
+// ── Lease liveness on the manual `todo claim` path (state::Todo::claim) ────
+// A killed run leaves a live lease whose holder pid no longer exists; the
+// next manual claim must reclaim it (mirrors the run-path task_lease steal),
+// while a live pid keeps the hard error and a pre-liveness ledger (no pid)
+// keeps the old refusal.
+#[test]
+fn claim_reclaims_dead_holder_lease() {
+    let mut g = goal_with_todo(&["alice", "bob"]);
+    let now = now_epoch();
+    {
+        let t = g.todo_mut("t1").unwrap();
+        t.claimed_by = Some("alice".to_string());
+        t.lease_expires_at = Some(now + 3600);
+        t.holder_pid = Some(4_000_000_000); // far outside the pid range
+    }
+    let claimed = g.todo_mut("t1").unwrap().claim("bob", 3600, now);
+    assert!(claimed, "dead holder's lease must be reclaimed");
+    assert_eq!(g.todo("t1").unwrap().claimed_by.as_deref(), Some("bob"));
+}
+
+#[test]
+fn claim_refuses_live_holder_pid() {
+    let mut g = goal_with_todo(&["alice", "bob"]);
+    let now = now_epoch();
+    {
+        let t = g.todo_mut("t1").unwrap();
+        t.claimed_by = Some("alice".to_string());
+        t.lease_expires_at = Some(now + 3600);
+        t.holder_pid = Some(std::process::id()); // the test process is alive
+    }
+    let claimed = g.todo_mut("t1").unwrap().claim("bob", 3600, now);
+    assert!(!claimed, "a live holder's lease must not be stolen");
+    assert_eq!(g.todo("t1").unwrap().claimed_by.as_deref(), Some("alice"));
+}
+
 // ── Contract (P0-1): workspace declarations survive replay and drive the
 //    guard — a peer holding a live lease in an overlapping workspace
 //    conflicts; idle or disjoint peers do not. ─────────────────────────────
@@ -145,6 +180,7 @@ fn workspace_guard_survives_replay_and_detects_conflicts() {
             goal_id: "g1".into(),
             todo_id: "t1".into(),
             agent_id: "alice".into(),
+            holder_pid: None,
             lease_expires_at: now + 3600,
             ts: now,
         })
@@ -211,6 +247,7 @@ fn claim_survives_replay() {
             goal_id: "g1".into(),
             todo_id: "t1".into(),
             agent_id: "alice".into(),
+            holder_pid: None,
             lease_expires_at: ts + 3600,
             ts,
         })
@@ -284,21 +321,58 @@ fn store_with_todo(tag: &str) -> (String, Store) {
 #[test]
 fn atomic_claim_conflict_is_reported() {
     let (_root, store) = store_with_todo("atomic-conflict");
-    assert!(store.try_claim_todo("g1", "t1", "alice", 3600).unwrap());
+    assert!(
+        store
+            .try_claim_todo("g1", "t1", "alice", 3600)
+            .unwrap()
+            .claimed
+    );
     // A different agent loses atomically (no overwrite in the ledger).
-    assert!(!store.try_claim_todo("g1", "t1", "bob", 3600).unwrap());
+    assert!(
+        !store
+            .try_claim_todo("g1", "t1", "bob", 3600)
+            .unwrap()
+            .claimed
+    );
     // The holder reclaiming (renewal) succeeds.
-    assert!(store.try_claim_todo("g1", "t1", "alice", 3600).unwrap());
+    assert!(
+        store
+            .try_claim_todo("g1", "t1", "alice", 3600)
+            .unwrap()
+            .claimed
+    );
 }
 
 #[test]
 fn atomic_claim_after_expiry_or_release() {
     let (_root, mut store) = store_with_todo("atomic-expiry");
-    // Lease of 0s is immediately expired → another agent may claim.
-    assert!(store.try_claim_todo("g1", "t1", "alice", 0).unwrap());
-    assert!(store.try_claim_todo("g1", "t1", "bob", 3600).unwrap());
+    // An explicit expiry marker frees the lease for another agent.
+    assert!(
+        store
+            .try_claim_todo("g1", "t1", "alice", 3600)
+            .unwrap()
+            .claimed
+    );
+    store
+        .append(Event::TodoExpired {
+            goal_id: "g1".into(),
+            todo_id: "t1".into(),
+            ts: now_epoch(),
+        })
+        .unwrap();
+    assert!(
+        store
+            .try_claim_todo("g1", "t1", "bob", 3600)
+            .unwrap()
+            .claimed
+    );
     // A third agent cannot claim while bob's lease is live.
-    assert!(!store.try_claim_todo("g1", "t1", "carol", 3600).unwrap());
+    assert!(
+        !store
+            .try_claim_todo("g1", "t1", "carol", 3600)
+            .unwrap()
+            .claimed
+    );
     // An explicit release frees the todo immediately.
     store
         .append(Event::TodoReleased {
@@ -308,5 +382,10 @@ fn atomic_claim_after_expiry_or_release() {
             ts: now_epoch(),
         })
         .unwrap();
-    assert!(store.try_claim_todo("g1", "t1", "carol", 3600).unwrap());
+    assert!(
+        store
+            .try_claim_todo("g1", "t1", "carol", 3600)
+            .unwrap()
+            .claimed
+    );
 }

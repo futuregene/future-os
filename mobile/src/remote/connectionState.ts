@@ -31,7 +31,7 @@
  */
 
 export type ConnectionState =
-  "connecting" | "ready" | "reconnecting" | "refreshing" | "revoked" | "unpaired";
+  "connecting" | "ready" | "reconnecting" | "refreshing" | "failed" | "revoked" | "unpaired";
 
 export type LifecycleEvent =
   | { type: "open_started" }
@@ -39,6 +39,7 @@ export type LifecycleEvent =
   | { type: "ready" }
   | { type: "transport_disconnect" }
   | { type: "auth_failed" }
+  | { type: "fatal"; error: Error }
   | { type: "revoked" }
   | { type: "unpair" };
 
@@ -70,7 +71,7 @@ export function backoffDelayMs(attempt: number, random = Math.random): number {
  *   auth         — the token/pairing is broken but not revoked (refreshable).
  *   transport    — transient; retry with backoff.
  */
-export function classifyError(error: unknown): "authTerminal" | "auth" | "transport" {
+export function classifyError(error: unknown): "authTerminal" | "auth" | "fatal" | "transport" {
   const message = error instanceof Error ? error.message : String(error);
   if (
     message.includes("invalid_remote_credential") ||
@@ -87,6 +88,13 @@ export function classifyError(error: unknown): "authTerminal" | "auth" | "transp
     message.includes("pairing_confirmation_mismatch")
   ) {
     return "auth";
+  }
+  if (
+    message.includes("PERMISSIONS_VIOLATION") ||
+    message.includes("AUTHORIZATION_VIOLATION") ||
+    message.includes("remote_service_misconfigured")
+  ) {
+    return "fatal";
   }
   return "transport";
 }
@@ -112,6 +120,8 @@ export function transition(current: ConnectionState, event: LifecycleEvent): Con
           return { next: "refreshing", effects: [{ type: "begin_token_refresh" }] };
         case "revoked":
           return { next: "revoked", effects: [{ type: "dispose_connection", reason: "revoked" }] };
+        case "fatal":
+          return { next: "failed", effects: [{ type: "dispose_connection", reason: "fatal" }] };
         case "transport_disconnect":
           // Already reconnecting — absorb; only open_failed may arm the timer.
           return { next: "reconnecting", effects: [] };
@@ -133,6 +143,8 @@ export function transition(current: ConnectionState, event: LifecycleEvent): Con
           return { next: "refreshing", effects: [{ type: "begin_token_refresh" }] };
         case "revoked":
           return { next: "revoked", effects: [{ type: "dispose_connection", reason: "revoked" }] };
+        case "fatal":
+          return { next: "failed", effects: [{ type: "dispose_connection", reason: "fatal" }] };
         case "open_failed":
           return { next: "reconnecting", effects: [{ type: "schedule_reconnect" }] };
         case "unpair":
@@ -145,6 +157,10 @@ export function transition(current: ConnectionState, event: LifecycleEvent): Con
       }
     case "revoked":
       // Terminal — nothing may transition out except a fresh pair.
+      return { next: current, effects: [] };
+    case "failed":
+      // A manual reconnect creates a fresh RemoteClient; this failed instance
+      // must not restart itself in the background.
       return { next: current, effects: [] };
     case "unpaired":
       // A fresh pair (a new RemoteClient with credentials) begins its first

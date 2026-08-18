@@ -24,7 +24,7 @@
   },
   "remote": {
     "autoConnect": {
-      "title": "打开软件后自动连接远程设备",
+      "title": "打开软件后自动连接手机",
       "description": "已配对手机时，每次打开软件自动连接到该设备，你仍可随时手动断开。"
     }
   },
@@ -57,7 +57,7 @@
     },
     "tabs": {
       "general": "通用",
-      "remote": "远程",
+      "remote": "手机遥控",
       "account": "账号",
       "update": "检查更新",
       "about": "关于",

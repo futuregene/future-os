@@ -28,6 +28,13 @@ pub async fn update_builtin_provider_key(
 }
 
 #[tauri::command]
+pub async fn update_builtin_provider(
+    input: agent_providers::UpdateBuiltinProviderInput,
+) -> Result<agent_providers::ProvidersView, crate::AppError> {
+    agent_providers::update_builtin_provider(input).await
+}
+
+#[tauri::command]
 pub async fn set_builtin_provider_base_url(
     input: agent_providers::SetBuiltinProviderBaseUrlInput,
 ) -> Result<agent_providers::ProvidersView, crate::AppError> {
@@ -54,12 +61,14 @@ mod tests {
             tauri::generate_handler![
                 upsert_custom_provider,
                 update_builtin_provider_key,
+                update_builtin_provider,
                 set_builtin_provider_base_url,
                 delete_custom_provider
             ],
             &[
                 "upsert_custom_provider",
                 "update_builtin_provider_key",
+                "update_builtin_provider",
                 "set_builtin_provider_base_url",
                 "delete_custom_provider",
             ],

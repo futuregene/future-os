@@ -237,6 +237,21 @@ fn sync_title_best_effort(thread_id: &str, name: &str) {
     }
 }
 
+/// The "no agent session" payload for [`get_thread_agent_state`]: null model /
+/// thinking level and session id, so the frontend falls back to the thread
+/// title and the global draft selections.
+fn empty_agent_state(session_name: &str) -> serde_json::Value {
+    serde_json::json!({
+        "model": null,
+        "thinkingLevel": null,
+        "session_name": session_name,
+        "sessionId": null,
+        "cwd": null,
+        "parentSessionId": null,
+        "isStreaming": false,
+    })
+}
+
 #[tauri::command]
 pub async fn get_thread_agent_state(
     thread_id: String,
@@ -248,15 +263,7 @@ pub async fn get_thread_agent_state(
         .map(str::trim)
         .filter(|id| !id.is_empty())
     else {
-        return Ok(serde_json::json!({
-            "model": null,
-            "thinkingLevel": null,
-            "session_name": thread.title,
-            "sessionId": null,
-            "cwd": null,
-            "parentSessionId": null,
-            "isStreaming": false,
-        }));
+        return Ok(empty_agent_state(&thread.title));
     };
 
     // Agent unreachable or get_state failed: return an ERROR, not a null
@@ -264,6 +271,12 @@ pub async fn get_thread_agent_state(
     // fabricated nulls poisoned the composer with the global draft
     // model/thinking level for the whole TTL window. An error instead
     // rejects the fetch, leaving the last-known-good cache entry in place.
+    //
+    // The one exception is a missing session ("session not found"): the agent
+    // losing a session (e.g. after an environment switch restarts it) is not a
+    // transient fetch failure, so a null payload is the honest answer — the
+    // thread genuinely has no session now, and the prompt path recreates it on
+    // the next send.
     let mut client = crate::agent_bridge::connect_agent()
         .await
         .map_err(|e| format!("Future Agent unreachable: {e}"))?;
@@ -274,6 +287,9 @@ pub async fn get_thread_agent_state(
         .map_err(|e| format!("get_state RPC failed: {e}"))?
         .into_inner();
     if !resp.success {
+        if resp.error.contains("session not found") {
+            return Ok(empty_agent_state(&thread.title));
+        }
         return Err(format!("get_state rejected: {}", resp.error).into());
     }
     let value = serde_json::from_str::<serde_json::Value>(&resp.data)
@@ -330,6 +346,13 @@ pub async fn get_session_entries(thread_id: String) -> Result<serde_json::Value,
         .map_err(|e| format!("get_session_entries failed: {e}"))?
         .into_inner();
     if !resp.success {
+        // A session the agent no longer knows (e.g. lost after an environment
+        // switch restarts the agent) is benign for reads: report empty history,
+        // matching a thread with no session. The prompt path recreates it on the
+        // next send. Other rejections stay real errors.
+        if resp.error.contains("session not found") {
+            return Ok(serde_json::json!({ "entries": [] }));
+        }
         return Err(resp.error.into());
     }
     serde_json::from_str(&resp.data).map_err(|e| format!("Parse error: {e}").into())
@@ -1060,6 +1083,52 @@ mod tests {
         });
         let err = get_session_entries(thread.id.clone()).await.unwrap_err();
         assert!(!err.to_string().is_empty());
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn get_thread_agent_state_returns_null_when_session_not_found() {
+        // Regression: a session lost after an environment switch (the agent is
+        // restarted and no longer knows the id) must read as "no session", not
+        // surface the raw "session not found" error to the frontend.
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_agent_state_missing");
+        let thread = make_thread(&_home, Some("sess_state_missing"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            errors: HashMap::from([(
+                "get_state".to_string(),
+                "session not found — pass a valid session_id (new_session creates one)".to_string(),
+            )]),
+            ..Default::default()
+        });
+        let value = get_thread_agent_state(thread.id.clone())
+            .await
+            .expect("missing session is a benign null payload");
+        assert_eq!(value["sessionId"], serde_json::Value::Null);
+        assert_eq!(value["model"], serde_json::Value::Null);
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn get_session_entries_returns_empty_when_session_not_found() {
+        // Same regression for history: a lost session reads as empty, matching a
+        // thread that never had an agent session.
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_entries_missing");
+        let thread = make_thread(&_home, Some("sess_entries_missing"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            errors: HashMap::from([(
+                "get_session_entries".to_string(),
+                "session not found — pass a valid session_id (new_session creates one)".to_string(),
+            )]),
+            ..Default::default()
+        });
+        let value = get_session_entries(thread.id.clone())
+            .await
+            .expect("missing session is a benign empty history");
+        assert_eq!(value["entries"], serde_json::json!([]));
         script_mock_agent(MockScript::default());
     }
 

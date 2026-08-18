@@ -6,7 +6,7 @@
 mod common;
 
 use common::mock_agent::{completed_events, spawn_mock, MockState};
-use common::{cli_err, cli_ok, cli_root, first_todo_id, init_goal, open_store, run_record};
+use common::{cli_err, cli_ok, cli_root, first_todo_id, init_goal, open_store};
 use future_loop::state::{now_epoch, Todo, TodoStatus};
 
 fn rt() -> tokio::runtime::Runtime {
@@ -67,15 +67,9 @@ fn unknown_flags_hard_error_everywhere() {
         vec!["runs", "retention", "--goal", &gid, "--zz", "1"],
         vec!["runs", "stale", "--goal", &gid, "--zz", "1"],
         vec!["heartbeat-prompt", "--goal", &gid, "--zz", "1"],
-        vec!["capability", "list", "--zz", "1"],
-        vec!["capability", "commands", "--zz", "1"],
-        vec!["capability", "propose", "--name", "issue_fix", "--zz", "1"],
-        vec!["catalog", "--zz", "1"],
-        vec!["catalog", "--name", "issue_fix", "--zz", "1"],
         vec!["scope", "--goal", &gid, "--agent-id", "w1", "--zz", "1"],
         vec!["lane", "--goal", &gid, "--agent-id", "w1", "--zz", "1"],
         vec!["supervisor", "events", "--goal", &gid, "--zz", "1"],
-        vec!["handoff", "--goal", &gid, "--zz", "1"],
         vec!["task-graph", "--goal", &gid, "--zz", "1"],
         vec!["attention", "--goal", &gid, "--zz", "1"],
         vec!["inbox", "--project", &cr.cwd, "--zz", "1"],
@@ -96,11 +90,7 @@ fn unknown_flags_hard_error_everywhere() {
             "1",
         ],
         vec!["evidence-log", "--goal", &gid, "--zz", "1"],
-        vec!["benchmark", "protocol", "--route", "r", "--zz", "1"],
-        vec!["benchmark", "ledger", "--zz", "1"],
         vec!["agent", "list", "--goal", &gid, "--zz", "1"],
-        vec!["extension", "status", "--zz", "1"],
-        vec!["extension", "capabilities", "--zz", "1"],
         vec!["replan", "obligations", "--goal", &gid, "--zz", "1"],
     ];
     for args in &cases {
@@ -153,6 +143,8 @@ fn unknown_flags_hard_error_everywhere() {
         "--todo-id",
         &first,
         "--no-follow-up",
+        "--evidence",
+        "fixture evidence for completion contract",
         "--zz",
         "1",
     ]);
@@ -288,10 +280,6 @@ fn unknown_flags_hard_error_everywhere() {
         "--zz",
         "1",
     ]);
-    assert_unknown_flag(&["replay", "record", "--goal", &gid, "--zz", "1"]);
-    assert_unknown_flag(&[
-        "replay", "corpus", "build", "--goal", &gid, "--patch", "{}", "--zz", "1",
-    ]);
 }
 
 // ── steer poll seam ────────────────────────────────────────────────────────
@@ -349,6 +337,7 @@ fn steer_poll_once_arms() {
                 priority: None,
                 resume_when: None,
                 blocks: None,
+                acceptance: None,
                 ts: now_epoch(),
             })
             .unwrap();
@@ -430,6 +419,7 @@ fn run_monitor_claim_race_stops_without_selection() {
                 goal_id: goal.clone(),
                 todo_id: "mon_raced".into(),
                 agent_id: "other-agent".into(),
+                holder_pid: None,
                 lease_expires_at: now_epoch() + 3600,
                 ts: now_epoch(),
             })
@@ -510,6 +500,8 @@ fn status_closure_and_gap_arms() {
         "--todo-id",
         &first,
         "--no-follow-up",
+        "--evidence",
+        "fixture evidence for completion contract",
     ]);
     cli_ok(&["status", "--goal", &gid]);
     // Projection gap → the ⚠ line.
@@ -560,26 +552,6 @@ fn scheduler_tick_single_execution_arm() {
     cli_ok(&["scheduler", "tick", "--goal", &gid]);
 }
 
-// ── capability hook proposal-kind arms ─────────────────────────────────────
-
-#[test]
-fn capability_hook_kind_arms() {
-    let _cr = cli_root();
-    // NoFollowUp via empty input; Gate via read-only authority (prints the
-    // gate question line).
-    cli_ok(&["issue-fix"]);
-    cli_ok(&[
-        "issue-fix",
-        "--input",
-        "title: bug\nerror: crash\nrepro: steps\nauthority: read-only",
-    ]);
-    cli_ok(&[
-        "issue-fix",
-        "--input",
-        "title: crash\nerror: panicked\nrepro: run it\nexpected: works fine\nscope: cli",
-    ]);
-}
-
 // ── runs index duplicate-group print arms ──────────────────────────────────
 
 #[test]
@@ -600,58 +572,4 @@ fn runs_index_duplicate_report() {
         .unwrap();
     }
     cli_ok(&["runs", "index", "--goal", &gid]);
-}
-
-// ── handoff: delivery contract present arm ─────────────────────────────────
-
-#[test]
-fn handoff_delivery_contract_present() {
-    let cr = cli_root();
-    let gid = init_goal(&cr, "handoff contract");
-    {
-        let store = open_store(&cr);
-        // Two small-scale runs → small-batch streak hits the default threshold.
-        let mut r1 = run_record("t", "completed", now_epoch());
-        r1.evidence = "unit test passed".into();
-        let mut r2 = run_record("t", "completed", now_epoch());
-        r2.evidence = "unit test passed".into();
-        store.append_run(&gid, &r1).unwrap();
-        store.append_run(&gid, &r2).unwrap();
-    }
-    cli_ok(&["handoff", "--goal", &gid]);
-}
-
-// ── serve-status via the CLI (parse + serve, thread-leaked) ────────────────
-
-#[test]
-fn serve_status_command_arm() {
-    let cr = cli_root();
-    let _gid = init_goal(&cr, "serve via cli");
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    // cmd_serve_status blocks forever in serve() → run it on a leaked thread.
-    std::thread::spawn(move || {
-        let _ = future_loop::console::run(
-            "future-loop",
-            vec![
-                "serve-status".to_string(),
-                "--port".to_string(),
-                port.to_string(),
-            ],
-        );
-    });
-    // Wait for the server, then hit it.
-    let mut ok = false;
-    for _ in 0..100 {
-        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            ok = true;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    assert!(ok, "serve-status came up");
-    let _ = cr;
 }

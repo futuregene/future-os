@@ -1,7 +1,7 @@
 //! G-15 attention / operator-inbox / delivery-signal contract tests: the
 //! attention queue projection, the operator inbox urgency read model (content
 //! never returned), and the delivery signals (batch scale / outcome / streaks)
-//! that feed the handoff delivery contract.
+//! that feed delivery evaluation.
 
 use future_loop::state::{Goal, RunRecord, Todo};
 use future_loop::work_items::attention::{

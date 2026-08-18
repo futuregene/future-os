@@ -13,7 +13,7 @@ use crate::auth_store::FUTURE_PROVIDER_ID;
 /// Future platform root (no `/api`); auth/account endpoints hang off this and
 /// the model API base is derived as `{platform}/api/v1`. Production host — the
 /// production and test environments differ only in the host; see the shared
-/// contract in `rpc/proto/future.proto` ("Future Platform URL Resolution").
+/// contract in `packages/rpc/proto/future.proto` ("Future Platform URL Resolution").
 pub(crate) const DEFAULT_FUTURE_PLATFORM_URL: &str = "https://future-os.cn";
 
 /// Selectable FutureGene environments. Mirrors the CLI's `auth login --url`
@@ -23,7 +23,7 @@ pub(crate) const PRODUCTION_PLATFORM_URL: &str = DEFAULT_FUTURE_PLATFORM_URL;
 pub(crate) const TEST_PLATFORM_URL: &str = "https://test.future-os.cn";
 
 /// Resolve the Future **platform** root (no `/api`), following the shared
-/// contract in `rpc/proto/future.proto` ("Future Platform URL Resolution") — keep
+/// contract in `packages/rpc/proto/future.proto` ("Future Platform URL Resolution") — keep
 /// aligned with the agent implementation (`agent/src/models/future.rs`):
 ///   1. `future.base_url` with a trailing `/api` stripped (the storage format
 ///      every writer uses — the CLI's `saveAuth` and this app's login /
@@ -58,6 +58,7 @@ pub(crate) fn resolve_future_platform_url(auth: &Value) -> String {
 
 /// Resolve the FutureGene **model API** base URL: `{platform}/api/v1`. This is
 /// what the Providers page shows and what model calls use.
+#[cfg(test)]
 pub(crate) fn resolve_future_base_url(auth: &Value) -> String {
     format!("{}/api/v1", resolve_future_platform_url(auth))
 }
@@ -150,7 +151,7 @@ mod tests {
 
     #[test]
     fn base_url_wins_over_platform_base_url() {
-        // Same precedence as the agent (rpc/proto/future.proto contract): the stored
+        // Same precedence as the agent (packages/rpc/proto/future.proto contract): the stored
         // `base_url` beats a stale `platform_base_url`.
         let auth = json!({ "future": {
             "base_url": "https://future-os.cn/api",

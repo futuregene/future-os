@@ -1,7 +1,7 @@
 //! Coverage sweep 2 for console.rs — the surgical remainder: default-cwd
 //! goal init, delete-force errors, agent-list lease events, the run-loop
 //! replan self-repair arm, backfill claim print, stale status cache, scoped
-//! gates, benchmark adapter connect error, replay mismatch prints, failing
+//! gates, failing
 //! canary/doctor CLI paths.
 
 mod common;
@@ -43,16 +43,7 @@ fn agent_list_with_lease_events() {
     let cr = cli_root();
     let gid = init_goal(&cr, "agent list lease events");
     let first = first_todo_id(&cr.root, &gid);
-    cli_ok(&[
-        "agent",
-        "onboard",
-        "--goal",
-        &gid,
-        "--agent-id",
-        "w1",
-        "--capability",
-        "shell",
-    ]);
+    cli_ok(&["agent", "onboard", "--goal", &gid, "--agent-id", "w1"]);
     cli_ok(&[
         "todo",
         "claim",
@@ -200,62 +191,6 @@ fn scope_with_open_gate() {
 }
 
 #[test]
-fn benchmark_run_unreachable_agent() {
-    let cr = cli_root();
-    let err = cli_err(&[
-        "benchmark",
-        "run",
-        "--benchmark-id",
-        "b",
-        "--case-id",
-        "c",
-        "--task",
-        "t",
-        "--agent-addr",
-        "127.0.0.1:1",
-    ]);
-    assert!(err.contains(""), "{err}");
-    let _ = cr;
-}
-
-#[test]
-fn replay_run_mismatch_prints_and_bails() {
-    let cr = cli_root();
-    let gid = init_goal(&cr, "replay mismatch");
-    let case_file = std::path::Path::new(&cr.cwd).join("cases.json");
-    cli_ok(&[
-        "replay",
-        "record",
-        "--goal",
-        &gid,
-        "--out",
-        case_file.to_str().unwrap(),
-    ]);
-    // Tamper the recorded case: flip a decision field.
-    let mut value: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&case_file).unwrap()).unwrap();
-    let should_run = value["cases"][0]["decision"]["should_run"]
-        .as_bool()
-        .unwrap();
-    value["cases"][0]["decision"]
-        .as_object_mut()
-        .unwrap()
-        .insert("should_run".into(), serde_json::json!(!should_run));
-    std::fs::write(&case_file, serde_json::to_string(&value).unwrap()).unwrap();
-    let err = cli_err(&["replay", "run", "--case", case_file.to_str().unwrap()]);
-    assert!(err.contains("drifted"), "{err}");
-    // JSON mode prints the comparison object.
-    let err = cli_err(&[
-        "replay",
-        "run",
-        "--case",
-        case_file.to_str().unwrap(),
-        "--json",
-    ]);
-    assert!(err.contains("drifted"), "{err}");
-}
-
-#[test]
 fn canary_cli_failing_checks() {
     let cr = cli_root();
     let gid = init_goal(&cr, "canary cli fail");
@@ -297,22 +232,6 @@ fn doctor_goal_replay_error_arm() {
 }
 
 #[test]
-fn capability_commands_experimental_note() {
-    let _cr = cli_root();
-    // pr_review_queue ships as active-preview: its commands list with and
-    // without the flag; experimental-gated capabilities still need it.
-    cli_ok(&["capability", "commands", "--name", "pr_review_queue"]);
-    cli_ok(&[
-        "capability",
-        "commands",
-        "--name",
-        "pr_review_queue",
-        "--include-experimental",
-    ]);
-    cli_ok(&["catalog", "--name", "pr_review_queue"]);
-}
-
-#[test]
 fn diagnose_and_doctor_with_projection_gap() {
     let cr = cli_root();
     let gid = init_goal(&cr, "gap surfaces");
@@ -327,6 +246,8 @@ fn diagnose_and_doctor_with_projection_gap() {
         "--todo-id",
         &first,
         "--no-follow-up",
+        "--evidence",
+        "fixture evidence for completion contract",
     ]);
     {
         let store = open_store(&cr);
@@ -335,30 +256,6 @@ fn diagnose_and_doctor_with_projection_gap() {
     cli_ok(&["diagnose", "--goal", &gid]);
     let err = cli_err(&["doctor", "--goal", &gid]);
     assert!(err.contains("gap") || err.contains("failure"), "{err}");
-}
-
-#[test]
-fn benchmark_protocol_blind_route() {
-    let _cr = cli_root();
-    cli_ok(&[
-        "benchmark",
-        "protocol",
-        "--route",
-        "raw-codex-autonomous-max5",
-    ]);
-}
-
-#[test]
-fn capability_propose_gate_print_arm() {
-    let _cr = cli_root();
-    cli_ok(&[
-        "capability",
-        "propose",
-        "--name",
-        "issue_fix",
-        "--input",
-        "title: bug\nerror: crash\nrepro: steps\nauthority: read-only",
-    ]);
 }
 
 #[test]
@@ -372,17 +269,6 @@ fn privacy_private_fields_print_arm() {
         &format!("read {home}/.ssh/id_rsa and rotate the key"),
     );
     cli_ok(&["privacy", "--goal", &gid]);
-}
-
-#[test]
-fn corpus_build_trailing_flag_arms() {
-    let cr = cli_root();
-    let gid = init_goal(&cr, "corpus trailing");
-    // --ablate / --patch at the very end with no value → skipped arms.
-    cli_ok(&[
-        "replay", "corpus", "build", "--goal", &gid, "--patch", "{}", "--ablate",
-    ]);
-    let _ = cr;
 }
 
 #[test]
@@ -415,17 +301,6 @@ fn runs_retention_with_candidates() {
         }
     }
     cli_ok(&["runs", "retention", "--goal", &gid, "--keep", "1"]);
-}
-
-#[test]
-fn benchmark_protocol_blind_route_print() {
-    let _cr = cli_root();
-    cli_ok(&[
-        "benchmark",
-        "protocol",
-        "--route",
-        "future-loop-blind-loop-treatment",
-    ]);
 }
 
 #[test]
@@ -463,41 +338,6 @@ fn runs_retention_candidates_print() {
 }
 
 #[test]
-fn benchmark_run_stub_flag() {
-    let cr = cli_root();
-    let ledger_dir = std::path::Path::new(&cr.cwd).join("bench-stub");
-    cli_ok(&[
-        "benchmark",
-        "run",
-        "--benchmark-id",
-        "bs",
-        "--case-id",
-        "cs",
-        "--task",
-        "t",
-        "--stub",
-        "--ledger-dir",
-        ledger_dir.to_str().unwrap(),
-    ]);
-}
-
-#[test]
-fn corpus_build_positional_arg_arm() {
-    let cr = cli_root();
-    let gid = init_goal(&cr, "corpus positional");
-    cli_ok(&[
-        "replay",
-        "corpus",
-        "build",
-        "--goal",
-        &gid,
-        "positional-junk",
-        "--patch",
-        "{}",
-    ]);
-}
-
-#[test]
 fn run_validator_inconclusive_print() {
     let cr = cli_root();
     let (_rt, _shared) = mock_env(MockState {
@@ -514,6 +354,8 @@ fn run_validator_inconclusive_print() {
         "--todo-id",
         &first,
         "--no-follow-up",
+        "--evidence",
+        "fixture evidence for completion contract",
     ]);
     cli_ok(&[
         "todo",

@@ -1,364 +1,147 @@
-# Loop Control Plane (`future-loop`)
+# Loop Control Plane (`future loop`)
 
-> The local control plane for long-running AI agent work — keep objectives,
-> gates, todos, evidence, quota, and handoffs stable while an agent executes
-> bounded turns.
+> A local control plane that makes long-running AI agent work durable,
+> governable, and verifiable — objectives, gates, todos, evidence, and quotas
+> persist outside the chat; the agent executes one bounded turn at a time and
+> a deterministic kernel decides what happens next.
 
-FutureOS ships a native loop control plane in `orchestration/loop` as the
-`future-loop` CLI plus the `/future-loop` agent skill. It turns a conversation
-into a durable, reviewable long-running goal: goals, todos, human gates,
-monitors, evidence, and completion are persisted outside the chat, and a
-deterministic kernel decides what should happen next — one bounded turn at a
-time.
+## Why it exists
 
-The primary way to invoke it is `future loop <command>`; the standalone
-`future-loop` binary is equivalent but no longer installed by default —
-build it with `cargo build -p future-loop` (or install via
-scripts/install-future-loop.sh), and `make run-loop` runs it in dev.
+A conversation loses context; a "keep an eye on this for a week" request
+should not live in chat history. `future loop` turns the request into a
+**durable goal**: a todo graph, human gates, per-step evidence, and a
+verifiable definition of done — surviving sessions, restarts, and parallel
+workers.
 
-> `future-loop` is a Rust rewrite of the
-> [loopx](https://github.com/huangruiteng/loopx) control plane, adapted and
-> extended for FutureOS (project-local state, gRPC executor bridge, quota
-> kernel, extensions & multi-agent).
+## At a glance
 
 ```
-objective / issue / project
+objective
+   │
+   ├─ todo graph (advancement / user-gate / monitor, --blocks dependencies)
+   │
+   ├─ human judgment needed? ──▶ ask one concrete question and wait (user gate)
+   │
+   ├─ safe to proceed? ──▶ kernel decision packet: run this todo / wait / replan / terminal
    │
    ▼
-loop state: objective + gates + todos + scope + evidence + quota
-   │
-   ├─ human judgment needed? ── yes ─▶ ask a concrete question and wait
-   │
-   ├─ safe fallback available? ──────▶ run one bounded agent slice
+agent executes one bounded turn (gRPC) → writes evidence → kernel decides the next turn
+```
+
+## Core concepts
+
+| Concept | Command | What it does |
+|---|---|---|
+| Goal | `goal init` | Project-local state at `<cwd>/.future/loop/`, event-sourced and replayable |
+| Todo | `todo add/update/complete/supersede` | Five classes: advancement / user-gate / user-action / monitor (external-state watch) / blocker; `--blocks` dependency chains; `--priority` |
+| Evidence | `todo complete --evidence` | **Non-empty, enforced**: closing a todo must state what actually landed (paths, attempt ids, measurements); `--force` is the explicit operator override |
+| Acceptance contract | `todo add --acceptance "tok1,tok2"` | Completion evidence must contain every token (case-insensitive) — the hard form of "done ≠ delivered" |
+| Verifier | `todo add --verify "cmd"` | The kernel runs the command after each turn; only exit 0 completes the todo (bounded by `--max-validation-attempts`). The physical blocker of empty closures |
+| Lease | `lease claim/renew/release/status` | Who holds a todo and until when. **Lease liveness**: the holder's pid is recorded; a dead process's leases are auto-reclaimed — no manual cleanup after killing a worker |
+| Gate | `gate resolve` | Any open user gate freezes all work until resolved; user-actions (non-blocking human to-dos) surface to the user without freezing the agent |
+| Delivery closure | `delivery status/record` | Completion lands in a pending `delivered` state; an operator resolves it as `verified/failed/rework`; unverified deliveries auto-derive a follow-up after 3 turns |
+| Terminal | `frontier show` | Validated closure: todos done/superseded + closure intent + no acceptance gaps + no pending deferred work; `frontier` gives the terminal judgement with gap detail |
+| Quota | `quota should-run/usage/spend/decisions` | The deterministic should-run kernel: scheduling, refusal reasons, and spend are all auditable |
+| Scheduler | `scheduler tick/show/liveness` | Monitor cadence, host-failure records, liveness heartbeats |
+| Multi-agent | `agent contract/recipe/succession/collective` | One goal, several workers: contract (backups / handoff rules), named recipes for one-command onboarding, auto back-up promotion on offline timeout, wake roster, collective turn ledger |
+| Frontier | `frontier show` | Outcome segments, structured replan rules, bounded semantic history (N=50), terminal judgement |
+
+## Drive loop via the skill (recommended entry)
+
+In most cases you won't type the CLI below — **use the `/future-loop` skill
+and let the agent drive**:
+
+```
+You say "/future-loop keep an eye on X for a week"
    │
    ▼
-agent executes one turn (gRPC) → write evidence + handoff + next todo
-   │
-   ▼
-quota decides the next tick
+Agent loads the future-loop skill (v3.x driving manual)
+   ├─ 1. `future loop status` first — continue an existing goal, never duplicate it
+   ├─ 2. Confirm the plan with you (steps/model/thinking level) — unless your message already carries the full objective + constraints
+   ├─ 3. `goal init` + decompose todos (dependencies via --blocks, hard checks via --verify/--acceptance)
+   ├─ 4. Drive turns: `run --max-turns 1 --agent-id <unique>`, relaunching the moment a turn exits
+   ├─ 5. Steer a drifting worker mid-turn via `todo update --text`
+   ├─ 6. Irreversible/expensive/user-only decisions → open a user gate and wait (gates freeze everything)
+   └─ 7. Close out: acceptance todo copies artifacts to the project root → validated closure (terminal)
 ```
 
-## Highlights
+**Skill vs CLI**: the skill owns "what to do when, how to decompose, how to
+drive" (the orchestration layer); the CLI is the underlying mechanism (state
+kernel + hard checks + decisions). The skill is a maintained v3.x manual, kept
+in sync with this page; full semantics at
+[future-skills/builtin/future-loop](https://github.com/futuregene/future-skills/tree/main/builtin/future-loop).
 
-### Durable goals & todo work graph
-
-- **Goals** (`goal init / cancel / delete`): project-local state under
-  `<cwd>/.future/loop/`, persisted as an event ledger with replay.
-- **Todos** (`todo add / claim / complete / supersede / update / archive`):
-  advancement / user-gate / monitor / blocker classes, priorities, dependency
-  chains (`--blocks`), claim + lease lifecycle, and the reference-compatible
-  completion contract (every completed todo declares a successor or an
-  explicit no-follow-up).
-- **Human gates** (`gate resolve`): a todo blocks on a concrete question until
-  a human decision lands — never a vague "waiting".
-- **Monitors** (`--class monitor --cadence ...`): scheduled observation of
-  external state (CI, PR, a file), with no-change backoff so a stale target
-  never spends quota.
-
-### Deterministic should-run decision kernel
-
-`future loop run` asks a pure, injectable-clock kernel whether to run, why,
-and which todo — identity-scoped frontiers, user-gate precedence, repair
-budgets, outcome floors, succession replan obligations, acceptance gaps, and
-a scheduler-arbitration layer that classifies every decision into one of nine
-dispositions (terminal / monitor-wait / active work / consistency repair /
-human gate / quiet wait / …). Enforcement is fail-closed: a cancelled goal
-never runs; an ambiguous state stops rather than spends.
-
-### Quota & scheduler
-
-- Slot accounting across `run` / `agent` / `heartbeat` sources, 24h/7d usage
-  summaries, and stall repair that detects surface-only progress loops.
-- A scheduler state machine with cadence normalization
-  (`once / hourly / daily / weekly` or `15m / 1h / 2d`), atomic persistence,
-  and host-failure tracking.
-- Monitor polls land as replayable events (`MonitorPolled`) with exact
-  writeback.
-
-### Event-sourced state & projections
-
-- Content-addressed event ids with idempotent append and fail-closed conflict
-  detection; `QuotaSpent` / `EvidenceAttached` events; markdown backfill into
-  the ledger.
-- Per-goal schema migration bridge (verify / migrate / bridge), privacy-graded
-  projections (public-safe / local-private / private-pointer), and a run
-  lifecycle (history / compaction / index / retention / stale detection).
-
-### Independent validation
-
-`todo add --verify "cargo test" --max-validation-attempts 5` attaches an
-independent validator: the kernel runs it in the goal's cwd after each turn,
-only completes the todo when it exits 0, and replans when the retry budget is
-exhausted — closure stays validated, not self-judged.
-
-### Extensions & multi-agent
-
-- A capability framework with a provider lifecycle
-  (declared → installed → enabled → ready), a queryable catalog, a capability
-  gate (run / ask-owner / repair-bridge / skip), and per-capability command
-  hooks.
-- Extensions with declarative manifests and install / enable / disable /
-  rollback (revision-retained), plus a readiness doctor — v1 is declarative
-  and never executes extension code.
-- Identity-scoped multi-agent: agent scope frontiers, lane recommendations,
-  supervisor proposal/receipt events, task leases, handoff documents with a
-  delivery contract, a todo dependency graph, and an attention queue /
-  operator inbox — driven by the `agent` command group (see
-  [Multi-agent workflow](#multi-agent-workflow)).
-
-### Evaluation & diagnostics
-
-- A benchmark closed loop (protocol / run / ledger over the same gRPC
-  channel), decision replay with a model-behavior corpus, and a canary smoke
-  suite (`core-control-plane` / `extension-runtime` / `release-gate`).
-- `version` / `doctor` / `history` / `turn` / `todo-event` / `evidence-log`
-  diagnostics, plus `backup` / restore.
-
-## CLI overview
-
-```text
-goal          goal lifecycle (init / cancel / delete) · status · models · diagnose
-todo          add | claim | complete | supersede | update | archive
-              gate resolve · replan ack · lease · task-graph
-agent         onboard · scope · lane · supervisor
-capability    list | propose | commands · catalog · per-capability hooks
-extension     install | upgrade | enable | disable | rollback | status | capabilities
-ops           version · doctor · history · turn · todo-event · evidence-log
-              backup · authority · profile · quota · scheduler · store
-              backfill · privacy · runs · heartbeat-prompt · worker-bridge
-              serve-status · run
-work-items    attention · inbox
-handoff       handoff [--write]
-benchmark     protocol | run | ledger
-replay        record | run · corpus build | run
-canary        smoke [--profile ...]
-cli           registry [--json] [--include-experimental]
-```
-
-Run `future loop` (or `future-loop`) with no arguments for the full grouped help.
-
-## Quick start (skill mode)
-
-Start a conversation with the agent and type:
-
-```
-/future-loop Turn this long-running objective into a goal with todos and drive it to completion
-```
-
-The skill loads, creates a durable goal, breaks the work into todos (with
-dependency chains and a final deliverable-copy todo), and drives it turn by
-turn with `future loop run --max-turns 1` — reporting status and cost after
-each step.
-
-Or drive it directly from the terminal (`future loop` runs the same code as
-the standalone `future-loop` binary):
+## User workflow (zero to closure)
 
 ```bash
-future loop goal init --objective "..." --cwd /path/to/project
-future loop todo add --goal <id> --text "collect data" --priority P0
-future loop todo add --goal <id> --text "write report" --priority P0 \
-  --blocks <collect-todo-id> --verify "test -f report.md"
-future loop status --goal <id>
-future loop run --goal <id> --model future/deepseek-v4-flash --max-turns 1
+# 1. Create the goal
+future loop goal init --objective "..." --cwd DIR
+
+# 2. Decompose — dependencies and hard checks together
+future loop todo add --goal G --text "..." --priority P0 --verify "cargo check -p X"
+future loop todo add --goal G --text "..." --blocks T1 --acceptance "attempt,scored"
+future loop todo add --goal G --role user --class user_gate --text "Release gate" --gate-question "Ship it?"
+
+# 3. Drive turns (one worker per --agent-id; relaunch as soon as a turn exits)
+future loop run --goal G --agent-id mac-worker --model M --thinking-level L --max-turns 1
+
+# 4. Human decisions
+future loop gate resolve --goal G --todo-id GATE --decision "approve"
+
+# 5. Observe and close
+future loop status --goal G
+future loop frontier show --goal G        # terminal judgement + gap detail
+future loop delivery record --goal G ...  # verified / failed / rework
 ```
 
-## Multi-agent workflow
+## Hard checks first (conventions fail, gates hold)
 
-The `agent` command group models a goal shared by several agents. Every agent
-is identified by an `--agent-id`, scopes its work, and hands over via a
-handoff document — so a supervisor (or a human) can reason about who owns
-what and what the next agent needs to know.
+- Empty-evidence closures are **refused** (fail-closed by default; `--force` opens)
+- `--verify` makes "wrote it" mean "it compiles / the artifact exists" — attach one to every delivery todo
+- `--acceptance` turns "accepted by an external observable" into a hard check
+- Lease liveness self-heals: dead-process leases are reclaimed automatically — relaunching workers needs no manual release
+- Workspace guard: multi-agent write conflicts degrade to serial automatically
+- Idle turns (15 minutes without writes) are ledgered; steer mid-turn via `todo update --text`
 
-> The commands below are **flat top-level commands** — `future-loop` dispatches
-> `agent`, `scope`, `lane`, `supervisor`, `handoff`, `task-graph`, `attention`
-> and `inbox` all at the top level. The `agent` / `todo` / `work-items` groups
-> in the help output are only presentation groupings.
+## Loop state is CLI-first
 
-### 1. Onboard an agent (register + capabilities)
+The control plane is driven and observed through the **`future loop` CLI** —
+goal state is project-local (`<cwd>/.future/loop/`), not attached to any one
+client. The TUI, desktop GUI, mobile apps, and IM bots have no built-in loop
+views; they drive the same control plane through the **`/future-loop`
+skill**, which orchestrates `future loop` commands on the agent's behalf.
+Because the state lives in the project and the skill runs through the agent
+service, a goal started in one client (e.g. the TUI) can be steered from any
+other (e.g. a Feishu chat).
+
+## CLI surface (10 groups, 43 commands)
 
 ```bash
-# plain registration (prerequisite for quota --agent-id)
-future loop agent --goal <id> --agent-id codex
-
-# register AND declare capabilities (input to the capability gate)
-future loop agent onboard --goal <id> --agent-id codex --capability shell,github
+future loop registry        # every command
+future loop commands        # grouped by operator journey
 ```
 
-`onboard` records an `AgentOnboarded` event with the declared capabilities.
+- **goal group**: `goal` `status` `models` `diagnose`
+- **todo group**: `todo` `gate` `replan` `frontier` `lease` `task-graph`
+- **agent group**: `agent` `list` `scope` `lane` `supervisor`
+- **ops group**: `version` `doctor` `history` `turn` `todo-event` `evidence-log` `backup` `authority` `profile` `quota` `scheduler` `store` `backfill` `privacy` `runs` `heartbeat-prompt` `worker-bridge` `serve-status` `run`
+- **work-items group**: `attention` `inbox` `delivery`
+- **handoff group**: `handoff`
+- **cli group**: `registry` `commands`
+- **benchmark group**: `benchmark`
+- **replay group**: `replay`
+- **canary group**: `canary`
 
-### 2. Scope & lane
+## How it fits FutureOS
 
-```bash
-# identity-scoped frontier: which todos this agent may see/claim, and which
-# claims belong to others (outside the frontier)
-future loop scope --goal <id> --agent-id codex [--exclude docs,build]
+- **Agent service** (`future agent`, gRPC 127.0.0.1:50051): `run` executes every turn through it
+- **Any client through the skill** (TUI, desktop, mobile, Feishu / DingTalk): loop goals are driven by the `/future-loop` skill orchestrating `future loop` commands — there is no native bridge↔loop integration; gates surface as agent messages asking one concrete question
+- **The `/future-loop` skill**: the driving manual for agents (v3.x, kept in sync with this doc)
+- **State location**: `<cwd>/.future/loop/` (add to the project `.gitignore`)
 
-# compact lane recommendation for this agent (classification + action)
-future loop lane --goal <id> --agent-id codex
-```
+## Further reading
 
-The frontier output lists `visible agent todos`, `claimed by self`, `other
-agent claims`, `open user gates`, and the `unclaimed advancement` count;
-`lane` summarizes the agent's progress scope and a recommended next action.
-
-### 3. Supervisor decisions
-
-```bash
-# propose a decision: observe (default) or execute (with capabilities)
-future loop supervisor propose --goal <id> --agent-id super --decision-id d1 \
-  --target-agent-id codex --kind execute --capabilities shell --summary "run tests"
-
-# record the host's receipt (executed | failed | rejected)
-future loop supervisor receipt --goal <id> --decision-id d1 \
-  --receipt-id r1 --adapter-id host --outcome executed
-
-# project all supervisor events as JSON
-future loop supervisor events --goal <id>
-```
-
-### 4. Hand off
-
-```bash
-# print the delivery contract (degradation mode + summary) and the handoff doc
-future loop handoff --goal <id>
-
-# also write it to .future/loop/goals/<id>/HANDOFF.md
-future loop handoff --goal <id> --write
-```
-
-The delivery contract is derived from run history (newest first); the handoff
-document is rendered as markdown so the next agent can pick up context without
-re-reading the whole ledger.
-
-### 5. Coordinate
-
-```bash
-# todo dependency graph (topological order; cycles fail closed)
-future loop task-graph --goal <id>
-
-# attention queue for one goal, or across all goals
-future loop attention --goal <id>
-future loop attention --all
-
-# operator inbox urgency projection
-future loop inbox --project .
-```
-
-## Deployment topology (recommended)
-
-The control plane is deliberately **daemonless**: every `future loop` command
-is a short-lived process that loads the ledger, does one bounded thing,
-persists, and exits. Availability therefore comes from an **external
-scheduler** invoking `future loop run` at your chosen cadence — not from a
-long-running loop process you have to keep alive.
-
-```
-cron / systemd timer / CI schedule          (the availability source)
-   │  one invocation per tick
-   ▼
-future loop run --goal <id> --agent-id <name> --max-turns 1
-   │  bounded slice: decide → execute one turn → writeback → exit
-   ▼
-<cwd>/.future/loop/                         (event ledger — the only state)
-```
-
-Why this is safe to drive externally:
-
-- **Bounded invocations** — each tick is capped by `--max-turns` /
-  `--max-turn-secs`; a wedged turn stops gracefully instead of holding the
-  goal, and the next tick resumes from the ledger.
-- **Restart-safe state** — the event ledger uses content-addressed, idempotent
-  appends; a crashed or overlapping tick replays cleanly, and conflicts fail
-  closed rather than double-spending quota.
-- **Lease coordination** — `run` claims todos under a lease (default 4h,
-  `--lease-secs`), so two schedulers cannot silently race the same todo.
-  Always pass a stable `--agent-id` (auto-registered on first use);
-  `--anonymous` opts out of coordination and can race.
-- **Fail-closed kernel** — a cancelled goal never runs; an ambiguous state
-  stops instead of spending.
-
-Example drivers:
-
-```cron
-# cron — one bounded turn every 15 minutes
-*/15 * * * * cd /path/to/project && future loop run --goal <id> --agent-id cron-worker --max-turns 1 >> .future/loop/cron.log 2>&1
-```
-
-```ini
-# /etc/systemd/system/loop-worker.service
-[Service]
-Type=oneshot
-WorkingDirectory=/path/to/project
-ExecStart=/usr/local/bin/future loop run --goal <id> --agent-id systemd-worker --max-turns 1
-
-# /etc/systemd/system/loop-worker.timer
-[Timer]
-OnCalendar=*:0/15
-Persistent=true
-```
-
-```yaml
-# CI scheduled tick (GitHub Actions). CI runners are ephemeral: persist
-# .future/loop/ across runs (e.g. actions/cache) or every tick restarts
-# from an empty ledger.
-on:
-  schedule: [{ cron: "*/30 * * * *" }]
-  workflow_dispatch:
-jobs:
-  tick:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: future loop run --goal <id> --agent-id ci-worker --max-turns 1
-```
-
-The scheduler state machine complements the external driver:
-`future loop scheduler tick|show` keeps a restart-safe cadence progression
-(useful when the driver wants backoff state), and
-`future loop scheduler record-host-failure` records missed/late host ticks so
-liveness gaps surface in state instead of going silent.
-
-### Optional persistent runner
-
-A daemon is never required, but two long-running conveniences exist:
-
-- **Wrapper loop** (workstations): `while true; do future loop run --goal <id>
-  --agent-id local-runner --max-turns 1; sleep 300; done` — the same
-  bounded-turn semantics without cron.
-- **`future loop serve-status [--port 8791]`** — a zero-dependency, GET-only
-  HTTP dashboard (`GET /`, `GET /goals.json`). It is a read-only projection
-  and never a second source of truth; run it alongside any topology for
-  observability.
-
-For a fully custom runner, `future loop worker-bridge` exposes the reference
-stdio contract: the bridge emits one typed turn packet per line on stdout,
-your worker executes the bounded turn in its own runtime, and writes one JSON
-result line back. Pick **one driver per goal** (or one per
-`(goal, agent-id)` in multi-agent setups) — leases make overlaps safe, but a
-single driver keeps cadence and quota accounting predictable.
-
-## State layout
-
-```
-<cwd>/.future/loop/registry.json                        — registry (source of truth)
-<cwd>/.future/loop/goals/<id>/events.jsonl              — per-goal event ledger
-<cwd>/.future/loop/goals/<id>/ACTIVE_GOAL_STATE.md      — reference-compatible projection
-<cwd>/.future/loop/runs/                                — run history
-```
-
-Runtime state is never written outside the project; add `.future/loop/` to
-`.gitignore`.
-
-## Install
-
-```bash
-make install-skills                      # preferred: links the /future-loop skill (no build —
-                                          # `future loop` runs through the unified CLI)
-# optional standalone binary (dev use):
-bash scripts/install-future-loop.sh      # CLI → ~/.local/bin/future-loop, skill → ~/.future/agent/skills/
-# or build in the workspace:
-cargo build -p future-loop
-```
-
-Prerequisites and full product build/install steps are in
-[Build & Install](build-and-install.md).
+- Install & build: [build-and-install.md](build-and-install.md)
+- Evidence ledger: [long-run-evidence-ledger.md](long-run-evidence-ledger.md)
+- TUI usage: [tui.md](tui.md)
+- Skill source: [future-skills/builtin/future-loop](https://github.com/futuregene/future-skills/tree/main/builtin/future-loop)
