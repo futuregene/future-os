@@ -1,5 +1,6 @@
 import { ArrowRight, GraduationCap, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { Button } from "../../components/ui/Button";
 
 interface SkillGuideBannerProps {
   /** True while the coach conversation is being created. */
@@ -12,9 +13,10 @@ interface SkillGuideBannerProps {
 
 /**
  * Skill-onboarding entry banner under the new-conversation composer. A soft
- * info-tinted card: icon + title/subtitle on the left, "start learning" action
- * on the right, and a corner × that collapses it (reopen lives on the Skills
- * page, a later change).
+ * info-tinted card: icon + title/subtitle on the left, a muted accent-tinted
+ * action on the right (deliberately not the solid primary style, so it can't
+ * be mistaken for the composer's send button), and a corner × that collapses
+ * it (reopen lives on the Skills page, a later change).
  */
 export function SkillGuideBanner({ starting, onStart, onDismiss }: SkillGuideBannerProps) {
   const { t } = useTranslation("agent");
@@ -36,15 +38,16 @@ export function SkillGuideBanner({ starting, onStart, onDismiss }: SkillGuideBan
           <div className="text-sm font-semibold text-ink">{t("skillGuide.title")}</div>
           <div className="mt-0.5 text-xs leading-5 text-ink-muted">{t("skillGuide.subtitle")}</div>
         </div>
-        <button
-          className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md bg-accent px-3 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-default disabled:bg-accent-disabled"
+        <Button
+          className="shrink-0 gap-1 border-accent/30 bg-accent-soft text-accent hover:brightness-95"
           disabled={starting}
           onClick={onStart}
-          type="button"
+          size="sm"
+          variant="secondary"
         >
           {t("skillGuide.start")}
           <ArrowRight className="size-3.5" />
-        </button>
+        </Button>
       </div>
     </div>
   );
