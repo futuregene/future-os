@@ -1,0 +1,20 @@
+Future Loop (future-loop)
+Copyright 2026 FutureGene
+
+This directory contains code derived from LoopX
+(https://github.com/huangruiteng/loopx), which is licensed under the
+Apache License, Version 2.0. A copy of the Apache License is included
+in this directory (see LICENSE).
+
+The following attribution notice is retained from the upstream LoopX
+project (per Apache License, Version 2.0, section 4(d)):
+
+    LoopX
+    Copyright 2026 LoopX contributors
+
+    LoopX releases through v0.4.7 were distributed under the MIT License.
+    The historical MIT license text and copyright notice are retained in
+    LICENSE-MIT (in the upstream repository).
+
+See UPSTREAM.md for the upstream base version, the scope of derived
+code, and the modifications made by FutureGene.
