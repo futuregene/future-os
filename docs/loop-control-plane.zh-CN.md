@@ -26,12 +26,12 @@ Agent 执行一个有界回合（gRPC）→ 写证据 → 内核据此决定下�
 | 概念 | 命令 | 说明 |
 |---|---|---|
 | 目标 goal | `goal init` | 项目本地状态 `<cwd>/.future/loop/`，事件溯源 + 可重放 |
-| 任务 todo | `todo add/update/complete/supersede` | 三类：advancement（推进）/ user-gate（人工门禁）/ monitor（监视外部状态）；`--blocks` 依赖链；`--priority` |
+| 任务 todo | `todo add/update/complete/supersede` | 五类：advancement（推进）/ user-gate（人工门禁）/ user-action（不冻结的人待办）/ monitor（监视外部状态）/ blocker（外部阻塞）；`--blocks` 依赖链；`--priority` |
 | 证据 evidence | `todo complete --evidence` | **非空强制**：关单必须写明实际落地了什么（路径、attempt id、测量结果），`--force` 是操作者显式覆盖 |
 | 验收契约 acceptance | `todo add --acceptance "tok1,tok2"` | 关单证据必须包含全部 token（大小写不敏感）——"done ≠ delivered" 的硬形式 |
 | 验证器 verify | `todo add --verify "cmd"` | 每个回合后内核执行命令，exit 0 才算完成；上限 `--max-validation-attempts`。空关单的物理阻断器 |
 | 租约 lease | `lease claim/renew/release/status` | 任务被谁租用、多久过期。**租约活性自愈**：记录持有进程 pid，进程死了自动回收——杀掉 worker 后无需手动清理 |
-| 门禁 gate | `gate resolve` | 任何打开的用户门禁冻结全部工作；PLAN_REVIEW 类检查点由 Agent 自行解决 |
+| 门禁 gate | `gate resolve` | 任何打开的用户门禁冻结全部工作直到解决；user-action（不冻结的人待办）会展示给用户但不阻塞 agent |
 | 交付闭环 delivery | `delivery status/record` | 完成 = `delivered` 待验证态；操作者用 `verified/failed/rework` 结案；3 回合未验证自动派生跟进任务 |
 | 终局 terminal | `frontier show` | 验证式闭环：todos 完成/被取代 + 闭环意图 + 无验收缺口 + 无待决 deferred 工作；`frontier` 给出终局判定与缺口明细 |
 | 配额 quota | `quota should-run/usage/spend/decisions` | 确定性 should-run 内核：每个回合的调度、拒绝原因、花费全部可审计 |
@@ -70,7 +70,7 @@ future loop goal init --objective "..." --cwd DIR
 # 2. 拆任务（依赖 + 硬校验一起挂上）
 future loop todo add --goal G --text "..." --priority P0 --verify "cargo check -p X"
 future loop todo add --goal G --text "..." --blocks T1 --acceptance "attempt,scored"
-future loop todo add --goal G --role user --class user_gate --gate-question "是否发布？"
+future loop todo add --goal G --role user --class user_gate --text "发布门禁" --gate-question "是否发布？"
 
 # 3. 驱动回合（一个 worker 一个 --agent-id；回合结束立即重启）
 future loop run --goal G --agent-id mac-worker --model M --thinking-level L --max-turns 1
@@ -93,9 +93,14 @@ future loop delivery record --goal G ...  # verified / failed / rework
 - 工作区守卫：多 agent 写冲突自动降级串行
 - 空转回合（15 分钟无写入）会记账；用 `todo update --text` 中途 steering 干预
 
-## 三端体验
+## loop 状态以 CLI 为准
 
-loop 状态通过 FutureOS 的多个前端随时可见：**终端 TUI / 桌面 GUI / 移动端（Android · iOS）**——同一个 gRPC Agent 服务，多端无缝切换。移动端是 FutureOS 区别于多数同类 Agent 的亮点：`future` 核心在手机上也完整可用，配合桌面端与 TUI 形成全平台闭环。
+控制面通过 **`future loop` CLI** 驱动与观察——目标状态是项目本地的
+（`<cwd>/.future/loop/`），不属于任何一个客户端。TUI、桌面 GUI、移动端 App
+与 IM 机器人目前没有内置的 loop 视图；它们通过 **`/future-loop` 技能**驱动
+同一控制面（技能替 agent 编排 `future loop` 命令）。因为状态在项目里、技能
+经 agent 服务运行，所以在一个客户端（如 TUI）启动的目标可以在任何其他客户端
+（如飞书聊天）继续驾驶。
 
 ## CLI 全景（10 组 43 命令）
 
@@ -106,15 +111,19 @@ future loop commands        # 按操作者旅程分组视图
 
 - **goal 组**：`goal` `status` `models` `diagnose`
 - **todo 组**：`todo` `gate` `replan` `frontier` `lease` `task-graph`
-- **agent 组**：`agent` `scope` `lane` `supervisor`
-- **ops 组**：`version` `doctor` `history` `turn` `todo-event` `evidence-log` `backup` `authority` `profile` `quota` `scheduler` `store` `backfill` `privacy` `runs` `heartbeat-prompt` `worker-bridge` `run`
+- **agent 组**：`agent` `list` `scope` `lane` `supervisor`
+- **ops 组**：`version` `doctor` `history` `turn` `todo-event` `evidence-log` `backup` `authority` `profile` `quota` `scheduler` `store` `backfill` `privacy` `runs` `heartbeat-prompt` `worker-bridge` `serve-status` `run`
 - **work-items 组**：`attention` `inbox` `delivery`
-- **质量组**：`canary`
+- **handoff 组**：`handoff`
+- **cli 组**：`registry` `commands`
+- **benchmark 组**：`benchmark`
+- **replay 组**：`replay`
+- **canary 组**：`canary`
 
 ## 与 FutureOS 其他部件的关系
 
 - **Agent 服务**（`future agent`，gRPC 127.0.0.1:50051）：`run` 通过它执行每个回合
-- **渠道桥**（飞书 / 钉钉）：消息可触发 loop 操作，loop 的门禁与通知可回到聊天里
+- **任何客户端都可经技能驱动**（TUI、桌面、移动端、飞书 / 钉钉）：loop 目标由 `/future-loop` 技能编排 `future loop` 命令驱动——桥与 loop 之间没有原生集成；门禁以 agent 消息形式提出一个具体问题
 - **技能 `/future-loop`**：编排 Agent 使用本控制面的驾驶手册（v3.x 与本文档同步维护）
 - **状态位置**：`<cwd>/.future/loop/`（加入项目 `.gitignore`）
 

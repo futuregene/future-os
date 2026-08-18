@@ -14,9 +14,10 @@
 
 数据源（全部本地、全部可核验）：
 
-- **turn / 墙钟 / 花费**——目标运行历史文件
-  `.future/loop/goals/<goal-id>/runs/*.json`（每次运行的
-  `terminal_state`、`tokens_in`、`tokens_out`、`cost`、工具调用数），
+- **turn / 墙钟 / 花费**——目标运行历史账本
+  `.future/loop/goals/<goal-id>/runs.jsonl`（每次运行的
+  `terminal_state`、token 增量、`cost`、工具调用数；每回合实时日志在
+  `.future/loop/runs/<run-id>.live.jsonl`），
   以及 `future loop runs history --goal <id> --format json` /
   `future loop quota usage --goal <id>` 的紧凑投影。
 - **验证**——目标的官方测量（写明工具、命令、commit、日期），以及

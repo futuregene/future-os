@@ -467,7 +467,7 @@ mod tests {
         std::fs::create_dir_all(&plain).unwrap();
         let repo = ShadowRepo::open("ws-plain", &plain, false).unwrap();
         assert_eq!(repo.workspace_id, "ws-plain");
-        assert!(!repo.real_repo_info_exclude().is_some());
+        assert!(repo.real_repo_info_exclude().is_none());
 
         // Git workspace: seeds from the real repo.
         let src = git_dir();

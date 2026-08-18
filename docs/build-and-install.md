@@ -203,13 +203,14 @@ and how to use it.
 
 FutureOS includes a set of curated skills — specialized instructions for
 common tasks like deep research, browser automation, document processing,
-and more. These are maintained in the
-[future-skills](https://github.com/futuregene/future-skills) repository:
+long-running goal orchestration (`/future-loop`), and more. These are
+maintained in the [future-skills](https://github.com/futuregene/future-skills)
+repository:
 
 ```bash
 make install-skills                          # symlink from the bundled skills/ submodule
 # or install from the platform catalog:
-future skills install                        # install all future-* skills (14)
+future skills install                        # install all future-* skills (15)
 future init                                  # install skills and, on macOS/Linux, link local commands
 ```
 
@@ -231,30 +232,8 @@ Source builds use the repo Makefile from the repo root:
 ```bash
 make build          # build GUI + unified CLI (no system install; agent/tui/channel/loop embedded in future, GUI stages its own sidecars)
 make lint           # lint all: agent, channels, TUI, CLI, GUI (+stylelint), mobile
-make fmt            # cargo fmt (agent + channels) + mobile formatting
+make fmt            # cargo fmt --all (workspace) + desktop/src-tauri + mobile formatting
 make test           # all 7 suites: agent, channels, CLI, TUI, GUI, GUI Rust, mobile
-make clean          # remove build artifacts + installed binaries
-```
-
-### Proto
-
-The canonical API is `packages/rpc/proto/future.proto`. Generated Rust code is
-checked into the repo — normal builds don't touch it. After editing a `.proto`
-file, regenerate:
-
-```bash
-make generate-proto          # future-rpc + channels
-```
-
-## Development (from source)
-
-Source builds use the repo Makefile from the repo root:
-
-```bash
-make build          # build GUI + unified CLI (no system install; agent/tui/channel/loop embedded in future, GUI stages its own sidecars)
-make lint           # lint all (agent + channels + TUI + CLI + GUI)
-make fmt            # cargo fmt (agent + channels)
-make test           # cargo test (agent)
 make clean          # remove build artifacts + installed binaries
 ```
 

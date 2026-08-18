@@ -157,7 +157,13 @@ install_linux() {
   else
     pkg_type="portable"
     key="linux-$ARCH-portable"
-    filename="FutureOS-portable-linux.tar.gz"
+    # x86_64 keeps its historical arch-less filename; aarch64 tarballs carry
+    # the -arm64 suffix (see release.yml's linux matrix).
+    case "$ARCH" in
+      x86_64)  filename="FutureOS-portable-linux.tar.gz" ;;
+      aarch64) filename="FutureOS-portable-linux-arm64.tar.gz" ;;
+      *) die "unsupported architecture: $ARCH" ;;
+    esac
     say "Non-Debian system detected — installing the portable tarball"
   fi
 
