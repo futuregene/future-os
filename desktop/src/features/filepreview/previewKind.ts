@@ -6,16 +6,19 @@ import { pathExtension } from "../../lib/workspacePath";
  * filesystem). Only these kinds get an in-app preview; every other file (PDFs
  * included) keeps the "open with the OS default handler" behavior.
  */
-export type PreviewKind = "image" | "markdown";
+export type PreviewKind = "image" | "json" | "markdown";
 
 const IMAGE_RE = /\.(?:avif|bmp|gif|jpe?g|png|svg|webp)$/i;
 const MARKDOWN_RE = /\.(?:md|markdown)$/i;
+const JSON_RE = /\.json$/i;
 
 export function previewKindForPath(path: string): PreviewKind | null {
   if (IMAGE_RE.test(path))
     return "image";
   if (MARKDOWN_RE.test(path))
     return "markdown";
+  if (JSON_RE.test(path))
+    return "json";
   return null;
 }
 

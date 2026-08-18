@@ -1397,7 +1397,7 @@ export function ChatScreen() {
                 {!!preview?.truncated && (
                   <Text style={styles.previewTruncated}>{t("attachment.markdownTruncated")}</Text>
                 )}
-                <MarkdownText text={preview?.markdown ?? ""} />
+                <MarkdownText mode="file-preview" text={preview?.markdown ?? ""} />
               </ScrollView>
             ) : preview?.info.previewKind === "json" ? (
               <JsonPreview

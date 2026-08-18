@@ -34,6 +34,12 @@
     "close": "关闭预览",
     "unavailable": "无法预览 {{name}}，已改用默认程序打开。"
   },
+  "jsonPreview": {
+    "truncated": "仅对小于 1 MB 的 JSON 进行格式化，当前显示可读取的原始内容。",
+    "invalid": "JSON 格式无效：{{detail}}",
+    "invalidEncoding": "文件不是有效的 UTF-8 编码，当前内容包含替换字符。",
+    "tooComplex": "JSON 嵌套过深或行数过多，无法完整渲染。"
+  },
   "link": {
     "visit": "访问",
     "copyLink": "复制链接"
