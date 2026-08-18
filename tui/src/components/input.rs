@@ -637,6 +637,15 @@ impl Input {
 
     // ── History navigation ────────────────────────────────────────────
 
+    /// Whether the user is currently browsing submitted history (up/down
+    /// recalled a past entry; `history_index != -1`).  The app layer uses
+    /// this to keep the autocomplete popup from hijacking arrow keys / Enter
+    /// while a recalled line is on screen — a recalled `/…` command would
+    /// otherwise open the popup and trap the user in it.
+    pub fn is_browsing_history(&self) -> bool {
+        self.history_index != -1
+    }
+
     fn history_up(&mut self) -> bool {
         if self.history.is_empty() {
             return true;
@@ -1161,6 +1170,22 @@ mod tests {
         // Up should go to history, not stay on current line
         input.handle_key("up");
         assert_eq!(input.get_value(), "line1\nline2");
+    }
+
+    #[test]
+    fn is_browsing_history_tracks_up_down_navigation() {
+        let mut input = make_input();
+        input.onSubmit = Some(Box::new(|_| {}));
+        assert!(!input.is_browsing_history());
+        input.set_value("/model deepseek", None);
+        input.handle_key("enter"); // adds the slash command to history
+        input.set_value("", None); // fresh draft
+        input.handle_key("up"); // recall → browsing
+        assert!(input.is_browsing_history());
+        assert_eq!(input.get_value(), "/model deepseek");
+        input.handle_key("down"); // past the draft → back to composing
+        assert!(!input.is_browsing_history());
+        assert_eq!(input.get_value(), "");
     }
 
     // ─── text manipulation ────────────────────────────────────────────
