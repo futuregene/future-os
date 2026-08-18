@@ -161,11 +161,3 @@ future tui       # terminal UI
 | Client exits with a connection / gRPC error | The agent isn't running. Start it (`future agent`) and check nothing else holds the port: `lsof -i :50051`. |
 | Agent replies with an auth / "no model" error | No model configured yet. Run `future auth login`, or add a provider to `models.json` — see [Configure a model](#configure-a-model). |
 | Build / install problems | See [Build & Install](docs/build-and-install.md) (platform toolchains, linker, GUI packaging). |
-
-## License
-
-FutureOS is distributed under the [MIT License](LICENSE), **except**
-[`orchestration/loop/`](orchestration/loop/) (Future Loop), which contains
-code derived from [LoopX](https://github.com/huangruiteng/loopx) and is
-distributed under the Apache License, Version 2.0 — see
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

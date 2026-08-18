@@ -155,10 +155,3 @@ future tui        # 终端界面
 | 客户端报连接 / gRPC 错误退出 | Agent 没启动。先启动它(`future agent`)，并确认端口没被占用：`lsof -i :50051`。 |
 | Agent 回复鉴权 / "no model" 错误 | 还没配置模型。运行 `future auth login`，或在 `models.json` 里加一个 provider——见 [配置模型](#配置模型)。 |
 | 构建 / 安装问题 | 见 [构建与安装](docs/build-and-install.zh-CN.md)（平台工具链、链接器、GUI 打包）。 |
-
-## License
-
-FutureOS 基于 [MIT License](LICENSE) 发布，**唯一例外**是
-[`orchestration/loop/`](orchestration/loop/)（Future Loop）——该目录包含派生自
-[LoopX](https://github.com/huangruiteng/loopx) 的代码，按 Apache License 2.0 分发——
-见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
