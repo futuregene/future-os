@@ -38,12 +38,15 @@ import {
 } from "react-native";
 import * as Network from "expo-network";
 import * as Sharing from "expo-sharing";
+import { openFile as openAndroidFile } from "future-file-handler";
 import { File } from "expo-file-system";
+import * as LegacyFileSystem from "expo-file-system/legacy";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { PendingApprovalCard, TimelineCard } from "../components/TimelineCard";
 import { Button } from "../components/Button";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { JsonPreview } from "../components/JsonPreview";
 import { MarkdownText } from "../components/MarkdownText";
 import { useRemote } from "../remote/RemoteContext";
 import { loadSessionDraft, saveSessionDraft } from "../remote/draftStorage";
@@ -54,8 +57,11 @@ import {
   pickAttachments,
   pickFromAlbum,
   takePhoto,
+  TransferCancelledError,
 } from "../remote/files";
 import { basename } from "../remote/localPath";
+import { mobileFileType, mobilePreviewRoute } from "../remote/fileTypes";
+import { supportedExternalMime } from "../remote/fileHandler";
 import {
   modelReference,
   type DownloadInfo,
@@ -90,14 +96,31 @@ const AT_LATEST_THRESHOLD = 32;
 const COMPOSER_FADE_CLEARANCE = 48;
 const MARKDOWN_RENDER_BYTES = 2 * 1024 * 1024;
 
+type DownloadPhase =
+  | "preparing"
+  | "downloading"
+  | "waiting_network"
+  | "verifying"
+  | "saving"
+  | "opening"
+  | "cancelling";
+
+interface ActiveDownload {
+  id: string;
+  fileName: string;
+  phase: DownloadPhase;
+  completedBytes: number;
+  totalBytes: number;
+}
+
+interface DownloadHandle {
+  id: string;
+  controller: AbortController;
+}
+
 function formatBytes(bytes: number): string {
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${Math.max(1, Math.ceil(bytes / 1024))} KB`;
-}
-
-function fileExtension(name: string): string {
-  const dot = name.lastIndexOf(".");
-  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
 }
 
 function plainText(bytes: Uint8Array): string | null {
@@ -137,7 +160,10 @@ export function ChatScreen() {
   const [attachments, setAttachments] = useState<MobileAttachment[]>([]);
   const [attachmentMenu, setAttachmentMenu] = useState(false);
   const [transferProgress, setTransferProgress] = useState<number | null>(null);
+  const [activeDownload, setActiveDownload] = useState<ActiveDownload | null>(null);
+  const activeDownloadRef = useRef<DownloadHandle | null>(null);
   const [preview, setPreview] = useState<{
+    attachment: HistoryAttachment;
     info: DownloadInfo;
     uri: string;
     markdown?: string;
@@ -149,6 +175,7 @@ export function ChatScreen() {
   const [fileAction, setFileAction] = useState<{
     info: DownloadInfo;
     cachedFile: File | null;
+    openMimeType: string;
   } | null>(null);
   const [selector, setSelector] = useState<"model" | "thinking" | null>(null);
   const [renameOpen, setRenameOpen] = useState(false);
@@ -177,6 +204,52 @@ export function ChatScreen() {
   const activeModelLabel =
     activeModel?.label || activeModel?.id || remote.modelId || t("chat.model");
   const supportsImages = activeModel ? activeModel.supportsImages !== false : true;
+  const activeDownloadFraction = activeDownload?.totalBytes
+    ? Math.min(1, activeDownload.completedBytes / activeDownload.totalBytes)
+    : 0;
+
+  const beginDownload = useCallback(
+    (key: string, fileName: string, totalBytes = 0): DownloadHandle | null => {
+      if (activeDownloadRef.current) return null;
+      const handle = {
+        id: `${key}:${Date.now().toString(36)}`,
+        controller: new AbortController(),
+      };
+      activeDownloadRef.current = handle;
+      setActiveDownload({
+        id: handle.id,
+        fileName,
+        phase: "preparing",
+        completedBytes: 0,
+        totalBytes,
+      });
+      return handle;
+    },
+    [],
+  );
+
+  const updateDownload = useCallback(
+    (handle: DownloadHandle, patch: Partial<Omit<ActiveDownload, "id" | "fileName">>) => {
+      if (activeDownloadRef.current?.id !== handle.id) return;
+      setActiveDownload(current =>
+        current?.id === handle.id ? { ...current, ...patch } : current,
+      );
+    },
+    [],
+  );
+
+  const finishDownload = useCallback((handle: DownloadHandle) => {
+    if (activeDownloadRef.current?.id !== handle.id) return;
+    activeDownloadRef.current = null;
+    setActiveDownload(null);
+  }, []);
+
+  const cancelActiveDownload = useCallback(() => {
+    const handle = activeDownloadRef.current;
+    if (!handle) return;
+    handle.controller.abort();
+    updateDownload(handle, { phase: "cancelling" });
+  }, [updateDownload]);
 
   // Approvals live docked above the composer (not inline in the transcript), and
   // only while undecided — once a decision lands the card disappears.
@@ -273,6 +346,13 @@ export function ChatScreen() {
     );
     return () => clearTimeout(timer);
   }, [remote.desktopOnline]);
+
+  useEffect(
+    () => () => {
+      activeDownloadRef.current?.controller.abort();
+    },
+    [],
+  );
 
   // Restore this conversation's draft when the screen (re)opens. Uses the
   // sessionId captured at mount — the draft conversation key stays stable
@@ -441,19 +521,25 @@ export function ChatScreen() {
 
   const openAttachment = useCallback(
     async (attachment: HistoryAttachment) => {
-      setTransferProgress(0);
+      let handle: DownloadHandle | null = null;
       try {
+        const fileType = mobileFileType(attachment.name);
+        if (!fileType) {
+          Alert.alert(t("attachment.title"), t("attachment.unsupportedType"));
+          return;
+        }
+        const openMimeType =
+          fileType.route === "external" ? await supportedExternalMime(attachment.name) : null;
+        if (fileType.route === "external" && !openMimeType) {
+          Alert.alert(t("attachment.title"), t("attachment.noHandler"));
+          return;
+        }
         // The just-sent optimistic bubble still points at this phone's local
         // picker URI. Open it directly; durable history later replaces this
         // with the desktop path used by the NATS download flow.
         if (/^[a-z][a-z0-9+.-]*:\/\//i.test(attachment.path)) {
           const local = new File(attachment.path);
-          const ext = fileExtension(attachment.name);
-          if (
-            attachment.kind === "image" &&
-            ext !== "gif" &&
-            !attachment.mobilePreviewUnsupported
-          ) {
+          if (fileType.route === "image" && !attachment.mobilePreviewUnsupported) {
             setPreview({
               info: {
                 transferId: "local",
@@ -462,9 +548,26 @@ export function ChatScreen() {
                 size: local.size,
                 contentHash: "",
                 previewKind: "image",
+                variant: "preview",
                 chunkBytes: 0,
               },
+              attachment,
               uri: local.uri,
+            });
+          } else if (fileType.route === "external") {
+            setFileAction({
+              info: {
+                transferId: "local",
+                name: attachment.name,
+                mimeType: fileType.mimeType,
+                size: local.size,
+                contentHash: "",
+                previewKind: "file",
+                variant: "original",
+                chunkBytes: 0,
+              },
+              cachedFile: local,
+              openMimeType: openMimeType!,
             });
           } else {
             const bytes = await local.bytes();
@@ -476,17 +579,20 @@ export function ChatScreen() {
             const visible = bytes.slice(0, MARKDOWN_RENDER_BYTES);
             const previewText =
               visible.byteLength === bytes.byteLength ? text : new TextDecoder().decode(visible);
-            const markdown = ext === "md" || ext === "markdown";
+            const markdown = fileType.route === "markdown";
+            const richJson = mobilePreviewRoute(attachment.name, local.size) === "json";
             setPreview({
               info: {
                 transferId: "local",
                 name: attachment.name,
-                mimeType: markdown ? "text/markdown" : "text/plain",
+                mimeType: fileType.mimeType,
                 size: local.size,
                 contentHash: "",
-                previewKind: markdown ? "markdown" : "text",
+                previewKind: richJson ? "json" : markdown ? "markdown" : "text",
+                variant: "preview",
                 chunkBytes: 0,
               },
+              attachment,
               uri: local.uri,
               ...(markdown ? { markdown: previewText } : { text: previewText }),
               truncated: bytes.byteLength > visible.byteLength,
@@ -494,14 +600,27 @@ export function ChatScreen() {
           }
           return;
         }
-        const cachedPreview = remote.cachedAttachment(attachment);
-        const info = cachedPreview?.info ?? (await remote.prepareAttachment(attachment));
-        if (
-          info.previewKind !== "image" &&
-          info.previewKind !== "markdown" &&
-          info.previewKind !== "text"
-        ) {
-          Alert.alert(t("attachment.title"), t("attachment.previewOnDesktop"));
+        handle = beginDownload(attachment.path, attachment.name);
+        if (!handle) {
+          showToast(t("attachment.downloadInProgress"));
+          return;
+        }
+        const variant = fileType.route === "external" ? "original" : "preview";
+        const cachedPreview = remote.cachedAttachment(attachment, variant);
+        const info =
+          cachedPreview?.info ??
+          (await remote.prepareAttachment(
+            attachment,
+            variant,
+            handle.controller.signal,
+            () => handle && updateDownload(handle, { phase: "waiting_network" }),
+          ));
+        if (info.previewKind === "file") {
+          if (!openMimeType) {
+            Alert.alert(t("attachment.title"), t("attachment.noHandler"));
+            return;
+          }
+          setFileAction({ info, cachedFile: cachedPreview?.file ?? null, openMimeType });
           return;
         }
         let file = cachedPreview?.file ?? null;
@@ -519,17 +638,28 @@ export function ChatScreen() {
             );
             if (!accepted) return;
           }
-          file = await remote.downloadAttachment(info, (done, total) =>
-            setTransferProgress(total > 0 ? done / total : null),
-          );
         }
+        updateDownload(handle, { phase: "downloading", totalBytes: info.size });
+        file = await remote.downloadAttachment(
+          info,
+          (done, total) =>
+            handle &&
+            updateDownload(handle, {
+              phase: done >= total ? "verifying" : "downloading",
+              completedBytes: done,
+              totalBytes: total,
+            }),
+          handle.controller.signal,
+          () => handle && updateDownload(handle, { phase: "waiting_network" }),
+        );
         if (info.previewKind === "image") {
-          setPreview({ info, uri: file.uri });
+          setPreview({ attachment, info, uri: file.uri });
         } else {
           const bytes = await file.bytes();
           const visible = bytes.slice(0, MARKDOWN_RENDER_BYTES);
           const previewText = new TextDecoder().decode(visible);
           setPreview({
+            attachment,
             info,
             uri: file.uri,
             ...(info.previewKind === "markdown"
@@ -539,6 +669,7 @@ export function ChatScreen() {
           });
         }
       } catch (error) {
+        if (error instanceof TransferCancelledError) return;
         const detail = error instanceof Error ? error.message : "";
         const message =
           detail.includes("view it on desktop") || detail.includes("GIF preview")
@@ -546,17 +677,21 @@ export function ChatScreen() {
             : t("attachment.downloadFailed");
         Alert.alert(t("attachment.title"), message);
       } finally {
-        setTransferProgress(null);
+        if (handle) finishDownload(handle);
       }
     },
-    [remote, t],
+    [beginDownload, finishDownload, remote, t, updateDownload],
   );
 
   // Download `info` to a cached File, prompting on cellular. Returns the file,
   // or null when the user declines the cellular download.
   const fetchDownload = useCallback(
-    async (info: DownloadInfo, cachedFile: File | null): Promise<File | null> => {
-      if (cachedFile) return cachedFile;
+    async (
+      info: DownloadInfo,
+      cachedFile: File | null,
+      handle?: DownloadHandle,
+    ): Promise<File | null> => {
+      if (info.transferId === "local" && cachedFile) return cachedFile;
       const network = await Network.getNetworkStateAsync();
       if (
         network.type === Network.NetworkStateType.CELLULAR ||
@@ -570,47 +705,172 @@ export function ChatScreen() {
         );
         if (!accepted) return null;
       }
-      return remote.downloadAttachment(info, (done, total) =>
-        setTransferProgress(total > 0 ? done / total : null),
+      if (handle) {
+        updateDownload(handle, {
+          phase: "downloading",
+          completedBytes: 0,
+          totalBytes: info.size,
+        });
+      }
+      return remote.downloadAttachment(
+        info,
+        (done, total) => {
+          if (handle) {
+            updateDownload(handle, {
+              phase: done >= total ? "verifying" : "downloading",
+              completedBytes: done,
+              totalBytes: total,
+            });
+          } else {
+            setTransferProgress(total > 0 ? done / total : null);
+          }
+        },
+        handle?.controller.signal,
+        () => {
+          if (handle) updateDownload(handle, { phase: "waiting_network" });
+        },
       );
     },
-    [remote, t],
+    [remote, t, updateDownload],
   );
 
   // Non-previewable file: download then hand it to the OS share sheet, which is
   // the cross-platform "open with external app / save to files" surface.
   const openOrShare = useCallback(
-    async (info: DownloadInfo, cachedFile: File | null, save: boolean) => {
-      setTransferProgress(0);
+    async (
+      info: DownloadInfo,
+      cachedFile: File | null,
+      save: boolean,
+      existingHandle?: DownloadHandle,
+      openMimeType = info.mimeType,
+    ) => {
+      const handle =
+        existingHandle ?? beginDownload(info.transferId || info.name, info.name, info.size);
+      if (!handle) {
+        showToast(t("attachment.downloadInProgress"));
+        return;
+      }
       try {
-        const file = await fetchDownload(info, cachedFile);
+        const file = await fetchDownload(info, cachedFile, handle);
         if (!file) return;
+        if (save && Platform.OS === "android") {
+          updateDownload(handle, { phase: "saving" });
+          const permission =
+            await LegacyFileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+          if (!permission.granted) return;
+          if (handle.controller.signal.aborted) throw new TransferCancelledError();
+          const destination = await LegacyFileSystem.StorageAccessFramework.createFileAsync(
+            permission.directoryUri,
+            info.name,
+            info.mimeType,
+          );
+          const base64 = await LegacyFileSystem.readAsStringAsync(file.uri, {
+            encoding: LegacyFileSystem.EncodingType.Base64,
+          });
+          if (handle.controller.signal.aborted) throw new TransferCancelledError();
+          await LegacyFileSystem.StorageAccessFramework.writeAsStringAsync(destination, base64, {
+            encoding: LegacyFileSystem.EncodingType.Base64,
+          });
+          showToast(t("attachment.downloaded", { name: info.name }));
+          return;
+        }
+        if (!save && Platform.OS === "android") {
+          updateDownload(handle, { phase: "opening" });
+          await openAndroidFile(file.uri, openMimeType);
+          return;
+        }
         if (!(await Sharing.isAvailableAsync())) {
           Alert.alert(t("attachment.title"), t("attachment.shareUnavailable"));
           return;
         }
+        updateDownload(handle, { phase: save ? "saving" : "opening" });
         await Sharing.shareAsync(file.uri, {
-          mimeType: info.mimeType,
+          mimeType: save ? info.mimeType : openMimeType,
           dialogTitle: save ? t("attachment.save") : t("attachment.open"),
         });
-      } catch {
+      } catch (error) {
+        if (error instanceof TransferCancelledError) return;
         Alert.alert(t("attachment.title"), t("attachment.downloadFailed"));
       } finally {
-        setTransferProgress(null);
+        finishDownload(handle);
       }
     },
-    [fetchDownload, t],
+    [beginDownload, fetchDownload, finishDownload, t, updateDownload],
+  );
+
+  const downloadOriginal = useCallback(
+    async (attachment: HistoryAttachment) => {
+      const handle = beginDownload(attachment.path, attachment.name);
+      if (!handle) {
+        showToast(t("attachment.downloadInProgress"));
+        return;
+      }
+      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(attachment.path)) {
+        const local = new File(attachment.path);
+        await openOrShare(
+          {
+            transferId: "local",
+            name: attachment.name,
+            mimeType: mimeFor(attachment.name),
+            size: local.size,
+            contentHash: "",
+            previewKind: "file",
+            variant: "original",
+            chunkBytes: 0,
+          },
+          local,
+          true,
+          handle,
+        );
+        return;
+      }
+      try {
+        const cached = remote.cachedAttachment(attachment, "original");
+        const info =
+          cached?.info ??
+          (await remote.prepareAttachment(attachment, "original", handle.controller.signal, () =>
+            updateDownload(handle, { phase: "waiting_network" }),
+          ));
+        await openOrShare(info, cached?.file ?? null, true, handle);
+      } catch (error) {
+        finishDownload(handle);
+        if (error instanceof TransferCancelledError) return;
+        Alert.alert(t("attachment.title"), t("attachment.downloadFailed"));
+      }
+    },
+    [beginDownload, finishDownload, openOrShare, remote, t, updateDownload],
   );
 
   // A local-file markdown link/image target: prepare, then dispatch by size and
-  // preview kind. Over 10 MB → desktop; image/markdown/text → in-app preview;
+  // preview kind. Over 10 MB → desktop; image/markdown/text/JSON → in-app preview;
   // anything else → open/save action sheet.
   const openFileLink = useCallback(
     async (path: string) => {
       const attachment: HistoryAttachment = { path, name: basename(path) };
+      const fileType = mobileFileType(attachment.name);
+      if (!fileType) {
+        Alert.alert(t("attachment.title"), t("attachment.unsupportedType"));
+        return;
+      }
+      const openMimeType =
+        fileType.route === "external" ? await supportedExternalMime(attachment.name) : null;
+      if (fileType.route === "external" && !openMimeType) {
+        Alert.alert(t("attachment.title"), t("attachment.noHandler"));
+        return;
+      }
+      const handle = beginDownload(path, attachment.name);
+      if (!handle) {
+        showToast(t("attachment.downloadInProgress"));
+        return;
+      }
       try {
-        const cachedPreview = remote.cachedAttachment(attachment);
-        const info = cachedPreview?.info ?? (await remote.prepareAttachment(attachment));
+        const variant = fileType.route === "external" ? "original" : "preview";
+        const cachedPreview = remote.cachedAttachment(attachment, variant);
+        const info =
+          cachedPreview?.info ??
+          (await remote.prepareAttachment(attachment, variant, handle.controller.signal, () =>
+            updateDownload(handle, { phase: "waiting_network" }),
+          ));
         if (info.size > MAX_FILE_BYTES) {
           Alert.alert(t("attachment.title"), t("attachment.tooLarge"));
           return;
@@ -618,33 +878,26 @@ export function ChatScreen() {
         const previewable =
           info.previewKind === "image" ||
           info.previewKind === "markdown" ||
-          info.previewKind === "text";
+          info.previewKind === "text" ||
+          info.previewKind === "json";
         if (!previewable) {
-          if (Platform.OS === "ios") {
-            ActionSheetIOS.showActionSheetWithOptions(
-              {
-                options: [t("attachment.open"), t("attachment.save"), t("chat.cancel")],
-                cancelButtonIndex: 2,
-              },
-              index => {
-                if (index === 0 || index === 1)
-                  void openOrShare(info, cachedPreview?.file ?? null, index === 1);
-              },
-            );
-          } else {
-            setFileAction({ info, cachedFile: cachedPreview?.file ?? null });
+          if (!openMimeType) {
+            Alert.alert(t("attachment.title"), t("attachment.noHandler"));
+            return;
           }
+          setFileAction({ info, cachedFile: cachedPreview?.file ?? null, openMimeType });
           return;
         }
-        const file = await fetchDownload(info, cachedPreview?.file ?? null);
+        const file = await fetchDownload(info, cachedPreview?.file ?? null, handle);
         if (!file) return;
         if (info.previewKind === "image") {
-          setPreview({ info, uri: file.uri });
+          setPreview({ attachment, info, uri: file.uri });
         } else {
           const bytes = await file.bytes();
           const visible = bytes.slice(0, MARKDOWN_RENDER_BYTES);
           const previewText = new TextDecoder().decode(visible);
           setPreview({
+            attachment,
             info,
             uri: file.uri,
             ...(info.previewKind === "markdown"
@@ -654,6 +907,7 @@ export function ChatScreen() {
           });
         }
       } catch (error) {
+        if (error instanceof TransferCancelledError) return;
         const detail = error instanceof Error ? error.message : "";
         const message =
           detail.includes("view it on desktop") || detail.includes("GIF preview")
@@ -661,10 +915,10 @@ export function ChatScreen() {
             : t("attachment.downloadFailed");
         Alert.alert(t("attachment.title"), message);
       } finally {
-        setTransferProgress(null);
+        finishDownload(handle);
       }
     },
-    [fetchDownload, openOrShare, remote, t],
+    [beginDownload, fetchDownload, finishDownload, remote, t, updateDownload],
   );
 
   // The bottom-most scroll offset: full content height minus the viewport,
@@ -1041,7 +1295,14 @@ export function ChatScreen() {
                     onPress={() => {
                       const action = fileAction;
                       setFileAction(null);
-                      if (action) void openOrShare(action.info, action.cachedFile, false);
+                      if (action)
+                        void openOrShare(
+                          action.info,
+                          action.cachedFile,
+                          false,
+                          undefined,
+                          action.openMimeType,
+                        );
                     }}
                     style={styles.attachmentMenuOption}
                   >
@@ -1076,6 +1337,19 @@ export function ChatScreen() {
               <Text numberOfLines={1} style={styles.previewTitle}>
                 {preview?.info.name}
               </Text>
+              <Pressable
+                accessibilityLabel={t("attachment.save")}
+                disabled={activeDownload !== null}
+                onPress={() => {
+                  if (preview) void downloadOriginal(preview.attachment);
+                }}
+              >
+                {activeDownload !== null ? (
+                  <ActivityIndicator color={colors.ink} size="small" />
+                ) : (
+                  <Download color={colors.ink} size={21} />
+                )}
+              </Pressable>
               <Pressable accessibilityLabel={t("common.close")} onPress={() => setPreview(null)}>
                 <X color={colors.ink} size={22} />
               </Pressable>
@@ -1093,6 +1367,14 @@ export function ChatScreen() {
                 )}
                 <MarkdownText text={preview?.markdown ?? ""} />
               </ScrollView>
+            ) : preview?.info.previewKind === "json" ? (
+              <JsonPreview
+                invalidMessage={detail => t("attachment.jsonInvalid", { detail })}
+                sourceTruncated={!!preview.truncated}
+                text={preview.text ?? ""}
+                tooComplexMessage={t("attachment.jsonTooComplex")}
+                truncatedMessage={t("attachment.jsonTruncated")}
+              />
             ) : (
               <ScrollView contentContainerStyle={styles.previewMarkdown}>
                 {!!preview?.truncated && (
@@ -1104,6 +1386,53 @@ export function ChatScreen() {
               </ScrollView>
             )}
           </SafeAreaView>
+        </Modal>
+
+        <Modal
+          animationType="fade"
+          onRequestClose={cancelActiveDownload}
+          transparent
+          visible={activeDownload !== null}
+        >
+          <View style={styles.downloadOverlay}>
+            <View style={styles.downloadDialog}>
+              <Text style={styles.downloadTitle}>{t("attachment.downloadProgressTitle")}</Text>
+              <Text numberOfLines={1} style={styles.downloadFileName}>
+                {activeDownload?.fileName}
+              </Text>
+              <Text style={styles.downloadPhase}>
+                {activeDownload ? t(`attachment.downloadPhases.${activeDownload.phase}`) : ""}
+              </Text>
+              <View style={styles.downloadTrack}>
+                <View
+                  style={[
+                    styles.downloadFill,
+                    { width: `${Math.max(2, activeDownloadFraction * 100)}%` },
+                  ]}
+                />
+              </View>
+              <View style={styles.downloadMeta}>
+                <Text style={styles.downloadBytes}>
+                  {activeDownload?.totalBytes
+                    ? `${activeDownload.completedBytes === 0 ? "0 KB" : formatBytes(activeDownload.completedBytes)} / ${formatBytes(activeDownload.totalBytes)}`
+                    : t("attachment.calculatingSize")}
+                </Text>
+                <Text style={styles.downloadPercent}>
+                  {activeDownload?.totalBytes ? `${Math.round(activeDownloadFraction * 100)}%` : ""}
+                </Text>
+              </View>
+              <Pressable
+                disabled={activeDownload?.phase === "cancelling"}
+                onPress={cancelActiveDownload}
+                style={({ pressed }) => [
+                  styles.downloadCancel,
+                  pressed && styles.downloadCancelPressed,
+                ]}
+              >
+                <Text style={styles.downloadCancelText}>{t("chat.cancel")}</Text>
+              </Pressable>
+            </View>
+          </View>
         </Modal>
 
         <Modal
@@ -1436,6 +1765,42 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.lineSoft,
   },
   attachmentMenuText: { color: colors.ink, fontSize: 15, fontWeight: "600" },
+  downloadOverlay: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: spacing.xl,
+    backgroundColor: colors.overlay,
+  },
+  downloadDialog: {
+    width: "100%",
+    maxWidth: 360,
+    gap: spacing.md,
+    padding: spacing.xl,
+    borderRadius: radius.lg,
+    backgroundColor: colors.surface,
+  },
+  downloadTitle: { color: colors.inkStrong, fontSize: 17, fontWeight: "700" },
+  downloadFileName: { color: colors.ink, fontSize: 14, fontWeight: "600" },
+  downloadPhase: { color: colors.inkMuted, fontSize: 13 },
+  downloadTrack: {
+    height: 7,
+    overflow: "hidden",
+    borderRadius: radius.pill,
+    backgroundColor: colors.surfaceSubtle,
+  },
+  downloadFill: { height: 7, borderRadius: radius.pill, backgroundColor: colors.accent },
+  downloadMeta: { flexDirection: "row", justifyContent: "space-between" },
+  downloadBytes: { color: colors.inkMuted, fontSize: 12 },
+  downloadPercent: { color: colors.inkSoft, fontSize: 12, fontWeight: "600" },
+  downloadCancel: {
+    alignSelf: "flex-end",
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.md,
+  },
+  downloadCancelPressed: { backgroundColor: colors.surfaceSubtle },
+  downloadCancelText: { color: colors.accent, fontSize: 14, fontWeight: "600" },
   previewSafe: { flex: 1, backgroundColor: colors.surface },
   previewHeader: {
     minHeight: 52,

@@ -20,6 +20,7 @@ use std::{
 use crate::agent_bridge::AttachmentInput;
 
 pub const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_JSON_RICH_PREVIEW_BYTES: u64 = 1024 * 1024;
 pub const MAX_MESSAGE_BYTES: u64 = 20 * 1024 * 1024;
 pub const MAX_ATTACHMENTS: usize = 10;
 pub const MAX_IMAGES: usize = 4;
@@ -82,6 +83,7 @@ pub struct DownloadInfo {
     size: u64,
     content_hash: String,
     preview_kind: String,
+    variant: String,
     chunk_bytes: u64,
 }
 
@@ -418,9 +420,18 @@ fn resolve_local_link(session_id: &str, requested_path: &str) -> Option<PathBuf>
     Path::new(&cwd).join(requested).canonicalize().ok()
 }
 
+#[cfg(test)]
 pub async fn prepare_download(
     session_id: &str,
     requested_path: &str,
+) -> Result<DownloadInfo, crate::AppError> {
+    prepare_download_variant(session_id, requested_path, "preview").await
+}
+
+pub async fn prepare_download_variant(
+    session_id: &str,
+    requested_path: &str,
+    requested_variant: &str,
 ) -> Result<DownloadInfo, crate::AppError> {
     prune_expired();
     let entries = crate::agent_bridge::get_session_entries(session_id.to_string()).await?;
@@ -443,10 +454,17 @@ pub async fn prepare_download(
     if !source.is_file() {
         return Err("The attachment is no longer available.".to_string().into());
     }
-    let prepared = prepare_preview(&source, &display_name)?;
-    // prepare_preview already bounds its output: text/markdown previews are
-    // byte-copies of a size-checked source and image previews are re-encoded at
-    // ≤1600px, so the preview can never exceed MAX_FILE_BYTES here.
+    if !is_mobile_download_allowed(&display_name) {
+        return Err("This file type is not available on mobile; view it on desktop."
+            .to_string()
+            .into());
+    }
+    let prepared = match requested_variant {
+        "original" => prepare_original(&source, &display_name)?,
+        "" | "preview" => prepare_preview(&source, &display_name)
+            .or_else(|_| prepare_original(&source, &display_name))?,
+        _ => return Err("Unsupported download variant.".to_string().into()),
+    };
     let size = std::fs::metadata(&prepared.path)?.len();
     let transfer_id = new_transfer_id("download");
     let content_hash = sha256_file(&prepared.path)?;
@@ -457,6 +475,7 @@ pub async fn prepare_download(
         size,
         content_hash: content_hash.clone(),
         preview_kind: prepared.preview_kind.clone(),
+        variant: prepared.variant.clone(),
         chunk_bytes: CHUNK_BYTES,
     };
     DOWNLOADS.lock().unwrap().insert(
@@ -476,6 +495,110 @@ struct PreparedPreview {
     name: String,
     mime_type: String,
     preview_kind: String,
+    variant: String,
+}
+
+fn mime_type_for_name(name: &str) -> &'static str {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".tar.gz") {
+        return "application/gzip";
+    }
+    let ext = Path::new(&lower)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    match ext {
+        "doc" => "application/msword",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls" => "application/vnd.ms-excel",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "pdf" => "application/pdf",
+        "rtf" => "application/rtf",
+        "csv" => "text/csv",
+        "tsv" => "text/tab-separated-values",
+        "json" => "application/json",
+        "jsonl" => "application/jsonl",
+        "yaml" | "yml" => "application/yaml",
+        "xml" => "application/xml",
+        "html" | "htm" => "text/html",
+        "tex" => "application/x-tex",
+        "bib" => "application/x-bibtex",
+        "ris" => "application/x-research-info-systems",
+        "py" => "text/x-python",
+        "r" => "text/x-r-source",
+        "jl" => "text/x-julia",
+        "m" => "text/x-matlab",
+        "sql" => "application/sql",
+        "sh" => "application/x-sh",
+        "zip" => "application/zip",
+        "rar" => "application/vnd.rar",
+        "7z" => "application/x-7z-compressed",
+        "tar" => "application/x-tar",
+        "tgz" | "gz" | "gzip" => "application/gzip",
+        "bz2" => "application/x-bzip2",
+        "xz" => "application/x-xz",
+        "zst" => "application/zstd",
+        "epub" => "application/epub+zip",
+        "pages" => "application/vnd.apple.pages",
+        "numbers" => "application/vnd.apple.numbers",
+        "key" => "application/vnd.apple.keynote",
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "tif" | "tiff" => "image/tiff",
+        "heic" => "image/heic",
+        "heif" => "image/heif",
+        "svg" => "image/svg+xml",
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
+        "wav" => "audio/wav",
+        "flac" => "audio/flac",
+        "ogg" => "audio/ogg",
+        "mp4" => "video/mp4",
+        "m4v" => "video/x-m4v",
+        "mov" => "video/quicktime",
+        "webm" => "video/webm",
+        "md" | "markdown" => "text/markdown",
+        "txt" | "log" => "text/plain",
+        _ => "application/octet-stream",
+    }
+}
+
+fn is_mobile_download_allowed(name: &str) -> bool {
+    mime_type_for_name(name) != "application/octet-stream"
+}
+
+fn prepare_original(
+    source: &Path,
+    requested_display_name: &str,
+) -> Result<PreparedPreview, crate::AppError> {
+    let size = std::fs::metadata(source)?.len();
+    if size > MAX_FILE_BYTES {
+        return Err("The file is larger than 10 MiB; view it on desktop."
+            .to_string()
+            .into());
+    }
+    let original_name = display_name(requested_display_name, "attachment");
+    let dir = transfer_root().join("download");
+    ensure_private_dir(&dir)?;
+    let path = dir.join(format!(
+        "{}_{}",
+        new_transfer_id("original"),
+        safe_disk_name(&original_name, "attachment")
+    ));
+    std::fs::copy(source, &path)?;
+    Ok(PreparedPreview {
+        path,
+        name: original_name.clone(),
+        mime_type: mime_type_for_name(&original_name).to_string(),
+        preview_kind: "file".to_string(),
+        variant: "original".to_string(),
+    })
 }
 
 fn is_animated_image(source: &Path) -> Result<bool, crate::AppError> {
@@ -583,6 +706,7 @@ fn prepare_preview(
                 ),
                 mime_type: "image/jpeg".to_string(),
                 preview_kind: "image".to_string(),
+                variant: "preview".to_string(),
             });
         }
         let path = dir.join(format!("{stamp}.png"));
@@ -600,6 +724,7 @@ fn prepare_preview(
             ),
             mime_type: "image/png".to_string(),
             preview_kind: "image".to_string(),
+            variant: "preview".to_string(),
         });
     }
 
@@ -610,6 +735,14 @@ fn prepare_preview(
             .into());
     }
     let markdown = matches!(ext.as_str(), "md" | "markdown");
+    let json = ext == "json";
+    let rich_json = json && size < MAX_JSON_RICH_PREVIEW_BYTES;
+    let plain_text = matches!(ext.as_str(), "txt" | "log");
+    if !markdown && !json && !plain_text {
+        return Err("This file type must be opened by a mobile app."
+            .to_string()
+            .into());
+    }
     if !is_plain_utf8_text(source)? {
         return Err(
             "This file type cannot be previewed on mobile; view it on desktop."
@@ -627,11 +760,21 @@ fn prepare_preview(
         name: original_name,
         mime_type: if markdown {
             "text/markdown"
+        } else if json {
+            "application/json"
         } else {
             "text/plain"
         }
         .to_string(),
-        preview_kind: if markdown { "markdown" } else { "text" }.to_string(),
+        preview_kind: if markdown {
+            "markdown"
+        } else if rich_json {
+            "json"
+        } else {
+            "text"
+        }
+        .to_string(),
+        variant: "preview".to_string(),
     })
 }
 
@@ -721,14 +864,18 @@ pub fn spawn_transfer_loop(
                                 .parse::<u64>()
                                 .map_err(|_| "Invalid chunk index.".to_string())
                                 .and_then(|index| write_upload_chunk(transfer_id, index, &message.payload)),
-                            [transfer_id, "pull", index] => index
-                                .parse::<u64>()
-                                .map_err(|_| "Invalid chunk index.".to_string())
-                                .and_then(|index| {
-                                    publish_download_chunk(&client, &pair_id, transfer_id, index)
-                                        .map(|_| json!({ "published": true, "index": index }))
-                                        .map_err(|error| error.to_string())
-                                }),
+                            [transfer_id, "pull", index] => match index.parse::<u64>() {
+                                Ok(index) => publish_download_chunk(
+                                    &client,
+                                    &pair_id,
+                                    transfer_id,
+                                    index,
+                                )
+                                .await
+                                .map(|_| json!({ "published": true, "index": index }))
+                                .map_err(|error| error.to_string()),
+                                Err(_) => Err("Invalid chunk index.".to_string()),
+                            },
                             _ => Err("Unsupported transfer operation.".to_string()),
                         };
                         if let Some(reply) = message.reply {
@@ -790,7 +937,7 @@ pub(crate) fn write_upload_chunk(
     Ok(json!({ "index": index, "received": item.received }))
 }
 
-fn publish_download_chunk(
+async fn publish_download_chunk(
     client: &async_nats::Client,
     pair_id: &str,
     transfer_id: &str,
@@ -814,10 +961,14 @@ fn publish_download_chunk(
     let mut bytes = vec![0_u8; length];
     file.read_exact(&mut bytes)?;
     let subject = format!("p.{pair_id}.xfer.down.{transfer_id}.chunk.{index}");
-    let client = client.clone();
-    tokio::spawn(async move {
-        let _ = client.publish(subject, bytes.into()).await;
-    });
+    client
+        .publish(subject, bytes.into())
+        .await
+        .map_err(|error| format!("Download chunk publish failed: {error}"))?;
+    client
+        .flush()
+        .await
+        .map_err(|error| format!("Download chunk flush failed: {error}"))?;
     Ok(())
 }
 
@@ -825,7 +976,8 @@ fn publish_download_chunk(
 mod tests {
     use super::{
         attachment_is_in_session, display_name, ensure_private_dir, is_animated_image,
-        prepare_preview, safe_disk_name, validate_mobile_image, MAX_FILE_BYTES,
+        is_mobile_download_allowed, mime_type_for_name, prepare_preview, safe_disk_name,
+        validate_mobile_image, MAX_FILE_BYTES, MAX_JSON_RICH_PREVIEW_BYTES,
     };
     use serde_json::json;
 
@@ -924,7 +1076,7 @@ mod tests {
     }
 
     #[test]
-    fn prepares_only_plain_text_and_markdown_as_non_image_previews() {
+    fn prepares_only_selected_in_app_text_types_as_non_image_previews() {
         let dir = std::env::temp_dir().join(format!(
             "futureos-preview-test-{}",
             nkeys::KeyPair::new_user().public_key()
@@ -945,12 +1097,60 @@ mod tests {
         assert_eq!(markdown_preview.mime_type, "text/markdown");
         std::fs::remove_file(markdown_preview.path).unwrap();
 
+        let json = dir.join("result.json");
+        std::fs::write(&json, r#"{"ok":true}"#).unwrap();
+        let json_preview = prepare_preview(&json, "result.json").unwrap();
+        assert_eq!(json_preview.preview_kind, "json");
+        assert_eq!(json_preview.mime_type, "application/json");
+        std::fs::remove_file(json_preview.path).unwrap();
+
+        let json_below_limit = dir.join("below-limit.json");
+        std::fs::write(
+            &json_below_limit,
+            format!("\"{}\"", "x".repeat(MAX_JSON_RICH_PREVIEW_BYTES as usize - 3)),
+        )
+        .unwrap();
+        let preview = prepare_preview(&json_below_limit, "below-limit.json").unwrap();
+        assert_eq!(std::fs::metadata(&json_below_limit).unwrap().len(), 1024 * 1024 - 1);
+        assert_eq!(preview.preview_kind, "json");
+        std::fs::remove_file(preview.path).unwrap();
+
+        let json_at_limit = dir.join("at-limit.json");
+        std::fs::write(
+            &json_at_limit,
+            format!("\"{}\"", "x".repeat(MAX_JSON_RICH_PREVIEW_BYTES as usize - 2)),
+        )
+        .unwrap();
+        let preview = prepare_preview(&json_at_limit, "at-limit.json").unwrap();
+        assert_eq!(std::fs::metadata(&json_at_limit).unwrap().len(), 1024 * 1024);
+        assert_eq!(preview.preview_kind, "text");
+        assert_eq!(preview.mime_type, "application/json");
+        std::fs::remove_file(preview.path).unwrap();
+
+        let csv = dir.join("result.csv");
+        std::fs::write(&csv, "sample,value\na,1\n").unwrap();
+        let error = prepare_preview(&csv, "result.csv")
+            .expect_err("CSV must be delegated to an installed mobile app");
+        assert!(error.to_string().contains("mobile app"));
+
         let pdf = dir.join("document.pdf");
         std::fs::write(&pdf, b"%PDF-1.7\0binary").unwrap();
         let error =
             prepare_preview(&pdf, "document.pdf").expect_err("PDF should not get a mobile preview");
-        assert!(error.to_string().contains("view it on desktop"));
+        assert!(error.to_string().contains("mobile app"));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn mobile_download_allow_list_uses_precise_mimes_and_compound_suffixes() {
+        assert_eq!(mime_type_for_name("DATA.TAR.GZ"), "application/gzip");
+        assert_eq!(mime_type_for_name("table.csv"), "text/csv");
+        assert_eq!(mime_type_for_name("book.epub"), "application/epub+zip");
+        assert_eq!(mime_type_for_name("drawing.svg"), "image/svg+xml");
+        assert!(is_mobile_download_allowed("archive.7z"));
+        assert!(is_mobile_download_allowed("analysis.jsonl"));
+        assert!(!is_mobile_download_allowed("dataset.h5"));
+        assert!(!is_mobile_download_allowed("unknown"));
     }
 }
 
@@ -1390,6 +1590,44 @@ mod flow_tests {
         assert!(!DOWNLOADS.lock().unwrap().contains_key(&info.transfer_id));
         cancel_download("never-existed");
 
+        // Binary documents cannot be previewed, so the default display request
+        // falls back to an exact original-file snapshot that mobile can save.
+        let document = dir.join("report.doc");
+        let document_bytes = b"\xD0\xCF\x11\xE0binary-doc";
+        std::fs::write(&document, document_bytes).unwrap();
+        agent.set_session_entries(
+            &session,
+            json!({"entries":[{"meta":{"attachments":[{"path": document.to_string_lossy(),"name":"report.doc"}]}}]}),
+        );
+        let info = prepare_download(&session, &document.to_string_lossy())
+            .await
+            .unwrap();
+        assert_eq!(info.preview_kind, "file");
+        assert_eq!(info.variant, "original");
+        assert_eq!(info.mime_type, "application/msword");
+        let snapshot = DOWNLOADS
+            .lock()
+            .unwrap()
+            .get(&info.transfer_id)
+            .unwrap()
+            .path
+            .clone();
+        assert_eq!(std::fs::read(snapshot).unwrap(), document_bytes);
+        cancel_download(&info.transfer_id);
+        assert_eq!(std::fs::read(&document).unwrap(), document_bytes);
+
+        // An explicit original request never returns a text preview.
+        agent.set_session_entries(
+            &session,
+            json!({"entries":[{"meta":{"attachments":[{"path": notes.to_string_lossy(),"name":"notes.txt"}]}}]}),
+        );
+        let original = prepare_download_variant(&session, &notes.to_string_lossy(), "original")
+            .await
+            .unwrap();
+        assert_eq!(original.preview_kind, "file");
+        assert_eq!(original.variant, "original");
+        cancel_download(&original.transfer_id);
+
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1540,10 +1778,10 @@ mod flow_tests {
         assert!(error.to_string().contains("10 MiB"));
 
         // Invalid UTF-8 is not previewable as text.
-        let binary = dir.join("data.bin");
+        let binary = dir.join("data.txt");
         std::fs::write(&binary, [0xFF, 0xFE, 0x00, 0x01]).unwrap();
         assert!(!is_plain_utf8_text(&binary).unwrap());
-        let error = prepare_preview(&binary, "data.bin").unwrap_err();
+        let error = prepare_preview(&binary, "data.txt").unwrap_err();
         assert!(error.to_string().contains("cannot be previewed"));
 
         // Control characters other than whitespace are not plain text.
@@ -1662,9 +1900,8 @@ mod flow_tests {
             Some(&pull_reply),
             Vec::new(),
         );
-        let reply = await_publish(&mut tap, &pull_reply, Duration::from_secs(5)).await;
-        assert_eq!(reply.json()["success"], json!(true));
-        assert_eq!(reply.json()["data"]["published"], json!(true));
+        // The loop now confirms that the chunk reached NATS before acknowledging
+        // the pull, so the data publish is observably ordered first.
         let chunk = await_publish(
             &mut tap,
             &format!("p.{pair}.xfer.down.download_loop.chunk.0"),
@@ -1672,6 +1909,9 @@ mod flow_tests {
         )
         .await;
         assert_eq!(chunk.payload, b"download-bytes");
+        let reply = await_publish(&mut tap, &pull_reply, Duration::from_secs(5)).await;
+        assert_eq!(reply.json()["success"], json!(true));
+        assert_eq!(reply.json()["data"]["published"], json!(true));
 
         // Out-of-range and unknown pulls get error replies.
         let range_reply = format!("rep-{}", unique("range"));

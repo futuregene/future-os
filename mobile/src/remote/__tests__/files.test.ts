@@ -317,6 +317,14 @@ describe("pickAttachments", () => {
     expect(result[0]!.mimeType).toBe("application/octet-stream");
   });
 
+  test("preserves the Word mime type for external open/save", async () => {
+    const file = fsFile("file:///docs/report.docx", { bytes: new Uint8Array(3) });
+    const result = await prepareOne(file);
+    expect(result[0]!.mimeType).toBe(
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    );
+  });
+
   test("rejects a batch over the attachment count quota", async () => {
     const files = Array.from({ length: 11 }, (_, i) =>
       fsFile(`file:///docs/f${i}.txt`, { bytes: new Uint8Array(1) }),
@@ -668,8 +676,9 @@ describe("download & preview cache", () => {
     name: "result.jpg",
     mimeType: "image/jpeg",
     size: 8,
-    contentHash: "abc123",
+    contentHash: sha256Hex(new Uint8Array(8)),
     previewKind: "image",
+    variant: "preview",
     chunkBytes: 4,
   };
 
@@ -683,7 +692,31 @@ describe("download & preview cache", () => {
     const history: HistoryAttachment = { path: "/tmp/a.jpg", name: "a.jpg" };
     expect(await prepareDownload(client as unknown as RemoteClient, "s1", history)).toBe(info);
     expect(client.request).toHaveBeenCalledWith(
-      { type: "download_prepare", sessionId: "s1", filePath: "/tmp/a.jpg" },
+      expect.objectContaining({
+        type: "download_prepare",
+        sessionId: "s1",
+        filePath: "/tmp/a.jpg",
+        mode: "preview",
+      }),
+      "s1",
+    );
+  });
+
+  test("requests the untouched original independently from the preview", async () => {
+    const original = { ...info, previewKind: "file" as const, variant: "original" as const };
+    const client = mockClient();
+    client.request.mockResolvedValue({ success: true, data: original });
+    const history: HistoryAttachment = { path: "/tmp/a.jpg", name: "a.jpg" };
+    expect(
+      await prepareDownload(client as unknown as RemoteClient, "s1", history, "original"),
+    ).toBe(original);
+    expect(client.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "download_prepare",
+        sessionId: "s1",
+        filePath: "/tmp/a.jpg",
+        mode: "original",
+      }),
       "s1",
     );
   });
@@ -702,7 +735,27 @@ describe("download & preview cache", () => {
     );
   });
 
-  test("cachedDownload returns a file only when present and byte-identical", () => {
+  test("prepareDownload retries with the same command id after a transient failure", async () => {
+    const client = mockClient();
+    client.request.mockRejectedValueOnce(new Error("timeout")).mockResolvedValue({
+      success: true,
+      data: info,
+    });
+    const waiting = jest.fn();
+    await prepareDownload(
+      client as unknown as RemoteClient,
+      "s1",
+      { path: "/tmp/a.jpg", name: "a.jpg" },
+      "preview",
+      undefined,
+      waiting,
+    );
+    expect(waiting).toHaveBeenCalledTimes(1);
+    expect(client.request).toHaveBeenCalledTimes(2);
+    expect(client.request.mock.calls[0]![0].id).toBe(client.request.mock.calls[1]![0].id);
+  });
+
+  test("cachedDownload returns only a present size-matching cache candidate", () => {
     expect(cachedDownload(info)).toBeNull();
     mockFS.__set(cacheUri(info), { bytes: new Uint8Array(8) });
     expect(cachedDownload(info)).not.toBeNull();
@@ -728,6 +781,24 @@ describe("download & preview cache", () => {
     // A pruned backing file drops the remembered preview again.
     mockFS.__reset();
     expect(cachedPreviewForAttachment(attachment)).toBeNull();
+  });
+
+  test("keeps preview and original cache entries independent", () => {
+    const attachment: HistoryAttachment = { path: "/tmp/a.jpg", name: "a.jpg" };
+    const original: DownloadInfo = {
+      ...info,
+      contentHash: "original123",
+      previewKind: "file",
+      variant: "original",
+    };
+    rememberPreparedPreview(attachment, info);
+    rememberPreparedPreview(attachment, original);
+    mockFS.__set(cacheUri(info), { bytes: new Uint8Array(8) });
+    mockFS.__set("/mock/cache/futureos-previews/original123.jpg", {
+      bytes: new Uint8Array(8),
+    });
+    expect(cachedPreviewForAttachment(attachment, "preview")?.info).toBe(info);
+    expect(cachedPreviewForAttachment(attachment, "original")?.info).toBe(original);
   });
 
   test("downloadPrepared downloads, verifies size and hash, and cancels", async () => {
@@ -769,6 +840,18 @@ describe("download & preview cache", () => {
     );
   });
 
+  test("downloadPrepared replaces a same-size cache entry whose hash is wrong", async () => {
+    const fileBytes = new Uint8Array([1, 2, 3, 4]);
+    const i: DownloadInfo = { ...info, size: 4, chunkBytes: 4, contentHash: sha256Hex(fileBytes) };
+    mockFS.__set(cacheUri(i), { bytes: new Uint8Array([9, 9, 9, 9]) });
+    const client = mockClient();
+    client.downloadChunk.mockResolvedValue(fileBytes);
+    client.request.mockResolvedValue({ success: true, data: {} });
+    const file = await downloadPrepared(client as unknown as RemoteClient, i);
+    expect(client.downloadChunk).toHaveBeenCalledTimes(1);
+    expect(await file.bytes()).toEqual(fileBytes);
+  });
+
   test("downloadPrepared retries a transient chunk failure", async () => {
     const fileBytes = new Uint8Array([1, 2, 3, 4]);
     const i: DownloadInfo = { ...info, size: 4, chunkBytes: 4, contentHash: sha256Hex(fileBytes) };
@@ -804,9 +887,29 @@ describe("download & preview cache", () => {
   test("downloadPrepared cleans up and rethrows on a chunk failure", async () => {
     const i: DownloadInfo = { ...info, size: 8, contentHash: "x" };
     const client = mockClient();
-    client.downloadChunk.mockRejectedValue(new Error("dead"));
+    client.downloadChunk.mockRejectedValue(new Error("Download expired or does not exist"));
     client.request.mockResolvedValue({ success: true, data: {} });
-    await expect(downloadPrepared(client as unknown as RemoteClient, i)).rejects.toThrow("dead");
+    await expect(downloadPrepared(client as unknown as RemoteClient, i)).rejects.toThrow(
+      "Download expired or does not exist",
+    );
+    expect(client.request).toHaveBeenCalledWith(
+      { type: "download_cancel", transferId: "t1" },
+      "transfer",
+    );
+  });
+
+  test("downloadPrepared cancels a weak-network retry without waiting for the next attempt", async () => {
+    const i: DownloadInfo = { ...info, size: 8, contentHash: "x" };
+    const client = mockClient();
+    const controller = new AbortController();
+    client.downloadChunk.mockRejectedValue(new Error("not_connected"));
+    client.request.mockResolvedValue({ success: true, data: {} });
+    await expect(
+      downloadPrepared(client as unknown as RemoteClient, i, undefined, controller.signal, () =>
+        controller.abort(),
+      ),
+    ).rejects.toThrow("transfer_cancelled");
+    expect(client.downloadChunk).toHaveBeenCalledTimes(1);
     expect(client.request).toHaveBeenCalledWith(
       { type: "download_cancel", transferId: "t1" },
       "transfer",

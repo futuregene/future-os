@@ -142,7 +142,8 @@ export interface DownloadInfo {
   mimeType: string;
   size: number;
   contentHash: string;
-  previewKind: "image" | "markdown" | "text";
+  previewKind: "image" | "markdown" | "text" | "json" | "file";
+  variant: "preview" | "original";
   chunkBytes: number;
 }
 

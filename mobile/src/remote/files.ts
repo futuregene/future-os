@@ -5,6 +5,7 @@ import * as Crypto from "expo-crypto";
 import { Image } from "react-native";
 import type { RemoteClient } from "./client";
 import type { DownloadInfo, HistoryAttachment, MobileAttachment } from "./types";
+import { mobileFileType } from "./fileTypes";
 
 export const MAX_FILE_BYTES = 10 * 1024 * 1024;
 export const MAX_MESSAGE_BYTES = 20 * 1024 * 1024;
@@ -16,7 +17,7 @@ export const MAX_IMAGES = 4;
 // (report 06 decision D1).
 export const MAX_IMAGE_EDGE = 1600;
 const MAX_PREVIEW_CACHE_BYTES = 100 * 1024 * 1024;
-const preparedPreviewIndex = new Map<string, DownloadInfo>();
+const preparedDownloadIndex = new Map<string, DownloadInfo>();
 
 const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif"]);
 const JPEG_OUTPUT_INPUTS = new Set(["jpg", "jpeg", "bmp", "heic", "heif"]);
@@ -53,23 +54,7 @@ function imageSize(uri: string): Promise<{ width: number; height: number }> {
 }
 
 export function mimeFor(name: string, fallback = "application/octet-stream"): string {
-  // Only extensions that can actually reach this helper are mapped. Image
-  // inputs that are re-encoded to JPEG (jpg/jpeg/bmp/heic/heif) always set
-  // their mime to "image/jpeg" directly, so mimeFor is never consulted for
-  // them; those cases are intentionally absent.
-  switch (extension(name)) {
-    case "png":
-      return "image/png";
-    case "gif":
-      return "image/gif";
-    case "webp":
-      return "image/webp";
-    case "md":
-    case "markdown":
-      return "text/markdown";
-    default:
-      return fallback;
-  }
+  return mobileFileType(name)?.mimeType ?? fallback;
 }
 
 function isImage(file: File, mimeType?: string | null): boolean {
@@ -363,16 +348,66 @@ async function cancelDownload(client: RemoteClient, transferId: string): Promise
   await client.request({ type: "download_cancel", transferId }, "transfer").catch(() => {});
 }
 
-async function withTransferRetry<T>(operation: () => Promise<T>): Promise<T> {
+const TRANSFER_RETRY_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000, 15_000, 15_000];
+
+export class TransferCancelledError extends Error {
+  constructor() {
+    super("transfer_cancelled");
+    this.name = "TransferCancelledError";
+  }
+}
+
+function throwIfCancelled(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new TransferCancelledError();
+}
+
+function isPermanentTransferError(error: unknown): boolean {
+  const message =
+    error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return [
+    "expired or does not exist",
+    "outside the file",
+    "unsupported download variant",
+    "not an attachment",
+    "no longer available",
+    "larger than 10 mib",
+  ].some(fragment => message.includes(fragment));
+}
+
+function retryDelay(delayMs: number, signal?: AbortSignal): Promise<void> {
+  throwIfCancelled(signal);
+  return new Promise((resolve, reject) => {
+    const jittered = Math.round(delayMs * (0.85 + Math.random() * 0.3));
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new TransferCancelledError());
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, jittered);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+async function withTransferRetry<T>(
+  operation: () => Promise<T>,
+  signal?: AbortSignal,
+  onWaiting?: () => void,
+  retryDelays = TRANSFER_RETRY_DELAYS_MS,
+): Promise<T> {
   let lastError: unknown;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+    throwIfCancelled(signal);
     try {
       return await operation();
     } catch (error) {
       lastError = error;
-      if (attempt < 2) {
-        await new Promise(resolve => setTimeout(resolve, 250 * 2 ** attempt));
-      }
+      if (error instanceof TransferCancelledError || isPermanentTransferError(error)) throw error;
+      const delay = retryDelays[attempt];
+      if (delay === undefined) break;
+      onWaiting?.();
+      await retryDelay(delay, signal);
     }
   }
   throw lastError;
@@ -407,7 +442,12 @@ export async function uploadAttachments(
       while ((handle.offset ?? 0) < attachment.transferSize) {
         const remaining = attachment.transferSize - (handle.offset ?? 0);
         const bytes = handle.readBytes(Math.min(init.data.chunkBytes, remaining));
-        await withTransferRetry(() => client.uploadChunk(init.data.uploadId, index, bytes));
+        await withTransferRetry(
+          () => client.uploadChunk(init.data.uploadId, index, bytes),
+          undefined,
+          undefined,
+          [250, 500],
+        );
         completedBytes += bytes.byteLength;
         onProgress?.(completedBytes, totalBytes);
         index += 1;
@@ -437,24 +477,46 @@ export async function prepareDownload(
   client: RemoteClient,
   sessionId: string,
   attachment: HistoryAttachment,
+  variant: "preview" | "original" = "preview",
+  signal?: AbortSignal,
+  onWaiting?: () => void,
 ): Promise<DownloadInfo> {
-  const response = await client.request<DownloadInfo>(
-    { type: "download_prepare", sessionId, filePath: attachment.path },
+  const command = {
+    id: `download_prepare_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`,
+    type: "download_prepare",
     sessionId,
+    filePath: attachment.path,
+    mode: variant,
+  };
+  const response = await withTransferRetry(
+    () => client.request<DownloadInfo>(command, sessionId),
+    signal,
+    onWaiting,
   );
-  const info = response.data;
-  if (cachedDownload(info)) {
+  // Older desktops do not return `variant`; their preview behavior remains
+  // compatible, so normalize the response to the variant we requested.
+  const info = response.data.variant ? response.data : { ...response.data, variant };
+  if (signal?.aborted) {
     await cancelDownload(client, info.transferId);
+    throw new TransferCancelledError();
+  }
+  try {
+    if (await verifiedCachedDownload(info, signal)) {
+      await cancelDownload(client, info.transferId);
+    }
+  } catch (error) {
+    await cancelDownload(client, info.transferId);
+    throw error;
   }
   return info;
 }
 
-function previewSourceKey(attachment: HistoryAttachment): string {
+function downloadSourceKey(attachment: HistoryAttachment, variant: "preview" | "original"): string {
   // The same desktop attachment path always produces the same prepared
   // preview while it remains in the session. Its content hash is only known
   // after desktop has resized/re-encoded the preview, so retain that resolved
   // key locally and avoid the prepare RPC on subsequent opens.
-  return `${attachment.path}\u0000${attachment.name}`;
+  return `${attachment.path}\u0000${attachment.name}\u0000${variant}`;
 }
 
 export interface CachedAttachmentPreview {
@@ -463,7 +525,7 @@ export interface CachedAttachmentPreview {
 }
 
 export function rememberPreparedPreview(attachment: HistoryAttachment, info: DownloadInfo): void {
-  preparedPreviewIndex.set(previewSourceKey(attachment), info);
+  preparedDownloadIndex.set(downloadSourceKey(attachment, info.variant), info);
 }
 
 function cacheFile(info: DownloadInfo): File {
@@ -493,14 +555,42 @@ export function cachedDownload(info: DownloadInfo): File | null {
   return file.exists && file.size === info.size ? file : null;
 }
 
+async function fileSha256(file: File): Promise<string> {
+  const digest = new Uint8Array(
+    await Crypto.digest(Crypto.CryptoDigestAlgorithm.SHA256, await file.bytes()),
+  );
+  return Array.from(digest, byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function verifiedCachedDownload(
+  info: DownloadInfo,
+  signal?: AbortSignal,
+): Promise<File | null> {
+  throwIfCancelled(signal);
+  const file = cachedDownload(info);
+  if (!file) return null;
+  try {
+    const hash = await fileSha256(file);
+    throwIfCancelled(signal);
+    if (hash === info.contentHash) return file;
+  } catch (error) {
+    if (error instanceof TransferCancelledError) throw error;
+    // Treat unreadable cache entries like a miss and replace them below.
+  }
+  if (file.exists) file.delete();
+  return null;
+}
+
 export function cachedPreviewForAttachment(
   attachment: HistoryAttachment,
+  variant: "preview" | "original" = "preview",
 ): CachedAttachmentPreview | null {
-  const info = preparedPreviewIndex.get(previewSourceKey(attachment));
+  const key = downloadSourceKey(attachment, variant);
+  const info = preparedDownloadIndex.get(key);
   if (!info) return null;
   const file = cachedDownload(info);
   if (file) return { info, file };
-  preparedPreviewIndex.delete(previewSourceKey(attachment));
+  preparedDownloadIndex.delete(key);
   return null;
 }
 
@@ -508,8 +598,17 @@ export async function downloadPrepared(
   client: RemoteClient,
   info: DownloadInfo,
   onProgress?: (completedBytes: number, totalBytes: number) => void,
+  signal?: AbortSignal,
+  onWaiting?: () => void,
 ): Promise<File> {
-  const cached = cachedDownload(info);
+  throwIfCancelled(signal);
+  let cached: File | null;
+  try {
+    cached = await verifiedCachedDownload(info, signal);
+  } catch (error) {
+    await cancelDownload(client, info.transferId);
+    throw error;
+  }
   if (cached) {
     await cancelDownload(client, info.transferId);
     return cached;
@@ -523,7 +622,13 @@ export async function downloadPrepared(
     const chunks = Math.ceil(info.size / info.chunkBytes);
     let completed = 0;
     for (let index = 0; index < chunks; index += 1) {
-      const bytes = await withTransferRetry(() => client.downloadChunk(info.transferId, index));
+      throwIfCancelled(signal);
+      const bytes = await withTransferRetry(
+        () => client.downloadChunk(info.transferId, index),
+        signal,
+        onWaiting,
+      );
+      throwIfCancelled(signal);
       handle.writeBytes(bytes);
       completed += bytes.byteLength;
       onProgress?.(completed, info.size);
@@ -535,6 +640,11 @@ export async function downloadPrepared(
     throw error;
   }
   handle.close();
+  if (signal?.aborted) {
+    file.delete();
+    await cancelDownload(client, info.transferId);
+    throw new TransferCancelledError();
+  }
   if (file.size !== info.size) {
     file.delete();
     await cancelDownload(client, info.transferId);
@@ -542,10 +652,8 @@ export async function downloadPrepared(
   }
   let hash: string;
   try {
-    const digest = new Uint8Array(
-      await Crypto.digest(Crypto.CryptoDigestAlgorithm.SHA256, await file.bytes()),
-    );
-    hash = Array.from(digest, byte => byte.toString(16).padStart(2, "0")).join("");
+    hash = await fileSha256(file);
+    throwIfCancelled(signal);
   } catch (error) {
     file.delete();
     await cancelDownload(client, info.transferId);
