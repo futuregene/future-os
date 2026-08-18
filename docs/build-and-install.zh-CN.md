@@ -210,7 +210,7 @@ make clean          # 清理构建产物与已安装二进制
 
 ### Proto
 
-规范 API 是 `rpc/proto/future.proto`。生成的 Rust 代码已入库——正常构建不会改动它。编辑 `.proto` 文件后重新生成：
+规范 API 是 `packages/rpc/proto/future.proto`。生成的 Rust 代码已入库——正常构建不会改动它。编辑 `.proto` 文件后重新生成：
 
 ```bash
 make generate-proto          # future-rpc + channels
@@ -230,7 +230,7 @@ make clean          # 清理构建产物与已安装二进制
 
 ### Proto
 
-规范 API 是 `rpc/proto/future.proto`。生成的 Rust 代码已入库——正常构建不会改动它。编辑 `.proto` 文件后重新生成：
+规范 API 是 `packages/rpc/proto/future.proto`。生成的 Rust 代码已入库——正常构建不会改动它。编辑 `.proto` 文件后重新生成：
 
 ```bash
 make generate-proto          # future-rpc + channels

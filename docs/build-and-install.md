@@ -238,7 +238,7 @@ make clean          # remove build artifacts + installed binaries
 
 ### Proto
 
-The canonical API is `rpc/proto/future.proto`. Generated Rust code is
+The canonical API is `packages/rpc/proto/future.proto`. Generated Rust code is
 checked into the repo — normal builds don't touch it. After editing a `.proto`
 file, regenerate:
 
@@ -260,7 +260,7 @@ make clean          # remove build artifacts + installed binaries
 
 ### Proto
 
-The canonical API is `rpc/proto/future.proto`. Generated Rust code is
+The canonical API is `packages/rpc/proto/future.proto`. Generated Rust code is
 checked into the repo — normal builds don't touch it. After editing a `.proto`
 file, regenerate:
 
