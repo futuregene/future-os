@@ -1,31 +1,54 @@
 <p align="center">
-  <a href="https://github.com/futuregene/future-os/wiki"><img src="https://img.shields.io/badge/Docs-Wiki-FFD700?style=for-the-badge" alt="Documentation"></a>
-  <a href="https://github.com/futuregene/future-os/blob/main/THIRD_PARTY_NOTICES.md"><img src="https://img.shields.io/badge/License-MIT_%2B_Apache--2.0-green?style=for-the-badge" alt="License: MIT + Apache-2.0"></a>
-  <a href="https://github.com/futuregene/future-skills"><img src="https://img.shields.io/badge/Skills-future--skills-blue?style=for-the-badge" alt="Skills"></a>
-  <a href="README.md"><img src="https://img.shields.io/badge/Lang-English-blue?style=for-the-badge" alt="English"></a>
-</p>
-
-<p align="center">
   <img src="docs/banner.png" alt="FutureOS" width="600">
 </p>
 
-# FutureOS
+<h3 align="center">同一个 AI Agent，处处随你。</h3>
+<p align="center">
+  终端、桌面、手机、飞书与钉钉——一个 Rust 核心，一个 Agent，3800+ 模型。<br>
+  每一次工具调用都由你审批。本地优先。开源。
+</p>
 
-> 同一个 AI Agent，处处随你——终端、桌面、手机、飞书与钉钉。
+<!-- TODO(demo): 录制 60–90 秒演示 GIF（TUI 审批门控 → 桌面 GUI → IM 机器人进度 →
+     会话 fork 树 → /future-loop 看板），保存为 docs/demo.gif 后取消注释：
+<p align="center">
+  <img src="docs/demo.gif" alt="FutureOS 演示——一个 Agent 跨越终端、桌面、手机与聊天软件" width="800">
+</p>
+-->
 
-FutureOS 提供统一的 AI Agent 体验，覆盖终端界面 (TUI)、桌面应用 (GUI)、移动端 App（Android · iOS）、命令行 (CLI) 和 IM 机器人——支持 macOS、Linux、Windows 与你的手机。写代码、做调研、管理文件——从终端、聊天软件、原生桌面窗口或口袋里的手机，无缝切换。
+<p align="center">
+  <a href="#快速开始">快速开始</a> •
+  <a href="#特性">特性</a> •
+  <a href="#配置模型">3800+ 模型</a> •
+  <a href="#常用斜杠命令tui">命令</a> •
+  <a href="#故障排查">故障排查</a>
+</p>
+
+<p align="center">⭐ 如果 FutureOS 对你有用，点个 Star 帮助更多人发现它。</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Core-Rust-orange?style=for-the-badge&logo=rust" alt="Rust 核心">
+  <a href="https://github.com/futuregene/future-os/blob/main/THIRD_PARTY_NOTICES.md"><img src="https://img.shields.io/badge/License-MIT_%2B_Apache--2.0-green?style=for-the-badge" alt="License: MIT + Apache-2.0"></a>
+  <a href="README.md"><img src="https://img.shields.io/badge/Lang-English-blue?style=for-the-badge" alt="English"></a>
+</p>
+
+---
+
+## 为什么是 FutureOS
+
+- **信任先于能力。** 每一次工具调用——读、写、编辑、shell——默认都需要你批准，没有任何文件写入和命令执行是静默发生的。当 Agent 手握你的凭证，信任不能只是一个配置项。
+- **一个后端，所有界面。** 同一个 gRPC Agent 驱动终端界面、桌面应用、移动端、CLI 和 IM 机器人——同一份会话、同一份记忆、同一套技能，无论你身在何处。
+- **长任务靠工程，不靠提示词。** 内置 loop 控制面为 24 小时以上的任务提供持久化目标、事件溯源状态与验证门控——晚上布置一个调研任务，早上在手机上验收结果。
 
 ## 特性
 
 | 类别 | 说明 |
 |---|---|
 | **多端统一** | 终端界面 (TUI)、桌面应用 (GUI)、移动端 App（Android · iOS）、命令行 (CLI)、IM 机器人——一个 Agent，无处不在 |
+| **信任优先的工具执行** | read, write, edit, shell——每次调用都需你审批；沙箱分级（关闭 / 手动 / macOS Seatbelt）；工具集精简，杜绝 prompt 膨胀 |
 | **模型灵活** | 内置 3800+ 模型，覆盖 140+ Provider（[目录](docs/wiki/zh/Models.md)）；通过 `models.json` 自定义 Provider；支持模型范围限定 |
-| **Agent 服务** | Agent 以独立 gRPC 服务运行——运行时与 TUI、桌面端、移动端、IM 渠道桥、loop 控制面解耦，为新的客户端与扩展留足空间 |
-| **极简工具执行** | read, write, edit, shell，带审批控制和沙箱保护（关闭 / 手动 / macOS Seatbelt）——Pi 式极简主义：工具集精简，杜绝 prompt 膨胀 |
-| **可分支会话** | 像仓库一样为对话开分支——fork、clone、树形导航，JSONL 存储 |
-| **强大的预设技能** | 内置 15+ 技能开箱即用，覆盖日常 Agent 场景——图片读取与生成、PDF/Word 解析、网页搜索、浏览器控制、幻灯片与软件安装，以及 `/future-loop` 长程目标编排器（[builtin](https://github.com/futuregene/future-skills/tree/main/builtin)） |
 | **Loop 工程** | 持久化目标/todos/门禁/监控，支撑 24+ 小时长程任务连续执行——确定性 should-run 内核、事件溯源状态、硬校验（证据下限/验收契约/verify 闸门）、租约活性自愈、多 agent（[指南](docs/loop-control-plane.zh-CN.md)） |
+| **强大的预设技能** | 内置 15+ 技能开箱即用，覆盖日常 Agent 场景——图片读取与生成、PDF/Word 解析、网页搜索、浏览器控制、幻灯片与软件安装，以及 `/future-loop` 长程目标编排器（[builtin](https://github.com/futuregene/future-skills/tree/main/builtin)） |
+| **可分支会话** | 像仓库一样为对话开分支——fork、clone、树形导航，JSONL 存储 |
 | **Rust 核心** | Agent、IM 渠道桥、loop 控制面、CLI 与 TUI 均用 Rust 编写——高性能、内存安全 |
 
 ## 快速开始
@@ -51,15 +74,18 @@ iex (irm https://dl.future-os.cn/install.ps1)
 
 ### 配置模型
 
-Agent 至少需要一个带 API key 的模型才能回复。三种方式:
+Agent 至少需要一个带 API key 的模型才能回复。
 
-**A —— FutureOS 托管模型。** 设备码登录会自动配好 key 和模型列表:
+**FutureOS 托管模型** —— 设备码登录会自动配好 key 和模型列表：
 
 ```bash
 future auth login
 ```
 
-**B —— 使用已知 Provider。** 将 API Key 放入 `~/.future/agent/auth.json`，按 Provider 名索引。查看[内置模型目录](docs/wiki/zh/Models.md)了解所有支持的 Provider——多数自带 Base URL，模型自动发现：
+<details>
+<summary><strong>想用自己的 API key？（BYOK 与自定义 Provider）</strong></summary>
+
+**使用已知 Provider。** 将 API Key 放入 `~/.future/agent/auth.json`，按 Provider 名索引。查看[内置模型目录](docs/wiki/zh/Models.md)——多数 Provider 自带 Base URL，模型自动发现：
 
 ```json
 {
@@ -75,7 +101,7 @@ future auth login
 }
 ```
 
-**C —— 自定义 Provider。** 不在内置目录中的 Provider，在 `~/.future/agent/models.json` 中指定完整信息：
+**自定义 Provider。** 不在内置目录中的 Provider，在 `~/.future/agent/models.json` 中指定完整信息：
 
 ```json
 {
@@ -90,6 +116,8 @@ future auth login
   }
 }
 ```
+
+</details>
 
 ### 启动 Agent
 
@@ -155,3 +183,7 @@ future tui        # 终端界面
 | 客户端报连接 / gRPC 错误退出 | Agent 没启动。先启动它(`future agent`)，并确认端口没被占用：`lsof -i :50051`。 |
 | Agent 回复鉴权 / "no model" 错误 | 还没配置模型。运行 `future auth login`，或在 `models.json` 里加一个 provider——见 [配置模型](#配置模型)。 |
 | 构建 / 安装问题 | 见 [构建与安装](docs/build-and-install.zh-CN.md)（平台工具链、链接器、GUI 打包）。 |
+
+## 社区
+
+[💬 Discussions](https://github.com/futuregene/future-os/discussions) • [🐛 Issues](https://github.com/futuregene/future-os/issues) • [🔒 安全](SECURITY.md) • [📖 Wiki](https://github.com/futuregene/future-os/wiki) • [第三方声明](THIRD_PARTY_NOTICES.md)
