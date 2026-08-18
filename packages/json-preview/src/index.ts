@@ -107,29 +107,105 @@ export function formatJsonForPreview(source: string): FormattedJsonPreview {
   return { lines, limited };
 }
 
-const JSON_TOKEN =
-  /"(?:\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})|[^"\\])*"|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|\b(?:true|false|null)\b/g;
-
 export function tokenizeJsonLine(line: string): JsonToken[] {
   const tokens: JsonToken[] = [];
-  let cursor = 0;
-  for (const match of line.matchAll(JSON_TOKEN)) {
-    const start = match.index;
-    if (start > cursor) tokens.push({ text: line.slice(cursor, start), kind: "plain" });
-    const text = match[0];
-    const rest = line.slice(start + text.length).trimStart();
-    const kind: JsonToken["kind"] = text.startsWith('"')
-      ? rest.startsWith(":")
+  let plainStart = 0;
+  let index = 0;
+
+  while (index < line.length) {
+    const char = line[index]!;
+    const end = char === '"'
+      ? jsonStringEnd(line, index)
+      : numberEnd(line, index) ?? literalEnd(line, index);
+    if (end === null) {
+      index += 1;
+      continue;
+    }
+
+    if (plainStart < index) tokens.push({ text: line.slice(plainStart, index), kind: "plain" });
+    const text = line.slice(index, end);
+    const kind: JsonToken["kind"] = char === '"'
+      ? nextNonWhitespace(line, end) === ":"
         ? "key"
         : "string"
-      : text === "true" || text === "false" || text === "null"
+      : char === "t" || char === "f" || char === "n"
         ? "literal"
         : "number";
     tokens.push({ text, kind });
-    cursor = start + text.length;
+    index = end;
+    plainStart = end;
   }
-  if (cursor < line.length) tokens.push({ text: line.slice(cursor), kind: "plain" });
+  if (plainStart < line.length) tokens.push({ text: line.slice(plainStart), kind: "plain" });
   return tokens;
+}
+
+/** Scans a JSON string in one pass, including malformed unterminated input. */
+function jsonStringEnd(line: string, start: number): number | null {
+  let escaped = false;
+  for (let index = start + 1; index < line.length; index += 1) {
+    const char = line[index]!;
+    if (escaped) {
+      escaped = false;
+    } else if (char === "\\") {
+      escaped = true;
+    } else if (char === '"') {
+      return index + 1;
+    }
+  }
+  return null;
+}
+
+function numberEnd(line: string, start: number): number | null {
+  let index = start;
+  if (line[index] === "-") index += 1;
+
+  if (line[index] === "0") {
+    index += 1;
+  } else if (isDigitOneToNine(line[index])) {
+    index += 1;
+    while (isDigit(line[index])) index += 1;
+  } else {
+    return null;
+  }
+
+  if (line[index] === "." && isDigit(line[index + 1])) {
+    index += 2;
+    while (isDigit(line[index])) index += 1;
+  }
+  if ((line[index] === "e" || line[index] === "E") && hasExponentDigits(line, index + 1)) {
+    index += line[index + 1] === "+" || line[index + 1] === "-" ? 2 : 1;
+    while (isDigit(line[index])) index += 1;
+  }
+  return index;
+}
+
+function literalEnd(line: string, start: number): number | null {
+  for (const literal of ["true", "false", "null"]) {
+    const end = start + literal.length;
+    if (
+      line.startsWith(literal, start)
+      && !isWordCharacter(line[start - 1])
+      && !isWordCharacter(line[end])
+    ) return end;
+  }
+  return null;
+}
+
+function hasExponentDigits(line: string, start: number) {
+  const first = line[start] === "+" || line[start] === "-" ? start + 1 : start;
+  return isDigit(line[first]);
+}
+
+function isDigit(char: string | undefined) {
+  return char !== undefined && char >= "0" && char <= "9";
+}
+
+function isDigitOneToNine(char: string | undefined) {
+  return char !== undefined && char >= "1" && char <= "9";
+}
+
+function isWordCharacter(char: string | undefined) {
+  return char !== undefined && ((char >= "a" && char <= "z") || (char >= "A" && char <= "Z") || isDigit(char) || char === "_");
 }
 
 export function rawJsonLines(source: string): FormattedJsonPreview {

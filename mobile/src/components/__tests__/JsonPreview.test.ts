@@ -42,6 +42,11 @@ describe("JsonPreview", () => {
     ]);
   });
 
+  test("tokenizes strings with many escaped quotes without backtracking", () => {
+    const text = '"' + '\\"'.repeat(20_000) + '"';
+    expect(tokenizeJsonLine(text)).toEqual([{ text, kind: "string" }]);
+  });
+
   test("stops pathological nesting before indentation becomes unbounded", () => {
     const formatted = formatJsonForPreview("[".repeat(200));
     expect(formatted.limited).toBe(true);
