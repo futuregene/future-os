@@ -26,7 +26,6 @@ FutureOS 的所有用户状态都存放在 `~/.future/` 下（Windows 为
 │   └── review/                # 每个 workspace 的影子 git 评审仓库
 ├── workspaces/
 │   └── chat/                  # 每线程聊天工作区（agent 会话 / 线程 id）
-├── loop/                      # loop 控制面状态根（future-loop）
 └── bin/                       # CLI / agent 链接：`future`、`future-agent`（见下）
 ```
 
@@ -79,13 +78,12 @@ GUI 的每线程聊天工作区，每个子目录以 agent 会话 id（已知时
 获得）或 GUI 线程 id 命名。用户自选的工作区位于别处，清理本目录时绝不会
 触碰它们。
 
-## `~/.future/loop/` — loop 控制面
+## loop 控制面 — 项目本地，不在 `~/.future/` 下
 
-`future-loop` 的状态根（默认 `~/.future/loop/`，可用 `FUTURE_LOOP_ROOT`
-覆盖）。注意：常规使用下 loop 状态是**项目本地**的——在项目目录运行
-`future-loop`，目标状态存放在 `<cwd>/.future/loop/` 下
-（`registry.json`、`goals/<id>/events.jsonl`、
-`goals/<id>/ACTIVE_GOAL_STATE.md`、`runs/`）——见
+`future-loop` 的状态是**项目本地**的：在项目目录运行它，目标状态存放在
+`<cwd>/.future/loop/` 下（`registry.json`、`goals/<id>/events.jsonl`、
+`goals/<id>/ACTIVE_GOAL_STATE.md`、`runs/`）。`FUTURE_LOOP_ROOT` 可为特殊
+场景覆盖状态根；`~/.future/loop/` 不会被使用——见
 [loop-control-plane.zh-CN.md](loop-control-plane.zh-CN.md)。
 
 ## `~/.future/bin/` — CLI 链接

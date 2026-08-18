@@ -170,7 +170,7 @@ docs/wiki/
 ### Skills
 **代码入口(先读再写):** `desktop/src/features/skills/SkillsView.tsx`、`desktop/src/integrations/skills/skillsClient.ts`、`cli/src/commands/skills.ts`、`agent/src/skills/mod.rs`(技能发现)。**先用这些确认当前真实存在的技能清单和用途**,再据实写下方表格。
 - 定义:内置能力包,agent 在相关时**自动使用**;同时也是一个**可浏览/安装/卸载的目录**(Installed / All 标签,清单来自在线目录)。**Skills 侧边栏入口是可见的**(与 Research/Data 不同,后者才是隐藏的)——以 `ActivityRail.tsx` 为准。
-- 常见内置技能表(技能名 + 用途,**参考,以应用 All 标签实际清单为准**):Account(账户资料/额度/充值)、Web(搜公网并读全文)、Paper(检索 PubMed/ArXiv/DOI 并取全文)、Deep research(多源交叉核对、带引用的报告)、Document(PDF/Word 转结构化文本)、Image(生成/编辑/分析图像,含读图中文字)、Browser(驱动浏览器:开页、点击、输入、截图)、Hand-drawn posters(手绘竖版信息图海报)、Hand-drawn slides(手绘草图幻灯并合成 PDF)、Subagent(并行跑多任务)、Skill creator(帮忙做新技能)。
+- 常见内置技能表(技能名 + 用途,**参考,以应用 All 标签实际清单为准**):Account(账户资料/额度/充值)、Web(搜公网并读全文)、Paper(检索 PubMed/ArXiv/DOI 并取全文)、Deep research(多源交叉核对、带引用的报告)、Document(PDF/Word 转结构化文本)、Image(生成/编辑/分析图像,含读图中文字)、Loop(长程目标编排:`/future-loop` 技能驱动 `future loop` 控制面)、Browser(驱动浏览器:开页、点击、输入、截图)、Database lookup(查询公共数据库)、Experimental design(实验设计)、Peer review(结构化评审)、Scientific writing(科学写作)、Slides(生成幻灯片)、Software install(软件安装)、Skill creator(帮忙做新技能)。
 - **使用方式**:无需手动开启,直接描述需求即可;也可在 Skills 页浏览与安装/卸载。(不要写 Research / Data 入口——它们已隐藏。)
 
 ### CLI
