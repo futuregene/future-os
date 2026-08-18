@@ -162,6 +162,10 @@ export function ChatScreen() {
   const [transferProgress, setTransferProgress] = useState<number | null>(null);
   const [activeDownload, setActiveDownload] = useState<ActiveDownload | null>(null);
   const activeDownloadRef = useRef<DownloadHandle | null>(null);
+  // UIKit cannot reliably present a second React Native Modal while the
+  // download-progress Modal is still dismissing. Keep the next presentation
+  // out of render state until `onDismiss` confirms that first Modal is gone.
+  const pendingDownloadModalRef = useRef<(() => void) | null>(null);
   const [preview, setPreview] = useState<{
     attachment: HistoryAttachment;
     info: DownloadInfo;
@@ -243,6 +247,23 @@ export function ChatScreen() {
     activeDownloadRef.current = null;
     setActiveDownload(null);
   }, []);
+
+  const flushPendingDownloadModal = useCallback(() => {
+    const present = pendingDownloadModalRef.current;
+    pendingDownloadModalRef.current = null;
+    present?.();
+  }, []);
+
+  const handoffDownloadModal = useCallback(
+    (handle: DownloadHandle, present: () => void) => {
+      pendingDownloadModalRef.current = present;
+      finishDownload(handle);
+      // `onDismiss` is iOS-only. Android supports stacking these modals, so
+      // hand off on its next event-loop turn instead of leaving it pending.
+      if (Platform.OS !== "ios") setTimeout(flushPendingDownloadModal, 0);
+    },
+    [finishDownload, flushPendingDownloadModal],
+  );
 
   const cancelActiveDownload = useCallback(() => {
     const handle = activeDownloadRef.current;
@@ -620,7 +641,9 @@ export function ChatScreen() {
             Alert.alert(t("attachment.title"), t("attachment.noHandler"));
             return;
           }
-          setFileAction({ info, cachedFile: cachedPreview?.file ?? null, openMimeType });
+          handoffDownloadModal(handle, () =>
+            setFileAction({ info, cachedFile: cachedPreview?.file ?? null, openMimeType }),
+          );
           return;
         }
         let file = cachedPreview?.file ?? null;
@@ -653,20 +676,22 @@ export function ChatScreen() {
           () => handle && updateDownload(handle, { phase: "waiting_network" }),
         );
         if (info.previewKind === "image") {
-          setPreview({ attachment, info, uri: file.uri });
+          handoffDownloadModal(handle, () => setPreview({ attachment, info, uri: file.uri }));
         } else {
           const bytes = await file.bytes();
           const visible = bytes.slice(0, MARKDOWN_RENDER_BYTES);
           const previewText = new TextDecoder().decode(visible);
-          setPreview({
-            attachment,
-            info,
-            uri: file.uri,
-            ...(info.previewKind === "markdown"
-              ? { markdown: previewText }
-              : { text: previewText }),
-            truncated: bytes.byteLength > visible.byteLength,
-          });
+          handoffDownloadModal(handle, () =>
+            setPreview({
+              attachment,
+              info,
+              uri: file.uri,
+              ...(info.previewKind === "markdown"
+                ? { markdown: previewText }
+                : { text: previewText }),
+              truncated: bytes.byteLength > visible.byteLength,
+            }),
+          );
         }
       } catch (error) {
         if (error instanceof TransferCancelledError) return;
@@ -680,7 +705,7 @@ export function ChatScreen() {
         if (handle) finishDownload(handle);
       }
     },
-    [beginDownload, finishDownload, remote, t, updateDownload],
+    [beginDownload, finishDownload, handoffDownloadModal, remote, t, updateDownload],
   );
 
   // Download `info` to a cached File, prompting on cellular. Returns the file,
@@ -885,26 +910,30 @@ export function ChatScreen() {
             Alert.alert(t("attachment.title"), t("attachment.noHandler"));
             return;
           }
-          setFileAction({ info, cachedFile: cachedPreview?.file ?? null, openMimeType });
+          handoffDownloadModal(handle, () =>
+            setFileAction({ info, cachedFile: cachedPreview?.file ?? null, openMimeType }),
+          );
           return;
         }
         const file = await fetchDownload(info, cachedPreview?.file ?? null, handle);
         if (!file) return;
         if (info.previewKind === "image") {
-          setPreview({ attachment, info, uri: file.uri });
+          handoffDownloadModal(handle, () => setPreview({ attachment, info, uri: file.uri }));
         } else {
           const bytes = await file.bytes();
           const visible = bytes.slice(0, MARKDOWN_RENDER_BYTES);
           const previewText = new TextDecoder().decode(visible);
-          setPreview({
-            attachment,
-            info,
-            uri: file.uri,
-            ...(info.previewKind === "markdown"
-              ? { markdown: previewText }
-              : { text: previewText }),
-            truncated: bytes.byteLength > visible.byteLength,
-          });
+          handoffDownloadModal(handle, () =>
+            setPreview({
+              attachment,
+              info,
+              uri: file.uri,
+              ...(info.previewKind === "markdown"
+                ? { markdown: previewText }
+                : { text: previewText }),
+              truncated: bytes.byteLength > visible.byteLength,
+            }),
+          );
         }
       } catch (error) {
         if (error instanceof TransferCancelledError) return;
@@ -918,7 +947,7 @@ export function ChatScreen() {
         finishDownload(handle);
       }
     },
-    [beginDownload, fetchDownload, finishDownload, remote, t, updateDownload],
+    [beginDownload, fetchDownload, finishDownload, handoffDownloadModal, remote, t, updateDownload],
   );
 
   // The bottom-most scroll offset: full content height minus the viewport,
@@ -1390,6 +1419,7 @@ export function ChatScreen() {
 
         <Modal
           animationType="fade"
+          onDismiss={flushPendingDownloadModal}
           onRequestClose={cancelActiveDownload}
           transparent
           visible={activeDownload !== null}
