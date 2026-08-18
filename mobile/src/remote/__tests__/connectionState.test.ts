@@ -387,10 +387,12 @@ describe("RemoteClient terminal iterator recovery", () => {
     async function* events() {
       yield {
         subject: "p.pair_1.evt._global",
-        data: new TextEncoder().encode(JSON.stringify({
-          type: "provider_config_changed",
-          data: JSON.stringify({ revision: 9, providerId: "custom" }),
-        })),
+        data: new TextEncoder().encode(
+          JSON.stringify({
+            type: "provider_config_changed",
+            data: JSON.stringify({ revision: 9, providerId: "custom" }),
+          }),
+        ),
       };
       await new Promise(() => {});
     }
