@@ -5,9 +5,11 @@ export * from "./app";
 
 export * from "./artifacts";
 export * from "./files";
+export * from "./markdownReferences";
 export * from "./review";
 export * from "./runs";
 export * from "./threads";
+export * from "./typeGuards";
 export type {
   GitReview,
   StoredApprovalRequest,

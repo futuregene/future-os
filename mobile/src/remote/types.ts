@@ -265,24 +265,6 @@ export type TimelineItem =
     }
   | {
       id: string;
-      kind: "thinking";
-      text: string;
-      complete: boolean;
-      runId?: string;
-    }
-  | {
-      id: string;
-      kind: "tool";
-      toolId: string;
-      name: string;
-      complete: boolean;
-      runId?: string;
-      /** The call's display target (desktop parity): the shell command or
-       *  file path, shown on the row and expandable on tap. */
-      detail?: string;
-    }
-  | {
-      id: string;
       kind: "approval";
       payload: ApprovalPayload;
       decision?: "approved" | "rejected" | "cancelled";

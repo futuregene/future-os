@@ -253,7 +253,6 @@ CREATE INDEX IF NOT EXISTS idx_artifacts_workspace ON artifacts(workspace_id, de
 /// (which `ALTER TABLE ADD COLUMN` supports), so migrated and fresh databases
 /// enforce the same constraints.
 pub(super) const ADDED_COLUMNS: &[(&str, &str)] = &[
-    ("threads", "thinking_level TEXT"),
     (
         "review_changesets",
         "source_kind TEXT NOT NULL DEFAULT 'run_snapshot'",

@@ -1,8 +1,7 @@
 // Barrel over the mobile projection layer. The projection semantics (live event
 // folding, history projection) live in the shared @future-os/thread-projection
 // package; this module re-exports the mobile mapping layer and the UI-shell
-// state (TimelineState) that RemoteContext consumes. Kept under the historical
-// name so RemoteContext's imports and the pinned tests stay stable.
+// state (TimelineState) that RemoteContext consumes.
 export {
   appendUserMessage,
   applyStreamEvent,

@@ -1,6 +1,6 @@
 import { fetchEventsSince, type EventsPage } from "../replay";
 import type { RemoteClient } from "../client";
-import type { ReplayEventWire } from "../eventReducer";
+import type { ReplayEventWire } from "../timeline";
 
 /** Build a fake client that returns a scripted sequence of pages. */
 function clientReturning(pages: EventsPage[]): { client: RemoteClient; request: jest.Mock } {

@@ -1,4 +1,4 @@
-import { emptyTimeline } from "../eventReducer";
+import { emptyTimeline } from "../timeline";
 import { SyncEngine, type ReplayResult } from "../syncEngine";
 import type { StreamEvent } from "../types";
 

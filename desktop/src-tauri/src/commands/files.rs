@@ -37,10 +37,12 @@ fn best_effort_canonical(path: &Path) -> PathBuf {
 
 /// Reject file access to FutureOS's own credential files. These commands are
 /// reachable from the webview, which renders agent-produced markdown/artifacts —
-/// without this guard an XSS could read `auth.json` and exfiltrate API keys.
+/// without this guard an XSS could read the credential files and exfiltrate
+/// API keys, remote bridge identity, or IM channel secrets.
 ///
 /// This is a **denylist of credential files only** (`auth.json` / `models.json`
-/// in the agent config dirs). Everything else — attachment images, workspace
+/// in the agent config dirs, `remote_pairing.json` at the `~/.future` root, and
+/// `channels/config.json`). Everything else — attachment images, workspace
 /// files, the app DB, session history, settings, run logs, and any user-chosen
 /// file elsewhere — is allowed: the webview already reaches all of that through
 /// typed store/session commands, so the raw bytes aren't a new exposure. The
@@ -60,16 +62,31 @@ pub(crate) fn ensure_path_allowed(path: &Path) -> Result<(), crate::AppError> {
 }
 
 /// True when `resolved` (already canonical) is a FutureOS credential file:
-/// `auth.json` / `models.json` sitting directly in an agent config dir
-/// (`~/.future/agent/` or `~/.future/agent-app/`). Scoped to those dirs so a
-/// user's own file that merely shares the name (e.g. a workspace `models.json`)
-/// stays readable.
+/// `auth.json` / `models.json` directly in an agent config dir
+/// (`~/.future/agent/` or `~/.future/agent-app/`), `remote_pairing.json` at the
+/// `~/.future` root, or `channels/config.json`. Scoped so a user's own file that
+/// merely shares the name (e.g. a workspace `models.json`) stays readable.
 fn is_protected_credential(future_dir: &Path, resolved: &Path) -> bool {
-    let is_credential_name = resolved
+    let name = resolved
         .file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name == "auth.json" || name == "models.json");
-    if !is_credential_name {
+        .unwrap_or_default();
+
+    // Remote bridge identity (nkey_seed + user_jwt) sits directly under ~/.future.
+    if name == "remote_pairing.json" && resolved.parent() == Some(future_dir) {
+        return true;
+    }
+
+    // IM channel secrets live in ~/.future/channels/config.json.
+    if name == "config.json" {
+        let channels_dir = future_dir.join("channels");
+        let channels_dir = channels_dir.canonicalize().unwrap_or(channels_dir);
+        if resolved.parent() == Some(channels_dir.as_path()) {
+            return true;
+        }
+    }
+
+    if name != "auth.json" && name != "models.json" {
         return false;
     }
     ["agent", "agent-app"].iter().any(|dir| {
@@ -671,6 +688,8 @@ mod tests {
             "agent/auth.json",
             "agent/models.json",
             "agent-app/auth.json",
+            "remote_pairing.json",
+            "channels/config.json",
         ] {
             let cred = write_under(&future_dir, rel);
             assert!(
@@ -694,6 +713,8 @@ mod tests {
             "workspaces/chat/thread_x/长诗.md",
             // Same filename as a credential but not in an agent config dir.
             "workspaces/chat/thread_x/models.json",
+            // config.json only counts as a credential under ~/.future/channels/.
+            "workspaces/chat/thread_x/config.json",
         ] {
             let file = write_under(&future_dir, rel);
             assert!(

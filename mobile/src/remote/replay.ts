@@ -1,5 +1,5 @@
 import type { RemoteClient } from "./client";
-import type { ReplayEventWire } from "./eventReducer";
+import type { ReplayEventWire } from "./timeline";
 
 export interface EventsData {
   /** Raw replay events — the RPC serializes them with snake_case `run_id`. */

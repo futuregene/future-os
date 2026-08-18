@@ -528,57 +528,6 @@ export function TimelineCard({
     );
   }
 
-  if (item.kind === "thinking") {
-    return (
-      <View style={styles.secondaryCard}>
-        <Pressable onPress={() => setExpanded(value => !value)} style={styles.cardHeader}>
-          <Text style={styles.cardLabel}>
-            {t(item.complete ? "chat.thoughtCompleted" : "chat.thinking")}
-          </Text>
-          {expanded ? (
-            <ChevronUp color={colors.inkMuted} size={17} />
-          ) : (
-            <ChevronDown color={colors.inkMuted} size={17} />
-          )}
-        </Pressable>
-        {expanded && <Text style={styles.secondaryText}>{item.text}</Text>}
-      </View>
-    );
-  }
-
-  if (item.kind === "tool") {
-    const kind = toolKind(item.name);
-    // Desktop parity (AgentActivityList): the row carries the call's target —
-    // the command for shell, the file path otherwise — but keeps it hidden
-    // until tapped; the chevron signals the row is expandable.
-    const detail = item.detail?.trim() ? item.detail.trim() : null;
-    return (
-      <View style={styles.tool}>
-        <Pressable
-          accessibilityRole="button"
-          disabled={!detail}
-          onPress={() => setExpanded(value => !value)}
-          style={styles.toolHeader}
-        >
-          <ToolGlyph kind={kind} />
-          <Text style={styles.toolText}>{toolLabel(t, kind, item.complete)}</Text>
-          {detail ? (
-            expanded ? (
-              <ChevronUp color={colors.inkMuted} size={15} />
-            ) : (
-              <ChevronDown color={colors.inkMuted} size={15} />
-            )
-          ) : null}
-        </Pressable>
-        {detail && expanded ? (
-          <Text selectable style={styles.toolDetailText}>
-            {detail}
-          </Text>
-        ) : null}
-      </View>
-    );
-  }
-
   if (item.kind === "notice") {
     const warning = item.tone === "warning";
     return (
