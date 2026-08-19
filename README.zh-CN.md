@@ -110,7 +110,7 @@ future auth login
       "apiKey": "sk-...",
       "baseUrl": "https://my-api.example.com/v1",
       "models": [
-        { "id": "my-model", "name": "My Model", "contextWindow": 128000 }
+        { "id": "my-model", "name": "My Model", "contextWindow": 128000, "maxTokens": 16384 }
       ]
     }
   }

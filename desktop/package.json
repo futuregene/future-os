@@ -30,6 +30,7 @@
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-i18next": "^17.0.8",
+    "remark-math": "^6.0.0",
     "shiki": "^4.3.0",
     "tailwind-merge": "^3.6.0"
   },

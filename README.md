@@ -110,7 +110,7 @@ For providers with user-specific base URLs (e.g. Azure's `YOUR_RESOURCE`), add a
       "apiKey": "sk-...",
       "baseUrl": "https://my-api.example.com/v1",
       "models": [
-        { "id": "my-model", "name": "My Model", "contextWindow": 128000 }
+        { "id": "my-model", "name": "My Model", "contextWindow": 128000, "maxTokens": 16384 }
       ]
     }
   }

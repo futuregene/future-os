@@ -162,7 +162,13 @@ export function CustomProviderDialog({
 
     // Models.
     const cleanedModels = models
-      .map(model => ({ id: model.id.trim(), name: model.name.trim(), supportsImages: model.supportsImages }))
+      .map(model => ({
+        id: model.id.trim(),
+        name: model.name.trim(),
+        supportsImages: model.supportsImages,
+        contextWindow: model.contextWindow,
+        maxTokens: model.maxTokens,
+      }))
       .filter(model => model.id.length > 0);
     const seenModelIds = new Set<string>();
     for (const model of cleanedModels) {
@@ -181,6 +187,15 @@ export function CustomProviderDialog({
       seenModelIds.add(model.id);
       if (model.name.length > MODEL_NAME_MAX_LEN) {
         setError(t("customProvider.errors.modelNameLength", { name: model.name }));
+        return;
+      }
+      if (!Number.isSafeInteger(model.contextWindow) || model.contextWindow <= 0
+        || !Number.isSafeInteger(model.maxTokens) || model.maxTokens <= 0) {
+        setError(t("customProvider.errors.tokenLimitsPositive", { id: model.id }));
+        return;
+      }
+      if (model.maxTokens > model.contextWindow) {
+        setError(t("customProvider.errors.maxTokensExceedContext", { id: model.id }));
         return;
       }
     }
@@ -211,7 +226,8 @@ export function CustomProviderDialog({
 
   return (
     <Dialog
-      className="max-w-lg"
+      bodyClassName="min-h-0 flex-1 overflow-y-auto pr-2"
+      className="flex h-[min(760px,calc(100vh-3rem))] max-w-lg flex-col"
       onClose={onClose}
       open={open}
       title={editing ? t("customProvider.editTitle") : t("customProvider.addTitle")}
@@ -261,7 +277,14 @@ export function CustomProviderDialog({
             <span className="text-sm font-medium text-ink">{t("customProvider.modelsHeading")}</span>
             <button
               className="text-xs font-medium text-accent transition-colors hover:underline"
-              onClick={() => setModels(current => [...current, { id: "", key: crypto.randomUUID(), name: "", supportsImages: false }])}
+              onClick={() => setModels(current => [...current, {
+                id: "",
+                key: crypto.randomUUID(),
+                name: "",
+                supportsImages: false,
+                contextWindow: 128000,
+                maxTokens: 16384,
+              }])}
               type="button"
             >
               {t("customProvider.addModel")}
@@ -272,41 +295,69 @@ export function CustomProviderDialog({
             : (
                 <div className="space-y-2">
                   {models.map((model, index) => (
-                    <div className="space-y-2 rounded-md border border-line-soft p-2" key={model.key}>
-                      <div className="flex items-center gap-2">
-                        <TextInput
-                          onChange={event => updateModel(index, { id: event.target.value })}
-                          placeholder={t("customProvider.modelIdPlaceholder")}
-                          value={model.id}
-                        />
-                        <TextInput
-                          onChange={event => updateModel(index, { name: event.target.value })}
-                          placeholder={t("customProvider.modelNamePlaceholder")}
-                          value={model.name}
-                        />
-                        <IconButton
-                          className="shrink-0 hover:text-danger"
-                          icon={<Trash2 className="size-4" />}
-                          label={t("customProvider.removeModel")}
-                          onClick={() => setModels(current => current.filter((_, modelIndex) => modelIndex !== index))}
-                        />
+                    <div className="flex items-start gap-2" key={model.key}>
+                      <div className="flex-1 space-y-4 rounded-md border border-line-soft p-3">
+                        <div className="grid grid-cols-2 gap-3">
+                          <label className="flex flex-col gap-1.5 text-xs text-ink-muted">
+                            <span><RequiredLabel>{t("customProvider.modelIdLabel")}</RequiredLabel></span>
+                            <TextInput
+                              onChange={event => updateModel(index, { id: event.target.value })}
+                              placeholder={t("customProvider.modelIdPlaceholder")}
+                              value={model.id}
+                            />
+                          </label>
+                          <label className="flex flex-col gap-1.5 text-xs text-ink-muted">
+                            <span>{t("customProvider.modelNameLabel")}</span>
+                            <TextInput
+                              onChange={event => updateModel(index, { name: event.target.value })}
+                              placeholder={t("customProvider.modelNamePlaceholder")}
+                              value={model.name}
+                            />
+                          </label>
+                          <label className="flex flex-col gap-1.5 text-xs text-ink-muted">
+                            <span><RequiredLabel>{t("customProvider.contextWindowLabel")}</RequiredLabel></span>
+                            <TextInput
+                              min="1"
+                              step="1"
+                              onChange={event => updateModel(index, { contextWindow: Number(event.target.value) })}
+                              type="number"
+                              value={model.contextWindow}
+                            />
+                          </label>
+                          <label className="flex flex-col gap-1.5 text-xs text-ink-muted">
+                            <span><RequiredLabel>{t("customProvider.maxTokensLabel")}</RequiredLabel></span>
+                            <TextInput
+                              min="1"
+                              step="1"
+                              onChange={event => updateModel(index, { maxTokens: Number(event.target.value) })}
+                              type="number"
+                              value={model.maxTokens}
+                            />
+                          </label>
+                        </div>
+                        <div className="flex items-center gap-4">
+                          <span className="text-xs text-ink-muted">{t("customProvider.modalityLabel")}</span>
+                          <label className="flex cursor-not-allowed items-center gap-1.5 text-xs text-ink-soft">
+                            <input checked className="size-3.5 accent-accent" disabled type="checkbox" />
+                            {t("customProvider.modalityText")}
+                          </label>
+                          <label className="flex cursor-pointer items-center gap-1.5 text-xs text-ink">
+                            <input
+                              checked={model.supportsImages}
+                              className="size-3.5 accent-accent"
+                              onChange={event => updateModel(index, { supportsImages: event.target.checked })}
+                              type="checkbox"
+                            />
+                            {t("customProvider.modalityImage")}
+                          </label>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-4 pl-0.5">
-                        <span className="text-xs text-ink-muted">{t("customProvider.modalityLabel")}</span>
-                        <label className="flex cursor-not-allowed items-center gap-1.5 text-xs text-ink-soft">
-                          <input checked className="size-3.5 accent-accent" disabled type="checkbox" />
-                          {t("customProvider.modalityText")}
-                        </label>
-                        <label className="flex cursor-pointer items-center gap-1.5 text-xs text-ink">
-                          <input
-                            checked={model.supportsImages}
-                            className="size-3.5 accent-accent"
-                            onChange={event => updateModel(index, { supportsImages: event.target.checked })}
-                            type="checkbox"
-                          />
-                          {t("customProvider.modalityImage")}
-                        </label>
-                      </div>
+                      <IconButton
+                        className="shrink-0 hover:text-danger"
+                        icon={<Trash2 className="size-4" />}
+                        label={t("customProvider.removeModel")}
+                        onClick={() => setModels(current => current.filter((_, modelIndex) => modelIndex !== index))}
+                      />
                     </div>
                   ))}
                 </div>

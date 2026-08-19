@@ -57,6 +57,16 @@ fn input(id: &str, name: &str, create: bool) -> UpsertCustomProviderInput {
     }
 }
 
+fn custom_model(id: &str, name: &str, supports_images: bool) -> CustomProviderModel {
+    CustomProviderModel {
+        id: id.to_string(),
+        name: name.to_string(),
+        supports_images,
+        context_window: 128_000,
+        max_tokens: 16_384,
+    }
+}
+
 #[test]
 fn create_rejects_existing_id() {
     let _home = HomeGuard::new("dup-id");
@@ -287,36 +297,17 @@ fn validates_models() {
     let catalog = fixture_catalog();
     // Valid composite model id with `/` and `.`.
     let mut ok = input("p1", "P1", true);
-    ok.models = vec![CustomProviderModel {
-        id: "anthropic/claude-3.5-sonnet".to_string(),
-        name: String::new(),
-        supports_images: false,
-    }];
+    ok.models = vec![custom_model("anthropic/claude-3.5-sonnet", "", false)];
     assert!(upsert_custom_provider_with_catalog(ok, &catalog).is_ok());
 
     // Whitespace in model id is rejected.
     let mut bad = input("p2", "P2", true);
-    bad.models = vec![CustomProviderModel {
-        id: "bad id".to_string(),
-        name: String::new(),
-        supports_images: false,
-    }];
+    bad.models = vec![custom_model("bad id", "", false)];
     assert!(upsert_custom_provider_with_catalog(bad, &catalog).is_err());
 
     // Duplicate model ids are rejected.
     let mut dup = input("p3", "P3", true);
-    dup.models = vec![
-        CustomProviderModel {
-            id: "m".to_string(),
-            name: String::new(),
-            supports_images: false,
-        },
-        CustomProviderModel {
-            id: "m".to_string(),
-            name: String::new(),
-            supports_images: false,
-        },
-    ];
+    dup.models = vec![custom_model("m", "", false), custom_model("m", "", false)];
     assert!(upsert_custom_provider_with_catalog(dup, &catalog).is_err());
 }
 
@@ -325,11 +316,7 @@ fn empty_provider_and_model_names_fall_back_to_their_ids() {
     let _home = HomeGuard::new("name-fallbacks");
     let catalog = fixture_catalog();
     let mut input = input("provider-id", "", true);
-    input.models = vec![CustomProviderModel {
-        id: "model-id".to_string(),
-        name: String::new(),
-        supports_images: false,
-    }];
+    input.models = vec![custom_model("model-id", "", false)];
 
     let view = upsert_custom_provider_with_catalog(input, &catalog).unwrap();
 
@@ -348,16 +335,8 @@ fn model_modalities_round_trip() {
     let catalog = fixture_catalog();
     let mut in_ = input("p1", "P1", true);
     in_.models = vec![
-        CustomProviderModel {
-            id: "text-only".to_string(),
-            name: String::new(),
-            supports_images: false,
-        },
-        CustomProviderModel {
-            id: "vision".to_string(),
-            name: String::new(),
-            supports_images: true,
-        },
+        custom_model("text-only", "", false),
+        custom_model("vision", "", true),
     ];
     upsert_custom_provider_with_catalog(in_, &catalog).unwrap();
 
@@ -366,6 +345,8 @@ fn model_modalities_round_trip() {
     let models = doc["providers"]["p1"]["models"].as_array().unwrap();
     let vision = models.iter().find(|m| m["id"] == "vision").unwrap();
     assert_eq!(vision["modalities"], json!(["text", "image"]));
+    assert_eq!(vision["contextWindow"], json!(128000));
+    assert_eq!(vision["maxTokens"], json!(16384));
     let text_only = models.iter().find(|m| m["id"] == "text-only").unwrap();
     assert_eq!(text_only["modalities"], json!(["text"]));
 
@@ -583,11 +564,7 @@ fn validate_api_key_rules() {
 #[test]
 fn validate_model_rules() {
     let _home = HomeGuard::new("val-models");
-    let model = |id: &str, name: &str| CustomProviderModel {
-        id: id.to_string(),
-        name: name.to_string(),
-        supports_images: false,
-    };
+    let model = |id: &str, name: &str| custom_model(id, name, false);
 
     // Empty model ids are skipped, not rejected.
     let mut skipped = valid_input();
@@ -630,16 +607,25 @@ fn validate_model_rules() {
 
     // Image support maps to the modalities pair.
     let mut vision = valid_input();
-    vision.models = vec![CustomProviderModel {
-        id: "v1".to_string(),
-        name: "Vision".to_string(),
-        supports_images: true,
-    }];
+    vision.models = vec![custom_model("v1", "Vision", true)];
     let validated = validate_custom_provider(vision).unwrap();
     assert_eq!(validated.models[0].modalities, ["text", "image"]);
     let values = model_json_values(&validated.models);
     assert_eq!(values[0]["modalities"], json!(["text", "image"]));
     assert_eq!(values[0]["name"], json!("Vision"));
+    assert_eq!(values[0]["contextWindow"], json!(128000));
+    assert_eq!(values[0]["maxTokens"], json!(16384));
+
+    let mut invalid_limits = valid_input();
+    invalid_limits.models = vec![CustomProviderModel {
+        context_window: 4096,
+        max_tokens: 8192,
+        ..custom_model("m1", "", false)
+    }];
+    assert!(validate_custom_provider(invalid_limits)
+        .unwrap_err()
+        .to_string()
+        .contains("cannot exceed"));
 }
 
 // ── catalog.rs ──────────────────────────────────────────────────────────────
@@ -842,11 +828,7 @@ async fn custom_provider_upsert_paths() {
     // does not persist files, so the view simply re-reads the (empty) locals.
     let mut create = valid_input();
     create.api_key = Some("sk-new".to_string());
-    create.models = vec![CustomProviderModel {
-        id: "m1".to_string(),
-        name: String::new(),
-        supports_images: true,
-    }];
+    create.models = vec![custom_model("m1", "", true)];
     upsert_custom_provider(create).await.unwrap();
     assert!(agent.served("upsert_provider", ""));
 

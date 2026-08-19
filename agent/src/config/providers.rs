@@ -46,6 +46,10 @@ pub struct ProviderModelSpec {
     pub name: String,
     /// Input modalities, e.g. `["text"]` or `["text", "image"]`.
     pub modalities: Vec<String>,
+    /// Maximum total context window, in tokens.
+    pub context_window: i32,
+    /// Maximum tokens generated in one response.
+    pub max_tokens: i32,
 }
 
 /// Create/update of a `models.json` `providers` entry, optionally with the
@@ -175,6 +179,12 @@ pub fn validate_provider_upsert(spec: &ProviderUpsertSpec) -> Result<(), String>
                 .any(|modality| !matches!(modality.as_str(), "text" | "image"))
         {
             return Err("provider model modalities are invalid".to_string());
+        }
+        if model.context_window <= 0 || model.max_tokens <= 0 {
+            return Err("provider model token limits must be positive".to_string());
+        }
+        if model.max_tokens > model.context_window {
+            return Err("provider model max tokens cannot exceed its context window".to_string());
         }
     }
     Ok(())
@@ -458,6 +468,8 @@ pub fn apply_provider_upsert(
                     "id": model.id,
                     "name": model.name,
                     "modalities": model.modalities,
+                    "contextWindow": model.context_window,
+                    "maxTokens": model.max_tokens,
                 })
             })
             .collect::<Vec<_>>();
@@ -763,6 +775,8 @@ mod tests {
                 id: "m1".to_string(),
                 name: "Model One".to_string(),
                 modalities: vec!["text".to_string(), "image".to_string()],
+                context_window: 128000,
+                max_tokens: 16384,
             }],
             ..Default::default()
         };
@@ -772,6 +786,8 @@ mod tests {
         assert_eq!(provider["baseUrl"], json!("https://new.example.com"));
         assert_eq!(provider["compat"], json!("strict"), "unmanaged fields kept");
         assert_eq!(provider["models"][0]["modalities"][1], json!("image"));
+        assert_eq!(provider["models"][0]["contextWindow"], json!(128000));
+        assert_eq!(provider["models"][0]["maxTokens"], json!(16384));
     }
 
     #[test]
@@ -990,6 +1006,8 @@ mod tests {
                 id: "m1".to_string(),
                 name: "m1".to_string(),
                 modalities: vec!["text".to_string()],
+                context_window: 128000,
+                max_tokens: 16384,
             }],
             ..Default::default()
         };

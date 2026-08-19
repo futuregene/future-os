@@ -2576,6 +2576,8 @@ mod tests {
                 id: "m1".to_string(),
                 name: "Model One".to_string(),
                 modalities: vec!["text".to_string()],
+                context_window: 128000,
+                max_tokens: 16384,
             }],
             ..Default::default()
         });

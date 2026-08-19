@@ -324,6 +324,10 @@ message ProviderModel {
   string name = 2;
   // Input modalities, e.g. ["text"] or ["text", "image"].
   repeated string modalities = 3;
+  // Maximum total context window, in tokens.
+  int32 context_window = 4;
+  // Maximum tokens generated in one response.
+  int32 max_tokens = 5;
 }
 
 // ── ImageContent ───────────────────────────────────────────────────────────

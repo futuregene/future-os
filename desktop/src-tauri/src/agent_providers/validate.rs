@@ -31,6 +31,8 @@ pub(super) struct ValidatedModel {
     pub(super) name: String,
     /// Input modalities, e.g. `["text"]` or `["text", "image"]`.
     pub(super) modalities: Vec<String>,
+    pub(super) context_window: i32,
+    pub(super) max_tokens: i32,
 }
 
 /// Serialize validated models to the models.json entry shape.
@@ -43,6 +45,8 @@ pub(super) fn model_json_values(models: &[ValidatedModel]) -> Vec<Value> {
                 "id": model.id,
                 "name": model.name,
                 "modalities": model.modalities,
+                "contextWindow": model.context_window,
+                "maxTokens": model.max_tokens,
             })
         })
         .collect()
@@ -178,6 +182,17 @@ pub(super) fn validate_custom_provider(
         if !seen_model_ids.insert(model_id.to_string()) {
             return Err(format!("Model ID `{model_id}` is duplicated.").into());
         }
+        if model.context_window <= 0 || model.max_tokens <= 0 {
+            return Err(
+                format!("Model `{model_id}` token limits must be positive integers.").into(),
+            );
+        }
+        if model.max_tokens > model.context_window {
+            return Err(format!(
+                "Model `{model_id}` maximum output tokens cannot exceed its context window."
+            )
+            .into());
+        }
         let model_name = model.name.trim();
         let model_name = if model_name.is_empty() {
             model_id
@@ -205,6 +220,8 @@ pub(super) fn validate_custom_provider(
             id: model_id.to_string(),
             name: model_name.to_string(),
             modalities,
+            context_window: model.context_window,
+            max_tokens: model.max_tokens,
         });
     }
     if models.len() > MAX_MODELS {

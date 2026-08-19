@@ -193,13 +193,14 @@ struct RemoteState {
     transfer_task: tokio::task::JoinHandle<()>,
     heartbeat_task: tokio::task::JoinHandle<()>,
     refresh_task: tokio::task::JoinHandle<()>,
-    /// `None` when the web server failed to bind (port busy) — the bridge still
-    /// runs, but there's no web client to point at.
+    /// `None` outside the test environment, or when the optional test web
+    /// server failed to bind. The phone bridge remains available either way.
     web_task: Option<tokio::task::JoinHandle<()>>,
-    /// Web client URL for THIS machine (localhost); `None` when bind failed.
+    /// Test-only web client URL for THIS machine; `None` outside the test
+    /// environment or when bind failed.
     web_url: Option<String>,
-    /// Web client URL a phone on the same LAN can reach; `None` when bind
-    /// failed or no LAN route was found.
+    /// Test-only web client URL a phone on the same LAN can reach; `None`
+    /// outside the test environment, when bind failed, or without a LAN route.
     web_lan_url: Option<String>,
     /// The one-shot pairing code issued at start, kept (with its expiry) so the
     /// UI can re-show it after navigation until it expires — no longer a
@@ -265,10 +266,11 @@ pub struct RemoteStatus {
     /// Desktop identity bound into the QR invitation and signed handshake.
     pub desktop_id: String,
     pub desktop_public_key: String,
-    /// Web client URL for this machine (localhost); `None` if the web server
-    /// failed to bind.
+    /// Test-only web client URL for this machine; `None` outside the test
+    /// environment or if the web server failed to bind.
     pub web_url: Option<String>,
-    /// Web client URL a phone on the same LAN can reach; `None` if unavailable.
+    /// Test-only web client URL a phone on the same LAN can reach; `None` if
+    /// unavailable or outside the test environment.
     pub web_lan_url: Option<String>,
     /// Machine-readable reason the bridge isn't healthy (e.g. `network`,
     /// `revoked`, `server`, `service_config`, `reconnect_required`,
@@ -399,22 +401,28 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
         pairing_confirmed.clone(),
         handshake_state,
     );
-    // Bind the web server up front so a busy port is reported, not silent. A
-    // failed bind is non-fatal: the bridge still runs, it just has no web UI.
-    let (web_task, web_url, web_lan_url) = match bind_web_listener().await {
-        Ok(listener) => (
-            Some(spawn_web_server(listener)),
-            Some(format!("http://localhost:{WEB_PORT}")),
-            lan_ip().map(|ip| format!("http://{ip}:{WEB_PORT}")),
-        ),
-        Err(error) => {
-            eprintln!("remote: web client bind failed: {error}");
-            (None, None, None)
+    // The browser client is a test-environment-only validation surface. Keep
+    // the NATS/mobile bridge available in every environment, but never expose
+    // the unauthenticated local HTTP listener in production or custom envs.
+    let web_enabled = web_client_enabled();
+    let (web_task, web_url, web_lan_url) = if web_enabled {
+        match bind_web_listener().await {
+            Ok(listener) => (
+                Some(spawn_web_server(listener)),
+                Some(format!("http://localhost:{WEB_PORT}")),
+                lan_ip().map(|ip| format!("http://{ip}:{WEB_PORT}")),
+            ),
+            Err(error) => {
+                eprintln!("remote: web client bind failed: {error}");
+                (None, None, None)
+            }
         }
+    } else {
+        (None, None, None)
     };
     // A failed web bind is non-fatal (the bridge still runs) and is retried
     // silently before the UI is asked to intervene.
-    let web_bind_failed = web_task.is_none();
+    let web_bind_failed = web_enabled && web_task.is_none();
 
     let status = RemoteStatus {
         running: true,
@@ -861,15 +869,17 @@ pub fn status() -> RemoteStatus {
                 && (!generation_unhealthy || reconnect_in_flight || can_auto_reconnect);
             let connected = !generation_unhealthy && !terminal_service_error && !nats_reconnecting;
 
-            // The local Web listener is optional and retries independently so
+            // The local Web listener is test-only and retries independently so
             // a busy port never disrupts the healthy phone bridge.
-            let web_dead = s.web_task.as_ref().is_none_or(|task| task.is_finished());
-            if !web_dead {
+            let web_enabled = web_client_enabled();
+            let web_dead = web_enabled && s.web_task.as_ref().is_none_or(|task| task.is_finished());
+            if web_enabled && !web_dead {
                 WEB_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
             }
-            let web_reconnect_in_flight = WEB_RECONNECT_RUNNING.load(Ordering::Acquire);
-            let can_reconnect_web =
-                WEB_RECONNECT_ATTEMPTS.load(Ordering::Acquire) < MAX_WEB_RECONNECT_ATTEMPTS;
+            let web_reconnect_in_flight =
+                web_enabled && WEB_RECONNECT_RUNNING.load(Ordering::Acquire);
+            let can_reconnect_web = web_enabled
+                && WEB_RECONNECT_ATTEMPTS.load(Ordering::Acquire) < MAX_WEB_RECONNECT_ATTEMPTS;
             if web_dead && can_reconnect_web && !web_reconnect_in_flight {
                 spawn_web_reconnect(s.pair_id.clone());
             }
@@ -1592,6 +1602,26 @@ fn web_dir() -> std::path::PathBuf {
         .unwrap_or_else(|_| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../web"))
 }
 
+/// The web remote client is intentionally available only against the test
+/// platform. Production and custom platform URLs retain mobile remote control
+/// but never bind the local HTTP listener.
+fn web_client_enabled_for_platform(platform_url: &str) -> bool {
+    platform_url == crate::future_platform::TEST_PLATFORM_URL
+}
+
+fn web_client_enabled() -> bool {
+    // Remote integration tests use local mock platform URLs while exercising
+    // the listener; production code always checks the actual environment.
+    #[cfg(test)]
+    {
+        true
+    }
+    #[cfg(not(test))]
+    {
+        web_client_enabled_for_platform(&crate::future_platform::current_platform_url())
+    }
+}
+
 /// Bind the web-client listener up front (in `start()`) so a busy port surfaces
 /// in the returned status instead of a silent web_url that goes nowhere.
 async fn bind_web_listener() -> Result<tokio::net::TcpListener, crate::AppError> {
@@ -1805,6 +1835,19 @@ mod runtime_tests {
     use super::*;
     use serde_json::json;
     use std::time::Duration;
+
+    #[test]
+    fn web_client_is_limited_to_the_test_platform() {
+        assert!(web_client_enabled_for_platform(
+            crate::future_platform::TEST_PLATFORM_URL
+        ));
+        assert!(!web_client_enabled_for_platform(
+            crate::future_platform::PRODUCTION_PLATFORM_URL
+        ));
+        assert!(!web_client_enabled_for_platform(
+            "https://custom.example.com"
+        ));
+    }
 
     fn test_creds(pair_id: &str, nats_url: &str, expires_in: i64) -> pairing::PairingCreds {
         let key_pair = nkeys::KeyPair::new_user();
