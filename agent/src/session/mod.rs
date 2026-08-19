@@ -2385,6 +2385,48 @@ mod tests {
     }
 
     #[test]
+    fn load_legacy_jsonl_rehydrates_string_content_thinking_and_tool_calls() {
+        let dir = std::env::temp_dir().join(format!(
+            "future_test_legacy_jsonl_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manager = Manager::new(dir.clone());
+        std::fs::write(
+            manager.session_path("legacy"),
+            concat!(
+                r#"{"id":"u","type":"user","role":"user","content":"plain user"}"#, "\n",
+                r#"{"id":"a","type":"assistant","role":"assistant","content":"plain answer","thinking":"legacy reasoning","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":{"path":"/tmp/a"}}}]}"#, "\n",
+                r#"{"id":"t","type":"tool","role":"tool","content":"legacy result","tool_call_id":"call_1"}"#, "\n",
+            ),
+        )
+        .unwrap();
+
+        let loaded = manager.load("legacy").unwrap();
+        assert!(Manager::entry_text_starts_with(&loaded.entries[0], "plain"));
+        let messages = entries_to_agent_messages(&loaded.entries, false);
+        assert_eq!(messages[0].text(), "plain user");
+        assert!(matches!(
+            messages[1].content.first(),
+            Some(crate::types::ContentBlock::Reasoning { text, .. }) if text == "legacy reasoning"
+        ));
+        assert!(matches!(
+            messages[1].content.iter().find(|block| matches!(block, crate::types::ContentBlock::ToolCall { .. })),
+            Some(crate::types::ContentBlock::ToolCall { id, name, args, .. })
+                if id == "call_1" && name == "read" && args == &serde_json::json!({"path": "/tmp/a"})
+        ));
+        assert!(matches!(
+            messages[2].content.as_slice(),
+            [crate::types::ContentBlock::ToolResult { tool_call_id, content, .. }]
+                if tool_call_id == "call_1" && content == "legacy result"
+        ));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn entries_to_messages_array_content() {
         let entries = vec![SessionEntry::new_user(
             "user",

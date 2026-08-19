@@ -448,7 +448,9 @@ fn finish(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::schema::{GenerationConfig, OpenAiChatConfig, ProviderRoute};
+    use crate::llm::schema::{
+        ChatReasoningFormat, GenerationConfig, OpenAiChatConfig, ProviderRoute,
+    };
 
     fn frame(data: Value) -> SseFrame {
         SseFrame {
@@ -585,5 +587,92 @@ mod tests {
                 ..
             }]
         ));
+    }
+
+    #[test]
+    fn decodes_reasoning_and_stream_error_frames() {
+        let adapter = OpenAiChatAdapter;
+        let mut state = adapter.new_stream_state();
+        let mut events = adapter
+            .decode_frame(
+                &frame(json!({"choices": [{"delta": {"reasoning_content": "think"}}]})),
+                state.as_mut(),
+            )
+            .unwrap();
+        events.extend(adapter.finish_stream(state.as_mut()).unwrap());
+        assert!(matches!(
+            events.first(),
+            Some(ModelStreamEvent::ReasoningStart { .. })
+        ));
+        assert!(
+            matches!(events.get(1), Some(ModelStreamEvent::ReasoningDelta { text, .. }) if text == "think")
+        );
+        assert!(matches!(
+            events.get(2),
+            Some(ModelStreamEvent::ReasoningEnd { .. })
+        ));
+
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(json!({"error": {"message": "provider boom"}})),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(
+            matches!(events.as_slice(), [ModelStreamEvent::Error { message }] if message == "provider boom")
+        );
+    }
+
+    #[test]
+    fn apply_reasoning_uses_each_protocol_shape() {
+        let mut target = ResolvedModelTarget {
+            model_id: "m".into(),
+            route: ProviderRoute {
+                provider_id: "p".into(),
+                base_url: "https://example.test".into(),
+                api_key: "k".into(),
+                auth: crate::llm::schema::AuthScheme::Bearer,
+                headers: Default::default(),
+            },
+            protocol: ProtocolConfig::OpenAiChat(OpenAiChatConfig::default()),
+            capabilities: Default::default(),
+            generation: GenerationConfig {
+                thinking_level: "high".into(),
+                ..Default::default()
+            },
+        };
+        target.capabilities.reasoning.supported = true;
+        for (format, expected) in [
+            (
+                ChatReasoningFormat::Qwen {
+                    chat_template: false,
+                },
+                json!({"enable_thinking": true, "reasoning_effort": "high"}),
+            ),
+            (
+                ChatReasoningFormat::Qwen {
+                    chat_template: true,
+                },
+                json!({"chat_template_kwargs": {"enable_thinking": true, "preserve_thinking": true}, "reasoning_effort": "high"}),
+            ),
+            (
+                ChatReasoningFormat::DeepSeek,
+                json!({"thinking": {"type": "enabled"}, "reasoning_effort": "high"}),
+            ),
+            (ChatReasoningFormat::Zai, json!({"enable_thinking": true})),
+            (
+                ChatReasoningFormat::ReasoningSplit,
+                json!({"thinking": "enabled", "reasoning_split": true}),
+            ),
+        ] {
+            let config = OpenAiChatConfig {
+                reasoning: format,
+                ..Default::default()
+            };
+            let mut body = json!({});
+            apply_reasoning(&mut body, &target, &config);
+            assert_eq!(body, expected);
+        }
     }
 }

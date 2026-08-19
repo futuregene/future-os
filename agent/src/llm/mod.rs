@@ -345,6 +345,8 @@ mod tests {
     use super::*;
     use crate::types::LLMProvider;
 
+    static IDLE_TIMEOUT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     // ─── Client construction and single target state ─────────────────────────
 
     fn chat_target(
@@ -413,6 +415,27 @@ mod tests {
         assert_eq!(target.route.base_url, "https://new.test");
         assert_eq!(target.generation.thinking_level, "high");
         assert_eq!(target.generation.thinking_budget, 16000);
+    }
+
+    #[test]
+    fn normalize_http_error_preserves_retry_and_auth_semantics() {
+        assert!(normalize_http_error(
+            400,
+            r#"{"error":{"code":"context_length_exceeded","message":"too long"}}"#,
+            "m",
+            1024,
+        )
+        .to_string()
+        .starts_with("[CTX_LIMIT]"));
+        assert!(normalize_http_error(401, "nope", "m", 0)
+            .to_string()
+            .contains("Authentication failed"));
+        assert!(normalize_http_error(403, "nope", "m", 0)
+            .to_string()
+            .contains("Authentication failed"));
+        assert!(normalize_http_error(429, "slow down", "m", 0)
+            .to_string()
+            .contains("Rate limited"));
     }
 
     // ─── mock HTTP server ───────────────────────────────────────────────────
@@ -653,5 +676,185 @@ mod tests {
         assert!(raw_requests[0]
             .to_ascii_lowercase()
             .starts_with("post /chat/completions "));
+    }
+
+    #[tokio::test]
+    async fn stream_model_reports_invalid_provider_json_as_an_error_event() {
+        let server = mock_server(|_| (200, "text/event-stream", "data: {not json}\n\n".into()));
+        let client = Client::from_target(chat_target(&server.base_url, "secret", None, None));
+        let events: Vec<_> = client
+            .stream_model(canonical_request())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        assert!(matches!(
+            events.as_slice(),
+            [schema::ModelStreamEvent::Error { message }]
+                if message.starts_with("invalid provider stream event:")
+        ));
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_model_idle_timeout_finishes_as_incomplete() {
+        let _env = IDLE_TIMEOUT_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        std::env::set_var("FUTURE_TEST_STREAM_IDLE_SECS", "1");
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 16 * 1024];
+            let _ = stream.read(&mut request);
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
+                )
+                .unwrap();
+            let frame = b"data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n";
+            stream
+                .write_all(format!("{:X}\r\n", frame.len()).as_bytes())
+                .and_then(|_| stream.write_all(frame))
+                .and_then(|_| stream.write_all(b"\r\n"))
+                .and_then(|_| stream.flush())
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        });
+
+        let client = Client::from_target(chat_target(
+            &format!("http://127.0.0.1:{port}"),
+            "secret",
+            None,
+            None,
+        ));
+        let events: Vec<_> = client
+            .stream_model(canonical_request())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        std::env::remove_var("FUTURE_TEST_STREAM_IDLE_SECS");
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            schema::ModelStreamEvent::TextDelta { text, .. } if text == "partial"
+        )));
+        assert!(matches!(
+            events.last(),
+            Some(schema::ModelStreamEvent::Finish {
+                reason: schema::FinishReason::Incomplete,
+                ..
+            })
+        ));
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_model_keepalives_prevent_idle_timeout() {
+        let _env = IDLE_TIMEOUT_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        std::env::set_var("FUTURE_TEST_STREAM_IDLE_SECS", "1");
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 16 * 1024];
+            let _ = stream.read(&mut request);
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
+                )
+                .unwrap();
+            for _ in 0..6 {
+                stream
+                    .write_all(b"3\r\n:\n\n\r\n")
+                    .and_then(|_| stream.flush())
+                    .unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            let frame = b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+            stream
+                .write_all(format!("{:X}\r\n", frame.len()).as_bytes())
+                .and_then(|_| stream.write_all(frame))
+                .and_then(|_| stream.write_all(b"\r\n0\r\n\r\n"))
+                .and_then(|_| stream.flush())
+                .unwrap();
+        });
+
+        let client = Client::from_target(chat_target(
+            &format!("http://127.0.0.1:{port}"),
+            "secret",
+            None,
+            None,
+        ));
+        let events: Vec<_> = client
+            .stream_model(canonical_request())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        std::env::remove_var("FUTURE_TEST_STREAM_IDLE_SECS");
+
+        assert!(matches!(
+            events.last(),
+            Some(schema::ModelStreamEvent::Finish {
+                reason: schema::FinishReason::Stop,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_model_consumer_drop_closes_the_upstream_connection() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let disconnected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed_disconnect = disconnected.clone();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 16 * 1024];
+            let _ = stream.read(&mut request);
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
+                )
+                .unwrap();
+            for _ in 0..20 {
+                if stream
+                    .write_all(b"3\r\n:\n\n\r\n")
+                    .and_then(|_| stream.flush())
+                    .is_err()
+                {
+                    observed_disconnect.store(true, std::sync::atomic::Ordering::Release);
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+        });
+
+        let client = Client::from_target(chat_target(
+            &format!("http://127.0.0.1:{port}"),
+            "secret",
+            None,
+            None,
+        ));
+        let stream = client.stream_model(canonical_request()).await.unwrap();
+        drop(stream);
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while !disconnected.load(std::sync::atomic::Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("consumer drop should close the upstream stream promptly");
     }
 }

@@ -11,6 +11,11 @@ use std::collections::BTreeMap;
 
 pub struct AnthropicMessagesAdapter;
 
+/// Anthropic requires an enabled thinking budget to be strictly smaller than
+/// the response's `max_tokens` allocation. A lower allocation cannot support
+/// extended thinking at all (Anthropic's minimum budget is 1024 tokens).
+const MIN_THINKING_BUDGET_TOKENS: i32 = 1024;
+
 #[derive(Debug)]
 enum AnthropicBlock {
     Text {
@@ -51,17 +56,18 @@ impl ProtocolAdapter for AnthropicMessagesAdapter {
             bail!("Anthropic Messages adapter received a non-anthropic target")
         };
         let messages = lower_messages(request)?;
+        let max_tokens = target.generation.max_output_tokens.unwrap_or({
+            if target.capabilities.max_output_tokens > 0 {
+                target.capabilities.max_output_tokens
+            } else {
+                4096
+            }
+        });
         let mut body = json!({
             "model": request.model,
             "messages": messages,
             "stream": true,
-            "max_tokens": target.generation.max_output_tokens.unwrap_or({
-                if target.capabilities.max_output_tokens > 0 {
-                    target.capabilities.max_output_tokens
-                } else {
-                    4096
-                }
-            }),
+            "max_tokens": max_tokens,
         });
         if !request.system_prompt.is_empty() {
             body["system"] = json!([{"type": "text", "text": request.system_prompt}]);
@@ -81,10 +87,14 @@ impl ProtocolAdapter for AnthropicMessagesAdapter {
                     .collect(),
             );
         }
-        if target.generation.thinking_budget > 0 {
+        let thinking_budget = target
+            .generation
+            .thinking_budget
+            .min(max_tokens.saturating_sub(1));
+        if thinking_budget >= MIN_THINKING_BUDGET_TOKENS {
             body["thinking"] = json!({
                 "type": "enabled",
-                "budget_tokens": target.generation.thinking_budget,
+                "budget_tokens": thinking_budget,
             });
         } else if let Some(temperature) = target.generation.temperature {
             body["temperature"] = json!(temperature);
@@ -477,6 +487,55 @@ fn map_finish_reason(reason: &str) -> FinishReason {
 mod tests {
     use super::*;
 
+    fn target(max_tokens: Option<i32>, thinking_budget: i32) -> ResolvedModelTarget {
+        ResolvedModelTarget {
+            model_id: "claude".into(),
+            route: crate::llm::schema::ProviderRoute {
+                provider_id: "fixture".into(),
+                base_url: "https://api.example.test".into(),
+                api_key: "secret".into(),
+                auth: crate::llm::schema::AuthScheme::AnthropicApiKey,
+                headers: Default::default(),
+            },
+            protocol: ProtocolConfig::AnthropicMessages(Default::default()),
+            capabilities: Default::default(),
+            generation: crate::llm::schema::GenerationConfig {
+                max_output_tokens: max_tokens,
+                thinking_budget,
+                ..Default::default()
+            },
+        }
+    }
+
+    fn empty_request() -> ModelRequest {
+        ModelRequest {
+            model: "claude".into(),
+            system_prompt: String::new(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn thinking_budget_is_clamped_below_max_tokens() {
+        let body = AnthropicMessagesAdapter
+            .build_body(&target(None, 16_000), &empty_request())
+            .unwrap();
+        assert_eq!(body["max_tokens"], 4_096);
+        assert_eq!(body["thinking"]["budget_tokens"], 4_095);
+    }
+
+    #[test]
+    fn thinking_is_omitted_when_max_tokens_cannot_fit_minimum_budget() {
+        let body = AnthropicMessagesAdapter
+            .build_body(
+                &target(Some(MIN_THINKING_BUDGET_TOKENS), 16_000),
+                &empty_request(),
+            )
+            .unwrap();
+        assert!(body.get("thinking").is_none());
+    }
+
     fn frame(event: &str, data: Value) -> SseFrame {
         SseFrame {
             event: Some(event.into()),
@@ -677,5 +736,57 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn decodes_redacted_thinking_and_error_frames() {
+        let adapter = AnthropicMessagesAdapter;
+        let mut state = adapter.new_stream_state();
+        let mut events = adapter
+            .decode_frame(
+                &frame(
+                    "content_block_start",
+                    json!({
+                        "type": "content_block_start", "index": 0,
+                        "content_block": {"type": "redacted_thinking", "data": "opaque"}
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        events.extend(
+            adapter
+                .decode_frame(
+                    &frame(
+                        "content_block_stop",
+                        json!({"type": "content_block_stop", "index": 0}),
+                    ),
+                    state.as_mut(),
+                )
+                .unwrap(),
+        );
+        assert!(matches!(
+            events.first(),
+            Some(ModelStreamEvent::ReasoningStart { .. })
+        ));
+        assert!(matches!(
+            events.get(1),
+            Some(ModelStreamEvent::ReasoningEnd { provider_metadata, .. })
+                if provider_metadata["anthropic"]["redacted_data"] == "opaque"
+        ));
+
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(
+                    "error",
+                    json!({"type": "error", "error": {"message": "boom"}}),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(
+            matches!(events.as_slice(), [ModelStreamEvent::Error { message }] if message == "boom")
+        );
     }
 }

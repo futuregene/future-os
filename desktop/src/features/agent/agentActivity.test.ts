@@ -493,6 +493,17 @@ describe("buildAssistantRunProjection edge branches", () => {
     expect(projection.activityItems[0]).toMatchObject({ target: "/partial.ts" });
   });
 
+  it("replaces partial tool arguments when a delta is a snapshot", () => {
+    const projection = buildAssistantRunProjection(
+      events([
+        ["tool_start", { tool_name: "edit", tool_id: "e1", tool_args: {} }],
+        ["tool_delta", { text: "{\"file_path\": \"/old" }],
+        ["tool_delta", { snapshot: true, text: "{\"file_path\": \"/new.ts\"}" }],
+      ]),
+    );
+    expect(projection.activityItems[0]).toMatchObject({ target: "/new.ts" });
+  });
+
   it("tolerates an invalid JSON string field in partial args", () => {
     const projection = buildAssistantRunProjection(
       events([

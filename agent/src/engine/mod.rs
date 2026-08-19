@@ -213,6 +213,23 @@ mod tests {
         assert_eq!(engine.config.thinking_level, "high");
     }
 
+    #[test]
+    fn engine_new_with_target_preserves_target_identity_and_thinking_level() {
+        let target = crate::llm::schema::ResolvedModelTarget::openai_chat_compatible(
+            "target-model",
+            "https://api.example.test/v1",
+            "target-key",
+            None,
+            Some(2048),
+        );
+        let mut config = EngineConfig::with_defaults();
+        config.thinking_level = "high".into();
+        let engine = Engine::new_with_target(target, config).unwrap();
+        assert_eq!(engine.model, "target-model");
+        assert_eq!(engine.api_key, "target-key");
+        assert_eq!(engine.config.thinking_level, "high");
+    }
+
     // ─── Builder methods ────────────────────────────────────────────────────
 
     #[test]

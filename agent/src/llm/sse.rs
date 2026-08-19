@@ -104,4 +104,11 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn rejects_an_unbounded_event_buffer() {
+        let mut decoder = SseDecoder::default();
+        let error = decoder.push(&vec![b'x'; MAX_EVENT_BYTES + 1]).unwrap_err();
+        assert!(error.to_string().contains("SSE event exceeded"));
+    }
 }

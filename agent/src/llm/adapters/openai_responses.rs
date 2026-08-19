@@ -912,5 +912,29 @@ mod tests {
                 ..
             }]
         ));
+
+        let mut state = adapter.new_stream_state();
+        let filtered = adapter
+            .decode_frame(
+                &frame(
+                    "response.incomplete",
+                    json!({
+                        "type": "response.incomplete",
+                        "response": {
+                            "status": "incomplete",
+                            "incomplete_details": {"reason": "content_filter"}
+                        }
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(matches!(
+            filtered.as_slice(),
+            [ModelStreamEvent::Finish {
+                reason: FinishReason::ContentFilter,
+                ..
+            }]
+        ));
     }
 }
