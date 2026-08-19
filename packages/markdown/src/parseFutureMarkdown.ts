@@ -172,13 +172,19 @@ function blockToFutureNode(
     /* v8 ignore stop */
     case "list":
       return [listToFutureNode(node, context)];
-    case "paragraph":
-      return [
-        {
-          children: phrasingToInline(node.children, context),
-          type: "paragraph",
-        },
-      ];
+    case "paragraph": {
+      const children = phrasingToInline(node.children, context);
+      // A paragraph containing only a single math formula (e.g. `$$E=mc^2$$`
+      // on one line, the model's common output) is promoted to a block-level
+      // formula so it renders centered, matching Typora/Obsidian behavior.
+      if (
+        children.length === 1
+        && children[0]?.type === "mathInline"
+      ) {
+        return [{ code: children[0].code, type: "mathBlock" }];
+      }
+      return [{ children, type: "paragraph" }];
+    }
     case "table":
       return [tableToFutureNode(node, context)];
     /* v8 ignore next 2 -- remark never emits a bare text node as a block child */
