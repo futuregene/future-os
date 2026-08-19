@@ -698,7 +698,7 @@ impl Manager {
             .open(path)
             .with_context(|| format!("open session file for append: {}", path.display()))?;
         for entry in entries {
-            let json = serde_json::to_string(entry).context("serialize entry")?;
+            let json = Self::serialize_entry(entry)?;
             let mut line = json.into_bytes();
             line.push(b'\n');
             file.write_all(&line).context("write entry")?;
@@ -798,7 +798,7 @@ impl Manager {
         let file = File::create(&tmp_path).context("create temp session file")?;
         let mut w = std::io::BufWriter::new(file);
         for entry in entries {
-            let json = serde_json::to_string(entry).context("serialize entry")?;
+            let json = Self::serialize_entry(entry)?;
             writeln!(w, "{}", json).context("write entry")?;
         }
         w.flush().context("flush")?;
@@ -837,6 +837,80 @@ impl Manager {
         Ok(())
     }
 
+    fn serialize_entry(entry: &SessionEntry) -> Result<String> {
+        let mut value = serde_json::to_value(entry).context("serialize entry")?;
+        if matches!(
+            entry.entry_type.as_str(),
+            ENTRY_TYPE_USER | ENTRY_TYPE_ASSISTANT | ENTRY_TYPE_TOOL | ENTRY_TYPE_SYSTEM
+        ) {
+            if let Some(object) = value.as_object_mut() {
+                let mut blocks: Vec<crate::types::ContentBlock> = match &entry.content {
+                    Some(serde_json::Value::Array(values)) => values
+                        .iter()
+                        .filter_map(|value| serde_json::from_value(value.clone()).ok())
+                        .collect(),
+                    Some(serde_json::Value::String(text)) => {
+                        vec![crate::types::ContentBlock::text(text)]
+                    }
+                    _ => Vec::new(),
+                };
+                if !entry.thinking.is_empty()
+                    && !blocks
+                        .iter()
+                        .any(|block| matches!(block, crate::types::ContentBlock::Reasoning { .. }))
+                {
+                    blocks.insert(
+                        0,
+                        crate::types::ContentBlock::reasoning(&entry.thinking, Default::default()),
+                    );
+                }
+                if !blocks
+                    .iter()
+                    .any(|block| matches!(block, crate::types::ContentBlock::ToolCall { .. }))
+                {
+                    blocks.extend(entry.tool_calls.iter().map(|call| {
+                        crate::types::ContentBlock::tool_call(
+                            &call.id,
+                            &call.function.name,
+                            call.function.arguments.clone(),
+                            Default::default(),
+                        )
+                    }));
+                }
+                if entry.entry_type == ENTRY_TYPE_TOOL
+                    && !blocks
+                        .iter()
+                        .any(|block| matches!(block, crate::types::ContentBlock::ToolResult { .. }))
+                {
+                    let text = blocks
+                        .iter()
+                        .filter_map(|block| match block {
+                            crate::types::ContentBlock::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("");
+                    blocks
+                        .retain(|block| !matches!(block, crate::types::ContentBlock::Text { .. }));
+                    blocks.push(crate::types::ContentBlock::tool_result(
+                        &entry.tool_call_id,
+                        text,
+                        false,
+                    ));
+                }
+                if !blocks.is_empty() {
+                    object.insert("content".into(), serde_json::to_value(blocks)?);
+                }
+                object.remove("thinking");
+                object.remove("tool_calls");
+                object.remove("tool_call_id");
+                object.remove("name");
+                object.remove("tool_args");
+            }
+        }
+        serde_json::to_string(&value).context("serialize entry")
+    }
+
     pub fn load(&self, id: &str) -> Result<Session> {
         let path = self.session_path(id);
         self.load_path(&path, id)
@@ -862,10 +936,14 @@ impl Manager {
         match &entry.content {
             Some(serde_json::Value::String(s)) => s.starts_with(prefix),
             Some(serde_json::Value::Array(arr)) => arr
-                .first()
-                .and_then(|b| b.get("text"))
-                .and_then(|t| t.as_str())
-                .is_some_and(|s| s.starts_with(prefix)),
+                .iter()
+                .find_map(|block| {
+                    block
+                        .get("text")
+                        .or_else(|| block.get("content"))
+                        .and_then(|text| text.as_str())
+                })
+                .is_some_and(|text| text.starts_with(prefix)),
             _ => false,
         }
     }
@@ -1067,7 +1145,10 @@ impl Manager {
         let len = raw_lines.len();
         for (i, line) in raw_lines.into_iter().enumerate() {
             match serde_json::from_str::<SessionEntry>(&line) {
-                Ok(entry) => entries.push(entry),
+                Ok(mut entry) => {
+                    hydrate_entry_projections(&mut entry);
+                    entries.push(entry);
+                }
                 Err(e) if i == len - 1 => {
                     tracing::warn!(
                         "Dropping malformed last line of session {id} (possibly \
@@ -1685,22 +1766,19 @@ pub fn entries_to_agent_messages(
         let mut content: Vec<ContentBlock> = match &entry.content {
             Some(serde_json::Value::Array(arr)) => arr
                 .iter()
-                .filter_map(|v| match v.get("type").and_then(|t| t.as_str()) {
-                    Some("image_url") => {
-                        // Preserve an on-disk base64 image_url (channels/TUI); a
-                        // stripped/empty one (GUI) is skipped — rebuilt from meta.
-                        let url = v
-                            .get("image_url")
-                            .and_then(|u| u.get("url"))
-                            .and_then(|u| u.as_str())
-                            .unwrap_or("");
-                        (!url.is_empty()).then(|| ContentBlock::image(url))
-                    }
-                    _ => {
-                        let text = v.get("text").and_then(|t| t.as_str()).unwrap_or("");
-                        Some(ContentBlock::Text {
-                            text: text.to_string(),
-                        })
+                .filter_map(|value| {
+                    let block = serde_json::from_value::<ContentBlock>(value.clone()).ok()?;
+                    match &block {
+                        ContentBlock::Image { image_url } => {
+                            // Preserve an on-disk base64 image_url (channels/TUI); a
+                            // stripped/empty one (GUI) is skipped — rebuilt from meta.
+                            image_url
+                                .url
+                                .as_ref()
+                                .is_some_and(|url| !url.is_empty())
+                                .then_some(block)
+                        }
+                        _ => Some(block),
                     }
                 })
                 .collect(),
@@ -1733,22 +1811,99 @@ pub fn entries_to_agent_messages(
             }
         }
 
-        let tool_calls: Vec<AgentToolCall> = entry
+        let legacy_tool_calls: Vec<AgentToolCall> = entry
             .tool_calls
             .iter()
             .map(|tc| AgentToolCall {
                 id: tc.id.clone(),
                 name: tc.function.name.clone(),
                 args: tc.function.arguments.clone(),
+                provider_metadata: Default::default(),
             })
             .collect();
+
+        if !entry.thinking.is_empty()
+            && !content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::Reasoning { .. }))
+        {
+            content.insert(
+                0,
+                ContentBlock::reasoning(entry.thinking.clone(), Default::default()),
+            );
+        }
+        if !content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::ToolCall { .. }))
+        {
+            content.extend(legacy_tool_calls.iter().map(|call| {
+                ContentBlock::tool_call(
+                    call.id.clone(),
+                    call.name.clone(),
+                    call.args.clone(),
+                    call.provider_metadata.clone(),
+                )
+            }));
+        }
+        if role == "tool"
+            && !content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
+        {
+            let text = content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            content.retain(|block| !matches!(block, ContentBlock::Text { .. }));
+            content.push(ContentBlock::tool_result(
+                entry.tool_call_id.clone(),
+                text,
+                false,
+            ));
+        }
+        let thinking = content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Reasoning { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        let tool_calls = content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::ToolCall {
+                    id,
+                    name,
+                    args,
+                    provider_metadata,
+                } => Some(AgentToolCall {
+                    id: id.clone(),
+                    name: name.clone(),
+                    args: args.clone(),
+                    provider_metadata: provider_metadata.clone(),
+                }),
+                _ => None,
+            })
+            .collect();
+        let tool_call_id = content
+            .iter()
+            .find_map(|block| match block {
+                ContentBlock::ToolResult { tool_call_id, .. } => Some(tool_call_id.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| entry.tool_call_id.clone());
 
         msgs.push(crate::types::AgentMessage {
             role,
             content,
-            thinking: entry.thinking.clone(),
+            thinking,
             tool_calls,
-            tool_call_id: entry.tool_call_id.clone(),
+            tool_call_id,
             name: entry.name.clone(),
             tool_args: entry.tool_args.clone(),
             metadata: entry.meta.as_ref().and_then(|m| m.as_object().cloned()),
@@ -1811,7 +1966,7 @@ pub fn agent_message_to_entry(msg: &crate::types::AgentMessage) -> SessionEntry 
                 .any(|a| a.get("kind").and_then(|k| k.as_str()) == Some("image"))
         });
     let content_blocks: Vec<serde_json::Value> = msg
-        .content
+        .model_content()
         .iter()
         .map(|b| serde_json::to_value(b).unwrap_or(serde_json::Value::Null))
         .filter(|v| {
@@ -1855,6 +2010,54 @@ pub fn agent_message_to_entry(msg: &crate::types::AgentMessage) -> SessionEntry 
         // survives reload; the reverse mapping restores it in
         // entries_to_agent_messages.
         meta: msg.metadata.clone().map(serde_json::Value::Object),
+    }
+}
+
+fn hydrate_entry_projections(entry: &mut SessionEntry) {
+    let Some(serde_json::Value::Array(values)) = entry.content.as_ref() else {
+        return;
+    };
+    let blocks: Vec<crate::types::ContentBlock> = values
+        .iter()
+        .filter_map(|value| serde_json::from_value(value.clone()).ok())
+        .collect();
+    if entry.thinking.is_empty() {
+        entry.thinking = blocks
+            .iter()
+            .filter_map(|block| match block {
+                crate::types::ContentBlock::Reasoning { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+    }
+    if entry.tool_calls.is_empty() {
+        entry.tool_calls = blocks
+            .iter()
+            .filter_map(|block| match block {
+                crate::types::ContentBlock::ToolCall { id, name, args, .. } => {
+                    Some(crate::types::ToolCall {
+                        id: id.clone(),
+                        call_type: "function".into(),
+                        function: crate::types::ToolCallFn {
+                            name: name.clone(),
+                            arguments: args.clone(),
+                        },
+                    })
+                }
+                _ => None,
+            })
+            .collect();
+    }
+    if entry.tool_call_id.is_empty() {
+        if let Some(id) = blocks.iter().find_map(|block| match block {
+            crate::types::ContentBlock::ToolResult { tool_call_id, .. } => {
+                Some(tool_call_id.clone())
+            }
+            _ => None,
+        }) {
+            entry.tool_call_id = id;
+        }
     }
 }
 
@@ -2084,6 +2287,7 @@ mod tests {
                 id: "c1".to_string(),
                 name: "shell".to_string(),
                 args: serde_json::json!({"cmd": "ls"}),
+                provider_metadata: Default::default(),
             }],
             ..Default::default()
         };
@@ -2178,6 +2382,48 @@ mod tests {
         )];
         let msgs = entries_to_agent_messages(&entries, false);
         assert_eq!(msgs[0].text(), "plain string");
+    }
+
+    #[test]
+    fn load_legacy_jsonl_rehydrates_string_content_thinking_and_tool_calls() {
+        let dir = std::env::temp_dir().join(format!(
+            "future_test_legacy_jsonl_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manager = Manager::new(dir.clone());
+        std::fs::write(
+            manager.session_path("legacy"),
+            concat!(
+                r#"{"id":"u","type":"user","role":"user","content":"plain user"}"#, "\n",
+                r#"{"id":"a","type":"assistant","role":"assistant","content":"plain answer","thinking":"legacy reasoning","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":{"path":"/tmp/a"}}}]}"#, "\n",
+                r#"{"id":"t","type":"tool","role":"tool","content":"legacy result","tool_call_id":"call_1"}"#, "\n",
+            ),
+        )
+        .unwrap();
+
+        let loaded = manager.load("legacy").unwrap();
+        assert!(Manager::entry_text_starts_with(&loaded.entries[0], "plain"));
+        let messages = entries_to_agent_messages(&loaded.entries, false);
+        assert_eq!(messages[0].text(), "plain user");
+        assert!(matches!(
+            messages[1].content.first(),
+            Some(crate::types::ContentBlock::Reasoning { text, .. }) if text == "legacy reasoning"
+        ));
+        assert!(matches!(
+            messages[1].content.iter().find(|block| matches!(block, crate::types::ContentBlock::ToolCall { .. })),
+            Some(crate::types::ContentBlock::ToolCall { id, name, args, .. })
+                if id == "call_1" && name == "read" && args == &serde_json::json!({"path": "/tmp/a"})
+        ));
+        assert!(matches!(
+            messages[2].content.as_slice(),
+            [crate::types::ContentBlock::ToolResult { tool_call_id, content, .. }]
+                if tool_call_id == "call_1" && content == "legacy result"
+        ));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -2346,6 +2592,54 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn manager_writes_only_canonical_message_blocks_and_rehydrates_projections() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Manager::new(dir.path().to_path_buf());
+        let mut provider_metadata = crate::types::ProviderMetadata::new();
+        provider_metadata.insert("anthropic".into(), serde_json::json!({"signature": "sig"}));
+        let message = crate::types::AgentMessage {
+            role: "assistant".into(),
+            content: vec![
+                crate::types::ContentBlock::reasoning("thought", provider_metadata),
+                crate::types::ContentBlock::text("answer"),
+                crate::types::ContentBlock::tool_call(
+                    "call-1",
+                    "lookup",
+                    serde_json::json!({"q": "rust"}),
+                    Default::default(),
+                ),
+            ],
+            ..Default::default()
+        };
+        let mut session = Session::new("/tmp/test", "claude", "");
+        session.entries.push(agent_message_to_entry(&message));
+        manager.save(&session).unwrap();
+
+        let disk = std::fs::read_to_string(manager.session_path(&session.id)).unwrap();
+        let assistant: serde_json::Value = disk
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .find(|value: &serde_json::Value| value["type"] == "assistant")
+            .unwrap();
+        assert!(assistant.get("thinking").is_none());
+        assert!(assistant.get("tool_calls").is_none());
+        assert_eq!(assistant["content"][0]["type"], "reasoning");
+        assert_eq!(
+            assistant["content"][0]["provider_metadata"]["anthropic"]["signature"],
+            "sig"
+        );
+
+        let loaded = manager.load(&session.id).unwrap();
+        let assistant = loaded
+            .entries
+            .iter()
+            .find(|entry| entry.entry_type == ENTRY_TYPE_ASSISTANT)
+            .unwrap();
+        assert_eq!(assistant.thinking, "thought");
+        assert_eq!(assistant.tool_calls.len(), 1);
+    }
+
     /// Regression test for the HTTP 400 "Messages with role 'tool' must be a
     /// response to a preceding message with 'tool_calls'" failure seen when
     /// resuming a session: a load-time repair previously PERSISTED a "tool
@@ -2401,7 +2695,11 @@ mod tests {
         );
         assert_eq!(
             tool_entries[0].content.as_ref().unwrap(),
-            &serde_json::json!("real output"),
+            &serde_json::json!([{
+                "type": "tool_result",
+                "tool_call_id": "tc1",
+                "content": "real output"
+            }]),
             "the real result must win over the placeholder"
         );
 
@@ -2461,7 +2759,11 @@ mod tests {
         assert_eq!(tool_entries.len(), 1);
         assert_eq!(
             tool_entries[0].content.as_ref().unwrap(),
-            &serde_json::json!("first result")
+            &serde_json::json!([{
+                "type": "tool_result",
+                "tool_call_id": "tc1",
+                "content": "first result"
+            }])
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -3048,7 +3350,7 @@ mod tests {
         let new_user_index = loaded
             .entries
             .iter()
-            .position(|entry| entry.content.as_ref() == Some(&serde_json::json!("new")))
+            .position(|entry| Manager::entry_text_starts_with(entry, "new"))
             .unwrap();
         assert!(old_terminal_index < new_user_index);
         let _ = std::fs::remove_dir_all(dir);
@@ -3733,7 +4035,11 @@ mod tests {
         assert_eq!(tool_entries.len(), 1);
         assert_eq!(
             tool_entries[0].content.as_ref().unwrap(),
-            &serde_json::json!("real output")
+            &serde_json::json!([{
+                "type": "tool_result",
+                "tool_call_id": "call-1",
+                "content": "real output"
+            }])
         );
     }
 
@@ -3945,7 +4251,11 @@ mod tests {
         assert_eq!(tools.len(), 1);
         assert_eq!(
             tools[0].content.as_ref().unwrap(),
-            &serde_json::json!("real output")
+            &serde_json::json!([{
+                "type": "tool_result",
+                "tool_call_id": "call-1",
+                "content": "real output"
+            }])
         );
     }
     // ── coverage batch 13: scan/summary/gc/delete edge arms ─────────────────

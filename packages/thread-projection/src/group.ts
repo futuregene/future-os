@@ -29,19 +29,22 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-/** Coerce a tool's `arguments` (object, or a JSON string) to a plain record. */
+/** Coerce a tool's `arguments` (object, or nested JSON strings) to a plain record. */
 export function normalizeArgs(value: unknown): Record<string, unknown> | null {
-  if (isRecord(value))
-    return value;
-  if (typeof value !== "string")
-    return null;
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return isRecord(parsed) ? parsed : null;
+  let current = value;
+  for (let index = 0; index < 3; index += 1) {
+    if (isRecord(current))
+      return current;
+    if (typeof current !== "string" || !current.trim())
+      return null;
+    try {
+      current = JSON.parse(current) as unknown;
+    }
+    catch {
+      return null;
+    }
   }
-  catch {
-    return null;
-  }
+  return isRecord(current) ? current : null;
 }
 
 /**

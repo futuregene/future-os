@@ -478,17 +478,6 @@ async fn async_main(
 
     // Default thinking level (clients override per-session).
 
-    // Parse thinking level map from model config
-    let thinking_level_map: std::collections::HashMap<String, String> = model_config
-        .as_ref()
-        .map(|m| {
-            m.thinking_level_map
-                .iter()
-                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                .collect()
-        })
-        .unwrap_or_default();
-
     // Honor each model's advertised output limit. Models without one retain
     // the existing reasoning/non-reasoning fallbacks.
     let max_tokens = model_config
@@ -504,37 +493,24 @@ async fn async_main(
             50
         },
         thinking_level: "high".to_string(),
-        thinking_level_map,
-        compat_thinking_format: model_config
-            .as_ref()
-            .and_then(|m| m.compat.get("thinkingFormat"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        compat_supports_reasoning_effort: model_config
-            .as_ref()
-            .and_then(|m| m.compat.get("supportsReasoningEffort"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-        compat_requires_reasoning_on_assistant: model_config
-            .as_ref()
-            .and_then(|m| m.compat.get("requiresReasoningContentOnAssistantMessages"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-        max_tokens_field: model_config
-            .as_ref()
-            .and_then(|m| m.compat.get("maxTokensField"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or_default(),
         compaction_reserve_tokens: settings.compaction_reserve_tokens(),
         compaction_keep_recent_tokens: settings.compaction_keep_recent_tokens(),
         ..EngineConfig::with_defaults()
     };
 
     // Build engine
-    let mut engine = Engine::new(&base_url, &api_key, &engine_model, config, None, max_tokens)?
-        .with_tools(crate::coding_tools());
+    let engine = if let Some(model) = model_config.as_ref() {
+        let target = crate::llm::schema::ResolvedModelTarget::from_model(
+            model,
+            api_key.clone(),
+            None,
+            max_tokens,
+        )?;
+        Engine::new_with_target(target, config)?
+    } else {
+        Engine::new(&base_url, &api_key, &engine_model, config, None, max_tokens)?
+    };
+    let mut engine = engine.with_tools(crate::coding_tools());
 
     // Always run gRPC server mode
     let (grpc_host, grpc_port) = if cli.grpc_addr.starts_with(':') {

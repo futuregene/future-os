@@ -1923,9 +1923,12 @@ fn cmd_get_session_entries(session: &Arc<parking_lot::RwLock<ServerSession>>, id
                         .as_ref()
                         .map(|c| {
                             if let Some(arr) = c.as_array() {
-                                let texts = arr
-                                    .iter()
-                                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()));
+                                let texts = arr.iter().filter_map(|block| {
+                                    (block.get("type").and_then(|value| value.as_str())
+                                        == Some("text"))
+                                    .then(|| block.get("text").and_then(|text| text.as_str()))
+                                    .flatten()
+                                });
                                 if e.role == "user" {
                                     // A user entry's visible text is only their typed
                                     // message (the first text block). Any later text
@@ -1947,11 +1950,21 @@ fn cmd_get_session_entries(session: &Arc<parking_lot::RwLock<ServerSession>>, id
                     // run events, not in the message content).
                     let full_content = if e.entry_type == "tool" {
                         // Tool entries: show the result text, or a placeholder.
-                        if content_text.is_empty() {
-                            String::new()
-                        } else {
-                            content_text
-                        }
+                        e.content
+                            .as_ref()
+                            .and_then(serde_json::Value::as_array)
+                            .and_then(|blocks| {
+                                blocks.iter().find_map(|block| {
+                                    (block.get("type").and_then(serde_json::Value::as_str)
+                                        == Some("tool_result"))
+                                    .then(|| {
+                                        block.get("content").and_then(serde_json::Value::as_str)
+                                    })
+                                    .flatten()
+                                })
+                            })
+                            .map(str::to_owned)
+                            .unwrap_or(content_text)
                     } else {
                         // User and assistant entries: just the text content.
                         content_text
@@ -2381,8 +2394,9 @@ mod tests {
     use super::*;
     use crate::{
         agent::Loop,
+        llm::schema::{ModelRequest, ModelStreamEvent},
         rpc::ApprovalGate,
-        types::{LLMProvider, Message, StreamEvent, ToolDef},
+        types::LLMProvider,
     };
     use std::collections::HashMap;
     use tokio::sync::mpsc;
@@ -2392,13 +2406,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl LLMProvider for EmptyProvider {
-        async fn stream_chat(
+        async fn stream_model(
             &self,
-            _model: String,
-            _messages: Vec<Message>,
-            _tools: Vec<ToolDef>,
-            _system_prompt: String,
-        ) -> anyhow::Result<ReceiverStream<StreamEvent>> {
+            _request: ModelRequest,
+        ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
             let (_tx, rx) = mpsc::channel(1);
             Ok(ReceiverStream::new(rx))
         }
@@ -3004,14 +3015,22 @@ mod tests {
         // No run_started marker → nothing unterminated → not interrupted.
         assert!(resp["data"]["interruptedRun"].is_null());
         let loaded = state.session_manager.load(session_id).unwrap();
-        assert!(loaded
-            .entries
-            .iter()
-            .any(|entry| entry.content == Some(serde_json::json!("legacy message"))));
-        assert!(loaded
-            .entries
-            .iter()
-            .any(|entry| entry.content == Some(serde_json::json!("legacy reply"))));
+        assert!(loaded.entries.iter().any(|entry| entry
+            .content
+            .as_ref()
+            .and_then(|content| content.as_array())
+            .and_then(|blocks| blocks.first())
+            .and_then(|block| block.get("text"))
+            .and_then(|text| text.as_str())
+            == Some("legacy message")));
+        assert!(loaded.entries.iter().any(|entry| entry
+            .content
+            .as_ref()
+            .and_then(|content| content.as_array())
+            .and_then(|blocks| blocks.first())
+            .and_then(|block| block.get("text"))
+            .and_then(|text| text.as_str())
+            == Some("legacy reply")));
         assert!(loaded
             .entries
             .iter()
@@ -5615,7 +5634,12 @@ mod tests {
             use tokio_stream::StreamExt;
             let provider = EmptyProvider;
             let mut stream = provider
-                .stream_chat("mock".to_string(), vec![], vec![], String::new())
+                .stream_model(ModelRequest {
+                    model: "mock".into(),
+                    system_prompt: String::new(),
+                    messages: vec![],
+                    tools: vec![],
+                })
                 .await
                 .unwrap();
             assert!(stream.next().await.is_none());

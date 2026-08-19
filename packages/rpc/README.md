@@ -23,6 +23,15 @@ agents and old clients keep reading `data` from new agents. Once every
 released client reads the typed payload, the `data` dual-write can be
 retired (a later milestone).
 
+The model/agent runtime no longer uses this string envelope internally: model
+providers emit typed model events and the Agent projects typed run events onto
+`StreamEvent` only at the RPC boundary. The wire envelope itself is still a
+migration boundary, not the final design. Retiring it requires all sideband and
+control-plane events to gain typed payload variants, a versioned migration for
+journal/replay/NATS records, and an explicit compatibility window for released
+clients. Until those prerequisites are complete, keep `type`/`data` dual-write
+and replay semantics byte-compatible.
+
 - `encode.rs` — JSON `data` Value → typed `payload` (agent side). Defensive:
   returns `None` on unknown/shape-mismatched input so clients fall back.
 - `decode.rs` — typed `payload` → canonical Value (client side), JSON `data`

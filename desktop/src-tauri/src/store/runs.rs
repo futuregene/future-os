@@ -841,9 +841,21 @@ fn parse_tool_start_payload(payload: Option<&str>) -> (String, String, Option<St
     let input = v
         .get("tool_args")
         .or(v.get("input"))
-        .and_then(|s| s.as_str())
-        .map(|s| s.to_string());
+        .and_then(normalize_tool_input);
     (name, kind, input)
+}
+
+/// Preserve the historical string representation consumed by the desktop UI
+/// while accepting the protocol-neutral agent's native JSON arguments. Older
+/// OpenAI Chat events commonly carry a JSON-encoded string; Responses and
+/// Anthropic carry an object. Keeping both forms here also lets the later,
+/// complete tool_start enrich an earlier streaming start with empty args.
+fn normalize_tool_input(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(value) => Some(value.clone()),
+        value => serde_json::to_string(value).ok(),
+    }
 }
 
 /// Tool-call status from its `tool_end` payload. An explicit `error` is a
@@ -988,8 +1000,7 @@ pub fn get_tool_call_input(
         return Ok(v
             .get("tool_args")
             .or(v.get("input"))
-            .and_then(|s| s.as_str())
-            .map(|s| s.to_string()));
+            .and_then(normalize_tool_input));
     }
     Ok(None)
 }
@@ -1233,6 +1244,40 @@ mod tests {
         assert_eq!(third.len(), 2);
         assert_eq!(third[1].name, "edit");
         assert_eq!(third[1].status, "running");
+
+        let mut cache = TOOL_PROJECTION_CACHE.lock().unwrap_or_else(unpoison);
+        cache.remove(&run_id);
+    }
+
+    #[test]
+    fn tool_projection_accepts_object_args_and_enriches_streaming_start() {
+        let run_id = format!("test_object_args_{}", std::process::id());
+        let tools = advance_tool_projection(
+            &run_id,
+            &[
+                tool_event(
+                    &run_id,
+                    "tool_start",
+                    r#"{"tool_id":"t1","tool_name":"shell","tool_args":""}"#,
+                    0,
+                ),
+                tool_event(
+                    &run_id,
+                    "tool_start",
+                    r#"{"tool_id":"t1","tool_name":"shell","tool_args":{"command":"pwd"}}"#,
+                    1,
+                ),
+                tool_event(&run_id, "tool_end", r#"{"tool_id":"t1","text":"ok"}"#, 2),
+            ],
+        );
+
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].input.as_deref(), Some(r#"{"command":"pwd"}"#));
+        assert_eq!(tools[0].status, "completed");
+        assert_eq!(
+            get_tool_call_input(&run_id, "t1").expect("read object input"),
+            Some(r#"{"command":"pwd"}"#.to_string())
+        );
 
         let mut cache = TOOL_PROJECTION_CACHE.lock().unwrap_or_else(unpoison);
         cache.remove(&run_id);
@@ -1897,6 +1942,13 @@ mod tests {
             sequence: 1,
         })
         .expect("bad start");
+        append_run_event(AppendRunEventInput {
+            run_id: run_id.clone(),
+            event_type: "tool_start".to_string(),
+            payload: Some(r#"{"tool_id":"object","tool_args":{"path":"/object"}}"#.to_string()),
+            sequence: 2,
+        })
+        .expect("object start");
 
         // The projection cache has no entry for this run, so every read falls
         // through to the legacy scan (newest first).
@@ -1904,12 +1956,16 @@ mod tests {
             get_tool_call_input(&run_id, "good").expect("legacy read"),
             Some(r#"{"path":"/x"}"#.to_string())
         );
+        assert_eq!(
+            get_tool_call_input(&run_id, "object").expect("legacy object read"),
+            Some(r#"{"path":"/object"}"#.to_string())
+        );
         // A matched tool_start whose payload lacks tool_args → None.
         append_run_event(AppendRunEventInput {
             run_id: run_id.clone(),
             event_type: "tool_start".to_string(),
             payload: Some(r#"{"tool_id":"bare"}"#.to_string()),
-            sequence: 2,
+            sequence: 3,
         })
         .expect("bare start");
         assert_eq!(get_tool_call_input(&run_id, "bare").expect("bare"), None);

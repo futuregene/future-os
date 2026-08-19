@@ -20,7 +20,7 @@ pub mod tools;
 pub mod types;
 pub mod utils;
 
-pub use agent::Loop;
+pub use agent::{Loop, RunEvent};
 pub use auth::AuthStore;
 pub use config::{load_settings, Settings};
 pub use engine::{Engine, EngineConfig};
@@ -33,7 +33,7 @@ pub use skills::{
     AGENTS_SKILLS_DIR, APP_SKILLS_DIR,
 };
 pub use tools::{all_tools, coding_tools};
-pub use types::{AgentMessage, AgentTool, LLMProvider, Message, StreamEvent, ToolDef};
+pub use types::{AgentMessage, AgentTool, LLMProvider, Message, ToolDef};
 pub use utils::{default_config_dir, default_session_dir, generate_id};
 
 /// Process-global guard serializing tests that redirect `$HOME` (TestHome in
@@ -147,14 +147,12 @@ pub(crate) mod test_support {
 
     #[async_trait::async_trait]
     impl crate::types::LLMProvider for EmptyProvider {
-        async fn stream_chat(
+        async fn stream_model(
             &self,
-            _model: String,
-            _messages: Vec<crate::types::Message>,
-            _tools: Vec<crate::types::ToolDef>,
-            _system_prompt: String,
-        ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::types::StreamEvent>>
-        {
+            _request: crate::llm::schema::ModelRequest,
+        ) -> anyhow::Result<
+            tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>,
+        > {
             let (_tx, rx) = tokio::sync::mpsc::channel(1);
             Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
         }
@@ -167,7 +165,12 @@ pub(crate) mod test_support {
             use tokio_stream::StreamExt;
             let provider = super::EmptyProvider;
             let mut stream = provider
-                .stream_chat("mock".to_string(), vec![], vec![], String::new())
+                .stream_model(crate::llm::schema::ModelRequest {
+                    model: "mock".into(),
+                    system_prompt: String::new(),
+                    messages: vec![],
+                    tools: vec![],
+                })
                 .await
                 .unwrap();
             assert!(stream.next().await.is_none());

@@ -889,7 +889,7 @@ mod tests {
         assert!(loaded
             .entries
             .iter()
-            .any(|entry| { entry.content.as_ref() == Some(&serde_json::json!("before close")) }));
+            .any(|entry| Manager::entry_text_starts_with(entry, "before close")));
 
         std::fs::remove_file(manager.session_path("session-1")).unwrap();
         assert!(persistence
@@ -1215,7 +1215,7 @@ mod tests {
         assert!(loaded
             .entries
             .iter()
-            .any(|entry| entry.content.as_ref() == Some(&serde_json::json!("after crash"))));
+            .any(|entry| Manager::entry_text_starts_with(entry, "after crash")));
         persistence.close().unwrap();
         let _ = std::fs::remove_dir_all(_dir);
     }
@@ -1424,7 +1424,7 @@ mod tests {
         assert!(loaded
             .entries
             .iter()
-            .any(|entry| entry.content.as_ref() == Some(&serde_json::json!("drained"))));
+            .any(|entry| Manager::entry_text_starts_with(entry, "drained")));
         let _ = std::fs::remove_dir_all(dir);
     }
 

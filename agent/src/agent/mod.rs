@@ -1,10 +1,10 @@
 //! Agent Loop — 1:1 compatible with Go internal/agent/
 
+mod events;
 mod run_loop;
-use crate::types::{
-    AgentMessage, AgentTool, ContentBlock, LLMProvider, Message, StreamEvent, ToolCall,
-};
+use crate::types::{AgentMessage, AgentTool, ContentBlock, LLMProvider, Message, ToolCall};
 use anyhow::{anyhow, Result};
+pub use events::RunEvent;
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -32,8 +32,6 @@ pub struct StreamContext {
     #[allow(clippy::type_complexity)]
     pub on_tool_result: Option<PersistCallback>,
     pub save_callback: Option<PersistCallback>,
-    #[allow(clippy::type_complexity)]
-    pub tool_event_callback: Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>,
 }
 
 pub struct Loop {
@@ -180,31 +178,35 @@ impl Loop {
     // TOOL EXECUTION
     // ═══════════════════════════════════════════════════════════════════════════
 
-    async fn execute_tools(
+    async fn execute_tools<F>(
         &self,
         turn: usize,
         tool_calls: &[ToolCall],
         messages: &mut Vec<AgentMessage>,
-        tool_event_cb: &Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>,
+        on_event: &F,
         on_tool_result: &Option<PersistCallback>,
-    ) {
+    ) where
+        F: Fn(RunEvent) + Send + Sync,
+    {
         // `parallel_tools` and `tools_execution_mode` remain readable only for
         // historical config compatibility. They never provided real parallel
         // execution, so the runtime exposes one honest deterministic behavior.
         // A future parallel executor must return as a new capability together
         // with explicit same-workspace write-conflict semantics.
-        self.execute_tools_sequential(turn, tool_calls, messages, tool_event_cb, on_tool_result)
+        self.execute_tools_sequential(turn, tool_calls, messages, on_event, on_tool_result)
             .await;
     }
 
-    async fn execute_tools_sequential(
+    async fn execute_tools_sequential<F>(
         &self,
         _turn: usize,
         tool_calls: &[ToolCall],
         messages: &mut Vec<AgentMessage>,
-        tool_event_cb: &Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>,
+        on_event: &F,
         on_tool_result: &Option<PersistCallback>,
-    ) {
+    ) where
+        F: Fn(RunEvent) + Send + Sync,
+    {
         let tools = &self.tools;
         let config = &self.config;
         let mut interrupted = false;
@@ -218,15 +220,11 @@ impl Loop {
             let start = Instant::now();
 
             // Broadcast tool_start (include tool_call for args)
-            if let Some(ref cb) = tool_event_cb {
-                cb(StreamEvent {
-                    event_type: "tool_start".to_string(),
-                    tool_call: Some(tc.clone()),
-                    tool_name: tc.function.name.clone(),
-                    tool_id: tc.id.clone(),
-                    ..Default::default()
-                });
-            }
+            on_event(RunEvent::ToolExecutionStarted {
+                id: tc.id.clone(),
+                name: tc.function.name.clone(),
+                arguments: tc.function.arguments.clone(),
+            });
 
             let (result, err_str, tool_name) =
                 Self::execute_one_tool_impl_static(tc, tools, config).await;
@@ -252,23 +250,17 @@ impl Loop {
             // Broadcast tool_end — with structured semantics (exit code,
             // soft-fail, target path) so consumers don't re-parse the output
             // prose.
-            if let Some(ref cb) = tool_event_cb {
-                let semantics =
-                    crate::tools::tool_end_semantics(&tool_name, &tc.function.arguments, &result);
-                let payload = match &semantics {
-                    serde_json::Value::Object(object) if !object.is_empty() => Some(semantics),
-                    _ => None,
-                };
-                cb(StreamEvent {
-                    event_type: "tool_end".to_string(),
-                    text: result.clone(),
-                    tool_name: tool_name.clone(),
-                    tool_id: tc.id.clone(),
-                    error_text: err_str.clone().unwrap_or_default(),
-                    payload,
-                    ..Default::default()
-                });
-            }
+            let semantics =
+                crate::tools::tool_end_semantics(&tool_name, &tc.function.arguments, &result);
+            on_event(RunEvent::ToolExecutionFinished {
+                id: tc.id.clone(),
+                name: tool_name.clone(),
+                output: result.clone(),
+                error: err_str.clone(),
+                exit_code: semantics.exit_code,
+                is_soft_fail: semantics.is_soft_fail,
+                target_path: semantics.target_path,
+            });
 
             let tool_args_str = match &tc.function.arguments {
                 serde_json::Value::String(s) => s.clone(),
@@ -506,14 +498,12 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::types::LLMProvider for MockProvider {
-        async fn stream_chat(
+        async fn stream_model(
             &self,
-            _model: String,
-            _messages: Vec<crate::types::Message>,
-            _tools: Vec<crate::types::ToolDef>,
-            _system_prompt: String,
-        ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::types::StreamEvent>>
-        {
+            _request: crate::llm::schema::ModelRequest,
+        ) -> anyhow::Result<
+            tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>,
+        > {
             let (_tx, rx) = tokio::sync::mpsc::channel(1);
             Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
         }
@@ -812,38 +802,33 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::types::LLMProvider for TextStreamProvider {
-        async fn stream_chat(
+        async fn stream_model(
             &self,
-            _model: String,
-            _messages: Vec<crate::types::Message>,
-            _tools: Vec<crate::types::ToolDef>,
-            _system_prompt: String,
-        ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::types::StreamEvent>>
-        {
+            _request: crate::llm::schema::ModelRequest,
+        ) -> anyhow::Result<
+            tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>,
+        > {
             let (tx, rx) = tokio::sync::mpsc::channel(64);
             let chunks = self.chunks.clone();
             tokio::spawn(async move {
                 for chunk in chunks {
                     let _ = tx
-                        .send(crate::types::StreamEvent {
-                            event_type: "text_delta".to_string(),
+                        .send(crate::llm::schema::ModelStreamEvent::TextDelta {
+                            id: "text".to_string(),
                             text: chunk,
-                            ..Default::default()
                         })
                         .await;
                 }
                 // Send stop event to end the stream
                 let _ = tx
-                    .send(crate::types::StreamEvent {
-                        event_type: "stop".to_string(),
-                        stop_reason: "end_turn".to_string(),
+                    .send(crate::llm::schema::ModelStreamEvent::Finish {
+                        reason: crate::llm::schema::FinishReason::Stop,
                         usage: Some(crate::types::Usage {
                             prompt_tokens: 10,
                             completion_tokens: 5,
                             total_tokens: 15,
                             ..Default::default()
                         }),
-                        ..Default::default()
                     })
                     .await;
             });
@@ -949,7 +934,7 @@ mod tests {
         ];
         let mut messages = Vec::new();
         loop_
-            .execute_tools_sequential(0, &calls, &mut messages, &None, &None)
+            .execute_tools_sequential(0, &calls, &mut messages, &|_| {}, &None)
             .await;
         assert_eq!(messages.len(), 2);
         assert!(messages[0].text().contains("SKILL.md"));
@@ -966,7 +951,7 @@ mod tests {
         ];
         let mut messages = Vec::new();
         loop_
-            .execute_tools_sequential(0, &calls, &mut messages, &None, &None)
+            .execute_tools_sequential(0, &calls, &mut messages, &|_| {}, &None)
             .await;
         assert_eq!(messages.len(), 2);
         assert!(messages[0].text().contains("cancelled"));
