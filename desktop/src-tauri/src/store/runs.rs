@@ -135,6 +135,31 @@ pub fn list_runs(thread_id: &str) -> Result<Vec<RunRecord>, crate::AppError> {
         .map_err(crate::AppError::from)
 }
 
+/// Find the run created for a durable remote command id. Mobile persists this
+/// id before sending a prompt, so a retry after either process restarts can
+/// recover the original acknowledgement instead of creating a duplicate run.
+pub fn find_run_by_trigger_message_id(
+    trigger_message_id: &str,
+) -> Result<Option<RunRecord>, crate::AppError> {
+    if trigger_message_id.trim().is_empty() {
+        return Ok(None);
+    }
+    let conn = connect()?;
+    conn.query_row(
+        &format!(
+            "SELECT {RUN_COLUMNS}
+                 FROM runs
+                 WHERE trigger_message_id = ?1
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT 1"
+        ),
+        params![trigger_message_id],
+        run_from_row,
+    )
+    .optional()
+    .map_err(crate::AppError::from)
+}
+
 /// The thread's single most recent run (same ordering/tiebreak as
 /// [`latest_run_infos`]). Used by initial loads and pushed terminal
 /// reconciliation without transferring the thread's entire run history.

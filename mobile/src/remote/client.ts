@@ -82,6 +82,7 @@ export class RemoteClient {
   private authRetryCount = 0;
   private generation = 0;
   private stopped = false;
+  private appActive = true;
   private networkAvailable = true;
   private recoveryPromise: Promise<void> | null = null;
   private failedGeneration: number | null = null;
@@ -122,7 +123,7 @@ export class RemoteClient {
    * the retry timer is owned by exactly one place, here).
    */
   async open(): Promise<void> {
-    if (this.stopped || !this.networkAvailable) return;
+    if (this.stopped || !this.appActive || !this.networkAvailable) return;
     this.signal({ type: "open_started" });
     const generation = ++this.generation;
     try {
@@ -131,7 +132,13 @@ export class RemoteClient {
       this.credentials = fresh;
       this.callbacks.onCredentials(fresh);
       await this.connectSocket(generation);
-      if (this.stopped || !this.networkAvailable || generation !== this.generation) return;
+      if (
+        this.stopped ||
+        !this.appActive ||
+        !this.networkAvailable ||
+        generation !== this.generation
+      )
+        return;
       this.scheduleRefresh();
     } catch (error) {
       if (this.stopped || generation !== this.generation) return;
@@ -159,9 +166,25 @@ export class RemoteClient {
     this.disposeConnection("network_unavailable");
   }
 
+  /**
+   * Ordinary WebSockets are not a background execution mechanism on either
+   * mobile OS. Close deliberately before JavaScript is suspended so foreground
+   * recovery starts from a known state instead of inheriting a half-open WSS.
+   */
+  pauseForBackground(): void {
+    if (this.stopped || !this.appActive) return;
+    this.appActive = false;
+    this.generation += 1;
+    this.clearTimers();
+    this.signal({ type: "transport_disconnect" });
+    this.disposeConnection("background");
+  }
+
   /** Validate after foregrounding, or immediately rebuild after a path change. */
   recoverNow(reason: RecoveryReason): Promise<void> {
     if (this.stopped) return Promise.resolve();
+    if (reason === "foreground") this.appActive = true;
+    if (!this.appActive) return Promise.resolve();
     if (reason !== "foreground") this.networkAvailable = true;
     if (!this.networkAvailable) return Promise.resolve();
     if (this.recoveryPromise) return this.recoveryPromise;
@@ -201,7 +224,7 @@ export class RemoteClient {
         // Rebuild below without waiting for NATS's ping budget to expire.
       }
     }
-    if (this.stopped || !this.networkAvailable) return;
+    if (this.stopped || !this.appActive || !this.networkAvailable) return;
     this.generation += 1;
     this.clearTimers();
     this.signal({ type: "transport_disconnect" });
@@ -212,7 +235,7 @@ export class RemoteClient {
 
   /** Rotate the JWT in place and resume the connection (M1's refreshable class). */
   private async refreshToken(): Promise<void> {
-    if (this.refreshInFlight) return;
+    if (this.refreshInFlight || !this.appActive) return;
     this.refreshInFlight = true;
     try {
       this.signal({ type: "auth_failed" }); // moves to refreshing
@@ -347,13 +370,13 @@ export class RemoteClient {
 
   private scheduleRetry(): void {
     this.signal({ type: "open_failed", error: new Error("transport_failed") });
-    if (this.stopped || !this.networkAvailable) return;
+    if (this.stopped || !this.appActive || !this.networkAvailable) return;
     if (this.retryTimer) clearTimeout(this.retryTimer);
     const delay = backoffDelayMs(this.retryAttempt);
     this.retryAttempt += 1;
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null;
-      if (this.stopped || !this.networkAvailable) return;
+      if (this.stopped || !this.appActive || !this.networkAvailable) return;
       void this.open();
     }, delay);
   }
@@ -855,7 +878,7 @@ class RemoteResponseError extends Error {
   }
 }
 
-function isTransientNatsRequestError(error: unknown): boolean {
+export function isTransientNatsRequestError(error: unknown): boolean {
   if (error instanceof RemoteResponseError) return false;
   if (error instanceof Error && error.message === "not_connected") return true;
   const code =
