@@ -31,6 +31,8 @@ desktop/.vite/
 mobile/.expo/
 mobile/android/
 mobile/ios/
+# Generated Gradle output for local Expo native modules.
+mobile/modules/*/android/build/
 node_modules/
 
 # Build-time generated version modules (see scripts/version.mjs)

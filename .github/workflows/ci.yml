@@ -118,6 +118,17 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true
 
+      # Run formatting before any package installation: rustfmt only needs the
+      # pinned toolchain, so a formatting failure returns immediately even when
+      # an Ubuntu mirror is unhealthy.
+      - name: rustfmt (workspace)
+        if: needs.changes.outputs.rust_workspace == 'true'
+        run: cargo fmt --check --all
+
+      - name: rustfmt (desktop backend)
+        if: needs.changes.outputs.desktop_tauri == 'true'
+        run: cargo fmt --check --manifest-path desktop/src-tauri/Cargo.toml
+
       # mold + binutils because .cargo/config.toml pins -fuse-ld=mold and clippy
       # still links build scripts, proc-macros and test binaries. WebKit/GTK for
       # the Tauri -sys build scripts (desktop backend is part of this gate now).
@@ -126,8 +137,7 @@ jobs:
       # REGENERATE_PROTO).
       - name: Install Linux deps
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          bash scripts/ci/install-apt-packages.sh \
             build-essential \
             binutils \
             mold \
@@ -152,10 +162,6 @@ jobs:
       # ── Workspace crates (agent / channels) ──
       # --all because the root manifest is a virtual workspace (no [package]);
       # --manifest-path would fail with "Failed to find targets".
-      - name: rustfmt (workspace)
-        if: needs.changes.outputs.rust_workspace == 'true'
-        run: cargo fmt --check --all
-
       - name: clippy (workspace)
         if: needs.changes.outputs.rust_workspace == 'true'
         run: cargo clippy --workspace --all-targets --manifest-path Cargo.toml -- -D warnings
@@ -172,10 +178,6 @@ jobs:
           git diff --exit-code packages/rpc/src/generated/proto.rs channels/src/generated/
 
       # ── desktop Tauri backend ──
-      - name: rustfmt (desktop backend)
-        if: needs.changes.outputs.desktop_tauri == 'true'
-        run: cargo fmt --check --manifest-path desktop/src-tauri/Cargo.toml
-
       - name: clippy (desktop backend)
         if: needs.changes.outputs.desktop_tauri == 'true'
         run: cargo clippy --all-targets --manifest-path desktop/src-tauri/Cargo.toml -- -D warnings
@@ -272,24 +274,27 @@ jobs:
           cache-all-crates: true
 
       # The WebKit/GTK stack is only needed by the desktop backend's -sys
-      # build scripts; workspace groups skip it (~40s of apt each).
+      # build scripts; workspace groups skip it (~40s of apt each). The root
+      # workspace has no openssl-sys dependency, so libssl-dev is unnecessary
+      # for its test groups.
       - name: Install Linux deps
         if: steps.affected.outputs.run == 'true'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          packages=(
             build-essential \
             binutils \
             mold \
-            pkg-config \
-            libssl-dev
+            pkg-config
+          )
           if [ "${{ matrix.desktop }}" = 'true' ]; then
-            sudo apt-get install -y \
+            packages+=(
               libayatana-appindicator3-dev \
               libgtk-3-dev \
               librsvg2-dev \
               libwebkit2gtk-4.1-dev
+            )
           fi
+          bash scripts/ci/install-apt-packages.sh "${packages[@]}"
 
       # tauri-build's build script aborts with `resource path ... doesn't
       # exist` unless every `bundle.externalBin` sidecar is present; empty
@@ -373,8 +378,7 @@ jobs:
       - name: Install Linux system dependencies
         if: (needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.desktop_tauri == 'true') && runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          bash scripts/ci/install-apt-packages.sh \
             build-essential \
             binutils \
             mold \
