@@ -30,7 +30,8 @@ make setup    # JS deps (desktop/mobile) + skills submodule + sidecar placeholde
 package and the desktop/mobile JavaScript dependencies, initializes the `skills`
 submodule, and creates an empty Tauri sidecar placeholder so `cargo check`/
 `clippy`/`test` under `desktop/src-tauri` run even before the first `cargo
-build`. After it, any `make build-*` / `run-*` / `lint` / `test` target works.
+build`. It prepares the repository-level dependencies; app run targets still
+need the platform SDKs and a suitable emulator or device.
 
 ## macOS
 
@@ -39,6 +40,7 @@ Install dependencies:
 ```bash
 xcode-select --install                                            # system toolchain (Tauri)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh    # Rust
+source "$HOME/.cargo/env"                                         # make cargo/rustc available in this shell
 brew install node                                                 # Node.js 24+ (nvm works too — see .nvmrc)
 brew install protobuf                                             # optional — only for make generate-proto
 ```
@@ -88,6 +90,7 @@ sudo apt update
 sudo apt install -y build-essential mold libssl-dev \
   libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh    # Rust (rust-toolchain.toml pins 1.97.0)
+source "$HOME/.cargo/env"                                         # make cargo/rustc available in this shell
 sudo apt install -y protobuf-compiler                             # optional — only for make generate-proto
 ```
 
@@ -234,7 +237,7 @@ make build          # build GUI + unified CLI (no system install; agent/tui/chan
 make lint           # lint all: agent, channels, TUI, CLI, GUI (+stylelint), mobile
 make fmt            # cargo fmt --all (workspace) + desktop/src-tauri + mobile formatting
 make test           # all 7 suites: agent, channels, CLI, TUI, GUI, GUI Rust, mobile
-make clean          # remove build artifacts + installed binaries
+make clean          # remove build artifacts (use make uninstall for installed binaries)
 ```
 
 ### Proto

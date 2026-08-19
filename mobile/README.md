@@ -11,12 +11,14 @@ iOS；业务层、主题、国际化和凭证存储均保持跨平台。
 - 流式展示回复、思考与工具执行；支持审批、停止、模型、思考等级和重命名。
 - 历史分页加载、按 `(runId, idx)` 去重，并在连接恢复后通过
   `get_events_since` 回补实时事件。
+- 支持从相册选择或拍摄图片、添加文件附件；可下载会话附件并在手机预览图片、
+  Markdown、文本和 JSON，其余受支持类型交给系统应用打开或保存。
 - seed、JWT 和刷新 token 分项存入 Android Keystore 支持的 SecureStore；
   明文不会进入 AsyncStorage、日志或二维码。
 
 ## 环境
 
-- Node.js 22.11 或更高版本。
+- Node.js 24 或更高版本（与仓库根目录 `.nvmrc` 和 CI 保持一致）。
 - Android Studio、JDK 17 和 Android SDK / Build Tools 36。
 - 一台启用开发者模式与 USB 调试的 Android 设备，或 Android 模拟器。
 
@@ -131,20 +133,20 @@ npm run ios:device
      Store Connect API Key，与 macOS 公证共用；角色需为 App Manager 或以上）
    - 复用现有 `OSS_*` secrets（上传 IPA 到 `dl.future-os.cn`）
 2. Actions → Build iOS TestFlight → Run workflow。
-3. 构建用 `0.0.<提交数>` 作为 TestFlight 版本号（纯数字，TestFlight 要求），
-   提交数同时作为 CFBundleVersion。
+3. 当前工作流固定使用 TestFlight marketing version `0.0.2`；
+   `github.run_number` 同时作为 CFBundleVersion。若需要重置递增序列或发布正式版，
+   需在工作流中显式调整 marketing version。
 4. 上传成功后，登录 App Store Connect → TestFlight → 添加外部测试者。
    首次外部测试需苹果 Beta 审核（约 1-2 天）。
 5. 测试者手机装 TestFlight App → 接受邀请 → 安装 FutureOS。
 
-> 版本号机制：测试包（dev）版本为 `0.0.<提交数>[-<hash>]`，第一位 `0` 即
-> 测试包；正式版从 `1.0.0` 起，打 `vX.Y.Z` tag 触发 release。iOS 测试包
-> 去掉 `-<hash>` 后缀以通过 TestFlight 校验，但版本号仍是 `0.0.x`，判定规则
-> 不变。
+> 版本号机制：本地测试包由 `scripts/version.mjs` 生成，可带开发后缀；TestFlight
+> 必须使用纯数字的 marketing version，当前为 `0.0.2`。其 build number 来自该
+> 工作流的 `github.run_number`，并且必须在同一 marketing version 内单调递增。
+> 正式版从 `1.0.0` 起，打 `vX.Y.Z` tag 触发 release。
 
 ### iOS 平台注意
 
-- Bundle identifier 不能含下划线，Android 的 `cn.future_os.mobile` 在 iOS 上
-  不合法；本项目统一为 `cn.futureos.mobile`。
+- Bundle identifier 统一为 `cn.futureos.mobile`，供 Android 与 iOS 共用。
 - NATS 一律走 `wss://`，不配置任何明文/cleartext 例外；iOS 依赖系统 ATS
   默认放行 TLS WebSocket，Android 保持 cleartext 禁止。

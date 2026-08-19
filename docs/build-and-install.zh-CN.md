@@ -20,7 +20,13 @@ TUI 与 CLI 均为 Rust（`cargo build`），不再需要 Bun 或 Node。
 ```bash
 git clone https://github.com/futuregene/future-os.git
 cd future-os
+make setup    # 安装 JS 依赖（desktop/mobile）+ 初始化 skills 子模块 + 创建 sidecar 占位文件
 ```
+
+`make setup` 只准备仓库级依赖：安装共享的 `thread-projection`、desktop/mobile
+JavaScript 依赖、初始化 `skills` 子模块，并创建空的 Tauri sidecar 占位文件，
+使 `desktop/src-tauri` 的 `cargo check` / `clippy` / `test` 可在首次 `cargo build`
+前运行。应用启动目标仍需要相应平台的 SDK 与模拟器或真机。
 
 ## macOS
 
@@ -29,6 +35,7 @@ cd future-os
 ```bash
 xcode-select --install                                            # 系统工具链（Tauri）
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh    # Rust
+source "$HOME/.cargo/env"                                         # 使 cargo/rustc 在当前 shell 中可用
 brew install node                                                 # Node.js 24+（也可用 nvm——见 .nvmrc）
 brew install protobuf                                             # 可选 —— 仅用于 make generate-proto
 ```
@@ -72,6 +79,7 @@ sudo apt update
 sudo apt install -y build-essential mold libssl-dev \
   libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh    # Rust（rust-toolchain.toml 锁定 1.97.0）
+source "$HOME/.cargo/env"                                         # 使 cargo/rustc 在当前 shell 中可用
 sudo apt install -y protobuf-compiler                             # 可选 —— 仅用于 make generate-proto
 ```
 
@@ -207,7 +215,7 @@ make build          # 构建 GUI + 统一 CLI（不安装到系统；agent/tui/c
 make lint           # 全量 lint：agent、channels、TUI、CLI、GUI（含 stylelint）、mobile
 make fmt            # cargo fmt --all（workspace）+ desktop/src-tauri + mobile 格式化
 make test           # 全部 7 个套件：agent、channels、CLI、TUI、GUI、GUI Rust、mobile
-make clean          # 清理构建产物与已安装二进制
+make clean          # 清理构建产物（已安装二进制请用 make uninstall 删除）
 ```
 
 ### Proto
