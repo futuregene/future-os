@@ -1,6 +1,7 @@
 {
   "title": "Phone Remote Control",
   "description": "Let a phone remotely take over this machine's session (tools still run locally). Once enabled, local conversations are mirrored to the phone, and the phone can drive the same session.",
+  "downloadMobile": "Download mobile app",
   "connect": "Connect",
   "reconnect": "Reconnect",
   "disconnect": "Disconnect",

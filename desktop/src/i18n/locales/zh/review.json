@@ -5,7 +5,7 @@
     "lastRun": "上一轮变更"
   },
   "workingTree": {
-    "emptyTitle": "工作树没有未提交变化",
+    "emptyTitle": "工作区没有未提交的更改",
     "emptyDetail": "当前分支相对所选 base 没有变化。"
   },
   "expandAll": "全部展开",
@@ -30,7 +30,7 @@
     "retry": "重试"
   },
   "file": {
-    "unknown": "Unknown file",
+    "unknown": "未知文件",
     "sensitiveContent": "敏感文件发生变化，内容未保存。",
     "noTextDiff": "无文本 diff。",
     "diffTruncated": "diff 过大，已截断显示。"

@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { ConfirmDeleteDialog } from "../../components/layout/EntityDialogs";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
 import { Button } from "../../components/ui/Button";
+import { openExternalUrl } from "../../integrations/storage/files";
 import { cn } from "../../lib/cn";
 import { usePolling } from "../../lib/usePolling";
 import { startWindowDrag } from "../../lib/windowDrag";
@@ -170,7 +171,17 @@ export function RemoteView({
 
       <div className="min-h-0 flex-1 overflow-y-auto p-8">
         <div className="mx-auto w-full max-w-xl space-y-6">
-          <p className="text-sm text-ink-muted">{t("description")}</p>
+          <p className="text-sm text-ink-muted">
+            {t("description")}
+            {" "}
+            <button
+              className="text-accent hover:underline"
+              onClick={() => void openExternalUrl("https://future-os.cn/#download-mobile")}
+              type="button"
+            >
+              {t("downloadMobile")}
+            </button>
+          </p>
 
           {isPaired && !pairingCode
             ? (

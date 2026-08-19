@@ -226,12 +226,11 @@ export function CustomProviderDialog({
 
   return (
     <Dialog
-      bodyClassName="min-h-0 flex-1 overflow-y-auto pr-2"
-      className="flex h-[min(760px,calc(100vh-3rem))] max-w-lg flex-col"
+      bodyClassName="-mr-5 min-h-0 flex-1 overflow-y-auto pr-5"
+      className="flex max-h-[min(760px,calc(100vh-3rem))] max-w-lg flex-col"
       onClose={onClose}
       open={open}
       title={editing ? t("customProvider.editTitle") : t("customProvider.addTitle")}
-      description={t("customProvider.description")}
       footer={(
         <>
           <Button onClick={onClose} variant="secondary">{t("customProvider.cancel")}</Button>
