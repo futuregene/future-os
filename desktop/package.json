@@ -23,7 +23,7 @@
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "i18next": "^26.3.4",
-    "katex": "^0.16.0",
+    "katex": "^0.16.21",
     "lucide-react": "^1.22.0",
     "pdfjs-dist": "^6.2.108",
     "qrcode.react": "^4.2.0",
