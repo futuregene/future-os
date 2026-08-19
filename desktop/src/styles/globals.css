@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "katex/dist/katex.min.css";
 @config "../../tailwind.config.js";
 
 /* Load-older button entrance: a quick pop with a small overshoot bounce so the

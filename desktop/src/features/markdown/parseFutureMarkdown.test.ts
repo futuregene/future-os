@@ -189,6 +189,21 @@ describe("parseFutureMarkdown", () => {
       { text: "<script>alert(1)</script>", type: "text" },
     ]);
   });
+
+  it("parses block-level math formulas ($$...$$) as mathBlock nodes", () => {
+    const document = parseFutureMarkdown("$$\n\\frac{a}{b}\n$$");
+    const mathBlock = findBlock(document.nodes, "mathBlock");
+    expect(mathBlock).toEqual({ code: "\\frac{a}{b}", type: "mathBlock" });
+  });
+
+  it("parses inline math formulas ($...$) as mathInline nodes", () => {
+    const document = parseFutureMarkdown("The formula $E=mc^2$ is famous.");
+    const paragraph = document.nodes[0];
+    expect(paragraph?.type).toBe("paragraph");
+    const children = paragraph?.type === "paragraph" ? paragraph.children : [];
+    const mathInline = children.find(node => node.type === "mathInline");
+    expect(mathInline).toEqual({ code: "E=mc^2", displayMode: false, type: "mathInline" });
+  });
 });
 
 function findBlock<T extends MarkdownNode["type"]>(

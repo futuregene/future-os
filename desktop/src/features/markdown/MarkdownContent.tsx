@@ -8,6 +8,8 @@ import { parseFutureMarkdown } from "./parseFutureMarkdown";
 import { PreviewMarkdownContext, usePreviewMarkdown } from "./PreviewMarkdownContext";
 import { CodeBlock } from "./renderers/CodeBlock";
 import { FileLink } from "./renderers/FileLink";
+import { MathBlock } from "./renderers/MathBlock";
+import { MathInline } from "./renderers/MathInline";
 import { renderFileReference } from "./renderers/fileReference";
 import { FutureEmbed } from "./renderers/FutureEmbed";
 import { MarkdownImage } from "./renderers/MarkdownImage";
@@ -88,6 +90,8 @@ function renderBlock(node: MarkdownNode, workspaceId: string | null | undefined,
     }
     case "code":
       return <CodeBlock code={node.code} key={key} language={node.language} />;
+    case "mathBlock":
+      return <MathBlock code={node.code} key={key} />;
     case "futureEmbed":
       return <FutureEmbedView key={key} reference={node.reference} workspaceId={workspaceId} />;
     case "blockquote":
@@ -168,6 +172,8 @@ function renderInline(nodes: InlineNode[], workspaceId: string | null | undefine
         return <MarkdownImage alt={node.alt} key={key} src={node.src} title={node.title} workspaceId={workspaceId} />;
       case "futureReference":
         return <FutureReferenceChip key={key} reference={node.reference} workspaceId={workspaceId} />;
+      case "mathInline":
+        return <MathInline code={node.code} key={key} />;
       default:
         return node.text;
     }

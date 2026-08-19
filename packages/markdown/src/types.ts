@@ -20,7 +20,8 @@ export type InlineNode =
   | { type: "break" }
   | { children: InlineNode[]; href: string; type: "link" }
   | { alt: string; src: string; title?: string; type: "image" }
-  | { reference: FutureReference; type: "futureReference" };
+  | { reference: FutureReference; type: "futureReference" }
+  | { code: string; displayMode: false; type: "mathInline" };
 
 export interface ListItemNode {
   blocks?: MarkdownNode[];
@@ -42,7 +43,8 @@ export type MarkdownNode =
   | { items: ListItemNode[]; ordered: boolean; type: "list" }
   | { reference: FutureReference; type: "futureEmbed" }
   | { type: "thematicBreak" }
-  | ({ type: "table" } & TableNode);
+  | ({ type: "table" } & TableNode)
+  | { code: string; type: "mathBlock" };
 
 export interface FutureMarkdownDocument {
   nodes: MarkdownNode[];

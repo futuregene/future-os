@@ -29,11 +29,12 @@ import type {
   MarkdownNode,
 } from "./types";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 import remarkParse from "remark-parse";
 import { unified } from "unified";
 import { localFilePath } from "./localPath";
 
-const markdownProcessor = unified().use(remarkParse).use(remarkGfm);
+const markdownProcessor = unified().use(remarkParse).use(remarkMath).use(remarkGfm);
 
 // Cross-instance parse cache: `useMemo([content])` in MarkdownContent only
 // survives within one mounted component, so a thread switch re-parses every
@@ -150,6 +151,8 @@ function blockToFutureNode(
       ];
     case "html":
       return htmlToSafeParagraph(node);
+    case "math":
+      return [{ code: node.value, type: "mathBlock" }];
     /* v8 ignore start -- remark never emits phrasing nodes as block children */
     case "image":
       return [{ children: [imageToInline(node)], type: "paragraph" }];
@@ -230,6 +233,8 @@ function phrasingNodeToInline(
       ];
     case "inlineCode":
       return [inlineCodeToInline(node)];
+    case "inlineMath":
+      return [{ code: node.value, displayMode: false, type: "mathInline" }];
     case "link":
       return [linkToInline(node, context)];
     case "linkReference":
