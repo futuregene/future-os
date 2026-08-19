@@ -261,7 +261,6 @@ async fn handle_command_singleflight(
             }
         }
     };
-
     if inserted {
         let slots = reply_slots.clone();
         let id = command_id.clone();
@@ -563,12 +562,8 @@ async fn handle_command(
             .await
         }
         "download_prepare" => {
-            match super::transfer::prepare_download_variant(
-                &cmd.session_id,
-                &cmd.file_path,
-                &cmd.mode,
-            )
-            .await
+            match super::transfer::prepare_download_variant(&cmd.session_id, &cmd.file_path, &cmd.mode)
+                .await
             {
                 Ok(data) => {
                     reply(

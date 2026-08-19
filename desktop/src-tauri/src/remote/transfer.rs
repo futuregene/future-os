@@ -25,6 +25,8 @@ pub const MAX_MESSAGE_BYTES: u64 = 20 * 1024 * 1024;
 pub const MAX_ATTACHMENTS: usize = 10;
 pub const MAX_IMAGES: usize = 4;
 const MOBILE_PREVIEW_MAX_EDGE: u32 = 1600;
+const PREVIEW_CACHE_VERSION: &[u8] = b"futureos-mobile-preview-v1";
+const MAX_PREVIEW_CACHE_BYTES: u64 = 100 * 1024 * 1024;
 pub const CHUNK_BYTES: u64 = 512 * 1024;
 const TRANSFER_TTL: Duration = Duration::from_secs(30 * 60);
 
@@ -93,6 +95,76 @@ fn transfer_root() -> PathBuf {
         .join("mobile")
 }
 
+fn preview_cache_dir() -> PathBuf {
+    transfer_root().join("preview-cache")
+}
+
+fn image_preview_extension(source: &Path) -> Option<&'static str> {
+    match source
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "jpg" | "jpeg" | "bmp" => Some("jpg"),
+        "png" | "webp" => Some("png"),
+        _ => None,
+    }
+}
+
+fn preview_cache_path(source: &Path) -> Result<Option<PathBuf>, crate::AppError> {
+    let Some(output_extension) = image_preview_extension(source) else {
+        return Ok(None);
+    };
+    let metadata = std::fs::metadata(source)?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|value| value.as_nanos())
+        .unwrap_or_default();
+    let mut hasher = Sha256::new();
+    hasher.update(PREVIEW_CACHE_VERSION);
+    hasher.update([0]);
+    hasher.update(source.to_string_lossy().as_bytes());
+    hasher.update([0]);
+    hasher.update(metadata.len().to_le_bytes());
+    hasher.update(modified.to_le_bytes());
+    let key = format!("{:x}", hasher.finalize());
+    Ok(Some(
+        preview_cache_dir().join(format!("{key}.{output_extension}")),
+    ))
+}
+
+fn prune_preview_cache() {
+    let dir = preview_cache_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    let mut files = entries
+        .flatten()
+        .filter_map(|entry| {
+            let metadata = entry.metadata().ok()?;
+            metadata
+                .is_file()
+                .then_some((entry.path(), metadata.len(), metadata.modified().ok()))
+        })
+        .collect::<Vec<_>>();
+    files.sort_by_key(|(_, _, modified)| *modified);
+    let mut total = files.iter().map(|(_, size, _)| *size).sum::<u64>();
+    for (path, size, modified) in files {
+        let expired = modified
+            .and_then(|value| value.elapsed().ok())
+            .is_some_and(|age| age > TRANSFER_TTL);
+        if (expired || total > MAX_PREVIEW_CACHE_BYTES)
+            && std::fs::remove_file(path).is_ok()
+        {
+            total = total.saturating_sub(size);
+        }
+    }
+}
+
 /// Create a staging directory with owner-only permissions (0700 on unix).
 /// Attachment bytes (uploaded `.part` files and downloaded previews) sit here
 /// until claimed or TTL'd — on a multi-user machine the default `/tmp` mode
@@ -143,6 +215,7 @@ fn safe_disk_name(name: &str, fallback: &str) -> String {
 }
 
 fn prune_expired() {
+    prune_preview_cache();
     let expired = |created: SystemTime| created.elapsed().unwrap_or_default() > TRANSFER_TTL;
     let mut uploads = UPLOADS.lock().unwrap();
     uploads.retain(|_, item| {
@@ -428,7 +501,7 @@ pub async fn prepare_download(
     prepare_download_variant(session_id, requested_path, "preview").await
 }
 
-pub async fn prepare_download_variant(
+pub(super) async fn prepare_download_variant(
     session_id: &str,
     requested_path: &str,
     requested_variant: &str,
@@ -465,15 +538,30 @@ pub async fn prepare_download_variant(
                 .into(),
         );
     }
-    let prepared = match requested_variant {
-        "original" => prepare_original(&source, &display_name)?,
-        "" | "preview" => prepare_preview(&source, &display_name)
-            .or_else(|_| prepare_original(&source, &display_name))?,
-        _ => return Err("Unsupported download variant.".to_string().into()),
-    };
-    let size = std::fs::metadata(&prepared.path)?.len();
+    let source_for_prepare = source.clone();
+    let display_name_for_prepare = display_name.clone();
+    let variant_for_prepare = requested_variant.to_string();
+    let prepared = tokio::task::spawn_blocking(move || {
+        match variant_for_prepare.as_str() {
+            "original" => prepare_original(&source_for_prepare, &display_name_for_prepare),
+            "" | "preview" => prepare_preview_cached(&source_for_prepare, &display_name_for_prepare)
+            .or_else(|_| prepare_original(&source_for_prepare, &display_name_for_prepare)),
+            _ => Err("Unsupported download variant.".to_string().into()),
+        }
+    })
+    .await
+    .map_err(|error| format!("Preview preparation task failed: {error}"))??;
+    let prepared_path = prepared.path.clone();
+    let (size, content_hash) = tokio::task::spawn_blocking(
+        move || -> Result<(u64, String), crate::AppError> {
+            let size = std::fs::metadata(&prepared_path)?.len();
+            let content_hash = sha256_file(&prepared_path)?;
+            Ok((size, content_hash))
+        },
+    )
+    .await
+    .map_err(|error| format!("Preview hashing task failed: {error}"))??;
     let transfer_id = new_transfer_id("download");
-    let content_hash = sha256_file(&prepared.path)?;
     let info = DownloadInfo {
         transfer_id: transfer_id.clone(),
         name: prepared.name.clone(),
@@ -733,7 +821,6 @@ fn prepare_preview(
             variant: "preview".to_string(),
         });
     }
-
     let size = std::fs::metadata(source)?.len();
     if size > MAX_FILE_BYTES {
         return Err("The file is larger than 10 MiB; view it on desktop."
@@ -784,6 +871,101 @@ fn prepare_preview(
     })
 }
 
+fn cached_image_preview(
+    requested_display_name: &str,
+    cache_path: &Path,
+) -> Result<Option<PreparedPreview>, crate::AppError> {
+    let metadata = match std::fs::metadata(cache_path) {
+        Ok(metadata) if metadata.is_file() && metadata.len() > 0 => metadata,
+        Ok(_) => {
+            let _ = std::fs::remove_file(cache_path);
+            return Ok(None);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let valid_dimensions = image::ImageReader::open(cache_path)
+        .ok()
+        .and_then(|reader| reader.with_guessed_format().ok())
+        .and_then(|reader| reader.into_dimensions().ok())
+        .is_some_and(|(width, height)| {
+            width > 0 && height > 0 && width.max(height) <= MOBILE_PREVIEW_MAX_EDGE
+        });
+    if !valid_dimensions {
+        let _ = std::fs::remove_file(cache_path);
+        return Ok(None);
+    }
+    let output_extension = cache_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("jpg");
+    let dir = transfer_root().join("download");
+    ensure_private_dir(&dir)?;
+    let transfer_path = dir.join(format!(
+        "{}.{}",
+        new_transfer_id("preview-cache"),
+        output_extension
+    ));
+    if std::fs::hard_link(cache_path, &transfer_path).is_err() {
+        std::fs::copy(cache_path, &transfer_path)?;
+    }
+    debug_assert_eq!(std::fs::metadata(&transfer_path)?.len(), metadata.len());
+    let original_name = display_name(requested_display_name, "attachment");
+    Ok(Some(PreparedPreview {
+        path: transfer_path,
+        name: format!(
+            "{}.{}",
+            Path::new(&original_name)
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("image"),
+            output_extension
+        ),
+        mime_type: if output_extension == "png" {
+            "image/png"
+        } else {
+            "image/jpeg"
+        }
+        .to_string(),
+        preview_kind: "image".to_string(),
+        variant: "preview".to_string(),
+    }))
+}
+
+fn persist_image_preview_cache(prepared: &PreparedPreview, cache_path: &Path) {
+    let Some(parent) = cache_path.parent() else {
+        return;
+    };
+    if ensure_private_dir(parent).is_err() || cache_path.exists() {
+        return;
+    }
+    let temporary = parent.join(format!("{}.tmp", new_transfer_id("preview-cache")));
+    if std::fs::copy(&prepared.path, &temporary).is_err() {
+        let _ = std::fs::remove_file(temporary);
+        return;
+    }
+    if std::fs::rename(&temporary, cache_path).is_err() {
+        let _ = std::fs::remove_file(temporary);
+    }
+}
+
+fn prepare_preview_cached(
+    source: &Path,
+    requested_display_name: &str,
+) -> Result<PreparedPreview, crate::AppError> {
+    let cache_path = preview_cache_path(source)?;
+    if let Some(path) = cache_path.as_deref() {
+        if let Some(prepared) = cached_image_preview(requested_display_name, path)? {
+            return Ok(prepared);
+        }
+    }
+    let prepared = prepare_preview(source, requested_display_name)?;
+    if let Some(path) = cache_path.as_deref() {
+        persist_image_preview_cache(&prepared, path);
+    }
+    Ok(prepared)
+}
+
 fn is_plain_utf8_text(path: &Path) -> Result<bool, crate::AppError> {
     let bytes = std::fs::read(path)?;
     let Ok(text) = std::str::from_utf8(&bytes) else {
@@ -800,13 +982,23 @@ pub fn cancel_download(transfer_id: &str) {
     }
 }
 
-pub fn clear_all() {
+pub fn clear_transfers() {
     for (_, item) in UPLOADS.lock().unwrap().drain() {
         let _ = std::fs::remove_file(item.path);
     }
     for (_, item) in DOWNLOADS.lock().unwrap().drain() {
         let _ = std::fs::remove_file(item.path);
     }
+}
+
+pub fn clear_preview_cache() {
+    let _ = std::fs::remove_dir_all(preview_cache_dir());
+}
+
+#[cfg(test)]
+pub fn clear_all() {
+    clear_transfers();
+    clear_preview_cache();
 }
 
 /// First resubscribe delay after a failed subscribe / ended stream (doubles up
@@ -1533,6 +1725,38 @@ mod flow_tests {
         assert!(!download_path.exists());
         // Idempotent on empty maps.
         clear_all();
+    }
+
+    #[test]
+    fn preview_cache_survives_transfer_cleanup_and_invalidates_on_source_change() {
+        let _lock = mock_agent_lock();
+        let _home = HomeGuard::new("xfer-preview-cache");
+        let dir = std::env::temp_dir().join(unique("futureos-preview-cache-source"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("photo.jpg");
+        image::DynamicImage::new_rgb8(64, 32).save(&source).unwrap();
+        let first_cache_path = preview_cache_path(&source).unwrap().unwrap();
+        let _ = std::fs::remove_file(&first_cache_path);
+
+        let first = prepare_preview_cached(&source, "photo.jpg").unwrap();
+        let expected = std::fs::read(&first.path).unwrap();
+        assert!(first_cache_path.exists());
+        std::fs::remove_file(&first.path).unwrap();
+        clear_transfers();
+        assert!(first_cache_path.exists());
+
+        let second = prepare_preview_cached(&source, "photo.jpg").unwrap();
+        assert_eq!(std::fs::read(&second.path).unwrap(), expected);
+        assert!(first_cache_path.exists());
+
+        image::DynamicImage::new_rgb8(65, 32).save(&source).unwrap();
+        let changed_cache_path = preview_cache_path(&source).unwrap().unwrap();
+        assert_ne!(changed_cache_path, first_cache_path);
+
+        std::fs::remove_file(second.path).unwrap();
+        clear_preview_cache();
+        assert!(!first_cache_path.exists());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
