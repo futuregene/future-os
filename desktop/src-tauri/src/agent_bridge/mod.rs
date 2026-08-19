@@ -25,7 +25,9 @@ pub use self::client::{
     set_session_name_command, set_thinking_level_command, RpcResponseExt,
 };
 pub use self::config_observer::spawn_provider_config_observer;
-pub use self::headless::{prepare_prompt_persisted, run_prepared_prompt, PreparedPrompt};
+pub use self::headless::{
+    prepare_prompt_persisted_with_trigger, run_prepared_prompt, PreparedPrompt,
+};
 pub(crate) use self::import::{import_missing_sessions, list_agent_session_ids};
 pub use self::models::{list_agent_models, list_builtin_providers, AgentModelOption};
 pub use self::observer::{

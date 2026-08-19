@@ -678,12 +678,12 @@ export function ChatScreen() {
     const value = message.trim();
     if (!value && attachments.length === 0) return;
     const pendingAttachments = attachments;
-    setMessage("");
     setTransferProgress(pendingAttachments.length ? 0 : null);
     try {
       await remote.sendMessage(value, pendingAttachments, (done, total) =>
         setTransferProgress(total > 0 ? done / total : null),
       );
+      setMessage("");
       setAttachments([]);
     } catch (error) {
       // M9: sendMessage now throws for busy/streaming/disconnected instead of

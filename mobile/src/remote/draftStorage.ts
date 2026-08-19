@@ -97,3 +97,25 @@ export async function clearSessionDraft(sessionId: string): Promise<void> {
     // Ignore — storage unavailable.
   }
 }
+
+/**
+ * A cold-start outbox acknowledgement may arrive after the user has already
+ * edited the composer again. Remove only the exact draft that produced the
+ * acknowledged prompt; never erase newer local work.
+ */
+export async function clearSessionDraftIfMatches(
+  sessionId: string,
+  expected: Pick<SessionDraft, "text" | "attachments">,
+): Promise<void> {
+  const current = await loadSessionDraft(sessionId);
+  if (!current || current.text.trim() !== expected.text.trim()) return;
+  const identities = (items: MobileAttachment[]) =>
+    items.map(item => `${item.localUri}\u0000${item.name}\u0000${item.transferSize}`).sort();
+  if (
+    JSON.stringify(identities(current.attachments)) !==
+    JSON.stringify(identities(expected.attachments))
+  ) {
+    return;
+  }
+  await clearSessionDraft(sessionId);
+}

@@ -18,8 +18,8 @@ import {
   timelineFromHistory,
   type TimelineState,
 } from "./timeline";
-import { RemoteClient } from "./client";
-import { MAX_PROMPT_MESSAGE_BYTES, utf8Bytes } from "./codec";
+import { isTransientNatsRequestError, RemoteClient } from "./client";
+import { MAX_PROMPT_MESSAGE_BYTES, randomId, utf8Bytes } from "./codec";
 import type { ConnectionState } from "./connectionState";
 import { classifyError } from "./connectionState";
 import { attemptPendingRevoke, claimPairingCode, serverRevoke } from "./pairing";
@@ -32,6 +32,13 @@ import {
 import { type RunCursor } from "./runCursor";
 import { SyncEngine, type ReconcileReason } from "./syncEngine";
 import { fetchEventsSince } from "./replay";
+import {
+  clearPendingPrompt,
+  loadPendingPrompt,
+  savePendingPrompt,
+  type PendingPrompt,
+} from "./pendingPromptStorage";
+import { clearSessionDraftIfMatches } from "./draftStorage";
 import { useSessionCatalog } from "./useSessionCatalog";
 import {
   clearCredentials,
@@ -139,6 +146,71 @@ interface RemoteContextValue {
 
 const RemoteContext = createContext<RemoteContextValue | null>(null);
 
+function samePendingPrompt(
+  pending: PendingPrompt,
+  candidate: Omit<PendingPrompt, "version" | "commandId" | "createdAt">,
+): boolean {
+  const attachmentKey = (items: MobileAttachment[]) =>
+    items.map(item => `${item.localUri}\u0000${item.name}\u0000${item.transferSize}`).sort();
+  return (
+    pending.draftKey === candidate.draftKey &&
+    pending.sessionId === candidate.sessionId &&
+    pending.text.trim() === candidate.text.trim() &&
+    pending.modelId === candidate.modelId &&
+    pending.thinkingLevel === candidate.thinkingLevel &&
+    pending.mode === candidate.mode &&
+    pending.workspaceId === candidate.workspaceId &&
+    JSON.stringify(attachmentKey(pending.attachments)) ===
+      JSON.stringify(attachmentKey(candidate.attachments))
+  );
+}
+
+async function pendingPromptReceipt(
+  client: RemoteClient,
+  commandId: string,
+): Promise<PromptAck | null> {
+  return (
+    await client.requestRetry<PromptAck | null>(
+      { type: "get_prompt_receipt", promptId: commandId },
+      "list",
+    )
+  ).data;
+}
+
+async function deliverPendingPrompt(
+  client: RemoteClient,
+  pending: PendingPrompt,
+  checkReceipt: boolean,
+  receiptSupported: boolean,
+  onUploadProgress?: (completedBytes: number, totalBytes: number) => void,
+): Promise<PromptAck> {
+  if (checkReceipt && receiptSupported) {
+    const receipt = await pendingPromptReceipt(client, pending.commandId);
+    if (receipt) return receipt;
+  }
+  const uploaded = await uploadAttachments(client, pending.attachments, onUploadProgress);
+  return (
+    await client.requestRetry<PromptAck>(
+      {
+        id: pending.commandId,
+        type: "prompt",
+        sessionId: pending.sessionId,
+        message: pending.text.trim(),
+        modelId: pending.modelId,
+        providerId: modelProviderFromReference(pending.modelId),
+        level: pending.thinkingLevel,
+        ...(uploaded.length
+          ? { attachments: uploaded.map(attachment => ({ uploadId: attachment.uploadId! })) }
+          : {}),
+        ...(pending.mode === "workspace"
+          ? { mode: "workspace", workspaceId: pending.workspaceId }
+          : {}),
+      },
+      pending.sessionId,
+    )
+  ).data;
+}
+
 /**
  * Compares each session's status against the previously seen status map and
  * returns the ids whose run just finished (running/queued/waiting_approval →
@@ -156,9 +228,12 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const [modelId, setModelId] = useState("");
   const [thinkingLevel, setThinkingLevelState] = useState<ThinkingLevel>("off");
   const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
+  const pendingRecoveryRef = useRef<Promise<void> | null>(null);
   const [openingSession, setOpeningSession] = useState(false);
   const [capabilities, setCapabilities] = useState<Set<string>>(() => new Set());
   const fileTransferSupported = capabilities.has("file_transfer_v1");
+  const promptReceiptSupported = capabilities.has("prompt_receipt_v1");
   const [clock, setClock] = useState(Date.now());
   // Relative-heartbeat state (L7): the desktop-presence check judges staleness
   // by clock-offset drift, so the running baseline survives recomputes. Reset
@@ -566,6 +641,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         },
       });
       clientRef.current = client;
+      if (AppState.currentState === "background") client.pauseForBackground();
       if (networkAvailableRef.current === false) client.setNetworkAvailable(false);
       // The sync engine is created ONCE and survives client generations —
       // reconcileAll (reconnect recovery) must keep working across a client
@@ -656,7 +732,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     let previous: AppStateStatus = AppState.currentState;
     const subscription = AppState.addEventListener("change", next => {
       const returnedToForeground = next === "active" && previous !== "active";
+      const enteredBackground = next === "background" && previous !== "background";
       previous = next;
+      if (enteredBackground) clientRef.current?.pauseForBackground();
       if (returnedToForeground) void recoverLifecycle("foreground");
     });
     return () => subscription.remove();
@@ -790,6 +868,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       }
     }
     await clearCredentials();
+    const pendingPrompt = await loadPendingPrompt();
+    if (pendingPrompt) await clearPendingPrompt(pendingPrompt.commandId);
     setCredentials(null);
     setPresence(null);
     resetCatalog();
@@ -916,7 +996,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       // Nothing to send is a no-op, not an error — the composer guards this too.
       if (!text.trim() && attachments.length === 0) return;
       if (!client) throw new Error("not_connected");
-      if (sending) throw new Error("send_busy");
+      if (sendingRef.current) throw new Error("send_busy");
       if (attachments.length > 0 && !fileTransferSupported) {
         throw new Error("attachment_unsupported_desktop");
       }
@@ -932,26 +1012,64 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       const targetDraftWorkspaceId = draftWorkspaceId;
       const conversationEpoch = conversationEpochRef.current;
       const engine = syncEngineRef.current;
+      const candidate = {
+        draftKey: targetSessionId || "draft:new",
+        sessionId: targetSessionId,
+        text,
+        attachments,
+        modelId,
+        thinkingLevel,
+        mode: targetDraft ? targetDraftMode : ("chat" as const),
+        workspaceId: targetDraft ? targetDraftWorkspaceId : "",
+      };
       // A run may have started (on this device or another) after the composer
       // cleared the input — a silent return here would swallow the user's
       // message. Throw so the UI restores the draft instead. Reads the live
       // mirror so the check reflects the latest lane snapshot even before the
       // subscriber re-renders.
       if (streamingRef.current[targetSessionId] ?? false) throw new Error("send_streaming");
+      let pending = await loadPendingPrompt();
+      let checkReceipt = false;
+      if (pending && samePendingPrompt(pending, candidate)) {
+        checkReceipt = true;
+      } else {
+        if (pending) {
+          // Resolve the previous intent before replacing it. If the desktop
+          // accepted it, clear only its matching draft; if it did not, the
+          // newly edited composer supersedes that unsent intent.
+          const previousReceipt = promptReceiptSupported
+            ? await pendingPromptReceipt(client, pending.commandId)
+            : null;
+          if (previousReceipt) {
+            await clearSessionDraftIfMatches(pending.draftKey, pending);
+          }
+          await clearPendingPrompt(pending.commandId);
+        }
+        pending = {
+          version: 1,
+          commandId: randomId("prompt"),
+          ...candidate,
+          createdAt: Date.now(),
+        };
+        // This write is the commit point for the user's send intent. Do it
+        // before clearing any UI or starting attachment uploads.
+        await savePendingPrompt(pending);
+      }
+      sendingRef.current = true;
       setSending(true);
       try {
-        const uploaded = await uploadAttachments(client, attachments, onUploadProgress);
         // The optimistic bubble is a lane instruction (append to the current
         // snapshot), not a whole-cache overwrite — events that landed during
         // the upload stay (M8).
         engine?.mutate(targetSessionId, timeline => {
           const base = timeline ?? emptyTimeline();
+          if (base.items.some(item => item.id === `local:${pending.commandId}`)) return base;
           return {
             ...base,
             items: [
               ...base.items,
               {
-                id: `local:${Date.now()}:${base.items.length}`,
+                id: `local:${pending.commandId}`,
                 kind: "message",
                 role: "user",
                 text: text.trim(),
@@ -969,24 +1087,16 @@ export function RemoteProvider({ children }: PropsWithChildren) {
             ],
           };
         });
-        const response = await client.requestRetry<PromptAck>(
-          {
-            type: "prompt",
-            sessionId: targetSessionId,
-            message: text.trim(),
-            modelId,
-            providerId: modelProviderFromReference(modelId),
-            level: thinkingLevel,
-            ...(uploaded.length
-              ? { attachments: uploaded.map(attachment => ({ uploadId: attachment.uploadId! })) }
-              : {}),
-            ...(targetDraft && targetDraftMode === "workspace"
-              ? { mode: "workspace", workspaceId: targetDraftWorkspaceId }
-              : {}),
-          },
-          targetSessionId,
+        const response = await deliverPendingPrompt(
+          client,
+          pending,
+          checkReceipt,
+          promptReceiptSupported,
+          onUploadProgress,
         );
-        const nextSessionId = response.data.sessionId;
+        await clearPendingPrompt(pending.commandId);
+        await clearSessionDraftIfMatches(pending.draftKey, pending);
+        const nextSessionId = response.sessionId;
         if (nextSessionId && nextSessionId !== targetSessionId) {
           // A draft just got bound to a real session. Migrate the optimistic
           // bubble from the "" placeholder lane into the real session's lane —
@@ -1028,21 +1138,71 @@ export function RemoteProvider({ children }: PropsWithChildren) {
             void refreshSessions();
           }
         }
+      } catch (sendError) {
+        // Business/auth failures are definitive and leave the regular draft in
+        // place. Transport failures keep the outbox record for foreground or
+        // cold-start recovery with the same durable command id.
+        if (!isTransientNatsRequestError(sendError)) {
+          await clearPendingPrompt(pending.commandId);
+        }
+        throw sendError;
       } finally {
+        sendingRef.current = false;
         setSending(false);
       }
     },
     [
-      sending,
       draft,
       draftMode,
       draftWorkspaceId,
       fileTransferSupported,
       modelId,
+      promptReceiptSupported,
       refreshSessions,
       thinkingLevel,
     ],
   );
+
+  const recoverPendingPrompt = useCallback(async () => {
+    if (sendingRef.current) return;
+    if (pendingRecoveryRef.current) return pendingRecoveryRef.current;
+    const recovery = (async () => {
+      const client = clientRef.current;
+      if (!client || !credentialsRef.current) return;
+      const pending = await loadPendingPrompt();
+      if (!pending) return;
+      sendingRef.current = true;
+      setSending(true);
+      try {
+        const receipt = await deliverPendingPrompt(client, pending, true, promptReceiptSupported);
+        await clearPendingPrompt(pending.commandId);
+        await clearSessionDraftIfMatches(pending.draftKey, pending);
+        void refreshSessions();
+        reconcileSession(receipt.sessionId, "reconnect");
+      } catch (recoveryError) {
+        if (!isTransientNatsRequestError(recoveryError)) {
+          await clearPendingPrompt(pending.commandId);
+          recordError(recoveryError);
+        }
+      } finally {
+        sendingRef.current = false;
+        setSending(false);
+      }
+    })().finally(() => {
+      pendingRecoveryRef.current = null;
+    });
+    pendingRecoveryRef.current = recovery;
+    return recovery;
+  }, [promptReceiptSupported, reconcileSession, recordError, refreshSessions]);
+
+  // A cold start lands on the session list. Resume a staged send there; when
+  // ChatScreen is still mounted after a brief background trip, leave its draft
+  // visible and let the user's next tap reuse the same durable command id.
+  useEffect(() => {
+    if (phase === "connected" && !selectedRef.current && !draft) {
+      void recoverPendingPrompt();
+    }
+  }, [draft, phase, recoverPendingPrompt]);
 
   const prepareAttachment = useCallback(
     async (

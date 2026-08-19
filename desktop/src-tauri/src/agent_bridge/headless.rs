@@ -26,12 +26,34 @@ pub struct PreparedPrompt {
 
 /// Create the run for `thread`, returning the
 /// identifiers the caller can immediately ack to its client.
+#[cfg(test)]
 pub fn prepare_prompt_persisted(
     thread: &store::ThreadRecord,
     message: String,
     model_id: Option<String>,
     thinking_level: Option<String>,
     attachments: Vec<AttachmentInput>,
+) -> Result<PreparedPrompt, crate::AppError> {
+    prepare_prompt_persisted_with_trigger(
+        thread,
+        message,
+        model_id,
+        thinking_level,
+        attachments,
+        None,
+    )
+}
+
+/// Remote prompts use their persisted command id as the run trigger. Keeping
+/// the regular headless entrypoint above unchanged avoids assigning transport
+/// identities to local GUI prompts.
+pub fn prepare_prompt_persisted_with_trigger(
+    thread: &store::ThreadRecord,
+    message: String,
+    model_id: Option<String>,
+    thinking_level: Option<String>,
+    attachments: Vec<AttachmentInput>,
+    trigger_message_id: Option<String>,
 ) -> Result<PreparedPrompt, crate::AppError> {
     let session_id = thread
         .agent_session_id
@@ -41,7 +63,7 @@ pub fn prepare_prompt_persisted(
     let run = store::create_run(store::CreateRunInput {
         id: None,
         thread_id: thread.id.clone(),
-        trigger_message_id: None,
+        trigger_message_id,
         model_provider: None,
         model_id: None,
     })?;

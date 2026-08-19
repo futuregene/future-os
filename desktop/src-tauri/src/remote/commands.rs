@@ -108,6 +108,7 @@ struct IncomingCmd {
     mode: String,
     // get_events_since (P1c backfill)
     run_id: String,
+    prompt_id: String,
     since_idx: i64,
     // get_messages pagination (NATS payload-limit guard)
     offset: i64,
@@ -156,6 +157,7 @@ impl Default for IncomingCmd {
             entry_id: String::new(),
             mode: String::new(),
             run_id: String::new(),
+            prompt_id: String::new(),
             since_idx: -1,
             offset: 0,
             limit: 0,
@@ -589,6 +591,21 @@ async fn handle_command(
             reply(client, &msg, true, json!({}), None).await;
         }
         "prompt" => {
+            // The command id is persisted on the run. This lookup survives the
+            // in-memory reply cache, mobile process death, and desktop restart.
+            // A retry therefore returns the original receipt without executing
+            // the user's prompt twice.
+            match remote_prompt_receipt(&cmd.id) {
+                Ok(Some(ack)) => {
+                    reply(client, &msg, true, ack, None).await;
+                    return;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    reply(client, &msg, false, Value::Null, Some(&error.to_string())).await;
+                    return;
+                }
+            }
             // Lazy creation (matches the GUI new-chat flow): the web client's
             // "new" button only stages a local draft and sends the first message
             // with an empty `session_id`. Here an empty/unknown id creates the
@@ -602,11 +619,14 @@ async fn handle_command(
             match prepare_remote_prompt(
                 &cmd.session_id,
                 cmd.message.clone(),
-                model_id,
-                thinking_level,
-                cmd.mode.clone(),
-                cmd.workspace_id.clone(),
-                cmd.attachments.clone(),
+                RemotePromptOptions {
+                    model_id,
+                    thinking_level,
+                    mode: cmd.mode.clone(),
+                    workspace_id: cmd.workspace_id.clone(),
+                    upload_references: cmd.attachments.clone(),
+                    command_id: cmd.id.clone(),
+                },
             )
             .await
             {
@@ -629,6 +649,10 @@ async fn handle_command(
                 Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
             }
         }
+        "get_prompt_receipt" => match remote_prompt_receipt(&cmd.prompt_id) {
+            Ok(receipt) => reply(client, &msg, true, receipt.unwrap_or(Value::Null), None).await,
+            Err(error) => reply(client, &msg, false, Value::Null, Some(&error.to_string())).await,
+        },
         "abort" => {
             reply_unit(
                 client,
@@ -645,11 +669,14 @@ async fn handle_command(
             match prepare_remote_prompt(
                 &cmd.session_id,
                 prompt,
-                None,
-                None,
-                "chat".to_string(),
-                String::new(),
-                Vec::new(),
+                RemotePromptOptions {
+                    model_id: None,
+                    thinking_level: None,
+                    mode: "chat".to_string(),
+                    workspace_id: String::new(),
+                    upload_references: Vec::new(),
+                    command_id: cmd.id.clone(),
+                },
             )
             .await
             {
@@ -1029,7 +1056,7 @@ async fn handle_pair_handshake_confirm(
             "bridgeInstanceId": state.bridge_instance_id,
             "deviceId": cmd.device_id,
             "desktopNonce": cmd.desktop_nonce,
-            "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1"],
+            "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1"],
             "presence": super::build_presence_payload(
                 &state.creds.pair_id,
                 &state.bridge_instance_id,
@@ -1113,17 +1140,48 @@ fn build_continue_prompt(run_id: &str) -> String {
     lines.join("\n")
 }
 
-/// Find the thread for `session_id` (create a new chat thread when unknown —
-/// remote policy), then persist user message + run via `agent_bridge::headless`.
-async fn prepare_remote_prompt(
-    session_id: &str,
-    message: String,
+fn remote_prompt_receipt(command_id: &str) -> Result<Option<Value>, crate::AppError> {
+    let Some(run) = crate::store::find_run_by_trigger_message_id(command_id)? else {
+        return Ok(None);
+    };
+    let Some(thread) = crate::store::get_thread(&run.thread_id)? else {
+        return Ok(None);
+    };
+    let session_id = thread
+        .agent_session_id
+        .clone()
+        .unwrap_or_else(|| thread.id.clone());
+    Ok(Some(json!({
+        "sessionId": session_id,
+        "threadId": thread.id,
+        "runId": run.id,
+    })))
+}
+
+struct RemotePromptOptions {
     model_id: Option<String>,
     thinking_level: Option<String>,
     mode: String,
     workspace_id: String,
     upload_references: Vec<super::transfer::UploadReference>,
+    command_id: String,
+}
+
+/// Find the thread for `session_id` (create a new chat thread when unknown —
+/// remote policy), then persist user message + run via `agent_bridge::headless`.
+async fn prepare_remote_prompt(
+    session_id: &str,
+    message: String,
+    options: RemotePromptOptions,
 ) -> Result<crate::agent_bridge::PreparedPrompt, crate::AppError> {
+    let RemotePromptOptions {
+        model_id,
+        thinking_level,
+        mode,
+        workspace_id,
+        upload_references,
+        command_id,
+    } = options;
     let thread = match crate::store::find_thread_by_agent_session(session_id)? {
         Some(thread) => thread,
         None => {
@@ -1188,12 +1246,13 @@ async fn prepare_remote_prompt(
         ));
     }
     let attachments = super::transfer::claim_uploads(&upload_references, &thread.id)?;
-    let prepared = crate::agent_bridge::prepare_prompt_persisted(
+    let prepared = crate::agent_bridge::prepare_prompt_persisted_with_trigger(
         &thread,
         message,
         model_id,
         thinking_level,
         attachments.clone(),
+        (!command_id.trim().is_empty()).then_some(command_id),
     );
     #[cfg(test)]
     let prepared = prepared.and_then(|prepared| injected_prepare_failure().map(|()| prepared));
@@ -2096,7 +2155,8 @@ mod bridge_tests {
                 "file_transfer_v1",
                 "file_download_v2",
                 "approval_tier_v1",
-                "continue_run_v1"
+                "continue_run_v1",
+                "prompt_receipt_v1"
             ])
         );
         assert!(bridge.handshake.active_flag().load(Ordering::Acquire));
@@ -2501,8 +2561,9 @@ mod bridge_tests {
             .contains("Select a workspace"));
 
         // Chat mode with an empty session id → lazy thread + agent session.
+        let prompt_id = unique("cmd");
         let reply = bridge
-            .call(json!({ "id": unique("cmd"), "type": "prompt", "message": "hello there", "modelId": "m1", "providerId": "p1", "level": "high" }))
+            .call(json!({ "id": prompt_id, "type": "prompt", "message": "hello there", "modelId": "m1", "providerId": "p1", "level": "high" }))
             .await;
         assert_eq!(reply["success"], json!(true), "got: {reply}");
         let session = reply["data"]["sessionId"].as_str().unwrap().to_string();
@@ -2521,6 +2582,21 @@ mod bridge_tests {
             assert!(std::time::Instant::now() < deadline, "run never settled");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+
+        // The run id is a durable receipt keyed by the mobile command id. It
+        // remains queryable after the in-memory single-flight cache expires,
+        // and resending the prompt returns the same ack without a second run.
+        let receipt = bridge
+            .call(
+                json!({ "id": unique("cmd"), "type": "get_prompt_receipt", "promptId": prompt_id }),
+            )
+            .await;
+        assert_eq!(receipt["data"]["runId"], json!(run_id));
+        tokio::time::sleep(Duration::from_millis(650)).await;
+        let retried = bridge
+            .call(json!({ "id": prompt_id, "type": "prompt", "message": "hello there" }))
+            .await;
+        assert_eq!(retried["data"]["runId"], json!(run_id));
 
         // A follow-up prompt on the idle session reuses the thread.
         let reply = bridge

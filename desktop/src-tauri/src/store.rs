@@ -53,9 +53,10 @@ pub use review_snapshots::{
 pub use runs::{
     active_run_sessions, advance_tool_projection, clear_all_run_events_files,
     clear_run_event_buffer, create_run, delete_run_events_file, fail_run_if_active,
-    get_tool_call_input, latest_run, latest_run_infos, list_run_events, list_run_events_since,
-    list_runs, project_tool_outputs, tool_projection_cursor, update_run_status_if_active,
-    LatestRunInfo, RunEventRecord, RunRecord, ToolCallRecord, ToolOutputRecord,
+    find_run_by_trigger_message_id, get_tool_call_input, latest_run, latest_run_infos,
+    list_run_events, list_run_events_since, list_runs, project_tool_outputs,
+    tool_projection_cursor, update_run_status_if_active, LatestRunInfo, RunEventRecord, RunRecord,
+    ToolCallRecord, ToolOutputRecord,
 };
 #[cfg(test)]
 pub(crate) use runs::{append_run_event, flush_run_event_log_for_test};
