@@ -28,16 +28,11 @@ pub struct EngineConfig {
     pub system_prompt: String,
     pub max_turns: i32,
     pub thinking_level: String,
-    pub thinking_level_map: std::collections::HashMap<String, String>,
     pub no_tools: String,
     pub compaction_reserve_tokens: i32,
     pub compaction_keep_recent_tokens: i32,
     pub extension_paths: Vec<String>,
     pub no_extensions: bool,
-    pub compat_thinking_format: String,
-    pub compat_supports_reasoning_effort: bool,
-    pub compat_requires_reasoning_on_assistant: bool,
-    pub max_tokens_field: String,
 }
 
 impl Engine {
@@ -49,30 +44,41 @@ impl Engine {
         temperature: Option<f32>,
         max_tokens: Option<i32>,
     ) -> Result<Self> {
-        let llm_client = LLMClient::new(base_url, api_key, temperature, max_tokens).with_compat(
-            &config.compat_thinking_format,
-            config.compat_supports_reasoning_effort,
-            config.compat_requires_reasoning_on_assistant,
-        );
+        let llm_client = LLMClient::new(base_url, api_key, temperature, max_tokens);
 
         // Apply optional overrides in a chain via a scoped block — each
         // with_* consumes and returns Self (true builder pattern), so the
         // intermediate reassignments in the old code were always redundant.
         let llm_client = {
             let mut c = llm_client;
-            if !config.max_tokens_field.is_empty() {
-                c = c.with_max_tokens_field(&config.max_tokens_field);
-            }
             if !config.thinking_level.is_empty() {
                 c = c.with_thinking_level(&config.thinking_level);
-            }
-            if !config.thinking_level_map.is_empty() {
-                c = c.with_thinking_level_map(config.thinking_level_map.clone());
             }
             c
         };
 
-        let client: Arc<dyn LLMProvider> = Arc::new(llm_client);
+        Self::from_client(Arc::new(llm_client), model, config, api_key)
+    }
+
+    pub fn new_with_target(
+        target: crate::llm::schema::ResolvedModelTarget,
+        config: EngineConfig,
+    ) -> Result<Self> {
+        let model = target.model_id.clone();
+        let api_key = target.route.api_key.clone();
+        let mut llm_client = LLMClient::from_target(target);
+        if !config.thinking_level.is_empty() {
+            llm_client = llm_client.with_thinking_level(&config.thinking_level);
+        }
+        Self::from_client(Arc::new(llm_client), &model, config, &api_key)
+    }
+
+    fn from_client(
+        client: Arc<dyn LLMProvider>,
+        model: &str,
+        config: EngineConfig,
+        api_key: &str,
+    ) -> Result<Self> {
         let cwd = config.cwd.clone();
         let _max_turns = config.max_turns;
         let agent_loop = Loop::new(client.clone(), model);
@@ -134,8 +140,6 @@ impl EngineConfig {
             compaction_keep_recent_tokens: 20000,
             extension_paths: vec![],
             no_extensions: false,
-            max_tokens_field: String::new(),
-            ..Default::default()
         }
     }
 }
@@ -157,7 +161,6 @@ mod tests {
         assert_eq!(c.compaction_keep_recent_tokens, 20000);
         assert!(c.extension_paths.is_empty());
         assert!(!c.no_extensions);
-        assert!(c.max_tokens_field.is_empty());
     }
 
     #[test]
@@ -165,7 +168,6 @@ mod tests {
         let c = EngineConfig::default();
         assert!(c.cwd.is_empty());
         assert_eq!(c.max_turns, 0);
-        assert!(c.thinking_level_map.is_empty());
     }
 
     // ─── Engine::new ────────────────────────────────────────────────────────
@@ -191,7 +193,6 @@ mod tests {
     fn engine_new_with_custom_config() {
         let mut config = EngineConfig::with_defaults();
         config.thinking_level = "high".to_string();
-        config.max_tokens_field = "max_completion_tokens".to_string();
         let engine = Engine::new(
             "https://api.test.com",
             "key",
@@ -202,27 +203,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(engine.config.thinking_level, "high");
-    }
-
-    #[test]
-    fn engine_new_applies_thinking_level_map() {
-        let mut config = EngineConfig::with_defaults();
-        config
-            .thinking_level_map
-            .insert("test-model".to_string(), "max".to_string());
-        let engine = Engine::new(
-            "https://api.test.com",
-            "key",
-            "test-model",
-            config,
-            None,
-            None,
-        )
-        .unwrap();
-        assert_eq!(
-            engine.config.thinking_level_map.get("test-model"),
-            Some(&"max".to_string())
-        );
     }
 
     // ─── Builder methods ────────────────────────────────────────────────────

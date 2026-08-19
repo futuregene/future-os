@@ -2,8 +2,12 @@
 //!
 //! Uses reqwest for HTTP + SSE streaming, matching Go's OpenAI SDK behavior.
 
+mod adapters;
 mod helpers;
+pub mod schema;
+mod sse;
 use crate::types::{Message, StreamEvent, ToolDef};
+use adapters::AdapterRegistry;
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
 use parking_lot::RwLock;
@@ -83,6 +87,8 @@ fn stream_exit_reason(cause: StreamExitCause) -> &'static str {
 
 pub struct Client {
     http: HttpClient,
+    target: RwLock<schema::ResolvedModelTarget>,
+    adapters: AdapterRegistry,
     base_url: RwLock<String>,
     api_key: RwLock<String>,
     reasoning_effort: String,
@@ -115,6 +121,13 @@ impl Client {
 
         Self {
             http,
+            target: RwLock::new(schema::ResolvedModelTarget::legacy_chat(
+                base_url,
+                api_key,
+                temperature,
+                max_tokens,
+            )),
+            adapters: AdapterRegistry::default(),
             base_url: RwLock::new(base_url.to_string()),
             api_key: RwLock::new(api_key.to_string()),
             reasoning_effort: String::new(),
@@ -132,13 +145,39 @@ impl Client {
         }
     }
 
+    pub fn from_target(target: schema::ResolvedModelTarget) -> Self {
+        Self::from_target_with_registry(target, AdapterRegistry::default())
+    }
+
+    /// Construct a client with an explicit adapter registry. This is the
+    /// extension seam for embedding additional protocol implementations
+    /// without adding provider-specific branches to the agent loop.
+    pub fn from_target_with_registry(
+        target: schema::ResolvedModelTarget,
+        adapters: AdapterRegistry,
+    ) -> Self {
+        let mut client = Self::new(
+            &target.route.base_url,
+            &target.route.api_key,
+            target.generation.temperature,
+            target.generation.max_output_tokens,
+        );
+        client.temperature = target.generation.temperature;
+        client.max_tokens = target.generation.max_output_tokens;
+        client.adapters = adapters;
+        *client.target.write() = target;
+        client
+    }
+
     pub fn with_thinking_level(self, level: &str) -> Self {
         *self.thinking_level.write() = level.to_string();
+        self.target.write().generation.thinking_level = level.to_string();
         self
     }
 
     pub fn with_thinking_budget(self, budget: i32) -> Self {
         *self.thinking_budget.write() = budget;
+        self.target.write().generation.thinking_budget = budget;
         self
     }
 
@@ -151,34 +190,249 @@ impl Client {
         *self.compat_thinking_format.write() = format.to_string();
         *self.compat_supports_reasoning_effort.write() = supports_reasoning_effort;
         *self.compat_requires_reasoning_on_assistant.write() = requires_reasoning_on_assistant;
+        if let schema::ProtocolConfig::OpenAiChat(chat) = &mut self.target.write().protocol {
+            chat.reasoning = match format {
+                "openai" | "openrouter" => schema::ChatReasoningFormat::ReasoningEffort,
+                "qwen" => schema::ChatReasoningFormat::Qwen {
+                    chat_template: false,
+                },
+                "qwen-chat-template" => schema::ChatReasoningFormat::Qwen {
+                    chat_template: true,
+                },
+                "deepseek" => schema::ChatReasoningFormat::DeepSeek,
+                "zai" => schema::ChatReasoningFormat::Zai,
+                "reasoning-split" => schema::ChatReasoningFormat::ReasoningSplit,
+                _ => schema::ChatReasoningFormat::None,
+            };
+            chat.supports_reasoning_effort = supports_reasoning_effort;
+            chat.replay_assistant_reasoning = requires_reasoning_on_assistant;
+        }
         self
     }
 
     pub fn with_max_tokens_field(self, field: &str) -> Self {
         if !field.is_empty() {
             *self.max_tokens_field.write() = field.to_string();
+            if let schema::ProtocolConfig::OpenAiChat(chat) = &mut self.target.write().protocol {
+                chat.max_tokens_field = if field == "max_completion_tokens" {
+                    schema::ChatMaxTokensField::MaxCompletionTokens
+                } else {
+                    schema::ChatMaxTokensField::MaxTokens
+                };
+            }
         }
         self
     }
 
     pub fn with_thinking_level_map(self, map: HashMap<String, String>) -> Self {
         *self.thinking_level_map.write() = map;
+        self.target.write().capabilities.reasoning.levels = self
+            .thinking_level_map
+            .read()
+            .iter()
+            .map(|(key, value)| (key.clone(), serde_json::Value::String(value.clone())))
+            .collect();
         self
     }
 
     pub fn with_temperature(mut self, temperature: f32) -> Self {
         self.temperature = Some(temperature);
+        self.target.write().generation.temperature = Some(temperature);
         self
     }
 
     pub fn with_max_tokens(mut self, max_tokens: i32) -> Self {
         self.max_tokens = Some(max_tokens);
+        self.target.write().generation.max_output_tokens = Some(max_tokens);
         self
     }
 }
 
 #[async_trait::async_trait]
 impl crate::types::LLMProvider for Client {
+    async fn stream_model(
+        &self,
+        request: schema::ModelRequest,
+    ) -> Result<ReceiverStream<schema::ModelStreamEvent>> {
+        let target = self.target.read().clone();
+        let adapter = self.adapters.get(target.protocol.protocol())?;
+        let body = adapter.build_body(&target, &request)?;
+        let url = format!(
+            "{}{}",
+            target.route.base_url.trim_end_matches('/'),
+            adapter.endpoint_path()
+        );
+        let mut builder = self
+            .http
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header(
+                "User-Agent",
+                concat!("future-agent/", env!("FUTURE_VERSION")),
+            );
+        for (name, value) in &target.route.headers {
+            let lower = name.to_ascii_lowercase();
+            if matches!(
+                lower.as_str(),
+                "authorization" | "x-api-key" | "content-type" | "anthropic-version"
+            ) {
+                continue;
+            }
+            builder = builder.header(name, value);
+        }
+        builder = match target.route.auth {
+            schema::AuthScheme::Bearer => {
+                builder.header("Authorization", format!("Bearer {}", target.route.api_key))
+            }
+            schema::AuthScheme::AnthropicApiKey => {
+                let version = match &target.protocol {
+                    schema::ProtocolConfig::AnthropicMessages(config) => config.version.as_str(),
+                    _ => "2023-06-01",
+                };
+                builder
+                    .header("x-api-key", &target.route.api_key)
+                    .header("anthropic-version", version)
+            }
+        };
+        let req = builder.json(&body).build()?;
+        let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
+        info!(
+            protocol = target.protocol.protocol().canonical_name(),
+            model = %request.model,
+            body_kb = body_bytes.len() / 1024,
+            "LLM request"
+        );
+        let resp = self.http.execute(req).await?;
+        let status = resp.status();
+        let headers: HashMap<String, String> = resp
+            .headers()
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_str().unwrap_or("").to_string()))
+            .collect();
+        if let Some(callback) = &self.on_response {
+            callback(status.as_u16(), &headers);
+        }
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(normalize_http_error(
+                status.as_u16(),
+                &text,
+                &request.model,
+                body_bytes.len(),
+            ));
+        }
+
+        let (tx, rx) = mpsc::channel(32);
+        let mut stream = resp.bytes_stream();
+        let on_payload = self.on_payload.clone();
+        tokio::spawn(async move {
+            let mut decoder = sse::SseDecoder::default();
+            let mut state = adapter.new_stream_state();
+            let mut terminal = false;
+            loop {
+                let next = tokio::select! {
+                    _ = tx.closed() => return,
+                    next = tokio::time::timeout(
+                        std::time::Duration::from_secs(stream_idle_timeout_secs()),
+                        stream.next(),
+                    ) => next,
+                };
+                let bytes = match next {
+                    Ok(Some(Ok(bytes))) => bytes,
+                    Ok(Some(Err(error))) => {
+                        let _ = tx
+                            .send(schema::ModelStreamEvent::Error {
+                                message: error.to_string(),
+                            })
+                            .await;
+                        return;
+                    }
+                    Ok(None) => break,
+                    Err(_) => break,
+                };
+                if tx.is_closed() {
+                    return;
+                }
+                if let Some(callback) = &on_payload {
+                    callback(&bytes);
+                }
+                let frames = match decoder.push(&bytes) {
+                    Ok(frames) => frames,
+                    Err(error) => {
+                        let _ = tx
+                            .send(schema::ModelStreamEvent::Error {
+                                message: error.to_string(),
+                            })
+                            .await;
+                        return;
+                    }
+                };
+                for frame in frames {
+                    let events = match adapter.decode_frame(&frame, state.as_mut()) {
+                        Ok(events) => events,
+                        Err(error) => {
+                            let _ = tx
+                                .send(schema::ModelStreamEvent::Error {
+                                    message: format!("invalid provider stream event: {error}"),
+                                })
+                                .await;
+                            return;
+                        }
+                    };
+                    for event in events {
+                        terminal |= matches!(
+                            event,
+                            schema::ModelStreamEvent::Finish { .. }
+                                | schema::ModelStreamEvent::Error { .. }
+                        );
+                        if tx.send(event).await.is_err() {
+                            return;
+                        }
+                    }
+                    if terminal {
+                        return;
+                    }
+                }
+            }
+
+            if let Ok(frames) = decoder.finish() {
+                for frame in frames {
+                    if let Ok(events) = adapter.decode_frame(&frame, state.as_mut()) {
+                        for event in events {
+                            terminal |= matches!(
+                                event,
+                                schema::ModelStreamEvent::Finish { .. }
+                                    | schema::ModelStreamEvent::Error { .. }
+                            );
+                            if tx.send(event).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            if !terminal {
+                match adapter.finish_stream(state.as_mut()) {
+                    Ok(events) => {
+                        for event in events {
+                            if tx.send(event).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let _ = tx
+                            .send(schema::ModelStreamEvent::Error {
+                                message: error.to_string(),
+                            })
+                            .await;
+                    }
+                }
+            }
+        });
+        Ok(ReceiverStream::new(rx))
+    }
+
     async fn stream_chat(
         &self,
         model: String,
@@ -745,15 +999,51 @@ impl crate::types::LLMProvider for Client {
 
     fn set_api_key(&self, api_key: &str) {
         *self.api_key.write() = api_key.to_string();
+        self.target.write().route.api_key = api_key.to_string();
     }
 
     fn set_base_url(&self, base_url: &str) {
         *self.base_url.write() = base_url.to_string();
+        self.target.write().route.base_url = base_url.to_string();
     }
 
     fn update_thinking(&self, level: &str, budget: i32) {
         *self.thinking_level.write() = level.to_string();
         *self.thinking_budget.write() = budget;
+        let mut target = self.target.write();
+        target.generation.thinking_level = level.to_string();
+        target.generation.thinking_budget = budget;
+    }
+}
+
+fn normalize_http_error(status: u16, text: &str, model: &str, body_bytes: usize) -> anyhow::Error {
+    let parsed = serde_json::from_str::<Value>(text).ok();
+    let error = parsed
+        .as_ref()
+        .and_then(|value| value.get("error"))
+        .unwrap_or(&Value::Null);
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .or_else(|| parsed.as_ref()?.get("message")?.as_str())
+        .unwrap_or(text);
+    let code = error.get("code").and_then(Value::as_str).unwrap_or("");
+    if status == 400
+        && (code == "context_length_exceeded"
+            || message.contains("maximum context")
+            || message.contains("context_length")
+            || message.contains("too long"))
+    {
+        return anyhow!(
+            "[CTX_LIMIT] Request exceeds the model context limit for `{model}` ({} KB). {}",
+            body_bytes / 1024,
+            message
+        );
+    }
+    match status {
+        401 | 403 => anyhow!("Authentication failed (HTTP {status}): {message}"),
+        429 => anyhow!("Rate limited (HTTP 429): {message}"),
+        _ => anyhow!("LLM API request failed (HTTP {status}): {message}"),
     }
 }
 
@@ -906,6 +1196,7 @@ mod tests {
     struct MockServer {
         base_url: String,
         requests: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        raw_requests: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     }
 
     fn mock_server(
@@ -924,6 +1215,8 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let captured = requests.clone();
+        let raw_requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured_raw = raw_requests.clone();
         std::thread::spawn(move || {
             use std::io::{Read, Write};
             for _ in 0..16 {
@@ -968,6 +1261,10 @@ mod tests {
                 }
                 let body = String::from_utf8_lossy(&buf[header_end..]).to_string();
                 captured.lock().unwrap().push(body.clone());
+                captured_raw
+                    .lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&buf).to_string());
                 let (status, content_type, response_body) = respond(&body);
                 let response = format!(
                     "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
@@ -983,6 +1280,7 @@ mod tests {
         MockServer {
             base_url: format!("http://127.0.0.1:{port}"),
             requests,
+            raw_requests,
         }
     }
 
@@ -1995,5 +2293,119 @@ mod tests {
             )
             .await;
         assert!(result.is_ok() || result.is_err());
+    }
+
+    fn protocol_target(
+        base_url: &str,
+        protocol: schema::ProtocolConfig,
+    ) -> schema::ResolvedModelTarget {
+        schema::ResolvedModelTarget {
+            model_id: "mock".into(),
+            route: schema::ProviderRoute {
+                provider_id: "fixture".into(),
+                base_url: base_url.into(),
+                api_key: "secret".into(),
+                auth: if matches!(protocol, schema::ProtocolConfig::AnthropicMessages(_)) {
+                    schema::AuthScheme::AnthropicApiKey
+                } else {
+                    schema::AuthScheme::Bearer
+                },
+                headers: Default::default(),
+            },
+            protocol,
+            capabilities: schema::ModelCapabilities::default(),
+            generation: schema::GenerationConfig {
+                max_output_tokens: Some(256),
+                ..Default::default()
+            },
+        }
+    }
+
+    fn canonical_request() -> schema::ModelRequest {
+        schema::ModelRequest {
+            model: "mock".into(),
+            system_prompt: "system".into(),
+            messages: vec![crate::types::AgentMessage::new_user(
+                "user",
+                serde_json::json!("hello"),
+            )],
+            tools: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn responses_transport_uses_native_endpoint_and_events() {
+        let sse = concat!(
+            "event: response.output_text.delta\r\n",
+            "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"delta\":\"hello\"}\r\n\r\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":2,\"output_tokens\":1,\"total_tokens\":3}}}\n\n"
+        );
+        let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
+        let client = Client::from_target(protocol_target(
+            &server.base_url,
+            schema::ProtocolConfig::OpenAiResponses(schema::OpenAiResponsesConfig::default()),
+        ));
+        let events: Vec<_> = client
+            .stream_model(canonical_request())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        assert!(events.iter().any(|event| matches!(
+            event,
+            schema::ModelStreamEvent::TextDelta { text, .. } if text == "hello"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            schema::ModelStreamEvent::Finish {
+                reason: schema::FinishReason::Stop,
+                ..
+            }
+        )));
+        let requests = server.requests.lock().unwrap();
+        assert!(requests[0].contains("\"store\":false"));
+        let raw_requests = server.raw_requests.lock().unwrap();
+        let raw = raw_requests[0].to_ascii_lowercase();
+        assert!(raw.starts_with("post /responses "), "{}", raw_requests[0]);
+        assert!(raw.contains("authorization: bearer secret"));
+    }
+
+    #[tokio::test]
+    async fn anthropic_transport_uses_native_headers_and_events() {
+        let sse = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":2,\"output_tokens\":0}}}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n"
+        );
+        let server = mock_server(move |_| (200, "text/event-stream", sse.to_string()));
+        let client = Client::from_target(protocol_target(
+            &server.base_url,
+            schema::ProtocolConfig::AnthropicMessages(schema::AnthropicMessagesConfig::default()),
+        ));
+        let events: Vec<_> = client
+            .stream_model(canonical_request())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        assert!(events.iter().any(|event| matches!(
+            event,
+            schema::ModelStreamEvent::TextDelta { text, .. } if text == "hello"
+        )));
+        let raw_requests = server.raw_requests.lock().unwrap();
+        let raw = raw_requests[0].to_ascii_lowercase();
+        assert!(raw.starts_with("post /messages "), "{}", raw_requests[0]);
+        assert!(raw.contains("x-api-key: secret"));
+        assert!(raw.contains("anthropic-version: 2023-06-01"));
+        assert!(!raw.contains("authorization:"));
     }
 }

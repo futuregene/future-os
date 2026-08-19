@@ -156,12 +156,13 @@ impl Loop {
                 fold_steering_into_prompt(&ctx.system_prompt, &mut self.steering_notes.lock());
             let stream_result = match self
                 .await_or_interrupt(
-                    self.provider.stream_chat(
-                        ctx.model.clone(),
-                        llm_messages,
-                        tool_defs.clone(),
-                        step_system_prompt,
-                    ),
+                    self.provider
+                        .stream_model(crate::llm::schema::ModelRequest {
+                            model: ctx.model.clone(),
+                            messages: work_messages.clone(),
+                            tools: tool_defs.clone(),
+                            system_prompt: step_system_prompt,
+                        }),
                     interrupt_rx.as_mut(),
                 )
                 .await
@@ -268,6 +269,11 @@ impl Loop {
             // Process stream events
             let mut assistant_text = String::new();
             let mut reasoning_text = String::new();
+            let mut reasoning_provider_metadata = crate::types::ProviderMetadata::new();
+            let mut tool_provider_metadata: std::collections::HashMap<
+                String,
+                crate::types::ProviderMetadata,
+            > = std::collections::HashMap::new();
             let mut tool_calls: Vec<ToolCall> = vec![];
             let mut total_usage: Option<crate::types::Usage> = None;
             let mut current_tool_calls: Vec<Option<AgentToolCall>> = vec![];
@@ -319,7 +325,7 @@ impl Loop {
                     }
                 };
 
-                let event = match event {
+                let model_event = match event {
                     Some(e) => e,
                     None => {
                         // No event for the whole idle window means the LLM layer
@@ -334,6 +340,26 @@ impl Loop {
                         break;
                     }
                 };
+                match &model_event {
+                    crate::llm::schema::ModelStreamEvent::ReasoningEnd {
+                        provider_metadata,
+                        ..
+                    } => reasoning_provider_metadata = provider_metadata.clone(),
+                    crate::llm::schema::ModelStreamEvent::ToolInputStart {
+                        id,
+                        provider_metadata,
+                        ..
+                    }
+                    | crate::llm::schema::ModelStreamEvent::ToolInputEnd {
+                        id,
+                        provider_metadata,
+                        ..
+                    } if !provider_metadata.is_empty() => {
+                        tool_provider_metadata.insert(id.clone(), provider_metadata.clone());
+                    }
+                    _ => {}
+                }
+                let event = model_event.to_legacy();
                 on_event(event.clone());
 
                 // Close the text-output block before switching to a different
@@ -408,6 +434,7 @@ impl Loop {
                             id: event.tool_id.clone(),
                             name: event.tool_name.clone(),
                             args,
+                            provider_metadata: Default::default(),
                         });
                     }
                     "toolcall_delta" => {
@@ -426,10 +453,17 @@ impl Loop {
                                 // are empty, just "{}", or a prefix of the delta,
                                 // replace instead of concatenating to avoid corrupt
                                 // JSON like {}{"path":...}.
-                                if event.text.starts_with('{')
-                                    && (s.is_empty()
-                                        || s == "{}"
-                                        || event.text.starts_with(s.as_str()))
+                                let snapshot = event
+                                    .payload
+                                    .as_ref()
+                                    .and_then(|value| value.get("snapshot"))
+                                    .and_then(serde_json::Value::as_bool)
+                                    .unwrap_or(false);
+                                if snapshot
+                                    || (event.text.starts_with('{')
+                                        && (s.is_empty()
+                                            || s == "{}"
+                                            || event.text.starts_with(s.as_str())))
                                 {
                                     *s = event.text.clone();
                                 } else {
@@ -444,12 +478,35 @@ impl Loop {
                                 id: String::new(),
                                 name: String::new(),
                                 args: serde_json::Value::String(event.text.clone()),
+                                provider_metadata: Default::default(),
                             });
                         }
                     }
                     "tool_call" | "toolcall_end" => {
                         if let Some(ref u) = event.usage {
                             self.process_usage_event(u, &mut total_usage);
+                        }
+                        if let Some(call) = event.tool_call.as_ref() {
+                            let index = event.tc_index;
+                            if index >= current_tool_calls.len() {
+                                current_tool_calls.resize(index + 1, None);
+                            }
+                            let slot =
+                                current_tool_calls[index].get_or_insert_with(|| AgentToolCall {
+                                    id: call.id.clone(),
+                                    name: call.function.name.clone(),
+                                    args: call.function.arguments.clone(),
+                                    provider_metadata: Default::default(),
+                                });
+                            if !call.id.is_empty() {
+                                slot.id = call.id.clone();
+                            }
+                            if !call.function.name.is_empty() {
+                                slot.name = call.function.name.clone();
+                            }
+                            if !call.function.arguments.is_null() {
+                                slot.args = call.function.arguments.clone();
+                            }
                         }
                         for tc_opt in current_tool_calls.iter_mut() {
                             if let Some(tc) = tc_opt.take() {
@@ -519,14 +576,28 @@ impl Loop {
                 |messages: &mut Vec<AgentMessage>,
                  assistant_text: &str,
                  reasoning_text: &str,
+                 reasoning_provider_metadata: &crate::types::ProviderMetadata,
+                 tool_provider_metadata: &std::collections::HashMap<
+                    String,
+                    crate::types::ProviderMetadata,
+                >,
                  tool_calls: &[ToolCall]| {
                     let first_new_message = messages.len();
                     let mut msg = AgentMessage {
                         role: "assistant".to_string(),
-                        content: if !assistant_text.is_empty() {
-                            vec![ContentBlock::text(assistant_text)]
-                        } else {
-                            vec![]
+                        content: {
+                            let mut content = Vec::new();
+                            if !reasoning_text.is_empty() || !reasoning_provider_metadata.is_empty()
+                            {
+                                content.push(ContentBlock::reasoning(
+                                    reasoning_text,
+                                    reasoning_provider_metadata.clone(),
+                                ));
+                            }
+                            if !assistant_text.is_empty() {
+                                content.push(ContentBlock::text(assistant_text));
+                            }
+                            content
                         },
                         thinking: reasoning_text.to_string(),
                         tool_calls: vec![],
@@ -537,6 +608,10 @@ impl Loop {
                             id: tc.id.clone(),
                             name: tc.function.name.clone(),
                             args: tc.function.arguments.clone(),
+                            provider_metadata: tool_provider_metadata
+                                .get(&tc.id)
+                                .cloned()
+                                .unwrap_or_default(),
                         });
                     }
                     // Don't push an empty assistant — the LLM API rejects
@@ -584,6 +659,8 @@ impl Loop {
                     &mut messages,
                     &assistant_text,
                     &reasoning_text,
+                    &reasoning_provider_metadata,
+                    &tool_provider_metadata,
                     &tool_calls,
                 );
                 return Ok((String::new(), messages));
@@ -599,10 +676,18 @@ impl Loop {
             // Build assistant message
             let mut assistant_msg = AgentMessage {
                 role: "assistant".to_string(),
-                content: if !assistant_text.is_empty() {
-                    vec![ContentBlock::text(&assistant_text)]
-                } else {
-                    vec![]
+                content: {
+                    let mut content = Vec::new();
+                    if !reasoning_text.is_empty() || !reasoning_provider_metadata.is_empty() {
+                        content.push(ContentBlock::reasoning(
+                            &reasoning_text,
+                            reasoning_provider_metadata.clone(),
+                        ));
+                    }
+                    if !assistant_text.is_empty() {
+                        content.push(ContentBlock::text(&assistant_text));
+                    }
+                    content
                 },
                 thinking: reasoning_text.clone(),
                 tool_calls: vec![],
@@ -615,6 +700,10 @@ impl Loop {
                     id: tc.id.clone(),
                     name: tc.function.name.clone(),
                     args: tc.function.arguments.clone(),
+                    provider_metadata: tool_provider_metadata
+                        .get(&tc.id)
+                        .cloned()
+                        .unwrap_or_default(),
                 });
             }
             // Skip truly empty assistant messages — the LLM API rejects them
@@ -1086,7 +1175,9 @@ mod tests {
                 total_tokens: prompt + completion,
                 cache_read_tokens: Some(3),
                 cache_write_tokens: Some(2),
+                reasoning_tokens: None,
                 credit_cost,
+                provider_metadata: None,
             }),
             ..Default::default()
         }
@@ -1764,7 +1855,9 @@ mod tests {
                         total_tokens: 10,
                         cache_read_tokens: None,
                         cache_write_tokens: None,
+                        reasoning_tokens: None,
                         credit_cost: None,
+                        provider_metadata: None,
                     }),
                     ..Default::default()
                 },
@@ -1851,6 +1944,7 @@ mod tests {
             id: "c1".to_string(),
             name: "echo".to_string(),
             args: serde_json::Value::String("{\"a\":1}".to_string()),
+            provider_metadata: Default::default(),
         };
         assert!(tool_call_args_complete(&call));
         call.args = serde_json::Value::String("{\"a\":1".to_string());
@@ -1865,6 +1959,7 @@ mod tests {
             id: "c1".to_string(),
             name: "echo".to_string(),
             args: serde_json::Value::String("{\"a\":1}".to_string()),
+            provider_metadata: Default::default(),
         };
         let finalized = finalize_agent_tool_call(complete);
         assert_eq!(finalized.id, "c1");
@@ -1878,6 +1973,7 @@ mod tests {
             id: "c2".to_string(),
             name: "echo".to_string(),
             args: serde_json::Value::String("{\"a\":\"x".to_string()),
+            provider_metadata: Default::default(),
         };
         let finalized = finalize_agent_tool_call(partial);
         // The truncated JSON was repaired into something parseable.
@@ -1958,7 +2054,9 @@ mod tests {
                         total_tokens: 6,
                         cache_read_tokens: None,
                         cache_write_tokens: None,
+                        reasoning_tokens: None,
                         credit_cost: Some(0.1),
+                        provider_metadata: None,
                     }),
                     ..Default::default()
                 },
@@ -2013,7 +2111,9 @@ mod tests {
                         total_tokens: 13,
                         cache_read_tokens: None,
                         cache_write_tokens: None,
+                        reasoning_tokens: None,
                         credit_cost: None,
+                        provider_metadata: None,
                     }),
                     ..Default::default()
                 },
@@ -2081,7 +2181,9 @@ mod tests {
                     total_tokens: 18,
                     cache_read_tokens: None,
                     cache_write_tokens: None,
+                    reasoning_tokens: None,
                     credit_cost: Some(0.01),
+                    provider_metadata: None,
                 }),
                 ..Default::default()
             },

@@ -690,7 +690,9 @@ async fn prompt_auto_compaction_compacts_and_rewrites_history() {
                     total_tokens: 50_100,
                     cache_read_tokens: None,
                     cache_write_tokens: None,
+                    reasoning_tokens: None,
                     credit_cost: None,
+                    provider_metadata: None,
                 }),
                 ..Default::default()
             },
@@ -1063,7 +1065,9 @@ async fn prompt_auto_compaction_with_small_history_completes() {
                     total_tokens: 50_100,
                     cache_read_tokens: None,
                     cache_write_tokens: None,
+                    reasoning_tokens: None,
                     credit_cost: None,
+                    provider_metadata: None,
                 }),
                 ..Default::default()
             },

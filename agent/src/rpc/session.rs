@@ -429,28 +429,7 @@ impl ServerSession {
                 self.strip_image_content_from_messages();
             }
 
-            let thinking_format = model_config
-                .compat
-                .get("thinkingFormat")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let supports_reasoning_effort = model_config
-                .compat
-                .get("supportsReasoningEffort")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let requires_reasoning_on_assistant = model_config
-                .compat
-                .get("requiresReasoningContentOnAssistantMessages")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
             let max_tokens = Some(crate::models::effective_max_tokens(&model_config));
-            let tlm: HashMap<String, String> = model_config
-                .thinking_level_map
-                .into_iter()
-                .filter_map(|(k, v)| v.as_str().map(|s| (k, s.to_string())))
-                .collect();
 
             let auth = crate::AuthStore::load();
             let api_key =
@@ -462,23 +441,13 @@ impl ServerSession {
             // the fresh client is this session's alone: concurrent sessions
             // use independent connections and never clobber each other's
             // endpoint mid-run.
-            // maxTokensField: compat field controlling max_tokens vs max_completion_tokens
-            let max_tokens_field = model_config
-                .compat
-                .get("maxTokensField")
-                .and_then(|v| v.as_str())
-                .unwrap_or("max_tokens")
-                .to_string();
-
-            let mut client =
-                crate::llm::Client::new(&model_config.base_url, &api_key, None, max_tokens)
-                    .with_compat(
-                        &thinking_format,
-                        supports_reasoning_effort,
-                        requires_reasoning_on_assistant,
-                    )
-                    .with_max_tokens_field(&max_tokens_field)
-                    .with_thinking_level_map(tlm);
+            let target = crate::llm::schema::ResolvedModelTarget::from_model(
+                &model_config,
+                api_key,
+                None,
+                max_tokens,
+            )?;
+            let mut client = crate::llm::Client::from_target(target);
             // Carry the session's current thinking level/budget onto the new
             // client; an explicit set_thinking_level afterward still overrides.
             if !self.thinking_level.is_empty() {
