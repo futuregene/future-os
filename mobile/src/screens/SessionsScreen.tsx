@@ -10,7 +10,7 @@ import {
   Unplug,
   X,
 } from "lucide-react-native";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { showActionSheet as showAndroidActionSheet } from "future-native-ui";
 import {
@@ -118,6 +118,7 @@ export function SessionsScreen() {
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [renameTarget, setRenameTarget] = useState<RemoteSession | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const pendingNewConversationRef = useRef<(() => void) | null>(null);
 
   const chats = useMemo(
     () => remote.sessions.filter(session => session.mode !== "workspace"),
@@ -212,8 +213,30 @@ export function SessionsScreen() {
 
   const startConversation = () => {
     if (newMode === "workspace" && !workspaceId) return;
+    const mode = newMode;
+    const selectedWorkspaceId = workspaceId;
+    const start = () => void remote.newConversation(mode, selectedWorkspaceId);
     setNewOpen(false);
-    void remote.newConversation(newMode, workspaceId);
+    if (Platform.OS === "ios") {
+      // Do not switch screens while the creation Modal still owns UIKit's
+      // presentation controller. The destination screen may immediately need
+      // to present another native surface.
+      pendingNewConversationRef.current = start;
+    } else {
+      deferPresentation(start);
+    }
+  };
+
+  const closeNew = () => {
+    pendingNewConversationRef.current = null;
+    setNewOpen(false);
+  };
+
+  const flushPendingNewConversation = () => {
+    if (Platform.OS !== "ios") return;
+    const start = pendingNewConversationRef.current;
+    pendingNewConversationRef.current = null;
+    start?.();
   };
 
   const renameSession = async (session: RemoteSession, rawName: string) => {
@@ -497,7 +520,8 @@ export function SessionsScreen() {
 
         <Modal
           animationType="fade"
-          onRequestClose={() => setNewOpen(false)}
+          onDismiss={flushPendingNewConversation}
+          onRequestClose={closeNew}
           transparent
           visible={newOpen}
         >
@@ -505,7 +529,7 @@ export function SessionsScreen() {
             <View style={styles.dialog}>
               <View style={styles.dialogHeader}>
                 <Text style={styles.dialogTitle}>{t("sessions.new")}</Text>
-                <Pressable accessibilityLabel={t("common.close")} onPress={() => setNewOpen(false)}>
+                <Pressable accessibilityLabel={t("common.close")} onPress={closeNew}>
                   <X color={colors.inkMuted} size={20} />
                 </Pressable>
               </View>

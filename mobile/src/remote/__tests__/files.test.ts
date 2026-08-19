@@ -212,12 +212,14 @@ function fsFile(
 function mockClient(): {
   request: jest.Mock;
   requestRetry: jest.Mock;
+  recoverAfterTransientRequest: jest.Mock;
   uploadChunk: jest.Mock;
   downloadChunk: jest.Mock;
 } {
   return {
     request: jest.fn(),
     requestRetry: jest.fn(),
+    recoverAfterTransientRequest: jest.fn().mockResolvedValue(true),
     uploadChunk: jest.fn(),
     downloadChunk: jest.fn(),
   };
@@ -736,6 +738,7 @@ describe("download & preview cache", () => {
         mode: "preview",
       }),
       "s1",
+      10_000,
     );
   });
 
@@ -755,6 +758,7 @@ describe("download & preview cache", () => {
         mode: "original",
       }),
       "s1",
+      10_000,
     );
   });
 
@@ -790,6 +794,23 @@ describe("download & preview cache", () => {
     expect(waiting).toHaveBeenCalledTimes(1);
     expect(client.request).toHaveBeenCalledTimes(2);
     expect(client.request.mock.calls[0]![0].id).toBe(client.request.mock.calls[1]![0].id);
+    expect(client.request.mock.calls[0]![2]).toBe(10_000);
+    expect(client.request.mock.calls[1]![2]).toBe(20_000);
+    expect(client.recoverAfterTransientRequest).toHaveBeenCalledTimes(1);
+  });
+
+  test("prepareDownload does not retry a non-transient failure", async () => {
+    const client = mockClient();
+    client.request.mockRejectedValue(new Error("not an attachment"));
+    client.recoverAfterTransientRequest.mockResolvedValue(false);
+
+    await expect(
+      prepareDownload(client as unknown as RemoteClient, "s1", {
+        path: "/tmp/a.jpg",
+        name: "a.jpg",
+      }),
+    ).rejects.toThrow("not an attachment");
+    expect(client.request).toHaveBeenCalledTimes(1);
   });
 
   test("cachedDownload returns only a present size-matching cache candidate", () => {

@@ -4,7 +4,7 @@ import * as ImagePicker from "expo-image-picker";
 import * as Crypto from "expo-crypto";
 import { Image } from "react-native";
 import type { RemoteClient } from "./client";
-import type { DownloadInfo, HistoryAttachment, MobileAttachment } from "./types";
+import type { DownloadInfo, HistoryAttachment, MobileAttachment, RpcResponse } from "./types";
 import { mobileFileType } from "./fileTypes";
 import { basename } from "./localPath";
 
@@ -371,6 +371,12 @@ function cancelDownload(client: RemoteClient, transferId: string): void {
 }
 
 const TRANSFER_RETRY_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000, 15_000, 15_000];
+// Metadata preparation has a different failure profile from byte chunks. One
+// retry with the same command id is enough to retrieve a desktop singleflight
+// result or recover a half-open socket; the second attempt gets extra time for
+// an uncached image pipeline without multiplying silence for minutes.
+const PREPARE_RPC_TIMEOUTS_MS = [10_000, 20_000] as const;
+const PREPARE_RETRY_DELAY_MS = 500;
 
 export class TransferCancelledError extends Error {
   constructor() {
@@ -537,11 +543,26 @@ export async function prepareDownload(
     filePath: attachment.path,
     mode: variant,
   };
-  const response = await withTransferRetry(
-    () => client.request<DownloadInfo>(command, sessionId),
-    signal,
-    onWaiting,
-  );
+  let attempt = 0;
+  let response: RpcResponse<DownloadInfo> | null = null;
+  for (const timeoutMs of PREPARE_RPC_TIMEOUTS_MS) {
+    attempt += 1;
+    try {
+      response = await abortable(
+        client.request<DownloadInfo>(command, sessionId, timeoutMs),
+        signal,
+      );
+      break;
+    } catch (error) {
+      if (error instanceof TransferCancelledError) throw error;
+      if (attempt >= PREPARE_RPC_TIMEOUTS_MS.length) throw error;
+      const retryable = await abortable(client.recoverAfterTransientRequest(error), signal);
+      if (!retryable) throw error;
+      onWaiting?.();
+      await retryDelay(PREPARE_RETRY_DELAY_MS, signal);
+    }
+  }
+  if (!response) throw new Error("download_prepare_failed");
   // Older desktops do not return `variant`; their preview behavior remains
   // compatible, so normalize the response to the variant we requested.
   const info = response.data.variant ? response.data : { ...response.data, variant };
@@ -550,7 +571,8 @@ export async function prepareDownload(
     throw new TransferCancelledError();
   }
   try {
-    if (await verifiedCachedDownload(info, signal)) {
+    const cached = await verifiedCachedDownload(info, signal);
+    if (cached) {
       cancelDownload(client, info.transferId);
     }
   } catch (error) {
