@@ -307,10 +307,7 @@ fn validates_models() {
 
     // Duplicate model ids are rejected.
     let mut dup = input("p3", "P3", true);
-    dup.models = vec![
-        custom_model("m", "", false),
-        custom_model("m", "", false),
-    ];
+    dup.models = vec![custom_model("m", "", false), custom_model("m", "", false)];
     assert!(upsert_custom_provider_with_catalog(dup, &catalog).is_err());
 }
 

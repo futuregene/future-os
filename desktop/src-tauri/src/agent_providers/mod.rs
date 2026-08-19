@@ -103,8 +103,12 @@ pub struct CustomProviderModel {
     pub max_tokens: i32,
 }
 
-const fn default_context_window() -> i32 { 128_000 }
-const fn default_max_tokens() -> i32 { 16_384 }
+const fn default_context_window() -> i32 {
+    128_000
+}
+const fn default_max_tokens() -> i32 {
+    16_384
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]

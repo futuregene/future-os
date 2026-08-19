@@ -876,13 +876,15 @@ pub fn status() -> RemoteStatus {
             if web_enabled && !web_dead {
                 WEB_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
             }
-            let web_reconnect_in_flight = web_enabled && WEB_RECONNECT_RUNNING.load(Ordering::Acquire);
+            let web_reconnect_in_flight =
+                web_enabled && WEB_RECONNECT_RUNNING.load(Ordering::Acquire);
             let can_reconnect_web = web_enabled
                 && WEB_RECONNECT_ATTEMPTS.load(Ordering::Acquire) < MAX_WEB_RECONNECT_ATTEMPTS;
             if web_dead && can_reconnect_web && !web_reconnect_in_flight {
                 spawn_web_reconnect(s.pair_id.clone());
             }
-            let web_reconnect_exhausted = web_dead && !web_reconnect_in_flight && !can_reconnect_web;
+            let web_reconnect_exhausted =
+                web_dead && !web_reconnect_in_flight && !can_reconnect_web;
             // Re-expose the pairing code until it expires so the UI keeps it
             // after navigating away and back (it's no longer a show-once value).
             let confirmed = s.pairing_confirmed.load(Ordering::Acquire);
@@ -1842,7 +1844,9 @@ mod runtime_tests {
         assert!(!web_client_enabled_for_platform(
             crate::future_platform::PRODUCTION_PLATFORM_URL
         ));
-        assert!(!web_client_enabled_for_platform("https://custom.example.com"));
+        assert!(!web_client_enabled_for_platform(
+            "https://custom.example.com"
+        ));
     }
 
     fn test_creds(pair_id: &str, nats_url: &str, expires_in: i64) -> pairing::PairingCreds {

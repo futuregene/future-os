@@ -183,10 +183,15 @@ pub(super) fn validate_custom_provider(
             return Err(format!("Model ID `{model_id}` is duplicated.").into());
         }
         if model.context_window <= 0 || model.max_tokens <= 0 {
-            return Err(format!("Model `{model_id}` token limits must be positive integers.").into());
+            return Err(
+                format!("Model `{model_id}` token limits must be positive integers.").into(),
+            );
         }
         if model.max_tokens > model.context_window {
-            return Err(format!("Model `{model_id}` maximum output tokens cannot exceed its context window.").into());
+            return Err(format!(
+                "Model `{model_id}` maximum output tokens cannot exceed its context window."
+            )
+            .into());
         }
         let model_name = model.name.trim();
         let model_name = if model_name.is_empty() {
