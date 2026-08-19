@@ -1,6 +1,7 @@
 {
-  "title": "手机远程控制",
+  "title": "手机遥控",
   "description": "让手机远程接管本机会话（工具在本机执行）。开启后，本地对话会镜像给手机，手机也可驱动同一会话。",
+  "downloadMobile": "下载手机端",
   "connect": "连接",
   "reconnect": "重新连接",
   "disconnect": "断开",

@@ -2,7 +2,7 @@ export const resources = {
   en: {
     translation: {
       appName: "FutureOS",
-      remote: "Remote",
+      remote: "Phone Control",
       pairing: {
         title: "Connect to your desktop",
         description:
@@ -14,7 +14,7 @@ export const resources = {
         invalid: "This pairing code is invalid or expired.",
         host: "The QR code belongs to a different FutureOS environment.",
         secureEndpoint:
-          "The desktop returned an unencrypted connection address. Make sure the server uses wss://.",
+          "The desktop returned an insecure connection address. Check the server security settings and try again.",
         network: "The network is unavailable. Reconnect to the network and scan the code again.",
         service: "The remote service is temporarily unavailable. Scan the code again in a moment.",
         verification: "The desktop could not be verified. Update both apps and scan a new code.",
@@ -52,7 +52,6 @@ export const resources = {
         workspace: "Workspace",
         noWorkspaces: "No workspaces on the desktop yet.",
         settings: "Settings",
-        settingsPlaceholder: "Remote settings will appear here.",
         empty: "No desktop sessions yet.",
         emptyConnectedTitle: "No conversations yet",
         emptyConnectedHint:
@@ -245,7 +244,7 @@ export const resources = {
   zh: {
     translation: {
       appName: "FutureOS",
-      remote: "远程控制",
+      remote: "手机遥控",
       pairing: {
         title: "连接桌面端",
         description: "在 FutureOS 桌面端打开“手机遥控”，点击“配对并启动”，然后扫描二维码。",
@@ -255,7 +254,7 @@ export const resources = {
         claiming: "正在安全配对…",
         invalid: "配对码无效或已过期。",
         host: "二维码属于另一个 FutureOS 环境。",
-        secureEndpoint: "桌面端返回了未加密的连接地址，请确认服务器使用 wss://。",
+        secureEndpoint: "桌面端返回的连接地址不安全，请检查服务器的安全设置后重试。",
         network: "当前网络不可用，请恢复网络后重新扫码。",
         service: "远程服务暂时不可用，请稍后重新扫码。",
         verification: "无法验证桌面端，请更新两端应用后重新扫码。",
@@ -281,7 +280,7 @@ export const resources = {
         errorNotFound: "请求的内容在桌面端已不存在。",
         errorTimeout: "请求超时，请检查网络后重试。",
         errorNetwork: "网络不可达，请检查与桌面服务器的连接。",
-        errorAgentOffline: "桌面端 Agent 离线，会话历史暂不可用，恢复后会自动加载。",
+        errorAgentOffline: "桌面端离线，会话历史暂不可用，恢复后会自动加载。",
         errorGeneric: "操作未能完成，请重试。",
       },
       sessions: {
@@ -290,7 +289,6 @@ export const resources = {
         workspace: "工作区",
         noWorkspaces: "桌面端还没有工作区。",
         settings: "设置",
-        settingsPlaceholder: "远程设置将在这里提供。",
         empty: "桌面端还没有会话。",
         emptyConnectedTitle: "还没有对话",
         emptyConnectedHint: "已连接到桌面端，创建一个新对话即可开始聊天。",
@@ -358,9 +356,9 @@ export const resources = {
       },
       approval: {
         title: "需要审批",
-        approve: "批准",
+        approve: "允许",
         reject: "拒绝",
-        approved: "已批准",
+        approved: "已允许",
         rejected: "已拒绝",
         submitFailed: "审批提交失败。",
         readTitle: "允许读取文件",
@@ -413,7 +411,7 @@ export const resources = {
         save: "保存",
         tooLarge: "文件大于 10 MB，请在桌面端查看。",
         shareUnavailable: "当前设备无法打开分享面板。",
-        unsupportedType: "手机端不提供这种文件类型，请在桌面端查看。",
+        unsupportedType: "手机端暂不支持查看此类文件，请在桌面端查看。",
         noHandler: "手机上没有可以打开这种文件的应用。",
         imagesUnsupported: "当前模型不支持图片，可能无法正确理解图片内容。",
         markdownTruncated: "仅渲染前 2 MB 内容，完整文件请在桌面端查看。",

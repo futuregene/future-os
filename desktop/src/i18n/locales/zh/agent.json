@@ -76,7 +76,7 @@
     },
     "allModelsDisabled": {
       "title": "模型已全部禁用",
-      "detail": "已加载到模型，但你在设置中禁用了全部模型。请至少启用一个模型。",
+      "detail": "已加载模型，但你在设置中禁用了全部模型。请至少启用一个模型。",
       "action": "模型设置"
     }
   },
@@ -203,7 +203,7 @@
     "compactedTokens": "上下文已压缩 · {{formattedCount}} tokens"
   },
   "skillGuide": {
-    "title": "5分钟技能上手",
+    "title": "5 分钟技能上手",
     "subtitle": "互动式教学，教练带着你边学边练，快速学会用技能",
     "start": "技能教学",
     "dismiss": "收起教学入口",
