@@ -15,7 +15,7 @@ The Rust workspace (`Cargo.toml`) members and their slice of `~/.future/` (see `
 - `cli/` — `future-cli`, builds the unified `future` binary that embeds agent/tui/channel/loop.
 - `packages/rpc/` — `future-rpc`, the protobuf wire-contract crate (single source of truth; see proto notes below).
 
-`desktop/src-tauri` is deliberately **not** a workspace member (excluded): it builds on its own schedule via npm/tauri, and membership would pull it into every root cargo invocation. `packages/` also holds shared npm packages (`markdown`, `thread-projection`) consumed by desktop/mobile; the repo-root `package.json` declares npm workspaces `["packages/*", "desktop", "mobile"]`, so a single `npm install` at the root hoists all deps.
+`desktop/src-tauri` is deliberately **not** a workspace member (excluded): it builds on its own schedule via npm/tauri, and membership would pull it into every root cargo invocation. `packages/` also holds shared npm packages (`markdown`, `thread-projection`, `json-preview`) consumed by desktop/mobile; the repo-root `package.json` declares npm workspaces `["packages/*", "desktop", "mobile"]`, so a single `npm install` at the root hoists all deps.
 
 ## Project memory
 

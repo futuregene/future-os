@@ -1009,6 +1009,14 @@ message SessionEntry {
   // false when it is plain display text. Lets decoders re-inflate `content`
   // into the exact original JSON value.
   bool content_is_object = 12;
+  // Prompt (input) tokens of the run this reply concluded — the run's delta of
+  // the session's cumulative tokens_in. Footer shows in+out so the total
+  // matches the provider's billed usage; absent on legacy sessions.
+  optional int64 input_tokens = 13;
+  // Cache-read tokens of that run (delta of cumulative tokens_cache_r) —
+  // informational: on most providers these are a discounted subset of
+  // input_tokens, not an addition to them.
+  optional int64 cache_read_tokens = 14;
 }
 
 // One event as replayed by get_events_since. Field names mirror the

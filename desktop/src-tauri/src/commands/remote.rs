@@ -65,11 +65,30 @@ pub fn remote_pairing_status() -> Result<RemotePairingStatus, crate::AppError> {
 /// Open a URL in the system browser (webview `<a>` clicks don't navigate externally).
 #[tauri::command]
 pub fn open_url(url: String) -> Result<(), crate::AppError> {
-    // The OS opener's error arm cannot be exercised on any supported platform
-    // (`open`/`xdg-open` dispatch accepts arbitrary input); expect keeps the
-    // invariant explicit instead of a dead error-mapping arm.
-    open::that_detached(&url).expect("browser open must not fail");
-    Ok(())
+    open_url_with(&url, |u| {
+        open::that_detached(u).map_err(|e| format!("Failed to open URL: {e}").into())
+    })
+}
+
+/// Validation + opener with the OS layer injectable so the scheme guard is
+/// testable without launching a browser. The scheme is restricted to
+/// http/https/mailto — matching [`crate::commands::files::open_external_url`] —
+/// so a crafted URL can't launch a local handler (`file:`, custom app schemes).
+fn open_url_with(
+    url: &str,
+    opener: impl Fn(&str) -> Result<(), crate::AppError>,
+) -> Result<(), crate::AppError> {
+    let trimmed = url.trim();
+    let normalized = trimmed.to_ascii_lowercase();
+    if !(normalized.starts_with("http://")
+        || normalized.starts_with("https://")
+        || normalized.starts_with("mailto:"))
+    {
+        return Err("Only http(s) or mailto URLs can be opened."
+            .to_string()
+            .into());
+    }
+    opener(trimmed)
 }
 
 #[cfg(test)]
@@ -86,9 +105,18 @@ mod tests {
     }
 
     #[test]
-    fn open_url_accepts_arbitrary_input() {
-        let _home = HomeGuard::new("remote_open_url");
-        open_url("https://example.invalid/".to_string()).expect("open");
+    fn open_url_with_rejects_non_http_schemes() {
+        assert!(open_url_with("file:///etc/passwd", |_| unreachable!()).is_err());
+        assert!(open_url_with("ftp://x", |_| unreachable!()).is_err());
+        assert!(open_url_with("javascript:alert(1)", |_| unreachable!()).is_err());
+        assert!(open_url_with("   ", |_| unreachable!()).is_err());
+    }
+
+    #[test]
+    fn open_url_with_allows_http_and_mailto() {
+        assert!(open_url_with("https://example.invalid/", |_| Ok(())).is_ok());
+        assert!(open_url_with("mailto:x@example.com", |_| Ok(())).is_ok());
+        assert!(open_url_with("https://x", |_| Err("os failed".to_string().into())).is_err());
     }
 
     #[test]

@@ -47,7 +47,7 @@ export function LastRunReview({
     <div className="space-y-3">
       <RunReviewBanners review={review} retrying={retrying} onRetry={onRetry} />
       <section className="rounded-md border border-line-soft bg-surface p-3">
-        <div className="text-sm font-semibold text-ink">{changeset.title}</div>
+        <div className="text-sm font-semibold text-ink">{t("lastRunHeading")}</div>
         <div className="mt-1 text-xs text-ink-muted">
           {formatTime(storedTimeToIso(changeset.createdAt), i18n.language)}
           {" · "}

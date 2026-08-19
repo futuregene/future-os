@@ -172,6 +172,13 @@ export interface HistoryEntry {
   duration_ms?: number;
   /** Desktop-store run outcome, added by the remote bridge for recovery parity. */
   run_status?: "completed" | "failed" | "cancelled" | string;
+  /** Raw run error for `run_status: "failed"` — the bridge pairs it with the
+   *  status so a reloaded timeline can rebuild the desktop's failure bubble. */
+  run_error?: string;
+  /** Authoritative elapsed run time from the desktop store. This remains
+   * separate from `duration_ms`, which belongs to a persisted assistant entry
+   * and is absent when a run fails before producing one. */
+  run_duration_ms?: number;
   /** RFC3339 entry time; preserved across re-saves so history keeps real times. */
   timestamp?: string;
 }
@@ -247,6 +254,10 @@ export type TimelineItem =
       durationMs?: number;
       /** Output tokens for the reply (real provider usage). */
       outputTokens?: number;
+      /** Prompt (input) tokens of the run (billed side); absent on legacy. */
+      inputTokens?: number;
+      /** Cache-read tokens of the run (informational subset of input). */
+      cacheReadTokens?: number;
       attachments?: HistoryAttachment[];
       /**
        * Ordered inline slices of an assistant reply — thinking/tool rows and
@@ -257,29 +268,15 @@ export type TimelineItem =
       segments?: TimelineSegment[];
       /** The owning run failed. A handled tool error alone is not recoverable. */
       failed?: boolean;
+      /** Raw agent error of a failed run with no visible content — rendered as
+       *  the friendly failure bubble (desktop parity: failure text is the
+       *  assistant content, not a separate banner). */
+      error?: string;
       /** The user cancelled this run (agent_end state "cancelled"). */
       stopped?: boolean;
       /** The stream ended before the model finished (agent_end reason
        *  "incomplete") — the text is a truncated prefix, not a clean answer. */
       truncated?: boolean;
-    }
-  | {
-      id: string;
-      kind: "thinking";
-      text: string;
-      complete: boolean;
-      runId?: string;
-    }
-  | {
-      id: string;
-      kind: "tool";
-      toolId: string;
-      name: string;
-      complete: boolean;
-      runId?: string;
-      /** The call's display target (desktop parity): the shell command or
-       *  file path, shown on the row and expandable on tap. */
-      detail?: string;
     }
   | {
       id: string;

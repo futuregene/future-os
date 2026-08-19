@@ -17,7 +17,7 @@ import {
   timelineFromEntries,
   timelineFromHistory,
   type TimelineState,
-} from "./eventReducer";
+} from "./timeline";
 import { RemoteClient } from "./client";
 import { MAX_PROMPT_MESSAGE_BYTES, utf8Bytes } from "./codec";
 import type { ConnectionState } from "./connectionState";

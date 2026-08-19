@@ -2,6 +2,7 @@ import {
   backoffDelayMs,
   classifyError,
   MAX_BACKOFF_MS,
+  RemoteApiError,
   transition,
   type ConnectionEffect,
   type ConnectionState,
@@ -237,20 +238,43 @@ describe("backoffDelayMs", () => {
 
 describe("classifyError", () => {
   test("terminal auth errors → authTerminal", () => {
-    expect(classifyError(new Error("invalid_remote_credential"))).toBe("authTerminal");
-    expect(classifyError(new Error("server replied 401"))).toBe("authTerminal");
-    expect(classifyError(new Error("credentials_revoked"))).toBe("authTerminal");
+    // Server revocation is read from the machine code (never the message).
+    expect(
+      classifyError(
+        new RemoteApiError(
+          "Remote credential is invalid or revoked.",
+          "invalid_remote_credential",
+          401,
+        ),
+      ),
+    ).toBe("authTerminal");
+    expect(classifyError(new RemoteApiError("gone", "credentials_revoked", 401))).toBe(
+      "authTerminal",
+    );
+    // A locally-corrupt JWT is terminal regardless of source.
     expect(classifyError(new Error("invalid_jwt"))).toBe("authTerminal");
   });
   test("refreshable auth errors → auth", () => {
+    expect(
+      classifyError(new RemoteApiError("bad signature", "pairing_signature_invalid", 400)),
+    ).toBe("auth");
     expect(classifyError(new Error("pairing_signature_invalid"))).toBe("auth");
     expect(classifyError(new Error("pairing_confirmation_mismatch"))).toBe("auth");
   });
   test("service permission errors → fatal", () => {
+    expect(
+      classifyError(new RemoteApiError("misconfigured", "remote_service_misconfigured", 500)),
+    ).toBe("fatal");
     expect(classifyError(new Error("PERMISSIONS_VIOLATION"))).toBe("fatal");
     expect(classifyError(new Error("remote_service_misconfigured"))).toBe("fatal");
   });
   test("everything else → transport", () => {
+    // A revocation-shaped message with no machine code is NOT sniffed — it
+    // stays transport (mirrors the desktop's generic "server" category).
+    expect(classifyError(new Error("invalid_remote_credential"))).toBe("transport");
+    expect(classifyError(new RemoteApiError("something went wrong", "unknown_code", 500))).toBe(
+      "transport",
+    );
     expect(classifyError(new Error("nats_connect_failed"))).toBe("transport");
     expect(classifyError(new Error("ETIMEDOUT"))).toBe("transport");
     expect(classifyError("boom")).toBe("transport");

@@ -87,6 +87,12 @@ pub struct CreateReviewSnapshotInput {
     pub error_message: Option<String>,
 }
 
+/// The auto-generated title for a `run_snapshot` (shadow review) changeset.
+/// Locale-neutral by design: the frontend renders this heading through i18n
+/// (`review.lastRunHeading`), never the stored title verbatim, so the database
+/// value must not be hard-coded in a single locale.
+pub const LAST_RUN_CHANGESET_TITLE: &str = "Last run changes";
+
 /// Create-or-replace the single `run_snapshot` changeset for a Run (§8.2).
 #[derive(Debug, Default)]
 pub struct UpsertRunChangesetInput {

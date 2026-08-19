@@ -3,6 +3,7 @@ import { Platform } from "react-native";
 import { createUser, fromSeed } from "nkeys.js";
 import { isExpectedClaimUrl, natsWsUrlScheme } from "../config/environment";
 import { decodePairingCode, jwtExpiry, parsePairingInvitation, randomId } from "./codec";
+import { RemoteApiError } from "./connectionState";
 import { loadDeviceId, saveDeviceId, type PendingRevoke } from "./storage";
 import type { RemoteCredentials } from "./types";
 
@@ -31,8 +32,20 @@ function assertSecureNatsUrl(url: string): void {
 }
 
 async function responseJson<T>(response: Response): Promise<T> {
-  const body = (await response.json().catch(() => ({}))) as { message?: string } & T;
-  if (!response.ok) throw new Error(body.message ?? `HTTP ${response.status}`);
+  const body = (await response.json().catch(() => ({}))) as {
+    error?: string;
+    message?: string;
+  } & T;
+  if (!response.ok) {
+    // Preserve the server's machine-readable `error` code alongside the human
+    // message, so a revocation (`invalid_remote_credential`) is distinguishable
+    // from a transient failure instead of being sniffed from prose.
+    throw new RemoteApiError(
+      body.message ?? `HTTP ${response.status}`,
+      body.error,
+      response.status,
+    );
+  }
   return body;
 }
 

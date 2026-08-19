@@ -9,7 +9,7 @@ import {
   timelineFromEntries,
   timelineFromHistory,
   timelineFromProjection,
-} from "../eventReducer";
+} from "../timeline";
 
 describe("history reducer", () => {
   test("keeps optimistic attachment chips for an attachment-only prompt", () => {
@@ -250,14 +250,6 @@ describe("projection reducer", () => {
           kind: "message" as const,
           role: "assistant" as const,
           text: "run-1 reply",
-          runId: "run-1",
-        },
-        {
-          id: "t1",
-          kind: "tool" as const,
-          toolId: "t1",
-          name: "read" as const,
-          complete: true,
           runId: "run-1",
         },
         {
@@ -950,5 +942,83 @@ describe("stream event edge cases", () => {
       expect(toolSegment.tool.count).toBe(2);
       expect(toolSegment.tool.children?.map(child => child.name)).toEqual(["read", "read"]);
     }
+  });
+});
+
+describe("run failure parity with the desktop", () => {
+  test("an error event settles the run and pins the raw error on the assistant bubble", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "agent_start",
+      data: "{}",
+      runId: "run-1",
+      idx: 0,
+    });
+    state = applyStreamEvent(state, {
+      type: "error",
+      data: JSON.stringify({ error: "Authentication failed (401). Check your API key." }),
+      runId: "run-1",
+      idx: 1,
+    });
+    // The failure lives on the assistant bubble (friendly text at render time),
+    // not as a separate red notice.
+    expect(state.items.filter(item => item.kind === "notice")).toHaveLength(0);
+    const reply = state.items.find(item => item.kind === "message" && item.role === "assistant");
+    if (!reply || reply.kind !== "message") throw new Error("assistant bubble missing");
+    expect(reply.failed).toBe(true);
+    expect(reply.streaming).toBe(false);
+    expect(reply.error).toBe("Authentication failed (401). Check your API key.");
+    expect(reply.text).toBe("");
+  });
+
+  test("an error event without any run id still surfaces as a danger notice", () => {
+    const state = applyStreamEvent(emptyTimeline(), {
+      type: "error",
+      data: JSON.stringify({ error: "boom" }),
+      idx: 0,
+    });
+    expect(state.items[0]).toMatchObject({ kind: "notice", tone: "danger", text: "boom" });
+  });
+
+  test("history reload rebuilds the failure bubble for a run with no assistant entry", () => {
+    const timeline = timelineFromEntries([
+      {
+        id: "e1",
+        role: "user",
+        content: "poem.txt 里面内容是什么",
+        meta: { run_id: "run-1" },
+        run_status: "failed",
+        run_error: "Authentication failed (401). Check your API key.",
+        run_duration_ms: 15_000,
+      },
+    ]);
+    expect(timeline.items).toEqual([
+      expect.objectContaining({ kind: "message", role: "user" }),
+      expect.objectContaining({
+        id: "failed_run-1",
+        kind: "message",
+        role: "assistant",
+        failed: true,
+        error: "Authentication failed (401). Check your API key.",
+        durationMs: 15_000,
+      }),
+    ]);
+  });
+
+  test("history reload keeps a partial assistant reply instead of a synthesized bubble", () => {
+    const timeline = timelineFromEntries([
+      { id: "e1", role: "user", content: "hi", meta: { run_id: "run-1" }, run_status: "failed" },
+      {
+        id: "e2",
+        role: "assistant",
+        content: "partial",
+        meta: { run_id: "run-1" },
+        run_status: "failed",
+      },
+    ]);
+    const assistants = timeline.items.filter(
+      item => item.kind === "message" && item.role === "assistant",
+    );
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]).toMatchObject({ failed: true, text: "partial" });
   });
 });

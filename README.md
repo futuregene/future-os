@@ -1,35 +1,54 @@
 <p align="center">
-  <a href="https://github.com/futuregene/future-os/wiki"><img src="https://img.shields.io/badge/Docs-Wiki-FFD700?style=for-the-badge" alt="Documentation"></a>
-  <a href="https://github.com/futuregene/future-os/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
-  <a href="https://github.com/futuregene/future-skills"><img src="https://img.shields.io/badge/Skills-future--skills-blue?style=for-the-badge" alt="Skills"></a>
-  <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/Lang-中文-red?style=for-the-badge" alt="中文"></a>
-</p>
-
-<p align="center">
   <img src="docs/banner.png" alt="FutureOS" width="600">
 </p>
 
-# FutureOS
+<h3 align="center">One AI agent, everywhere you work.</h3>
+<p align="center">
+  Terminal, desktop, mobile, and your chat apps — one Rust core, one agent, 3,800+ models.<br>
+  Every tool call gated by your approval. Local-first. Open source.
+</p>
 
-> One AI agent, everywhere you work — terminal, desktop, mobile, and your chat apps.
+<p align="center">
+  <img src="docs/desktop-screenshot.png" alt="FutureOS desktop app — new conversation, models, skills, and workspace in one window" width="800">
+</p>
 
-FutureOS gives you a unified AI agent experience across a terminal UI (TUI),
-desktop app (GUI), mobile apps (Android & iOS), CLI, and IM bots — on
-macOS, Linux, Windows, and your phone. Write code, run research, manage files —
-from the terminal, from a chat app, from a native desktop window, or from a
-phone in your pocket.
+<!-- TODO(demo): replace the static screenshot with a 60-90s demo GIF (TUI approval gate →
+     desktop GUI → IM-bot progress → session fork tree → /future-loop board), saved as docs/demo.gif -->
+
+<p align="center">
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#features">Features</a> •
+  <a href="#configure-a-model">3,800+ Models</a> •
+  <a href="#essential-slash-commands-tui">Commands</a> •
+  <a href="#troubleshooting">Troubleshooting</a>
+</p>
+
+<p align="center">⭐ If FutureOS is useful to you, a star helps others find it.</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Core-Rust-orange?style=for-the-badge&logo=rust" alt="Rust core">
+  <a href="https://github.com/futuregene/future-os/blob/main/THIRD_PARTY_NOTICES.md"><img src="https://img.shields.io/badge/License-MIT_%2B_Apache--2.0-green?style=for-the-badge" alt="License: MIT + Apache-2.0"></a>
+  <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/Lang-中文-red?style=for-the-badge" alt="中文"></a>
+</p>
+
+---
+
+## Why FutureOS
+
+- **Trust before capability.** Every tool call — read, write, edit, shell — is gated by your approval by default. Nothing writes to your filesystem or runs a command silently. When an agent holds your credentials, trust can't be a config option.
+- **One backend, every surface.** A single gRPC agent drives the terminal UI, desktop app, mobile apps, CLI, and IM bots — same sessions, same memory, same skills, wherever you happen to be.
+- **Long runs need engineering, not prompting.** The built-in loop control plane gives durable goals, event-sourced state, and verification gates to runs of 24+ hours — start a research task at night, review the results from your phone in the morning.
 
 ## Features
 
 | Category | Details |
 |---|---|
 | **Multi-Interface** | Terminal UI (TUI), desktop app (GUI), mobile apps (Android & iOS), CLI, IM bots — one agent, everywhere |
+| **Trust-First Tool Execution** | read, write, edit, shell — every call gated by your approval; sandbox tiers (off / manual / macOS Seatbelt); a lean tool set, no prompt bloat |
 | **Model Flexibility** | 3800+ built-in models across 140+ providers ([catalog](docs/wiki/en/Models.md)); custom providers via `models.json`; scoped model lists |
-| **Agent Service** | The agent runs as a standalone gRPC service — the runtime is decoupled from the TUI, desktop app, mobile app, channel bridge, and loop control plane, leaving room for new clients and extensions |
-| **Minimalist Tool Execution** | read, write, edit, shell with approval gating; sandbox tiers (off / manual / macOS Seatbelt) — Pi-style minimalism: a lean tool set, no prompt bloat |
-| **Forkable Sessions** | Branch any conversation like a repo — fork, clone, and tree navigation over JSONL session history |
+| **Loop Engineering** | Durable goals/todos/gates/monitors for long-horizon runs of 24+ hours — deterministic should-run kernel, event-sourced state, hard checks (evidence floor / acceptance contracts / verify gates), lease liveness, multi-agent ([guide](docs/loop-control-plane.md)) |
 | **Powerful Built-in Skills** | 15+ skills out of the box for everyday agent work — image read & generation, PDF/Word parsing, web search, browser control, slides, software install, and the `/future-loop` long-run goal orchestrator ([builtin](https://github.com/futuregene/future-skills/tree/main/builtin)) |
-| **Loop Engineering** | Durable goals/todos/gates/monitors for long-horizon runs of 24+ hours — deterministic should-run kernel, event-sourced state, hard checks (evidence floor / acceptance contracts / verify gates), lease liveness, multi-agent ([guide](docs/loop-control-plane.md)) — a Rust rewrite of the [loopx](https://github.com/huangruiteng/loopx) control plane, customized for FutureOS |
+| **Forkable Sessions** | Branch any conversation like a repo — fork, clone, and tree navigation over JSONL session history |
 | **Rust Core** | Agent, IM channel bridge, loop control plane, CLI, and TUI are all written in Rust — high performance with memory safety |
 
 ## Quick Start
@@ -55,15 +74,18 @@ packaging) is in the **[Build & Install](docs/build-and-install.md)** guide.
 
 ### Configure a model
 
-The agent needs at least one model with an API key before it can answer. Three options:
+The agent needs at least one model with an API key before it can answer.
 
-**A — FutureOS hosted models.** Device-flow sign-in provisions keys and a model list automatically:
+**FutureOS hosted models** — device-flow sign-in provisions keys and a model list automatically:
 
 ```bash
 future auth login
 ```
 
-**B — Use a known provider.** Put your API key in `~/.future/agent/auth.json`, keyed by provider name. See the [built-in model catalog](docs/wiki/en/Models.md) for all supported providers — most have built-in base URLs and auto-discover their models:
+<details>
+<summary><strong>Prefer your own keys? (BYOK &amp; custom providers)</strong></summary>
+
+**Use a known provider.** Put your API key in `~/.future/agent/auth.json`, keyed by provider name. See the [built-in model catalog](docs/wiki/en/Models.md) — most providers have built-in base URLs and auto-discover their models:
 
 ```json
 {
@@ -79,7 +101,7 @@ For providers with user-specific base URLs (e.g. Azure's `YOUR_RESOURCE`), add a
 }
 ```
 
-**C — Custom provider.** For providers not in the built-in catalog, specify everything in `~/.future/agent/models.json`:
+**Custom provider.** For providers not in the built-in catalog, specify everything in `~/.future/agent/models.json`:
 
 ```json
 {
@@ -95,6 +117,8 @@ For providers with user-specific base URLs (e.g. Azure's `YOUR_RESOURCE`), add a
 }
 ```
 
+</details>
+
 ### Run the agent
 
 The terminal and CLI clients are thin gRPC clients. **The agent must be running
@@ -109,6 +133,10 @@ Then launch the terminal UI from the same `future` command:
 ```bash
 future tui       # terminal UI
 ```
+
+<p align="center">
+  <img src="docs/tui-screenshot.png" alt="FutureOS terminal UI — built-in skills loaded, /help command palette" width="720">
+</p>
 
 > `future <cmd>` is the unified entry point for every Rust component: `future agent`,
 > `future tui`, `future channel`, `future loop`. Each runs the same code as the
@@ -162,6 +190,6 @@ future tui       # terminal UI
 | Agent replies with an auth / "no model" error | No model configured yet. Run `future auth login`, or add a provider to `models.json` — see [Configure a model](#configure-a-model). |
 | Build / install problems | See [Build & Install](docs/build-and-install.md) (platform toolchains, linker, GUI packaging). |
 
-## License
+## Community
 
-MIT
+[💬 Discussions](https://github.com/futuregene/future-os/discussions) • [🐛 Issues](https://github.com/futuregene/future-os/issues) • [🔒 Security](SECURITY.md) • [📖 Wiki](https://github.com/futuregene/future-os/wiki) • [Third-Party Notices](THIRD_PARTY_NOTICES.md)
