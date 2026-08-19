@@ -562,8 +562,12 @@ async fn handle_command(
             .await
         }
         "download_prepare" => {
-            match super::transfer::prepare_download_variant(&cmd.session_id, &cmd.file_path, &cmd.mode)
-                .await
+            match super::transfer::prepare_download_variant(
+                &cmd.session_id,
+                &cmd.file_path,
+                &cmd.mode,
+            )
+            .await
             {
                 Ok(data) => {
                     reply(

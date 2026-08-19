@@ -157,9 +157,7 @@ fn prune_preview_cache() {
         let expired = modified
             .and_then(|value| value.elapsed().ok())
             .is_some_and(|age| age > TRANSFER_TTL);
-        if (expired || total > MAX_PREVIEW_CACHE_BYTES)
-            && std::fs::remove_file(path).is_ok()
-        {
+        if (expired || total > MAX_PREVIEW_CACHE_BYTES) && std::fs::remove_file(path).is_ok() {
             total = total.saturating_sub(size);
         }
     }
@@ -541,26 +539,23 @@ pub(super) async fn prepare_download_variant(
     let source_for_prepare = source.clone();
     let display_name_for_prepare = display_name.clone();
     let variant_for_prepare = requested_variant.to_string();
-    let prepared = tokio::task::spawn_blocking(move || {
-        match variant_for_prepare.as_str() {
-            "original" => prepare_original(&source_for_prepare, &display_name_for_prepare),
-            "" | "preview" => prepare_preview_cached(&source_for_prepare, &display_name_for_prepare)
+    let prepared = tokio::task::spawn_blocking(move || match variant_for_prepare.as_str() {
+        "original" => prepare_original(&source_for_prepare, &display_name_for_prepare),
+        "" | "preview" => prepare_preview_cached(&source_for_prepare, &display_name_for_prepare)
             .or_else(|_| prepare_original(&source_for_prepare, &display_name_for_prepare)),
-            _ => Err("Unsupported download variant.".to_string().into()),
-        }
+        _ => Err("Unsupported download variant.".to_string().into()),
     })
     .await
     .map_err(|error| format!("Preview preparation task failed: {error}"))??;
     let prepared_path = prepared.path.clone();
-    let (size, content_hash) = tokio::task::spawn_blocking(
-        move || -> Result<(u64, String), crate::AppError> {
+    let (size, content_hash) =
+        tokio::task::spawn_blocking(move || -> Result<(u64, String), crate::AppError> {
             let size = std::fs::metadata(&prepared_path)?.len();
             let content_hash = sha256_file(&prepared_path)?;
             Ok((size, content_hash))
-        },
-    )
-    .await
-    .map_err(|error| format!("Preview hashing task failed: {error}"))??;
+        })
+        .await
+        .map_err(|error| format!("Preview hashing task failed: {error}"))??;
     let transfer_id = new_transfer_id("download");
     let info = DownloadInfo {
         transfer_id: transfer_id.clone(),
