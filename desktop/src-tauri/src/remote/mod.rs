@@ -727,6 +727,7 @@ pub async fn unpair() -> Result<RemoteStatus, crate::AppError> {
         pairing::revoke_pairing(&creds).await?;
     }
     let status = stop();
+    transfer::clear_preview_cache();
     pairing::clear_creds()?;
     Ok(status)
 }
@@ -825,7 +826,10 @@ fn stop_runtime() -> RemoteStatus {
         if let Some(web_task) = state.web_task {
             web_task.abort();
         }
-        transfer::clear_all();
+        // In-flight transfers are generation-scoped, but prepared previews are
+        // safe content-derived artifacts. Preserve them across bridge restarts
+        // so a transient NATS reconnect cannot force an expensive re-encode.
+        transfer::clear_transfers();
     }
     empty()
 }

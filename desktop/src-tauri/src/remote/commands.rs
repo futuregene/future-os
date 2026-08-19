@@ -261,7 +261,6 @@ async fn handle_command_singleflight(
             }
         }
     };
-
     if inserted {
         let slots = reply_slots.clone();
         let id = command_id.clone();

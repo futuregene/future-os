@@ -20,7 +20,8 @@ const decoder = new TextDecoder();
 const HANDSHAKE_PROTOCOL_VERSION = 1;
 const FOREGROUND_PROBE_TIMEOUT_MS = 4_000;
 
-export type RecoveryReason = "foreground" | "network-restored" | "network-changed";
+export type RecoveryReason =
+  "foreground" | "network-restored" | "network-changed" | "request-failure";
 
 interface HandshakeConfirmation {
   confirmed: boolean;
@@ -174,9 +175,20 @@ export class RemoteClient {
   private async runRecovery(reason: RecoveryReason): Promise<void> {
     const connection = this.connection;
     const generation = this.generation;
-    if (reason === "foreground" && connection && !connection.isClosed()) {
+    if (
+      (reason === "foreground" || reason === "request-failure") &&
+      connection &&
+      !connection.isClosed()
+    ) {
       try {
-        await withTimeout(connection.flush(), FOREGROUND_PROBE_TIMEOUT_MS);
+        // A command timeout can be a slow desktop handler or a half-open WSS.
+        // Probe briefly: keep a healthy socket (the stable command id will
+        // retrieve the singleflight result), but rebuild a half-open one before
+        // the only prepare retry is spent on the same dead path.
+        await withTimeout(
+          connection.flush(),
+          reason === "request-failure" ? 1_000 : FOREGROUND_PROBE_TIMEOUT_MS,
+        );
         if (
           !this.stopped &&
           this.networkAvailable &&
@@ -657,10 +669,22 @@ export class RemoteClient {
   async request<T>(
     command: RemoteCommand,
     sessionId = command.sessionId ?? "list",
+    timeoutMs = 10_000,
   ): Promise<RpcResponse<T>> {
     const connection = this.connection;
     if (!connection) throw new Error("not_connected");
-    return this.requestWithConnection(connection, command, sessionId);
+    return this.requestWithConnection(connection, command, sessionId, timeoutMs);
+  }
+
+  /** Recover a stale request path only for transport failures. Business errors
+   * must surface immediately and must never enter the transfer retry loop. */
+  async recoverAfterTransientRequest(error: unknown): Promise<boolean> {
+    if (!isTransientNatsRequestError(error)) return false;
+    // The retry itself remains the source of truth. Recovery is best-effort:
+    // if reconnecting fails, let the bounded retry report its own transport
+    // error instead of replacing it with an internal recovery exception.
+    await this.recoverNow("request-failure").catch(() => undefined);
+    return true;
   }
 
   /**
@@ -736,12 +760,13 @@ export class RemoteClient {
     connection: NatsConnection,
     command: RemoteCommand,
     sessionId = command.sessionId ?? "list",
+    timeoutMs = 10_000,
   ): Promise<RpcResponse<T>> {
     const payload = { ...command, id: command.id ?? randomId("cmd") };
     const message = await connection.request(
       `p.${this.credentials.pairId}.cmd.${sessionId || "new"}`,
       encoder.encode(JSON.stringify(payload)),
-      { timeout: 10_000 },
+      { timeout: timeoutMs },
     );
     const response = decodeJson<RpcResponse<T>>(message.data);
     if (!response.success) {
@@ -832,6 +857,7 @@ class RemoteResponseError extends Error {
 
 function isTransientNatsRequestError(error: unknown): boolean {
   if (error instanceof RemoteResponseError) return false;
+  if (error instanceof Error && error.message === "not_connected") return true;
   const code =
     typeof error === "object" && error !== null && "code" in error
       ? (error as { code?: unknown }).code

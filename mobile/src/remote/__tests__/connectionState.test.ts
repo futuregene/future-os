@@ -506,6 +506,31 @@ describe("RemoteClient request retry classification", () => {
     );
     expect(request).toHaveBeenCalledTimes(1);
   });
+
+  test("recovers only transient request failures", async () => {
+    const { client } = recoveryClient();
+    const recoverNow = jest.spyOn(client, "recoverNow").mockResolvedValue(undefined);
+
+    await expect(
+      client.recoverAfterTransientRequest(new NatsError("timeout", ErrorCode.Timeout)),
+    ).resolves.toBe(true);
+    await expect(client.recoverAfterTransientRequest(new Error("business_error"))).resolves.toBe(
+      false,
+    );
+    expect(recoverNow).toHaveBeenCalledTimes(1);
+    expect(recoverNow).toHaveBeenCalledWith("request-failure");
+  });
+
+  test("passes a command-specific timeout to NATS", async () => {
+    const { client } = recoveryClient();
+    const request = jest.fn().mockResolvedValue({
+      data: response({ success: true, data: { ok: true } }),
+    });
+    (client as unknown as { connection: { request: jest.Mock } | null }).connection = { request };
+
+    await client.request({ type: "list_sessions" }, "list", 20_000);
+    expect(request.mock.calls[0]?.[2]).toEqual({ timeout: 20_000 });
+  });
 });
 
 describe("RemoteClient OS lifecycle recovery", () => {

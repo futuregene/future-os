@@ -119,6 +119,7 @@ interface DownloadHandle {
   fileName: string;
   visible: boolean;
   controller: AbortController;
+  handoffPending: boolean;
 }
 
 interface FileAction {
@@ -205,14 +206,23 @@ function plainText(bytes: Uint8Array): string | null {
 
 function confirmDownload(title: string, message: string, cancel: string, download: string) {
   return new Promise<boolean>(resolve => {
+    let settled = false;
+    const settleAfterDismissal = (accepted: boolean) => {
+      if (settled) return;
+      settled = true;
+      // Alert button callbacks can run before UIKit has released its
+      // presentation controller. Continue only after the dismissal window so
+      // the progress Modal never competes with the cellular-confirmation alert.
+      deferPresentation(() => resolve(accepted));
+    };
     Alert.alert(
       title,
       message,
       [
-        { text: cancel, style: "cancel", onPress: () => resolve(false) },
-        { text: download, onPress: () => resolve(true) },
+        { text: cancel, style: "cancel", onPress: () => settleAfterDismissal(false) },
+        { text: download, onPress: () => settleAfterDismissal(true) },
       ],
-      { cancelable: true, onDismiss: () => resolve(false) },
+      { cancelable: true, onDismiss: () => settleAfterDismissal(false) },
     );
   });
 }
@@ -233,6 +243,8 @@ export function ChatScreen() {
   // download-progress Modal is still dismissing. Keep the next presentation
   // out of render state until `onDismiss` confirms that first Modal is gone.
   const pendingDownloadModalRef = useRef<(() => void) | null>(null);
+  const pendingDownloadHandleRef = useRef<DownloadHandle | null>(null);
+  const pendingPreviewActionRef = useRef<(() => void) | null>(null);
   const [preview, setPreview] = useState<{
     attachment: HistoryAttachment;
     info: DownloadInfo;
@@ -283,6 +295,7 @@ export function ChatScreen() {
         fileName,
         visible,
         controller: new AbortController(),
+        handoffPending: false,
       };
       activeDownloadRef.current = handle;
       if (visible) {
@@ -325,7 +338,11 @@ export function ChatScreen() {
     [],
   );
 
-  const finishDownload = useCallback((handle: DownloadHandle) => {
+  const finishDownload = useCallback((handle: DownloadHandle, force = false) => {
+    // An iOS handoff requested before Modal.onShow must keep the progress
+    // Modal mounted until UIKit confirms presentation. onShow then forces the
+    // state clear, and only onDismiss is allowed to present the next surface.
+    if (handle.handoffPending && !force) return;
     if (activeDownloadRef.current?.id !== handle.id) return;
     activeDownloadRef.current = null;
     setActiveDownload(null);
@@ -333,6 +350,11 @@ export function ChatScreen() {
 
   const flushPendingDownloadModal = useCallback(() => {
     downloadModalPresentedRef.current = false;
+    const handle = pendingDownloadHandleRef.current;
+    if (handle) {
+      handle.handoffPending = false;
+    }
+    pendingDownloadHandleRef.current = null;
     const present = pendingDownloadModalRef.current;
     pendingDownloadModalRef.current = null;
     present?.();
@@ -346,18 +368,18 @@ export function ChatScreen() {
         return;
       }
       pendingDownloadModalRef.current = present;
-      finishDownload(handle);
-      // `onDismiss` is iOS-only. Android continues after the state commit. On
-      // iOS, normally wait for Modal.onDismiss; only use the timer if the
-      // progress modal never reached onShow at all.
+      pendingDownloadHandleRef.current = handle;
+      // `onDismiss` is iOS-only. Android continues after the state commit.
+      // On iOS, if the work finishes before onShow, keep the Modal visible
+      // until onShow and then dismiss it. This avoids the invalid state where
+      // UIKit is still presenting the progress controller while a timer tries
+      // to present the preview/share controller on top of it.
       if (Platform.OS !== "ios") {
+        finishDownload(handle, true);
         deferPresentation(flushPendingDownloadModal);
-      } else if (!downloadModalPresentedRef.current) {
-        setTimeout(() => {
-          if (!downloadModalPresentedRef.current && pendingDownloadModalRef.current === present) {
-            flushPendingDownloadModal();
-          }
-        }, 500);
+      } else {
+        handle.handoffPending = true;
+        if (downloadModalPresentedRef.current) finishDownload(handle, true);
       }
     },
     [finishDownload, flushPendingDownloadModal],
@@ -373,12 +395,46 @@ export function ChatScreen() {
   const cancelActiveDownload = useCallback(() => {
     const handle = activeDownloadRef.current;
     if (!handle) return;
+    pendingDownloadModalRef.current = null;
+    pendingDownloadHandleRef.current = null;
+    handle.handoffPending = false;
     handle.controller.abort();
     // Local cancellation must be immediate even while an underlying NATS
     // request is waiting for its transport timeout. Late callbacks are scoped
     // to this handle and are ignored once it has been released.
-    finishDownload(handle);
+    finishDownload(handle, true);
   }, [finishDownload]);
+
+  const closePreview = useCallback(() => {
+    pendingPreviewActionRef.current = null;
+    setPreview(null);
+  }, []);
+
+  const dismissPreviewThen = useCallback(
+    (action: () => void) => {
+      if (!preview) {
+        action();
+        return;
+      }
+      pendingPreviewActionRef.current = action;
+      setPreview(null);
+      if (Platform.OS !== "ios") {
+        deferPresentation(() => {
+          if (pendingPreviewActionRef.current !== action) return;
+          pendingPreviewActionRef.current = null;
+          action();
+        });
+      }
+    },
+    [preview],
+  );
+
+  const flushPendingPreviewAction = useCallback(() => {
+    if (Platform.OS !== "ios") return;
+    const action = pendingPreviewActionRef.current;
+    pendingPreviewActionRef.current = null;
+    action?.();
+  }, []);
 
   // Approvals live docked above the composer (not inline in the transcript), and
   // only while undecided — once a decision lands the card disappears.
@@ -509,6 +565,9 @@ export function ChatScreen() {
   useEffect(
     () => () => {
       activeDownloadRef.current?.controller.abort();
+      pendingDownloadModalRef.current = null;
+      pendingDownloadHandleRef.current = null;
+      pendingPreviewActionRef.current = null;
     },
     [],
   );
@@ -781,7 +840,7 @@ export function ChatScreen() {
           return;
         }
         const variant = fileType.route === "external" ? "original" : "preview";
-        const cachedPreview = remote.cachedAttachment(attachment, variant);
+        let cachedPreview = remote.cachedAttachment(attachment, variant);
         const info =
           cachedPreview?.info ??
           (await remote.prepareAttachment(
@@ -790,6 +849,11 @@ export function ChatScreen() {
             handle.controller.signal,
             () => handle && updateDownload(handle, { phase: "waiting_network" }),
           ));
+        // prepareAttachment records the returned content identity before it
+        // resolves. Re-read the index so a persistent disk-cache hit is used
+        // immediately instead of showing a progress Modal and verifying the
+        // same file a second time in downloadAttachment.
+        cachedPreview ??= remote.cachedAttachment(attachment, variant);
         if (info.size > MAX_FILE_BYTES) {
           handoffDownloadAlert(handle, t("attachment.tooLarge"));
           return;
@@ -828,28 +892,32 @@ export function ChatScreen() {
             totalBytes: info.size,
           });
         }
-        file = await remote.downloadAttachment(
-          info,
-          (done, total) => {
-            if (!handle) return;
-            const patch = {
-              phase: done >= total ? "verifying" : "downloading",
-              completedBytes: done,
-              totalBytes: total,
-            } as const;
-            if (handle.visible) updateDownload(handle, patch);
-            else showDownload(handle, patch);
-          },
-          handle.controller.signal,
-          () => {
-            if (!handle) return;
-            const patch = { phase: "waiting_network" } as const;
-            if (handle.visible) updateDownload(handle, patch);
-            else showDownload(handle, patch);
-          },
-        );
+        if (!file) {
+          file = await remote.downloadAttachment(
+            info,
+            (done, total) => {
+              if (!handle) return;
+              const patch = {
+                phase: done >= total ? "verifying" : "downloading",
+                completedBytes: done,
+                totalBytes: total,
+              } as const;
+              if (handle.visible) updateDownload(handle, patch);
+              else showDownload(handle, patch);
+            },
+            handle.controller.signal,
+            () => {
+              if (!handle) return;
+              const patch = { phase: "waiting_network" } as const;
+              if (handle.visible) updateDownload(handle, patch);
+              else showDownload(handle, patch);
+            },
+          );
+        }
         if (info.previewKind === "image") {
-          handoffDownloadModal(handle, () => setPreview({ attachment, info, uri: file.uri }));
+          handoffDownloadModal(handle, () => {
+            setPreview({ attachment, info, uri: file.uri });
+          });
         } else {
           const bytes = await file.bytes();
           const visible = bytes.slice(0, MARKDOWN_RENDER_BYTES);
@@ -902,7 +970,7 @@ export function ChatScreen() {
       cachedFile: File | null,
       handle?: DownloadHandle,
     ): Promise<File | null> => {
-      if (info.transferId === "local" && cachedFile) return cachedFile;
+      if (cachedFile) return cachedFile;
       const network = await Network.getNetworkStateAsync();
       if (
         network.type === Network.NetworkStateType.CELLULAR ||
@@ -1067,12 +1135,13 @@ export function ChatScreen() {
         return;
       }
       try {
-        const cached = remote.cachedAttachment(attachment, "original");
+        let cached = remote.cachedAttachment(attachment, "original");
         const info =
           cached?.info ??
           (await remote.prepareAttachment(attachment, "original", handle.controller.signal, () =>
             updateDownload(handle, { phase: "waiting_network" }),
           ));
+        cached ??= remote.cachedAttachment(attachment, "original");
         await openOrShare(info, cached?.file ?? null, true, handle);
       } catch (error) {
         if (error instanceof TransferCancelledError) return;
@@ -1106,12 +1175,13 @@ export function ChatScreen() {
       }
       try {
         const variant = fileType.route === "external" ? "original" : "preview";
-        const cachedPreview = remote.cachedAttachment(attachment, variant);
+        let cachedPreview = remote.cachedAttachment(attachment, variant);
         const info =
           cachedPreview?.info ??
           (await remote.prepareAttachment(attachment, variant, handle.controller.signal, () =>
             updateDownload(handle, { phase: "waiting_network" }),
           ));
+        cachedPreview ??= remote.cachedAttachment(attachment, variant);
         if (info.size > MAX_FILE_BYTES) {
           handoffDownloadAlert(handle, t("attachment.tooLarge"));
           return;
@@ -1567,7 +1637,8 @@ export function ChatScreen() {
 
         <Modal
           animationType="slide"
-          onRequestClose={() => setPreview(null)}
+          onDismiss={flushPendingPreviewAction}
+          onRequestClose={closePreview}
           presentationStyle="pageSheet"
           visible={preview !== null}
         >
@@ -1580,7 +1651,10 @@ export function ChatScreen() {
                 accessibilityLabel={t("attachment.save")}
                 disabled={activeDownload !== null}
                 onPress={() => {
-                  if (preview) void downloadOriginal(preview.attachment);
+                  if (preview) {
+                    const attachment = preview.attachment;
+                    dismissPreviewThen(() => void downloadOriginal(attachment));
+                  }
                 }}
               >
                 {activeDownload !== null ? (
@@ -1589,7 +1663,7 @@ export function ChatScreen() {
                   <Download color={colors.ink} size={21} />
                 )}
               </Pressable>
-              <Pressable accessibilityLabel={t("common.close")} onPress={() => setPreview(null)}>
+              <Pressable accessibilityLabel={t("common.close")} onPress={closePreview}>
                 <X color={colors.ink} size={22} />
               </Pressable>
             </View>
@@ -1633,6 +1707,10 @@ export function ChatScreen() {
           onRequestClose={cancelActiveDownload}
           onShow={() => {
             downloadModalPresentedRef.current = true;
+            const handle = pendingDownloadHandleRef.current ?? activeDownloadRef.current;
+            if (handle) {
+              if (handle.handoffPending) finishDownload(handle, true);
+            }
           }}
           transparent
           visible={activeDownload !== null}
