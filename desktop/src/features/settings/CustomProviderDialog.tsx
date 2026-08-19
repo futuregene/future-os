@@ -227,7 +227,7 @@ export function CustomProviderDialog({
   return (
     <Dialog
       bodyClassName="min-h-0 flex-1 overflow-y-auto pr-2"
-    className="flex h-[min(760px,calc(100vh-3rem))] max-w-lg flex-col"
+      className="flex h-[min(760px,calc(100vh-3rem))] max-w-lg flex-col"
       onClose={onClose}
       open={open}
       title={editing ? t("customProvider.editTitle") : t("customProvider.addTitle")}
