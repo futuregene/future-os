@@ -8,12 +8,12 @@
   Every tool call gated by your approval. Local-first. Open source.
 </p>
 
-<!-- TODO(demo): record the 60-90s demo GIF (TUI approval gate → desktop GUI → IM-bot progress →
-     session fork tree → /future-loop board), save it as docs/demo.gif, then uncomment:
 <p align="center">
-  <img src="docs/demo.gif" alt="FutureOS demo — one agent across terminal, desktop, mobile, and chat" width="800">
+  <img src="docs/tui-screenshot.png" alt="FutureOS terminal UI — built-in skills loaded, /help command palette" width="800">
 </p>
--->
+
+<!-- TODO(demo): replace the static screenshot with a 60-90s demo GIF (TUI approval gate →
+     desktop GUI → IM-bot progress → session fork tree → /future-loop board), saved as docs/demo.gif -->
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> •

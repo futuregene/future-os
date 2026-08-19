@@ -8,12 +8,12 @@
   每一次工具调用都由你审批。本地优先。开源。
 </p>
 
-<!-- TODO(demo): 录制 60–90 秒演示 GIF（TUI 审批门控 → 桌面 GUI → IM 机器人进度 →
-     会话 fork 树 → /future-loop 看板），保存为 docs/demo.gif 后取消注释：
 <p align="center">
-  <img src="docs/demo.gif" alt="FutureOS 演示——一个 Agent 跨越终端、桌面、手机与聊天软件" width="800">
+  <img src="docs/tui-screenshot.png" alt="FutureOS 终端界面——内置技能加载，/help 命令面板" width="800">
 </p>
--->
+
+<!-- TODO(demo): 录制 60–90 秒演示 GIF（TUI 审批门控 → 桌面 GUI → IM 机器人进度 →
+     会话 fork 树 → /future-loop 看板），保存为 docs/demo.gif 后替换上面的静态截图 -->
 
 <p align="center">
   <a href="#快速开始">快速开始</a> •
