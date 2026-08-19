@@ -6,8 +6,8 @@ use std::sync::Arc;
 #[cfg(test)]
 use super::prompt_helpers::build_user_message;
 use super::prompt_helpers::{
-    approve_tool_path_if_present, build_user_message_with_model_context, canonical_stream_event,
-    prepare_session_tool_call, stream_event_to_sse_data,
+    approve_tool_path_if_present, build_user_message_with_model_context, prepare_session_tool_call,
+    run_event_to_sse,
 };
 use super::ServerSession;
 
@@ -732,16 +732,6 @@ impl ServerSession {
 
         // Build per-session StreamContext (callbacks) — these are session-
         // specific closures and must NOT be stored on the shared Loop.
-        let tool_event_cb: Option<Arc<dyn Fn(crate::types::StreamEvent) + Send + Sync>> = {
-            let bt = broadcaster.clone();
-            Some(Arc::new(move |event: crate::types::StreamEvent| {
-                bt.broadcast(crate::rpc::SseEvent {
-                    event_type: event.event_type.clone(),
-                    data: stream_event_to_sse_data(&event),
-                    ..Default::default()
-                });
-            }))
-        };
         let save_messages = messages_arc.clone();
         let save_persistence = self.persistence.clone();
         let persisted_run_id = run_lease.run_id.clone();
@@ -773,7 +763,6 @@ impl ServerSession {
             system_prompt,
             on_tool_result: Some(save_closure.clone()),
             save_callback: Some(save_closure),
-            tool_event_callback: tool_event_cb,
         };
 
         // Set approval/sandbox hooks on this session's Loop config (these
@@ -891,26 +880,15 @@ impl ServerSession {
                     on_sandboxed: Some(on_sandboxed),
                 },
                 async {
-                    let bt = broadcaster.clone();
                     let be = broadcaster.clone();
                     run_loop
                         .run_streaming_with_messages(
                             initial_messages,
                             &stream_ctx,
-                            move |text| {
-                                bt.broadcast(crate::rpc::SseEvent {
-                                    event_type: "text_chunk".to_string(),
-                                    data: serde_json::json!({"text": text}).to_string(),
-                                    ..Default::default()
-                                });
-                            },
+                            |_| {},
                             move |event| {
-                                if let Some(event) = canonical_stream_event(event) {
-                                    be.broadcast(crate::rpc::SseEvent {
-                                        event_type: event.event_type.clone(),
-                                        data: stream_event_to_sse_data(&event),
-                                        ..Default::default()
-                                    });
+                                if let Some(event) = run_event_to_sse(event) {
+                                    be.broadcast(event);
                                 }
                             },
                             Some(interrupt_rx),

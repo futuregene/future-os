@@ -44,7 +44,15 @@ impl Engine {
         temperature: Option<f32>,
         max_tokens: Option<i32>,
     ) -> Result<Self> {
-        let llm_client = LLMClient::new(base_url, api_key, temperature, max_tokens);
+        let llm_client = LLMClient::from_target(
+            crate::llm::schema::ResolvedModelTarget::openai_chat_compatible(
+                model,
+                base_url,
+                api_key,
+                temperature,
+                max_tokens,
+            ),
+        );
 
         // Apply optional overrides in a chain via a scoped block — each
         // with_* consumes and returns Self (true builder pattern), so the

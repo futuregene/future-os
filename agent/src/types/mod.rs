@@ -840,52 +840,6 @@ where
     deserializer.deserialize_option(CreditCostVisitor)
 }
 
-// ─── StreamEvent ────────────────────────────────────────────────────────────
-
-/// StreamEvent matches Go's types.StreamEvent exactly.
-/// JSON field names are camelCase as specified in Go struct tags.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct StreamEvent {
-    #[serde(rename = "type")]
-    pub event_type: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub text: String,
-    #[serde(rename = "toolCall", default, skip_serializing_if = "Option::is_none")]
-    pub tool_call: Option<ToolCall>,
-    #[serde(rename = "toolName", default, skip_serializing_if = "String::is_empty")]
-    pub tool_name: String,
-    #[serde(rename = "toolID", default, skip_serializing_if = "String::is_empty")]
-    pub tool_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub usage: Option<Usage>,
-    #[serde(
-        rename = "stopReason",
-        default,
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub stop_reason: String,
-    #[serde(
-        rename = "errorText",
-        default,
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub error_text: String,
-    /// Agent-owned semantic payload used after provider events are normalized.
-    /// Provider adapters never need to populate this; it is intentionally not
-    /// part of their JSON wire format.
-    #[serde(skip)]
-    pub payload: Option<serde_json::Value>,
-    /// Tool-call array index from the streaming SSE delta chunk.  Used to route
-    /// `toolcall_delta` events to the correct tool-call accumulator when the
-    /// model streams multiple tool calls in parallel.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub tc_index: usize,
-}
-
-fn is_zero(n: &usize) -> bool {
-    *n == 0
-}
-
 // ─── ToolDef / AgentTool ──────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1013,43 +967,10 @@ pub struct ModelCost {
 
 #[async_trait::async_trait]
 pub trait LLMProvider: Send + Sync {
-    /// Protocol-neutral streaming entrypoint used by the agent loop. Existing
-    /// test/dummy providers that only implement the legacy Chat-shaped method
-    /// are bridged automatically.
     async fn stream_model(
         &self,
         request: crate::llm::schema::ModelRequest,
-    ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>>
-    {
-        use tokio_stream::StreamExt;
-        let mut legacy = self
-            .stream_chat(
-                request.model,
-                convert_to_llm(&request.messages),
-                request.tools,
-                request.system_prompt,
-            )
-            .await?;
-        let (tx, rx) = tokio::sync::mpsc::channel(16);
-        tokio::spawn(async move {
-            while let Some(event) = legacy.next().await {
-                for event in crate::llm::schema::ModelStreamEvent::from_legacy(event) {
-                    if tx.send(event).await.is_err() {
-                        return;
-                    }
-                }
-            }
-        });
-        Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
-    }
-
-    async fn stream_chat(
-        &self,
-        model: String,
-        messages: Vec<Message>,
-        tools: Vec<ToolDef>,
-        system_prompt: String,
-    ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<StreamEvent>>;
+    ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>>;
 
     /// Refresh only the API key at runtime, after an out-of-band credential
     /// change (FutureGene login/logout, custom-provider key edits). This leaves
@@ -1447,30 +1368,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ─── StreamEvent tc_index ──────────────────────────────────────────────
-
-    #[test]
-    fn stream_event_tc_index_serialization() {
-        let event = StreamEvent {
-            event_type: "toolcall_delta".to_string(),
-            tc_index: 2,
-            ..Default::default()
-        };
-        let json = serde_json::to_value(&event).unwrap();
-        assert_eq!(json["tc_index"], 2);
-    }
-
-    #[test]
-    fn stream_event_tc_index_zero_skipped() {
-        let event = StreamEvent {
-            event_type: "toolcall_delta".to_string(),
-            tc_index: 0,
-            ..Default::default()
-        };
-        let json = serde_json::to_value(&event).unwrap();
-        assert!(json.get("tc_index").is_none());
-    }
-
     // ─── AgentTool / ToolCallFn ────────────────────────────────────────────
 
     #[test]
@@ -1806,42 +1703,6 @@ mod tests {
         assert!(u.credit_cost.is_none());
     }
 
-    // ─── StreamEvent ───────────────────────────────────────────────────────
-
-    #[test]
-    fn stream_event_serialization() {
-        let event = StreamEvent {
-            event_type: "text_chunk".to_string(),
-            text: "hello".to_string(),
-            ..Default::default()
-        };
-        let json = serde_json::to_value(&event).unwrap();
-        assert_eq!(json["type"], "text_chunk");
-        assert_eq!(json["text"], "hello");
-    }
-
-    #[test]
-    fn stream_event_deserialization() {
-        let json = r#"{"type":"tool_start","toolName":"shell","toolID":"call_1"}"#;
-        let e: StreamEvent = serde_json::from_str(json).unwrap();
-        assert_eq!(e.event_type, "tool_start");
-        assert_eq!(e.tool_name, "shell");
-        assert_eq!(e.tool_id, "call_1");
-    }
-
-    #[test]
-    fn stream_event_camel_case_fields() {
-        let event = StreamEvent {
-            event_type: "agent_end".to_string(),
-            stop_reason: "max_tokens".to_string(),
-            error_text: "some error".to_string(),
-            ..Default::default()
-        };
-        let json = serde_json::to_value(&event).unwrap();
-        assert_eq!(json["stopReason"], "max_tokens");
-        assert_eq!(json["errorText"], "some error");
-    }
-
     // ─── Message ↔ AgentMessage conversion ─────────────────────────────────
 
     #[test]
@@ -2121,13 +1982,12 @@ mod tests {
         struct MinimalProvider;
         #[async_trait::async_trait]
         impl LLMProvider for MinimalProvider {
-            async fn stream_chat(
+            async fn stream_model(
                 &self,
-                _model: String,
-                _messages: Vec<Message>,
-                _tools: Vec<ToolDef>,
-                _system_prompt: String,
-            ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<StreamEvent>> {
+                _request: crate::llm::schema::ModelRequest,
+            ) -> anyhow::Result<
+                tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>,
+            > {
                 let (_tx, rx) = tokio::sync::mpsc::channel(1);
                 Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
             }
@@ -2135,9 +1995,14 @@ mod tests {
         let provider = MinimalProvider;
         provider.set_api_key("ignored");
         provider.update_thinking("high", 1234);
-        // The default stream_chat implementation is callable too.
+        // The canonical model stream implementation is callable too.
         let mut stream = provider
-            .stream_chat("m".to_string(), vec![], vec![], String::new())
+            .stream_model(crate::llm::schema::ModelRequest {
+                model: "m".into(),
+                system_prompt: String::new(),
+                messages: vec![],
+                tools: vec![],
+            })
             .await
             .unwrap();
         use tokio_stream::StreamExt;

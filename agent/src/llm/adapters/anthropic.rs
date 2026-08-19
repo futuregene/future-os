@@ -477,6 +477,13 @@ fn map_finish_reason(reason: &str) -> FinishReason {
 mod tests {
     use super::*;
 
+    fn frame(event: &str, data: Value) -> SseFrame {
+        SseFrame {
+            event: Some(event.into()),
+            data: data.to_string(),
+        }
+    }
+
     #[test]
     fn thinking_signature_round_trips_into_anthropic_block() {
         let metadata = anthropic_reasoning_metadata("sig", None);
@@ -588,5 +595,87 @@ mod tests {
         assert_eq!(usage.completion_tokens, 205);
         assert_eq!(usage.total_tokens, 1307);
         assert_eq!(usage.cache_read_tokens, Some(2816));
+    }
+
+    #[test]
+    fn decodes_streaming_tool_input_and_tool_finish() {
+        let adapter = AnthropicMessagesAdapter;
+        let mut state = adapter.new_stream_state();
+        let mut events = Vec::new();
+        for frame in [
+            frame(
+                "content_block_start",
+                json!({
+                    "type": "content_block_start",
+                    "index": 2,
+                    "content_block": {"type": "tool_use", "id": "tool_2", "name": "lookup"}
+                }),
+            ),
+            frame(
+                "content_block_delta",
+                json!({
+                    "type": "content_block_delta",
+                    "index": 2,
+                    "delta": {"type": "input_json_delta", "partial_json": "{\"q\":"}
+                }),
+            ),
+            frame(
+                "content_block_delta",
+                json!({
+                    "type": "content_block_delta",
+                    "index": 2,
+                    "delta": {"type": "input_json_delta", "partial_json": "\"rust\"}"}
+                }),
+            ),
+            frame(
+                "content_block_stop",
+                json!({"type": "content_block_stop", "index": 2}),
+            ),
+            frame(
+                "message_delta",
+                json!({
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "tool_use"},
+                    "usage": {"output_tokens": 12}
+                }),
+            ),
+            frame("message_stop", json!({"type": "message_stop"})),
+        ] {
+            events.extend(adapter.decode_frame(&frame, state.as_mut()).unwrap());
+        }
+
+        assert!(matches!(
+            events.first(),
+            Some(ModelStreamEvent::ToolInputStart {
+                index: 2,
+                id,
+                name,
+                ..
+            }) if id == "tool_2" && name == "lookup"
+        ));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, ModelStreamEvent::ToolInputDelta { .. }))
+                .count(),
+            2
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ModelStreamEvent::ToolInputEnd {
+                index: 2,
+                id,
+                name,
+                arguments,
+                ..
+            } if id == "tool_2" && name == "lookup" && arguments == &json!({"q": "rust"})
+        )));
+        assert!(matches!(
+            events.last(),
+            Some(ModelStreamEvent::Finish {
+                reason: FinishReason::ToolCalls,
+                ..
+            })
+        ));
     }
 }

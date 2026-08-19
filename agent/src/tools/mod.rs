@@ -760,16 +760,23 @@ pub fn is_soft_fail_command(command: &str) -> bool {
 ///   `is_soft_fail` when exit 1 is the command's normal no-match signal (see
 ///   [`is_soft_fail_command`]); exit 2+ from those programs is a real error.
 /// - `write` / `edit`: `target_path` from the call arguments.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ToolEndSemantics {
+    pub exit_code: Option<i32>,
+    pub is_soft_fail: Option<bool>,
+    pub target_path: Option<String>,
+}
+
 pub fn tool_end_semantics(
     tool_name: &str,
     tool_args: &serde_json::Value,
     result: &str,
-) -> serde_json::Value {
-    let mut semantics = serde_json::Map::new();
+) -> ToolEndSemantics {
+    let mut semantics = ToolEndSemantics::default();
     match tool_name {
         "shell" => {
             if let Some(code) = shell_result_exit_code(result) {
-                semantics.insert("exit_code".to_string(), serde_json::json!(code));
+                semantics.exit_code = Some(code);
                 let args = tool_args_object(tool_args);
                 let command = args
                     .as_ref()
@@ -777,7 +784,7 @@ pub fn tool_end_semantics(
                     .and_then(|command| command.as_str())
                     .unwrap_or_default();
                 if code == 1 && is_soft_fail_command(command) {
-                    semantics.insert("is_soft_fail".to_string(), serde_json::json!(true));
+                    semantics.is_soft_fail = Some(true);
                 }
             }
         }
@@ -790,12 +797,12 @@ pub fn tool_end_semantics(
                 .map(str::trim)
                 .filter(|path| !path.is_empty())
             {
-                semantics.insert("target_path".to_string(), serde_json::json!(path));
+                semantics.target_path = Some(path.to_string());
             }
         }
         _ => {}
     }
-    serde_json::Value::Object(semantics)
+    semantics
 }
 
 /// Tool-call arguments as an object: the wire shape is either a JSON object or
@@ -1787,8 +1794,8 @@ mod tests {
             &serde_json::json!({"command": "grep -r pattern src"}),
             "no matches\n[exit: 1]",
         );
-        assert_eq!(semantics["exit_code"], 1);
-        assert_eq!(semantics["is_soft_fail"], true);
+        assert_eq!(semantics.exit_code, Some(1));
+        assert_eq!(semantics.is_soft_fail, Some(true));
 
         // A pipeline makes the exit code ambiguous — no soft-fail conclusion.
         let semantics = tool_end_semantics(
@@ -1796,8 +1803,8 @@ mod tests {
             &serde_json::json!({"command": "grep -r pattern src | head"}),
             "[exit: 1]",
         );
-        assert_eq!(semantics["exit_code"], 1);
-        assert!(semantics.get("is_soft_fail").is_none());
+        assert_eq!(semantics.exit_code, Some(1));
+        assert_eq!(semantics.is_soft_fail, None);
 
         // Real failure keeps its code, no soft-fail.
         let semantics = tool_end_semantics(
@@ -1805,8 +1812,8 @@ mod tests {
             &serde_json::json!({"command": "cargo build"}),
             "error[E0308]: mismatched types\n[exit: 101]",
         );
-        assert_eq!(semantics["exit_code"], 101);
-        assert!(semantics.get("is_soft_fail").is_none());
+        assert_eq!(semantics.exit_code, Some(101));
+        assert_eq!(semantics.is_soft_fail, None);
 
         // Exit 2 from grep is a real error (only exit 1 is "no match").
         let semantics = tool_end_semantics(
@@ -1814,8 +1821,8 @@ mod tests {
             &serde_json::json!({"command": "grep -r pattern src"}),
             "grep: src: Permission denied\n[exit: 2]",
         );
-        assert_eq!(semantics["exit_code"], 2);
-        assert!(semantics.get("is_soft_fail").is_none());
+        assert_eq!(semantics.exit_code, Some(2));
+        assert_eq!(semantics.is_soft_fail, None);
 
         // Exit 0 carries the code but no failure semantics.
         let semantics = tool_end_semantics(
@@ -1823,8 +1830,8 @@ mod tests {
             &serde_json::json!({"command": "ls"}),
             "file.txt\n[exit: 0]",
         );
-        assert_eq!(semantics["exit_code"], 0);
-        assert!(semantics.get("is_soft_fail").is_none());
+        assert_eq!(semantics.exit_code, Some(0));
+        assert_eq!(semantics.is_soft_fail, None);
 
         // Killed by a signal: no numeric code, no semantics.
         let semantics = tool_end_semantics(
@@ -1832,7 +1839,7 @@ mod tests {
             &serde_json::json!({"command": "sleep 99"}),
             "[exit: signal]",
         );
-        assert_eq!(semantics, serde_json::json!({}));
+        assert_eq!(semantics, ToolEndSemantics::default());
 
         // Windows: findstr is the grep analogue; `.exe` suffix and case
         // tolerated.
@@ -1841,7 +1848,7 @@ mod tests {
             &serde_json::json!({"command": "C:\\Bin\\FINDSTR.exe pattern file"}),
             "[exit: 1]",
         );
-        assert_eq!(semantics["is_soft_fail"], true);
+        assert_eq!(semantics.is_soft_fail, Some(true));
 
         // Args may arrive as a JSON-encoded string (the agent's wire shape).
         let semantics = tool_end_semantics(
@@ -1849,7 +1856,7 @@ mod tests {
             &serde_json::Value::String(r#"{"command":"diff a b"}"#.to_string()),
             "1c1\n[exit: 1]",
         );
-        assert_eq!(semantics["is_soft_fail"], true);
+        assert_eq!(semantics.is_soft_fail, Some(true));
     }
 
     #[test]
@@ -1859,7 +1866,7 @@ mod tests {
             &serde_json::json!({"path": "/ws/report.md", "content": "..."}),
             "Written to /ws/report.md",
         );
-        assert_eq!(semantics["target_path"], "/ws/report.md");
+        assert_eq!(semantics.target_path.as_deref(), Some("/ws/report.md"));
 
         // String-encoded args work too.
         let semantics = tool_end_semantics(
@@ -1867,7 +1874,7 @@ mod tests {
             &serde_json::Value::String(r#"{"path":"C:\\ws\\main.rs"}"#.to_string()),
             "Edited C:\\ws\\main.rs",
         );
-        assert_eq!(semantics["target_path"], "C:\\ws\\main.rs");
+        assert_eq!(semantics.target_path.as_deref(), Some("C:\\ws\\main.rs"));
 
         // Other tools report nothing structured.
         let semantics = tool_end_semantics(
@@ -1875,7 +1882,7 @@ mod tests {
             &serde_json::json!({"path": "/ws/main.rs"}),
             "fn main() {}",
         );
-        assert_eq!(semantics, serde_json::json!({}));
+        assert_eq!(semantics, ToolEndSemantics::default());
     }
 
     // ─── shell_segments ────────────────────────────────────────────────────

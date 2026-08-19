@@ -889,7 +889,8 @@ mod tests {
     use super::*;
     use crate::{
         agent::Loop,
-        types::{LLMProvider, Message, StreamEvent, ToolDef},
+        llm::schema::{FinishReason, ModelRequest, ModelStreamEvent},
+        types::LLMProvider,
     };
     use tokio::sync::mpsc;
     use tokio::sync::Notify;
@@ -899,13 +900,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl LLMProvider for EmptyProvider {
-        async fn stream_chat(
+        async fn stream_model(
             &self,
-            _model: String,
-            _messages: Vec<Message>,
-            _tools: Vec<ToolDef>,
-            _system_prompt: String,
-        ) -> anyhow::Result<ReceiverStream<StreamEvent>> {
+            _request: ModelRequest,
+        ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
             let (_tx, rx) = mpsc::channel(1);
             Ok(ReceiverStream::new(rx))
         }
@@ -915,13 +913,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl LLMProvider for KeyRecordingProvider {
-        async fn stream_chat(
+        async fn stream_model(
             &self,
-            _model: String,
-            _messages: Vec<Message>,
-            _tools: Vec<ToolDef>,
-            _system_prompt: String,
-        ) -> anyhow::Result<ReceiverStream<StreamEvent>> {
+            _request: ModelRequest,
+        ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
             let (_tx, rx) = mpsc::channel(1);
             Ok(ReceiverStream::new(rx))
         }
@@ -938,22 +933,19 @@ mod tests {
 
     #[async_trait::async_trait]
     impl LLMProvider for BlockingProvider {
-        async fn stream_chat(
+        async fn stream_model(
             &self,
-            _model: String,
-            _messages: Vec<Message>,
-            _tools: Vec<ToolDef>,
-            _system_prompt: String,
-        ) -> anyhow::Result<ReceiverStream<StreamEvent>> {
+            _request: ModelRequest,
+        ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
             let (tx, rx) = mpsc::channel(2);
             self.started.notify_one();
             let release = self.release.clone();
             tokio::spawn(async move {
                 release.notified().await;
                 let _ = tx
-                    .send(StreamEvent {
-                        event_type: "stop".to_string(),
-                        ..Default::default()
+                    .send(ModelStreamEvent::Finish {
+                        reason: FinishReason::Stop,
+                        usage: None,
                     })
                     .await;
             });
@@ -2617,7 +2609,10 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn scheduler_worker_starts_queued_run_after_completion() {
-        use crate::types::{LLMProvider, Message, StreamEvent, ToolDef};
+        use crate::{
+            llm::schema::{FinishReason, ModelRequest, ModelStreamEvent},
+            types::LLMProvider,
+        };
         use tokio_stream::wrappers::ReceiverStream;
 
         struct GateProvider {
@@ -2626,27 +2621,22 @@ mod tests {
         }
         #[async_trait::async_trait]
         impl LLMProvider for GateProvider {
-            async fn stream_chat(
+            async fn stream_model(
                 &self,
-                _model: String,
-                _messages: Vec<Message>,
-                _tools: Vec<ToolDef>,
-                _system_prompt: String,
-            ) -> anyhow::Result<ReceiverStream<StreamEvent>> {
+                _request: ModelRequest,
+            ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
                 self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 if self.calls.load(std::sync::atomic::Ordering::SeqCst) == 1 {
                     self.gate.notified().await;
                 }
                 let (tx, rx) = mpsc::channel(2);
-                let _ = tx.try_send(StreamEvent {
-                    event_type: "text_delta".to_string(),
+                let _ = tx.try_send(ModelStreamEvent::TextDelta {
+                    id: "text".into(),
                     text: "reply".to_string(),
-                    ..Default::default()
                 });
-                let _ = tx.try_send(StreamEvent {
-                    event_type: "stop".to_string(),
-                    stop_reason: "end_turn".to_string(),
-                    ..Default::default()
+                let _ = tx.try_send(ModelStreamEvent::Finish {
+                    reason: FinishReason::Stop,
+                    usage: None,
                 });
                 drop(tx);
                 Ok(ReceiverStream::new(rx))

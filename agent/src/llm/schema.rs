@@ -269,175 +269,6 @@ pub enum ModelStreamEvent {
     },
 }
 
-impl ModelStreamEvent {
-    pub fn from_legacy(event: crate::types::StreamEvent) -> Vec<Self> {
-        use crate::types::ProviderMetadata;
-        match event.event_type.as_str() {
-            "text_start" => vec![Self::TextStart { id: "text".into() }],
-            "text" | "text_delta" => vec![Self::TextDelta {
-                id: "text".into(),
-                text: event.text,
-            }],
-            "text_end" => vec![Self::TextEnd { id: "text".into() }],
-            "thinking_start" => vec![Self::ReasoningStart {
-                id: "reasoning".into(),
-            }],
-            "thinking_delta" => vec![Self::ReasoningDelta {
-                id: "reasoning".into(),
-                text: event.text,
-            }],
-            "thinking_end" => vec![Self::ReasoningEnd {
-                id: "reasoning".into(),
-                provider_metadata: ProviderMetadata::new(),
-            }],
-            "toolcall_start" => vec![Self::ToolInputStart {
-                index: event.tc_index,
-                id: event.tool_id,
-                name: event.tool_name,
-                arguments: event.tool_call.map(|call| call.function.arguments),
-                provider_metadata: ProviderMetadata::new(),
-            }],
-            "toolcall_delta" => vec![Self::ToolInputDelta {
-                index: event.tc_index,
-                id: event.tool_id,
-                delta: event.text,
-                snapshot: false,
-            }],
-            "tool_call" | "toolcall_end" => vec![Self::ToolInputEnd {
-                index: event.tc_index,
-                id: event.tool_id,
-                name: event.tool_name,
-                arguments: event
-                    .tool_call
-                    .map(|call| call.function.arguments)
-                    .unwrap_or(Value::Null),
-                provider_metadata: ProviderMetadata::new(),
-            }],
-            "usage" => event.usage.map(Self::Usage).into_iter().collect(),
-            "stop" => vec![Self::Finish {
-                reason: match event.stop_reason.as_str() {
-                    "" | "stop" => FinishReason::Stop,
-                    "tool_calls" => FinishReason::ToolCalls,
-                    "length" => FinishReason::Length,
-                    "content_filter" => FinishReason::ContentFilter,
-                    "truncated" => FinishReason::Incomplete,
-                    other => FinishReason::Unknown(other.to_string()),
-                },
-                usage: event.usage,
-            }],
-            "error" => vec![Self::Error {
-                message: event.error_text,
-            }],
-            _ => Vec::new(),
-        }
-    }
-
-    pub fn to_legacy(&self) -> crate::types::StreamEvent {
-        use crate::types::{StreamEvent, ToolCall, ToolCallFn};
-        match self {
-            Self::TextStart { .. } => StreamEvent {
-                event_type: "text_start".into(),
-                ..Default::default()
-            },
-            Self::TextDelta { text, .. } => StreamEvent {
-                event_type: "text_delta".into(),
-                text: text.clone(),
-                ..Default::default()
-            },
-            Self::TextEnd { .. } => StreamEvent {
-                event_type: "text_end".into(),
-                ..Default::default()
-            },
-            Self::ReasoningStart { .. } => StreamEvent {
-                event_type: "thinking_start".into(),
-                ..Default::default()
-            },
-            Self::ReasoningDelta { text, .. } => StreamEvent {
-                event_type: "thinking_delta".into(),
-                text: text.clone(),
-                ..Default::default()
-            },
-            Self::ReasoningEnd { .. } => StreamEvent {
-                event_type: "thinking_end".into(),
-                ..Default::default()
-            },
-            Self::ToolInputStart {
-                index,
-                id,
-                name,
-                arguments,
-                ..
-            } => StreamEvent {
-                event_type: "toolcall_start".into(),
-                tool_id: id.clone(),
-                tool_name: name.clone(),
-                tc_index: *index,
-                tool_call: Some(ToolCall {
-                    id: id.clone(),
-                    call_type: "function".into(),
-                    function: ToolCallFn {
-                        name: name.clone(),
-                        arguments: arguments
-                            .clone()
-                            .unwrap_or_else(|| Value::String(String::new())),
-                    },
-                }),
-                ..Default::default()
-            },
-            Self::ToolInputDelta {
-                index,
-                id,
-                delta,
-                snapshot,
-            } => StreamEvent {
-                event_type: "toolcall_delta".into(),
-                tool_id: id.clone(),
-                text: delta.clone(),
-                tc_index: *index,
-                payload: Some(serde_json::json!({"snapshot": snapshot})),
-                ..Default::default()
-            },
-            Self::ToolInputEnd {
-                index,
-                id,
-                name,
-                arguments,
-                ..
-            } => StreamEvent {
-                event_type: "toolcall_end".into(),
-                tool_id: id.clone(),
-                tool_name: name.clone(),
-                tc_index: *index,
-                tool_call: Some(ToolCall {
-                    id: id.clone(),
-                    call_type: "function".into(),
-                    function: ToolCallFn {
-                        name: name.clone(),
-                        arguments: arguments.clone(),
-                    },
-                }),
-                ..Default::default()
-            },
-            Self::Usage(usage) => StreamEvent {
-                event_type: "usage".into(),
-                usage: Some(usage.clone()),
-                ..Default::default()
-            },
-            Self::Finish { reason, usage } => StreamEvent {
-                event_type: "stop".into(),
-                stop_reason: reason.as_str().to_string(),
-                usage: usage.clone(),
-                ..Default::default()
-            },
-            Self::Error { message } => StreamEvent {
-                event_type: "error".into(),
-                error_text: message.clone(),
-                ..Default::default()
-            },
-        }
-    }
-}
-
 impl ResolvedModelTarget {
     pub fn from_model(
         model: &crate::models::Model,
@@ -506,14 +337,15 @@ impl ResolvedModelTarget {
         })
     }
 
-    pub fn legacy_chat(
+    pub fn openai_chat_compatible(
+        model_id: impl Into<String>,
         base_url: &str,
         api_key: &str,
         temperature: Option<f32>,
         max_output_tokens: Option<i32>,
     ) -> Self {
         Self {
-            model_id: String::new(),
+            model_id: model_id.into(),
             route: ProviderRoute {
                 provider_id: String::new(),
                 base_url: base_url.to_string(),

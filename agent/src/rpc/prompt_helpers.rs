@@ -4,91 +4,191 @@
 
 use std::path::Path;
 
-/// Serialize a `StreamEvent` into the JSON `data` payload of an `SseEvent`.
-///
-/// Every optional field is emitted only when the event carries it, so the
-/// tool-only callback (tool_start/tool_end) and the full event callback share
-/// one schema instead of drifting — previously the tool path silently omitted
-/// `stopReason`/`usage`/`tc_index`.
-pub(super) fn stream_event_to_sse_data(event: &crate::types::StreamEvent) -> String {
-    let mut data = event
-        .payload
-        .as_ref()
-        .and_then(|value| value.as_object())
-        .cloned()
-        .unwrap_or_default();
-    data.insert("type".to_string(), serde_json::json!(&event.event_type));
-    if !event.text.is_empty() {
-        data.insert("text".to_string(), serde_json::json!(&event.text));
-    }
-    if !event.tool_name.is_empty() {
-        data.insert("tool_name".to_string(), serde_json::json!(&event.tool_name));
-    }
-    if !event.tool_id.is_empty() {
-        data.insert("tool_id".to_string(), serde_json::json!(&event.tool_id));
-    }
-    if !event.error_text.is_empty() {
-        data.insert("error".to_string(), serde_json::json!(&event.error_text));
-    }
-    if !event.stop_reason.is_empty() {
-        data.insert(
-            "stopReason".to_string(),
-            serde_json::json!(&event.stop_reason),
-        );
-    }
-    if let Some(usage) = &event.usage {
-        data.insert("usage".to_string(), serde_json::json!(usage));
-    }
-    if let Some(ref tc) = event.tool_call {
-        data.insert("tool_args".to_string(), tc.function.arguments.clone());
-    }
-    if event.tc_index > 0 {
-        data.insert("tc_index".to_string(), serde_json::json!(event.tc_index));
-    }
-    serde_json::to_string(&data).unwrap_or_default()
+/// Project the agent's typed run events onto the stable public RPC vocabulary.
+/// This is the only model/run-event boundary that knows the string event names
+/// and legacy JSON `data` shapes retained by released clients.
+pub(super) fn run_event_to_sse(event: crate::agent::RunEvent) -> Option<super::SseEvent> {
+    use crate::agent::RunEvent;
+    use crate::llm::schema::ModelStreamEvent;
+
+    let projected = match event {
+        RunEvent::AgentStart { started_at_ms } => (
+            "agent_start",
+            ordered_data([
+                ("started_at_ms", serde_json::json!(started_at_ms)),
+                ("type", serde_json::json!("agent_start")),
+            ]),
+        ),
+        RunEvent::CompactionEnd {
+            tokens_before,
+            summary,
+        } => (
+            "compaction_end",
+            ordered_data([
+                ("tokens_before", serde_json::json!(tokens_before)),
+                ("summary", serde_json::json!(summary)),
+                ("aborted", serde_json::json!(false)),
+                ("reason", serde_json::json!("auto")),
+                ("type", serde_json::json!("compaction_end")),
+            ]),
+        ),
+        RunEvent::ToolExecutionStarted {
+            id,
+            name,
+            arguments,
+        } => (
+            "tool_start",
+            ordered_data([
+                ("type", serde_json::json!("tool_start")),
+                ("tool_name", serde_json::json!(name)),
+                ("tool_id", serde_json::json!(id)),
+                ("tool_args", arguments),
+            ]),
+        ),
+        RunEvent::ToolExecutionFinished {
+            id,
+            name,
+            output,
+            error,
+            exit_code,
+            is_soft_fail,
+            target_path,
+        } => {
+            let mut data = serde_json::Map::new();
+            insert_some(&mut data, "exit_code", exit_code);
+            insert_some(&mut data, "is_soft_fail", is_soft_fail);
+            insert_some(&mut data, "target_path", target_path);
+            data.insert("type".into(), serde_json::json!("tool_end"));
+            if !output.is_empty() {
+                data.insert("text".into(), serde_json::json!(output));
+            }
+            if !name.is_empty() {
+                data.insert("tool_name".into(), serde_json::json!(name));
+            }
+            if !id.is_empty() {
+                data.insert("tool_id".into(), serde_json::json!(id));
+            }
+            if let Some(error) = error.filter(|error| !error.is_empty()) {
+                data.insert("error".into(), serde_json::json!(error));
+            }
+            ("tool_end", serde_json::Value::Object(data))
+        }
+        RunEvent::Model(model_event) => match model_event {
+            ModelStreamEvent::TextStart { .. } | ModelStreamEvent::TextEnd { .. } => return None,
+            ModelStreamEvent::TextDelta { text, .. } => {
+                ("text_chunk", serde_json::json!({"text": text}))
+            }
+            ModelStreamEvent::ReasoningStart { .. } => (
+                "thinking_start",
+                ordered_data([("type", serde_json::json!("thinking_start"))]),
+            ),
+            ModelStreamEvent::ReasoningDelta { text, .. } => (
+                "thinking_delta",
+                ordered_data([
+                    ("type", serde_json::json!("thinking_delta")),
+                    ("text", serde_json::json!(text)),
+                ]),
+            ),
+            ModelStreamEvent::ReasoningEnd { .. } => (
+                "thinking_end",
+                ordered_data([("type", serde_json::json!("thinking_end"))]),
+            ),
+            ModelStreamEvent::ToolInputStart {
+                index,
+                id,
+                name,
+                arguments,
+                ..
+            } => {
+                let mut data = serde_json::Map::new();
+                data.insert("type".into(), serde_json::json!("tool_start"));
+                if !name.is_empty() {
+                    data.insert("tool_name".into(), serde_json::json!(name));
+                }
+                if !id.is_empty() {
+                    data.insert("tool_id".into(), serde_json::json!(id));
+                }
+                data.insert(
+                    "tool_args".into(),
+                    arguments.unwrap_or_else(|| serde_json::Value::String(String::new())),
+                );
+                if index > 0 {
+                    data.insert("tc_index".into(), serde_json::json!(index));
+                }
+                ("tool_start", serde_json::Value::Object(data))
+            }
+            ModelStreamEvent::ToolInputDelta {
+                index,
+                id,
+                delta,
+                snapshot,
+            } => {
+                let mut data = serde_json::Map::new();
+                data.insert("snapshot".into(), serde_json::json!(snapshot));
+                data.insert("type".into(), serde_json::json!("tool_delta"));
+                if !delta.is_empty() {
+                    data.insert("text".into(), serde_json::json!(delta));
+                }
+                if !id.is_empty() {
+                    data.insert("tool_id".into(), serde_json::json!(id));
+                }
+                if index > 0 {
+                    data.insert("tc_index".into(), serde_json::json!(index));
+                }
+                ("tool_delta", serde_json::Value::Object(data))
+            }
+            ModelStreamEvent::ToolInputEnd { .. } => return None,
+            ModelStreamEvent::Usage(usage) => (
+                "usage",
+                ordered_data([
+                    ("type", serde_json::json!("usage")),
+                    ("usage", serde_json::json!(usage)),
+                ]),
+            ),
+            ModelStreamEvent::Finish { reason, usage } => {
+                let usage = usage?;
+                (
+                    "usage",
+                    ordered_data([
+                        ("type", serde_json::json!("usage")),
+                        ("stopReason", serde_json::json!(reason.as_str())),
+                        ("usage", serde_json::json!(usage)),
+                    ]),
+                )
+            }
+            ModelStreamEvent::Error { message } => (
+                "error",
+                ordered_data([
+                    ("type", serde_json::json!("error")),
+                    ("error", serde_json::json!(message)),
+                ]),
+            ),
+        },
+    };
+
+    Some(super::SseEvent {
+        event_type: projected.0.to_string(),
+        data: serde_json::to_string(&projected.1).unwrap_or_default(),
+        ..Default::default()
+    })
 }
 
-/// Convert provider-specific stream events into the public RunEvent vocabulary.
-/// Text is projected exclusively through `text_chunk`; tool-call construction
-/// aliases are mapped to `tool_start`/`tool_delta`; provider terminal frames are
-/// internal unless they carry usage. Unknown raw event types are deliberately
-/// dropped so adding a provider cannot silently expand the RPC contract.
-pub(super) fn canonical_stream_event(
-    mut event: crate::types::StreamEvent,
-) -> Option<crate::types::StreamEvent> {
-    match event.event_type.as_str() {
-        "text" | "text_delta" | "text_start" | "text_end" => None,
-        // Tool-call terminal frames are internal, but providers attach per-call
-        // usage to them (usage + finish_reason "tool_calls" in one chunk) —
-        // promote to `usage` like `stop` so clients summing per-call usage
-        // agree with the run total instead of only seeing the last call.
-        "toolcall_end" | "tool_call" => event.usage.is_some().then(|| {
-            event.event_type = "usage".to_string();
-            event
-        }),
-        "toolcall_start" => {
-            event.event_type = "tool_start".to_string();
-            if let Some(tool_call) = event.tool_call.as_ref() {
-                if event.tool_id.is_empty() {
-                    event.tool_id = tool_call.id.clone();
-                }
-                if event.tool_name.is_empty() {
-                    event.tool_name = tool_call.function.name.clone();
-                }
-            }
-            Some(event)
-        }
-        "toolcall_delta" => {
-            event.event_type = "tool_delta".to_string();
-            Some(event)
-        }
-        "stop" => event.usage.is_some().then(|| {
-            event.event_type = "usage".to_string();
-            event
-        }),
-        "agent_start" | "thinking_start" | "thinking_delta" | "thinking_end" | "tool_start"
-        | "tool_delta" | "tool_end" | "usage" | "error" | "compaction_end" => Some(event),
-        _ => None,
+fn ordered_data<const N: usize>(entries: [(&str, serde_json::Value); N]) -> serde_json::Value {
+    serde_json::Value::Object(
+        entries
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value))
+            .collect(),
+    )
+}
+
+fn insert_some<T: serde::Serialize>(
+    data: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    value: Option<T>,
+) {
+    if let Some(value) = value {
+        data.insert(key.to_string(), serde_json::json!(value));
     }
 }
 
@@ -273,266 +373,126 @@ pub(super) fn resolve_workspace_path(cwd: &str, path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Attachment, ImageContent, StreamEvent};
+    use crate::agent::RunEvent;
+    use crate::llm::schema::{FinishReason, ModelStreamEvent};
+    use crate::types::{Attachment, ImageContent, Usage};
 
-    // ─── stream_event_to_sse_data ──────────────────────────────────────────
-
-    #[test]
-    fn sse_data_text_event() {
-        let event = StreamEvent {
-            event_type: "text_delta".to_string(),
-            text: "hello".to_string(),
-            ..Default::default()
-        };
-        let data = stream_event_to_sse_data(&event);
-        assert!(data.contains("\"type\":\"text_delta\""));
-        assert!(data.contains("\"text\":\"hello\""));
+    fn project(event: RunEvent) -> (String, String) {
+        let event = run_event_to_sse(event).expect("projected event");
+        (event.event_type, event.data)
     }
 
     #[test]
-    fn provider_aliases_are_normalized_at_rpc_boundary() {
-        let tool = crate::types::ToolCall {
-            id: "call-1".to_string(),
-            call_type: "function".to_string(),
-            function: crate::types::ToolCallFn {
-                name: "read".to_string(),
-                arguments: serde_json::json!({"path": "a.txt"}),
-            },
-        };
-        let start = canonical_stream_event(StreamEvent {
-            event_type: "toolcall_start".to_string(),
-            tool_call: Some(tool),
-            ..Default::default()
-        })
-        .expect("canonical tool start");
-        assert_eq!(start.event_type, "tool_start");
-        assert_eq!(start.tool_id, "call-1");
-        assert_eq!(start.tool_name, "read");
-
-        let delta = canonical_stream_event(StreamEvent {
-            event_type: "toolcall_delta".to_string(),
-            text: "{}".to_string(),
-            ..Default::default()
-        })
-        .expect("canonical tool delta");
-        assert_eq!(delta.event_type, "tool_delta");
-        assert!(canonical_stream_event(StreamEvent {
-            event_type: "text_delta".to_string(),
-            text: "duplicate".to_string(),
-            ..Default::default()
-        })
-        .is_none());
-        assert!(canonical_stream_event(StreamEvent {
-            event_type: "provider_private_event".to_string(),
-            ..Default::default()
-        })
-        .is_none());
-    }
-
-    #[test]
-    fn canonical_tool_start_keeps_preset_id_and_name() {
-        // tool_id/tool_name already populated → the tool_call fallback is
-        // skipped for both fields.
-        let tool = crate::types::ToolCall {
-            id: "call-9".to_string(),
-            call_type: "function".to_string(),
-            function: crate::types::ToolCallFn {
-                name: "write".to_string(),
-                arguments: serde_json::json!({}),
-            },
-        };
-        let start = canonical_stream_event(StreamEvent {
-            event_type: "toolcall_start".to_string(),
-            tool_id: "preset-id".to_string(),
-            tool_name: "preset-name".to_string(),
-            tool_call: Some(tool),
-            ..Default::default()
-        })
-        .expect("canonical tool start");
-        assert_eq!(start.tool_id, "preset-id");
-        assert_eq!(start.tool_name, "preset-name");
-
-        // No tool_call payload at all → the fallback block is skipped.
-        let bare = canonical_stream_event(StreamEvent {
-            event_type: "toolcall_start".to_string(),
-            ..Default::default()
-        })
-        .expect("canonical tool start without payload");
-        assert_eq!(bare.event_type, "tool_start");
-        assert!(bare.tool_id.is_empty());
-    }
-
-    #[test]
-    fn canonical_stop_with_usage_becomes_usage_event() {
-        let event = canonical_stream_event(StreamEvent {
-            event_type: "stop".to_string(),
-            usage: Some(crate::types::Usage {
-                prompt_tokens: 1,
-                completion_tokens: 2,
-                total_tokens: 3,
-                ..Default::default()
-            }),
-            ..Default::default()
-        })
-        .expect("stop with usage is surfaced as usage");
-        assert_eq!(event.event_type, "usage");
-        // A stop WITHOUT usage stays internal.
-        assert!(canonical_stream_event(StreamEvent {
-            event_type: "stop".to_string(),
-            ..Default::default()
-        })
-        .is_none());
-    }
-
-    #[test]
-    fn canonical_toolcall_terminal_with_usage_becomes_usage_event() {
-        // Intermediate LLM calls end with finish_reason "tool_calls"; the chunk
-        // carries that call's usage. It must surface as `usage` so per-call
-        // sums match the run total.
-        for terminal in ["toolcall_end", "tool_call"] {
-            let event = canonical_stream_event(StreamEvent {
-                event_type: terminal.to_string(),
-                usage: Some(crate::types::Usage {
-                    prompt_tokens: 10,
-                    completion_tokens: 20,
-                    total_tokens: 30,
-                    ..Default::default()
+    fn typed_run_events_preserve_public_wire_shapes() {
+        let fixtures = [
+            (
+                RunEvent::AgentStart { started_at_ms: 42 },
+                "agent_start",
+                r#"{"started_at_ms":42,"type":"agent_start"}"#,
+            ),
+            (
+                RunEvent::Model(ModelStreamEvent::TextDelta {
+                    id: "msg".into(),
+                    text: "hello".into(),
                 }),
-                ..Default::default()
-            })
-            .expect("tool-call terminal with usage is surfaced as usage");
-            assert_eq!(event.event_type, "usage");
-            // Without usage the terminal frame stays internal.
-            assert!(canonical_stream_event(StreamEvent {
-                event_type: terminal.to_string(),
-                ..Default::default()
-            })
-            .is_none());
+                "text_chunk",
+                r#"{"text":"hello"}"#,
+            ),
+            (
+                RunEvent::Model(ModelStreamEvent::ReasoningDelta {
+                    id: "reasoning".into(),
+                    text: "think".into(),
+                }),
+                "thinking_delta",
+                r#"{"type":"thinking_delta","text":"think"}"#,
+            ),
+            (
+                RunEvent::Model(ModelStreamEvent::ToolInputDelta {
+                    index: 2,
+                    id: "call".into(),
+                    delta: "{}".into(),
+                    snapshot: true,
+                }),
+                "tool_delta",
+                r#"{"snapshot":true,"type":"tool_delta","text":"{}","tool_id":"call","tc_index":2}"#,
+            ),
+            (
+                RunEvent::ToolExecutionFinished {
+                    id: "call".into(),
+                    name: "shell".into(),
+                    output: "done".into(),
+                    error: None,
+                    exit_code: Some(0),
+                    is_soft_fail: None,
+                    target_path: None,
+                },
+                "tool_end",
+                r#"{"exit_code":0,"type":"tool_end","text":"done","tool_name":"shell","tool_id":"call"}"#,
+            ),
+        ];
+        for (event, event_type, data) in fixtures {
+            assert_eq!(project(event), (event_type.to_string(), data.to_string()));
         }
     }
 
     #[test]
-    fn semantic_payload_is_merged_into_sse_data() {
-        let event = StreamEvent {
-            event_type: "compaction_end".to_string(),
-            payload: Some(serde_json::json!({
-                "tokens_before": 42,
-                "aborted": false,
-            })),
-            ..Default::default()
-        };
-        let data: serde_json::Value =
-            serde_json::from_str(&stream_event_to_sse_data(&event)).unwrap();
-        assert_eq!(data["type"], "compaction_end");
-        assert_eq!(data["tokens_before"], 42);
-        assert_eq!(data["aborted"], false);
-    }
+    fn typed_projection_handles_tool_usage_and_internal_markers() {
+        let (event_type, data) = project(RunEvent::Model(ModelStreamEvent::ToolInputStart {
+            index: 1,
+            id: "call-1".into(),
+            name: "read".into(),
+            arguments: Some(serde_json::json!({"path": "a.txt"})),
+            provider_metadata: Default::default(),
+        }));
+        assert_eq!(event_type, "tool_start");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&data).unwrap(),
+            serde_json::json!({
+                "type": "tool_start",
+                "tool_name": "read",
+                "tool_id": "call-1",
+                "tool_args": {"path": "a.txt"},
+                "tc_index": 1,
+            })
+        );
 
-    #[test]
-    fn sse_data_tool_event() {
-        let event = StreamEvent {
-            event_type: "tool_start".to_string(),
-            tool_name: "shell".to_string(),
-            tool_id: "call_1".to_string(),
+        let usage = Usage {
+            prompt_tokens: 1,
+            completion_tokens: 2,
+            total_tokens: 3,
             ..Default::default()
         };
-        let data = stream_event_to_sse_data(&event);
-        assert!(data.contains("\"tool_name\":\"shell\""));
-        assert!(data.contains("\"tool_id\":\"call_1\""));
-    }
+        let (event_type, data) = project(RunEvent::Model(ModelStreamEvent::Finish {
+            reason: FinishReason::ToolCalls,
+            usage: Some(usage),
+        }));
+        assert_eq!(event_type, "usage");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&data).unwrap()["stopReason"],
+            "tool_calls"
+        );
 
-    #[test]
-    fn sse_data_error_event() {
-        let event = StreamEvent {
-            event_type: "error".to_string(),
-            error_text: "something broke".to_string(),
-            ..Default::default()
-        };
-        let data = stream_event_to_sse_data(&event);
-        assert!(data.contains("\"error\":\"something broke\""));
-    }
-
-    #[test]
-    fn sse_data_stop_reason() {
-        let event = StreamEvent {
-            event_type: "stop".to_string(),
-            stop_reason: "max_tokens".to_string(),
-            ..Default::default()
-        };
-        let data = stream_event_to_sse_data(&event);
-        assert!(data.contains("\"stopReason\":\"max_tokens\""));
-    }
-
-    #[test]
-    fn sse_data_usage() {
-        let event = StreamEvent {
-            event_type: "usage".to_string(),
-            usage: Some(crate::types::Usage {
-                prompt_tokens: 100,
-                completion_tokens: 50,
-                total_tokens: 150,
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        let data = stream_event_to_sse_data(&event);
-        assert!(data.contains("\"usage\""));
-        assert!(data.contains("100"));
-    }
-
-    #[test]
-    fn sse_data_tool_call_args() {
-        let event = StreamEvent {
-            event_type: "toolcall_start".to_string(),
-            tool_name: "shell".to_string(),
-            tool_id: "call_1".to_string(),
-            tool_call: Some(crate::types::ToolCall {
-                id: "call_1".to_string(),
-                call_type: "function".to_string(),
-                function: crate::types::ToolCallFn {
-                    name: "shell".to_string(),
-                    arguments: serde_json::json!({"command": "ls"}),
-                },
-            }),
-            ..Default::default()
-        };
-        let data = stream_event_to_sse_data(&event);
-        assert!(data.contains("\"tool_args\""));
-    }
-
-    #[test]
-    fn sse_data_tc_index() {
-        let event = StreamEvent {
-            event_type: "toolcall_delta".to_string(),
-            tc_index: 2,
-            ..Default::default()
-        };
-        let data = stream_event_to_sse_data(&event);
-        assert!(data.contains("\"tc_index\":2"));
-    }
-
-    #[test]
-    fn sse_data_tc_index_zero_omitted() {
-        let event = StreamEvent {
-            event_type: "text_delta".to_string(),
-            tc_index: 0,
-            ..Default::default()
-        };
-        let data = stream_event_to_sse_data(&event);
-        assert!(!data.contains("tc_index"));
-    }
-
-    #[test]
-    fn sse_data_empty_fields_omitted() {
-        let event = StreamEvent {
-            event_type: "text_delta".to_string(),
-            ..Default::default()
-        };
-        let data = stream_event_to_sse_data(&event);
-        assert!(!data.contains("\"text\""));
-        assert!(!data.contains("\"tool_name\""));
-        assert!(!data.contains("\"error\""));
-        assert!(!data.contains("\"stopReason\""));
+        assert!(
+            run_event_to_sse(RunEvent::Model(ModelStreamEvent::TextStart {
+                id: "text".into()
+            }))
+            .is_none()
+        );
+        assert!(
+            run_event_to_sse(RunEvent::Model(ModelStreamEvent::ToolInputEnd {
+                index: 0,
+                id: "call".into(),
+                name: "read".into(),
+                arguments: serde_json::json!({}),
+                provider_metadata: Default::default(),
+            }))
+            .is_none()
+        );
+        assert!(run_event_to_sse(RunEvent::Model(ModelStreamEvent::Finish {
+            reason: FinishReason::Stop,
+            usage: None,
+        }))
+        .is_none());
     }
 
     // ─── build_user_message ────────────────────────────────────────────────

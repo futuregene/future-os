@@ -2394,8 +2394,9 @@ mod tests {
     use super::*;
     use crate::{
         agent::Loop,
+        llm::schema::{ModelRequest, ModelStreamEvent},
         rpc::ApprovalGate,
-        types::{LLMProvider, Message, StreamEvent, ToolDef},
+        types::LLMProvider,
     };
     use std::collections::HashMap;
     use tokio::sync::mpsc;
@@ -2405,13 +2406,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl LLMProvider for EmptyProvider {
-        async fn stream_chat(
+        async fn stream_model(
             &self,
-            _model: String,
-            _messages: Vec<Message>,
-            _tools: Vec<ToolDef>,
-            _system_prompt: String,
-        ) -> anyhow::Result<ReceiverStream<StreamEvent>> {
+            _request: ModelRequest,
+        ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
             let (_tx, rx) = mpsc::channel(1);
             Ok(ReceiverStream::new(rx))
         }
@@ -5636,7 +5634,12 @@ mod tests {
             use tokio_stream::StreamExt;
             let provider = EmptyProvider;
             let mut stream = provider
-                .stream_chat("mock".to_string(), vec![], vec![], String::new())
+                .stream_model(ModelRequest {
+                    model: "mock".into(),
+                    system_prompt: String::new(),
+                    messages: vec![],
+                    tools: vec![],
+                })
                 .await
                 .unwrap();
             assert!(stream.next().await.is_none());

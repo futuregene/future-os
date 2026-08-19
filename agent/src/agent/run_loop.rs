@@ -1,13 +1,13 @@
+use crate::llm::schema::{FinishReason, ModelStreamEvent};
 use crate::types::{
-    AgentMessage, AgentToolCall, ContentBlock, ConvertFromLLM, ConvertToLLM, Message, StreamEvent,
-    ToolCall,
+    AgentMessage, AgentToolCall, ContentBlock, ConvertFromLLM, ConvertToLLM, Message, ToolCall,
 };
 use anyhow::{anyhow, Result};
 use std::time::Duration;
 use tokio::time::sleep;
 use tokio_stream::StreamExt;
 
-use super::{Loop, C_GREEN, C_MAGENTA, C_RESET, DEFAULT_MAX_TURNS};
+use super::{Loop, RunEvent, C_GREEN, C_MAGENTA, C_RESET, DEFAULT_MAX_TURNS};
 
 const STREAM_EVENT_IDLE_TIMEOUT: Duration = Duration::from_secs(45);
 const COMPLETE_TOOL_CALL_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -18,7 +18,7 @@ impl Loop {
         mut messages: Vec<AgentMessage>,
         ctx: &super::StreamContext,
         on_text: impl Fn(String) + Send + 'static,
-        on_event: impl Fn(StreamEvent) + Send + 'static,
+        on_event: impl Fn(RunEvent) + Send + Sync + 'static,
         mut interrupt_rx: Option<tokio::sync::mpsc::Receiver<()>>,
     ) -> Result<(String, Vec<AgentMessage>)> {
         // Validate: last message must not be from assistant
@@ -44,11 +44,7 @@ impl Loop {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_millis() as u64)
             .unwrap_or_default();
-        on_event(StreamEvent {
-            event_type: "agent_start".to_string(),
-            payload: Some(serde_json::json!({ "started_at_ms": started_at_ms })),
-            ..Default::default()
-        });
+        on_event(RunEvent::AgentStart { started_at_ms });
 
         let tool_defs: Vec<_> = self.tools.iter().map(|t| t.def.clone()).collect();
         let mut retry_attempt = 0;
@@ -100,15 +96,9 @@ impl Loop {
                     let (tokens_before, summary) = compaction
                         .map(|result| (result.tokens_before, result.summary))
                         .unwrap_or((0, String::new()));
-                    on_event(StreamEvent {
-                        event_type: "compaction_end".to_string(),
-                        payload: Some(serde_json::json!({
-                            "tokens_before": tokens_before,
-                            "summary": summary,
-                            "aborted": false,
-                            "reason": "auto",
-                        })),
-                        ..Default::default()
+                    on_event(RunEvent::CompactionEnd {
+                        tokens_before,
+                        summary,
                     });
                 }
                 result
@@ -212,15 +202,9 @@ impl Loop {
                             );
                             messages = ConvertFromLLM(compacted);
                             if let Some(r) = compact_result {
-                                on_event(StreamEvent {
-                                    event_type: "compaction_end".to_string(),
-                                    payload: Some(serde_json::json!({
-                                        "tokens_before": r.tokens_before,
-                                        "summary": r.summary.clone(),
-                                        "aborted": false,
-                                        "reason": "auto",
-                                    })),
-                                    ..Default::default()
+                                on_event(RunEvent::CompactionEnd {
+                                    tokens_before: r.tokens_before,
+                                    summary: r.summary.clone(),
                                 });
                                 *self.last_compaction_result.lock() = Some(r);
                             } else {
@@ -270,11 +254,7 @@ impl Loop {
             let mut assistant_text = String::new();
             let mut reasoning_text = String::new();
             let mut reasoning_provider_metadata = crate::types::ProviderMetadata::new();
-            let mut tool_provider_metadata: std::collections::HashMap<
-                String,
-                crate::types::ProviderMetadata,
-            > = std::collections::HashMap::new();
-            let mut tool_calls: Vec<ToolCall> = vec![];
+            let mut agent_tool_calls: Vec<AgentToolCall> = vec![];
             let mut total_usage: Option<crate::types::Usage> = None;
             let mut current_tool_calls: Vec<Option<AgentToolCall>> = vec![];
             let mut output_started = false;
@@ -340,31 +320,11 @@ impl Loop {
                         break;
                     }
                 };
-                match &model_event {
-                    crate::llm::schema::ModelStreamEvent::ReasoningEnd {
-                        provider_metadata,
-                        ..
-                    } => reasoning_provider_metadata = provider_metadata.clone(),
-                    crate::llm::schema::ModelStreamEvent::ToolInputStart {
-                        id,
-                        provider_metadata,
-                        ..
-                    }
-                    | crate::llm::schema::ModelStreamEvent::ToolInputEnd {
-                        id,
-                        provider_metadata,
-                        ..
-                    } if !provider_metadata.is_empty() => {
-                        tool_provider_metadata.insert(id.clone(), provider_metadata.clone());
-                    }
-                    _ => {}
-                }
-                let event = model_event.to_legacy();
-                on_event(event.clone());
+                on_event(RunEvent::Model(model_event.clone()));
 
                 // Close the text-output block before switching to a different
                 // event type — text_end may never arrive from the LLM.
-                let is_text = matches!(event.event_type.as_str(), "text" | "text_delta");
+                let is_text = matches!(model_event, ModelStreamEvent::TextDelta { .. });
                 if self.verbose && was_outputting && !is_text {
                     crate::eprintln_log!();
                     was_outputting = false;
@@ -373,76 +333,93 @@ impl Loop {
                     was_outputting = true;
                 }
 
-                match event.event_type.as_str() {
-                    "thinking_start" => {
+                match model_event {
+                    ModelStreamEvent::ReasoningStart { .. } => {
                         if self.verbose {
                             crate::eprint_log!("\n{}[thinking]{} ", C_MAGENTA, C_RESET);
                         }
                     }
-                    "thinking_delta" => {
-                        reasoning_text.push_str(&event.text);
+                    ModelStreamEvent::ReasoningDelta { text, .. } => {
+                        reasoning_text.push_str(&text);
                         if self.verbose {
-                            crate::eprint_log!("{}", event.text);
+                            crate::eprint_log!("{}", text);
                         }
                     }
-                    "thinking_end" => {
+                    ModelStreamEvent::ReasoningEnd {
+                        provider_metadata, ..
+                    } => {
+                        reasoning_provider_metadata = provider_metadata;
                         if self.verbose {
                             crate::eprintln_log!(); // blank line after thinking
                         }
                     }
-                    "text" | "text_delta" => {
-                        assistant_text.push_str(&event.text);
+                    ModelStreamEvent::TextDelta { text, .. } => {
+                        assistant_text.push_str(&text);
                         if self.verbose && !output_started {
                             output_started = true;
                             crate::eprint_log!("\n{}[output]{} ", C_GREEN, C_RESET);
                         }
                         if self.verbose {
-                            crate::eprint_log!("{}", event.text);
+                            crate::eprint_log!("{}", text);
                         }
-                        on_text(event.text.clone());
+                        on_text(text);
                     }
-                    "text_start" => {}
-                    "text_end" => {
+                    ModelStreamEvent::TextStart { .. } => {}
+                    ModelStreamEvent::TextEnd { .. } => {
                         if self.verbose {
                             crate::eprintln_log!(); // blank line after output
                         }
                     }
-                    "toolcall_start" => {
+                    ModelStreamEvent::ToolInputStart {
+                        index,
+                        id,
+                        name,
+                        arguments,
+                        provider_metadata,
+                    } => {
                         // Some providers (e.g. GLM/Z.AI without tool_stream)
                         // send id+name in every argument chunk instead of just
                         // the first — a repeat is merged into the pending call
                         // rather than starting a new one.
-                        if merge_repeated_toolcall_start(&mut current_tool_calls, &event) {
+                        if merge_repeated_tool_input_start(
+                            &mut current_tool_calls,
+                            index,
+                            &id,
+                            &name,
+                            arguments.as_ref(),
+                            &provider_metadata,
+                        ) {
                             continue;
                         }
-                        let idx = event.tc_index;
-                        if idx >= current_tool_calls.len() {
-                            current_tool_calls.resize(idx + 1, None);
+                        if index >= current_tool_calls.len() {
+                            current_tool_calls.resize(index + 1, None);
                         }
 
                         // Finalize any existing tool call at this index (different id)
-                        if let Some(tc) = current_tool_calls[idx].take() {
-                            tool_calls.push(finalize_agent_tool_call(tc));
+                        if let Some(tc) = current_tool_calls[index].take() {
+                            agent_tool_calls.push(finalize_agent_tool_call(tc));
                         }
 
-                        let args = event
-                            .tool_call
-                            .as_ref()
-                            .map(|tc| tc.function.arguments.clone())
-                            .unwrap_or(serde_json::Value::Null);
-                        current_tool_calls[idx] = Some(AgentToolCall {
-                            id: event.tool_id.clone(),
-                            name: event.tool_name.clone(),
-                            args,
-                            provider_metadata: Default::default(),
+                        current_tool_calls[index] = Some(AgentToolCall {
+                            id,
+                            name,
+                            args: arguments.unwrap_or(serde_json::Value::Null),
+                            provider_metadata,
                         });
                     }
-                    "toolcall_delta" => {
-                        let idx = event.tc_index;
-                        if idx >= current_tool_calls.len() {
-                            current_tool_calls.resize(idx + 1, None);
+                    ModelStreamEvent::ToolInputDelta {
+                        index,
+                        id,
+                        delta,
+                        snapshot,
+                    } => {
+                        if index >= current_tool_calls.len() {
+                            current_tool_calls.resize(index + 1, None);
                         }
-                        if let Some(tc_ref) = &mut current_tool_calls[idx] {
+                        if let Some(tc_ref) = &mut current_tool_calls[index] {
+                            if tc_ref.id.is_empty() && !id.is_empty() {
+                                tc_ref.id = id;
+                            }
                             if let serde_json::Value::String(ref mut s) = tc_ref.args {
                                 // Some proxies (e.g. Anthropic → OpenAI) send the
                                 // full current state of the tool input JSON in every
@@ -453,115 +430,83 @@ impl Loop {
                                 // are empty, just "{}", or a prefix of the delta,
                                 // replace instead of concatenating to avoid corrupt
                                 // JSON like {}{"path":...}.
-                                let snapshot = event
-                                    .payload
-                                    .as_ref()
-                                    .and_then(|value| value.get("snapshot"))
-                                    .and_then(serde_json::Value::as_bool)
-                                    .unwrap_or(false);
-                                if snapshot
-                                    || (event.text.starts_with('{')
-                                        && (s.is_empty()
-                                            || s == "{}"
-                                            || event.text.starts_with(s.as_str())))
-                                {
-                                    *s = event.text.clone();
+                                if snapshot {
+                                    *s = delta;
                                 } else {
-                                    s.push_str(&event.text);
+                                    s.push_str(&delta);
                                 }
                             } else {
-                                tc_ref.args = serde_json::Value::String(event.text.clone());
+                                tc_ref.args = serde_json::Value::String(delta);
                             }
                         } else {
                             // Delta arrived before start — create placeholder
-                            current_tool_calls[idx] = Some(AgentToolCall {
-                                id: String::new(),
+                            current_tool_calls[index] = Some(AgentToolCall {
+                                id,
                                 name: String::new(),
-                                args: serde_json::Value::String(event.text.clone()),
+                                args: serde_json::Value::String(delta),
                                 provider_metadata: Default::default(),
                             });
                         }
                     }
-                    "tool_call" | "toolcall_end" => {
-                        if let Some(ref u) = event.usage {
-                            self.process_usage_event(u, &mut total_usage);
+                    ModelStreamEvent::ToolInputEnd {
+                        index,
+                        id,
+                        name,
+                        arguments,
+                        provider_metadata,
+                    } => {
+                        if index >= current_tool_calls.len() {
+                            current_tool_calls.resize(index + 1, None);
                         }
-                        if let Some(call) = event.tool_call.as_ref() {
-                            let index = event.tc_index;
-                            if index >= current_tool_calls.len() {
-                                current_tool_calls.resize(index + 1, None);
-                            }
-                            let slot =
-                                current_tool_calls[index].get_or_insert_with(|| AgentToolCall {
-                                    id: call.id.clone(),
-                                    name: call.function.name.clone(),
-                                    args: call.function.arguments.clone(),
-                                    provider_metadata: Default::default(),
-                                });
-                            if !call.id.is_empty() {
-                                slot.id = call.id.clone();
-                            }
-                            if !call.function.name.is_empty() {
-                                slot.name = call.function.name.clone();
-                            }
-                            if !call.function.arguments.is_null() {
-                                slot.args = call.function.arguments.clone();
-                            }
+                        let slot = current_tool_calls[index].get_or_insert_with(|| AgentToolCall {
+                            id: id.clone(),
+                            name: name.clone(),
+                            args: arguments.clone(),
+                            provider_metadata: provider_metadata.clone(),
+                        });
+                        if !id.is_empty() {
+                            slot.id = id;
                         }
-                        for tc_opt in current_tool_calls.iter_mut() {
-                            if let Some(tc) = tc_opt.take() {
-                                tool_calls.push(finalize_agent_tool_call(tc));
-                            }
+                        if !name.is_empty() {
+                            slot.name = name;
                         }
-                    }
-                    "tool_start" => {
-                        // `.then` keeps the verbose edge branchless: a lone
-                        // if-block closing brace here collected a phantom
-                        // zero-count coverage region.
-                        let _ = self
-                            .verbose
-                            .then(|| tracing::info!("[tool] {} → starting", event.tool_name));
-                    }
-                    "tool_end" => {
-                        let _ = self
-                            .verbose
-                            .then(|| tracing::info!("[tool] {} ← done", event.tool_name));
-                    }
-                    "usage" => {
-                        if let Some(ref u) = event.usage {
-                            self.process_usage_event(u, &mut total_usage);
+                        if !arguments.is_null() {
+                            slot.args = arguments;
+                        }
+                        if !provider_metadata.is_empty() {
+                            slot.provider_metadata = provider_metadata;
+                        }
+                        if let Some(tc) = current_tool_calls[index].take() {
+                            agent_tool_calls.push(finalize_agent_tool_call(tc));
                         }
                     }
-                    "stop" => {
+                    ModelStreamEvent::Usage(usage) => {
+                        self.process_usage_event(&usage, &mut total_usage);
+                    }
+                    ModelStreamEvent::Finish { reason, usage } => {
                         saw_terminal_event = true;
-                        // A `truncated` stop_reason means the stream was cut off
-                        // mid-flight (idle timeout / premature EOF) rather than
-                        // reaching a real finish. Remember it so the turn ends as
-                        // `incomplete` instead of `complete`.
-                        if event.stop_reason == "truncated" {
+                        if reason == FinishReason::Incomplete {
                             stream_truncated = true;
                         }
-                        // Process usage if attached to this event (e.g. when
-                        // the same chunk carries both usage and finish_reason).
-                        if let Some(ref u) = event.usage {
-                            self.process_usage_event(u, &mut total_usage);
+                        if let Some(ref usage) = usage {
+                            self.process_usage_event(usage, &mut total_usage);
                         }
                         for tc_opt in current_tool_calls.iter_mut() {
                             if let Some(tc) = tc_opt.take() {
-                                tool_calls.push(finalize_agent_tool_call(tc));
+                                agent_tool_calls.push(finalize_agent_tool_call(tc));
                             }
                         }
                     }
-                    "error" => {
-                        stream_error = Some(anyhow!("{}", event.error_text));
+                    ModelStreamEvent::Error { message } => {
+                        saw_terminal_event = true;
+                        stream_error = Some(anyhow!(message));
                     }
-                    _ => {}
                 }
             }
 
             for tc_opt in current_tool_calls.iter_mut() {
                 if let Some(tc) = tc_opt.take() {
-                    tool_calls.push(finalize_agent_tool_call(tc));
+                    agent_tool_calls.push(finalize_agent_tool_call(tc));
                 }
             }
 
@@ -577,11 +522,7 @@ impl Loop {
                  assistant_text: &str,
                  reasoning_text: &str,
                  reasoning_provider_metadata: &crate::types::ProviderMetadata,
-                 tool_provider_metadata: &std::collections::HashMap<
-                    String,
-                    crate::types::ProviderMetadata,
-                >,
-                 tool_calls: &[ToolCall]| {
+                 tool_calls: &[AgentToolCall]| {
                     let first_new_message = messages.len();
                     let mut msg = AgentMessage {
                         role: "assistant".to_string(),
@@ -604,15 +545,7 @@ impl Loop {
                         ..Default::default()
                     };
                     for tc in tool_calls {
-                        msg.tool_calls.push(AgentToolCall {
-                            id: tc.id.clone(),
-                            name: tc.function.name.clone(),
-                            args: tc.function.arguments.clone(),
-                            provider_metadata: tool_provider_metadata
-                                .get(&tc.id)
-                                .cloned()
-                                .unwrap_or_default(),
-                        });
+                        msg.tool_calls.push(tc.clone());
                     }
                     // Don't push an empty assistant — the LLM API rejects
                     // messages with neither content nor tool_calls.
@@ -624,13 +557,13 @@ impl Loop {
                     for tc in tool_calls {
                         let cancelled = format!(
                             "[Tool execution cancelled — {} was not executed due to interrupt]",
-                            tc.function.name
+                            tc.name
                         );
                         messages.push(AgentMessage {
                             role: "tool".to_string(),
                             content: vec![ContentBlock::text(&cancelled)],
                             tool_call_id: tc.id.clone(),
-                            name: tc.function.name.clone(),
+                            name: tc.name.clone(),
                             ..Default::default()
                         });
                     }
@@ -660,8 +593,7 @@ impl Loop {
                     &assistant_text,
                     &reasoning_text,
                     &reasoning_provider_metadata,
-                    &tool_provider_metadata,
-                    &tool_calls,
+                    &agent_tool_calls,
                 );
                 return Ok((String::new(), messages));
             }
@@ -695,16 +627,8 @@ impl Loop {
             };
 
             // Convert LLM tool calls to agent tool calls
-            for tc in &tool_calls {
-                assistant_msg.tool_calls.push(AgentToolCall {
-                    id: tc.id.clone(),
-                    name: tc.function.name.clone(),
-                    args: tc.function.arguments.clone(),
-                    provider_metadata: tool_provider_metadata
-                        .get(&tc.id)
-                        .cloned()
-                        .unwrap_or_default(),
-                });
+            for tc in &agent_tool_calls {
+                assistant_msg.tool_calls.push(tc.clone());
             }
             // Skip truly empty assistant messages — the LLM API rejects them
             // ("content or tool_calls must be set").  However, a message that
@@ -724,6 +648,12 @@ impl Loop {
                     save(messages.last().unwrap());
                 }
             }
+
+            let tool_calls: Vec<ToolCall> = agent_tool_calls
+                .iter()
+                .cloned()
+                .map(agent_tool_call_to_tool_call)
+                .collect();
 
             // Apply the final credit_cost from this LLM call to cumulative_cost.
             // The upstream API sends progressive credit_cost updates in each
@@ -808,7 +738,7 @@ impl Loop {
                 turn,
                 &tool_calls,
                 &mut messages,
-                &ctx.tool_event_callback,
+                &on_event,
                 &ctx.on_tool_result,
             )
             .await;
@@ -943,24 +873,34 @@ fn tool_call_args_complete(tool_call: &AgentToolCall) -> bool {
     }
 }
 
-/// Merge a repeated `toolcall_start` (same tool id at the same stream index)
+/// Merge a repeated tool-input start (same tool id at the same stream index)
 /// into the pending call's args, returning true when the event was consumed
 /// as a repeat. Always prefers the longer args string — it's more complete:
 /// some gateways (e.g. Aliyun MaaS) send chunks out of prefix order, or a
 /// trailing fragment shorter than the accumulated args, and overwriting
 /// longer data with shorter data is the primary cause of argument loss.
-fn merge_repeated_toolcall_start(
+fn merge_repeated_tool_input_start(
     current_tool_calls: &mut [Option<AgentToolCall>],
-    event: &StreamEvent,
+    index: usize,
+    id: &str,
+    name: &str,
+    arguments: Option<&serde_json::Value>,
+    provider_metadata: &crate::types::ProviderMetadata,
 ) -> bool {
-    let Some(Some(existing)) = current_tool_calls.get_mut(event.tc_index) else {
+    let Some(Some(existing)) = current_tool_calls.get_mut(index) else {
         return false;
     };
-    if existing.id != event.tool_id {
+    if existing.id != id {
         return false;
     }
-    if let Some(ref tc) = event.tool_call {
-        if let serde_json::Value::String(ref new_args) = tc.function.arguments {
+    if !name.is_empty() {
+        existing.name = name.to_string();
+    }
+    if !provider_metadata.is_empty() {
+        existing.provider_metadata = provider_metadata.clone();
+    }
+    if let Some(arguments) = arguments {
+        if let serde_json::Value::String(new_args) = arguments {
             let mut updated = false;
             if let serde_json::Value::String(ref mut s) = existing.args {
                 if new_args.len() > s.len() {
@@ -975,13 +915,19 @@ fn merge_repeated_toolcall_start(
             if !updated {
                 existing.args = serde_json::Value::String(new_args.clone());
             }
+        } else if !arguments.is_null() {
+            existing.args = arguments.clone();
         }
     }
     true
 }
 
-fn finalize_agent_tool_call(mut tool_call: AgentToolCall) -> ToolCall {
+fn finalize_agent_tool_call(mut tool_call: AgentToolCall) -> AgentToolCall {
     repair_partial_tool_args(&mut tool_call.args);
+    tool_call
+}
+
+fn agent_tool_call_to_tool_call(tool_call: AgentToolCall) -> ToolCall {
     ToolCall {
         id: tool_call.id,
         call_type: "function".to_string(),
@@ -1092,11 +1038,11 @@ mod tests {
 
     enum Script {
         /// Send all events, then close the channel (stream end).
-        Events(Vec<StreamEvent>),
-        /// Fail the stream_chat call itself.
+        Events(Vec<ModelStreamEvent>),
+        /// Fail the stream_model call itself.
         Fail(String),
         /// Send the events, then go silent forever (channel stays open).
-        PartialThenStall(Vec<StreamEvent>),
+        PartialThenStall(Vec<ModelStreamEvent>),
     }
 
     struct ScriptedProvider {
@@ -1115,14 +1061,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl LLMProvider for ScriptedProvider {
-        async fn stream_chat(
+        async fn stream_model(
             &self,
-            _model: String,
-            _messages: Vec<Message>,
-            _tools: Vec<ToolDef>,
-            system_prompt: String,
-        ) -> Result<ReceiverStream<StreamEvent>> {
-            self.system_prompts.lock().push(system_prompt);
+            request: crate::llm::schema::ModelRequest,
+        ) -> Result<ReceiverStream<ModelStreamEvent>> {
+            self.system_prompts.lock().push(request.system_prompt);
             let script = self
                 .scripts
                 .lock()
@@ -1150,70 +1093,79 @@ mod tests {
         }
     }
 
-    fn ev_text(text: &str) -> StreamEvent {
-        StreamEvent {
-            event_type: "text_delta".to_string(),
+    struct TypedProvider {
+        events: parking_lot::Mutex<Option<Vec<ModelStreamEvent>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LLMProvider for TypedProvider {
+        async fn stream_model(
+            &self,
+            _request: crate::llm::schema::ModelRequest,
+        ) -> Result<ReceiverStream<ModelStreamEvent>> {
+            let events = self.events.lock().take().unwrap_or_default();
+            let (tx, rx) = mpsc::channel(events.len().max(1));
+            for event in events {
+                let _ = tx.try_send(event);
+            }
+            drop(tx);
+            Ok(ReceiverStream::new(rx))
+        }
+    }
+
+    fn ev_text(text: &str) -> ModelStreamEvent {
+        ModelStreamEvent::TextDelta {
+            id: "text".to_string(),
             text: text.to_string(),
-            ..Default::default()
         }
     }
 
-    fn ev_stop() -> StreamEvent {
-        StreamEvent {
-            event_type: "stop".to_string(),
-            stop_reason: "end_turn".to_string(),
-            ..Default::default()
+    fn ev_stop() -> ModelStreamEvent {
+        ModelStreamEvent::Finish {
+            reason: FinishReason::Stop,
+            usage: None,
         }
     }
 
-    fn ev_usage(prompt: i64, completion: i64, credit_cost: Option<f64>) -> StreamEvent {
-        StreamEvent {
-            event_type: "usage".to_string(),
-            usage: Some(crate::types::Usage {
-                prompt_tokens: prompt,
-                completion_tokens: completion,
-                total_tokens: prompt + completion,
-                cache_read_tokens: Some(3),
-                cache_write_tokens: Some(2),
-                reasoning_tokens: None,
-                credit_cost,
-                provider_metadata: None,
-            }),
-            ..Default::default()
+    fn ev_usage(prompt: i64, completion: i64, credit_cost: Option<f64>) -> ModelStreamEvent {
+        ModelStreamEvent::Usage(crate::types::Usage {
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            total_tokens: prompt + completion,
+            cache_read_tokens: Some(3),
+            cache_write_tokens: Some(2),
+            reasoning_tokens: None,
+            credit_cost,
+            provider_metadata: None,
+        })
+    }
+
+    fn ev_toolcall_start(index: usize, id: &str, name: &str, args: &str) -> ModelStreamEvent {
+        ModelStreamEvent::ToolInputStart {
+            index,
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments: Some(serde_json::Value::String(args.to_string())),
+            provider_metadata: Default::default(),
         }
     }
 
-    fn ev_toolcall_start(index: usize, id: &str, name: &str, args: &str) -> StreamEvent {
-        StreamEvent {
-            event_type: "toolcall_start".to_string(),
-            tool_id: id.to_string(),
-            tool_name: name.to_string(),
-            tc_index: index,
-            tool_call: Some(ToolCall {
-                id: id.to_string(),
-                call_type: "function".to_string(),
-                function: crate::types::ToolCallFn {
-                    name: name.to_string(),
-                    arguments: serde_json::Value::String(args.to_string()),
-                },
-            }),
-            ..Default::default()
+    fn ev_toolcall_delta(index: usize, text: &str) -> ModelStreamEvent {
+        ModelStreamEvent::ToolInputDelta {
+            index,
+            id: String::new(),
+            delta: text.to_string(),
+            snapshot: false,
         }
     }
 
-    fn ev_toolcall_delta(index: usize, text: &str) -> StreamEvent {
-        StreamEvent {
-            event_type: "toolcall_delta".to_string(),
-            tc_index: index,
-            text: text.to_string(),
-            ..Default::default()
-        }
-    }
-
-    fn ev_toolcall_end() -> StreamEvent {
-        StreamEvent {
-            event_type: "toolcall_end".to_string(),
-            ..Default::default()
+    fn ev_toolcall_end() -> ModelStreamEvent {
+        ModelStreamEvent::ToolInputEnd {
+            index: 0,
+            id: String::new(),
+            name: String::new(),
+            arguments: serde_json::Value::Null,
+            provider_metadata: Default::default(),
         }
     }
 
@@ -1243,7 +1195,99 @@ mod tests {
 
     fn noop_on_text(_: String) {}
 
-    fn noop_on_event(_: StreamEvent) {}
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_consumes_typed_tool_state_and_emits_typed_events() {
+        let mut start_metadata = crate::types::ProviderMetadata::new();
+        start_metadata.insert("openai".into(), serde_json::json!({"item_id": "fc_1"}));
+        let mut end_metadata = crate::types::ProviderMetadata::new();
+        end_metadata.insert("openai".into(), serde_json::json!({"item_id": "fc_1_done"}));
+        let provider = Arc::new(TypedProvider {
+            events: parking_lot::Mutex::new(Some(vec![
+                ModelStreamEvent::ToolInputStart {
+                    index: 0,
+                    id: "call_1".into(),
+                    name: "lookup".into(),
+                    arguments: Some(serde_json::json!("{}")),
+                    provider_metadata: start_metadata,
+                },
+                ModelStreamEvent::ToolInputStart {
+                    index: 1,
+                    id: "call_2".into(),
+                    name: "other".into(),
+                    arguments: None,
+                    provider_metadata: Default::default(),
+                },
+                ModelStreamEvent::ToolInputDelta {
+                    index: 0,
+                    id: "call_1".into(),
+                    delta: "{\"q\":\"rust\"}".into(),
+                    snapshot: true,
+                },
+                ModelStreamEvent::ToolInputDelta {
+                    index: 1,
+                    id: "call_2".into(),
+                    delta: "{\"n\":2}".into(),
+                    snapshot: false,
+                },
+                ModelStreamEvent::ToolInputEnd {
+                    index: 0,
+                    id: "call_1".into(),
+                    name: "lookup".into(),
+                    arguments: serde_json::json!({"q": "rust"}),
+                    provider_metadata: end_metadata,
+                },
+                ModelStreamEvent::ToolInputEnd {
+                    index: 1,
+                    id: "call_2".into(),
+                    name: "other".into(),
+                    arguments: serde_json::json!({"n": 2}),
+                    provider_metadata: Default::default(),
+                },
+                ModelStreamEvent::Finish {
+                    reason: FinishReason::ToolCalls,
+                    usage: None,
+                },
+            ])),
+        });
+        let config = crate::types::AgentConfig {
+            stop_condition: Some(Arc::new(|_, _| true)),
+            ..Default::default()
+        };
+        let loop_ = Loop::new(provider, "mock").with_config(config);
+        let projected = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let (_, messages) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                {
+                    let projected = projected.clone();
+                    move |event| projected.lock().push(event)
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(messages[1].tool_calls.len(), 2);
+        assert_eq!(
+            messages[1].tool_calls[0].args,
+            serde_json::json!({"q": "rust"})
+        );
+        assert_eq!(
+            messages[1].tool_calls[0].provider_metadata["openai"]["item_id"],
+            "fc_1_done"
+        );
+        let projected = projected.lock();
+        assert!(projected.iter().any(|event| {
+            matches!(
+                event,
+                RunEvent::Model(ModelStreamEvent::ToolInputDelta { snapshot: true, .. })
+            )
+        }));
+    }
+
+    fn noop_on_event(_: RunEvent) {}
 
     /// Install a thread-local tracing subscriber that discards output. The
     /// verbose log macros only evaluate their arguments when a subscriber
@@ -1291,23 +1335,20 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn run_records_thinking_and_usage() {
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
-            StreamEvent {
-                event_type: "thinking_start".to_string(),
-                ..Default::default()
+            ModelStreamEvent::ReasoningStart {
+                id: "reasoning".into(),
             },
-            StreamEvent {
-                event_type: "thinking_delta".to_string(),
+            ModelStreamEvent::ReasoningDelta {
+                id: "reasoning".into(),
                 text: "deep ".to_string(),
-                ..Default::default()
             },
-            StreamEvent {
-                event_type: "thinking_delta".to_string(),
+            ModelStreamEvent::ReasoningDelta {
+                id: "reasoning".into(),
                 text: "thought".to_string(),
-                ..Default::default()
             },
-            StreamEvent {
-                event_type: "thinking_end".to_string(),
-                ..Default::default()
+            ModelStreamEvent::ReasoningEnd {
+                id: "reasoning".into(),
+                provider_metadata: Default::default(),
             },
             ev_usage(10, 5, Some(0.25)),
             ev_text("answer"),
@@ -1390,14 +1431,27 @@ mod tests {
                 let saved = saved.clone();
                 Arc::new(move |m: &AgentMessage| saved.lock().push(m.role.clone()))
             }),
-            tool_event_callback: Some({
-                let tool_events = tool_events.clone();
-                Arc::new(move |e: StreamEvent| tool_events.lock().push(e.event_type.clone()))
-            }),
             ..Default::default()
         };
         let (text, messages) = loop_
-            .run_streaming_with_messages(user_messages("go"), &ctx, noop_on_text, |_| {}, None)
+            .run_streaming_with_messages(
+                user_messages("go"),
+                &ctx,
+                noop_on_text,
+                {
+                    let tool_events = tool_events.clone();
+                    move |event| match event {
+                        RunEvent::ToolExecutionStarted { .. } => {
+                            tool_events.lock().push("tool_start")
+                        }
+                        RunEvent::ToolExecutionFinished { .. } => {
+                            tool_events.lock().push("tool_end")
+                        }
+                        _ => {}
+                    }
+                },
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(text, "done");
@@ -1408,8 +1462,8 @@ mod tests {
         assert_eq!(messages[2].role, "tool");
         assert!(messages[2].text().contains("echo:"));
         let tool_events = tool_events.lock().clone();
-        assert!(tool_events.contains(&"tool_start".to_string()));
-        assert!(tool_events.contains(&"tool_end".to_string()));
+        assert!(tool_events.contains(&"tool_start"));
+        assert!(tool_events.contains(&"tool_end"));
         // save_callback fired for assistant + tool messages.
         assert!(saved.lock().len() >= 2);
     }
@@ -1499,10 +1553,8 @@ mod tests {
     async fn run_handles_stream_error_event() {
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
             ev_text("partial"),
-            StreamEvent {
-                event_type: "error".to_string(),
-                error_text: "upstream exploded".to_string(),
-                ..Default::default()
+            ModelStreamEvent::Error {
+                message: "upstream exploded".to_string(),
             },
         ])]);
         let loop_ = Loop::new(provider, "mock");
@@ -1528,10 +1580,9 @@ mod tests {
     async fn run_marks_truncated_stop_as_incomplete() {
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
             ev_text("cut off"),
-            StreamEvent {
-                event_type: "stop".to_string(),
-                stop_reason: "truncated".to_string(),
-                ..Default::default()
+            ModelStreamEvent::Finish {
+                reason: FinishReason::Incomplete,
+                usage: None,
             },
         ])]);
         let loop_ = Loop::new(provider, "mock");
@@ -1684,14 +1735,18 @@ mod tests {
                 noop_on_text,
                 {
                     let events = events.clone();
-                    move |e: StreamEvent| events.lock().push(e.event_type.clone())
+                    move |event| {
+                        if matches!(event, RunEvent::CompactionEnd { .. }) {
+                            events.lock().push("compaction_end")
+                        }
+                    }
                 },
                 None,
             )
             .await
             .unwrap();
         assert_eq!(text, "recovered");
-        assert!(events.lock().contains(&"compaction_end".to_string()));
+        assert!(events.lock().contains(&"compaction_end"));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1739,14 +1794,18 @@ mod tests {
                 noop_on_text,
                 {
                     let events = events.clone();
-                    move |e: StreamEvent| events.lock().push(e.event_type.clone())
+                    move |event| {
+                        if matches!(event, RunEvent::CompactionEnd { .. }) {
+                            events.lock().push("compaction_end")
+                        }
+                    }
                 },
                 None,
             )
             .await
             .unwrap();
         assert_eq!(text, "ok");
-        assert!(events.lock().contains(&"compaction_end".to_string()));
+        assert!(events.lock().contains(&"compaction_end"));
         // The in-memory history was replaced by the compacted transform result.
         assert!(final_messages.len() <= 3);
     }
@@ -1846,21 +1905,17 @@ mod tests {
                 ev_toolcall_delta(0, ", \"post\":2}"),
                 // A second tool call at index 1.
                 ev_toolcall_start(1, "call-2", "echo", "{}"),
-                // Usage piggy-backed on the end event.
-                StreamEvent {
-                    event_type: "toolcall_end".to_string(),
-                    usage: Some(crate::types::Usage {
-                        prompt_tokens: 7,
-                        completion_tokens: 3,
-                        total_tokens: 10,
-                        cache_read_tokens: None,
-                        cache_write_tokens: None,
-                        reasoning_tokens: None,
-                        credit_cost: None,
-                        provider_metadata: None,
-                    }),
-                    ..Default::default()
-                },
+                ev_toolcall_end(),
+                ModelStreamEvent::Usage(crate::types::Usage {
+                    prompt_tokens: 7,
+                    completion_tokens: 3,
+                    total_tokens: 10,
+                    cache_read_tokens: None,
+                    cache_write_tokens: None,
+                    reasoning_tokens: None,
+                    credit_cost: None,
+                    provider_metadata: None,
+                }),
                 ev_stop(),
             ]),
             Script::Events(vec![ev_text("done"), ev_stop()]),
@@ -1963,9 +2018,9 @@ mod tests {
         };
         let finalized = finalize_agent_tool_call(complete);
         assert_eq!(finalized.id, "c1");
-        assert_eq!(finalized.function.name, "echo");
+        assert_eq!(finalized.name, "echo");
         assert_eq!(
-            finalized.function.arguments,
+            finalized.args,
             serde_json::Value::String("{\"a\":1}".to_string())
         );
 
@@ -1977,7 +2032,7 @@ mod tests {
         };
         let finalized = finalize_agent_tool_call(partial);
         // The truncated JSON was repaired into something parseable.
-        let args = finalized.function.arguments;
+        let args = finalized.args;
         let args_str = args.as_str().unwrap();
         assert!(serde_json::from_str::<serde_json::Value>(args_str).is_ok());
     }
@@ -2011,43 +2066,24 @@ mod tests {
     async fn run_verbose_covers_logging_arms() {
         let provider = ScriptedProvider::new(vec![
             Script::Events(vec![
-                StreamEvent {
-                    event_type: "thinking_start".to_string(),
-                    ..Default::default()
+                ModelStreamEvent::ReasoningStart {
+                    id: "reasoning".into(),
                 },
-                StreamEvent {
-                    event_type: "thinking_delta".to_string(),
+                ModelStreamEvent::ReasoningDelta {
+                    id: "reasoning".into(),
                     text: "ponder".to_string(),
-                    ..Default::default()
                 },
-                StreamEvent {
-                    event_type: "thinking_end".to_string(),
-                    ..Default::default()
+                ModelStreamEvent::ReasoningEnd {
+                    id: "reasoning".into(),
+                    provider_metadata: Default::default(),
                 },
-                StreamEvent {
-                    event_type: "text_start".to_string(),
-                    ..Default::default()
-                },
+                ModelStreamEvent::TextStart { id: "text".into() },
                 ev_text("chunk"),
-                StreamEvent {
-                    event_type: "text_end".to_string(),
-                    ..Default::default()
-                },
+                ModelStreamEvent::TextEnd { id: "text".into() },
                 ev_toolcall_start(0, "c1", "echo", "{}"),
-                StreamEvent {
-                    event_type: "tool_start".to_string(),
-                    tool_name: "echo".to_string(),
-                    ..Default::default()
-                },
-                StreamEvent {
-                    event_type: "tool_end".to_string(),
-                    tool_name: "echo".to_string(),
-                    ..Default::default()
-                },
                 // Usage piggy-backed on the terminal stop.
-                StreamEvent {
-                    event_type: "stop".to_string(),
-                    stop_reason: "tool_calls".to_string(),
+                ModelStreamEvent::Finish {
+                    reason: FinishReason::ToolCalls,
                     usage: Some(crate::types::Usage {
                         prompt_tokens: 5,
                         completion_tokens: 1,
@@ -2058,7 +2094,6 @@ mod tests {
                         credit_cost: Some(0.1),
                         provider_metadata: None,
                     }),
-                    ..Default::default()
                 },
             ]),
             Script::Events(vec![ev_text("final"), ev_stop()]),
@@ -2102,9 +2137,8 @@ mod tests {
         let provider = ScriptedProvider::new(vec![
             Script::Events(vec![
                 ev_toolcall_start(0, "c1", "echo", "{}"),
-                StreamEvent {
-                    event_type: "stop".to_string(),
-                    stop_reason: "tool_calls".to_string(),
+                ModelStreamEvent::Finish {
+                    reason: FinishReason::ToolCalls,
                     usage: Some(crate::types::Usage {
                         prompt_tokens: 9,
                         completion_tokens: 4,
@@ -2115,7 +2149,6 @@ mod tests {
                         credit_cost: None,
                         provider_metadata: None,
                     }),
-                    ..Default::default()
                 },
             ]),
             Script::Events(vec![ev_text("done"), ev_stop()]),
@@ -2146,10 +2179,9 @@ mod tests {
         let _tracing = tracing_sink();
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
             ev_text("cut off"),
-            StreamEvent {
-                event_type: "stop".to_string(),
-                stop_reason: "truncated".to_string(),
-                ..Default::default()
+            ModelStreamEvent::Finish {
+                reason: FinishReason::Incomplete,
+                usage: None,
             },
         ])]);
         let mut loop_ = Loop::new(provider, "mock");
@@ -2172,9 +2204,8 @@ mod tests {
         let _tracing = tracing_sink();
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
             ev_text("final"),
-            StreamEvent {
-                event_type: "stop".to_string(),
-                stop_reason: "end_turn".to_string(),
+            ModelStreamEvent::Finish {
+                reason: FinishReason::Stop,
                 usage: Some(crate::types::Usage {
                     prompt_tokens: 11,
                     completion_tokens: 7,
@@ -2185,7 +2216,6 @@ mod tests {
                     credit_cost: Some(0.01),
                     provider_metadata: None,
                 }),
-                ..Default::default()
             },
         ])]);
         let mut loop_ = Loop::new(provider, "mock");
@@ -2208,13 +2238,10 @@ mod tests {
         struct PendProvider;
         #[async_trait::async_trait]
         impl LLMProvider for PendProvider {
-            async fn stream_chat(
+            async fn stream_model(
                 &self,
-                _model: String,
-                _messages: Vec<Message>,
-                _tools: Vec<ToolDef>,
-                _system_prompt: String,
-            ) -> Result<ReceiverStream<StreamEvent>> {
+                _request: crate::llm::schema::ModelRequest,
+            ) -> Result<ReceiverStream<ModelStreamEvent>> {
                 std::future::pending::<()>().await;
                 unreachable!("never resolves");
             }
@@ -2245,13 +2272,10 @@ mod tests {
         }
         #[async_trait::async_trait]
         impl LLMProvider for FailOnSignalProvider {
-            async fn stream_chat(
+            async fn stream_model(
                 &self,
-                _model: String,
-                _messages: Vec<Message>,
-                _tools: Vec<ToolDef>,
-                _system_prompt: String,
-            ) -> Result<ReceiverStream<StreamEvent>> {
+                _request: crate::llm::schema::ModelRequest,
+            ) -> Result<ReceiverStream<ModelStreamEvent>> {
                 self.release.notified().await;
                 Err(anyhow!("signalled failure"))
             }
@@ -2359,36 +2383,32 @@ mod tests {
                 // Same-id start with shorter args → keep existing.
                 ev_toolcall_start(0, "c1", "echo", "z"),
                 // Start with no tool_call payload (args Null)…
-                StreamEvent {
-                    event_type: "toolcall_start".to_string(),
-                    tool_id: "c2".to_string(),
-                    tool_name: "echo".to_string(),
-                    tc_index: 1,
-                    tool_call: None,
-                    ..Default::default()
+                ModelStreamEvent::ToolInputStart {
+                    index: 1,
+                    id: "c2".into(),
+                    name: "echo".into(),
+                    arguments: None,
+                    provider_metadata: Default::default(),
                 },
                 // …then a same-id start with real args → replace the Null.
                 ev_toolcall_start(1, "c2", "echo", "{\"b\":2"),
                 // Delta on non-String args → set to String.
-                StreamEvent {
-                    event_type: "toolcall_start".to_string(),
-                    tool_id: "c3".to_string(),
-                    tool_name: "echo".to_string(),
-                    tc_index: 2,
-                    tool_call: Some(ToolCall {
-                        id: "c3".to_string(),
-                        call_type: "function".to_string(),
-                        function: crate::types::ToolCallFn {
-                            name: "echo".to_string(),
-                            arguments: serde_json::Value::Null,
-                        },
-                    }),
-                    ..Default::default()
+                ModelStreamEvent::ToolInputStart {
+                    index: 2,
+                    id: "c3".into(),
+                    name: "echo".into(),
+                    arguments: Some(serde_json::Value::Null),
+                    provider_metadata: Default::default(),
                 },
                 ev_toolcall_delta(2, "{\"c\":3"),
                 // Full-state replacement delta (starts with '{' and extends).
                 ev_toolcall_start(3, "c4", "echo", "{\"d\":"),
-                ev_toolcall_delta(3, "{\"d\":4}"),
+                ModelStreamEvent::ToolInputDelta {
+                    index: 3,
+                    id: "c4".into(),
+                    delta: "{\"d\":4}".into(),
+                    snapshot: true,
+                },
                 ev_toolcall_end(),
                 ev_stop(),
             ]),
@@ -2430,25 +2450,14 @@ mod tests {
         }
         #[async_trait::async_trait]
         impl LLMProvider for SlowProvider {
-            async fn stream_chat(
+            async fn stream_model(
                 &self,
-                _model: String,
-                _messages: Vec<Message>,
-                _tools: Vec<ToolDef>,
-                _system_prompt: String,
-            ) -> Result<ReceiverStream<StreamEvent>> {
+                _request: crate::llm::schema::ModelRequest,
+            ) -> Result<ReceiverStream<ModelStreamEvent>> {
                 tokio::time::sleep(self.delay).await;
                 let (tx, rx) = mpsc::channel(2);
-                let _ = tx.try_send(StreamEvent {
-                    event_type: "text_delta".to_string(),
-                    text: "slow".to_string(),
-                    ..Default::default()
-                });
-                let _ = tx.try_send(StreamEvent {
-                    event_type: "stop".to_string(),
-                    stop_reason: "end_turn".to_string(),
-                    ..Default::default()
-                });
+                let _ = tx.try_send(ev_text("slow"));
+                let _ = tx.try_send(ev_stop());
                 drop(tx);
                 Ok(ReceiverStream::new(rx))
             }
@@ -2603,80 +2612,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn toolcall_delta_detects_full_replacement() {
-        /// Simulates the toolcall_delta handler: merge `delta` into `existing`,
-        /// detecting full-state replacements (Anthropic partial_json style).
-        fn accumulate(existing: &str, delta: &str) -> String {
-            if delta.starts_with('{')
-                && (existing.is_empty() || existing == "{}" || delta.starts_with(existing))
-            {
-                delta.to_string()
-            } else {
-                format!("{}{}", existing, delta)
-            }
-        }
-
-        // Scenario 1: Standard OpenAI — first fragment starts with {, empty args
-        assert_eq!(
-            accumulate("", "{\"path\": \"/file.txt\""),
-            "{\"path\": \"/file.txt\""
-        );
-
-        // Scenario 2: Standard OpenAI — incremental fragment (starts with comma)
-        assert_eq!(
-            accumulate("{\"path\": \"/file.txt\"", ", \"content\": \"hello\"}"),
-            "{\"path\": \"/file.txt\", \"content\": \"hello\"}"
-        );
-
-        // Scenario 3: Anthropic full replacement — delta extends current
-        assert_eq!(
-            accumulate(
-                "{\"path\": \"/file.txt\", \"content\": \"hello",
-                "{\"path\": \"/file.txt\", \"content\": \"hello world\"}"
-            ),
-            "{\"path\": \"/file.txt\", \"content\": \"hello world\"}"
-        );
-
-        // Scenario 4: Anthropic — first delta after toolcall_start with "{}" args
-        // (e.g. proxy emits toolcall_start with empty-object args, then delta
-        // carries the full partial_json). Delta starts with { but does NOT start
-        // with "{}" — must still replace, not concatenate.
-        assert_eq!(
-            accumulate("{}", "{\"path\": \"/file.txt\", \"content\": \"hello\"}"),
-            "{\"path\": \"/file.txt\", \"content\": \"hello\"}"
-        );
-
-        // Scenario 5: Anthropic — first delta from empty args
-        assert_eq!(
-            accumulate(
-                "",
-                "{\"path\": \"/file.txt\", \"content\": \"hello world\"}"
-            ),
-            "{\"path\": \"/file.txt\", \"content\": \"hello world\"}"
-        );
-
-        // Scenario 6: Nested JSON in content value — delta starts with { but
-        // doesn't match the accumulated prefix and s is not empty/{}
-        assert_eq!(
-            accumulate(
-                "{\"path\": \"/file.txt\", \"content\": \"",
-                "{\"nested\": \"value\"}\"}"
-            ),
-            "{\"path\": \"/file.txt\", \"content\": \"{\"nested\": \"value\"}\"}"
-        );
-
-        // Scenario 7: Corrupted accumulated state — delta doesn't match prefix,
-        // s is non-empty and not "{}" → append (best effort)
-        assert_eq!(
-            accumulate(
-                "{\"path\": \"/file.txt\"}{\"path\": \"/file.txt\", \"content\": \"hello",
-                "{\"path\": \"/file.txt\", \"content\": \"hello world\"}"
-            ),
-            "{\"path\": \"/file.txt\"}{\"path\": \"/file.txt\", \"content\": \"hello{\"path\": \"/file.txt\", \"content\": \"hello world\"}"
-        );
-    }
-
     // ── coverage batch 14: residual run-loop arms ───────────────────────────
 
     /// Fails the LLM call after tripping the loop's interrupt flag, so the
@@ -2687,13 +2622,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl LLMProvider for FailAndInterruptProvider {
-        async fn stream_chat(
+        async fn stream_model(
             &self,
-            _model: String,
-            _messages: Vec<Message>,
-            _tools: Vec<ToolDef>,
-            _system_prompt: String,
-        ) -> Result<ReceiverStream<StreamEvent>> {
+            _request: crate::llm::schema::ModelRequest,
+        ) -> Result<ReceiverStream<ModelStreamEvent>> {
             self.flag.store(true, std::sync::atomic::Ordering::SeqCst);
             Err(anyhow!("boom"))
         }
@@ -2757,26 +2689,10 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn run_verbose_logs_tool_events_and_ignores_unknown_event() {
+    async fn run_verbose_handles_typed_text_events() {
         let _sink = tracing_sink();
-        let provider = ScriptedProvider::new(vec![Script::Events(vec![
-            StreamEvent {
-                event_type: "tool_start".to_string(),
-                tool_name: "echo".to_string(),
-                ..Default::default()
-            },
-            StreamEvent {
-                event_type: "tool_end".to_string(),
-                tool_name: "echo".to_string(),
-                ..Default::default()
-            },
-            StreamEvent {
-                event_type: "mystery".to_string(),
-                ..Default::default()
-            },
-            ev_text("done"),
-            ev_stop(),
-        ])]);
+        let provider =
+            ScriptedProvider::new(vec![Script::Events(vec![ev_text("done"), ev_stop()])]);
         let mut loop_ = Loop::new(provider, "mock");
         loop_.verbose = true;
         let (text, _) = loop_
@@ -2822,37 +2738,29 @@ mod tests {
         // overwrite arm (the merge arm needs a String on both sides).
         let provider = ScriptedProvider::new(vec![
             Script::Events(vec![
-                StreamEvent {
-                    event_type: "toolcall_start".to_string(),
-                    tool_id: "t1".to_string(),
-                    tool_name: "echo".to_string(),
-                    tc_index: 0,
-                    ..Default::default()
+                ModelStreamEvent::ToolInputStart {
+                    index: 0,
+                    id: "t1".into(),
+                    name: "echo".into(),
+                    arguments: None,
+                    provider_metadata: Default::default(),
                 },
                 ev_toolcall_start(0, "t1", "echo", "{\"a\":1}"),
                 // Repeat whose payload args are NOT a string: skipped over.
-                StreamEvent {
-                    event_type: "toolcall_start".to_string(),
-                    tool_id: "t1".to_string(),
-                    tool_name: "echo".to_string(),
-                    tc_index: 0,
-                    tool_call: Some(ToolCall {
-                        id: "t1".to_string(),
-                        call_type: "function".to_string(),
-                        function: crate::types::ToolCallFn {
-                            name: "echo".to_string(),
-                            arguments: serde_json::json!({"a": 1}),
-                        },
-                    }),
-                    ..Default::default()
+                ModelStreamEvent::ToolInputStart {
+                    index: 0,
+                    id: "t1".into(),
+                    name: "echo".into(),
+                    arguments: Some(serde_json::json!({"a": 1})),
+                    provider_metadata: Default::default(),
                 },
                 // Repeat with no payload at all: also skipped over.
-                StreamEvent {
-                    event_type: "toolcall_start".to_string(),
-                    tool_id: "t1".to_string(),
-                    tool_name: "echo".to_string(),
-                    tc_index: 0,
-                    ..Default::default()
+                ModelStreamEvent::ToolInputStart {
+                    index: 0,
+                    id: "t1".into(),
+                    name: "echo".into(),
+                    arguments: None,
+                    provider_metadata: Default::default(),
                 },
                 ev_toolcall_end(),
                 ev_stop(),

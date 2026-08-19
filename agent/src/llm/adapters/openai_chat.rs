@@ -91,7 +91,7 @@ impl ProtocolAdapter for OpenAiChatAdapter {
             .downcast_mut::<ChatStreamState>()
             .ok_or_else(|| anyhow!("invalid OpenAI Chat stream state"))?;
         if frame.data.trim() == "[DONE]" {
-            return finish(state, FinishReason::Stop, None);
+            return finish(state, FinishReason::Incomplete, None);
         }
         if frame.data.trim().is_empty() {
             return Ok(Vec::new());
@@ -450,6 +450,13 @@ mod tests {
     use super::*;
     use crate::llm::schema::{GenerationConfig, OpenAiChatConfig, ProviderRoute};
 
+    fn frame(data: Value) -> SseFrame {
+        SseFrame {
+            event: None,
+            data: data.to_string(),
+        }
+    }
+
     #[test]
     fn tool_snapshots_are_normalized() {
         assert_eq!(
@@ -486,5 +493,97 @@ mod tests {
         let body = OpenAiChatAdapter.build_body(&target, &request).unwrap();
         assert_eq!(body["messages"][0]["role"], "system");
         assert_eq!(body["messages"][1]["role"], "user");
+    }
+
+    #[test]
+    fn decodes_incremental_parallel_tool_calls() {
+        let adapter = OpenAiChatAdapter;
+        let mut state = adapter.new_stream_state();
+        let mut events = adapter
+            .decode_frame(
+                &frame(json!({
+                    "choices": [{"delta": {"tool_calls": [
+                        {"index": 0, "id": "call_0", "function": {"name": "first", "arguments": "{\"a\":"}},
+                        {"index": 1, "id": "call_1", "function": {"name": "second", "arguments": "{\"b\":"}}
+                    ]}}]
+                })),
+                state.as_mut(),
+            )
+            .unwrap();
+        events.extend(
+            adapter
+                .decode_frame(
+                    &frame(json!({
+                        "choices": [{"delta": {"tool_calls": [
+                            {"index": 0, "function": {"arguments": "1}"}},
+                            {"index": 1, "function": {"arguments": "2}"}}
+                        ]}}]
+                    })),
+                    state.as_mut(),
+                )
+                .unwrap(),
+        );
+        events.extend(
+            adapter
+                .decode_frame(
+                    &frame(json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]})),
+                    state.as_mut(),
+                )
+                .unwrap(),
+        );
+
+        let starts = events
+            .iter()
+            .filter(|event| matches!(event, ModelStreamEvent::ToolInputStart { .. }))
+            .count();
+        assert_eq!(starts, 2);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ModelStreamEvent::ToolInputDelta { snapshot: true, .. }
+        )));
+        let ends: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                ModelStreamEvent::ToolInputEnd {
+                    index,
+                    id,
+                    name,
+                    arguments,
+                    ..
+                } => Some((*index, id.as_str(), name.as_str(), arguments.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ends[0], (0, "call_0", "first", json!({"a": 1})));
+        assert_eq!(ends[1], (1, "call_1", "second", json!({"b": 2})));
+        assert!(matches!(
+            events.last(),
+            Some(ModelStreamEvent::Finish {
+                reason: FinishReason::ToolCalls,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn done_without_finish_reason_is_incomplete() {
+        let adapter = OpenAiChatAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &SseFrame {
+                    event: None,
+                    data: "[DONE]".into(),
+                },
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [ModelStreamEvent::Finish {
+                reason: FinishReason::Incomplete,
+                ..
+            }]
+        ));
     }
 }

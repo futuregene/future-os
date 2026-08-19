@@ -7,7 +7,7 @@ use crate::types::{ContentBlock, ProviderMetadata, Usage};
 use anyhow::{anyhow, bail, Result};
 use serde_json::{json, Map, Value};
 use std::any::Any;
-use std::collections::BTreeMap;
+use std::collections::{btree_map::Entry, BTreeMap};
 
 pub struct OpenAiResponsesAdapter;
 
@@ -21,11 +21,9 @@ struct ResponseToolState {
 
 #[derive(Debug, Default)]
 struct ResponsesState {
-    text_open: bool,
-    reasoning_open: BTreeMap<String, String>,
+    text_open: BTreeMap<usize, String>,
+    reasoning_open: BTreeMap<usize, String>,
     tools: BTreeMap<usize, ResponseToolState>,
-    saw_tool_call: bool,
-    saw_refusal: bool,
     finished: bool,
 }
 
@@ -131,7 +129,6 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
                 let item = event.get("item").unwrap_or(&Value::Null);
                 match item.get("type").and_then(Value::as_str).unwrap_or("") {
                     "function_call" => {
-                        state.saw_tool_call = true;
                         let item_id = item.get("id").and_then(Value::as_str).unwrap_or("");
                         let call_id = item
                             .get("call_id")
@@ -160,19 +157,23 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
                             .get("id")
                             .and_then(Value::as_str)
                             .unwrap_or("reasoning");
-                        state.reasoning_open.insert(id.to_string(), String::new());
+                        state.reasoning_open.insert(index, id.to_string());
                         events.push(ModelStreamEvent::ReasoningStart { id: id.to_string() });
                     }
                     _ => {}
                 }
             }
             "response.output_text.delta" => {
+                let index = event
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
                 let id = event
                     .get("item_id")
                     .and_then(Value::as_str)
                     .unwrap_or("text");
-                if !state.text_open {
-                    state.text_open = true;
+                if let Entry::Vacant(entry) = state.text_open.entry(index) {
+                    entry.insert(id.to_string());
                     events.push(ModelStreamEvent::TextStart { id: id.to_string() });
                 }
                 if let Some(delta) = event.get("delta").and_then(Value::as_str) {
@@ -183,25 +184,25 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
                 }
             }
             "response.output_text.done" => {
-                if state.text_open {
-                    state.text_open = false;
-                    events.push(ModelStreamEvent::TextEnd {
-                        id: event
-                            .get("item_id")
-                            .and_then(Value::as_str)
-                            .unwrap_or("text")
-                            .to_string(),
-                    });
+                let index = event
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
+                if let Some(id) = state.text_open.remove(&index) {
+                    events.push(ModelStreamEvent::TextEnd { id });
                 }
             }
             "response.refusal.delta" => {
-                state.saw_refusal = true;
+                let index = event
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
                 let id = event
                     .get("item_id")
                     .and_then(Value::as_str)
                     .unwrap_or("refusal");
-                if !state.text_open {
-                    state.text_open = true;
+                if let Entry::Vacant(entry) = state.text_open.entry(index) {
+                    entry.insert(id.to_string());
                     events.push(ModelStreamEvent::TextStart { id: id.to_string() });
                 }
                 if let Some(delta) = event.get("delta").and_then(Value::as_str) {
@@ -212,33 +213,28 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
                 }
             }
             "response.refusal.done" => {
-                state.saw_refusal = true;
-                if state.text_open {
-                    state.text_open = false;
-                    events.push(ModelStreamEvent::TextEnd {
-                        id: event
-                            .get("item_id")
-                            .and_then(Value::as_str)
-                            .unwrap_or("refusal")
-                            .to_string(),
-                    });
+                let index = event
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
+                if let Some(id) = state.text_open.remove(&index) {
+                    events.push(ModelStreamEvent::TextEnd { id });
                 }
             }
             "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
+                let index = event
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
                 let id = event
                     .get("item_id")
                     .and_then(Value::as_str)
                     .unwrap_or("reasoning");
-                if !state.reasoning_open.contains_key(id) {
-                    state.reasoning_open.insert(id.to_string(), String::new());
+                if let Entry::Vacant(entry) = state.reasoning_open.entry(index) {
+                    entry.insert(id.to_string());
                     events.push(ModelStreamEvent::ReasoningStart { id: id.to_string() });
                 }
                 if let Some(delta) = event.get("delta").and_then(Value::as_str) {
-                    state
-                        .reasoning_open
-                        .entry(id.to_string())
-                        .or_default()
-                        .push_str(delta);
                     events.push(ModelStreamEvent::ReasoningDelta {
                         id: id.to_string(),
                         text: delta.to_string(),
@@ -308,7 +304,7 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
                             .get("id")
                             .and_then(Value::as_str)
                             .unwrap_or("reasoning");
-                        state.reasoning_open.remove(id);
+                        state.reasoning_open.remove(&index);
                         let encrypted = item.get("encrypted_content").and_then(Value::as_str);
                         events.push(ModelStreamEvent::ReasoningEnd {
                             id: id.to_string(),
@@ -325,30 +321,30 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
                     .filter(|value| !value.is_null())
                     .map(responses_usage);
                 events.extend(close_open(state));
-                events.push(ModelStreamEvent::Finish {
-                    reason: if state.saw_refusal {
-                        FinishReason::Refusal
-                    } else if state.saw_tool_call {
-                        FinishReason::ToolCalls
-                    } else {
-                        FinishReason::Stop
-                    },
-                    usage,
-                });
+                let status = response
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("completed");
+                if status == "failed" {
+                    events.push(ModelStreamEvent::Error {
+                        message: response_error_message(response),
+                    });
+                } else {
+                    events.push(ModelStreamEvent::Finish {
+                        reason: match status {
+                            "completed" => completed_output_reason(response),
+                            "incomplete" => incomplete_reason(response),
+                            "cancelled" => FinishReason::Cancelled,
+                            _ => FinishReason::Incomplete,
+                        },
+                        usage,
+                    });
+                }
                 state.finished = true;
             }
             "response.incomplete" => {
                 let response = event.get("response").unwrap_or(&Value::Null);
-                let reason = response
-                    .get("incomplete_details")
-                    .and_then(|details| details.get("reason"))
-                    .and_then(Value::as_str)
-                    .map(|reason| match reason {
-                        "max_output_tokens" => FinishReason::Length,
-                        "content_filter" => FinishReason::ContentFilter,
-                        other => FinishReason::Unknown(other.to_string()),
-                    })
-                    .unwrap_or(FinishReason::Incomplete);
+                let reason = incomplete_reason(response);
                 events.extend(close_open(state));
                 events.push(ModelStreamEvent::Finish {
                     reason,
@@ -541,13 +537,63 @@ fn responses_usage(value: &Value) -> Usage {
     }
 }
 
+fn completed_output_reason(response: &Value) -> FinishReason {
+    let output = response
+        .get("output")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    if output
+        .iter()
+        .any(|item| item.get("type").and_then(Value::as_str) == Some("function_call"))
+    {
+        return FinishReason::ToolCalls;
+    }
+    if output.iter().any(|item| {
+        item.get("type").and_then(Value::as_str) == Some("refusal")
+            || item
+                .get("content")
+                .and_then(Value::as_array)
+                .is_some_and(|content| {
+                    content
+                        .iter()
+                        .any(|part| part.get("type").and_then(Value::as_str) == Some("refusal"))
+                })
+    }) {
+        FinishReason::Refusal
+    } else {
+        FinishReason::Stop
+    }
+}
+
+fn incomplete_reason(response: &Value) -> FinishReason {
+    response
+        .get("incomplete_details")
+        .and_then(|details| details.get("reason"))
+        .and_then(Value::as_str)
+        .map(|reason| match reason {
+            "max_output_tokens" => FinishReason::Length,
+            "content_filter" => FinishReason::ContentFilter,
+            other => FinishReason::Unknown(other.to_string()),
+        })
+        .unwrap_or(FinishReason::Incomplete)
+}
+
+fn response_error_message(response: &Value) -> String {
+    response
+        .get("error")
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+        .unwrap_or("OpenAI Responses stream failed")
+        .to_string()
+}
+
 fn close_open(state: &mut ResponsesState) -> Vec<ModelStreamEvent> {
     let mut events = Vec::new();
-    if state.text_open {
-        events.push(ModelStreamEvent::TextEnd { id: "text".into() });
-        state.text_open = false;
+    for (_, id) in std::mem::take(&mut state.text_open) {
+        events.push(ModelStreamEvent::TextEnd { id });
     }
-    for (id, _) in std::mem::take(&mut state.reasoning_open) {
+    for (_, id) in std::mem::take(&mut state.reasoning_open) {
         events.push(ModelStreamEvent::ReasoningEnd {
             id,
             provider_metadata: ProviderMetadata::new(),
@@ -568,6 +614,13 @@ fn close_open(state: &mut ResponsesState) -> Vec<ModelStreamEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn frame(event_type: &str, body: Value) -> SseFrame {
+        SseFrame {
+            event: Some(event_type.into()),
+            data: body.to_string(),
+        }
+    }
 
     #[test]
     fn stateless_reasoning_is_replayed() {
@@ -650,5 +703,214 @@ mod tests {
         assert_eq!(input[1]["id"], "fc_1");
         assert_eq!(input[2]["type"], "function_call_output");
         assert_eq!(input[2]["call_id"], "call_1");
+    }
+
+    #[test]
+    fn decodes_streaming_function_call_with_metadata() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = adapter.new_stream_state();
+        let mut events = Vec::new();
+        for frame in [
+            frame(
+                "response.output_item.added",
+                json!({
+                    "type": "response.output_item.added",
+                    "output_index": 1,
+                    "item": {"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "lookup"}
+                }),
+            ),
+            frame(
+                "response.function_call_arguments.delta",
+                json!({
+                    "type": "response.function_call_arguments.delta",
+                    "output_index": 1,
+                    "item_id": "fc_1",
+                    "delta": "{\"q\":"
+                }),
+            ),
+            frame(
+                "response.function_call_arguments.delta",
+                json!({
+                    "type": "response.function_call_arguments.delta",
+                    "output_index": 1,
+                    "item_id": "fc_1",
+                    "delta": "\"rust\"}"
+                }),
+            ),
+            frame(
+                "response.output_item.done",
+                json!({
+                    "type": "response.output_item.done",
+                    "output_index": 1,
+                    "item": {
+                        "type": "function_call",
+                        "id": "fc_1",
+                        "call_id": "call_1",
+                        "name": "lookup",
+                        "arguments": "{\"q\":\"rust\"}"
+                    }
+                }),
+            ),
+            frame(
+                "response.completed",
+                json!({
+                    "type": "response.completed",
+                    "response": {
+                        "status": "completed",
+                        "output": [{"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "lookup"}],
+                        "usage": {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14}
+                    }
+                }),
+            ),
+        ] {
+            events.extend(adapter.decode_frame(&frame, state.as_mut()).unwrap());
+        }
+
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, ModelStreamEvent::ToolInputDelta { .. }))
+                .count(),
+            2
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ModelStreamEvent::ToolInputEnd {
+                index: 1,
+                id,
+                name,
+                arguments,
+                provider_metadata,
+            } if id == "call_1"
+                && name == "lookup"
+                && arguments == &json!({"q": "rust"})
+                && provider_metadata["openai"]["item_id"] == "fc_1"
+        )));
+        assert!(matches!(
+            events.last(),
+            Some(ModelStreamEvent::Finish {
+                reason: FinishReason::ToolCalls,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn abnormal_close_preserves_provider_text_id() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = adapter.new_stream_state();
+        let start = adapter
+            .decode_frame(
+                &frame(
+                    "response.output_text.delta",
+                    json!({
+                        "type": "response.output_text.delta",
+                        "output_index": 3,
+                        "item_id": "msg_3",
+                        "delta": "partial"
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        let end = adapter.finish_stream(state.as_mut()).unwrap();
+        assert!(matches!(
+            start.first(),
+            Some(ModelStreamEvent::TextStart { id }) if id == "msg_3"
+        ));
+        assert!(matches!(
+            end.first(),
+            Some(ModelStreamEvent::TextEnd { id }) if id == "msg_3"
+        ));
+        assert!(matches!(
+            end.last(),
+            Some(ModelStreamEvent::Finish {
+                reason: FinishReason::Incomplete,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn completed_status_and_output_determine_finish_reason() {
+        let cases = [
+            (
+                json!({"status": "completed", "output": [{"type": "message", "content": [{"type": "output_text"}]}]}),
+                FinishReason::Stop,
+            ),
+            (
+                json!({"status": "completed", "output": [{"type": "message", "content": [{"type": "refusal"}]}]}),
+                FinishReason::Refusal,
+            ),
+            (
+                json!({"status": "cancelled", "output": []}),
+                FinishReason::Cancelled,
+            ),
+            (
+                json!({"status": "in_progress", "output": []}),
+                FinishReason::Incomplete,
+            ),
+        ];
+        for (response, expected) in cases {
+            let adapter = OpenAiResponsesAdapter;
+            let mut state = adapter.new_stream_state();
+            let events = adapter
+                .decode_frame(
+                    &frame(
+                        "response.completed",
+                        json!({"type": "response.completed", "response": response}),
+                    ),
+                    state.as_mut(),
+                )
+                .unwrap();
+            assert!(matches!(
+                events.last(),
+                Some(ModelStreamEvent::Finish { reason, .. }) if reason == &expected
+            ));
+        }
+
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = adapter.new_stream_state();
+        let failed = adapter
+            .decode_frame(
+                &frame(
+                    "response.completed",
+                    json!({
+                        "type": "response.completed",
+                        "response": {"status": "failed", "error": {"message": "boom"}}
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(matches!(
+            failed.as_slice(),
+            [ModelStreamEvent::Error { message }] if message == "boom"
+        ));
+
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = adapter.new_stream_state();
+        let incomplete = adapter
+            .decode_frame(
+                &frame(
+                    "response.incomplete",
+                    json!({
+                        "type": "response.incomplete",
+                        "response": {
+                            "status": "incomplete",
+                            "incomplete_details": {"reason": "max_output_tokens"}
+                        }
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(matches!(
+            incomplete.as_slice(),
+            [ModelStreamEvent::Finish {
+                reason: FinishReason::Length,
+                ..
+            }]
+        ));
     }
 }
