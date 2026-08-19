@@ -4,6 +4,8 @@ import { cn } from "../../lib/cn";
 import { Overlay } from "./Overlay";
 
 interface DialogProps {
+  /** Optional layout classes for the scrollable content region. */
+  bodyClassName?: string;
   children: ReactNode;
   className?: string;
   description?: ReactNode;
@@ -14,6 +16,7 @@ interface DialogProps {
 }
 
 export function Dialog({
+  bodyClassName,
   children,
   className,
   description,
@@ -42,7 +45,7 @@ export function Dialog({
           </h2>
           {description ? <div className="text-sm leading-5 text-ink-soft">{description}</div> : null}
         </div>
-        <div className="mt-5">{children}</div>
+        <div className={cn("mt-5", bodyClassName)}>{children}</div>
         {footer ? <div className="mt-5 flex justify-end gap-2">{footer}</div> : null}
       </section>
     </Overlay>
