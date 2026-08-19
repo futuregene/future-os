@@ -293,7 +293,6 @@ impl ProtocolAdapter for AnthropicMessagesAdapter {
             "message_delta" => {
                 if let Some(usage) = event.get("usage") {
                     update_usage(&mut state.usage, usage);
-                    events.push(ModelStreamEvent::Usage(state.usage.clone()));
                 }
                 state.stop_reason = event
                     .get("delta")
@@ -532,5 +531,62 @@ mod tests {
         assert_eq!(messages[0]["content"][1]["type"], "tool_use");
         assert_eq!(messages[1]["role"], "user");
         assert_eq!(messages[1]["content"][0]["type"], "tool_result");
+    }
+
+    #[test]
+    fn cumulative_usage_is_emitted_once_at_message_stop() {
+        let adapter = AnthropicMessagesAdapter;
+        let mut state = adapter.new_stream_state();
+
+        let start = SseFrame {
+            event: Some("message_start".into()),
+            data: json!({
+                "type": "message_start",
+                "message": {
+                    "usage": {
+                        "input_tokens": 1102,
+                        "output_tokens": 0,
+                        "cache_read_input_tokens": 2816
+                    }
+                }
+            })
+            .to_string(),
+        };
+        assert!(adapter
+            .decode_frame(&start, state.as_mut())
+            .unwrap()
+            .is_empty());
+
+        let delta = SseFrame {
+            event: Some("message_delta".into()),
+            data: json!({
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 205}
+            })
+            .to_string(),
+        };
+        assert!(adapter
+            .decode_frame(&delta, state.as_mut())
+            .unwrap()
+            .is_empty());
+
+        let stop = SseFrame {
+            event: Some("message_stop".into()),
+            data: json!({"type": "message_stop"}).to_string(),
+        };
+        let events = adapter.decode_frame(&stop, state.as_mut()).unwrap();
+        assert_eq!(events.len(), 1);
+        let ModelStreamEvent::Finish {
+            reason: FinishReason::Stop,
+            usage: Some(usage),
+        } = &events[0]
+        else {
+            panic!("message_stop must emit exactly one final usage snapshot")
+        };
+        assert_eq!(usage.prompt_tokens, 1102);
+        assert_eq!(usage.completion_tokens, 205);
+        assert_eq!(usage.total_tokens, 1307);
+        assert_eq!(usage.cache_read_tokens, Some(2816));
     }
 }

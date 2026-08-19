@@ -86,6 +86,8 @@ describe("normalizeArgs / dedupe model helpers", () => {
     expect(normalizeArgs(42)).toBeNull();
     expect(normalizeArgs({ a: 1 })).toEqual({ a: 1 });
     expect(normalizeArgs("{\"a\":1}")).toEqual({ a: 1 });
+    expect(normalizeArgs(JSON.stringify(JSON.stringify({ a: 1 })))).toEqual({ a: 1 });
+    expect(normalizeArgs("   ")).toBeNull();
     expect(normalizeArgs("nope")).toBeNull();
   });
 
