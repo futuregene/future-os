@@ -1,5 +1,8 @@
-import { useMemo } from "react";
 import katex from "katex";
+import { useMemo } from "react";
+
+/* eslint-disable react/dom-no-dangerously-set-innerhtml -- KaTeX renders
+   HTML-escaped output; dangerouslySetInnerHTML is its documented render path */
 
 interface MathInlineProps {
   code: string;
@@ -18,7 +21,8 @@ export function MathInline({ code }: MathInlineProps) {
         trust: true,
         strict: false,
       });
-    } catch {
+    }
+    catch {
       return `<span class="text-red-500">${escapeHtml(code)}</span>`;
     }
   }, [code]);

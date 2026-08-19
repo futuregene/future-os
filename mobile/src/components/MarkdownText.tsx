@@ -50,6 +50,14 @@ function renderInline(nodes: InlineNode[], openTarget: OpenTarget, parentKey: st
             {node.code}
           </Text>
         );
+      case "mathInline":
+        // React Native has no KaTeX DOM renderer; fall back to the raw TeX
+        // source in monospace so formulas stay legible.
+        return (
+          <Text key={key} style={styles.inlineCode}>
+            {node.code}
+          </Text>
+        );
       case "break":
         return "\n";
       case "link": {
@@ -162,6 +170,14 @@ function renderBlock(
         </Text>
       );
     case "code":
+      return (
+        <Text key={key} selectable style={[styles.code, isLast ? styles.noBottom : null]}>
+          {node.code}
+        </Text>
+      );
+    case "mathBlock":
+      // React Native has no KaTeX DOM renderer; fall back to the raw TeX
+      // source in the block-code style so formulas stay legible.
       return (
         <Text key={key} selectable style={[styles.code, isLast ? styles.noBottom : null]}>
           {node.code}

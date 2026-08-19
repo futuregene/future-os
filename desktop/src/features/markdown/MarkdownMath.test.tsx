@@ -31,7 +31,7 @@ describe("math rendering in MarkdownContent", () => {
 
   it("renders inline $...$ math as a KaTeX inline element", () => {
     const html = renderToStaticMarkup(
-      <MarkdownContent content={"The formula $E=mc^2$ is famous."} />,
+      <MarkdownContent content="The formula $E=mc^2$ is famous." />,
     );
     expect(html).toContain("katex");
     expect(html).toContain("katex-mathml");
