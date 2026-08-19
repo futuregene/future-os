@@ -461,7 +461,6 @@ export function TimelineCard({
   onContinue,
 }: TimelineCardProps) {
   const { t, i18n } = useTranslation();
-  const [expanded, setExpanded] = useState(false);
   const { copied, copy } = useCopyState();
 
   if (item.kind === "message") {

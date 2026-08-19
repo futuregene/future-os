@@ -1257,15 +1257,25 @@ fn entries_vec(data: Value) -> Vec<Value> {
 /// needs this outcome to use the same recovery predicate as the desktop UI.
 /// Failed runs additionally carry `run_error` (the stored raw error) so mobile
 /// can rebuild the same friendly failure bubble the desktop shows on reload.
+/// `run_duration_ms` comes from the same persisted start/end timestamps the
+/// desktop footer uses, including for runs which produced no assistant entry.
 fn entries_with_run_status(session_id: &str, mut entries: Vec<Value>) -> Vec<Value> {
-    let outcomes: HashMap<String, (String, Option<String>)> =
+    let outcomes: HashMap<String, (String, Option<String>, Option<i64>)> =
         crate::store::find_thread_by_agent_session(session_id)
             .ok()
             .flatten()
             .and_then(|thread| crate::store::list_runs(&thread.id).ok())
             .unwrap_or_default()
             .into_iter()
-            .map(|run| (run.id, (run.status, run.error_message)))
+            .map(|run| {
+                let duration_ms = match (run.started_at, run.ended_at) {
+                    (Some(started_at), Some(ended_at)) if ended_at >= started_at => {
+                        Some(ended_at - started_at)
+                    }
+                    _ => None,
+                };
+                (run.id, (run.status, run.error_message, duration_ms))
+            })
             .collect();
     if outcomes.is_empty() {
         return entries;
@@ -1275,8 +1285,13 @@ fn entries_with_run_status(session_id: &str, mut entries: Vec<Value>) -> Vec<Val
             .pointer("/meta/run_id")
             .and_then(Value::as_str)
             .and_then(|run_id| outcomes.get(run_id));
-        if let (Some((status, error_message)), Some(object)) = (outcome, entry.as_object_mut()) {
+        if let (Some((status, error_message, duration_ms)), Some(object)) =
+            (outcome, entry.as_object_mut())
+        {
             object.insert("run_status".to_string(), Value::String(status.clone()));
+            if let Some(duration_ms) = duration_ms {
+                object.insert("run_duration_ms".to_string(), Value::from(*duration_ms));
+            }
             if status == "failed" {
                 if let Some(message) = error_message.as_ref().filter(|m| !m.trim().is_empty()) {
                     object.insert("run_error".to_string(), Value::String(message.clone()));
@@ -2357,6 +2372,7 @@ mod bridge_tests {
         assert_eq!(reply["success"], json!(true));
         assert_eq!(reply["data"]["entries"].as_array().unwrap().len(), 1);
         assert_eq!(reply["data"]["entries"][0]["run_status"], json!("failed"));
+        assert!(reply["data"]["entries"][0]["run_duration_ms"].is_number());
 
         // Entries honor an explicit positive limit too.
         let reply = bridge

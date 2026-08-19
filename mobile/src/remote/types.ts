@@ -175,6 +175,10 @@ export interface HistoryEntry {
   /** Raw run error for `run_status: "failed"` — the bridge pairs it with the
    *  status so a reloaded timeline can rebuild the desktop's failure bubble. */
   run_error?: string;
+  /** Authoritative elapsed run time from the desktop store. This remains
+   * separate from `duration_ms`, which belongs to a persisted assistant entry
+   * and is absent when a run fails before producing one. */
+  run_duration_ms?: number;
   /** RFC3339 entry time; preserved across re-saves so history keeps real times. */
   timestamp?: string;
 }

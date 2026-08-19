@@ -1,13 +1,11 @@
 import {
   ArrowDown,
   ArrowLeft,
-  Camera,
   Check,
   ChevronDown,
   CircleAlert,
   Download,
   FileText,
-  Images,
   Paperclip,
   Pencil,
   Send,
@@ -39,6 +37,7 @@ import {
 import * as Network from "expo-network";
 import * as Sharing from "expo-sharing";
 import { openFile as openAndroidFile } from "future-file-handler";
+import { showActionSheet as showAndroidActionSheet } from "future-native-ui";
 import { File } from "expo-file-system";
 import * as LegacyFileSystem from "expo-file-system/legacy";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
@@ -56,6 +55,7 @@ import {
   mimeFor,
   pickAttachments,
   pickFromAlbum,
+  recoverPendingImagePickerAttachments,
   takePhoto,
   TransferCancelledError,
   namedExternalFile,
@@ -116,7 +116,73 @@ interface ActiveDownload {
 
 interface DownloadHandle {
   id: string;
+  fileName: string;
+  visible: boolean;
   controller: AbortController;
+}
+
+interface FileAction {
+  info: DownloadInfo;
+  cachedFile: File | null;
+  openMimeType: string;
+}
+
+function deferPresentation(action: () => void): void {
+  // UIKit invokes action-sheet callbacks before the dismissal animation has
+  // fully released its presentation controller. A short delay avoids racing
+  // the next native controller. InteractionManager is deliberately avoided:
+  // it can remain pending while a Modal is itself transitioning.
+  setTimeout(action, Platform.OS === "ios" ? 350 : 0);
+}
+
+function NativeFileActionSheet({
+  action,
+  cancelLabel,
+  openLabel,
+  saveLabel,
+  onClose,
+  onSelect,
+}: {
+  action: FileAction | null;
+  cancelLabel: string;
+  openLabel: string;
+  saveLabel: string;
+  onClose: () => void;
+  onSelect: (action: FileAction, save: boolean) => void;
+}) {
+  const shownActionRef = useRef<FileAction | null>(null);
+
+  useEffect(() => {
+    if (!action || shownActionRef.current === action) return;
+    shownActionRef.current = action;
+    const close = () => {
+      shownActionRef.current = null;
+      onClose();
+    };
+    const select = (save: boolean) => {
+      close();
+      deferPresentation(() => onSelect(action, save));
+    };
+    if (Platform.OS === "ios") {
+      // iOS uses the same system share sheet for both "open" and "save".
+      // Present it directly instead of asking the user to choose between two
+      // actions that lead to the same native surface.
+      select(false);
+      return;
+    }
+    Alert.alert(
+      action.info.name,
+      undefined,
+      [
+        { text: openLabel, onPress: () => select(false) },
+        { text: cancelLabel, style: "cancel", onPress: close },
+        { text: saveLabel, onPress: () => select(true) },
+      ],
+      { cancelable: true, onDismiss: close },
+    );
+  }, [action, cancelLabel, onClose, onSelect, openLabel, saveLabel]);
+
+  return null;
 }
 
 function formatBytes(bytes: number): string {
@@ -159,10 +225,10 @@ export function ChatScreen() {
   const listRef = useRef<FlatList<TimelineItem>>(null);
   const [message, setMessage] = useState("");
   const [attachments, setAttachments] = useState<MobileAttachment[]>([]);
-  const [attachmentMenu, setAttachmentMenu] = useState(false);
   const [transferProgress, setTransferProgress] = useState<number | null>(null);
   const [activeDownload, setActiveDownload] = useState<ActiveDownload | null>(null);
   const activeDownloadRef = useRef<DownloadHandle | null>(null);
+  const downloadModalPresentedRef = useRef(false);
   // UIKit cannot reliably present a second React Native Modal while the
   // download-progress Modal is still dismissing. Keep the next presentation
   // out of render state until `onDismiss` confirms that first Modal is gone.
@@ -175,13 +241,9 @@ export function ChatScreen() {
     text?: string;
     truncated?: boolean;
   } | null>(null);
-  // Prepared non-previewable download awaiting an "open"/"save" choice (Android
-  // bottom sheet; iOS drives the same choice through the native action sheet).
-  const [fileAction, setFileAction] = useState<{
-    info: DownloadInfo;
-    cachedFile: File | null;
-    openMimeType: string;
-  } | null>(null);
+  // Prepared non-previewable attachment awaiting an Android open/save choice;
+  // iOS immediately continues to its system share sheet.
+  const [fileAction, setFileAction] = useState<FileAction | null>(null);
   const [selector, setSelector] = useState<"model" | "thinking" | null>(null);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
@@ -214,28 +276,48 @@ export function ChatScreen() {
     : 0;
 
   const beginDownload = useCallback(
-    (key: string, fileName: string, totalBytes = 0): DownloadHandle | null => {
+    (key: string, fileName: string, totalBytes = 0, visible = true): DownloadHandle | null => {
       if (activeDownloadRef.current) return null;
       const handle = {
         id: `${key}:${Date.now().toString(36)}`,
+        fileName,
+        visible,
         controller: new AbortController(),
       };
       activeDownloadRef.current = handle;
+      if (visible) {
+        setActiveDownload({
+          id: handle.id,
+          fileName,
+          phase: "preparing",
+          completedBytes: 0,
+          totalBytes,
+        });
+      }
+      return handle;
+    },
+    [],
+  );
+
+  const showDownload = useCallback(
+    (handle: DownloadHandle, patch: Partial<Omit<ActiveDownload, "id" | "fileName">> = {}) => {
+      if (activeDownloadRef.current?.id !== handle.id) return;
+      handle.visible = true;
       setActiveDownload({
         id: handle.id,
-        fileName,
+        fileName: handle.fileName,
         phase: "preparing",
         completedBytes: 0,
-        totalBytes,
+        totalBytes: 0,
+        ...patch,
       });
-      return handle;
     },
     [],
   );
 
   const updateDownload = useCallback(
     (handle: DownloadHandle, patch: Partial<Omit<ActiveDownload, "id" | "fileName">>) => {
-      if (activeDownloadRef.current?.id !== handle.id) return;
+      if (activeDownloadRef.current?.id !== handle.id || !handle.visible) return;
       setActiveDownload(current =>
         current?.id === handle.id ? { ...current, ...patch } : current,
       );
@@ -250,6 +332,7 @@ export function ChatScreen() {
   }, []);
 
   const flushPendingDownloadModal = useCallback(() => {
+    downloadModalPresentedRef.current = false;
     const present = pendingDownloadModalRef.current;
     pendingDownloadModalRef.current = null;
     present?.();
@@ -257,21 +340,45 @@ export function ChatScreen() {
 
   const handoffDownloadModal = useCallback(
     (handle: DownloadHandle, present: () => void) => {
+      if (!handle.visible) {
+        finishDownload(handle);
+        present();
+        return;
+      }
       pendingDownloadModalRef.current = present;
       finishDownload(handle);
-      // `onDismiss` is iOS-only. Android supports stacking these modals, so
-      // hand off on its next event-loop turn instead of leaving it pending.
-      if (Platform.OS !== "ios") setTimeout(flushPendingDownloadModal, 0);
+      // `onDismiss` is iOS-only. Android continues after the state commit. On
+      // iOS, normally wait for Modal.onDismiss; only use the timer if the
+      // progress modal never reached onShow at all.
+      if (Platform.OS !== "ios") {
+        deferPresentation(flushPendingDownloadModal);
+      } else if (!downloadModalPresentedRef.current) {
+        setTimeout(() => {
+          if (!downloadModalPresentedRef.current && pendingDownloadModalRef.current === present) {
+            flushPendingDownloadModal();
+          }
+        }, 500);
+      }
     },
     [finishDownload, flushPendingDownloadModal],
+  );
+
+  const handoffDownloadAlert = useCallback(
+    (handle: DownloadHandle, message: string) => {
+      handoffDownloadModal(handle, () => Alert.alert(t("attachment.title"), message));
+    },
+    [handoffDownloadModal, t],
   );
 
   const cancelActiveDownload = useCallback(() => {
     const handle = activeDownloadRef.current;
     if (!handle) return;
     handle.controller.abort();
-    updateDownload(handle, { phase: "cancelling" });
-  }, [updateDownload]);
+    // Local cancellation must be immediate even while an underlying NATS
+    // request is waiting for its transport timeout. Late callbacks are scoped
+    // to this handle and are ignored once it has been released.
+    finishDownload(handle);
+  }, [finishDownload]);
 
   // Approvals live docked above the composer (not inline in the transcript), and
   // only while undecided — once a decision lands the card disappears.
@@ -304,6 +411,11 @@ export function ChatScreen() {
   // The first content render snaps to the end without animation; only later
   // appends (streaming, new messages) scroll animated.
   const landedRef = useRef(false);
+  // A FlatList emits scroll events while iOS/Android are measuring its first
+  // content and viewport. Those are layout side effects, not a user decision
+  // to read earlier messages, so they must not disable the initial snap.
+  const initialScrollPendingRef = useRef(true);
+  const initialScrollFrameRef = useRef<number | null>(null);
   const decideApproval = useCallback(
     async (id: string, decision: "approved" | "rejected") => {
       setApprovalSubmitting(id);
@@ -319,9 +431,38 @@ export function ChatScreen() {
     [remote, t],
   );
 
+  const renameConversation = async (rawName: string) => {
+    const name = rawName.trim();
+    if (!name) return;
+    try {
+      await remote.rename(remote.selectedSessionId, name);
+    } catch {
+      Alert.alert(t("common.error"));
+    }
+  };
+
   const openRename = () => {
-    // Pre-fill the current title so the user can edit in place.
-    setRenameValue(remote.selectedTitle || "");
+    const currentTitle = remote.selectedTitle || "";
+    if (Platform.OS === "ios") {
+      Alert.prompt(
+        t("chat.renameTitle"),
+        undefined,
+        [
+          { text: t("chat.cancel"), style: "cancel" },
+          {
+            text: t("chat.save"),
+            onPress: (value?: string) => {
+              if (value?.trim()) void renameConversation(value);
+            },
+          },
+        ],
+        "plain-text",
+        currentTitle,
+      );
+      return;
+    }
+    // Android has no native React Native text-input alert.
+    setRenameValue(currentTitle);
     setRenameOpen(true);
   };
 
@@ -329,11 +470,7 @@ export function ChatScreen() {
     const name = renameValue.trim();
     if (!name) return;
     setRenameOpen(false);
-    try {
-      await remote.rename(remote.selectedSessionId, name);
-    } catch {
-      Alert.alert(t("common.error"));
-    }
+    await renameConversation(name);
   };
 
   useEffect(() => {
@@ -383,15 +520,26 @@ export function ChatScreen() {
     restoringDraftRef.current = true;
     activeDraftKeyRef.current = draftKey;
     const key = draftKey;
-    void loadSessionDraft(key).then(draft => {
-      // Guard against a conversation switch racing the async load.
+    void (async () => {
+      const draft = await loadSessionDraft(key);
+      let restoredAttachments = draft?.attachments ?? [];
+      if (Platform.OS === "android") {
+        try {
+          restoredAttachments = await recoverPendingImagePickerAttachments(restoredAttachments);
+        } catch (error) {
+          const errorKey = error instanceof Error ? error.message : "attachment_failed";
+          showToast(t(`attachment.errors.${errorKey}`));
+        }
+      }
+      // Guard against a conversation switch racing the async load or Android
+      // pending-result recovery after MainActivity reconstruction.
       if (restoringDraftRef.current && activeDraftKeyRef.current === key) {
         setMessage(draft?.text ?? "");
-        setAttachments(draft?.attachments ?? []);
+        setAttachments(restoredAttachments);
         restoringDraftRef.current = false;
       }
-    });
-  }, [draftKey]);
+    })();
+  }, [draftKey, t]);
 
   // Persist edits. The restore-driven update is skipped (the effect above
   // already loaded the draft), and temporary camera/cache files are released
@@ -402,12 +550,7 @@ export function ChatScreen() {
   }, [attachments, draftKey, message]);
 
   const chooseFiles = async () => {
-    setAttachmentMenu(false);
     try {
-      // Android's fallback sheet must finish dismissing before UIKit/Android
-      // presents another native controller. Otherwise the picker can be
-      // rejected as a concurrent presentation and looks like a no-op.
-      if (attachmentMenu) await new Promise(resolve => setTimeout(resolve, 200));
       setAttachments(await pickAttachments(attachments));
     } catch (error) {
       const key = error instanceof Error ? error.message : "attachment_failed";
@@ -416,9 +559,7 @@ export function ChatScreen() {
   };
 
   const capturePhoto = async () => {
-    setAttachmentMenu(false);
     try {
-      if (attachmentMenu) await new Promise(resolve => setTimeout(resolve, 200));
       setAttachments(await takePhoto(attachments));
     } catch (error) {
       const key = error instanceof Error ? error.message : "attachment_failed";
@@ -427,9 +568,7 @@ export function ChatScreen() {
   };
 
   const chooseFromAlbum = async () => {
-    setAttachmentMenu(false);
     try {
-      if (attachmentMenu) await new Promise(resolve => setTimeout(resolve, 200));
       setAttachments(await pickFromAlbum(attachments));
     } catch (error) {
       const key = error instanceof Error ? error.message : "attachment_failed";
@@ -450,16 +589,30 @@ export function ChatScreen() {
           cancelButtonIndex: 3,
         },
         index => {
-          // Schedule after the action sheet's dismissal animation, so the
-          // document/camera controller always gets a presentable view host.
-          if (index === 0) setTimeout(() => void capturePhoto(), 0);
-          if (index === 1) setTimeout(() => void chooseFromAlbum(), 0);
-          if (index === 2) setTimeout(() => void chooseFiles(), 0);
+          // Run after native presentation work has settled so the picker never
+          // competes with the action sheet for the current view controller.
+          if (index === 0) deferPresentation(() => void capturePhoto());
+          if (index === 1) deferPresentation(() => void chooseFromAlbum());
+          if (index === 2) deferPresentation(() => void chooseFiles());
         },
       );
       return;
     }
-    setAttachmentMenu(true);
+    void showAndroidActionSheet(
+      [
+        t("attachment.takePhoto"),
+        t("attachment.chooseFromAlbum"),
+        t("attachment.chooseFiles"),
+        t("chat.cancel"),
+      ],
+      t("attachment.title"),
+    )
+      .then(index => {
+        if (index === 0) deferPresentation(() => void capturePhoto());
+        if (index === 1) deferPresentation(() => void chooseFromAlbum());
+        if (index === 2) deferPresentation(() => void chooseFiles());
+      })
+      .catch(() => showToast(t("attachment.errors.attachment_failed")));
   };
 
   const send = async () => {
@@ -622,7 +775,7 @@ export function ChatScreen() {
           }
           return;
         }
-        handle = beginDownload(attachment.path, attachment.name);
+        handle = beginDownload(attachment.path, attachment.name, 0, false);
         if (!handle) {
           showToast(t("attachment.downloadInProgress"));
           return;
@@ -637,9 +790,13 @@ export function ChatScreen() {
             handle.controller.signal,
             () => handle && updateDownload(handle, { phase: "waiting_network" }),
           ));
+        if (info.size > MAX_FILE_BYTES) {
+          handoffDownloadAlert(handle, t("attachment.tooLarge"));
+          return;
+        }
         if (info.previewKind === "file") {
           if (!openMimeType) {
-            Alert.alert(t("attachment.title"), t("attachment.noHandler"));
+            handoffDownloadAlert(handle, t("attachment.noHandler"));
             return;
           }
           handoffDownloadModal(handle, () =>
@@ -662,19 +819,34 @@ export function ChatScreen() {
             );
             if (!accepted) return;
           }
+          // Metadata is intentionally silent. Once we know this is a cache
+          // miss and have the real byte size, show 0 / total before the first
+          // (possibly only) chunk arrives.
+          showDownload(handle, {
+            phase: "downloading",
+            completedBytes: 0,
+            totalBytes: info.size,
+          });
         }
-        updateDownload(handle, { phase: "downloading", totalBytes: info.size });
         file = await remote.downloadAttachment(
           info,
-          (done, total) =>
-            handle &&
-            updateDownload(handle, {
+          (done, total) => {
+            if (!handle) return;
+            const patch = {
               phase: done >= total ? "verifying" : "downloading",
               completedBytes: done,
               totalBytes: total,
-            }),
+            } as const;
+            if (handle.visible) updateDownload(handle, patch);
+            else showDownload(handle, patch);
+          },
           handle.controller.signal,
-          () => handle && updateDownload(handle, { phase: "waiting_network" }),
+          () => {
+            if (!handle) return;
+            const patch = { phase: "waiting_network" } as const;
+            if (handle.visible) updateDownload(handle, patch);
+            else showDownload(handle, patch);
+          },
         );
         if (info.previewKind === "image") {
           handoffDownloadModal(handle, () => setPreview({ attachment, info, uri: file.uri }));
@@ -701,12 +873,25 @@ export function ChatScreen() {
           detail.includes("view it on desktop") || detail.includes("GIF preview")
             ? t("attachment.previewOnDesktop")
             : t("attachment.downloadFailed");
-        Alert.alert(t("attachment.title"), message);
+        if (handle) {
+          handoffDownloadAlert(handle, message);
+        } else {
+          Alert.alert(t("attachment.title"), message);
+        }
       } finally {
         if (handle) finishDownload(handle);
       }
     },
-    [beginDownload, finishDownload, handoffDownloadModal, remote, t, updateDownload],
+    [
+      beginDownload,
+      finishDownload,
+      handoffDownloadAlert,
+      handoffDownloadModal,
+      remote,
+      showDownload,
+      t,
+      updateDownload,
+    ],
   );
 
   // Download `info` to a cached File, prompting on cellular. Returns the file,
@@ -731,33 +916,41 @@ export function ChatScreen() {
         );
         if (!accepted) return null;
       }
-      if (handle) {
-        updateDownload(handle, {
+      if (handle && !cachedFile) {
+        const patch = {
           phase: "downloading",
           completedBytes: 0,
           totalBytes: info.size,
-        });
+        } as const;
+        if (handle.visible) updateDownload(handle, patch);
+        else showDownload(handle, patch);
       }
       return remote.downloadAttachment(
         info,
         (done, total) => {
           if (handle) {
-            updateDownload(handle, {
+            const patch = {
               phase: done >= total ? "verifying" : "downloading",
               completedBytes: done,
               totalBytes: total,
-            });
+            } as const;
+            if (handle.visible) updateDownload(handle, patch);
+            else showDownload(handle, patch);
           } else {
             setTransferProgress(total > 0 ? done / total : null);
           }
         },
         handle?.controller.signal,
         () => {
-          if (handle) updateDownload(handle, { phase: "waiting_network" });
+          if (handle) {
+            const patch = { phase: "waiting_network" } as const;
+            if (handle.visible) updateDownload(handle, patch);
+            else showDownload(handle, patch);
+          }
         },
       );
     },
-    [remote, t, updateDownload],
+    [remote, showDownload, t, updateDownload],
   );
 
   // Non-previewable file: download then hand it to the OS share sheet, which is
@@ -771,7 +964,7 @@ export function ChatScreen() {
       openMimeType = info.mimeType,
     ) => {
       const handle =
-        existingHandle ?? beginDownload(info.transferId || info.name, info.name, info.size);
+        existingHandle ?? beginDownload(info.transferId || info.name, info.name, info.size, false);
       if (!handle) {
         showToast(t("attachment.downloadInProgress"));
         return;
@@ -807,7 +1000,7 @@ export function ChatScreen() {
           return;
         }
         if (!(await Sharing.isAvailableAsync())) {
-          Alert.alert(t("attachment.title"), t("attachment.shareUnavailable"));
+          handoffDownloadAlert(handle, t("attachment.shareUnavailable"));
           return;
         }
         updateDownload(handle, { phase: save ? "saving" : "opening" });
@@ -831,17 +1024,25 @@ export function ChatScreen() {
         });
       } catch (error) {
         if (error instanceof TransferCancelledError) return;
-        Alert.alert(t("attachment.title"), t("attachment.downloadFailed"));
+        handoffDownloadAlert(handle, t("attachment.downloadFailed"));
       } finally {
         finishDownload(handle);
       }
     },
-    [beginDownload, fetchDownload, finishDownload, handoffDownloadModal, t, updateDownload],
+    [
+      beginDownload,
+      fetchDownload,
+      finishDownload,
+      handoffDownloadAlert,
+      handoffDownloadModal,
+      t,
+      updateDownload,
+    ],
   );
 
   const downloadOriginal = useCallback(
     async (attachment: HistoryAttachment) => {
-      const handle = beginDownload(attachment.path, attachment.name);
+      const handle = beginDownload(attachment.path, attachment.name, 0, false);
       if (!handle) {
         showToast(t("attachment.downloadInProgress"));
         return;
@@ -874,12 +1075,11 @@ export function ChatScreen() {
           ));
         await openOrShare(info, cached?.file ?? null, true, handle);
       } catch (error) {
-        finishDownload(handle);
         if (error instanceof TransferCancelledError) return;
-        Alert.alert(t("attachment.title"), t("attachment.downloadFailed"));
+        handoffDownloadAlert(handle, t("attachment.downloadFailed"));
       }
     },
-    [beginDownload, finishDownload, openOrShare, remote, t, updateDownload],
+    [beginDownload, handoffDownloadAlert, openOrShare, remote, t, updateDownload],
   );
 
   // A local-file markdown link/image target: prepare, then dispatch by size and
@@ -899,7 +1099,7 @@ export function ChatScreen() {
         Alert.alert(t("attachment.title"), t("attachment.noHandler"));
         return;
       }
-      const handle = beginDownload(path, attachment.name);
+      const handle = beginDownload(path, attachment.name, 0, false);
       if (!handle) {
         showToast(t("attachment.downloadInProgress"));
         return;
@@ -913,7 +1113,7 @@ export function ChatScreen() {
             updateDownload(handle, { phase: "waiting_network" }),
           ));
         if (info.size > MAX_FILE_BYTES) {
-          Alert.alert(t("attachment.title"), t("attachment.tooLarge"));
+          handoffDownloadAlert(handle, t("attachment.tooLarge"));
           return;
         }
         const previewable =
@@ -923,7 +1123,7 @@ export function ChatScreen() {
           info.previewKind === "json";
         if (!previewable) {
           if (!openMimeType) {
-            Alert.alert(t("attachment.title"), t("attachment.noHandler"));
+            handoffDownloadAlert(handle, t("attachment.noHandler"));
             return;
           }
           handoffDownloadModal(handle, () =>
@@ -958,18 +1158,72 @@ export function ChatScreen() {
           detail.includes("view it on desktop") || detail.includes("GIF preview")
             ? t("attachment.previewOnDesktop")
             : t("attachment.downloadFailed");
-        Alert.alert(t("attachment.title"), message);
+        handoffDownloadAlert(handle, message);
       } finally {
         finishDownload(handle);
       }
     },
-    [beginDownload, fetchDownload, finishDownload, handoffDownloadModal, remote, t, updateDownload],
+    [
+      beginDownload,
+      fetchDownload,
+      finishDownload,
+      handoffDownloadAlert,
+      handoffDownloadModal,
+      remote,
+      t,
+      updateDownload,
+    ],
   );
 
   // The bottom-most scroll offset: full content height minus the viewport,
   // never negative. Recomputed from measured sizes so it stays correct as the
   // composer (bottom padding) and content grow.
   const maxScrollOffset = () => Math.max(0, contentHeightRef.current - layoutHeightRef.current);
+
+  // Opening a conversation may lay out the list, its remote history and the
+  // floating composer in separate commits. Wait one frame, then repeat on the
+  // next frame with the final measurements: this avoids both Android's stale
+  // first content size and iOS applying its safe-area/composer inset late.
+  const scheduleInitialScroll = () => {
+    if (
+      !initialScrollPendingRef.current ||
+      contentHeightRef.current <= 0 ||
+      layoutHeightRef.current <= 0 ||
+      composerHeight <= 0
+    ) {
+      return;
+    }
+    if (initialScrollFrameRef.current != null) return;
+    initialScrollFrameRef.current = requestAnimationFrame(() => {
+      initialScrollFrameRef.current = null;
+      if (!initialScrollPendingRef.current) return;
+      listRef.current?.scrollToOffset({ animated: false, offset: maxScrollOffset() });
+      initialScrollFrameRef.current = requestAnimationFrame(() => {
+        initialScrollFrameRef.current = null;
+        if (!initialScrollPendingRef.current) return;
+        listRef.current?.scrollToOffset({ animated: false, offset: maxScrollOffset() });
+        initialScrollPendingRef.current = false;
+        landedRef.current = true;
+        setAtLatest(true);
+      });
+    });
+  };
+
+  // Reset the opening contract if the mounted screen switches between the
+  // draft and an established session. In the usual navigation path ChatScreen
+  // unmounts, but this also covers a send binding a draft to its new session.
+  useEffect(() => {
+    landedRef.current = false;
+    initialScrollPendingRef.current = true;
+    contentHeightRef.current = 0;
+    layoutHeightRef.current = 0;
+    return () => {
+      if (initialScrollFrameRef.current != null) {
+        cancelAnimationFrame(initialScrollFrameRef.current);
+        initialScrollFrameRef.current = null;
+      }
+    };
+  }, [remote.selectedSessionId]);
 
   // scrollToEnd is unreliable on Android for the first layout of a large
   // history (it can no-op or use a stale content size, leaving a gap). An
@@ -1053,6 +1307,10 @@ export function ChatScreen() {
             }
             onContentSizeChange={(_w, h) => {
               contentHeightRef.current = h;
+              if (initialScrollPendingRef.current) {
+                scheduleInitialScroll();
+                return;
+              }
               if (!atLatest) return;
               if (!landedRef.current && transcriptItems.length === 0) return;
               listRef.current?.scrollToOffset({
@@ -1063,8 +1321,12 @@ export function ChatScreen() {
             }}
             onLayout={event => {
               layoutHeightRef.current = event.nativeEvent.layout.height;
+              scheduleInitialScroll();
             }}
             onScroll={event => {
+              // Ignore first-layout offsets; the two-frame snap above owns the
+              // initial position on both platforms.
+              if (initialScrollPendingRef.current) return;
               const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
               setAtLatest(
                 contentOffset.y + layoutMeasurement.height >=
@@ -1292,84 +1554,16 @@ export function ChatScreen() {
           )}
         </View>
 
-        <Modal
-          animationType="fade"
-          onRequestClose={() => setAttachmentMenu(false)}
-          transparent
-          visible={attachmentMenu}
-        >
-          <TouchableWithoutFeedback onPress={() => setAttachmentMenu(false)}>
-            <View style={styles.attachmentOverlay}>
-              <TouchableWithoutFeedback>
-                <View style={styles.attachmentMenu}>
-                  <Pressable
-                    onPress={() => void capturePhoto()}
-                    style={styles.attachmentMenuOption}
-                  >
-                    <Camera color={colors.ink} size={20} />
-                    <Text style={styles.attachmentMenuText}>{t("attachment.takePhoto")}</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => void chooseFromAlbum()}
-                    style={styles.attachmentMenuOption}
-                  >
-                    <Images color={colors.ink} size={20} />
-                    <Text style={styles.attachmentMenuText}>{t("attachment.chooseFromAlbum")}</Text>
-                  </Pressable>
-                  <Pressable onPress={() => void chooseFiles()} style={styles.attachmentMenuOption}>
-                    <FileText color={colors.ink} size={20} />
-                    <Text style={styles.attachmentMenuText}>{t("attachment.chooseFiles")}</Text>
-                  </Pressable>
-                </View>
-              </TouchableWithoutFeedback>
-            </View>
-          </TouchableWithoutFeedback>
-        </Modal>
-
-        <Modal
-          animationType="fade"
-          onRequestClose={() => setFileAction(null)}
-          transparent
-          visible={fileAction !== null}
-        >
-          <TouchableWithoutFeedback onPress={() => setFileAction(null)}>
-            <View style={styles.attachmentOverlay}>
-              <TouchableWithoutFeedback>
-                <View style={styles.attachmentMenu}>
-                  <Pressable
-                    onPress={() => {
-                      const action = fileAction;
-                      setFileAction(null);
-                      if (action)
-                        void openOrShare(
-                          action.info,
-                          action.cachedFile,
-                          false,
-                          undefined,
-                          action.openMimeType,
-                        );
-                    }}
-                    style={styles.attachmentMenuOption}
-                  >
-                    <FileText color={colors.ink} size={20} />
-                    <Text style={styles.attachmentMenuText}>{t("attachment.open")}</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => {
-                      const action = fileAction;
-                      setFileAction(null);
-                      if (action) void openOrShare(action.info, action.cachedFile, true);
-                    }}
-                    style={styles.attachmentMenuOption}
-                  >
-                    <Download color={colors.ink} size={20} />
-                    <Text style={styles.attachmentMenuText}>{t("attachment.save")}</Text>
-                  </Pressable>
-                </View>
-              </TouchableWithoutFeedback>
-            </View>
-          </TouchableWithoutFeedback>
-        </Modal>
+        <NativeFileActionSheet
+          action={fileAction}
+          cancelLabel={t("chat.cancel")}
+          onClose={() => setFileAction(null)}
+          onSelect={(action, save) => {
+            void openOrShare(action.info, action.cachedFile, save, undefined, action.openMimeType);
+          }}
+          openLabel={t("attachment.open")}
+          saveLabel={t("attachment.save")}
+        />
 
         <Modal
           animationType="slide"
@@ -1437,6 +1631,9 @@ export function ChatScreen() {
           animationType="fade"
           onDismiss={flushPendingDownloadModal}
           onRequestClose={cancelActiveDownload}
+          onShow={() => {
+            downloadModalPresentedRef.current = true;
+          }}
           transparent
           visible={activeDownload !== null}
         >
@@ -1557,7 +1754,7 @@ export function ChatScreen() {
           animationType="fade"
           onRequestClose={() => setRenameOpen(false)}
           transparent
-          visible={renameOpen}
+          visible={Platform.OS !== "ios" && renameOpen}
         >
           <View style={styles.overlay}>
             <View style={styles.dialog}>
@@ -1789,28 +1986,6 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.xl,
     backgroundColor: colors.overlay,
   },
-  attachmentOverlay: {
-    flex: 1,
-    justifyContent: "flex-end",
-    backgroundColor: colors.overlay,
-  },
-  attachmentMenu: {
-    width: "100%",
-    overflow: "hidden",
-    borderTopLeftRadius: radius.lg,
-    borderTopRightRadius: radius.lg,
-    backgroundColor: colors.surface,
-  },
-  attachmentMenuOption: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.lg,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.lineSoft,
-  },
-  attachmentMenuText: { color: colors.ink, fontSize: 15, fontWeight: "600" },
   downloadOverlay: {
     flex: 1,
     alignItems: "center",

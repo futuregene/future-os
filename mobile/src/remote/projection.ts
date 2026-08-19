@@ -180,6 +180,12 @@ export function timelineFromEntries(entries: HistoryEntry[]): TimelineState {
                 typeof entry.run_error === "string" && entry.run_error.trim()
                   ? entry.run_error
                   : undefined,
+              durationMs:
+                typeof entry.run_duration_ms === "number" &&
+                Number.isFinite(entry.run_duration_ms) &&
+                entry.run_duration_ms >= 0
+                  ? entry.run_duration_ms
+                  : undefined,
             },
           ] as const,
       ),
@@ -194,6 +200,9 @@ export function timelineFromEntries(entries: HistoryEntry[]): TimelineState {
             ...item,
             ...(outcome.status === "failed" ? { failed: true } : {}),
             ...(outcome.status === "cancelled" ? { stopped: true } : {}),
+            ...(item.durationMs == null && outcome.durationMs != null
+              ? { durationMs: outcome.durationMs }
+              : {}),
           }
         : item,
     );
@@ -214,15 +223,18 @@ export function timelineFromEntries(entries: HistoryEntry[]): TimelineState {
   // the shared projection ids them `m_<entry id>` — the same id this file's
   // toSessionEntries assigns — so a failed run's bubble anchors after its user
   // item without re-deriving the exchange grouping.
-  const failuresByAnchor = new Map<string, { runId: string; error?: string }>();
-  const unanchored: { runId: string; error?: string }[] = [];
+  const failuresByAnchor = new Map<
+    string,
+    { runId: string; error?: string; durationMs?: number }
+  >();
+  const unanchored: { runId: string; error?: string; durationMs?: number }[] = [];
   entries.forEach((entry, index) => {
     if (entry.role !== "user") return;
     const runId = typeof entry.meta?.run_id === "string" ? entry.meta.run_id : null;
     if (!runId) return;
     const outcome = runOutcomes.get(runId);
     if (outcome?.status !== "failed" || assistantRunIds.has(runId)) return;
-    const failure = { runId, error: outcome.error };
+    const failure = { runId, error: outcome.error, durationMs: outcome.durationMs };
     const text = typeof entry.content === "string" ? entry.content : "";
     if (text.trim() || (entry.meta?.attachments?.length ?? 0) > 0) {
       failuresByAnchor.set(`m_${entry.id ?? `entry_${index}`}`, failure);
@@ -230,7 +242,11 @@ export function timelineFromEntries(entries: HistoryEntry[]): TimelineState {
       unanchored.push(failure);
     }
   });
-  const toFailureBubble = (failure: { runId: string; error?: string }): TimelineItem => ({
+  const toFailureBubble = (failure: {
+    runId: string;
+    error?: string;
+    durationMs?: number;
+  }): TimelineItem => ({
     id: `failed_${failure.runId}`,
     kind: "message",
     role: "assistant",
@@ -238,6 +254,7 @@ export function timelineFromEntries(entries: HistoryEntry[]): TimelineState {
     runId: failure.runId,
     failed: true,
     ...(failure.error ? { error: failure.error } : {}),
+    ...(failure.durationMs != null ? { durationMs: failure.durationMs } : {}),
   });
   const items: TimelineItem[] = [];
   for (const item of projected) {
