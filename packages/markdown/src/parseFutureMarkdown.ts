@@ -29,11 +29,12 @@ import type {
   MarkdownNode,
 } from "./types";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 import remarkParse from "remark-parse";
 import { unified } from "unified";
 import { localFilePath } from "./localPath";
 
-const markdownProcessor = unified().use(remarkParse).use(remarkGfm);
+const markdownProcessor = unified().use(remarkParse).use(remarkMath).use(remarkGfm);
 
 // Cross-instance parse cache: `useMemo([content])` in MarkdownContent only
 // survives within one mounted component, so a thread switch re-parses every
@@ -150,6 +151,8 @@ function blockToFutureNode(
       ];
     case "html":
       return htmlToSafeParagraph(node);
+    case "math":
+      return [{ code: node.value, type: "mathBlock" }];
     /* v8 ignore start -- remark never emits phrasing nodes as block children */
     case "image":
       return [{ children: [imageToInline(node)], type: "paragraph" }];
@@ -169,13 +172,19 @@ function blockToFutureNode(
     /* v8 ignore stop */
     case "list":
       return [listToFutureNode(node, context)];
-    case "paragraph":
-      return [
-        {
-          children: phrasingToInline(node.children, context),
-          type: "paragraph",
-        },
-      ];
+    case "paragraph": {
+      const children = phrasingToInline(node.children, context);
+      // A paragraph containing only a single math formula (e.g. `$$E=mc^2$$`
+      // on one line, the model's common output) is promoted to a block-level
+      // formula so it renders centered, matching Typora/Obsidian behavior.
+      if (
+        children.length === 1
+        && children[0]?.type === "mathInline"
+      ) {
+        return [{ code: children[0].code, type: "mathBlock" }];
+      }
+      return [{ children, type: "paragraph" }];
+    }
     case "table":
       return [tableToFutureNode(node, context)];
     /* v8 ignore next 2 -- remark never emits a bare text node as a block child */
@@ -230,6 +239,8 @@ function phrasingNodeToInline(
       ];
     case "inlineCode":
       return [inlineCodeToInline(node)];
+    case "inlineMath":
+      return [{ code: node.value, displayMode: false, type: "mathInline" }];
     case "link":
       return [linkToInline(node, context)];
     case "linkReference":
