@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/tui-screenshot.png" alt="FutureOS 终端界面——内置技能加载，/help 命令面板" width="800">
+  <img src="docs/desktop-screenshot.png" alt="FutureOS 桌面应用——新对话、模型、技能与工作区，一窗集成" width="800">
 </p>
 
 <!-- TODO(demo): 录制 60–90 秒演示 GIF（TUI 审批门控 → 桌面 GUI → IM 机器人进度 →
@@ -132,6 +132,10 @@ future agent      # 在终端启动 agent（日志打到 stdout，Ctrl-C 停止�
 ```bash
 future tui        # 终端界面
 ```
+
+<p align="center">
+  <img src="docs/tui-screenshot.png" alt="FutureOS 终端界面——内置技能加载，/help 命令面板" width="720">
+</p>
 
 > `future <cmd>` 是所有 Rust 组件的统一入口：`future agent`、`future tui`、
 > `future channel`、`future loop`。每个都运行与同名独立二进制完全相同的代码

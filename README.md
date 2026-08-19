@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/tui-screenshot.png" alt="FutureOS terminal UI — built-in skills loaded, /help command palette" width="800">
+  <img src="docs/desktop-screenshot.png" alt="FutureOS desktop app — new conversation, models, skills, and workspace in one window" width="800">
 </p>
 
 <!-- TODO(demo): replace the static screenshot with a 60-90s demo GIF (TUI approval gate →
@@ -133,6 +133,10 @@ Then launch the terminal UI from the same `future` command:
 ```bash
 future tui       # terminal UI
 ```
+
+<p align="center">
+  <img src="docs/tui-screenshot.png" alt="FutureOS terminal UI — built-in skills loaded, /help command palette" width="720">
+</p>
 
 > `future <cmd>` is the unified entry point for every Rust component: `future agent`,
 > `future tui`, `future channel`, `future loop`. Each runs the same code as the
