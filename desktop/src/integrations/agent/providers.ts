@@ -22,6 +22,10 @@ export interface CustomProviderModel {
   name: string;
   /** Whether the model accepts image input. Text input is always implied. */
   supportsImages: boolean;
+  /** Maximum total context window, in tokens. */
+  contextWindow: number;
+  /** Maximum tokens generated in one response. */
+  maxTokens: number;
 }
 
 export interface CustomProvider {

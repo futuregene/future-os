@@ -95,7 +95,16 @@ pub struct CustomProviderModel {
     /// `modalities` array (`["text"]` or `["text","image"]`) that the agent reads.
     #[serde(default)]
     pub supports_images: bool,
+    /// Maximum total context window, in tokens.
+    #[serde(default = "default_context_window")]
+    pub context_window: i32,
+    /// Maximum tokens generated in one response.
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: i32,
 }
+
+const fn default_context_window() -> i32 { 128_000 }
+const fn default_max_tokens() -> i32 { 16_384 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -275,6 +284,16 @@ fn build_providers_view(
                                 id,
                                 name,
                                 supports_images,
+                                context_window: model
+                                    .get("contextWindow")
+                                    .and_then(Value::as_i64)
+                                    .and_then(|value| i32::try_from(value).ok())
+                                    .unwrap_or_else(default_context_window),
+                                max_tokens: model
+                                    .get("maxTokens")
+                                    .and_then(Value::as_i64)
+                                    .and_then(|value| i32::try_from(value).ok())
+                                    .unwrap_or_else(default_max_tokens),
                             })
                         })
                         .collect()

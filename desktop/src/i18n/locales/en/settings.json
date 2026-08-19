@@ -134,6 +134,8 @@
   },
   "customProvider": {
     "editTitle": "Edit custom provider",
+    "contextWindowLabel": "Maximum context tokens",
+    "maxTokensLabel": "Maximum output tokens",
     "addTitle": "Add custom provider",
     "description": "The provider is written to ~/.future/agent/models.json; the Agent may need a restart to load the new models.",
     "cancel": "Cancel",
@@ -152,8 +154,10 @@
     "modelsHeading": "Models",
     "addModel": "+ Add model",
     "noModels": "No models added yet.",
-    "modelIdPlaceholder": "Model ID",
-    "modelNamePlaceholder": "Display name",
+    "modelIdLabel": "Model ID",
+    "modelIdPlaceholder": "e.g. qwen",
+    "modelNameLabel": "Display name",
+    "modelNamePlaceholder": "Leave blank to use the model ID",
     "removeModel": "Remove model",
     "modalityLabel": "Modality",
     "modalityText": "Text",
@@ -172,6 +176,8 @@
       "modelIdPattern": "Model ID \"{{id}}\" contains invalid characters.",
       "modelIdDuplicate": "Model ID \"{{id}}\" is duplicated.",
       "modelNameLength": "Model name \"{{name}}\" is too long.",
+      "tokenLimitsPositive": "Token limits for model \"{{id}}\" must be positive integers.",
+      "maxTokensExceedContext": "Maximum output tokens for model \"{{id}}\" cannot exceed its context window.",
       "modelsMax": "The number of models cannot exceed {{max}}."
     }
   },

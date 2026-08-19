@@ -14,9 +14,9 @@ export interface RemoteStatus {
   /** Desktop identity authenticated by the signed client/bridge handshake. */
   desktopId: string;
   desktopPublicKey: string;
-  /** Web client URL for this machine (localhost); null if the web server failed to bind. */
+  /** Test-only web client URL for this machine; null outside the test environment or if bind failed. */
   webUrl: string | null;
-  /** Web client URL a phone on the same LAN can reach; null if unavailable. */
+  /** Test-only LAN web client URL; null outside the test environment or if unavailable. */
   webLanUrl: string | null;
   /**
    * Machine-readable reason the bridge isn't healthy (`network` / `revoked` /

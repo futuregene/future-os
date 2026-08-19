@@ -279,6 +279,8 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                             id: model.id,
                             name: model.name,
                             modalities: model.modalities,
+                            context_window: model.context_window,
+                            max_tokens: model.max_tokens,
                         })
                         .collect(),
                     replace_models: config.replace_models,
@@ -719,6 +721,8 @@ mod tests {
                     id: "m1".to_string(),
                     name: "Model One".to_string(),
                     modalities: vec!["text".to_string()],
+                    context_window: 128000,
+                    max_tokens: 16384,
                 }],
                 replace_models: true,
                 create_only: false,

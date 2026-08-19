@@ -344,6 +344,8 @@ fn provider_upsert_message(
                 id: model.id.clone(),
                 name: model.name.clone(),
                 modalities: model.modalities.clone(),
+                context_window: model.context_window,
+                max_tokens: model.max_tokens,
             })
             .collect(),
         replace_models: true,

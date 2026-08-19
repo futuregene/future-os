@@ -237,6 +237,12 @@ pub struct ProviderModel {
     /// Input modalities, e.g. \["text"\] or \["text", "image"\].
     #[prost(string, repeated, tag = "3")]
     pub modalities: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Maximum total context window, in tokens.
+    #[prost(int32, tag = "4")]
+    pub context_window: i32,
+    /// Maximum tokens generated in one response.
+    #[prost(int32, tag = "5")]
+    pub max_tokens: i32,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ImageContent {
