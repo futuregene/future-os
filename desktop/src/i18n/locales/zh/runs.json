@@ -43,8 +43,7 @@
     "confirmTerminate": "要终止此程序吗？",
     "cancel": "取消",
     "stopping": "停止中",
-    "terminate": "终止",
-    "startingRunHint": "后台程序即将开始…"
+    "terminate": "终止"
   },
   "status": {
     "completed": "已完成",

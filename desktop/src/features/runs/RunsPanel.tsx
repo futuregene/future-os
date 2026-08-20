@@ -99,26 +99,18 @@ export function RunsPanel({ onClearFinished, onInspectTool, onTerminateRun, runs
         : null}
       <div className="space-y-2">
         {entries.map(entry => (
-          entry.tool
-            ? (
-                <ToolRow
-                  busy={busyRunId === entry.run.id}
-                  confirming={confirmRunId === entry.run.id}
-                  key={entry.tool.id}
-                  entry={entry}
-                  workspacePath={workspacePath}
-                  actionError={actionErrors[entry.run.id]}
-                  onCancelConfirm={() => setConfirmRunId(null)}
-                  onInspect={() => onInspectTool(entry.tool.id)}
-                  onRequestTerminate={() => setConfirmRunId(entry.run.id)}
-                  onTerminate={() => void terminate(entry.run)}
-                />
-              )
-            : (
-                <div key={entry.run.id} className="rounded-md border border-line-soft bg-surface p-2.5 text-xs text-ink-muted">
-                  {t("runsPanel.startingRunHint")}
-                </div>
-              )
+          <ToolRow
+            busy={busyRunId === entry.run.id}
+            confirming={confirmRunId === entry.run.id}
+            key={entry.tool.id}
+            entry={entry}
+            workspacePath={workspacePath}
+            actionError={actionErrors[entry.run.id]}
+            onCancelConfirm={() => setConfirmRunId(null)}
+            onInspect={() => onInspectTool(entry.tool.id)}
+            onRequestTerminate={() => setConfirmRunId(entry.run.id)}
+            onTerminate={() => void terminate(entry.run)}
+          />
         ))}
       </div>
     </div>
@@ -269,14 +261,9 @@ function buildToolEntries(runs: StoredRun[], toolsByRun: Record<string, StoredTo
     const tools = toolsByRun[run.id] ?? [];
     const runActive = isActiveRun(run);
 
-    // Active runs show in the panel even when no tool has started yet —
-    // otherwise the running count stays at zero until the first tool fires,
-    // which is misleading.
+    // A Run tracks the model reply lifecycle, not a background program. Keep
+    // it out of this tool-only panel until the Agent has emitted a tool event.
     if (tools.length === 0) {
-      if (runActive) {
-        // Placeholder with no tool — just marks the run as active.
-        active.push({ tool: null as unknown as StoredToolCall, run, terminable: true });
-      }
       continue;
     }
 
@@ -300,11 +287,6 @@ function countEntries(entries: ToolEntry[]) {
   let runningCount = 0;
   let finishedCount = 0;
   for (const entry of entries) {
-    // Placeholder for active runs with no tool yet — count as running.
-    if (!entry.tool) {
-      runningCount += 1;
-      continue;
-    }
     if (entry.tool.status === "running" && isActiveRun(entry.run))
       runningCount += 1;
     else
