@@ -1538,10 +1538,6 @@ pub fn status() -> RemoteStatus {
                         Some(RemoteFailureReason::SystemSleep),
                     ),
                     Some("connecting") => (RemotePhase::Connecting, None),
-                    Some("credential_expired") => (
-                        RemotePhase::Refreshing,
-                        Some(RemoteFailureReason::CredentialExpired),
-                    ),
                     Some("protocol") => (RemotePhase::Failed, Some(RemoteFailureReason::Protocol)),
                     Some("network") => (
                         RemotePhase::Reconnecting,
