@@ -12,7 +12,6 @@ use parking_lot::RwLock;
 use reqwest::Client as HttpClient;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::info;
@@ -49,10 +48,6 @@ pub struct Client {
     http: HttpClient,
     target: RwLock<schema::ResolvedModelTarget>,
     adapters: AdapterRegistry,
-    #[allow(clippy::type_complexity)]
-    on_payload: Option<Arc<dyn Fn(&[u8]) + Send + Sync>>,
-    #[allow(clippy::type_complexity)]
-    on_response: Option<Arc<dyn Fn(u16, &HashMap<String, String>) + Send + Sync>>,
 }
 
 impl Client {
@@ -75,8 +70,6 @@ impl Client {
             http,
             target: RwLock::new(target),
             adapters,
-            on_payload: None,
-            on_response: None,
         }
     }
 
@@ -165,14 +158,6 @@ impl crate::types::LLMProvider for Client {
         );
         let resp = self.http.execute(req).await?;
         let status = resp.status();
-        let headers: HashMap<String, String> = resp
-            .headers()
-            .iter()
-            .map(|(key, value)| (key.to_string(), value.to_str().unwrap_or("").to_string()))
-            .collect();
-        if let Some(callback) = &self.on_response {
-            callback(status.as_u16(), &headers);
-        }
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
             return Err(normalize_http_error(
@@ -185,7 +170,6 @@ impl crate::types::LLMProvider for Client {
 
         let (tx, rx) = mpsc::channel(32);
         let mut stream = resp.bytes_stream();
-        let on_payload = self.on_payload.clone();
         tokio::spawn(async move {
             let mut decoder = sse::SseDecoder::default();
             let mut state = adapter.new_stream_state();
@@ -213,9 +197,6 @@ impl crate::types::LLMProvider for Client {
                 };
                 if tx.is_closed() {
                     return;
-                }
-                if let Some(callback) = &on_payload {
-                    callback(&bytes);
                 }
                 let frames = match decoder.push(&bytes) {
                     Ok(frames) => frames,

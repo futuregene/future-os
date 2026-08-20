@@ -389,7 +389,17 @@ fn parse_chat_config(model: &crate::models::Model) -> Result<OpenAiChatConfig> {
     };
 
     let reasoning = match string("thinkingFormat")?.unwrap_or("") {
-        "" => ChatReasoningFormat::None,
+        "" => {
+            // Preserve the legacy runtime auto-detect: a dashscope/aliyuncs
+            // endpoint without an explicit thinkingFormat is Qwen.
+            if model.base_url.contains("dashscope") || model.base_url.contains("aliyuncs") {
+                ChatReasoningFormat::Qwen {
+                    chat_template: false,
+                }
+            } else {
+                ChatReasoningFormat::None
+            }
+        }
         "openai" | "openrouter" => ChatReasoningFormat::ReasoningEffort,
         "qwen" => ChatReasoningFormat::Qwen {
             chat_template: false,
@@ -487,5 +497,38 @@ mod tests {
             ChatMaxTokensField::MaxCompletionTokens
         );
         assert!(target.capabilities.supports_image_input);
+    }
+
+    #[test]
+    fn chat_config_autodetects_qwen_from_dashscope_base_url() {
+        let qwen = crate::models::Model {
+            id: "qwen-flash".into(),
+            provider: "custom".into(),
+            api: "openai-completions".into(),
+            base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".into(),
+            reasoning: true,
+            ..Default::default()
+        };
+        let target = ResolvedModelTarget::from_model(&qwen, "key".into(), None, None).unwrap();
+        let ProtocolConfig::OpenAiChat(chat) = target.protocol else {
+            panic!("chat protocol expected")
+        };
+        assert_eq!(
+            chat.reasoning,
+            ChatReasoningFormat::Qwen {
+                chat_template: false
+            }
+        );
+
+        // A non-dashscope base_url without an explicit thinkingFormat stays None.
+        let plain = crate::models::Model {
+            base_url: "https://api.example.test/v1".into(),
+            ..qwen
+        };
+        let target = ResolvedModelTarget::from_model(&plain, "key".into(), None, None).unwrap();
+        let ProtocolConfig::OpenAiChat(chat) = target.protocol else {
+            panic!("chat protocol expected")
+        };
+        assert_eq!(chat.reasoning, ChatReasoningFormat::None);
     }
 }
