@@ -40,15 +40,34 @@ fn abort_all_sessions(sessions: &SessionsMap) {
 }
 
 /// Wait until no session reports an active stream, or `timeout` elapses.
+/// A session in a terminal unrecoverable state (cancellation-stuck /
+/// persistence-degraded) never clears its streaming flag, so it is treated
+/// as "cannot settle" and ends the wait immediately — the only recovery is
+/// restarting the agent, which is what shutdown is doing anyway.
 async fn wait_for_streams_to_settle(sessions: &SessionsMap, timeout: std::time::Duration) {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        let any_streaming = sessions.read().values().any(|s| {
-            s.read()
-                .is_streaming
-                .load(std::sync::atomic::Ordering::Relaxed)
-        });
-        if !any_streaming {
+        let mut any_streaming = false;
+        let mut unrecoverable = 0usize;
+        for s in sessions.read().values() {
+            let s = s.read();
+            if !s.is_streaming.load(std::sync::atomic::Ordering::Relaxed) {
+                continue;
+            }
+            if s.runtime.is_terminal_unrecoverable() {
+                unrecoverable += 1;
+            } else {
+                any_streaming = true;
+            }
+        }
+        if unrecoverable > 0 && !any_streaming {
+            tracing::warn!(
+                unrecoverable,
+                "Active stream(s) are terminally stuck/degraded and cannot settle — exiting now"
+            );
+            break;
+        }
+        if !any_streaming && unrecoverable == 0 {
             tracing::info!("All streams finished — exiting");
             break;
         }
@@ -637,7 +656,7 @@ async fn async_main(
     tokio::select! {
         result = server => result?,
         _ = tokio::signal::ctrl_c() => {
-            tracing::info!("SIGINT received — aborting active streams, shutting down (max 30s)");
+            tracing::info!("SIGINT received — aborting active streams, shutting down (max 30s; press Ctrl-C again to force)");
             shutting_down.store(true, std::sync::atomic::Ordering::SeqCst);
 
             // Actively interrupt in-flight runs. Without this, a long LLM
@@ -645,8 +664,16 @@ async fn async_main(
             // 30 s timeout — making Ctrl-C look like a hang.
             abort_all_sessions(&sessions);
 
-            // Wait for active streams to settle
-            wait_for_streams_to_settle(&sessions, shutdown_timeout).await;
+            // Wait for active streams to settle — but a second Ctrl-C forces
+            // an immediate exit. Users reasonably expect "keep mashing Ctrl-C"
+            // to kill a process whose graceful shutdown is dragging on.
+            tokio::select! {
+                _ = wait_for_streams_to_settle(&sessions, shutdown_timeout) => {}
+                _ = tokio::signal::ctrl_c() => {
+                    tracing::warn!("Second SIGINT — forcing immediate exit");
+                    std::process::exit(1);
+                }
+            }
         }
         _ = profile_rx => {
             // profile timer handled inside the future
@@ -745,5 +772,27 @@ mod tests {
             .read()
             .is_streaming
             .load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn drain_exits_immediately_when_stream_is_cancellation_stuck() {
+        let sessions = sessions_with(true);
+        let session = sessions.read().values().next().unwrap().clone();
+        // Drive the real state machine: begin a run, then mark it stuck the
+        // way the 30 s cancellation-ack timer would. is_streaming stays true.
+        let lease = {
+            let s = session.read();
+            s.runtime.begin(None, None).unwrap()
+        };
+        assert!(session.read().runtime.mark_stuck(&lease, "test"));
+        assert!(session
+            .read()
+            .is_streaming
+            .load(std::sync::atomic::Ordering::Relaxed));
+
+        let start = tokio::time::Instant::now();
+        wait_for_streams_to_settle(&sessions, std::time::Duration::from_secs(30)).await;
+        // Returns on the first poll, not after the 30 s timeout.
+        assert_eq!(start.elapsed(), std::time::Duration::ZERO);
     }
 }
