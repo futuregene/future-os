@@ -489,6 +489,13 @@ impl ServerSession {
     /// Active runs use a provider snapshot, so updating this control plane
     /// affects the next request without mutating headers already sent by an
     /// in-flight request.
+    ///
+    /// Also heals the `set_model` fallback: while the registry could not
+    /// resolve this model (catalog unavailable during a logout/broken-auth
+    /// window), `set_model` froze the full `provider/id` literal into the
+    /// loop, and upstream rejects that name ("Model 'provider/id' is not
+    /// configured"). Once the registry resolves the model again, restore the
+    /// bare id so the next request carries a name the server knows.
     pub fn reload_credentials(&self) -> Result<()> {
         if self.model.is_empty() {
             let loop_ = self
@@ -518,14 +525,24 @@ impl ServerSession {
         // The shared loop is a short-lived control plane; active runs own
         // independent snapshots. Wait until the latest credential revision is
         // installed so config commands cannot acknowledge while a session is
-        // still on the old key.
-        let loop_ = self
+        // still on the old key. A write lock is needed (not just for the
+        // interior-mutable provider) because the fallback heal below mutates
+        // `loop_.model`.
+        let mut loop_ = self
             .agent_loop
-            .try_read()
+            .try_write()
             .map_err(|_| anyhow::anyhow!("run configuration is busy; retry prompt"))?;
         loop_.provider.set_api_key(&api_key);
         if !base_url.is_empty() {
             loop_.provider.set_base_url(&base_url);
+        }
+        // Fallback heal: `set_model` only ever stores the bare resolved id
+        // here, so any divergence means the loop still carries the unresolved
+        // literal from a resolve-miss window.
+        if let Some(mc) = registry_resolved.as_ref() {
+            if loop_.model != mc.id {
+                loop_.model = mc.id.clone();
+            }
         }
         Ok(())
     }
@@ -2324,6 +2341,63 @@ mod tests {
 
         session.reload_credentials().unwrap();
         assert_eq!(&*observed.lock(), "new-key");
+    }
+
+    #[test]
+    fn reload_credentials_heals_fallback_model_literal() {
+        let mut session = make_test_session("fallback-heal");
+        session.set_model("gpt-4o").unwrap();
+        let bare = session.agent_loop.try_read().unwrap().model.clone();
+        assert!(!bare.contains('/'), "resolved set_model stores the bare id");
+        // Simulate the resolve-miss window: set_model's fallback froze the
+        // full provider/id literal into the loop.
+        let canonical = session.model.clone();
+        assert!(canonical.contains('/'));
+        session.agent_loop.try_write().unwrap().model = canonical;
+
+        session.reload_credentials().unwrap();
+        assert_eq!(session.agent_loop.try_read().unwrap().model, bare);
+    }
+
+    #[test]
+    fn reload_credentials_keeps_consistent_model_id() {
+        let mut session = make_test_session("consistent-model");
+        session.set_model("gpt-4o").unwrap();
+        let before = session.agent_loop.try_read().unwrap().model.clone();
+
+        session.reload_credentials().unwrap();
+        assert_eq!(session.agent_loop.try_read().unwrap().model, before);
+    }
+
+    #[test]
+    fn reload_credentials_leaves_unresolved_model_literal() {
+        let mut session = make_test_session("unresolved-model");
+        // Resolve miss: the fallback stores the literal, and reload must not
+        // rewrite it while the registry still cannot resolve the model.
+        session.set_model("unknown-provider/unknown-model").unwrap();
+        assert_eq!(
+            session.agent_loop.try_read().unwrap().model,
+            "unknown-provider/unknown-model"
+        );
+
+        session.reload_credentials().unwrap();
+        assert_eq!(
+            session.agent_loop.try_read().unwrap().model,
+            "unknown-provider/unknown-model"
+        );
+    }
+
+    #[test]
+    fn reload_credentials_reports_busy_when_loop_is_read_locked() {
+        let mut session = make_test_session("busy-loop");
+        session.set_model("gpt-4o").unwrap();
+        // A held read guard makes the credential install's try_write fail.
+        let _read_guard = session.agent_loop.try_read().unwrap();
+        let error = session.reload_credentials().unwrap_err();
+        assert!(
+            error.to_string().contains("configuration is busy"),
+            "unexpected error: {error:#}"
+        );
     }
 
     #[test]
