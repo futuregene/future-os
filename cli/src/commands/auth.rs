@@ -236,71 +236,87 @@ pub async fn credential(json: bool, out: &Output) -> Result<(), String> {
 }
 
 /// `logout()` — remove the stored Future API key.
+///
+/// Same probe-and-fallback shape as [`login`]: when the agent is running the
+/// key is cleared through its sole-writer RPC (keeping live state
+/// consistent); when it is down the key is dropped from `auth.json`
+/// directly.
 pub async fn logout(out: &Output) -> Result<(), String> {
     #[cfg(not(test))]
     {
         let client = RunClient::new(&grpc_addr());
-        let providers = client
-            .list_providers()
-            .await
-            .map_err(|error| format!("Future Agent must be running before logout: {error}"))?;
-        let logged_in = providers
-            .get("builtin")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .any(|provider| {
-                provider.get("id").and_then(Value::as_str) == Some(FUTURE_AUTH_PROVIDER)
-                    && provider
-                        .get("hasApiKey")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false)
-            });
-        if !logged_in {
-            out.log("Not logged in.");
-            return Ok(());
+        if client.get_agent_info().await.is_ok() {
+            return logout_via_agent(&client, out).await;
         }
-        client
-            .set_auth(future_rpc::proto::AuthUpdate {
-                provider: FUTURE_AUTH_PROVIDER.to_string(),
-                clear_key: true,
-                ..Default::default()
-            })
-            .await
-            .map_err(|error| format!("Future Agent did not clear the credential: {error}"))?;
-        out.log("Removed Future API key through Future Agent.");
-        Ok(())
     }
+    logout_via_file(out).await
+}
 
-    #[cfg(test)]
-    {
-        let auth_file = load_auth_file().await?;
-        let current = get_future_auth_entry(&auth_file);
-
-        let Some(current) = current.filter(|c| c.key.is_some()) else {
-            out.log("Not logged in.");
-            return Ok(());
-        };
-        // `const next = { ...current }; delete next.key;` — the sanitized
-        // entry (type/key/base_url only) minus the key.
-        let mut next = Map::new();
-        if let Some(type_) = current.type_ {
-            next.insert("type".to_string(), Value::String(type_));
-        }
-        if let Some(base_url) = current.base_url {
-            next.insert("base_url".to_string(), Value::String(base_url));
-        }
-        let mut auth_file = auth_file;
-        if let Some(obj) = auth_file.as_object_mut() {
-            obj.insert(FUTURE_AUTH_PROVIDER.to_string(), Value::Object(next));
-        }
-        write_auth_file(&auth_file).await?;
-        out.log(&format!(
-            "Removed Future API key from {}",
-            auth_file_path().display()
-        ));
-        Ok(())
+/// Agent-online logout: verify the credential exists, then clear it through
+/// the sole-writer RPC so the running agent's live state stays consistent.
+#[cfg(not(test))]
+async fn logout_via_agent(client: &RunClient, out: &Output) -> Result<(), String> {
+    let providers = client
+        .list_providers()
+        .await
+        .map_err(|error| format!("Future Agent did not list providers: {error}"))?;
+    let logged_in = providers
+        .get("builtin")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|provider| {
+            provider.get("id").and_then(Value::as_str) == Some(FUTURE_AUTH_PROVIDER)
+                && provider
+                    .get("hasApiKey")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+        });
+    if !logged_in {
+        out.log("Not logged in.");
+        return Ok(());
     }
+    client
+        .set_auth(future_rpc::proto::AuthUpdate {
+            provider: FUTURE_AUTH_PROVIDER.to_string(),
+            clear_key: true,
+            ..Default::default()
+        })
+        .await
+        .map_err(|error| format!("Future Agent did not clear the credential: {error}"))?;
+    out.log("Removed Future API key through Future Agent.");
+    Ok(())
+}
+
+/// File-based logout: drop `key` from the sanitized `future` entry (keeping
+/// `type` / `base_url`), leaving every other provider untouched.
+async fn logout_via_file(out: &Output) -> Result<(), String> {
+    let auth_file = load_auth_file().await?;
+    let current = get_future_auth_entry(&auth_file);
+
+    let Some(current) = current.filter(|c| c.key.is_some()) else {
+        out.log("Not logged in.");
+        return Ok(());
+    };
+    // `const next = { ...current }; delete next.key;` — the sanitized
+    // entry (type/key/base_url only) minus the key.
+    let mut next = Map::new();
+    if let Some(type_) = current.type_ {
+        next.insert("type".to_string(), Value::String(type_));
+    }
+    if let Some(base_url) = current.base_url {
+        next.insert("base_url".to_string(), Value::String(base_url));
+    }
+    let mut auth_file = auth_file;
+    if let Some(obj) = auth_file.as_object_mut() {
+        obj.insert(FUTURE_AUTH_PROVIDER.to_string(), Value::Object(next));
+    }
+    write_auth_file(&auth_file).await?;
+    out.log(&format!(
+        "Removed Future API key from {}",
+        auth_file_path().display()
+    ));
+    Ok(())
 }
 
 /// `auth.baseUrl.replace(/\/api\/?$/, "")` — strip a trailing `/api` or

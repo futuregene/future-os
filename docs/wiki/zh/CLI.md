@@ -37,7 +37,7 @@ alias future="/Applications/FutureOS.app/Contents/MacOS/future"
 
 大部分命令都要连接 FutureOS 的 agent(后台服务)。如果**桌面应用已打开**,agent 就已经在运行。否则,用 `future agent` 启动 agent(或直接运行 `future-agent` 二进制,二者是同一套代码;打开桌面应用也会自动拉起 agent)。
 
-`future auth login` 是例外:agent 未运行时也能直接用,密钥会写入 `~/.future/agent/auth.json`,agent 下次启动时自动读取。
+`future auth login` 和 `future auth logout` 是例外:agent 未运行时也能直接用,密钥变更会写入 `~/.future/agent/auth.json`,agent 下次启动时自动读取。
 
 ---
 
