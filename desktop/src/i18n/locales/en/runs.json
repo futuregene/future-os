@@ -43,8 +43,7 @@
     "confirmTerminate": "Terminate this program?",
     "cancel": "Cancel",
     "stopping": "Stopping",
-    "terminate": "Terminate",
-    "startingRunHint": "Program starting…"
+    "terminate": "Terminate"
   },
   "status": {
     "completed": "completed",
