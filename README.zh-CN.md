@@ -137,6 +137,18 @@ future auth login
 
 </details>
 
+### 安装技能（可选）
+
+技能是按需安装的能力包，agent 会从 `~/.future/agent/skills/` 加载。浏览技能目录并安装需要的技能——只需要网络连接，不要求 agent 在运行：
+
+```bash
+future skills list             # 浏览技能目录
+future skills install <name>   # 安装指定技能
+future skills install          # 不带名字：安装全部内置技能
+```
+
+跳过这一步 agent 也能正常回答——技能只是提供现成的工作流。卸载、升级等用法见 [CLI 参考](docs/wiki/zh/CLI.md)。
+
 ### 启动 Agent
 
 终端与 CLI 客户端都是轻量 gRPC 客户端。**必须先启动 Agent**，监听 `127.0.0.1:50051`：

@@ -141,6 +141,22 @@ For providers with user-specific base URLs (e.g. Azure's `YOUR_RESOURCE`), add a
 
 </details>
 
+### Install skills (optional)
+
+Skills are add-on capability packs the agent picks up from
+`~/.future/agent/skills/`. Browse the catalog and install what you need —
+this only needs network access, not a running agent:
+
+```bash
+future skills list             # browse the skill catalog
+future skills install <name>   # install one skill
+future skills install          # no name: install every built-in skill
+```
+
+Skip this and the agent still answers fine — skills just add ready-made
+workflows. `uninstall` / `update` and friends are in the
+[CLI reference](docs/wiki/en/CLI.md).
+
 ### Run the agent
 
 The terminal and CLI clients are thin gRPC clients. **The agent must be running
