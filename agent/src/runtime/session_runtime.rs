@@ -133,6 +133,13 @@ impl SessionRuntime {
         self.control.snapshot()
     }
 
+    /// True when the active run is terminally stuck/degraded and will never
+    /// release the session on its own. Shutdown uses this to skip the settle
+    /// wait instead of blocking on an `is_streaming` flag that stays up.
+    pub fn is_terminal_unrecoverable(&self) -> bool {
+        self.control.is_terminal_unrecoverable()
+    }
+
     pub fn has_owned_task(&self) -> bool {
         self.task.lock().is_some()
     }

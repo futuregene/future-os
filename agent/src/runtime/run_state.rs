@@ -373,6 +373,20 @@ impl RunControl {
         })
     }
 
+    /// True when the active run reached a terminal state it cannot leave on
+    /// its own (`CancellationStuck` / `PersistenceDegraded`). Both keep
+    /// `is_streaming` asserted forever (only a new `begin` self-heals a stuck
+    /// lease; degraded is intentionally fail-closed), so shutdown must treat
+    /// them as "exit now" rather than waiting for a settle that never comes.
+    pub fn is_terminal_unrecoverable(&self) -> bool {
+        self.state.lock().active.as_ref().is_some_and(|active| {
+            matches!(
+                active.phase,
+                RunPhase::CancellationStuck | RunPhase::PersistenceDegraded
+            )
+        })
+    }
+
     pub fn request_lease(&self, client_request_id: &str) -> Option<RunLease> {
         if client_request_id.is_empty() {
             return None;
@@ -592,6 +606,32 @@ mod tests {
         // not a no-op — Cancelling is abortable.
         assert!(control.abort_expected(Some("run-1")).unwrap().is_some());
         assert_eq!(control.snapshot().unwrap().phase, RunPhase::Cancelling);
+    }
+
+    #[test]
+    fn terminal_unrecoverable_only_for_stuck_and_degraded() {
+        // Live phases are recoverable.
+        let control = RunControl::new(Arc::new(AtomicBool::new(false)));
+        let lease = control.begin(Some("run-1"), None).unwrap();
+        assert!(!control.is_terminal_unrecoverable());
+        assert!(control.abort_expected(Some("run-1")).unwrap().is_some());
+        assert!(!control.is_terminal_unrecoverable());
+
+        // Stuck is terminal.
+        assert!(control.mark_stuck(&lease, "test"));
+        assert!(control.is_terminal_unrecoverable());
+
+        // Degraded is terminal.
+        let control = RunControl::new(Arc::new(AtomicBool::new(false)));
+        let lease = control.begin(Some("run-2"), None).unwrap();
+        assert!(control.begin_finalizing(&lease));
+        assert!(!control.is_terminal_unrecoverable());
+        assert!(control.mark_persistence_degraded(&lease, "disk full"));
+        assert!(control.is_terminal_unrecoverable());
+
+        // No active run at all is not "unrecoverable".
+        let control = RunControl::new(Arc::new(AtomicBool::new(false)));
+        assert!(!control.is_terminal_unrecoverable());
     }
 
     #[test]
