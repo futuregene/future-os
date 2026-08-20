@@ -43,10 +43,17 @@ known `local` category.
 | Category | Code |
 | --- | --- |
 | `network`, `credential_network` | `NW001` |
+| request timeout | `NW002` |
 | `remote_server` | `SV001` |
+| rate limited | `SV002` |
 | `service_authorization` | `AU001` |
 | `credential_expired`, `credential_connect` | `AU002` |
 | `revoked`, `credential_revoked` | `PA001` |
+| pairing code invalid or expired | `PA002` |
+| pairing code from another environment | `PA003` |
+| pairing endpoint insecure | `PA004` |
+| desktop verification failed | `PA005` |
+| pairing failed (unknown) | `PA999` |
 | `protocol` | `PT001` |
 | `generation_unhealthy` | `RT001` |
 | `slow_consumer` | `RT002` |
@@ -55,7 +62,10 @@ known `local` category.
 | `event_publish` | `RT005` |
 | `heartbeat_publish`, `state_publish` | `RT006` |
 | `system_sleep` | `PW001` |
+| requested content not found | `DT001` |
 | `web_bind` | `LC002` |
+| desktop agent offline | `LC003` |
+| credential persistence failure | `LC004` |
 | `local` | `LC001` |
 | unknown local failure | `LC999` |
 
