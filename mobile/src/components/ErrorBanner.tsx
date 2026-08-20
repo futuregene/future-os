@@ -21,19 +21,29 @@ import { friendlyError } from "./errorMessage";
  * states (desktop asleep, reconnecting) never reach the banner; the badge and
  * offline empty state are their dedicated UI.
  */
-export function ErrorBanner({ message, onDismiss }: { message: string; onDismiss: () => void }) {
+export function ErrorBanner({
+  message,
+  onDismiss,
+}: {
+  message: string;
+  onDismiss?: () => void;
+}) {
   const { t } = useTranslation();
   return (
     <View style={styles.banner}>
       <Text style={styles.text}>{friendlyError(message, t)}</Text>
-      <Pressable
-        accessibilityLabel={t("common.close")}
-        accessibilityRole="button"
-        onPress={onDismiss}
-        style={styles.dismiss}
-      >
-        <X color={colors.danger} size={16} />
-      </Pressable>
+      {onDismiss
+        ? (
+            <Pressable
+              accessibilityLabel={t("common.close")}
+              accessibilityRole="button"
+              onPress={onDismiss}
+              style={styles.dismiss}
+            >
+              <X color={colors.danger} size={16} />
+            </Pressable>
+          )
+        : null}
     </View>
   );
 }

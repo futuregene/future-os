@@ -43,6 +43,11 @@ pub enum AppError {
     /// unchanged.
     #[error("{0}")]
     RemoteTransport(String),
+    /// NATS accepted the transport but rejected the freshly issued bridge
+    /// credential. This is a deployment/account authorization failure, not a
+    /// network outage, so retrying forever cannot repair it.
+    #[error("{0}")]
+    RemoteAuthorization(String),
     #[error("{0}")]
     Message(String),
 }

@@ -33,7 +33,9 @@ async fn listen() -> zbus::Result<()> {
             message = sleep.next() => {
                 let Some(message) = message else { return Ok(()); };
                 if message.body().deserialize::<bool>().unwrap_or(false) {
-                    crate::remote::notify_mobile_disconnect("system_sleep").await;
+                    crate::remote::handle_system_suspend().await;
+                } else {
+                    crate::remote::handle_system_resume();
                 }
             }
             message = shutdown.next() => {

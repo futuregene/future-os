@@ -4,7 +4,8 @@
 
 use block2::RcBlock;
 use objc2_app_kit::{
-    NSWorkspace, NSWorkspaceWillPowerOffNotification, NSWorkspaceWillSleepNotification,
+    NSWorkspace, NSWorkspaceDidWakeNotification, NSWorkspaceWillPowerOffNotification,
+    NSWorkspaceWillSleepNotification,
 };
 use objc2_foundation::NSNotification;
 use std::ptr::NonNull;
@@ -18,8 +19,11 @@ pub fn install_disconnect_notifier() {
 
     let sleep = RcBlock::new(move |_: NonNull<NSNotification>| {
         tauri::async_runtime::block_on(async {
-            crate::remote::notify_mobile_disconnect("system_sleep").await;
+            crate::remote::handle_system_suspend().await;
         });
+    });
+    let wake = RcBlock::new(move |_: NonNull<NSNotification>| {
+        crate::remote::handle_system_resume();
     });
     let power_off = RcBlock::new(move |_: NonNull<NSNotification>| {
         tauri::async_runtime::block_on(async {
@@ -39,6 +43,12 @@ pub fn install_disconnect_notifier() {
             None,
             None,
             &power_off,
+        );
+        center.addObserverForName_object_queue_usingBlock(
+            Some(NSWorkspaceDidWakeNotification),
+            None,
+            None,
+            &wake,
         );
     }
 }

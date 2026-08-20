@@ -9,8 +9,8 @@ pub async fn remote_start(
 ) -> Result<remote::RemoteStatus, crate::AppError> {
     match remote::start(input).await {
         Ok(status) => {
-            if let Some(code) = &status.error_code {
-                eprintln!("remote: start completed with degraded status [{code}]");
+            if let Some(reason) = &status.reason {
+                eprintln!("remote: start completed in {:?} [{reason:?}]", status.phase);
             }
             Ok(status)
         }
@@ -123,9 +123,9 @@ mod tests {
     fn remote_status_and_stop_report_no_bridge_when_idle() {
         let _home = HomeGuard::new("remote_idle");
         let status = remote_status().expect("status");
-        assert!(!status.connected);
+        assert!(!matches!(status.phase, remote::RemotePhase::Ready));
         let stopped = tauri::async_runtime::block_on(remote_stop()).expect("stop");
-        assert!(!stopped.connected);
+        assert!(!matches!(stopped.phase, remote::RemotePhase::Ready));
     }
 
     #[test]
@@ -157,7 +157,7 @@ mod tests {
     async fn remote_unpair_is_a_noop_without_credentials() {
         let _home = HomeGuard::new("remote_unpair");
         let status = remote_unpair().await.expect("unpair");
-        assert!(!status.connected);
+        assert!(!matches!(status.phase, remote::RemotePhase::Ready));
     }
 
     #[tokio::test]
@@ -171,8 +171,8 @@ mod tests {
         let status = remote_start(remote::RemoteStartInput {})
             .await
             .expect("start");
-        assert!(!status.running);
-        assert_eq!(status.error_code.as_deref(), Some("network"));
+        assert!(!matches!(status.phase, remote::RemotePhase::Ready));
+        assert_eq!(status.reason, Some(remote::RemoteFailureReason::Network));
     }
 
     #[tokio::test]

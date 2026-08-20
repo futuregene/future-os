@@ -13,6 +13,7 @@ import type { RemoteCredentials } from "../types";
 import { ErrorCode, NatsError } from "nats.ws";
 
 const ALL_STATES: ConnectionState[] = [
+  "stopped",
   "connecting",
   "ready",
   "reconnecting",
@@ -22,7 +23,7 @@ const ALL_STATES: ConnectionState[] = [
   "unpaired",
 ];
 
-const TERMINAL: ConnectionState[] = ["failed", "revoked", "unpaired"];
+const TERMINAL: ConnectionState[] = ["stopped", "failed", "revoked", "unpaired"];
 
 function runTable(): Record<string, ConnectionState> {
   const matrix: LifecycleEvent[] = [
@@ -165,7 +166,7 @@ describe("connectionState FSM", () => {
     const table = runTable();
     for (const key of Object.keys(table)) {
       const [from, event] = key.split("+");
-      if (from === "revoked" || from === "failed") {
+      if (from === "stopped" || from === "revoked" || from === "failed") {
         expect(table[key]).toBe(from);
       }
       if (from === "unpaired") {
@@ -261,11 +262,11 @@ describe("classifyError", () => {
     expect(classifyError(new Error("pairing_signature_invalid"))).toBe("auth");
     expect(classifyError(new Error("pairing_confirmation_mismatch"))).toBe("auth");
   });
-  test("service permission errors → fatal", () => {
+  test("NATS permission errors refresh once before becoming terminal", () => {
     expect(
       classifyError(new RemoteApiError("misconfigured", "remote_service_misconfigured", 500)),
     ).toBe("fatal");
-    expect(classifyError(new Error("PERMISSIONS_VIOLATION"))).toBe("fatal");
+    expect(classifyError(new Error("PERMISSIONS_VIOLATION"))).toBe("auth");
     expect(classifyError(new Error("remote_service_misconfigured"))).toBe("fatal");
   });
   test("everything else → transport", () => {
@@ -312,23 +313,81 @@ function recoveryClient(): {
 }
 
 describe("RemoteClient terminal iterator recovery", () => {
+  test("failure logs have a 24-hour per-category cap across episode changes", () => {
+    const { client } = recoveryClient();
+    const testClient = client as unknown as {
+      permitFailureLog(category: string): boolean;
+    };
+    for (let index = 0; index < 16; index += 1) {
+      expect(testClient.permitFailureLog("network")).toBe(true);
+    }
+    expect(testClient.permitFailureLog("network")).toBe(false);
+  });
+
+  test.each([
+    ["failed", new Error("remote_service_misconfigured")],
+    [
+      "revoked",
+      new RemoteApiError("revoked", "credentials_revoked", 401),
+    ],
+  ] as const)("late iterator completion cannot revive %s", async (terminal, failure) => {
+    jest.useFakeTimers();
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const { client, callbacks } = recoveryClient();
+      const testClient = client as unknown as {
+        generation: number;
+        state: ConnectionState;
+        handleFailure(error: unknown): void;
+        failGeneration(error: unknown, generation: number): void;
+        scheduleRetry(): void;
+        refreshToken(): Promise<void>;
+      };
+      testClient.state = "ready";
+      testClient.generation = 7;
+      testClient.handleFailure(failure);
+      expect(testClient.state).toBe(terminal);
+
+      // All four subscription iterators can finish after disposal. Their old
+      // generation must not arm a timer, refresh credentials, or reopen.
+      for (let i = 0; i < 4; i += 1) {
+        testClient.failGeneration(new Error("remote_event_subscription_ended"), 7);
+      }
+      testClient.scheduleRetry();
+      await testClient.refreshToken();
+      await client.open();
+      expect(jest.getTimerCount()).toBe(0);
+      expect(callbacks.onCredentials).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
   test("a permission status becomes a terminal service failure", async () => {
     const { client } = recoveryClient();
     const recovery = jest.fn();
+    const recordFailure = jest.fn();
     const testClient = client as unknown as {
       watchStatus(connection: unknown, generation: number): void;
       handleFailure(error: unknown): void;
+      recordFailure(category: string, error: unknown): void;
     };
     testClient.handleFailure = recovery;
+    testClient.recordFailure = recordFailure;
     async function* statuses() {
       yield { type: "error", data: ErrorCode.PermissionsViolation };
     }
     testClient.watchStatus({ status: statuses }, 0);
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(recovery).toHaveBeenCalledWith(
-      expect.objectContaining({ message: expect.stringContaining("remote_service_misconfigured") }),
+      expect.objectContaining({ message: expect.stringContaining("nats_authorization_rejected") }),
     );
     expect(recovery).toHaveBeenCalledTimes(1);
+    expect(recordFailure).toHaveBeenCalledWith(
+      "service_authorization",
+      ErrorCode.PermissionsViolation,
+    );
   });
 
   test("a protocol status fails its generation once without exhaustion fallback", async () => {
@@ -465,6 +524,76 @@ describe("RemoteClient terminal iterator recovery", () => {
 
     expect(recovery).toHaveBeenCalledTimes(1);
   });
+
+  test("a readiness teardown absorbs its provisional subscription endings", () => {
+    const { client } = recoveryClient();
+    const recovery = jest.fn();
+    const testClient = client as unknown as {
+      generation: number;
+      failedGeneration: number | null;
+      failGeneration(error: unknown, generation: number): void;
+      handleFailure(error: unknown): void;
+    };
+    testClient.generation = 5;
+    // `connectSocket()` writes this marker before closing a connection whose
+    // pre-flush readiness barrier failed.
+    testClient.failedGeneration = 5;
+    testClient.handleFailure = recovery;
+
+    for (let index = 0; index < 4; index += 1) {
+      testClient.failGeneration(new Error("remote_event_subscription_ended"), 5);
+    }
+
+    expect(recovery).not.toHaveBeenCalled();
+  });
+
+  test("an auth error during refresh backs off instead of becoming terminal", () => {
+    const { client } = recoveryClient();
+    const scheduleRetry = jest.fn();
+    const testClient = client as unknown as {
+      authRetryCount: number;
+      refreshInFlight: boolean;
+      state: ConnectionState;
+      handleFailure(error: unknown): void;
+      scheduleRetry(): void;
+    };
+    testClient.state = "refreshing";
+    testClient.refreshInFlight = true;
+    testClient.scheduleRetry = scheduleRetry;
+    testClient.handleFailure(new Error("PERMISSIONS_VIOLATION"));
+
+    expect(testClient.authRetryCount).toBe(0);
+    expect(testClient.state).toBe("refreshing");
+    expect(scheduleRetry).toHaveBeenCalledTimes(1);
+  });
+
+  test("four critical generations in ten minutes enter an unrecoverable failed state", () => {
+    jest.useFakeTimers();
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const { client } = recoveryClient();
+      const testClient = client as unknown as {
+        generation: number;
+        failedGeneration: number | null;
+        state: ConnectionState;
+        failGeneration(error: unknown, generation: number): void;
+      };
+      testClient.state = "ready";
+      for (let generation = 0; generation < 4; generation += 1) {
+        testClient.generation = generation;
+        testClient.failedGeneration = null;
+        testClient.failGeneration(
+          new Error("remote_event_subscription_ended"),
+          generation,
+        );
+      }
+      expect(testClient.state).toBe("failed");
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      warn.mockRestore();
+      jest.useRealTimers();
+    }
+  });
 });
 
 describe("RemoteClient request retry classification", () => {
@@ -571,7 +700,7 @@ describe("RemoteClient OS lifecycle recovery", () => {
     expect(open).not.toHaveBeenCalled();
   });
 
-  test("network path changes immediately replace the old generation", async () => {
+  test("network path changes retain the old generation until replacement is ready", async () => {
     const { client } = recoveryClient();
     const close = jest.fn().mockResolvedValue(undefined);
     const testClient = client as unknown as {
@@ -586,8 +715,8 @@ describe("RemoteClient OS lifecycle recovery", () => {
 
     await client.recoverNow("network-changed");
 
-    expect(close).toHaveBeenCalledTimes(1);
-    expect(testClient.connection).toBeNull();
+    expect(close).not.toHaveBeenCalled();
+    expect(testClient.connection).not.toBeNull();
     expect(open).toHaveBeenCalledTimes(1);
   });
 

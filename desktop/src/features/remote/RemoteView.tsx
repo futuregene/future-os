@@ -11,6 +11,7 @@ import { cn } from "../../lib/cn";
 import { usePolling } from "../../lib/usePolling";
 import { startWindowDrag } from "../../lib/windowDrag";
 import {
+  remoteFailurePresentation,
   startRemote,
   stopRemote,
   unpairRemote,
@@ -58,19 +59,24 @@ export function RemoteView({
   const [busy, setBusy] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [errorCode, setErrorCode] = useState<string | null>(null);
 
   // --- derived from the shared app-level status (same source as the sidebar indicator) ---
-  const running = remoteStatus?.running ?? false;
-  const connected = remoteStatus?.connected ?? false;
-  const reconnecting = remoteStatus?.reconnecting ?? false;
+  const phase = remoteStatus?.phase ?? "stopped";
+  const running = phase !== "stopped" && phase !== "failed" && phase !== "revoked";
+  const connected = phase === "ready";
+  const reconnecting = phase === "connecting" || phase === "reconnecting" || phase === "refreshing";
   // Backend `status()` now includes the persisted pair_id even when stopped, so
   // this is authoritative for "paired" across all states: idle, running, and
   // previously-stopped-but-credential-still-here.  Empty when truly unpaired.
   const isPaired = Boolean(remoteStatus?.pairId);
-  const activeErrorCode = errorCode ?? (error ? null : remoteStatus?.errorCode ?? null);
-  const errorText = activeErrorCode ? t(`error.${activeErrorCode}`) : error;
-  const showError = Boolean(activeErrorCode || error);
+  const terminal = phase === "failed" || phase === "revoked";
+  const failure = terminal && remoteStatus?.reason
+    ? remoteFailurePresentation(remoteStatus.reason)
+    : null;
+  const errorText = failure
+    ? t(`failure.${failure.messageKey}`, { code: failure.supportCode })
+    : error;
+  const showError = Boolean(failure || error);
 
   const pairingCode = remoteStatus?.pairingCode ?? null;
   const [now, setNow] = useState(() => Date.now());
@@ -94,7 +100,6 @@ export function RemoteView({
   async function handleStart() {
     setBusy(true);
     setError(null);
-    setErrorCode(null);
     try {
       await startRemote({});
     }
@@ -104,15 +109,16 @@ export function RemoteView({
       setError(t("error.generic"));
     }
     finally {
-      setBusy(false);
       await onRefreshRemote();
+      // Keep the preparation message visible until the refreshed status has
+      // supplied the pairing code, avoiding a one-frame return of the button.
+      setBusy(false);
     }
   }
 
   async function handleStop() {
     setBusy(true);
     setError(null);
-    setErrorCode(null);
     try {
       await stopRemote();
     }
@@ -129,7 +135,6 @@ export function RemoteView({
   async function handleUnpair() {
     setBusy(true);
     setError(null);
-    setErrorCode(null);
     try {
       await unpairRemote();
     }
@@ -152,7 +157,6 @@ export function RemoteView({
       setTimeout(setCopied, 1500, false);
     }
     catch {
-      setErrorCode(null);
       setError(t("copyFailed"));
     }
   }
@@ -203,14 +207,18 @@ export function RemoteView({
                       {t(reconnecting ? "reconnectingAs" : connected ? "connectedAs" : "pairedAs", { pairId: formatPairId(remoteStatus?.pairId) })}
                     </span>
                     <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">
-                      <Button
-                        disabled={busy}
-                        onClick={() => void (running ? handleStop() : handleStart())}
-                        size="sm"
-                        variant="secondary"
-                      >
-                        {running ? t("disconnect") : t("connect")}
-                      </Button>
+                      {phase !== "failed"
+                        ? (
+                            <Button
+                              disabled={busy}
+                              onClick={() => void (running ? handleStop() : handleStart())}
+                              size="sm"
+                              variant="secondary"
+                            >
+                              {running ? t("disconnect") : phase === "revoked" ? t("pairAgain") : t("connect")}
+                            </Button>
+                          )
+                        : null}
                       <Button
                         disabled={busy}
                         onClick={() => setConfirmOpen(true)}
@@ -229,15 +237,14 @@ export function RemoteView({
             ? (
                 <div className="flex items-center gap-3 rounded-md border border-danger-line bg-danger-soft px-3 py-2 text-sm text-danger">
                   <span className="min-w-0 flex-1">{errorText}</span>
-                  {activeErrorCode === "reconnect_required"
-                    || activeErrorCode === "service_config"
-                    || activeErrorCode === "web_bind"
-                    ? (
-                        <Button disabled={busy} onClick={() => void handleStart()} size="sm" variant="secondary">
-                          {t("reconnect")}
-                        </Button>
-                      )
-                    : null}
+                </div>
+              )
+            : null}
+
+          {remoteStatus?.warningCode === "web_bind"
+            ? (
+                <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-ink-soft">
+                  {t("warning.webBind", { code: "LC002" })}
                 </div>
               )
             : null}
@@ -289,10 +296,14 @@ export function RemoteView({
 
           {!isPaired && !pairingCode
             ? (
-                <div className="flex flex-wrap gap-2">
-                  <Button disabled={busy} onClick={() => void handleStart()} variant="primary">
-                    {t("pairAndStart")}
-                  </Button>
+                <div className="flex h-9 items-center">
+                  {busy
+                    ? <p aria-live="polite" className="text-sm text-ink-muted">{t("preparingPairingHint")}</p>
+                    : (
+                        <Button onClick={() => void handleStart()} variant="primary">
+                          {t("pairAndStart")}
+                        </Button>
+                      )}
                 </div>
               )
             : null}

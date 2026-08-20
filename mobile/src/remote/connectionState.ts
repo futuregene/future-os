@@ -31,7 +31,14 @@
  */
 
 export type ConnectionState =
-  "connecting" | "ready" | "reconnecting" | "refreshing" | "failed" | "revoked" | "unpaired";
+  | "stopped"
+  | "connecting"
+  | "ready"
+  | "reconnecting"
+  | "refreshing"
+  | "failed"
+  | "revoked"
+  | "unpaired";
 
 export type LifecycleEvent =
   | { type: "open_started" }
@@ -123,7 +130,13 @@ export function classifyError(error: unknown): "authTerminal" | "auth" | "fatal"
   if (
     message.includes("PERMISSIONS_VIOLATION") ||
     message.includes("AUTHORIZATION_VIOLATION") ||
-    message.includes("remote_service_misconfigured")
+    message.includes("nats_authorization_rejected")
+  ) {
+    return "auth";
+  }
+  if (
+    message.includes("remote_service_misconfigured") ||
+    message.includes("generation_unhealthy")
   ) {
     return "fatal";
   }
@@ -192,6 +205,8 @@ export function transition(current: ConnectionState, event: LifecycleEvent): Con
     case "failed":
       // A manual reconnect creates a fresh RemoteClient; this failed instance
       // must not restart itself in the background.
+      return { next: current, effects: [] };
+    case "stopped":
       return { next: current, effects: [] };
     case "unpaired":
       // A fresh pair (a new RemoteClient with credentials) begins its first

@@ -44,11 +44,11 @@ export function useRemoteStatus(enabled: boolean): {
 
   usePolling(refresh, 3000, { enabled, deps: [refresh] });
 
-  const indicator: RemoteIndicator = status?.reconnecting
+  const indicator: RemoteIndicator = status?.phase === "reconnecting" || status?.phase === "refreshing" || status?.phase === "connecting"
     ? "reconnecting"
-    : status?.errorCode
+    : status?.phase === "failed" || status?.phase === "revoked"
       ? "error"
-      : status?.running && status?.connected
+      : status?.phase === "ready"
         ? "connected"
         : null;
 
