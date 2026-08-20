@@ -7,6 +7,7 @@
   "reconnect": "重新连接",
   "disconnect": "断开",
   "pairAndStart": "配对并启动",
+  "preparingPairingHint": "正在建立安全连接，连接就绪后将显示二维码。",
   "pairedAs": "已配对 {{pairId}}",
   "connectedAs": "已连接 {{pairId}}",
   "reconnectingAs": "正在重新连接…",

@@ -109,8 +109,10 @@ export function RemoteView({
       setError(t("error.generic"));
     }
     finally {
-      setBusy(false);
       await onRefreshRemote();
+      // Keep the preparation message visible until the refreshed status has
+      // supplied the pairing code, avoiding a one-frame return of the button.
+      setBusy(false);
     }
   }
 
@@ -294,10 +296,14 @@ export function RemoteView({
 
           {!isPaired && !pairingCode
             ? (
-                <div className="flex flex-wrap gap-2">
-                  <Button disabled={busy} onClick={() => void handleStart()} variant="primary">
-                    {t("pairAndStart")}
-                  </Button>
+                <div className="flex h-9 items-center">
+                  {busy
+                    ? <p aria-live="polite" className="text-sm text-ink-muted">{t("preparingPairingHint")}</p>
+                    : (
+                        <Button onClick={() => void handleStart()} variant="primary">
+                          {t("pairAndStart")}
+                        </Button>
+                      )}
                 </div>
               )
             : null}

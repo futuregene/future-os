@@ -7,7 +7,8 @@ use windows::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, WPARAM},
     UI::WindowsAndMessaging::{
         CallWindowProcW, DefWindowProcW, SetWindowLongPtrW, GWLP_WNDPROC, PBT_APMRESUMEAUTOMATIC,
-        PBT_APMSUSPEND, WM_POWERBROADCAST, WM_QUERYENDSESSION, WNDPROC,
+        PBT_APMRESUMECRITICAL, PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, WM_POWERBROADCAST,
+        WM_QUERYENDSESSION, WNDPROC,
     },
 };
 
@@ -27,7 +28,14 @@ unsafe extern "system" fn power_wnd_proc(
 ) -> LRESULT {
     if message == WM_POWERBROADCAST && wparam.0 == PBT_APMSUSPEND as usize {
         tauri::async_runtime::block_on(crate::remote::handle_system_suspend());
-    } else if message == WM_POWERBROADCAST && wparam.0 == PBT_APMRESUMEAUTOMATIC as usize {
+    } else if message == WM_POWERBROADCAST
+        && matches!(
+            wparam.0,
+            value if value == PBT_APMRESUMEAUTOMATIC as usize
+                || value == PBT_APMRESUMESUSPEND as usize
+                || value == PBT_APMRESUMECRITICAL as usize
+        )
+    {
         crate::remote::handle_system_resume();
     } else if message == WM_QUERYENDSESSION {
         notify("system_power_off");

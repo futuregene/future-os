@@ -22,6 +22,8 @@ const FOREGROUND_PROBE_TIMEOUT_MS = 4_000;
 const SYSTEM_FAILURE_WINDOW_MS = 10 * 60_000;
 const HEALTHY_RESET_MS = 60_000;
 const MAX_SYSTEM_RECOVERIES = 3;
+const FAILURE_LOG_WINDOW_MS = 24 * 60 * 60_000;
+const MAX_FAILURE_LOGS_PER_CATEGORY = 16;
 
 export type RecoveryReason =
   "foreground" | "network-restored" | "network-changed" | "request-failure";
@@ -61,6 +63,7 @@ function failureSupportCode(category: string, detail = ""): string {
   if (category === "service_authorization") return "AU001";
   if (category === "protocol" || detail.includes("protocol")) return "PT001";
   if (category === "generation_unhealthy") return "RT001";
+  if (category === "local") return "LC001";
   return "LC999";
 }
 
@@ -114,6 +117,7 @@ export class RemoteClient {
     lastError: string;
     nextRetryAt: number | null;
   } | null = null;
+  private readonly failureLogQuota = new Map<string, { windowStartedAt: number; emitted: number }>();
   private downloadWaiters = new Map<
     string,
     {
@@ -142,6 +146,20 @@ export class RemoteClient {
     return this.state === "failed" || this.state === "revoked";
   }
 
+  /** Keep a category bounded even when a broken connection alternates error
+   * shapes and would otherwise create a fresh episode for every retry. */
+  private permitFailureLog(category: string): boolean {
+    const now = Date.now();
+    const quota = this.failureLogQuota.get(category);
+    if (!quota || now - quota.windowStartedAt >= FAILURE_LOG_WINDOW_MS) {
+      this.failureLogQuota.set(category, { windowStartedAt: now, emitted: 1 });
+      return true;
+    }
+    if (quota.emitted >= MAX_FAILURE_LOGS_PER_CATEGORY) return false;
+    quota.emitted += 1;
+    return true;
+  }
+
   private recordFailure(category: string, error: unknown, nextRetryAt: number | null = null): void {
     const message = error instanceof Error ? error.message : String(error);
     if (!this.failureEpisode || this.failureEpisode.category !== category) {
@@ -150,14 +168,17 @@ export class RemoteClient {
         category,
         startedAt: Date.now(),
         attempts: 1,
-        reports: 1,
+        reports: 0,
         lastError: message,
         nextRetryAt,
       };
-      console.warn("[remote] failure episode started", {
-        ...this.failureEpisode,
-        supportCode: failureSupportCode(category, message),
-      });
+      if (this.permitFailureLog(category)) {
+        this.failureEpisode.reports = 1;
+        console.warn("[remote] failure episode started", {
+          ...this.failureEpisode,
+          supportCode: failureSupportCode(category, message),
+        });
+      }
       return;
     }
     const episode = this.failureEpisode;
@@ -169,6 +190,7 @@ export class RemoteClient {
     if (
       episode.reports < 15 &&
       (episode.attempts & (episode.attempts - 1)) === 0
+      && this.permitFailureLog(category)
     ) {
       episode.reports += 1;
       console.warn("[remote] failure episode retry", {
@@ -181,12 +203,14 @@ export class RemoteClient {
   private finishFailureEpisode(result: "recovered" | "terminal" | "category_changed"): void {
     const episode = this.failureEpisode;
     if (!episode) return;
-    console.warn("[remote] failure episode finished", {
-      ...episode,
-      result,
-      supportCode: failureSupportCode(episode.category, episode.lastError),
-      durationMs: Date.now() - episode.startedAt,
-    });
+    if (this.permitFailureLog(episode.category)) {
+      console.warn("[remote] failure episode finished", {
+        ...episode,
+        result,
+        supportCode: failureSupportCode(episode.category, episode.lastError),
+        durationMs: Date.now() - episode.startedAt,
+      });
+    }
     this.failureEpisode = null;
   }
 
@@ -301,10 +325,12 @@ export class RemoteClient {
       }
     }
     if (this.stopped || !this.appActive || !this.networkAvailable) return;
+    // Keep the old generation as the serving fallback while the replacement
+    // completes its handshake, subscriptions, and flush. `connectSocket()`
+    // atomically publishes the new connection and only then closes this one.
     this.generation += 1;
     this.clearTimers();
     this.signal({ type: "transport_disconnect" });
-    this.disposeConnection(reason);
     this.retryAttempt = 0;
     await this.open();
   }
@@ -319,8 +345,9 @@ export class RemoteClient {
       if (this.stopped) return;
       this.credentials = fresh;
       this.callbacks.onCredentials(fresh);
-      this.disposeConnection("refresh");
-      // Re-open with the fresh token; the FSM is already in refreshing.
+      // Re-open with the fresh token while retaining the old generation until
+      // the replacement passes its readiness barrier. The FSM is already in
+      // refreshing, so this does not expose a second ready connection.
       await this.open();
     } catch (error) {
       if (this.stopped) return;
@@ -407,6 +434,13 @@ export class RemoteClient {
       }, HEALTHY_RESET_MS);
       this.callbacks.onReconnected();
     } catch (error) {
+      // Subscriptions are deliberately created before the readiness flush.
+      // Closing a half-built connection naturally ends those iterators; mark
+      // this generation failed first so they cannot recast a transport/readiness
+      // failure as four independent critical subscription failures.
+      if (!this.stopped && generation === this.generation) {
+        this.failedGeneration = generation;
+      }
       await connection.close().catch(() => undefined);
       throw error;
     }
@@ -443,6 +477,13 @@ export class RemoteClient {
       return;
     }
     if (kind === "auth") {
+      // A timer-triggered refresh may overlap an error emitted by the old
+      // connection. Do not promote it to terminal, but leave a bounded
+      // backoff retry in case the replacement connection rejects too.
+      if (this.refreshInFlight) {
+        this.scheduleRetry();
+        return;
+      }
       // Refreshable — rotate the JWT ONCE, then back off. A handshake that
       // keeps failing after a successful refresh must not spin at one full
       // RTT per cycle (no backoff): the second consecutive auth failure takes
@@ -779,7 +820,7 @@ export class RemoteClient {
               code === ErrorCode.PermissionsViolation ||
               code === ErrorCode.AuthorizationViolation
             ) {
-              this.recordFailure("credential_expired", code);
+              this.recordFailure("service_authorization", code);
               this.handleFailure(new Error(`nats_authorization_rejected: ${code}`));
               return;
             } else if (code === ErrorCode.ProtocolError) {

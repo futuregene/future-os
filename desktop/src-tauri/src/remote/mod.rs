@@ -20,6 +20,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
     Arc, Mutex,
 };
+use std::{collections::HashMap, sync::LazyLock};
 
 #[derive(Default)]
 struct FailureEpisodeState {
@@ -33,6 +34,36 @@ struct FailureEpisodeState {
 #[derive(Default)]
 struct FailureEpisode(Mutex<FailureEpisodeState>);
 
+#[derive(Default)]
+struct LogQuota {
+    window_started_at: u64,
+    emitted: u8,
+}
+
+/// This is intentionally process-wide, rather than an episode field. A
+/// broken broker can alternate network/auth/task symptoms and would otherwise
+/// reset each individual episode's counter forever. Support logs remain useful
+/// without letting a 24-hour outage fill the disk.
+static FAILURE_LOG_QUOTAS: LazyLock<Mutex<HashMap<String, LogQuota>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+const FAILURE_LOG_WINDOW_MS: u64 = 24 * 60 * 60 * 1_000;
+const MAX_FAILURE_LOGS_PER_CATEGORY: u8 = 16;
+
+fn permit_failure_log(category: &str) -> bool {
+    let now = unix_millis();
+    let mut quotas = FAILURE_LOG_QUOTAS.lock().unwrap();
+    let quota = quotas.entry(category.to_string()).or_default();
+    if now.saturating_sub(quota.window_started_at) >= FAILURE_LOG_WINDOW_MS {
+        quota.window_started_at = now;
+        quota.emitted = 0;
+    }
+    if quota.emitted >= MAX_FAILURE_LOGS_PER_CATEGORY {
+        return false;
+    }
+    quota.emitted += 1;
+    true
+}
+
 impl FailureEpisode {
     fn record(&self, category: &str, error: impl std::fmt::Display) -> Option<String> {
         let mut episode = self.0.lock().unwrap();
@@ -41,17 +72,24 @@ impl FailureEpisode {
             episode.category = category.to_string();
             episode.started_at = unix_millis();
             episode.attempts = 1;
-            episode.reports = 1;
+            episode.reports = 0;
             episode.last_error = error;
-            return Some(format!(
-                "remote: {category} failure episode started [{}]: {}",
-                support_code_for_category(category),
-                episode.last_error
-            ));
+            if permit_failure_log(category) {
+                episode.reports = 1;
+                return Some(format!(
+                    "remote: {category} failure episode started [{}]: {}",
+                    support_code_for_category(category),
+                    episode.last_error
+                ));
+            }
+            return None;
         }
         episode.attempts = episode.attempts.saturating_add(1);
         episode.last_error = error;
-        if episode.reports < 15 && episode.attempts.is_power_of_two() {
+        if episode.reports < 15
+            && episode.attempts.is_power_of_two()
+            && permit_failure_log(category)
+        {
             episode.reports += 1;
             return Some(format!(
                 "remote: {category} failure persists [{}] (attempt {}): {}",
@@ -68,15 +106,17 @@ impl FailureEpisode {
         if episode.category.is_empty() {
             return None;
         }
-        let line = format!(
-            "remote: {} failure recovered [{}] after {} attempts and {}ms",
-            episode.category,
-            support_code_for_category(&episode.category),
-            episode.attempts,
-            unix_millis().saturating_sub(episode.started_at)
-        );
+        let line = permit_failure_log(&episode.category).then(|| {
+            format!(
+                "remote: {} failure recovered [{}] after {} attempts and {}ms",
+                episode.category,
+                support_code_for_category(&episode.category),
+                episode.attempts,
+                unix_millis().saturating_sub(episode.started_at)
+            )
+        });
         *episode = FailureEpisodeState::default();
-        Some(line)
+        line
     }
 }
 
@@ -93,6 +133,7 @@ fn support_code_for_category(category: &str) -> &'static str {
         "heartbeat_publish" | "state_publish" => "RT006",
         "web_bind" => "LC002",
         "revoked" => "PA001",
+        "local" => "LC001",
         _ => "LC999",
     }
 }
@@ -126,7 +167,6 @@ static HEARTBEAT_PUBLISH_EPISODE: FailureEpisode =
         reports: 0,
         last_error: String::new(),
     }));
-static AUTHORIZATION_REFRESH_ATTEMPTED: AtomicBool = AtomicBool::new(false);
 
 /// Port for the embedded web client HTTP server.
 const WEB_PORT: u16 = 8022;
@@ -210,8 +250,6 @@ impl DropCounters {
     }
 }
 
-static DROP_COUNTERS: DropCounters = DropCounters::new();
-
 /// Cap on a single event's serialized size. A huge event (e.g. a large tool
 /// result) would otherwise exceed the NATS 1MB user-JWT payload limit and be
 /// rejected by the broker — silently leaving a permanent gap in the client's
@@ -232,8 +270,10 @@ struct EventPublish {
 struct NatsHealth {
     reconnect_required: AtomicBool,
     service_config_error: AtomicBool,
+    /// This belongs to one NATS generation, never the process. A late event
+    /// from an old socket must not decide whether a newer JWT is terminal.
+    credential_was_refreshed: AtomicBool,
     authorization_rejection_logged: AtomicBool,
-    client_error_logged: AtomicBool,
     event_episode: FailureEpisode,
 }
 
@@ -245,7 +285,6 @@ impl NatsHealth {
                 self.reconnect_required.store(false, Ordering::Release);
                 self.authorization_rejection_logged
                     .store(false, Ordering::Release);
-                self.client_error_logged.store(false, Ordering::Release);
                 if let Some(line) = self.event_episode.recovered() {
                     eprintln!("{line}");
                 }
@@ -299,7 +338,6 @@ impl NatsHealth {
                 }
             }
             Event::ClientError(error) => {
-                self.client_error_logged.store(true, Ordering::Release);
                 if let Some(line) = self.event_episode.record("network", error) {
                     eprintln!("{line}");
                 }
@@ -321,7 +359,7 @@ impl NatsHealth {
         // state transition is enough to make the supervisor refresh the JWT;
         // suppress the duplicate events so a sleeping laptop cannot flood its
         // console while that handoff is in progress.
-        if AUTHORIZATION_REFRESH_ATTEMPTED.load(Ordering::Acquire) {
+        if self.credential_was_refreshed.load(Ordering::Acquire) {
             self.service_config_error.store(true, Ordering::Release);
             if !self
                 .authorization_rejection_logged
@@ -368,6 +406,7 @@ struct ConnectedNats {
 /// Active remote connection. Holds async-nats client + command/event tasks;
 /// on stop, aborts the tasks and drops the client.
 struct RemoteState {
+    generation_id: u64,
     /// Raw client, kept to derive real connection state for [`status`].
     client: async_nats::Client,
     nats_health: Arc<NatsHealth>,
@@ -380,6 +419,7 @@ struct RemoteState {
     /// a clone of the client so the connection stays alive while events are in
     /// flight.
     event_tx: tokio::sync::mpsc::Sender<EventPublish>,
+    drop_counters: Arc<DropCounters>,
     event_task: tokio::task::JoinHandle<()>,
     cmd_task: tokio::task::JoinHandle<()>,
     transfer_task: tokio::task::JoinHandle<()>,
@@ -416,6 +456,8 @@ struct BridgeRuntimeShared {
     reply_slots: commands::ReplySlots,
     pairing_confirmed: Arc<AtomicBool>,
     bridge_instance_id: String,
+    drop_counters: Arc<DropCounters>,
+    next_generation_id: Arc<AtomicU64>,
 }
 
 static BRIDGE_SHARED: Mutex<Option<BridgeRuntimeShared>> = Mutex::new(None);
@@ -441,6 +483,8 @@ fn shared_runtime(
         reply_slots: commands::new_reply_slots(),
         pairing_confirmed: Arc::new(AtomicBool::new(pairing_confirmed)),
         bridge_instance_id: format!("bridge_{}", nkeys::KeyPair::new_user().public_key()),
+        drop_counters: Arc::new(DropCounters::new()),
+        next_generation_id: Arc::new(AtomicU64::new(1)),
     };
     *guard = Some(shared.clone());
     shared
@@ -589,7 +633,6 @@ pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppE
     RUNTIME_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
     RUNTIME_FAILURE_WINDOW_STARTED.store(0, Ordering::Release);
     WEB_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
-    AUTHORIZATION_REFRESH_ATTEMPTED.store(false, Ordering::Release);
     CREDENTIAL_REFRESHING.store(false, Ordering::Release);
     START_RETRY_ATTEMPTS.store(0, Ordering::Release);
     START_RETRY_SINCE.store(0, Ordering::Release);
@@ -614,8 +657,6 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
         }
     }
     let replacing_generation = STATE.lock().unwrap().is_some();
-    let _ = stop_runtime();
-    *LAST_ERROR_CODE.lock().unwrap() = None;
     *LAST_ERROR_CODE.lock().unwrap() = Some("connecting".to_string());
 
     // A remote/server failure here (offline, revoked, HTTP error) is not a
@@ -631,8 +672,7 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
     if !START_REQUESTED.load(Ordering::Acquire) {
         return Ok(empty());
     }
-    AUTHORIZATION_REFRESH_ATTEMPTED.store(false, Ordering::Release);
-    let connected_nats = match connect_nats(&creds).await {
+    let connected_nats = match connect_nats(&creds, false).await {
         Ok(connection) => connection,
         Err(error) => {
             return start_failure(error);
@@ -650,6 +690,7 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
     }
     let desktop_public_key = pairing::public_key(&creds)?;
     let bridge_instance_id = shared.bridge_instance_id.clone();
+    let generation_id = shared.next_generation_id.fetch_add(1, Ordering::AcqRel);
     let pair_id = creds.pair_id.clone();
 
     // Command-id dedup cache lives OUTSIDE the command loop: credential
@@ -759,7 +800,11 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
         web_lan_url: web_lan_url.clone(),
         warning_code: web_bind_failed.then(|| "web_bind".to_string()),
     };
-    *STATE.lock().unwrap() = Some(RemoteState {
+    // Keep the previous generation serving until every readiness prerequisite
+    // above is complete. Replacing the pointer is the hand-off point; only
+    // after it do we cancel the old generation.
+    let previous = STATE.lock().unwrap().replace(RemoteState {
+        generation_id,
         client,
         nats_health,
         nats_url: creds.nats_url,
@@ -768,6 +813,7 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
         desktop_public_key,
         bridge_instance_id: bridge_instance_id.clone(),
         event_tx,
+        drop_counters: shared.drop_counters.clone(),
         event_task,
         cmd_task,
         transfer_task,
@@ -780,6 +826,9 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
         pairing_code_expires_at,
         pairing_confirmed,
     });
+    if let Some(previous) = previous {
+        abort_generation(previous);
+    }
     *LAST_ERROR_CODE.lock().unwrap() = None;
     if let Some(line) = START_EPISODE.recovered() {
         eprintln!("{line}");
@@ -787,7 +836,7 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
     START_RETRY_ATTEMPTS.store(0, Ordering::Release);
     START_RETRY_SINCE.store(0, Ordering::Release);
     START_RETRY_NEXT_AT.store(0, Ordering::Release);
-    spawn_runtime_supervisor(bridge_instance_id);
+    spawn_runtime_supervisor(bridge_instance_id, generation_id);
     if web_bind_failed {
         spawn_web_reconnect(status.pair_id.clone());
     }
@@ -897,12 +946,14 @@ fn record_runtime_failure(now: u64) -> u8 {
 #[cfg(not(test))]
 struct RemoteSupervisor {
     bridge_instance_id: String,
+    generation_id: u64,
 }
 
 #[cfg(not(test))]
 impl RemoteSupervisor {
     async fn run(self) {
         let bridge_instance_id = self.bridge_instance_id;
+        let generation_id = self.generation_id;
         let mut healthy_secs = 0u8;
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -911,10 +962,10 @@ impl RemoteSupervisor {
             }
             let unhealthy = {
                 let guard = STATE.lock().unwrap();
-                let Some(state) = guard
-                    .as_ref()
-                    .filter(|state| state.bridge_instance_id == bridge_instance_id)
-                else {
+                let Some(state) = guard.as_ref().filter(|state| {
+                    state.bridge_instance_id == bridge_instance_id
+                        && state.generation_id == generation_id
+                }) else {
                     return;
                 };
                 if state.nats_health.is_terminal() {
@@ -949,14 +1000,20 @@ impl RemoteSupervisor {
     }
 }
 
-fn spawn_runtime_supervisor(bridge_instance_id: String) {
+fn spawn_runtime_supervisor(bridge_instance_id: String, generation_id: u64) {
     #[cfg(test)]
     {
-        let _ = bridge_instance_id;
+        let _ = (bridge_instance_id, generation_id);
     }
 
     #[cfg(not(test))]
-    tauri::async_runtime::spawn(RemoteSupervisor { bridge_instance_id }.run());
+    tauri::async_runtime::spawn(
+        RemoteSupervisor {
+            bridge_instance_id,
+            generation_id,
+        }
+        .run(),
+    );
 }
 
 /// Retry only the optional local Web listener. A busy port must not tear down
@@ -1085,12 +1142,18 @@ fn start_failure(error: crate::AppError) -> Result<RemoteStatus, crate::AppError
 /// and the web server's own URL construction). Do NOT reintroduce a `wss://`
 /// assertion on this hop: the platform hands the desktop a `nats://` URL by
 /// design.
-async fn connect_nats(creds: &pairing::PairingCreds) -> Result<ConnectedNats, crate::AppError> {
+async fn connect_nats(
+    creds: &pairing::PairingCreds,
+    credential_was_refreshed: bool,
+) -> Result<ConnectedNats, crate::AppError> {
     let key_pair = std::sync::Arc::new(
         nkeys::KeyPair::from_seed(&creds.nkey_seed)
             .map_err(|error| crate::AppError::Message(format!("Invalid desktop NKey: {error}")))?,
     );
     let health = Arc::new(NatsHealth::default());
+    health
+        .credential_was_refreshed
+        .store(credential_was_refreshed, Ordering::Release);
     let event_health = health.clone();
     let options = async_nats::ConnectOptions::with_jwt(creds.user_jwt.clone(), move |nonce| {
         let key_pair = key_pair.clone();
@@ -1216,15 +1279,50 @@ pub async fn notify_mobile_disconnect(reason: &str) {
     let _ = tokio::time::timeout(DISCONNECT_NOTICE_TIMEOUT, send).await;
 }
 
+/// Platform adapters report only these facts. Keeping their policy pure makes
+/// suspend/resume behavior testable without macOS/Windows/Linux notifications.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PowerEvent {
+    Suspend,
+    Resume,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PowerTransition {
+    stop_generation: bool,
+    start_generation: bool,
+    rotate_epoch: bool,
+}
+
+fn power_transition(event: PowerEvent, desired_running: bool) -> PowerTransition {
+    match (event, desired_running) {
+        (PowerEvent::Suspend, true) => PowerTransition {
+            stop_generation: true,
+            start_generation: false,
+            rotate_epoch: false,
+        },
+        (PowerEvent::Resume, true) => PowerTransition {
+            stop_generation: false,
+            start_generation: true,
+            rotate_epoch: true,
+        },
+        _ => PowerTransition {
+            stop_generation: false,
+            start_generation: false,
+            rotate_epoch: false,
+        },
+    }
+}
+
 /// OS power lifecycle adapter. Suspend tears down only generation-local
 /// resources; pairing, reply deduplication, drop episodes, and desired-running
 /// intent remain available for resume.
 pub async fn handle_system_suspend() {
     notify_mobile_disconnect("system_sleep").await;
-    if START_REQUESTED.load(Ordering::Acquire) {
+    let transition = power_transition(PowerEvent::Suspend, START_REQUESTED.load(Ordering::Acquire));
+    if transition.stop_generation {
         *LAST_ERROR_CODE.lock().unwrap() = Some("system_sleep".to_string());
         CREDENTIAL_REFRESHING.store(false, Ordering::Release);
-        AUTHORIZATION_REFRESH_ATTEMPTED.store(false, Ordering::Release);
         let _ = stop_runtime();
     }
 }
@@ -1233,11 +1331,15 @@ pub async fn handle_system_suspend() {
 /// pre-sleep socket for the current generation. `establish()` refreshes the
 /// JWT before the NATS connection is built.
 pub fn handle_system_resume() {
-    if !START_REQUESTED.load(Ordering::Acquire) {
+    let transition = power_transition(PowerEvent::Resume, START_REQUESTED.load(Ordering::Acquire));
+    if !transition.start_generation {
         return;
     }
-    if let Some(shared) = BRIDGE_SHARED.lock().unwrap().as_mut() {
-        shared.bridge_instance_id = format!("bridge_{}", nkeys::KeyPair::new_user().public_key());
+    if transition.rotate_epoch {
+        if let Some(shared) = BRIDGE_SHARED.lock().unwrap().as_mut() {
+            shared.bridge_instance_id =
+                format!("bridge_{}", nkeys::KeyPair::new_user().public_key());
+        }
     }
     *LAST_ERROR_CODE.lock().unwrap() = Some("system_sleep".to_string());
     tauri::async_runtime::spawn(async {
@@ -1252,34 +1354,38 @@ pub fn handle_system_resume() {
     });
 }
 
+fn abort_generation(state: RemoteState) {
+    debug_assert!(state.generation_id > 0, "generation IDs start at one");
+    state.event_task.abort();
+    state.cmd_task.abort();
+    state.transfer_task.abort();
+    state.heartbeat_task.abort();
+    state.refresh_task.abort();
+    if let Some(web_task) = state.web_task {
+        web_task.abort();
+    }
+    // In-flight transfers are generation-scoped. Preview artifacts are kept.
+    transfer::clear_transfers();
+}
+
 fn stop_runtime() -> RemoteStatus {
     if let Some(state) = STATE.lock().unwrap().take() {
         let pair_id = state.pair_id.clone();
         let client = state.client.clone();
+        let bridge_instance_id = state.bridge_instance_id.clone();
         tauri::async_runtime::spawn(async move {
             let subject = format!("p.{pair_id}.presence");
             let payload = serde_json::to_vec(&json!({
                 "online": false,
                 "pairId": pair_id,
-                "bridgeInstanceId": state.bridge_instance_id.clone(),
+                "bridgeInstanceId": bridge_instance_id,
                 "lastHeartbeatTs": unix_timestamp(),
             }))
             .unwrap_or_default();
             let _ = client.publish(subject, payload.into()).await;
             let _ = client.flush().await;
         });
-        state.event_task.abort();
-        state.cmd_task.abort();
-        state.transfer_task.abort();
-        state.heartbeat_task.abort();
-        state.refresh_task.abort();
-        if let Some(web_task) = state.web_task {
-            web_task.abort();
-        }
-        // In-flight transfers are generation-scoped, but prepared previews are
-        // safe content-derived artifacts. Preserve them across bridge restarts
-        // so a transient NATS reconnect cannot force an expensive re-encode.
-        transfer::clear_transfers();
+        abort_generation(state);
     }
     empty()
 }
@@ -1497,13 +1603,14 @@ pub fn publish_event(
     session_idx: i64,
     run_sequence: i64,
 ) {
-    let Some((tx, pair_id, connected)) = ({
+    let Some((tx, pair_id, connected, drop_counters)) = ({
         let guard = STATE.lock().unwrap();
         guard.as_ref().map(|s| {
             (
                 s.event_tx.clone(),
                 s.pair_id.clone(),
                 s.client.connection_state() == async_nats::connection::State::Connected,
+                s.drop_counters.clone(),
             )
         })
     }) else {
@@ -1514,7 +1621,7 @@ pub fn publish_event(
     // client recovers any gap via `get_events_since` backfill on its next
     // reattach, same as a dropped event.
     if !connected {
-        if let Some(line) = DROP_COUNTERS.record_drop(
+        if let Some(line) = drop_counters.record_drop(
             "NATS not connected",
             event_type,
             session_id,
@@ -1546,7 +1653,7 @@ pub fn publish_event(
         payload,
     };
     if tx.try_send(event).is_err() {
-        if let Some(line) = DROP_COUNTERS.record_drop(
+        if let Some(line) = drop_counters.record_drop(
             "event publish queue full",
             event_type,
             session_id,
@@ -1559,7 +1666,7 @@ pub fn publish_event(
     // A drop episode (queue full or NATS offline) has recovered: this event
     // enqueued normally. Report once, with the episode's total. Best-effort —
     // a burst racing across threads may miscount a line, never the flood.
-    if let Some(line) = DROP_COUNTERS.report_recovery() {
+    if let Some(line) = drop_counters.report_recovery() {
         eprintln!("{line}");
     }
 }
@@ -1852,8 +1959,7 @@ fn spawn_credential_refresh(
                     continue;
                 }
             };
-            AUTHORIZATION_REFRESH_ATTEMPTED.store(true, Ordering::Release);
-            let connected_nats = match connect_nats(&refreshed).await {
+            let connected_nats = match connect_nats(&refreshed, true).await {
                 Ok(connection) => connection,
                 Err(crate::AppError::RemoteAuthorization(error)) => {
                     eprintln!("remote: refreshed NATS credential rejected [AU001]: {error}");
@@ -1871,7 +1977,6 @@ fn spawn_credential_refresh(
                     if let Some(line) = CREDENTIAL_EPISODE.record("credential_connect", error) {
                         eprintln!("{line}");
                     }
-                    AUTHORIZATION_REFRESH_ATTEMPTED.store(false, Ordering::Release);
                     CREDENTIAL_REFRESHING.store(false, Ordering::Release);
                     tokio::time::sleep(refresh_tick()).await;
                     continue;
@@ -1968,7 +2073,6 @@ fn spawn_credential_refresh(
             if let Some(line) = CREDENTIAL_EPISODE.recovered() {
                 eprintln!("{line}");
             }
-            AUTHORIZATION_REFRESH_ATTEMPTED.store(false, Ordering::Release);
             CREDENTIAL_REFRESHING.store(false, Ordering::Release);
         }
     })
@@ -2458,6 +2562,7 @@ mod runtime_tests {
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(EVENT_QUEUE_CAPACITY);
         let event_task = spawn_event_publisher(client.clone(), event_rx);
         RemoteState {
+            generation_id: 1,
             client,
             nats_health: Arc::new(NatsHealth::default()),
             nats_url: nats.url().to_string(),
@@ -2466,6 +2571,7 @@ mod runtime_tests {
             desktop_public_key: "UPUBKEY".to_string(),
             bridge_instance_id: format!("bridge_{}", unique("rt")),
             event_tx,
+            drop_counters: Arc::new(DropCounters::new()),
             event_task,
             cmd_task: tokio::spawn(std::future::pending()),
             transfer_task: tokio::spawn(std::future::pending()),
@@ -2494,7 +2600,6 @@ mod runtime_tests {
     #[test]
     fn nats_health_classifies_recoverable_and_terminal_events() {
         let _home = HomeGuard::new("remote-nats-health");
-        AUTHORIZATION_REFRESH_ATTEMPTED.store(false, Ordering::Release);
         let health = NatsHealth::default();
         health.handle_event(&async_nats::Event::ClientError(
             async_nats::ClientError::MaxReconnects,
@@ -2533,15 +2638,15 @@ mod runtime_tests {
         health.handle_event(&async_nats::Event::ClientError(
             async_nats::ClientError::Other("IO error".to_string()),
         ));
-        assert!(health.client_error_logged.load(Ordering::Acquire));
         assert!(!health.needs_reconnect());
 
         health.handle_event(&async_nats::Event::Connected);
-        assert!(!health.client_error_logged.load(Ordering::Acquire));
 
         // The same rejection on the generation created by the reactive
         // refresh is terminal service authorization.
-        AUTHORIZATION_REFRESH_ATTEMPTED.store(true, Ordering::Release);
+        health
+            .credential_was_refreshed
+            .store(true, Ordering::Release);
         health.handle_event(&async_nats::Event::ServerError(
             async_nats::ServerError::AuthorizationViolation,
         ));
@@ -2550,7 +2655,48 @@ mod runtime_tests {
             health.is_terminal(),
             "reconnect must not hide an auth failure"
         );
-        AUTHORIZATION_REFRESH_ATTEMPTED.store(false, Ordering::Release);
+    }
+
+    #[test]
+    fn power_events_preserve_intent_and_only_resume_rebuilds_a_generation() {
+        assert_eq!(
+            power_transition(PowerEvent::Suspend, true),
+            PowerTransition {
+                stop_generation: true,
+                start_generation: false,
+                rotate_epoch: false,
+            }
+        );
+        assert_eq!(
+            power_transition(PowerEvent::Resume, true),
+            PowerTransition {
+                stop_generation: false,
+                start_generation: true,
+                rotate_epoch: true,
+            }
+        );
+        for event in [PowerEvent::Suspend, PowerEvent::Resume] {
+            assert_eq!(
+                power_transition(event, false),
+                PowerTransition {
+                    stop_generation: false,
+                    start_generation: false,
+                    rotate_epoch: false,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn failure_logs_are_bounded_across_alternating_episodes() {
+        // The per-episode counter alone is insufficient: alternating category
+        // names used to restart it indefinitely. This unique test category
+        // exercises the process-level, 24-hour quota.
+        let category = "test_alternating_failure_quota";
+        for _ in 0..MAX_FAILURE_LOGS_PER_CATEGORY {
+            assert!(permit_failure_log(category));
+        }
+        assert!(!permit_failure_log(category));
     }
 
     /// Wait until WEB_PORT is bindable again (stop() aborts the web task
@@ -2813,11 +2959,6 @@ mod runtime_tests {
     #[tokio::test]
     async fn publish_event_reports_offline_and_full_queue_drops() {
         let _home = HomeGuard::new("remote-drops");
-        // The drop counters are process-global: start from a clean slate so an
-        // episode leaked by another test can't suppress the first-drop line.
-        DROP_COUNTERS.dropping.store(false, Ordering::Relaxed);
-        DROP_COUNTERS.dropped.store(0, Ordering::Relaxed);
-        DROP_COUNTERS.reports.store(0, Ordering::Relaxed);
         // No state at all → immediate return.
         publish_event("sess", "t", "{}", "r", 0, 0, "e", "", -1, 0);
 
@@ -2842,14 +2983,14 @@ mod runtime_tests {
         // Offline → the drop-reporting path (episode start).
         publish_event("sess", "t", "{}", "r", 0, 0, "e", "", -1, 0);
 
-        // Full/closed queue → the queue-full drop path. Reset the episode so
-        // this drop (not the offline one above) is the "first" and gets a line.
-        DROP_COUNTERS.dropping.store(false, Ordering::Relaxed);
-        DROP_COUNTERS.dropped.store(0, Ordering::Relaxed);
-        DROP_COUNTERS.reports.store(0, Ordering::Relaxed);
+        // Full/closed queue → the queue-full drop path. Reset this runtime's
+        // cross-generation counters so this drop is the first in its episode.
         {
             let mut guard = STATE.lock().unwrap();
             let state = guard.as_mut().unwrap();
+            state.drop_counters.dropping.store(false, Ordering::Relaxed);
+            state.drop_counters.dropped.store(0, Ordering::Relaxed);
+            state.drop_counters.reports.store(0, Ordering::Relaxed);
             let (tx, rx) = tokio::sync::mpsc::channel(1);
             drop(rx);
             state.event_tx = tx;

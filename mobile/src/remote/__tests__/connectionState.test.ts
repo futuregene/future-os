@@ -313,6 +313,17 @@ function recoveryClient(): {
 }
 
 describe("RemoteClient terminal iterator recovery", () => {
+  test("failure logs have a 24-hour per-category cap across episode changes", () => {
+    const { client } = recoveryClient();
+    const testClient = client as unknown as {
+      permitFailureLog(category: string): boolean;
+    };
+    for (let index = 0; index < 16; index += 1) {
+      expect(testClient.permitFailureLog("network")).toBe(true);
+    }
+    expect(testClient.permitFailureLog("network")).toBe(false);
+  });
+
   test.each([
     ["failed", new Error("remote_service_misconfigured")],
     [
@@ -356,11 +367,14 @@ describe("RemoteClient terminal iterator recovery", () => {
   test("a permission status becomes a terminal service failure", async () => {
     const { client } = recoveryClient();
     const recovery = jest.fn();
+    const recordFailure = jest.fn();
     const testClient = client as unknown as {
       watchStatus(connection: unknown, generation: number): void;
       handleFailure(error: unknown): void;
+      recordFailure(category: string, error: unknown): void;
     };
     testClient.handleFailure = recovery;
+    testClient.recordFailure = recordFailure;
     async function* statuses() {
       yield { type: "error", data: ErrorCode.PermissionsViolation };
     }
@@ -370,6 +384,10 @@ describe("RemoteClient terminal iterator recovery", () => {
       expect.objectContaining({ message: expect.stringContaining("nats_authorization_rejected") }),
     );
     expect(recovery).toHaveBeenCalledTimes(1);
+    expect(recordFailure).toHaveBeenCalledWith(
+      "service_authorization",
+      ErrorCode.PermissionsViolation,
+    );
   });
 
   test("a protocol status fails its generation once without exhaustion fallback", async () => {
@@ -507,6 +525,48 @@ describe("RemoteClient terminal iterator recovery", () => {
     expect(recovery).toHaveBeenCalledTimes(1);
   });
 
+  test("a readiness teardown absorbs its provisional subscription endings", () => {
+    const { client } = recoveryClient();
+    const recovery = jest.fn();
+    const testClient = client as unknown as {
+      generation: number;
+      failedGeneration: number | null;
+      failGeneration(error: unknown, generation: number): void;
+      handleFailure(error: unknown): void;
+    };
+    testClient.generation = 5;
+    // `connectSocket()` writes this marker before closing a connection whose
+    // pre-flush readiness barrier failed.
+    testClient.failedGeneration = 5;
+    testClient.handleFailure = recovery;
+
+    for (let index = 0; index < 4; index += 1) {
+      testClient.failGeneration(new Error("remote_event_subscription_ended"), 5);
+    }
+
+    expect(recovery).not.toHaveBeenCalled();
+  });
+
+  test("an auth error during refresh backs off instead of becoming terminal", () => {
+    const { client } = recoveryClient();
+    const scheduleRetry = jest.fn();
+    const testClient = client as unknown as {
+      authRetryCount: number;
+      refreshInFlight: boolean;
+      state: ConnectionState;
+      handleFailure(error: unknown): void;
+      scheduleRetry(): void;
+    };
+    testClient.state = "refreshing";
+    testClient.refreshInFlight = true;
+    testClient.scheduleRetry = scheduleRetry;
+    testClient.handleFailure(new Error("PERMISSIONS_VIOLATION"));
+
+    expect(testClient.authRetryCount).toBe(0);
+    expect(testClient.state).toBe("refreshing");
+    expect(scheduleRetry).toHaveBeenCalledTimes(1);
+  });
+
   test("four critical generations in ten minutes enter an unrecoverable failed state", () => {
     jest.useFakeTimers();
     const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -640,7 +700,7 @@ describe("RemoteClient OS lifecycle recovery", () => {
     expect(open).not.toHaveBeenCalled();
   });
 
-  test("network path changes immediately replace the old generation", async () => {
+  test("network path changes retain the old generation until replacement is ready", async () => {
     const { client } = recoveryClient();
     const close = jest.fn().mockResolvedValue(undefined);
     const testClient = client as unknown as {
@@ -655,8 +715,8 @@ describe("RemoteClient OS lifecycle recovery", () => {
 
     await client.recoverNow("network-changed");
 
-    expect(close).toHaveBeenCalledTimes(1);
-    expect(testClient.connection).toBeNull();
+    expect(close).not.toHaveBeenCalled();
+    expect(testClient.connection).not.toBeNull();
     expect(open).toHaveBeenCalledTimes(1);
   });
 
