@@ -12,9 +12,7 @@ use crate::utils::platform::get_platform_url;
 use crate::utils::string::trim_trailing_slash;
 use crate::utils::time::sleep;
 use serde::Deserialize;
-#[cfg(test)]
-use serde_json::Map;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 
 /// `DeviceCodeResponse` from auth.ts.
@@ -73,12 +71,12 @@ fn resolve_login_platform_url(platform_url_override: Option<String>) -> String {
 }
 
 /// `login(platformUrlOverride?)` — device-code OAuth flow.
+///
+/// Works with or without a running agent: when the agent is up the key is
+/// saved through its sole-writer RPC (keeping live state consistent); when it
+/// is down the key is written to `auth.json` directly and the agent picks it
+/// up on its next start.
 pub async fn login(platform_url_override: Option<String>, out: &Output) -> Result<(), String> {
-    #[cfg(not(test))]
-    RunClient::new(&grpc_addr())
-        .get_agent_info()
-        .await
-        .map_err(|error| format!("Future Agent must be running before login: {error}"))?;
     #[cfg(test)]
     let auth_data = load_auth_file().await?;
     #[cfg(not(test))]
@@ -134,7 +132,7 @@ pub async fn login(platform_url_override: Option<String>, out: &Output) -> Resul
             // `response.ok` — token granted.
             let token: DeviceTokenResponse =
                 serde_json::from_value(body).map_err(|e| format!("Network error: {e}"))?;
-            save_auth(&auth_data, &token, &platform_url).await?;
+            save_auth(&auth_data, &token, &platform_url, out).await?;
             out.log(&format!(
                 "Saved Future API key to {}",
                 auth_file_path().display()
@@ -391,9 +389,9 @@ pub async fn load_auth_file() -> Result<Value, String> {
     }
 }
 
-/// `saveAuth(authFile, token, platformUrl)` — merge into the `future` entry.
-#[cfg(test)]
-async fn save_auth(
+/// `saveAuth(authFile, token, platformUrl)` — merge into the `future` entry
+/// and write `auth.json` directly (mkdir -p, pretty JSON, 0600).
+async fn save_auth_to_file(
     auth_file: &Value,
     token: &DeviceTokenResponse,
     platform_url: &str,
@@ -416,26 +414,47 @@ async fn save_auth(
     write_auth_file(&auth_file).await
 }
 
+#[cfg(test)]
+async fn save_auth(
+    auth_file: &Value,
+    token: &DeviceTokenResponse,
+    platform_url: &str,
+    _out: &Output,
+) -> Result<(), String> {
+    save_auth_to_file(auth_file, token, platform_url).await
+}
+
+/// Save through the agent's sole-writer RPC when it is running (keeps the
+/// live registry / credentials consistent and emits the provider-config
+/// event); otherwise write `auth.json` directly — the agent loads it on its
+/// next start and syncs the Future model list lazily from there.
 #[cfg(not(test))]
 async fn save_auth(
     _auth_file: &Value,
     token: &DeviceTokenResponse,
     platform_url: &str,
+    out: &Output,
 ) -> Result<(), String> {
-    RunClient::new(&grpc_addr())
-        .set_auth(future_rpc::proto::AuthUpdate {
-            provider: FUTURE_AUTH_PROVIDER.to_string(),
-            key: token.api_key.clone(),
-            base_url: format!("{platform_url}/api"),
-            ..Default::default()
-        })
-        .await
-        .map(|_| ())
-        .map_err(|error| format!("Future Agent did not save the login credential: {error}"))
+    let client = RunClient::new(&grpc_addr());
+    if client.get_agent_info().await.is_ok() {
+        return client
+            .set_auth(future_rpc::proto::AuthUpdate {
+                provider: FUTURE_AUTH_PROVIDER.to_string(),
+                key: token.api_key.clone(),
+                base_url: format!("{platform_url}/api"),
+                ..Default::default()
+            })
+            .await
+            .map(|_| ())
+            .map_err(|error| format!("Future Agent did not save the login credential: {error}"));
+    }
+    let auth_file = load_auth_file().await?;
+    save_auth_to_file(&auth_file, token, platform_url).await?;
+    out.log("Future Agent is not running — it will pick up the key when it starts.");
+    Ok(())
 }
 
 /// `writeAuthFile(authFile)` — mkdir -p, write pretty JSON + newline, 0600.
-#[cfg(test)]
 async fn write_auth_file(auth_file: &Value) -> Result<(), String> {
     let path = auth_file_path();
     // Invariant: auth_file_path() is always `<home>/.future/agent/auth.json`.

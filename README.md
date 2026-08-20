@@ -100,6 +100,10 @@ The agent needs at least one model with an API key before it can answer.
 future auth login
 ```
 
+This works whether or not the agent is running: with the agent up the key is
+applied live; without it the key is written to `~/.future/agent/auth.json`
+and picked up when the agent starts.
+
 <details>
 <summary><strong>Prefer your own keys? (BYOK &amp; custom providers)</strong></summary>
 
