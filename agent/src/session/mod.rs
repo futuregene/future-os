@@ -2267,7 +2267,9 @@ mod tests {
     fn agent_message_to_entry_tool() {
         let msg = crate::types::AgentMessage {
             role: "tool".to_string(),
-            content: vec![crate::types::ContentBlock::tool_result("c1", "result", false)],
+            content: vec![crate::types::ContentBlock::tool_result(
+                "c1", "result", false,
+            )],
             ..Default::default()
         };
         let entry = agent_message_to_entry(&msg);
