@@ -207,18 +207,20 @@ export function RemoteView({
                       {t(reconnecting ? "reconnectingAs" : connected ? "connectedAs" : "pairedAs", { pairId: formatPairId(remoteStatus?.pairId) })}
                     </span>
                     <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">
-                      {phase !== "failed"
-                        ? (
-                            <Button
-                              disabled={busy}
-                              onClick={() => void (running ? handleStop() : handleStart())}
-                              size="sm"
-                              variant="secondary"
-                            >
-                              {running ? t("disconnect") : phase === "revoked" ? t("pairAgain") : t("connect")}
-                            </Button>
-                          )
-                        : null}
+                      <Button
+                        disabled={busy}
+                        onClick={() => void (running ? handleStop() : handleStart())}
+                        size="sm"
+                        variant="secondary"
+                      >
+                        {running
+                          ? t("disconnect")
+                          : phase === "revoked"
+                            ? t("pairAgain")
+                            : phase === "failed"
+                              ? t("reconnect")
+                              : t("connect")}
+                      </Button>
                       <Button
                         disabled={busy}
                         onClick={() => setConfirmOpen(true)}

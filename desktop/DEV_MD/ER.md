@@ -130,6 +130,7 @@ Thread 表示用户可恢复、可继续、可管理的一段对话。
 - 一个 Thread 可以产生多个 Artifact。
 - 一个 Thread 可以产生多个 Approval Request。
 - 一个 Thread 可以产生多个 Review Changeset。
+- 一个 Thread 可以由另一个 Thread 分叉（fork）产生。
 
 说明：
 
@@ -138,6 +139,7 @@ Thread 表示用户可恢复、可继续、可管理的一段对话。
 - 标题默认生成，用户可以修改。
 - 归档对话默认隐藏、只读，但允许搜索命中。
 - 用户在归档对话中点击输入框时，产品自动引导恢复后继续。
+- 分叉（fork）：从某条 assistant 回复对应的用户消息处，复制出新 Thread 与独立 Agent session（`fork_thread` → `fork_agent_session`）；沿用父 Thread 的 `mode` 与（workspace 模式下的）workspace，标题默认「父标题 (fork)」，并合成分叉历史对应的已完成 Run 与工具事件，使 Runs 面板立即可见。消息由新 session 的 JSONL 提供，不迁移 `messages` 表；分叉点按用户消息在会话内的序号定位，内容仅作兜底。
 - 模型与思考等级**不再是 Thread 列**（`model_provider` / `model_id` / `thinking_level` 已经 `DROPPED_COLUMNS` 从旧库删除）：权威状态在 Agent session，GUI 经 `get_thread_agent_state` 读取，切换经 `set_model` / `set_thinking_level` 下发，只影响该会话之后的 run，不打断进行中的 run。
 
 ### 4.3 Message
@@ -195,6 +197,7 @@ Run 表示一次 Agent 执行，通常由用户消息触发。
 - Run 在当前 GUI 中以“后台程序”列表呈现：运行中、排队中、等待审批显示为活动程序；完成、失败、取消显示为已结束程序。
 - 日常 Runs 面板只展示程序摘要和结果状态，不承载完整 event timeline、长 stdout/stderr、tool payload 或审批历史。这些内容应进入后续专门 Debug / Inspect / Review 视图。
 - 运行中 Run 可以被用户终止；终止后状态进入 `cancelled`，并同步取消该 Run 下仍然 pending 的 Approval Request。
+- 失败 / 已取消的 Run 支持恢复：『重试』用 `trigger_message_id` 对应的用户消息（含附件）重新发起；『继续』以「继续上一个任务」+ 失败消息摘要（Runs 面板触发时另附已执行内容摘要）发起。两者仅针对最新一轮且未中断的 Run，更早轮次或中断恢复改走 Thread 分叉（见 §4.2）。
 - 长任务恢复时，Thread 可以通过最近 Run 恢复上下文展示。
 
 ### 4.5 Run Event
@@ -438,7 +441,7 @@ Review File Change 表示某个文件或 artifact 的具体变更。
 
 ### 4.11 Artifact
 
-> **面板已暂时隐藏（见 PRODUCT.md §4.8），但表仍在正常写入**——`persist_file_artifact` 每次 write / edit 成功后照常登记，历史数据继续积累，恢复面板时数据是连续的。以下身份与去重规则因此仍然有效。
+> **Artifact 已从产品路线移除、面板不再展示，但表仍在正常写入**——`persist_file_artifact` 每次 write / edit 成功后照常登记，历史数据继续积累。以下身份与去重规则因此仍然有效。
 
 Artifact 表示工作过程中产生的可复用产物。
 
@@ -486,17 +489,17 @@ Artifact 表示工作过程中产生的可复用产物。
 - **附件持久化目录**（不属于 Artifact/SQLite，纯文件树）：`~/.future/app/images/<threadId>/` 下 `thumb/` 保存所有图片附件的缩略图，`origin/` 保存粘贴图片及手机上传等没有稳定桌面原始路径的附件。附件元数据（`path` / `kind` / `name` / `thumbnail`）存在 Agent session JSONL 的 `SessionEntry.meta.attachments` 中，GUI SQLite `messages` 已不作为消息来源，**无独立附件表**。
 - **回收**：`images/<tid>` 无逐删执行器,靠启动时 `reconcile_orphan_images` 孤儿清扫——`threads` 表中 `status='deleted'` 或无行的 tid 其目录被删（无软删撤销）；整库 reset 额外清 `images/` 整棵。覆盖 GUI 删、TUI/CLI 外部删 session、reset 三种来源。
 
-### 4.12–4.13 Research Collection / Research Resource（已延后，未建表）
+### 4.12–4.13 Research Collection / Research Resource（已移除，未建表）
 
 > **第一版发布前不上线，已从 schema 移除。** Research 模块（资料集合 + 沉淀的研究材料）的数据模型、存储方式、产品形态均未定，为避免日后迁移负担，第一版**不建表**：`research_collections`、`research_resources` 两张表及其 CRUD、命令、前端视图已整体移除，`apply_schema` 通过 `DROPPED_TABLES`（`store/schema.rs`）在旧库上 `DROP TABLE IF EXISTS` 清除它们。
 >
-> 产品记录**仅保留在 PRODUCT.md §4.9**。日后重启 Research 时，需重新设计数据模型并回写本节。
+> 产品记录已从 PRODUCT.md 移除。日后重启 Research 时，需重新设计数据模型并回写本节。
 
 ### 4.14–4.17 Data Source / Data Credential / Skill / Skill Enablement（已废弃）
 
 > **已废弃并从 schema 删除（2026-07-07）。** 这四张表（`data_sources`、`data_credentials`、`skills`、`skill_enablements`）曾由早期 schema 建立，但从未接入任何 CRUD 代码：
 > - **Data 模块**（CSV/TSV/MySQL 数据源）整体延后，未进入第一版实现。
-> - **Skill** 改走**官方平台目录 + 文件系统**路线（`GET {platform}/client/v1/skills` → 下载安装到 `~/.future/agent/skills`），不入库；语义见 PRODUCT.md §4.11，实现见 `src-tauri/src/skills.rs`。
+> - **Skill** 改走**官方平台目录 + 文件系统**路线（`GET {platform}/client/v1/skills` → 下载安装到 `~/.future/agent/skills`），不入库；语义见 PRODUCT.md §4.8，实现见 `src-tauri/src/skills.rs`。
 >
 > `apply_schema` 通过 `DROPPED_TABLES`（`store/schema.rs`）在旧库上 `DROP TABLE IF EXISTS` 清除它们。若日后重启 Data 功能，需重新设计并回写本节。
 
@@ -642,9 +645,9 @@ Artifact、Run、Tool Call、Approval Request、Review Changeset、Workspace Fil
 
 Reference Target 需要支持全局对象，例如全局 Data Source 和全局 Skill。
 
-### 6.5 Research 转入（已延后）
+### 6.5 Research 转入（已移除）
 
-Research 模块延后至第一版发布后，相关设计已移除，仅在 PRODUCT.md §4.9 保留产品记录，数据模型见 §4.12–4.13 的延后说明。（编号保留，避免后续小节与 §6.8/§6.9 及 desktop/CLAUDE.md 的引用错位。）
+Research 模块已从产品设计中整体移除（PRODUCT.md 不再保留 Research 条目），数据模型见 §4.12–4.13 的说明。（编号保留，避免后续小节与 §6.8/§6.9 及 desktop/CLAUDE.md 的引用错位。）
 
 ### 6.6 Data 凭证与模型凭证分离
 

@@ -218,6 +218,21 @@ make test           # 全部 7 个套件：agent、channels、CLI、TUI、GUI、
 make clean          # 清理构建产物（已安装二进制请用 make uninstall 删除）
 ```
 
+### 从源码启动桌面应用
+
+完成上面的环境要求与克隆后，运行：
+
+```bash
+make setup
+make run-desktop
+```
+
+`make setup` 安装 JavaScript workspace、初始化内置技能并创建 Tauri sidecar
+占位文件；`make run-desktop` 构建本地 CLI sidecar 并以开发模式启动桌面应用——
+应用启动时会自动拉起内置的 agent sidecar，无需单独运行 `future agent`
+（若 `127.0.0.1:50051` 上已有 agent 在跑，应用会直接复用而不重复拉起）。
+Android 与 iOS 还需要各自的 SDK 和模拟器或真机，详见[移动端指南](../mobile/README.md)。
+
 ### Proto
 
 规范 API 是 `packages/rpc/proto/future.proto`。生成的 Rust 代码已入库——正常构建不会改动它。编辑 `.proto` 文件后重新生成：

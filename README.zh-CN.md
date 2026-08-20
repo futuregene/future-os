@@ -72,22 +72,6 @@ iex (irm https://dl.future-os.cn/install.ps1)
 各平台（桌面应用、工具链、GUI 打包）的分步安装步骤见
 **[构建与安装](docs/build-and-install.zh-CN.md)** 文档。
 
-### 从源码启动
-
-先按构建文档安装所在平台的前置依赖；全新克隆后可按以下步骤启动桌面应用：
-
-```bash
-git clone https://github.com/futuregene/future-os.git
-cd future-os
-make setup
-make run-desktop
-```
-
-`make setup` 会安装 JavaScript workspace、初始化内置技能并创建 Tauri sidecar
-占位文件；`make run-desktop` 会构建本地 CLI sidecar 并以开发模式启动桌面应用。
-Android 与 iOS 还需要各自的 SDK 和模拟器或真机，详见构建文档与
-[移动端指南](mobile/README.md)。
-
 ### 配置模型
 
 Agent 至少需要一个带 API key 的模型才能回复。

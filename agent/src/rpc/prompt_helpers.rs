@@ -40,6 +40,7 @@ pub(super) fn run_event_to_sse(event: crate::agent::RunEvent) -> Option<super::S
             "tool_start",
             ordered_data([
                 ("type", serde_json::json!("tool_start")),
+                ("phase", serde_json::json!("execution")),
                 ("tool_name", serde_json::json!(name)),
                 ("tool_id", serde_json::json!(id)),
                 ("tool_args", arguments),
@@ -102,6 +103,7 @@ pub(super) fn run_event_to_sse(event: crate::agent::RunEvent) -> Option<super::S
             } => {
                 let mut data = serde_json::Map::new();
                 data.insert("type".into(), serde_json::json!("tool_start"));
+                data.insert("phase".into(), serde_json::json!("input"));
                 if !name.is_empty() {
                     data.insert("tool_name".into(), serde_json::json!(name));
                 }
@@ -449,6 +451,7 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&data).unwrap(),
             serde_json::json!({
                 "type": "tool_start",
+                "phase": "input",
                 "tool_name": "read",
                 "tool_id": "call-1",
                 "tool_args": {"path": "a.txt"},
