@@ -467,7 +467,7 @@ export function useFileDownload(
         );
         if (!accepted) return null;
       }
-      if (handle && !cachedFile) {
+      if (handle) {
         const patch = {
           phase: "downloading",
           completedBytes: 0,

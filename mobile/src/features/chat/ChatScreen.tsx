@@ -111,7 +111,16 @@ export function ChatScreen() {
     [remote, t],
   );
 
-  const scroll = useChatScroll(remote.selectedSessionId, transcriptItems.length);
+  const {
+    listRef,
+    atLatest,
+    composerHeight,
+    setComposerHeight,
+    scrollToLatest,
+    onContentSizeChange,
+    onListLayout,
+    onScroll,
+  } = useChatScroll(remote.selectedSessionId, transcriptItems.length);
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
@@ -185,7 +194,7 @@ export function ChatScreen() {
             contentContainerStyle={[
               styles.timeline,
               {
-                paddingBottom: scroll.composerHeight + COMPOSER_FADE_CLEARANCE + spacing.lg + keyboardLift,
+                paddingBottom: composerHeight + COMPOSER_FADE_CLEARANCE + spacing.lg + keyboardLift,
               },
               timelineItems.length === 0 && styles.emptyTimeline,
             ]}
@@ -201,10 +210,10 @@ export function ChatScreen() {
                 <Text style={styles.empty}>{t("chat.noHistory")}</Text>
               )
             }
-            onContentSizeChange={scroll.onContentSizeChange}
-            onLayout={scroll.onListLayout}
-            onScroll={scroll.onScroll}
-            ref={scroll.listRef}
+            onContentSizeChange={onContentSizeChange}
+            onLayout={onListLayout}
+            onScroll={onScroll}
+            ref={listRef}
             renderItem={({ item }) => (
               <TimelineCard
                 item={item}
@@ -232,14 +241,14 @@ export function ChatScreen() {
             t={t}
             openAttachmentMenu={openAttachmentMenu}
             send={send}
-            atLatest={scroll.atLatest}
-            scrollToLatest={scroll.scrollToLatest}
+            atLatest={atLatest}
+            scrollToLatest={scrollToLatest}
             showOffline={showOffline}
             pendingApprovals={pendingApprovals}
             approvalSubmitting={approvalSubmitting}
             approvalError={approvalError}
             decideApproval={decideApproval}
-            setComposerHeight={scroll.setComposerHeight}
+            setComposerHeight={setComposerHeight}
             keyboardLift={keyboardLift}
             selector={selector}
             setSelector={setSelector}
