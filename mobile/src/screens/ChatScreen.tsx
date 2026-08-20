@@ -1352,7 +1352,12 @@ export function ChatScreen() {
           {remote.draft && <View style={styles.iconButton} />}
         </View>
 
-        {remote.error && <ErrorBanner message={remote.error} onDismiss={remote.clearError} />}
+        {remote.error && (
+          <ErrorBanner
+            message={remote.error}
+            onDismiss={remote.phase === "failed" ? undefined : remote.clearError}
+          />
+        )}
 
         <View style={styles.chatContent}>
           <FlatList

@@ -1,10 +1,36 @@
 import { invokeCommand } from "../../integrations/tauri/invoke";
 
+export type RemotePhase
+  = | "stopped"
+    | "connecting"
+    | "ready"
+    | "reconnecting"
+    | "refreshing"
+    | "failed"
+    | "revoked";
+
+export type RemoteFailureReason
+  = | "network"
+    | "system_sleep"
+    | "credential_expired"
+    | "credential_revoked"
+    | "service_authorization"
+    | "remote_server"
+    | "protocol"
+    | "generation_unhealthy"
+    | "local";
+
+export interface RecoveryProgress {
+  attempt: number;
+  maxAttempts: number | null;
+  since: number;
+  nextRetryAt: number | null;
+}
+
 export interface RemoteStatus {
-  running: boolean;
-  connected: boolean;
-  /** A failed connection generation is being reconnected automatically. */
-  reconnecting: boolean;
+  phase: RemotePhase;
+  reason: RemoteFailureReason | null;
+  recovery: RecoveryProgress | null;
   natsUrl: string;
   pairId: string;
   /** One-shot pairing code (base64url) returned only by a successful start. */
@@ -18,15 +44,42 @@ export interface RemoteStatus {
   webUrl: string | null;
   /** Test-only LAN web client URL; null outside the test environment or if unavailable. */
   webLanUrl: string | null;
-  /**
-   * Machine-readable reason the bridge isn't healthy (`network` / `revoked` /
-   * `server` / `service_config` / `reconnect_required` / `web_bind`). Localized via
-   * `error.<code>`; preferred
-   * over `error` when present.
-   */
-  errorCode: string | null;
-  /** Human-readable error, shown only when `errorCode` is null. */
-  error: string | null;
+  /** Non-critical web listener failure; the main Remote link may remain ready. */
+  warningCode: "web_bind" | null;
+}
+
+export interface RemoteFailurePresentation {
+  messageKey: "network" | "pairing" | "serviceLater" | "serviceSupport" | "local";
+  supportCode: string;
+}
+
+/**
+ * Internal failure detail stays precise; the UI deliberately collapses it to
+ * a small set of plain-language actions while retaining a stable support code.
+ */
+export function remoteFailurePresentation(
+  reason: RemoteFailureReason,
+): RemoteFailurePresentation {
+  switch (reason) {
+    case "network":
+      return { messageKey: "network", supportCode: "NW001" };
+    case "credential_revoked":
+      return { messageKey: "pairing", supportCode: "PA001" };
+    case "service_authorization":
+      return { messageKey: "serviceSupport", supportCode: "AU001" };
+    case "protocol":
+      return { messageKey: "serviceSupport", supportCode: "PT001" };
+    case "generation_unhealthy":
+      return { messageKey: "serviceLater", supportCode: "RT001" };
+    case "remote_server":
+      return { messageKey: "serviceLater", supportCode: "SV001" };
+    case "local":
+      return { messageKey: "local", supportCode: "LC001" };
+    case "system_sleep":
+      return { messageKey: "network", supportCode: "PW001" };
+    case "credential_expired":
+      return { messageKey: "serviceLater", supportCode: "AU002" };
+  }
 }
 
 export interface RemotePairingStatus {

@@ -13,6 +13,7 @@ import type { RemoteCredentials } from "../types";
 import { ErrorCode, NatsError } from "nats.ws";
 
 const ALL_STATES: ConnectionState[] = [
+  "stopped",
   "connecting",
   "ready",
   "reconnecting",
@@ -22,7 +23,7 @@ const ALL_STATES: ConnectionState[] = [
   "unpaired",
 ];
 
-const TERMINAL: ConnectionState[] = ["failed", "revoked", "unpaired"];
+const TERMINAL: ConnectionState[] = ["stopped", "failed", "revoked", "unpaired"];
 
 function runTable(): Record<string, ConnectionState> {
   const matrix: LifecycleEvent[] = [
@@ -165,7 +166,7 @@ describe("connectionState FSM", () => {
     const table = runTable();
     for (const key of Object.keys(table)) {
       const [from, event] = key.split("+");
-      if (from === "revoked" || from === "failed") {
+      if (from === "stopped" || from === "revoked" || from === "failed") {
         expect(table[key]).toBe(from);
       }
       if (from === "unpaired") {
@@ -261,11 +262,11 @@ describe("classifyError", () => {
     expect(classifyError(new Error("pairing_signature_invalid"))).toBe("auth");
     expect(classifyError(new Error("pairing_confirmation_mismatch"))).toBe("auth");
   });
-  test("service permission errors → fatal", () => {
+  test("NATS permission errors refresh once before becoming terminal", () => {
     expect(
       classifyError(new RemoteApiError("misconfigured", "remote_service_misconfigured", 500)),
     ).toBe("fatal");
-    expect(classifyError(new Error("PERMISSIONS_VIOLATION"))).toBe("fatal");
+    expect(classifyError(new Error("PERMISSIONS_VIOLATION"))).toBe("auth");
     expect(classifyError(new Error("remote_service_misconfigured"))).toBe("fatal");
   });
   test("everything else → transport", () => {
@@ -312,6 +313,46 @@ function recoveryClient(): {
 }
 
 describe("RemoteClient terminal iterator recovery", () => {
+  test.each([
+    ["failed", new Error("remote_service_misconfigured")],
+    [
+      "revoked",
+      new RemoteApiError("revoked", "credentials_revoked", 401),
+    ],
+  ] as const)("late iterator completion cannot revive %s", async (terminal, failure) => {
+    jest.useFakeTimers();
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const { client, callbacks } = recoveryClient();
+      const testClient = client as unknown as {
+        generation: number;
+        state: ConnectionState;
+        handleFailure(error: unknown): void;
+        failGeneration(error: unknown, generation: number): void;
+        scheduleRetry(): void;
+        refreshToken(): Promise<void>;
+      };
+      testClient.state = "ready";
+      testClient.generation = 7;
+      testClient.handleFailure(failure);
+      expect(testClient.state).toBe(terminal);
+
+      // All four subscription iterators can finish after disposal. Their old
+      // generation must not arm a timer, refresh credentials, or reopen.
+      for (let i = 0; i < 4; i += 1) {
+        testClient.failGeneration(new Error("remote_event_subscription_ended"), 7);
+      }
+      testClient.scheduleRetry();
+      await testClient.refreshToken();
+      await client.open();
+      expect(jest.getTimerCount()).toBe(0);
+      expect(callbacks.onCredentials).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
   test("a permission status becomes a terminal service failure", async () => {
     const { client } = recoveryClient();
     const recovery = jest.fn();
@@ -326,7 +367,7 @@ describe("RemoteClient terminal iterator recovery", () => {
     testClient.watchStatus({ status: statuses }, 0);
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(recovery).toHaveBeenCalledWith(
-      expect.objectContaining({ message: expect.stringContaining("remote_service_misconfigured") }),
+      expect.objectContaining({ message: expect.stringContaining("nats_authorization_rejected") }),
     );
     expect(recovery).toHaveBeenCalledTimes(1);
   });
@@ -464,6 +505,34 @@ describe("RemoteClient terminal iterator recovery", () => {
     testClient.failGeneration(new Error("presence ended"), 0);
 
     expect(recovery).toHaveBeenCalledTimes(1);
+  });
+
+  test("four critical generations in ten minutes enter an unrecoverable failed state", () => {
+    jest.useFakeTimers();
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const { client } = recoveryClient();
+      const testClient = client as unknown as {
+        generation: number;
+        failedGeneration: number | null;
+        state: ConnectionState;
+        failGeneration(error: unknown, generation: number): void;
+      };
+      testClient.state = "ready";
+      for (let generation = 0; generation < 4; generation += 1) {
+        testClient.generation = generation;
+        testClient.failedGeneration = null;
+        testClient.failGeneration(
+          new Error("remote_event_subscription_ended"),
+          generation,
+        );
+      }
+      expect(testClient.state).toBe("failed");
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      warn.mockRestore();
+      jest.useRealTimers();
+    }
   });
 });
 

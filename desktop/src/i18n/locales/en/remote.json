@@ -3,31 +3,36 @@
   "description": "Let a phone remotely take over this machine's session (tools still run locally). Once enabled, local conversations are mirrored to the phone, and the phone can drive the same session.",
   "downloadMobile": "Download mobile app",
   "connect": "Connect",
+  "pairAgain": "Pair again",
   "reconnect": "Reconnect",
   "disconnect": "Disconnect",
   "pairAndStart": "Pair & start",
   "pairedAs": "Paired as {{pairId}}",
   "connectedAs": "Connected as {{pairId}}",
-  "reconnectingAs": "Reconnecting {{pairId}}…",
+  "reconnectingAs": "Reconnecting…",
   "unpair": "Unpair",
   "unpairConfirmTitle": "Unpair this device?",
-  "unpairConfirmDesc": "This revokes the pairing on the server and clears the saved credentials on this desktop. The phone will no longer be able to control this machine until you pair again.",
+  "unpairConfirmDesc": "This phone will no longer control this computer. Scan a new code if you want to pair it again.",
   "cancel": "Cancel",
   "pairingCodeLabel": "Pairing code",
   "pairingQrLabel": "Scan with FutureOS Mobile",
-  "pairingCodeHint": "Scan the QR code with the FutureOS mobile app within 5 minutes. It is single-use and contains only a short-lived credential-claim nonce, never an account key or device private key.",
+  "pairingCodeHint": "Scan the QR code with the FutureOS mobile app within 5 minutes. The code can only be used once.",
   "pairingCodeExpiresIn": "expires in {{time}}",
   "copy": "Copy",
   "copied": "Copied",
   "copyFailed": "Copy failed — copy the code manually.",
-  "note": "Remote control requires the desktop to be online and awake.",
+  "note": "Phone control requires this computer to stay on and online.",
+  "failure": {
+    "network": "Network unavailable. Check your connection and try again later. ({{code}})",
+    "pairing": "Pairing expired. Pair this device again. ({{code}})",
+    "serviceLater": "Service temporarily unavailable. Try again later. ({{code}})",
+    "serviceSupport": "Service temporarily unavailable. Contact support. ({{code}})",
+    "local": "This device encountered a problem. Try again later. ({{code}})"
+  },
+  "warning": {
+    "webBind": "Some features are temporarily unavailable. Try again later. ({{code}})"
+  },
   "error": {
-    "network": "Cannot reach the Future server. Check your network connection and try again.",
-    "revoked": "This pairing was revoked or is no longer valid. Pair again to continue.",
-    "server": "The Future server returned an error. Please try again later.",
-    "service_config": "Remote authorization failed. Reconnect; if the problem continues, try again later or contact support.",
-    "reconnect_required": "Automatic reconnect failed. Reconnect to continue.",
-    "web_bind": "The web client is temporarily unavailable; phone access is unaffected. Reconnect to try again.",
-    "generic": "The remote control action failed. Please try again."
+    "generic": "The action could not be completed. Try again later. (LC999)"
   }
 }

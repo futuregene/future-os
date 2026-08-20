@@ -3,7 +3,7 @@ export type ConnectionPhase =
   | "unpaired"
   | "claiming"
   | "connecting"
-  | "connected"
+  | "ready"
   | "reconnecting"
   | "refreshing"
   | "failed"

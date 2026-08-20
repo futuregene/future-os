@@ -1,20 +1,23 @@
 import { friendlyError, friendlyRunError } from "../errorMessage";
 
-const t = (key: string): string => key;
+const t = (key: string, opts?: Record<string, unknown>): string =>
+  opts?.code ? `${key}:${String(opts.code)}` : key;
 
 describe("friendlyError", () => {
   test.each([
-    ["HTTP 503", "connection.errorService"],
-    ["nats_connection_exhausted", "connection.errorNetwork"],
-    ["remote_state_subscription_ended", "connection.errorNetwork"],
-    ["invalid_remote_credential", "connection.errorAuth"],
-    ["pairing_confirmation_mismatch", "connection.errorAuth"],
+    ["HTTP 503", "connection.errorServiceLater:SV001"],
+    ["nats_connection_exhausted", "connection.errorNetwork:NW001"],
+    ["remote_state_subscription_ended", "connection.errorNetwork:NW001"],
+    ["invalid_remote_credential", "connection.errorPairing:PA001"],
+    ["pairing_confirmation_mismatch", "connection.errorPairing:PA001"],
+    ["generation_unhealthy:protocol", "connection.errorServiceSupport:PT001"],
+    ["generation_unhealthy:subscription", "connection.errorServiceLater:RT001"],
   ])("maps %s to %s", (message, expected) => {
     expect(friendlyError(message, t)).toBe(expected);
   });
 
   test("does not expose an unknown internal error", () => {
-    expect(friendlyError("sqlite row decode exploded", t)).toBe("connection.errorGeneric");
+    expect(friendlyError("sqlite row decode exploded", t)).toBe("connection.errorGeneric:LC999");
   });
 });
 

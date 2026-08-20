@@ -399,11 +399,12 @@ export function SessionsScreen() {
       <View style={[styles.emptyIcon, styles.emptyIconOffline]}>
         <Unplug color={colors.danger} size={26} />
       </View>
-      <Text style={styles.emptyTitle}>{t("connection.offline")}</Text>
-      <Text style={styles.emptyHint}>{t("connection.offlineHint")}</Text>
-      {remote.phase === "failed" && (
-        <Button compact label={t("connection.retry")} onPress={() => void remote.reconnect()} />
-      )}
+      <Text style={styles.emptyTitle}>
+        {t(remote.phase === "failed" ? "connection.failed" : "connection.offline")}
+      </Text>
+      <Text style={styles.emptyHint}>
+        {t(remote.phase === "failed" ? "connection.failedHint" : "connection.offlineHint")}
+      </Text>
     </View>
   );
 
@@ -470,7 +471,12 @@ export function SessionsScreen() {
           </View>
         </View>
 
-        {remote.error && <ErrorBanner message={remote.error} onDismiss={remote.clearError} />}
+        {remote.error && (
+          <ErrorBanner
+            message={remote.error}
+            onDismiss={remote.phase === "failed" ? undefined : remote.clearError}
+          />
+        )}
 
         {tab === "workspace" ? (
           <FlatList

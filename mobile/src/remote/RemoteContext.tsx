@@ -604,7 +604,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
           // while ready is handled internally by the client's own status loop
           // and backoff timer — the context only mirrors the state.
           if (state === "ready") {
-            setPhase("connected");
+            setPhase("ready");
             // A healthy link invalidates any lingering banner — connection
             // complaints self-clear once the outage is over.
             setError(null);
@@ -1199,7 +1199,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // ChatScreen is still mounted after a brief background trip, leave its draft
   // visible and let the user's next tap reuse the same durable command id.
   useEffect(() => {
-    if (phase === "connected" && !selectedRef.current && !draft) {
+    if (phase === "ready" && !selectedRef.current && !draft) {
       void recoverPendingPrompt();
     }
   }, [draft, phase, recoverPendingPrompt]);
@@ -1323,7 +1323,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   }, []);
 
   const desktopOnline = useMemo(() => {
-    if (phase !== "connected") return false;
+    if (phase !== "ready") return false;
     const next = isDesktopOnline(presence, clock, presenceStateRef.current);
     presenceStateRef.current = next;
     // Fast death detection: the bridge beats once per second, so a local

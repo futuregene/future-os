@@ -3,31 +3,36 @@
   "description": "让手机远程接管本机会话（工具在本机执行）。开启后，本地对话会镜像给手机，手机也可驱动同一会话。",
   "downloadMobile": "下载手机端",
   "connect": "连接",
+  "pairAgain": "重新配对",
   "reconnect": "重新连接",
   "disconnect": "断开",
   "pairAndStart": "配对并启动",
   "pairedAs": "已配对 {{pairId}}",
   "connectedAs": "已连接 {{pairId}}",
-  "reconnectingAs": "正在重新连接 {{pairId}}…",
+  "reconnectingAs": "正在重新连接…",
   "unpair": "解除配对",
   "unpairConfirmTitle": "解除配对？",
-  "unpairConfirmDesc": "这会在服务器端撤销配对，并清除本机保存的配对凭证。解除后，该手机将无法再控制本机，直到重新配对。",
+  "unpairConfirmDesc": "解除后，这台手机将无法再控制本机；如需再次使用，请重新扫码配对。",
   "cancel": "取消",
   "pairingCodeLabel": "配对码",
   "pairingQrLabel": "使用 FutureOS 手机端扫描",
-  "pairingCodeHint": "请在 5 分钟内使用 FutureOS 手机端扫描二维码。配对码仅可使用一次，只含领取凭证所需的短期 nonce，不含账号密钥或设备私钥。",
+  "pairingCodeHint": "请在 5 分钟内使用 FutureOS 手机端扫描二维码。二维码仅可使用一次。",
   "pairingCodeExpiresIn": "{{time}} 后过期",
   "copy": "复制",
   "copied": "已复制",
   "copyFailed": "复制失败，请手动复制配对码。",
-  "note": "注：远程依赖桌面在线且未睡眠。",
+  "note": "注：手机控制需要电脑保持开机并联网。",
+  "failure": {
+    "network": "网络异常，请检查网络后稍后再试（{{code}}）",
+    "pairing": "配对已失效，请重新配对（{{code}}）",
+    "serviceLater": "服务暂时不可用，请稍后再试（{{code}}）",
+    "serviceSupport": "服务暂时不可用，请联系客服（{{code}}）",
+    "local": "设备出现异常，请稍后再试（{{code}}）"
+  },
+  "warning": {
+    "webBind": "部分功能暂时不可用，请稍后再试（{{code}}）"
+  },
   "error": {
-    "network": "无法连接到 Future 服务器，请检查网络连接后重试。",
-    "revoked": "该配对已被撤销或已失效，请重新配对。",
-    "server": "Future 服务器返回错误，请稍后重试。",
-    "service_config": "Remote 授权失败，请重新连接；若问题持续，请稍后再试或联系支持。",
-    "reconnect_required": "自动重连失败，请重新连接。",
-    "web_bind": "网页版暂时无法连接，手机端不受影响。你可以重新连接后再试。",
-    "generic": "远程操作失败，请重试。"
+    "generic": "操作未完成，请稍后再试（LC999）"
   }
 }

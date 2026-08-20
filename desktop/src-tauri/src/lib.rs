@@ -907,10 +907,12 @@ fn spawn_remote_auto_connect() {
 
     tauri::async_runtime::spawn(async {
         match remote::start(remote::RemoteStartInput {}).await {
-            Ok(status) if status.running => eprintln!("FutureOS remote auto-connect: connected"),
+            Ok(status) if matches!(status.phase, remote::RemotePhase::Ready) => {
+                eprintln!("FutureOS remote auto-connect: connected")
+            }
             Ok(status) => eprintln!(
-                "FutureOS remote auto-connect: deferred ({})",
-                status.error_code.as_deref().unwrap_or("unknown")
+                "FutureOS remote auto-connect: deferred ({:?})",
+                status.reason
             ),
             Err(error) => eprintln!("FutureOS remote auto-connect failed: {error}"),
         }

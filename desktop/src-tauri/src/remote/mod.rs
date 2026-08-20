@@ -21,6 +21,113 @@ use std::sync::{
     Arc, Mutex,
 };
 
+#[derive(Default)]
+struct FailureEpisodeState {
+    category: String,
+    started_at: u64,
+    attempts: u64,
+    reports: u8,
+    last_error: String,
+}
+
+#[derive(Default)]
+struct FailureEpisode(Mutex<FailureEpisodeState>);
+
+impl FailureEpisode {
+    fn record(&self, category: &str, error: impl std::fmt::Display) -> Option<String> {
+        let mut episode = self.0.lock().unwrap();
+        let error = error.to_string();
+        if episode.category != category {
+            episode.category = category.to_string();
+            episode.started_at = unix_millis();
+            episode.attempts = 1;
+            episode.reports = 1;
+            episode.last_error = error;
+            return Some(format!(
+                "remote: {category} failure episode started [{}]: {}",
+                support_code_for_category(category),
+                episode.last_error
+            ));
+        }
+        episode.attempts = episode.attempts.saturating_add(1);
+        episode.last_error = error;
+        if episode.reports < 15 && episode.attempts.is_power_of_two() {
+            episode.reports += 1;
+            return Some(format!(
+                "remote: {category} failure persists [{}] (attempt {}): {}",
+                support_code_for_category(category),
+                episode.attempts,
+                episode.last_error
+            ));
+        }
+        None
+    }
+
+    fn recovered(&self) -> Option<String> {
+        let mut episode = self.0.lock().unwrap();
+        if episode.category.is_empty() {
+            return None;
+        }
+        let line = format!(
+            "remote: {} failure recovered [{}] after {} attempts and {}ms",
+            episode.category,
+            support_code_for_category(&episode.category),
+            episode.attempts,
+            unix_millis().saturating_sub(episode.started_at)
+        );
+        *episode = FailureEpisodeState::default();
+        Some(line)
+    }
+}
+
+fn support_code_for_category(category: &str) -> &'static str {
+    match category {
+        "network" | "credential_network" => "NW001",
+        "remote_server" => "SV001",
+        "service_authorization" => "AU001",
+        "credential_expired" | "credential_connect" => "AU002",
+        "slow_consumer" => "RT002",
+        "command_subscription" => "RT003",
+        "transfer_subscription" => "RT004",
+        "event_publish" => "RT005",
+        "heartbeat_publish" | "state_publish" => "RT006",
+        "web_bind" => "LC002",
+        "revoked" => "PA001",
+        _ => "LC999",
+    }
+}
+
+static EVENT_PUBLISH_EPISODE: FailureEpisode = FailureEpisode(Mutex::new(FailureEpisodeState {
+    category: String::new(),
+    started_at: 0,
+    attempts: 0,
+    reports: 0,
+    last_error: String::new(),
+}));
+static START_EPISODE: FailureEpisode = FailureEpisode(Mutex::new(FailureEpisodeState {
+    category: String::new(),
+    started_at: 0,
+    attempts: 0,
+    reports: 0,
+    last_error: String::new(),
+}));
+static CREDENTIAL_EPISODE: FailureEpisode = FailureEpisode(Mutex::new(FailureEpisodeState {
+    category: String::new(),
+    started_at: 0,
+    attempts: 0,
+    reports: 0,
+    last_error: String::new(),
+}));
+static HEARTBEAT_PUBLISH_EPISODE: FailureEpisode =
+    FailureEpisode(Mutex::new(FailureEpisodeState {
+        category: String::new(),
+        started_at: 0,
+        attempts: 0,
+        reports: 0,
+        last_error: String::new(),
+    }));
+static AUTHORIZATION_REFRESH_ATTEMPTED: AtomicBool = AtomicBool::new(false);
+
 /// Port for the embedded web client HTTP server.
 const WEB_PORT: u16 = 8022;
 /// A shutdown notification is advisory: never delay closing the desktop for a
@@ -43,8 +150,9 @@ struct DropCounters {
     dropping: AtomicBool,
     /// Cumulative drops since the episode started; reset on recovery.
     dropped: AtomicU64,
-    /// Epoch-ms of the last emitted drop line; gates the 10s periodic line.
-    last_report: AtomicU64,
+    /// Number of emitted lines in this episode. Capped so a prolonged outage
+    /// can never fill the console or a redirected log file.
+    reports: AtomicU8,
 }
 
 impl DropCounters {
@@ -52,7 +160,7 @@ impl DropCounters {
         Self {
             dropping: AtomicBool::new(false),
             dropped: AtomicU64::new(0),
-            last_report: AtomicU64::new(0),
+            reports: AtomicU8::new(0),
         }
     }
 
@@ -70,12 +178,14 @@ impl DropCounters {
     ) -> Option<String> {
         let first = !self.dropping.swap(true, Ordering::Relaxed);
         let total = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
-        let last = self.last_report.swap(now, Ordering::Relaxed);
+        let _ = now;
         if first {
+            self.reports.store(1, Ordering::Relaxed);
             Some(format!(
                 "remote: {why}; dropping {event_type} for {session_id} (backfill on reconnect heals the gap)"
             ))
-        } else if total >= 10 && now.saturating_sub(last) >= 10_000 {
+        } else if total.is_power_of_two() && self.reports.load(Ordering::Relaxed) < 15 {
+            self.reports.fetch_add(1, Ordering::Relaxed);
             Some(format!(
                 "remote: {why}; dropped {total} events so far for {session_id}"
             ))
@@ -90,7 +200,7 @@ impl DropCounters {
     fn report_recovery(&self) -> Option<String> {
         if self.dropping.swap(false, Ordering::Relaxed) {
             let dropped = self.dropped.swap(0, Ordering::Relaxed);
-            self.last_report.store(0, Ordering::Relaxed);
+            self.reports.store(0, Ordering::Relaxed);
             Some(format!(
                 "remote: event publish recovered; dropped {dropped} events during the backlog"
             ))
@@ -122,6 +232,9 @@ struct EventPublish {
 struct NatsHealth {
     reconnect_required: AtomicBool,
     service_config_error: AtomicBool,
+    authorization_rejection_logged: AtomicBool,
+    client_error_logged: AtomicBool,
+    event_episode: FailureEpisode,
 }
 
 impl NatsHealth {
@@ -130,32 +243,68 @@ impl NatsHealth {
         match event {
             Event::Connected => {
                 self.reconnect_required.store(false, Ordering::Release);
-                eprintln!("remote: NATS connected");
+                self.authorization_rejection_logged
+                    .store(false, Ordering::Release);
+                self.client_error_logged.store(false, Ordering::Release);
+                if let Some(line) = self.event_episode.recovered() {
+                    eprintln!("{line}");
+                }
             }
-            Event::Disconnected => eprintln!("remote: NATS disconnected; reconnecting"),
+            Event::Disconnected => {
+                if let Some(line) = self.event_episode.record("network", "NATS disconnected") {
+                    eprintln!("{line}");
+                }
+            }
             Event::ServerError(ServerError::AuthorizationViolation) => {
-                self.service_config_error.store(true, Ordering::Release);
-                eprintln!(
-                    "remote: NATS authorization violation; check the Remote service account and permissions"
-                );
+                self.mark_authorization_rejected();
+            }
+            // async-nats reports an authorization rejection that occurs while
+            // reconnecting as `ClientError::Other`, not `ServerError`. Treat
+            // this transient-client shape as a failed generation: the runtime
+            // supervisor replaces it with a fresh short-lived bridge JWT.
+            Event::ClientError(ClientError::Other(error)) if is_authorization_violation(error) => {
+                self.mark_authorization_rejected();
             }
             Event::ClientError(ClientError::MaxReconnects) => {
                 self.reconnect_required.store(true, Ordering::Release);
-                eprintln!("remote: NATS reconnect budget exhausted; rebuilding bridge generation");
+                if let Some(line) = self
+                    .event_episode
+                    .record("network", "NATS reconnect budget exhausted")
+                {
+                    eprintln!("{line}");
+                }
             }
             Event::Closed => {
                 self.reconnect_required.store(true, Ordering::Release);
-                eprintln!("remote: NATS connection closed; rebuilding bridge generation");
+                if let Some(line) = self
+                    .event_episode
+                    .record("network", "NATS connection closed")
+                {
+                    eprintln!("{line}");
+                }
             }
-            Event::SlowConsumer(subscription) => eprintln!(
-                "remote: NATS slow consumer on subscription {subscription}; client backfill will heal event gaps"
-            ),
-            Event::ServerError(ServerError::SlowConsumer(subscription)) => eprintln!(
-                "remote: NATS server reported slow consumer {subscription}; client backfill will heal event gaps"
-            ),
-            Event::ServerError(error) => eprintln!("remote: NATS server event: {error}"),
-            Event::ClientError(error) => eprintln!("remote: NATS client event: {error}"),
-            other => eprintln!("remote: NATS event: {other}"),
+            Event::SlowConsumer(subscription) => {
+                if let Some(line) = self.event_episode.record("slow_consumer", subscription) {
+                    eprintln!("{line}");
+                }
+            }
+            Event::ServerError(ServerError::SlowConsumer(subscription)) => {
+                if let Some(line) = self.event_episode.record("slow_consumer", subscription) {
+                    eprintln!("{line}");
+                }
+            }
+            Event::ServerError(error) => {
+                if let Some(line) = self.event_episode.record("remote_server", error) {
+                    eprintln!("{line}");
+                }
+            }
+            Event::ClientError(error) => {
+                self.client_error_logged.store(true, Ordering::Release);
+                if let Some(line) = self.event_episode.record("network", error) {
+                    eprintln!("{line}");
+                }
+            }
+            _ => {}
         }
     }
 
@@ -166,6 +315,49 @@ impl NatsHealth {
     fn is_terminal(&self) -> bool {
         self.service_config_error.load(Ordering::Acquire)
     }
+
+    fn mark_authorization_rejected(&self) {
+        // The reconnect loop can deliver the same error indefinitely. One
+        // state transition is enough to make the supervisor refresh the JWT;
+        // suppress the duplicate events so a sleeping laptop cannot flood its
+        // console while that handoff is in progress.
+        if AUTHORIZATION_REFRESH_ATTEMPTED.load(Ordering::Acquire) {
+            self.service_config_error.store(true, Ordering::Release);
+            if !self
+                .authorization_rejection_logged
+                .swap(true, Ordering::AcqRel)
+            {
+                eprintln!(
+                    "remote: freshly refreshed NATS credential was rejected [AU001]; entering service_authorization"
+                );
+            }
+            return;
+        }
+        self.reconnect_required.store(true, Ordering::Release);
+        if !self
+            .authorization_rejection_logged
+            .swap(true, Ordering::AcqRel)
+        {
+            eprintln!("remote: NATS authorization rejected [AU002]; refreshing bridge credentials");
+        }
+    }
+}
+
+fn is_authorization_violation(error: &str) -> bool {
+    error.trim().eq_ignore_ascii_case("authorization violation")
+}
+
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn reconnect_delay(attempt: usize, random: f64) -> std::time::Duration {
+    let exponent = attempt.min(5) as u32;
+    let base_secs = (1u64 << exponent).min(30);
+    std::time::Duration::from_secs_f64((base_secs as f64 * (0.8 + random * 0.4)).min(30.0))
 }
 
 struct ConnectedNats {
@@ -214,6 +406,46 @@ struct RemoteState {
 
 static STATE: Mutex<Option<RemoteState>> = Mutex::new(None);
 
+/// State whose correctness spans credential and transport generations. A
+/// generation swap must never clear command single-flight replies or pairing
+/// confirmation, otherwise a retried command can execute twice and a paired
+/// phone can be forced through an unnecessary claim flow.
+#[derive(Clone)]
+struct BridgeRuntimeShared {
+    pair_id: String,
+    reply_slots: commands::ReplySlots,
+    pairing_confirmed: Arc<AtomicBool>,
+    bridge_instance_id: String,
+}
+
+static BRIDGE_SHARED: Mutex<Option<BridgeRuntimeShared>> = Mutex::new(None);
+
+fn shared_runtime(
+    pair_id: &str,
+    pairing_confirmed: bool,
+    rotate_epoch: bool,
+) -> BridgeRuntimeShared {
+    let mut guard = BRIDGE_SHARED.lock().unwrap();
+    if let Some(shared) = guard.as_mut().filter(|shared| shared.pair_id == pair_id) {
+        if rotate_epoch {
+            shared.bridge_instance_id =
+                format!("bridge_{}", nkeys::KeyPair::new_user().public_key());
+        }
+        if pairing_confirmed {
+            shared.pairing_confirmed.store(true, Ordering::Release);
+        }
+        return shared.clone();
+    }
+    let shared = BridgeRuntimeShared {
+        pair_id: pair_id.to_string(),
+        reply_slots: commands::new_reply_slots(),
+        pairing_confirmed: Arc::new(AtomicBool::new(pairing_confirmed)),
+        bridge_instance_id: format!("bridge_{}", nkeys::KeyPair::new_user().public_key()),
+    };
+    *guard = Some(shared.clone());
+    shared
+}
+
 /// Why the bridge last stopped on its own (e.g. the pairing was revoked by
 /// the web client), as a machine-readable category the UI localizes
 /// (`error.<code>`). Surfaced through [`status()`] so the GUI can explain a
@@ -232,11 +464,17 @@ static START_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static START_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// At most one process-lifetime startup retry worker may run at once.
 static START_RETRY_RUNNING: AtomicBool = AtomicBool::new(false);
+static START_RETRY_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+static START_RETRY_SINCE: AtomicU64 = AtomicU64::new(0);
+static START_RETRY_NEXT_AT: AtomicU64 = AtomicU64::new(0);
+static CREDENTIAL_REFRESHING: AtomicBool = AtomicBool::new(false);
 /// A finished critical task is rebuilt automatically. Bound repeated
 /// reconnects so a deterministic panic cannot spin forever.
 static RUNTIME_RECONNECT_RUNNING: AtomicBool = AtomicBool::new(false);
 static RUNTIME_RECONNECT_ATTEMPTS: AtomicU8 = AtomicU8::new(0);
+static RUNTIME_FAILURE_WINDOW_STARTED: AtomicU64 = AtomicU64::new(0);
 const MAX_RUNTIME_RECONNECT_ATTEMPTS: u8 = 3;
+const RUNTIME_FAILURE_WINDOW_MS: u64 = 10 * 60 * 1_000;
 /// Do not forgive a crash-loop merely because a replacement generation stayed
 /// alive for one poll. Only a sustained healthy minute resets the budget.
 #[cfg(not(test))]
@@ -249,13 +487,47 @@ const MAX_WEB_RECONNECT_ATTEMPTS: u8 = 3;
 #[serde(rename_all = "camelCase")]
 pub struct RemoteStartInput {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RemotePhase {
+    Stopped,
+    Connecting,
+    Ready,
+    Reconnecting,
+    Refreshing,
+    Failed,
+    Revoked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteFailureReason {
+    Network,
+    SystemSleep,
+    CredentialExpired,
+    CredentialRevoked,
+    ServiceAuthorization,
+    RemoteServer,
+    Protocol,
+    GenerationUnhealthy,
+    Local,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryProgress {
+    pub attempt: u64,
+    pub max_attempts: Option<u64>,
+    pub since: u64,
+    pub next_retry_at: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteStatus {
-    pub running: bool,
-    pub connected: bool,
-    /// The bridge is rebuilding a failed connection generation.
-    pub reconnecting: bool,
+    pub phase: RemotePhase,
+    pub reason: Option<RemoteFailureReason>,
+    pub recovery: Option<RecoveryProgress>,
     pub nats_url: String,
     pub pair_id: String,
     /// One-shot pairing code (base64url) returned only by a successful start, for the UI to display/copy.
@@ -272,30 +544,34 @@ pub struct RemoteStatus {
     /// Test-only web client URL a phone on the same LAN can reach; `None` if
     /// unavailable or outside the test environment.
     pub web_lan_url: Option<String>,
-    /// Machine-readable reason the bridge isn't healthy (e.g. `network`,
-    /// `revoked`, `server`, `service_config`, `reconnect_required`,
-    /// `web_bind`). The UI localizes this via `error.<code>`; it is the
-    /// preferred signal over [`Self::error`].
-    pub error_code: Option<String>,
-    /// Human-readable error text, used only when [`Self::error_code`] is `None`
-    /// (an uncategorized local failure). When a code is present the UI shows
-    /// the localized message and ignores this field.
-    pub error: Option<String>,
+    /// Non-critical local web listener failure. It never changes the main
+    /// Remote phase or readiness.
+    pub warning_code: Option<String>,
 }
 
 fn retryable_start_status(status: &RemoteStatus) -> bool {
-    !status.running
+    matches!(status.phase, RemotePhase::Reconnecting)
         && matches!(
-            status.error_code.as_deref(),
-            Some("network") | Some("server")
+            status.reason,
+            Some(RemoteFailureReason::Network | RemoteFailureReason::RemoteServer)
         )
+}
+
+fn runtime_active(status: &RemoteStatus) -> bool {
+    matches!(
+        status.phase,
+        RemotePhase::Connecting
+            | RemotePhase::Ready
+            | RemotePhase::Reconnecting
+            | RemotePhase::Refreshing
+    )
 }
 
 fn empty() -> RemoteStatus {
     RemoteStatus {
-        running: false,
-        connected: false,
-        reconnecting: false,
+        phase: RemotePhase::Stopped,
+        reason: None,
+        recovery: None,
         nats_url: String::new(),
         pair_id: String::new(),
         pairing_code: None,
@@ -304,15 +580,20 @@ fn empty() -> RemoteStatus {
         desktop_public_key: String::new(),
         web_url: None,
         web_lan_url: None,
-        error_code: None,
-        error: None,
+        warning_code: None,
     }
 }
 
 pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppError> {
     // An explicit user reconnect gets fresh automatic-reconnect budgets.
     RUNTIME_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
+    RUNTIME_FAILURE_WINDOW_STARTED.store(0, Ordering::Release);
     WEB_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
+    AUTHORIZATION_REFRESH_ATTEMPTED.store(false, Ordering::Release);
+    CREDENTIAL_REFRESHING.store(false, Ordering::Release);
+    START_RETRY_ATTEMPTS.store(0, Ordering::Release);
+    START_RETRY_SINCE.store(0, Ordering::Release);
+    START_RETRY_NEXT_AT.store(0, Ordering::Release);
     START_REQUESTED.store(true, Ordering::Release);
     let result = start_once(true).await;
     if result.as_ref().is_ok_and(retryable_start_status) {
@@ -328,12 +609,14 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
     }
     if !replace_existing {
         let current = status();
-        if current.running {
+        if runtime_active(&current) {
             return Ok(current);
         }
     }
+    let replacing_generation = STATE.lock().unwrap().is_some();
     let _ = stop_runtime();
     *LAST_ERROR_CODE.lock().unwrap() = None;
+    *LAST_ERROR_CODE.lock().unwrap() = Some("connecting".to_string());
 
     // A remote/server failure here (offline, revoked, HTTP error) is not a
     // program fault — surface it as a localized, not-running status instead of
@@ -342,17 +625,16 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
     let (creds, pairing_code, pairing_code_expires_at) = match establish().await {
         Ok(value) => value,
         Err(error) => {
-            eprintln!("remote: start failed at establish: {error}");
             return start_failure(error);
         }
     };
     if !START_REQUESTED.load(Ordering::Acquire) {
         return Ok(empty());
     }
+    AUTHORIZATION_REFRESH_ATTEMPTED.store(false, Ordering::Release);
     let connected_nats = match connect_nats(&creds).await {
         Ok(connection) => connection,
         Err(error) => {
-            eprintln!("remote: start failed at connect_nats: {error}");
             return start_failure(error);
         }
     };
@@ -361,19 +643,20 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
     if !START_REQUESTED.load(Ordering::Acquire) {
         return Ok(empty());
     }
-    let pairing_confirmed = Arc::new(AtomicBool::new(pairing_code.is_none()));
+    let shared = shared_runtime(&creds.pair_id, pairing_code.is_none(), replacing_generation);
+    let pairing_confirmed = shared.pairing_confirmed.clone();
     if pairing_confirmed.load(Ordering::Acquire) {
         pairing::save_creds(&creds)?;
     }
     let desktop_public_key = pairing::public_key(&creds)?;
-    let bridge_instance_id = format!("bridge_{}", nkeys::KeyPair::new_user().public_key());
+    let bridge_instance_id = shared.bridge_instance_id.clone();
     let pair_id = creds.pair_id.clone();
 
     // Command-id dedup cache lives OUTSIDE the command loop: credential
     // refresh swaps the loop every JWT TTL, and a cache tied to the loop would
     // be wiped each swap — retrying clients would re-execute commands (a
     // retried prompt = a duplicated user message + run).
-    let reply_slots = commands::new_reply_slots();
+    let reply_slots = shared.reply_slots.clone();
     let (event_tx, event_rx) = tokio::sync::mpsc::channel(EVENT_QUEUE_CAPACITY);
     let handshake_state = commands::HandshakeState::new(
         creds.clone(),
@@ -381,16 +664,20 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
         bridge_instance_id.clone(),
     );
 
-    let cmd_task = tokio::spawn(commands::command_loop(
+    let (command_ready_tx, command_ready_rx) = tokio::sync::oneshot::channel();
+    let cmd_task = tokio::spawn(commands::command_loop_with_ready(
         client.clone(),
         pair_id.clone(),
         reply_slots.clone(),
         handshake_state.clone(),
+        Some(command_ready_tx),
     ));
-    let transfer_task = transfer::spawn_transfer_loop(
+    let (transfer_ready_tx, transfer_ready_rx) = tokio::sync::oneshot::channel();
+    let transfer_task = transfer::spawn_transfer_loop_with_ready(
         client.clone(),
         pair_id.clone(),
         handshake_state.active_flag(),
+        Some(transfer_ready_tx),
     );
     let event_task = spawn_event_publisher(client.clone(), event_rx);
     let heartbeat_task =
@@ -401,6 +688,40 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
         pairing_confirmed.clone(),
         handshake_state,
     );
+    // Readiness barrier: give the subscription tasks a scheduling turn, then
+    // publish and flush the first presence packet. The generation is not
+    // installed in STATE (and therefore cannot report ready) until the broker
+    // has acknowledged every command queued before this flush.
+    tokio::task::yield_now().await;
+    let readiness = async {
+        command_ready_rx.await.map_err(|_| {
+            crate::AppError::Message("Remote command subscription stopped during readiness".into())
+        })?;
+        transfer_ready_rx.await.map_err(|_| {
+            crate::AppError::Message("Remote transfer subscription stopped during readiness".into())
+        })?;
+        let payload = serde_json::to_vec(&light_presence_payload(&pair_id, &bridge_instance_id))?;
+        client
+            .publish(format!("p.{pair_id}.presence"), payload.into())
+            .await
+            .map_err(|error| crate::AppError::RemoteTransport(error.to_string()))?;
+        client
+            .flush()
+            .await
+            .map_err(|error| crate::AppError::RemoteTransport(error.to_string()))
+    };
+    let readiness = tokio::time::timeout(std::time::Duration::from_secs(10), readiness)
+        .await
+        .map_err(|_| crate::AppError::RemoteTransport("Remote readiness timed out".into()))
+        .and_then(|result| result);
+    if let Err(error) = readiness {
+        event_task.abort();
+        cmd_task.abort();
+        transfer_task.abort();
+        heartbeat_task.abort();
+        refresh_task.abort();
+        return start_failure(error);
+    }
     // The browser client is a test-environment-only validation surface. Keep
     // the NATS/mobile bridge available in every environment, but never expose
     // the unauthenticated local HTTP listener in production or custom envs.
@@ -413,7 +734,7 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
                 lan_ip().map(|ip| format!("http://{ip}:{WEB_PORT}")),
             ),
             Err(error) => {
-                eprintln!("remote: web client bind failed: {error}");
+                eprintln!("remote: web client bind failed [LC002]: {error}");
                 (None, None, None)
             }
         }
@@ -425,9 +746,9 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
     let web_bind_failed = web_enabled && web_task.is_none();
 
     let status = RemoteStatus {
-        running: true,
-        connected: true,
-        reconnecting: false,
+        phase: RemotePhase::Ready,
+        reason: None,
+        recovery: None,
         nats_url: creds.nats_url.clone(),
         pair_id: pair_id.clone(),
         pairing_code: pairing_code.clone(),
@@ -436,8 +757,7 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
         desktop_public_key: desktop_public_key.clone(),
         web_url: web_url.clone(),
         web_lan_url: web_lan_url.clone(),
-        error_code: None,
-        error: None,
+        warning_code: web_bind_failed.then(|| "web_bind".to_string()),
     };
     *STATE.lock().unwrap() = Some(RemoteState {
         client,
@@ -460,6 +780,13 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
         pairing_code_expires_at,
         pairing_confirmed,
     });
+    *LAST_ERROR_CODE.lock().unwrap() = None;
+    if let Some(line) = START_EPISODE.recovered() {
+        eprintln!("{line}");
+    }
+    START_RETRY_ATTEMPTS.store(0, Ordering::Release);
+    START_RETRY_SINCE.store(0, Ordering::Release);
+    START_RETRY_NEXT_AT.store(0, Ordering::Release);
     spawn_runtime_supervisor(bridge_instance_id);
     if web_bind_failed {
         spawn_web_reconnect(status.pair_id.clone());
@@ -482,13 +809,26 @@ fn spawn_start_retry() {
         }
         tauri::async_runtime::spawn(async {
             let mut delay = std::time::Duration::from_secs(1);
+            START_RETRY_SINCE
+                .compare_exchange(0, unix_millis(), Ordering::AcqRel, Ordering::Acquire)
+                .ok();
             loop {
-                tokio::time::sleep(delay).await;
-                if !START_REQUESTED.load(Ordering::Acquire) || status().running {
+                let jitter = 0.8 + rand::random::<f64>() * 0.4;
+                let jittered =
+                    std::time::Duration::from_secs_f64((delay.as_secs_f64() * jitter).min(30.0));
+                START_RETRY_NEXT_AT.store(
+                    unix_millis().saturating_add(jittered.as_millis() as u64),
+                    Ordering::Release,
+                );
+                tokio::time::sleep(jittered).await;
+                START_RETRY_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
+                if !START_REQUESTED.load(Ordering::Acquire)
+                    || matches!(status().phase, RemotePhase::Ready)
+                {
                     break;
                 }
                 match start_once(false).await {
-                    Ok(status) if status.running => break,
+                    Ok(status) if matches!(status.phase, RemotePhase::Ready) => break,
                     Ok(status) if retryable_start_status(&status) => {
                         delay = delay
                             .saturating_mul(2)
@@ -497,6 +837,7 @@ fn spawn_start_retry() {
                     Ok(_) | Err(_) => break,
                 }
             }
+            START_RETRY_NEXT_AT.store(0, Ordering::Release);
             START_RETRY_RUNNING.store(false, Ordering::Release);
             // Close the tiny stop→start race: a new start may have requested
             // recovery after this worker decided to exit but before it released
@@ -522,16 +863,16 @@ fn spawn_runtime_reconnect() {
         if RUNTIME_RECONNECT_RUNNING.swap(true, Ordering::AcqRel) {
             return;
         }
-        let attempt = RUNTIME_RECONNECT_ATTEMPTS.fetch_add(1, Ordering::AcqRel) + 1;
+        let attempt = record_runtime_failure(unix_millis());
         eprintln!(
-            "remote: critical task stopped; reconnecting bridge automatically ({attempt}/{MAX_RUNTIME_RECONNECT_ATTEMPTS})"
+            "remote: critical task stopped [RT001]; rebuilding generation ({attempt}/{MAX_RUNTIME_RECONNECT_ATTEMPTS})"
         );
         tauri::async_runtime::spawn(async move {
             let result = start_once(true).await;
             match &result {
                 Ok(status) if retryable_start_status(status) => spawn_start_retry(),
                 Err(error) => {
-                    eprintln!("remote: automatic bridge reconnect failed: {error}");
+                    eprintln!("remote: automatic bridge reconnect failed [RT001]: {error}");
                     *LAST_ERROR_CODE.lock().unwrap() = Some("reconnect_required".to_string());
                 }
                 _ => {}
@@ -541,17 +882,27 @@ fn spawn_runtime_reconnect() {
     }
 }
 
+fn record_runtime_failure(now: u64) -> u8 {
+    let started = RUNTIME_FAILURE_WINDOW_STARTED.load(Ordering::Acquire);
+    if started == 0 || now.saturating_sub(started) > RUNTIME_FAILURE_WINDOW_MS {
+        RUNTIME_FAILURE_WINDOW_STARTED.store(now, Ordering::Release);
+        RUNTIME_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
+    }
+    RUNTIME_RECONNECT_ATTEMPTS.fetch_add(1, Ordering::AcqRel) + 1
+}
+
 /// Watch the active bridge from the process runtime, independently of any UI
 /// status polling. This is essential for Remote clients: a phone must recover
 /// even when the desktop window is hidden or no frontend has mounted yet.
-fn spawn_runtime_supervisor(bridge_instance_id: String) {
-    #[cfg(test)]
-    {
-        let _ = bridge_instance_id;
-    }
+#[cfg(not(test))]
+struct RemoteSupervisor {
+    bridge_instance_id: String,
+}
 
-    #[cfg(not(test))]
-    tauri::async_runtime::spawn(async move {
+#[cfg(not(test))]
+impl RemoteSupervisor {
+    async fn run(self) {
+        let bridge_instance_id = self.bridge_instance_id;
         let mut healthy_secs = 0u8;
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -580,6 +931,7 @@ fn spawn_runtime_supervisor(bridge_instance_id: String) {
                 healthy_secs = healthy_secs.saturating_add(1);
                 if healthy_secs >= RUNTIME_HEALTHY_RESET_SECS {
                     RUNTIME_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
+                    RUNTIME_FAILURE_WINDOW_STARTED.store(0, Ordering::Release);
                 }
                 continue;
             }
@@ -594,7 +946,17 @@ fn spawn_runtime_supervisor(bridge_instance_id: String) {
             spawn_runtime_reconnect();
             return;
         }
-    });
+    }
+}
+
+fn spawn_runtime_supervisor(bridge_instance_id: String) {
+    #[cfg(test)]
+    {
+        let _ = bridge_instance_id;
+    }
+
+    #[cfg(not(test))]
+    tauri::async_runtime::spawn(RemoteSupervisor { bridge_instance_id }.run());
 }
 
 /// Retry only the optional local Web listener. A busy port must not tear down
@@ -629,12 +991,14 @@ fn spawn_web_reconnect(pair_id: String) {
                         state.web_url = web_url;
                         state.web_lan_url = web_lan_url;
                         WEB_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
-                        eprintln!("remote: local web listener reconnected");
+                        eprintln!("remote: local web listener reconnected [LC002]");
                     } else {
                         web_task.abort();
                     }
                 }
-                Err(error) => eprintln!("remote: local web listener reconnect failed: {error}"),
+                Err(error) => {
+                    eprintln!("remote: local web listener reconnect failed [LC002]: {error}")
+                }
             }
             WEB_RECONNECT_RUNNING.store(false, Ordering::Release);
         });
@@ -651,7 +1015,7 @@ async fn establish() -> Result<(pairing::PairingCreds, Option<String>, Option<i6
         Some(creds) if creds.handshake_version != 1 => {
             // Credentials created before the signed mutual handshake have no
             // QR-bound peer identity. They cannot be upgraded safely in place.
-            eprintln!("remote: replacing legacy pairing without a signed handshake");
+            eprintln!("remote: replacing legacy pairing [PA003]");
             pairing::clear_creds()?;
             let (creds, code, exp) = pairing::create_pairing().await?;
             Ok((creds, Some(code), exp))
@@ -662,7 +1026,7 @@ async fn establish() -> Result<(pairing::PairingCreds, Option<String>, Option<i6
                 // A web client can revoke this pairing. Forget its unusable
                 // local credential and immediately issue a replacement code
                 // instead of leaving the GUI permanently stuck on startup.
-                eprintln!("remote: persisted pairing was revoked; creating a new pairing");
+                eprintln!("remote: persisted pairing was revoked [PA001]; creating a new pairing");
                 pairing::clear_creds()?;
                 let (creds, code, exp) = pairing::create_pairing().await?;
                 Ok((creds, Some(code), exp))
@@ -683,10 +1047,29 @@ async fn establish() -> Result<(pairing::PairingCreds, Option<String>, Option<i6
 fn start_failure(error: crate::AppError) -> Result<RemoteStatus, crate::AppError> {
     match pairing::error_code(&error) {
         Some(code) => {
-            eprintln!("remote: start failed [{code}]: {error}");
+            if let Some(line) = START_EPISODE.record(code, &error) {
+                eprintln!("{line}");
+            }
             *LAST_ERROR_CODE.lock().unwrap() = Some(code.to_string());
             Ok(RemoteStatus {
-                error_code: Some(code.to_string()),
+                phase: match code {
+                    "network" | "server" => RemotePhase::Reconnecting,
+                    "revoked" => RemotePhase::Revoked,
+                    _ => RemotePhase::Failed,
+                },
+                reason: Some(match code {
+                    "network" => RemoteFailureReason::Network,
+                    "revoked" => RemoteFailureReason::CredentialRevoked,
+                    "service_authorization" => RemoteFailureReason::ServiceAuthorization,
+                    "server" => RemoteFailureReason::RemoteServer,
+                    _ => RemoteFailureReason::Local,
+                }),
+                recovery: matches!(code, "network" | "server").then(|| RecoveryProgress {
+                    attempt: START_RETRY_ATTEMPTS.load(Ordering::Acquire),
+                    max_attempts: None,
+                    since: START_RETRY_SINCE.load(Ordering::Acquire),
+                    next_retry_at: None,
+                }),
                 ..empty()
             })
         }
@@ -714,14 +1097,34 @@ async fn connect_nats(creds: &pairing::PairingCreds) -> Result<ConnectedNats, cr
         async move { key_pair.sign(&nonce).map_err(async_nats::AuthError::new) }
     })
     .custom_inbox_prefix(format!("p.{}.rep.{}", creds.pair_id, creds.desktop_id))
+    .reconnect_delay_callback(|attempt| reconnect_delay(attempt, rand::random::<f64>()))
     .event_callback(move |event| {
         let health = event_health.clone();
         async move { health.handle_event(&event) }
     });
     let client = options.connect(&creds.nats_url).await.map_err(|error| {
-        crate::AppError::RemoteTransport(format!("Failed to connect to NATS: {error}"))
+        let message = format!("Failed to connect to NATS: {error}");
+        classify_nats_connect_error(error.kind(), message)
     })?;
     Ok(ConnectedNats { client, health })
+}
+
+fn classify_nats_connect_error(
+    kind: async_nats::ConnectErrorKind,
+    message: String,
+) -> crate::AppError {
+    match kind {
+        async_nats::ConnectErrorKind::Authentication
+        | async_nats::ConnectErrorKind::AuthorizationViolation => {
+            crate::AppError::RemoteAuthorization(message)
+        }
+        async_nats::ConnectErrorKind::Dns
+        | async_nats::ConnectErrorKind::TimedOut
+        | async_nats::ConnectErrorKind::Io
+        | async_nats::ConnectErrorKind::Tls
+        | async_nats::ConnectErrorKind::MaxReconnects => crate::AppError::RemoteTransport(message),
+        async_nats::ConnectErrorKind::ServerParse => crate::AppError::Message(message),
+    }
 }
 
 /// Drop the persisted pairing and stop the bridge (the desktop "unpair").
@@ -767,8 +1170,11 @@ async fn notify_mobile_unpair() {
 pub fn stop() -> RemoteStatus {
     START_REQUESTED.store(false, Ordering::Release);
     RUNTIME_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
+    RUNTIME_FAILURE_WINDOW_STARTED.store(0, Ordering::Release);
     WEB_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
-    stop_runtime()
+    let status = stop_runtime();
+    *BRIDGE_SHARED.lock().unwrap() = None;
+    status
 }
 
 /// Notify an online mobile client before an intentional desktop disconnect.
@@ -808,6 +1214,42 @@ pub async fn notify_mobile_disconnect(reason: &str) {
         }
     };
     let _ = tokio::time::timeout(DISCONNECT_NOTICE_TIMEOUT, send).await;
+}
+
+/// OS power lifecycle adapter. Suspend tears down only generation-local
+/// resources; pairing, reply deduplication, drop episodes, and desired-running
+/// intent remain available for resume.
+pub async fn handle_system_suspend() {
+    notify_mobile_disconnect("system_sleep").await;
+    if START_REQUESTED.load(Ordering::Acquire) {
+        *LAST_ERROR_CODE.lock().unwrap() = Some("system_sleep".to_string());
+        CREDENTIAL_REFRESHING.store(false, Ordering::Release);
+        AUTHORIZATION_REFRESH_ATTEMPTED.store(false, Ordering::Release);
+        let _ = stop_runtime();
+    }
+}
+
+/// Resume with a fresh bridge epoch so the phone cannot mistake a half-open
+/// pre-sleep socket for the current generation. `establish()` refreshes the
+/// JWT before the NATS connection is built.
+pub fn handle_system_resume() {
+    if !START_REQUESTED.load(Ordering::Acquire) {
+        return;
+    }
+    if let Some(shared) = BRIDGE_SHARED.lock().unwrap().as_mut() {
+        shared.bridge_instance_id = format!("bridge_{}", nkeys::KeyPair::new_user().public_key());
+    }
+    *LAST_ERROR_CODE.lock().unwrap() = Some("system_sleep".to_string());
+    tauri::async_runtime::spawn(async {
+        match start_once(false).await {
+            Ok(status) if retryable_start_status(&status) => spawn_start_retry(),
+            Ok(_) => {}
+            Err(error) => {
+                eprintln!("remote: resume recovery failed [PW001]: {error}");
+                *LAST_ERROR_CODE.lock().unwrap() = Some("reconnect_required".to_string());
+            }
+        }
+    });
 }
 
 fn stop_runtime() -> RemoteStatus {
@@ -898,9 +1340,46 @@ pub fn status() -> RemoteStatus {
                 (None, None)
             };
             RemoteStatus {
-                running: true,
-                connected,
-                reconnecting,
+                phase: if terminal_service_error {
+                    RemotePhase::Failed
+                } else if CREDENTIAL_REFRESHING.load(Ordering::Acquire) {
+                    RemotePhase::Refreshing
+                } else if connected {
+                    RemotePhase::Ready
+                } else if reconnecting {
+                    RemotePhase::Reconnecting
+                } else {
+                    RemotePhase::Failed
+                },
+                reason: if terminal_service_error {
+                    Some(RemoteFailureReason::ServiceAuthorization)
+                } else if CREDENTIAL_REFRESHING.load(Ordering::Acquire) {
+                    Some(RemoteFailureReason::CredentialExpired)
+                } else if generation_unhealthy {
+                    Some(RemoteFailureReason::GenerationUnhealthy)
+                } else if nats_reconnecting {
+                    Some(RemoteFailureReason::Network)
+                } else {
+                    None
+                },
+                recovery: reconnecting.then(|| RecoveryProgress {
+                    attempt: if generation_unhealthy {
+                        RUNTIME_RECONNECT_ATTEMPTS.load(Ordering::Acquire) as u64
+                    } else {
+                        START_RETRY_ATTEMPTS.load(Ordering::Acquire)
+                    },
+                    max_attempts: generation_unhealthy
+                        .then_some(MAX_RUNTIME_RECONNECT_ATTEMPTS as u64),
+                    since: if generation_unhealthy {
+                        RUNTIME_FAILURE_WINDOW_STARTED.load(Ordering::Acquire)
+                    } else {
+                        START_RETRY_SINCE.load(Ordering::Acquire)
+                    },
+                    next_retry_at: match START_RETRY_NEXT_AT.load(Ordering::Acquire) {
+                        0 => None,
+                        value => Some(value),
+                    },
+                }),
                 nats_url: s.nats_url.clone(),
                 pair_id: s.pair_id.clone(),
                 pairing_code,
@@ -909,16 +1388,7 @@ pub fn status() -> RemoteStatus {
                 desktop_public_key: s.desktop_public_key.clone(),
                 web_url: s.web_url.clone(),
                 web_lan_url: s.web_lan_url.clone(),
-                error_code: if terminal_service_error {
-                    Some("service_config".to_string())
-                } else if generation_unhealthy && !reconnecting {
-                    Some("reconnect_required".to_string())
-                } else if web_reconnect_exhausted {
-                    Some("web_bind".to_string())
-                } else {
-                    None
-                },
-                error: None,
+                warning_code: web_reconnect_exhausted.then(|| "web_bind".to_string()),
             }
         }
         // A bridge that stopped on its own (revoked pairing) explains itself
@@ -935,9 +1405,62 @@ pub fn status() -> RemoteStatus {
             let reconnecting = START_REQUESTED.load(Ordering::Acquire)
                 && START_RETRY_RUNNING.load(Ordering::Acquire)
                 && matches!(error_code.as_deref(), Some("network") | Some("server"));
+            let (phase, reason) = if reconnecting {
+                (
+                    RemotePhase::Reconnecting,
+                    Some(match error_code.as_deref() {
+                        Some("server") => RemoteFailureReason::RemoteServer,
+                        _ => RemoteFailureReason::Network,
+                    }),
+                )
+            } else {
+                match error_code.as_deref() {
+                    Some("revoked") => (
+                        RemotePhase::Revoked,
+                        Some(RemoteFailureReason::CredentialRevoked),
+                    ),
+                    Some("service_authorization" | "service_config") => (
+                        RemotePhase::Failed,
+                        Some(RemoteFailureReason::ServiceAuthorization),
+                    ),
+                    Some("reconnect_required") => (
+                        RemotePhase::Failed,
+                        Some(RemoteFailureReason::GenerationUnhealthy),
+                    ),
+                    Some("system_sleep") => (
+                        RemotePhase::Reconnecting,
+                        Some(RemoteFailureReason::SystemSleep),
+                    ),
+                    Some("connecting") => (RemotePhase::Connecting, None),
+                    Some("credential_expired") => (
+                        RemotePhase::Refreshing,
+                        Some(RemoteFailureReason::CredentialExpired),
+                    ),
+                    Some("protocol") => (RemotePhase::Failed, Some(RemoteFailureReason::Protocol)),
+                    Some("network") => (
+                        RemotePhase::Reconnecting,
+                        Some(RemoteFailureReason::Network),
+                    ),
+                    Some("server") => (
+                        RemotePhase::Reconnecting,
+                        Some(RemoteFailureReason::RemoteServer),
+                    ),
+                    Some(_) => (RemotePhase::Failed, Some(RemoteFailureReason::Local)),
+                    None => (RemotePhase::Stopped, None),
+                }
+            };
             RemoteStatus {
-                reconnecting,
-                error_code: if reconnecting { None } else { error_code },
+                phase,
+                reason,
+                recovery: reconnecting.then(|| RecoveryProgress {
+                    attempt: START_RETRY_ATTEMPTS.load(Ordering::Acquire),
+                    max_attempts: None,
+                    since: START_RETRY_SINCE.load(Ordering::Acquire),
+                    next_retry_at: match START_RETRY_NEXT_AT.load(Ordering::Acquire) {
+                        0 => None,
+                        value => Some(value),
+                    },
+                }),
                 pair_id: pairing::load_creds().map(|c| c.pair_id).unwrap_or_default(),
                 ..empty()
             }
@@ -1139,7 +1662,12 @@ fn spawn_event_publisher(
     tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
             if let Err(error) = client.publish(event.subject, event.payload.into()).await {
-                eprintln!("remote: event publish failed: {error}");
+                if let Some(line) = EVENT_PUBLISH_EPISODE.record("event_publish", error) {
+                    eprintln!("{line}");
+                }
+                break;
+            } else if let Some(line) = EVENT_PUBLISH_EPISODE.recovered() {
+                eprintln!("{line}");
             }
         }
     })
@@ -1191,7 +1719,12 @@ fn spawn_presence_heartbeat(
                 .publish(format!("p.{pair_id}.presence"), bytes.into())
                 .await
             {
-                eprintln!("remote: presence heartbeat write failed: {e}");
+                if let Some(line) = HEARTBEAT_PUBLISH_EPISODE.record("heartbeat_publish", e) {
+                    eprintln!("{line}");
+                }
+                return;
+            } else if let Some(line) = HEARTBEAT_PUBLISH_EPISODE.recovered() {
+                eprintln!("{line}");
             }
 
             // 2. Sessions snapshot (signature change or 20s self-heal).
@@ -1209,7 +1742,10 @@ fn spawn_presence_heartbeat(
                         .publish(format!("p.{pair_id}.state.sessions"), bytes.into())
                         .await
                     {
-                        eprintln!("remote: state.sessions publish failed: {e}");
+                        if let Some(line) = HEARTBEAT_PUBLISH_EPISODE.record("state_publish", e) {
+                            eprintln!("{line}");
+                        }
+                        return;
                     }
                     last_sessions_sig = sessions_sig;
                     secs_since_sessions = 0;
@@ -1225,7 +1761,10 @@ fn spawn_presence_heartbeat(
                     .publish(format!("p.{pair_id}.state.workspaces"), bytes.into())
                     .await
                 {
-                    eprintln!("remote: state.workspaces publish failed: {e}");
+                    if let Some(line) = HEARTBEAT_PUBLISH_EPISODE.record("state_publish", e) {
+                        eprintln!("{line}");
+                    }
+                    return;
                 }
                 last_workspaces_sig = workspaces_sig;
                 secs_since_workspaces = 0;
@@ -1248,13 +1787,10 @@ fn spawn_credential_refresh(
             let Some(creds) = pairing::load_creds().filter(|creds| creds.pair_id == pair_id) else {
                 return;
             };
-            // Tick instead of sleeping until the refresh deadline: the same
-            // generation swap that rotates the JWT also heals a dead
-            // command/transfer loop or a wedged connection (status() derives
-            // real health), so the bridge recovers without a manual
-            // stop/start. Two consecutive unhealthy ticks (30s) debounce
-            // transient NATS reconnects.
-            let mut unhealthy_ticks = 0u8;
+            // Credential scheduling owns only credential expiry. Critical task
+            // and transport health are exclusively decided by
+            // RemoteSupervisor, preventing two loops from replacing the same
+            // generation concurrently.
             loop {
                 tokio::time::sleep(refresh_tick()).await;
                 let generation_active = STATE.lock().unwrap().as_ref().is_some_and(|state| {
@@ -1264,29 +1800,23 @@ fn spawn_credential_refresh(
                 if !generation_active {
                     return;
                 }
-                let current = status();
-                if current.error_code.as_deref() == Some("service_config") {
+                if STATE
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .is_some_and(|state| state.nats_health.is_terminal())
+                {
                     // A deterministic authorization/configuration failure does
                     // not improve by rotating the same credentials forever.
                     return;
-                }
-                if current.connected {
-                    unhealthy_ticks = 0;
-                } else {
-                    unhealthy_ticks += 1;
                 }
                 // Refresh this far ahead of expiry (a production tick); kept
                 // independent of the test-shrunk tick so the due path stays
                 // reachable under test timing.
                 let refresh_due =
                     pairing::refresh_delay(&creds) < std::time::Duration::from_secs(15);
-                if refresh_due || unhealthy_ticks >= 2 {
-                    if unhealthy_ticks >= 2 {
-                        eprintln!(
-                            "remote: bridge unhealthy for {}s; swapping connection",
-                            unhealthy_ticks as u64 * refresh_tick().as_secs()
-                        );
-                    }
+                if refresh_due {
+                    CREDENTIAL_REFRESHING.store(true, Ordering::Release);
                     break;
                 }
             }
@@ -1306,22 +1836,43 @@ fn spawn_credential_refresh(
                     if !generation_active {
                         return;
                     }
-                    eprintln!("remote: pairing was revoked on the server; stopping bridge");
+                    eprintln!("remote: pairing was revoked on the server [PA001]; stopping bridge");
                     *LAST_ERROR_CODE.lock().unwrap() = Some("revoked".to_string());
+                    CREDENTIAL_REFRESHING.store(false, Ordering::Release);
                     let _ = pairing::clear_creds();
                     let _ = stop();
                     return;
                 }
                 Err(error) => {
-                    eprintln!("remote: credential refresh failed: {error}");
+                    if let Some(line) = CREDENTIAL_EPISODE.record("credential_network", error) {
+                        eprintln!("{line}");
+                    }
+                    CREDENTIAL_REFRESHING.store(false, Ordering::Release);
                     tokio::time::sleep(refresh_tick()).await;
                     continue;
                 }
             };
+            AUTHORIZATION_REFRESH_ATTEMPTED.store(true, Ordering::Release);
             let connected_nats = match connect_nats(&refreshed).await {
                 Ok(connection) => connection,
+                Err(crate::AppError::RemoteAuthorization(error)) => {
+                    eprintln!("remote: refreshed NATS credential rejected [AU001]: {error}");
+                    if let Some(state) = STATE.lock().unwrap().as_ref() {
+                        state
+                            .nats_health
+                            .service_config_error
+                            .store(true, Ordering::Release);
+                    }
+                    *LAST_ERROR_CODE.lock().unwrap() = Some("service_authorization".to_string());
+                    CREDENTIAL_REFRESHING.store(false, Ordering::Release);
+                    return;
+                }
                 Err(error) => {
-                    eprintln!("remote: reconnect with refreshed credential failed: {error}");
+                    if let Some(line) = CREDENTIAL_EPISODE.record("credential_connect", error) {
+                        eprintln!("{line}");
+                    }
+                    AUTHORIZATION_REFRESH_ATTEMPTED.store(false, Ordering::Release);
+                    CREDENTIAL_REFRESHING.store(false, Ordering::Release);
                     tokio::time::sleep(refresh_tick()).await;
                     continue;
                 }
@@ -1330,22 +1881,57 @@ fn spawn_credential_refresh(
             let nats_health = connected_nats.health;
             let (event_tx, event_rx) = tokio::sync::mpsc::channel(EVENT_QUEUE_CAPACITY);
             let new_event = spawn_event_publisher(client.clone(), event_rx);
-            let new_cmd = tokio::spawn(commands::command_loop(
+            let (command_ready_tx, command_ready_rx) = tokio::sync::oneshot::channel();
+            let new_cmd = tokio::spawn(commands::command_loop_with_ready(
                 client.clone(),
                 pair_id.clone(),
                 reply_slots.clone(),
                 handshake_state.clone(),
+                Some(command_ready_tx),
             ));
-            let new_transfer = transfer::spawn_transfer_loop(
+            let (transfer_ready_tx, transfer_ready_rx) = tokio::sync::oneshot::channel();
+            let new_transfer = transfer::spawn_transfer_loop_with_ready(
                 client.clone(),
                 pair_id.clone(),
                 handshake_state.active_flag(),
+                Some(transfer_ready_tx),
             );
             let new_heartbeat = spawn_presence_heartbeat(
                 client.clone(),
                 pair_id.clone(),
                 handshake_state.bridge_instance_id().to_string(),
             );
+            tokio::task::yield_now().await;
+            let readiness = async {
+                command_ready_rx.await.map_err(|_| ())?;
+                transfer_ready_rx.await.map_err(|_| ())?;
+                client
+                    .publish(
+                        format!("p.{pair_id}.presence"),
+                        serde_json::to_vec(&light_presence_payload(
+                            &pair_id,
+                            handshake_state.bridge_instance_id(),
+                        ))
+                        .unwrap_or_default()
+                        .into(),
+                    )
+                    .await
+                    .map_err(|_| ())?;
+                client.flush().await.map_err(|_| ())
+            };
+            let readiness_failed = !matches!(
+                tokio::time::timeout(std::time::Duration::from_secs(10), readiness).await,
+                Ok(Ok(()))
+            );
+            if readiness_failed {
+                new_event.abort();
+                new_cmd.abort();
+                new_transfer.abort();
+                new_heartbeat.abort();
+                CREDENTIAL_REFRESHING.store(false, Ordering::Release);
+                tokio::time::sleep(refresh_tick()).await;
+                continue;
+            }
             // Hold the STATE lock across the generation check AND the creds
             // save: saving outside the lock raced `unpair()` (stop → clear
             // creds) and could resurrect a just-revoked credential file.
@@ -1358,10 +1944,11 @@ fn spawn_credential_refresh(
                 new_cmd.abort();
                 new_transfer.abort();
                 new_heartbeat.abort();
+                CREDENTIAL_REFRESHING.store(false, Ordering::Release);
                 return;
             };
             if let Err(error) = pairing::save_creds(&refreshed) {
-                eprintln!("remote: save refreshed credential failed: {error}");
+                eprintln!("remote: save refreshed credential failed [LC004]: {error}");
             }
             let old_cmd = std::mem::replace(&mut state.cmd_task, new_cmd);
             let old_transfer = std::mem::replace(&mut state.transfer_task, new_transfer);
@@ -1378,6 +1965,11 @@ fn spawn_credential_refresh(
             // handle detaches it, and it exits on its own after flushing its
             // backlog — no event gap at the swap point.
             drop(old_event);
+            if let Some(line) = CREDENTIAL_EPISODE.recovered() {
+                eprintln!("{line}");
+            }
+            AUTHORIZATION_REFRESH_ATTEMPTED.store(false, Ordering::Release);
+            CREDENTIAL_REFRESHING.store(false, Ordering::Release);
         }
     })
 }
@@ -1746,20 +2338,16 @@ mod contract_tests {
     fn drop_log_rate_limits_episodes() {
         let counters = DropCounters::new();
 
-        // First drop logs the episode start; the next 8 are silent.
-        assert!(counters
-            .record_drop("queue full", "tool_delta", "s1", 1_000)
-            .is_some());
-        for i in 2..=9 {
+        // Episode progress is reported only at power-of-two attempts.
+        for i in 1..=10 {
             let line = counters.record_drop("queue full", "tool_delta", "s1", 1_000 + i);
-            assert!(line.is_none(), "drop {i} should be rate-limited");
+            assert_eq!(
+                line.is_some(),
+                i.is_power_of_two(),
+                "unexpected reporting decision for drop {i}"
+            );
         }
-
-        // 10s after the last line, the 10th drop reports a cumulative total.
-        let line = counters
-            .record_drop("queue full", "tool_delta", "s1", 12_000)
-            .expect("10th drop after 10s reports a total");
-        assert!(line.contains("dropped 10 events"), "got: {line}");
+        assert_eq!(counters.reports.load(Ordering::Relaxed), 4);
     }
 
     #[test]
@@ -1905,6 +2493,8 @@ mod runtime_tests {
 
     #[test]
     fn nats_health_classifies_recoverable_and_terminal_events() {
+        let _home = HomeGuard::new("remote-nats-health");
+        AUTHORIZATION_REFRESH_ATTEMPTED.store(false, Ordering::Release);
         let health = NatsHealth::default();
         health.handle_event(&async_nats::Event::ClientError(
             async_nats::ClientError::MaxReconnects,
@@ -1915,6 +2505,43 @@ mod runtime_tests {
         health.handle_event(&async_nats::Event::Connected);
         assert!(!health.needs_reconnect());
 
+        // async-nats wraps reconnect-time authorization errors in the client
+        // event rather than forwarding the server event. This must trigger a
+        // generation refresh instead of leaving an apparently live bridge in
+        // an unbounded reconnect/log loop.
+        health.handle_event(&async_nats::Event::ClientError(
+            async_nats::ClientError::Other("authorization violation".to_string()),
+        ));
+        health.handle_event(&async_nats::Event::ClientError(
+            async_nats::ClientError::Other("authorization violation".to_string()),
+        ));
+        assert!(health.needs_reconnect());
+        assert!(!health.is_terminal());
+        assert!(health
+            .authorization_rejection_logged
+            .load(Ordering::Acquire));
+
+        health.handle_event(&async_nats::Event::Connected);
+        assert!(!health.needs_reconnect());
+        assert!(!health
+            .authorization_rejection_logged
+            .load(Ordering::Acquire));
+
+        health.handle_event(&async_nats::Event::ClientError(
+            async_nats::ClientError::Other("IO error".to_string()),
+        ));
+        health.handle_event(&async_nats::Event::ClientError(
+            async_nats::ClientError::Other("IO error".to_string()),
+        ));
+        assert!(health.client_error_logged.load(Ordering::Acquire));
+        assert!(!health.needs_reconnect());
+
+        health.handle_event(&async_nats::Event::Connected);
+        assert!(!health.client_error_logged.load(Ordering::Acquire));
+
+        // The same rejection on the generation created by the reactive
+        // refresh is terminal service authorization.
+        AUTHORIZATION_REFRESH_ATTEMPTED.store(true, Ordering::Release);
         health.handle_event(&async_nats::Event::ServerError(
             async_nats::ServerError::AuthorizationViolation,
         ));
@@ -1923,6 +2550,7 @@ mod runtime_tests {
             health.is_terminal(),
             "reconnect must not hide an auth failure"
         );
+        AUTHORIZATION_REFRESH_ATTEMPTED.store(false, Ordering::Release);
     }
 
     /// Wait until WEB_PORT is bindable again (stop() aborts the web task
@@ -1944,15 +2572,14 @@ mod runtime_tests {
         let _home = HomeGuard::new("remote-stopped");
         assert!(STATE.lock().unwrap().is_none());
         let current = status();
-        assert!(!current.running);
-        assert!(!current.connected);
-        assert_eq!(current.error_code, None);
+        assert!(!matches!(current.phase, RemotePhase::Ready));
+        assert_eq!(current.reason, None);
         assert_eq!(current.pair_id, "");
 
         pairing::save_creds(&test_creds("pair_stopped", "nats://127.0.0.1:1", 3600)).unwrap();
         *LAST_ERROR_CODE.lock().unwrap() = Some("revoked".to_string());
         let current = status();
-        assert_eq!(current.error_code.as_deref(), Some("revoked"));
+        assert_eq!(current.reason, Some(RemoteFailureReason::CredentialRevoked));
         assert_eq!(current.pair_id, "pair_stopped");
 
         // A transient first connect failure starts the process-lifetime retry
@@ -1961,8 +2588,8 @@ mod runtime_tests {
         START_REQUESTED.store(true, Ordering::Release);
         START_RETRY_RUNNING.store(true, Ordering::Release);
         let current = status();
-        assert!(current.reconnecting);
-        assert_eq!(current.error_code, None);
+        assert!(matches!(current.phase, RemotePhase::Reconnecting));
+        assert_eq!(current.reason, Some(RemoteFailureReason::Network));
 
         START_RETRY_RUNNING.store(false, Ordering::Release);
         START_REQUESTED.store(false, Ordering::Release);
@@ -1974,7 +2601,7 @@ mod runtime_tests {
     fn stop_without_state_is_an_empty_noop() {
         let _home = HomeGuard::new("remote-stop-empty");
         let stopped = stop();
-        assert!(!stopped.running);
+        assert!(!matches!(stopped.phase, RemotePhase::Ready));
     }
 
     #[tokio::test]
@@ -1991,10 +2618,9 @@ mod runtime_tests {
 
         // Unconfirmed + fresh code → the code is re-exposed.
         let current = status();
-        assert!(current.running);
-        assert!(current.connected);
+        assert!(matches!(current.phase, RemotePhase::Ready));
         assert_eq!(current.pairing_code.as_deref(), Some("code-123"));
-        assert_eq!(current.error_code, None);
+        assert_eq!(current.reason, None);
 
         // Expired code → hidden even while unconfirmed.
         {
@@ -2024,16 +2650,22 @@ mod runtime_tests {
         RUNTIME_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
         tokio::time::sleep(Duration::from_millis(20)).await;
         let current = status();
-        assert!(!current.connected);
-        assert!(current.reconnecting);
-        assert_eq!(current.error_code, None);
+        assert!(!matches!(current.phase, RemotePhase::Ready));
+        assert!(matches!(current.phase, RemotePhase::Reconnecting));
+        assert_eq!(
+            current.reason,
+            Some(RemoteFailureReason::GenerationUnhealthy)
+        );
 
         // Only after the bounded automatic budget is exhausted does the UI
         // receive an actionable reconnect-required error.
         RUNTIME_RECONNECT_ATTEMPTS.store(MAX_RUNTIME_RECONNECT_ATTEMPTS, Ordering::Release);
         let current = status();
-        assert!(!current.reconnecting);
-        assert_eq!(current.error_code.as_deref(), Some("reconnect_required"));
+        assert!(!matches!(current.phase, RemotePhase::Reconnecting));
+        assert_eq!(
+            current.reason,
+            Some(RemoteFailureReason::GenerationUnhealthy)
+        );
 
         // Authorization/configuration failures are terminal for this
         // generation: do not spend the reconnect budget on the same invalid
@@ -2048,9 +2680,12 @@ mod runtime_tests {
         }
         RUNTIME_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
         let current = status();
-        assert!(!current.connected);
-        assert!(!current.reconnecting);
-        assert_eq!(current.error_code.as_deref(), Some("service_config"));
+        assert!(!matches!(current.phase, RemotePhase::Ready));
+        assert!(!matches!(current.phase, RemotePhase::Reconnecting));
+        assert_eq!(
+            current.reason,
+            Some(RemoteFailureReason::ServiceAuthorization)
+        );
         STATE
             .lock()
             .unwrap()
@@ -2060,6 +2695,30 @@ mod runtime_tests {
             .service_config_error
             .store(false, Ordering::Release);
 
+        // The reconnect-path authorization shape must never leave the UI on
+        // "connected" merely because the old generation still owns STATE.
+        {
+            let guard = STATE.lock().unwrap();
+            guard
+                .as_ref()
+                .unwrap()
+                .nats_health
+                .handle_event(&async_nats::Event::ClientError(
+                    async_nats::ClientError::Other("authorization violation".to_string()),
+                ));
+        }
+        let current = status();
+        assert!(!matches!(current.phase, RemotePhase::Ready));
+        assert!(matches!(current.phase, RemotePhase::Reconnecting));
+        {
+            let guard = STATE.lock().unwrap();
+            guard
+                .as_ref()
+                .unwrap()
+                .nats_health
+                .handle_event(&async_nats::Event::Connected);
+        }
+
         // The optional Web listener retries silently, then becomes actionable
         // only after its own reconnect budget is exhausted.
         {
@@ -2068,12 +2727,12 @@ mod runtime_tests {
             state.web_task = None;
             state.cmd_task = tokio::spawn(std::future::pending());
         }
-        assert_eq!(status().error_code, None);
+        assert_eq!(status().warning_code, None);
         WEB_RECONNECT_ATTEMPTS.store(MAX_WEB_RECONNECT_ATTEMPTS, Ordering::Release);
-        assert_eq!(status().error_code.as_deref(), Some("web_bind"));
+        assert_eq!(status().warning_code.as_deref(), Some("web_bind"));
 
         let stopped = stop();
-        assert!(!stopped.running);
+        assert!(!matches!(stopped.phase, RemotePhase::Ready));
         assert!(STATE.lock().unwrap().is_none());
     }
 
@@ -2158,7 +2817,7 @@ mod runtime_tests {
         // episode leaked by another test can't suppress the first-drop line.
         DROP_COUNTERS.dropping.store(false, Ordering::Relaxed);
         DROP_COUNTERS.dropped.store(0, Ordering::Relaxed);
-        DROP_COUNTERS.last_report.store(0, Ordering::Relaxed);
+        DROP_COUNTERS.reports.store(0, Ordering::Relaxed);
         // No state at all → immediate return.
         publish_event("sess", "t", "{}", "r", 0, 0, "e", "", -1, 0);
 
@@ -2187,7 +2846,7 @@ mod runtime_tests {
         // this drop (not the offline one above) is the "first" and gets a line.
         DROP_COUNTERS.dropping.store(false, Ordering::Relaxed);
         DROP_COUNTERS.dropped.store(0, Ordering::Relaxed);
-        DROP_COUNTERS.last_report.store(0, Ordering::Relaxed);
+        DROP_COUNTERS.reports.store(0, Ordering::Relaxed);
         {
             let mut guard = STATE.lock().unwrap();
             let state = guard.as_mut().unwrap();
@@ -2226,7 +2885,7 @@ mod runtime_tests {
         let nats = FakeNats::start().await;
         let client = nats_connect_once(&nats).await;
         let (tx, rx) = tokio::sync::mpsc::channel(EVENT_QUEUE_CAPACITY);
-        let drain = spawn_event_publisher(client.clone(), rx);
+        let mut drain = spawn_event_publisher(client.clone(), rx);
         let mut tap = nats.tap();
 
         for index in 0..3 {
@@ -2248,47 +2907,25 @@ mod runtime_tests {
         }
 
         // An event over the broker's max_payload cap is refused client-side;
-        // the publisher logs the failure and keeps draining the queue.
+        // the critical publisher exits so the generation supervisor rebuilds
+        // it under the shared system-failure budget.
         tx.send(EventPublish {
             subject: "p.pair_drain.evt.sess.huge".to_string(),
             payload: vec![b'x'; 9 * 1024 * 1024],
         })
         .await
         .unwrap();
-        tx.send(EventPublish {
-            subject: "p.pair_drain.evt.sess.after".to_string(),
-            payload: b"{}".to_vec(),
-        })
-        .await
-        .unwrap();
-        await_publish(
-            &mut tap,
-            "p.pair_drain.evt.sess.after",
-            Duration::from_secs(5),
-        )
-        .await;
-
-        // Publishing after the broker dies logs the failure and keeps draining.
-        nats.kill();
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while client.connection_state() == async_nats::connection::State::Connected {
-            assert!(std::time::Instant::now() < deadline, "client never noticed");
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        tx.send(EventPublish {
-            subject: "p.pair_drain.evt.sess.late".to_string(),
-            payload: b"{}".to_vec(),
-        })
-        .await
-        .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        // Closing the channel ends the drain task.
-        drop(tx);
-        tokio::time::timeout(Duration::from_secs(5), drain)
+        tokio::time::timeout(Duration::from_secs(5), &mut drain)
             .await
-            .expect("drain completes")
-            .expect("drain not panicked");
+            .expect("publisher exits after a critical write failure")
+            .expect("publisher not panicked");
+        assert!(tx
+            .send(EventPublish {
+                subject: "p.pair_drain.evt.sess.after".to_string(),
+                payload: b"{}".to_vec(),
+            })
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -2327,11 +2964,10 @@ mod runtime_tests {
         platform.respond_pair_code(nats.url());
 
         let started = start(RemoteStartInput {}).await.expect("start");
-        assert!(started.running);
-        assert!(started.connected);
+        assert!(matches!(started.phase, RemotePhase::Ready));
         assert!(started.pairing_code.is_some());
         assert_eq!(started.web_url.as_deref(), Some("http://localhost:8022"));
-        assert_eq!(started.error_code, None);
+        assert_eq!(started.reason, None);
 
         let mut tap = nats.tap();
         // The presence heartbeat and both catalog snapshots flow.
@@ -2419,13 +3055,13 @@ mod runtime_tests {
         platform.respond_pair_code(nats.url());
 
         let started = start(RemoteStartInput {}).await.expect("start");
-        assert!(started.running);
+        assert!(matches!(started.phase, RemotePhase::Ready));
         assert_eq!(started.web_url, None);
         assert_eq!(started.web_lan_url, None);
-        assert_eq!(started.error_code, None);
-        assert_eq!(status().error_code, None);
+        assert_eq!(started.warning_code.as_deref(), Some("web_bind"));
+        assert_eq!(status().warning_code, None);
         WEB_RECONNECT_ATTEMPTS.store(MAX_WEB_RECONNECT_ATTEMPTS, Ordering::Release);
-        assert_eq!(status().error_code.as_deref(), Some("web_bind"));
+        assert_eq!(status().warning_code.as_deref(), Some("web_bind"));
         stop();
         drop(blocker);
     }
@@ -2443,7 +3079,7 @@ mod runtime_tests {
         platform.respond_refresh(nats.url());
 
         let started = start(RemoteStartInput {}).await.expect("start");
-        assert!(started.running);
+        assert!(matches!(started.phase, RemotePhase::Ready));
         assert_eq!(started.pairing_code, None, "existing pairing → no new code");
         assert!(pairing::load_creds().is_some(), "refreshed creds persisted");
         stop();
@@ -2511,10 +3147,10 @@ mod runtime_tests {
         let started = start(RemoteStartInput {})
             .await
             .expect("network maps to status");
-        assert!(!started.running);
-        assert_eq!(started.error_code.as_deref(), Some("network"));
+        assert!(!matches!(started.phase, RemotePhase::Ready));
+        assert_eq!(started.reason, Some(RemoteFailureReason::Network));
         // The code sticks for later status() polls.
-        assert_eq!(status().error_code.as_deref(), Some("network"));
+        assert_eq!(status().reason, Some(RemoteFailureReason::Network));
 
         // Pairing issued but NATS unreachable → same categorized failure.
         let platform = MockPlatform::start().await;
@@ -2523,7 +3159,7 @@ mod runtime_tests {
         let started = start(RemoteStartInput {})
             .await
             .expect("nats failure maps to status");
-        assert_eq!(started.error_code.as_deref(), Some("network"));
+        assert_eq!(started.reason, Some(RemoteFailureReason::Network));
 
         // An uncategorized local failure (the credential directory is
         // read-only, so clearing the legacy pairing fails) propagates as Err.
@@ -2549,25 +3185,107 @@ mod runtime_tests {
     #[test]
     fn only_transient_remote_start_failures_arm_background_recovery() {
         let network = RemoteStatus {
-            error_code: Some("network".to_string()),
+            phase: RemotePhase::Reconnecting,
+            reason: Some(RemoteFailureReason::Network),
             ..empty()
         };
         let server = RemoteStatus {
-            error_code: Some("server".to_string()),
+            phase: RemotePhase::Reconnecting,
+            reason: Some(RemoteFailureReason::RemoteServer),
             ..empty()
         };
         let revoked = RemoteStatus {
-            error_code: Some("revoked".to_string()),
+            phase: RemotePhase::Revoked,
+            reason: Some(RemoteFailureReason::CredentialRevoked),
             ..empty()
         };
         assert!(retryable_start_status(&network));
         assert!(retryable_start_status(&server));
         assert!(!retryable_start_status(&revoked));
         assert!(!retryable_start_status(&RemoteStatus {
-            running: true,
-            error_code: Some("network".to_string()),
+            phase: RemotePhase::Ready,
+            reason: Some(RemoteFailureReason::Network),
             ..empty()
         }));
+    }
+
+    #[test]
+    fn initial_nats_connect_errors_distinguish_authorization_from_network() {
+        for kind in [
+            async_nats::ConnectErrorKind::Authentication,
+            async_nats::ConnectErrorKind::AuthorizationViolation,
+        ] {
+            assert!(matches!(
+                classify_nats_connect_error(kind, "rejected".to_string()),
+                crate::AppError::RemoteAuthorization(_)
+            ));
+        }
+        for kind in [
+            async_nats::ConnectErrorKind::Dns,
+            async_nats::ConnectErrorKind::TimedOut,
+            async_nats::ConnectErrorKind::Io,
+        ] {
+            assert!(matches!(
+                classify_nats_connect_error(kind, "offline".to_string()),
+                crate::AppError::RemoteTransport(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn desktop_reconnect_backoff_matches_the_shared_policy() {
+        assert_eq!(reconnect_delay(0, 0.5), Duration::from_secs(1));
+        assert_eq!(reconnect_delay(1, 0.5), Duration::from_secs(2));
+        assert_eq!(reconnect_delay(2, 0.5), Duration::from_secs(4));
+        assert_eq!(reconnect_delay(4, 0.5), Duration::from_secs(16));
+        assert_eq!(reconnect_delay(5, 0.5), Duration::from_secs(30));
+        assert!(reconnect_delay(20, 1.0) <= Duration::from_secs(30));
+    }
+
+    #[test]
+    fn bridge_shared_state_survives_generation_swaps_but_rotates_epoch() {
+        let _home = HomeGuard::new("remote-shared-generation");
+        *BRIDGE_SHARED.lock().unwrap() = None;
+        let first = shared_runtime("pair_shared", true, false);
+        let same_credential_epoch = shared_runtime("pair_shared", true, false);
+        assert!(Arc::ptr_eq(
+            &first.reply_slots,
+            &same_credential_epoch.reply_slots
+        ));
+        assert!(Arc::ptr_eq(
+            &first.pairing_confirmed,
+            &same_credential_epoch.pairing_confirmed
+        ));
+        assert_eq!(
+            first.bridge_instance_id,
+            same_credential_epoch.bridge_instance_id
+        );
+
+        let rebuilt = shared_runtime("pair_shared", true, true);
+        assert!(Arc::ptr_eq(&first.reply_slots, &rebuilt.reply_slots));
+        assert!(Arc::ptr_eq(
+            &first.pairing_confirmed,
+            &rebuilt.pairing_confirmed
+        ));
+        assert_ne!(first.bridge_instance_id, rebuilt.bridge_instance_id);
+        *BRIDGE_SHARED.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn runtime_failure_budget_uses_a_ten_minute_window() {
+        let _home = HomeGuard::new("remote-runtime-budget");
+        RUNTIME_FAILURE_WINDOW_STARTED.store(0, Ordering::Release);
+        RUNTIME_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
+        assert_eq!(record_runtime_failure(1_000), 1);
+        assert_eq!(record_runtime_failure(2_000), 2);
+        assert_eq!(record_runtime_failure(3_000), 3);
+        assert_eq!(record_runtime_failure(4_000), 4);
+        assert_eq!(
+            record_runtime_failure(1_000 + RUNTIME_FAILURE_WINDOW_MS + 1),
+            1
+        );
+        RUNTIME_FAILURE_WINDOW_STARTED.store(0, Ordering::Release);
+        RUNTIME_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
     }
 
     #[tokio::test]
@@ -2822,16 +3540,15 @@ mod runtime_tests {
     }
 
     #[tokio::test]
-    async fn credential_refresh_swaps_after_sustained_unhealthy_ticks() {
+    async fn credential_loop_does_not_compete_with_runtime_supervisor() {
         let _home = HomeGuard::new("remote-refresh-unhealthy");
         let platform = MockPlatform::start().await;
         let nats = FakeNats::start().await;
-        let nats2 = FakeNats::start().await;
         sign_in(platform.url());
-        // Far-future expiry: only the unhealthy debounce triggers the swap.
+        // Far-future expiry: transport health belongs to RemoteSupervisor and
+        // must not cause this credential-only loop to replace a generation.
         let creds = test_creds("pair_sick", nats.url(), 3600);
         pairing::save_creds(&creds).unwrap();
-        platform.respond_refresh(nats2.url());
 
         let state = fake_state(&nats, "pair_sick").await;
         let confirmed = state.pairing_confirmed.clone();
@@ -2844,26 +3561,10 @@ mod runtime_tests {
             confirmed,
             handshake,
         );
-        // Kill the broker: two unhealthy ticks trigger the generation swap.
+        // Killing the broker must not call the token endpoint from this task.
         nats.kill();
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            let swapped = {
-                let guard = STATE.lock().unwrap();
-                guard
-                    .as_ref()
-                    .map(|state| state.nats_url == nats2.url())
-                    .unwrap_or(false)
-            };
-            if swapped {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "unhealthy swap never ran"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(platform.requests().is_empty());
         handle.abort();
         stop();
     }
@@ -2974,7 +3675,7 @@ mod runtime_tests {
     }
 
     #[tokio::test]
-    async fn heartbeat_logs_publish_failures_and_keeps_ticking() {
+    async fn heartbeat_publish_failure_exits_for_generation_supervisor() {
         let _home = HomeGuard::new("remote-heartbeat-fail");
         init_store();
         let nats = FakeNats::start().await;
@@ -2995,10 +3696,10 @@ mod runtime_tests {
         .unwrap();
 
         let handle = spawn_presence_heartbeat(client.clone(), pair, "bridge_hbf".into());
-        // Several ticks run every publish arm; none of the failures is fatal.
+        // A critical publisher failure ends the generation instead of logging
+        // once per heartbeat forever.
         tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(!handle.is_finished());
-        handle.abort();
+        assert!(handle.is_finished());
         std::fs::remove_dir_all(&workspace_dir).ok();
     }
 

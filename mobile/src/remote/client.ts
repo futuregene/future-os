@@ -19,6 +19,9 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const HANDSHAKE_PROTOCOL_VERSION = 1;
 const FOREGROUND_PROBE_TIMEOUT_MS = 4_000;
+const SYSTEM_FAILURE_WINDOW_MS = 10 * 60_000;
+const HEALTHY_RESET_MS = 60_000;
+const MAX_SYSTEM_RECOVERIES = 3;
 
 export type RecoveryReason =
   "foreground" | "network-restored" | "network-changed" | "request-failure";
@@ -51,6 +54,16 @@ function decodeJson<T>(data: Uint8Array): T {
   return JSON.parse(decoder.decode(data)) as T;
 }
 
+function failureSupportCode(category: string, detail = ""): string {
+  if (category === "network") return "NW001";
+  if (category === "credential_revoked") return "PA001";
+  if (category === "credential_expired") return "AU002";
+  if (category === "service_authorization") return "AU001";
+  if (category === "protocol" || detail.includes("protocol")) return "PT001";
+  if (category === "generation_unhealthy") return "RT001";
+  return "LC999";
+}
+
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | null = null;
   try {
@@ -70,6 +83,7 @@ export class RemoteClient {
   private credentials: RemoteCredentials;
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private healthyTimer: ReturnType<typeof setTimeout> | null = null;
   private retryAttempt = 0;
   /**
    * Consecutive refreshable-auth failures. A single auth failure rotates the
@@ -91,6 +105,15 @@ export class RemoteClient {
   private handshakePromise: Promise<HandshakeConfirmation> | null = null;
   /** Guards against overlapping token refresh (timer + auth failure racing). */
   private refreshInFlight = false;
+  private systemFailures: number[] = [];
+  private failureEpisode: {
+    category: string;
+    startedAt: number;
+    attempts: number;
+    reports: number;
+    lastError: string;
+    nextRetryAt: number | null;
+  } | null = null;
   private downloadWaiters = new Map<
     string,
     {
@@ -115,6 +138,58 @@ export class RemoteClient {
     this.credentials = credentials;
   }
 
+  private isTerminal(): boolean {
+    return this.state === "failed" || this.state === "revoked";
+  }
+
+  private recordFailure(category: string, error: unknown, nextRetryAt: number | null = null): void {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!this.failureEpisode || this.failureEpisode.category !== category) {
+      if (this.failureEpisode) this.finishFailureEpisode("category_changed");
+      this.failureEpisode = {
+        category,
+        startedAt: Date.now(),
+        attempts: 1,
+        reports: 1,
+        lastError: message,
+        nextRetryAt,
+      };
+      console.warn("[remote] failure episode started", {
+        ...this.failureEpisode,
+        supportCode: failureSupportCode(category, message),
+      });
+      return;
+    }
+    const episode = this.failureEpisode;
+    episode.attempts += 1;
+    episode.lastError = message;
+    episode.nextRetryAt = nextRetryAt;
+    // Start + at most 14 power-of-two progress lines + recovery/terminal keeps
+    // a 24-hour outage bounded to 16 lines per category.
+    if (
+      episode.reports < 15 &&
+      (episode.attempts & (episode.attempts - 1)) === 0
+    ) {
+      episode.reports += 1;
+      console.warn("[remote] failure episode retry", {
+        ...episode,
+        supportCode: failureSupportCode(category, message),
+      });
+    }
+  }
+
+  private finishFailureEpisode(result: "recovered" | "terminal" | "category_changed"): void {
+    const episode = this.failureEpisode;
+    if (!episode) return;
+    console.warn("[remote] failure episode finished", {
+      ...episode,
+      result,
+      supportCode: failureSupportCode(episode.category, episode.lastError),
+      durationMs: Date.now() - episode.startedAt,
+    });
+    this.failureEpisode = null;
+  }
+
   /**
    * Establish (or re-establish) the live connection. The attempt runs in the
    * background: on a transport failure this arms the backoff timer and returns,
@@ -123,7 +198,7 @@ export class RemoteClient {
    * the retry timer is owned by exactly one place, here).
    */
   async open(): Promise<void> {
-    if (this.stopped || !this.appActive || !this.networkAvailable) return;
+    if (this.stopped || this.isTerminal() || !this.appActive || !this.networkAvailable) return;
     this.signal({ type: "open_started" });
     const generation = ++this.generation;
     try {
@@ -153,6 +228,7 @@ export class RemoteClient {
     this.clearTimers();
     this.disposeConnection(reason === "UserInitiated" ? "close" : "unpair");
     this.rejectDownloadWaiters("closed");
+    this.state = reason === "UserInitiated" ? "stopped" : "unpaired";
   }
 
   /** Stop live iterators and retries while the OS reports no usable network. */
@@ -182,7 +258,7 @@ export class RemoteClient {
 
   /** Validate after foregrounding, or immediately rebuild after a path change. */
   recoverNow(reason: RecoveryReason): Promise<void> {
-    if (this.stopped) return Promise.resolve();
+    if (this.stopped || this.isTerminal()) return Promise.resolve();
     if (reason === "foreground") this.appActive = true;
     if (!this.appActive) return Promise.resolve();
     if (reason !== "foreground") this.networkAvailable = true;
@@ -235,7 +311,7 @@ export class RemoteClient {
 
   /** Rotate the JWT in place and resume the connection (M1's refreshable class). */
   private async refreshToken(): Promise<void> {
-    if (this.refreshInFlight || !this.appActive) return;
+    if (this.refreshInFlight || this.isTerminal() || !this.appActive) return;
     this.refreshInFlight = true;
     try {
       this.signal({ type: "auth_failed" }); // moves to refreshing
@@ -295,26 +371,40 @@ export class RemoteClient {
         await connection.close();
         return;
       }
+      // Install every critical subscription and flush their SUB frames before
+      // publishing this generation as ready. Until this barrier succeeds the
+      // previous generation remains the sole externally-ready connection.
+      this.subscribeEvents(connection, generation);
+      this.subscribeLiveness(connection, generation);
+      this.subscribeState(connection, generation);
+      this.subscribeTransfers(connection, generation);
+      await connection.flush();
+      if (this.stopped || this.isTerminal() || generation !== this.generation) {
+        await connection.close().catch(() => undefined);
+        return;
+      }
       // Dispose any prior connection ONLY after the new one is proven — M10's
       // ghost connection: the old path nulled `this.connection` before the
       // refresh, leaking it on failure.
       const previous = this.connection;
-      if (previous && previous !== connection) {
-        await previous.close().catch(() => undefined);
-      }
       this.connection = connection;
       this.confirmedBridgeInstanceId = confirmation.bridgeInstanceId;
       this.retryAttempt = 0;
       this.authRetryCount = 0;
       this.failedGeneration = null;
+      this.watchStatus(connection, generation);
+      if (previous && previous !== connection) {
+        await previous.close().catch(() => undefined);
+      }
       this.callbacks.onPresence(confirmation.presence);
       this.callbacks.onFeatures(confirmation.features ?? []);
-      this.subscribeEvents(connection, generation);
-      this.subscribeLiveness(connection, generation);
-      this.subscribeState(connection, generation);
-      this.subscribeTransfers(connection, generation);
-      this.watchStatus(connection, generation);
       this.signal({ type: "ready" });
+      this.finishFailureEpisode("recovered");
+      if (this.healthyTimer) clearTimeout(this.healthyTimer);
+      this.healthyTimer = setTimeout(() => {
+        this.healthyTimer = null;
+        if (this.state === "ready" && generation === this.generation) this.systemFailures = [];
+      }, HEALTHY_RESET_MS);
       this.callbacks.onReconnected();
     } catch (error) {
       await connection.close().catch(() => undefined);
@@ -327,15 +417,28 @@ export class RemoteClient {
     if (kind === "authTerminal") {
       // The device was revoked (M1) — stop every network action and tell the
       // UI to guide the user to re-pair.
+      this.generation += 1;
+      this.failedGeneration = null;
       this.clearTimers();
       this.signal({ type: "revoked" });
+      this.recordFailure("credential_revoked", error);
+      this.finishFailureEpisode("terminal");
       this.callbacks.onError(error instanceof Error ? error : new Error(String(error)));
       return;
     }
     if (kind === "fatal") {
+      this.generation += 1;
+      this.failedGeneration = null;
       this.clearTimers();
       const failure = error instanceof Error ? error : new Error(String(error));
       this.signal({ type: "fatal", error: failure });
+      this.recordFailure(
+        failure.message.includes("generation_unhealthy")
+          ? "generation_unhealthy"
+          : "service_authorization",
+        failure,
+      );
+      this.finishFailureEpisode("terminal");
       this.callbacks.onError(failure);
       return;
     }
@@ -349,8 +452,18 @@ export class RemoteClient {
         void this.refreshToken();
         return;
       }
-      this.callbacks.onError(error instanceof Error ? error : new Error(String(error)));
-      this.scheduleRetry();
+      // A freshly issued JWT that is rejected by NATS proves this is not token
+      // expiry. Stop the loop as a service/account authorization failure.
+      const failure = new Error(
+        `remote_service_misconfigured: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      this.generation += 1;
+      this.failedGeneration = null;
+      this.clearTimers();
+      this.signal({ type: "fatal", error: failure });
+      this.recordFailure("service_authorization", failure);
+      this.finishFailureEpisode("terminal");
+      this.callbacks.onError(failure);
       return;
     }
     this.callbacks.onError(error instanceof Error ? error : new Error(String(error)));
@@ -365,18 +478,35 @@ export class RemoteClient {
       return;
     }
     this.failedGeneration = generation;
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("subscription_ended") || message.includes("protocol_error")) {
+      const cutoff = Date.now() - SYSTEM_FAILURE_WINDOW_MS;
+      this.systemFailures = this.systemFailures.filter(timestamp => timestamp >= cutoff);
+      this.systemFailures.push(Date.now());
+      this.recordFailure("generation_unhealthy", error);
+      if (this.systemFailures.length > MAX_SYSTEM_RECOVERIES) {
+        this.handleFailure(
+          new Error(
+            `generation_unhealthy:${message.includes("protocol_error") ? "protocol" : "subscription"}`,
+          ),
+        );
+        return;
+      }
+    }
     this.handleFailure(error);
   }
 
   private scheduleRetry(): void {
+    if (this.stopped || this.isTerminal()) return;
     this.signal({ type: "open_failed", error: new Error("transport_failed") });
-    if (this.stopped || !this.appActive || !this.networkAvailable) return;
+    if (this.stopped || this.isTerminal() || !this.appActive || !this.networkAvailable) return;
     if (this.retryTimer) clearTimeout(this.retryTimer);
     const delay = backoffDelayMs(this.retryAttempt);
+    this.recordFailure("network", new Error("transport_failed"), Date.now() + delay);
     this.retryAttempt += 1;
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null;
-      if (this.stopped || !this.appActive || !this.networkAvailable) return;
+      if (this.stopped || this.isTerminal() || !this.appActive || !this.networkAvailable) return;
       void this.open();
     }, delay);
   }
@@ -386,6 +516,8 @@ export class RemoteClient {
     this.refreshTimer = null;
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimer = null;
+    if (this.healthyTimer) clearTimeout(this.healthyTimer);
+    this.healthyTimer = null;
   }
 
   /** Feed the FSM with a lifecycle fact and execute its effects. */
@@ -628,6 +760,7 @@ export class RemoteClient {
                 break;
               }
               this.confirmedBridgeInstanceId = confirmation.bridgeInstanceId;
+              await connection.flush();
               this.callbacks.onPresence(confirmation.presence);
               this.callbacks.onFeatures(confirmation.features ?? []);
               this.signal({ type: "ready" });
@@ -639,19 +772,18 @@ export class RemoteClient {
             }
           } else if (status.type === "error") {
             const code = String(status.data);
-            console.warn("[remote] NATS asynchronous error", {
-              code,
-              permissionContext: status.permissionContext,
-            });
             if (code === ErrorCode.AuthenticationExpired || code === ErrorCode.AccountExpired) {
+              this.recordFailure("credential_expired", code);
               if (this.state !== "refreshing") void this.refreshToken();
             } else if (
               code === ErrorCode.PermissionsViolation ||
               code === ErrorCode.AuthorizationViolation
             ) {
-              this.handleFailure(new Error(`remote_service_misconfigured: ${code}`));
+              this.recordFailure("credential_expired", code);
+              this.handleFailure(new Error(`nats_authorization_rejected: ${code}`));
               return;
             } else if (code === ErrorCode.ProtocolError) {
+              this.recordFailure("protocol", code);
               this.failGeneration(new Error(`nats_protocol_error: ${code}`), generation);
               return;
             }
@@ -673,6 +805,7 @@ export class RemoteClient {
   }
 
   private scheduleRefresh(): void {
+    if (this.isTerminal()) return;
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
     const expiry = jwtExpiry(this.credentials.userJwt);
     if (expiry === null) {
@@ -685,6 +818,7 @@ export class RemoteClient {
     const delay = Math.max(5_000, expiry * 1000 - Date.now() - 60_000);
     this.refreshTimer = setTimeout(() => {
       this.refreshTimer = null;
+      if (this.isTerminal()) return;
       void this.refreshToken();
     }, delay);
   }
@@ -794,7 +928,6 @@ export class RemoteClient {
     const response = decodeJson<RpcResponse<T>>(message.data);
     if (!response.success) {
       const error = new RemoteResponseError(response.error ?? "command_failed");
-      if (classifyError(error) === "authTerminal") this.signal({ type: "revoked" });
       throw error;
     }
     return response;

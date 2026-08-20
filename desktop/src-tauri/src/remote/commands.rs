@@ -11,10 +11,12 @@ use std::{
     collections::HashMap,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        Arc, LazyLock, Mutex,
     },
     time::Duration,
 };
+
+static COMMAND_EPISODE: LazyLock<super::FailureEpisode> = LazyLock::new(Default::default);
 
 type ReplySlot = Arc<tokio::sync::Mutex<Option<Vec<u8>>>>;
 
@@ -78,16 +80,6 @@ fn reply_slot_ttl() -> Duration {
     #[cfg(not(test))]
     const TTL: Duration = Duration::from_secs(600);
     TTL
-}
-
-/// First resubscribe delay after a failed subscribe / ended stream (doubles up
-/// to 30s). Tests shrink it so the self-heal path runs without real waits.
-fn resubscribe_backoff() -> Duration {
-    #[cfg(test)]
-    const BACKOFF: Duration = Duration::from_millis(10);
-    #[cfg(not(test))]
-    const BACKOFF: Duration = Duration::from_secs(1);
-    BACKOFF
 }
 
 tokio::task_local! {
@@ -190,46 +182,53 @@ impl Default for IncomingCmd {
     }
 }
 
+#[cfg(test)]
 pub(super) async fn command_loop(
     client: async_nats::Client,
     pair_id: String,
     reply_slots: ReplySlots,
     handshake: HandshakeState,
 ) {
+    command_loop_with_ready(client, pair_id, reply_slots, handshake, None).await;
+}
+
+pub(super) async fn command_loop_with_ready(
+    client: async_nats::Client,
+    pair_id: String,
+    reply_slots: ReplySlots,
+    handshake: HandshakeState,
+    mut ready: Option<tokio::sync::oneshot::Sender<()>>,
+) {
     let subject = format!("p.{pair_id}.cmd.>");
     let queue = format!("bridge.{pair_id}");
-    // Self-heal: a failed subscribe or an ended subscription stream (server-side
-    // close, permission error) must not kill the loop — a dead loop leaves the
-    // queue group without a live member and every command then times out until
-    // the next credential-refresh swap. Retry with backoff; the task is only
-    // terminated by the caller (generation swap / stop), which aborts it.
-    let mut backoff = resubscribe_backoff();
-    loop {
-        let mut sub = match client.queue_subscribe(subject.clone(), queue.clone()).await {
-            Ok(sub) => sub,
-            Err(e) => {
-                eprintln!(
-                    "remote: failed to subscribe to commands {subject}: {e}; retrying in {backoff:?}"
-                );
-                tokio::time::sleep(backoff).await;
-                backoff = backoff.saturating_mul(2).min(Duration::from_secs(30));
-                continue;
+    let mut sub = match client.queue_subscribe(subject, queue).await {
+        Ok(sub) => sub,
+        Err(error) => {
+            if let Some(line) = COMMAND_EPISODE.record("command_subscription", error) {
+                eprintln!("{line}");
             }
-        };
-        backoff = resubscribe_backoff();
-        eprintln!("remote: subscribed to commands {subject}");
-        while let Some(msg) = sub.next().await {
-            let client = client.clone();
-            let reply_slots = reply_slots.clone();
-            let handshake = handshake.clone();
-            // Spawn per command: prevent a slow command from blocking others.
-            tokio::spawn(async move {
-                handle_command_singleflight(&client, msg, reply_slots, handshake).await;
-            });
+            return;
         }
-        eprintln!("remote: command subscription ended unexpectedly; resubscribing in {backoff:?}");
-        tokio::time::sleep(backoff).await;
-        backoff = backoff.saturating_mul(2).min(Duration::from_secs(30));
+    };
+    if let Some(line) = COMMAND_EPISODE.recovered() {
+        eprintln!("{line}");
+    }
+    if let Some(sender) = ready.take() {
+        let _ = sender.send(());
+    }
+    while let Some(msg) = sub.next().await {
+        let client = client.clone();
+        let reply_slots = reply_slots.clone();
+        let handshake = handshake.clone();
+        // Spawn per command: prevent a slow command from blocking others.
+        tokio::spawn(async move {
+            handle_command_singleflight(&client, msg, reply_slots, handshake).await;
+        });
+    }
+    if let Some(line) =
+        COMMAND_EPISODE.record("command_subscription", "subscription ended unexpectedly")
+    {
+        eprintln!("{line}");
     }
 }
 
@@ -3226,7 +3225,7 @@ mod bridge_tests {
     }
 
     #[tokio::test]
-    async fn command_loop_resubscribes_after_the_stream_ends() {
+    async fn command_loop_exits_for_generation_supervisor_when_stream_ends() {
         let _home = HomeGuard::new("cmd-self-heal");
         let nats = FakeNats::start().await;
         let client = nats_connect_once(&nats).await;
@@ -3245,11 +3244,13 @@ mod bridge_tests {
         ));
         nats.wait_for_sub(&format!("p.{pair_id}.cmd.>"), Duration::from_secs(5))
             .await;
-        // Kill the server: the subscription stream ends and every resubscribe
-        // fails — the loop must keep retrying instead of exiting.
+        // A critical subscription is generation-local. The loop exits so the
+        // single runtime supervisor can apply its 10-minute recovery budget.
         nats.kill();
         tokio::time::sleep(Duration::from_millis(300)).await;
-        assert!(!handle.is_finished(), "command loop must self-heal");
-        handle.abort();
+        assert!(
+            handle.is_finished(),
+            "supervisor must observe the dead task"
+        );
     }
 }
