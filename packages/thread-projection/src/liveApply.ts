@@ -227,7 +227,14 @@ export function createRunProjector(options?: { preferEndTokens?: boolean }): Run
       if (!existing)
         return;
 
-      const nextArgsText = `${existing.argsText ?? ""}${textFromPayload(payload)}`;
+      // Some providers periodically send the entire accumulated argument
+      // string instead of a fragment. The agent preserves that distinction in
+      // the wire payload, so replaying such a delta must replace rather than
+      // duplicate the prior prefix.
+      const deltaText = textFromPayload(payload);
+      const nextArgsText = isRecord(payload) && payload.snapshot === true
+        ? deltaText
+        : `${existing.argsText ?? ""}${deltaText}`;
       const target = targetFromToolArgs(existing.kind, nextArgsText);
       toolActivities.set(activeToolCallId, {
         ...existing,

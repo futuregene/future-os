@@ -534,6 +534,26 @@ describe("RemoteClient request retry classification", () => {
 });
 
 describe("RemoteClient OS lifecycle recovery", () => {
+  test("backgrounding closes the live socket and foregrounding opens a new generation", async () => {
+    const { client, callbacks } = recoveryClient();
+    const close = jest.fn().mockResolvedValue(undefined);
+    const testClient = client as unknown as {
+      connection: { close(): Promise<void> } | null;
+      state: string;
+    };
+    testClient.connection = { close };
+    testClient.state = "ready";
+
+    client.pauseForBackground();
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(testClient.connection).toBeNull();
+    expect(callbacks.onConnectionState).toHaveBeenCalledWith("reconnecting");
+
+    const open = jest.spyOn(client, "open").mockResolvedValue(undefined);
+    await client.recoverNow("foreground");
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+
   test("foreground validates a healthy socket without replacing it", async () => {
     const { client } = recoveryClient();
     const flush = jest.fn().mockResolvedValue(undefined);

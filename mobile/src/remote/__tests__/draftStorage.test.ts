@@ -1,5 +1,10 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { clearSessionDraft, loadSessionDraft, saveSessionDraft } from "../draftStorage";
+import {
+  clearSessionDraft,
+  clearSessionDraftIfMatches,
+  loadSessionDraft,
+  saveSessionDraft,
+} from "../draftStorage";
 
 jest.mock("@react-native-async-storage/async-storage", () => ({
   __esModule: true,
@@ -111,5 +116,20 @@ describe("session draft storage", () => {
   test("clearSessionDraft removes the stored slot", async () => {
     await clearSessionDraft("s1");
     expect(mockedAsync.removeItem).toHaveBeenCalledWith("futureos.remote.draft.v1:s1");
+  });
+
+  test("cold acknowledgement clears only the draft that produced it", async () => {
+    mockedAsync.getItem.mockResolvedValueOnce(
+      JSON.stringify({ version: 1, text: "hello", attachments: [attachment] }),
+    );
+    await clearSessionDraftIfMatches("s1", { text: "hello", attachments: [attachment] });
+    expect(mockedAsync.removeItem).toHaveBeenCalledWith("futureos.remote.draft.v1:s1");
+
+    jest.clearAllMocks();
+    mockedAsync.getItem.mockResolvedValueOnce(
+      JSON.stringify({ version: 1, text: "newer edit", attachments: [attachment] }),
+    );
+    await clearSessionDraftIfMatches("s1", { text: "hello", attachments: [attachment] });
+    expect(mockedAsync.removeItem).not.toHaveBeenCalled();
   });
 });

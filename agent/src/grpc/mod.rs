@@ -557,13 +557,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::types::LLMProvider for NoopProvider {
-        async fn stream_chat(
+        async fn stream_model(
             &self,
-            _model: String,
-            _messages: Vec<crate::types::Message>,
-            _tools: Vec<crate::types::ToolDef>,
-            _system_prompt: String,
-        ) -> anyhow::Result<ReceiverStream<crate::types::StreamEvent>> {
+            _request: crate::llm::schema::ModelRequest,
+        ) -> anyhow::Result<ReceiverStream<crate::llm::schema::ModelStreamEvent>> {
             let (_tx, rx) = tokio::sync::mpsc::channel(1);
             Ok(ReceiverStream::new(rx))
         }
@@ -1094,12 +1091,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn noop_provider_stream_chat_is_an_empty_stream() {
+    async fn noop_provider_stream_model_is_an_empty_stream() {
         // Exercise the harness provider double's stream body directly.
         use crate::types::LLMProvider;
         use tokio_stream::StreamExt;
         let mut stream = NoopProvider
-            .stream_chat("m".to_string(), vec![], vec![], String::new())
+            .stream_model(crate::llm::schema::ModelRequest {
+                model: "m".into(),
+                system_prompt: String::new(),
+                messages: vec![],
+                tools: vec![],
+            })
             .await
             .unwrap();
         assert!(stream.next().await.is_none());

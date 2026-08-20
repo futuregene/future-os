@@ -232,6 +232,7 @@ CREATE INDEX IF NOT EXISTS idx_threads_workspace ON threads(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_threads_recent ON threads(status, pinned, last_message_at, updated_at);
 -- idx_messages_thread removed with messages table
 CREATE INDEX IF NOT EXISTS idx_runs_thread ON runs(thread_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_runs_trigger_message ON runs(trigger_message_id);
 CREATE INDEX IF NOT EXISTS idx_reference_targets_scope ON reference_targets(scope, workspace_id, target_type);
 CREATE INDEX IF NOT EXISTS idx_review_snapshots_run ON review_snapshots(run_id, phase);
 CREATE INDEX IF NOT EXISTS idx_review_snapshots_workspace ON review_snapshots(workspace_id, created_at);

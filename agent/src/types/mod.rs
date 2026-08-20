@@ -23,12 +23,27 @@ pub enum ContentBlock {
     Image {
         image_url: ImageUrlData,
     },
+    Reasoning {
+        text: String,
+        provider_metadata: ProviderMetadata,
+    },
+    ToolCall {
+        id: String,
+        name: String,
+        args: serde_json::Value,
+        provider_metadata: ProviderMetadata,
+    },
     ToolResult {
         tool_call_id: String,
         content: String,
         is_error: bool,
     },
 }
+
+/// Opaque, namespaced protocol state that must survive a model round trip.
+/// Known adapters validate their own namespace (`openai`, `anthropic`); unknown
+/// namespaces are retained so future adapters can preserve state losslessly.
+pub type ProviderMetadata = serde_json::Map<String, serde_json::Value>;
 
 #[derive(Debug, Clone, Default)]
 pub struct ImageUrlData {
@@ -78,6 +93,25 @@ impl ContentBlock {
             image_url: ImageUrlData {
                 url: Some(url.into()),
             },
+        }
+    }
+    pub fn reasoning(text: impl Into<String>, provider_metadata: ProviderMetadata) -> Self {
+        ContentBlock::Reasoning {
+            text: text.into(),
+            provider_metadata,
+        }
+    }
+    pub fn tool_call(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        args: serde_json::Value,
+        provider_metadata: ProviderMetadata,
+    ) -> Self {
+        ContentBlock::ToolCall {
+            id: id.into(),
+            name: name.into(),
+            args,
+            provider_metadata,
         }
     }
     pub fn tool_result(
@@ -136,6 +170,10 @@ impl<'de> Deserialize<'de> for ContentBlock {
             "tool_call_id",
             "content",
             "is_error",
+            "id",
+            "name",
+            "args",
+            "provider_metadata",
         ];
         deserializer.deserialize_struct("ContentBlock", FIELDS, ContentBlockVisitor)
     }
@@ -158,6 +196,10 @@ impl<'de> de::Visitor<'de> for ContentBlockVisitor {
         let mut tool_call_id: Option<String> = None;
         let mut content: Option<String> = None;
         let mut is_error: Option<bool> = None;
+        let mut id: Option<String> = None;
+        let mut name: Option<String> = None;
+        let mut args: Option<serde_json::Value> = None;
+        let mut provider_metadata: Option<ProviderMetadata> = None;
 
         while let Some(k) = map.next_key::<String>()? {
             match k.as_str() {
@@ -179,6 +221,10 @@ impl<'de> de::Visitor<'de> for ContentBlockVisitor {
                 "is_error" => {
                     is_error = Some(map.next_value()?);
                 }
+                "id" => id = Some(map.next_value()?),
+                "name" => name = Some(map.next_value()?),
+                "args" => args = Some(map.next_value()?),
+                "provider_metadata" => provider_metadata = Some(map.next_value()?),
                 _ => {
                     let _: serde_json::Value = map.next_value()?;
                 }
@@ -192,6 +238,16 @@ impl<'de> de::Visitor<'de> for ContentBlockVisitor {
             }
             "image_url" => Ok(ContentBlock::Image {
                 image_url: image_url.unwrap_or_default(),
+            }),
+            "reasoning" => Ok(ContentBlock::Reasoning {
+                text: text.unwrap_or_default(),
+                provider_metadata: provider_metadata.unwrap_or_default(),
+            }),
+            "tool_call" => Ok(ContentBlock::ToolCall {
+                id: id.unwrap_or_default(),
+                name: name.unwrap_or_default(),
+                args: args.unwrap_or(serde_json::Value::Null),
+                provider_metadata: provider_metadata.unwrap_or_default(),
             }),
             "tool_result" => Ok(ContentBlock::ToolResult {
                 tool_call_id: tool_call_id.unwrap_or_default(),
@@ -232,6 +288,34 @@ impl Serialize for ContentBlock {
                 s.serialize_field("image_url", image_url)?;
                 s.end()
             }
+            ContentBlock::Reasoning {
+                text,
+                provider_metadata,
+            } => {
+                let mut s = serializer.serialize_struct("ContentBlock", 3)?;
+                s.serialize_field("type", "reasoning")?;
+                s.serialize_field("text", text)?;
+                if !provider_metadata.is_empty() {
+                    s.serialize_field("provider_metadata", provider_metadata)?;
+                }
+                s.end()
+            }
+            ContentBlock::ToolCall {
+                id,
+                name,
+                args,
+                provider_metadata,
+            } => {
+                let mut s = serializer.serialize_struct("ContentBlock", 5)?;
+                s.serialize_field("type", "tool_call")?;
+                s.serialize_field("id", id)?;
+                s.serialize_field("name", name)?;
+                s.serialize_field("args", args)?;
+                if !provider_metadata.is_empty() {
+                    s.serialize_field("provider_metadata", provider_metadata)?;
+                }
+                s.end()
+            }
             ContentBlock::ToolResult {
                 tool_call_id,
                 content,
@@ -252,29 +336,207 @@ impl Serialize for ContentBlock {
 
 // ─── AgentMessage ──────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default)]
+#[derive(Debug, Clone, Default)]
 pub struct AgentMessage {
-    #[serde(rename = "role")]
     pub role: String,
-    #[serde(default)]
     pub content: Vec<ContentBlock>,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    /// Legacy in-memory projection. New persistence stores reasoning as an
+    /// ordered `ContentBlock::Reasoning`; this field remains while callers are
+    /// migrated to content-block accessors.
     pub thinking: String,
-    #[serde(rename = "tool_calls", default, skip_serializing_if = "Vec::is_empty")]
+    /// Legacy in-memory projection of `ContentBlock::ToolCall`.
     pub tool_calls: Vec<AgentToolCall>,
-    #[serde(
-        rename = "tool_call_id",
-        default,
-        skip_serializing_if = "String::is_empty"
-    )]
     pub tool_call_id: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub tool_args: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+impl Serialize for AgentMessage {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let content = self.model_content();
+        let mut state = serializer.serialize_struct("AgentMessage", 3)?;
+        state.serialize_field("role", &self.role)?;
+        state.serialize_field("content", &content)?;
+        if let Some(metadata) = &self.metadata {
+            state.serialize_field("metadata", metadata)?;
+        }
+        state.end()
+    }
+}
+
+impl AgentMessage {
+    /// Return the canonical, ordered content used for persistence and protocol
+    /// lowering. Legacy side fields are projected only when their equivalent
+    /// block is not already present.
+    pub fn model_content(&self) -> Vec<ContentBlock> {
+        let mut content = self.content.clone();
+        if !self.thinking.is_empty()
+            && !content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::Reasoning { .. }))
+        {
+            content.insert(
+                0,
+                ContentBlock::reasoning(self.thinking.clone(), ProviderMetadata::new()),
+            );
+        }
+        if !content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::ToolCall { .. }))
+        {
+            content.extend(self.tool_calls.iter().map(|call| {
+                ContentBlock::tool_call(
+                    call.id.clone(),
+                    call.name.clone(),
+                    call.args.clone(),
+                    call.provider_metadata.clone(),
+                )
+            }));
+        }
+        if self.role == "tool"
+            && !content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
+        {
+            let text = content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            content.retain(|block| !matches!(block, ContentBlock::Text { .. }));
+            content.push(ContentBlock::tool_result(
+                self.tool_call_id.clone(),
+                text,
+                false,
+            ));
+        }
+        content
+    }
+}
+
+impl<'de> Deserialize<'de> for AgentMessage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize, Default)]
+        #[serde(default)]
+        struct StoredMessage {
+            role: String,
+            content: Vec<ContentBlock>,
+            thinking: String,
+            tool_calls: Vec<AgentToolCall>,
+            tool_call_id: String,
+            name: String,
+            tool_args: String,
+            metadata: Option<serde_json::Map<String, serde_json::Value>>,
+        }
+
+        let mut stored = StoredMessage::deserialize(deserializer)?;
+        let has_reasoning = stored
+            .content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Reasoning { .. }));
+        if !stored.thinking.is_empty() && !has_reasoning {
+            stored.content.insert(
+                0,
+                ContentBlock::reasoning(stored.thinking.clone(), ProviderMetadata::new()),
+            );
+        }
+        let has_tool_calls = stored
+            .content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::ToolCall { .. }));
+        if !has_tool_calls {
+            stored.content.extend(stored.tool_calls.iter().map(|call| {
+                ContentBlock::tool_call(
+                    call.id.clone(),
+                    call.name.clone(),
+                    call.args.clone(),
+                    call.provider_metadata.clone(),
+                )
+            }));
+        }
+        if stored.role == "tool"
+            && !stored
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
+        {
+            let text = stored
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            stored
+                .content
+                .retain(|block| !matches!(block, ContentBlock::Text { .. }));
+            stored.content.push(ContentBlock::tool_result(
+                stored.tool_call_id.clone(),
+                text,
+                false,
+            ));
+        }
+
+        let thinking = stored
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Reasoning { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        let tool_calls = stored
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::ToolCall {
+                    id,
+                    name,
+                    args,
+                    provider_metadata,
+                } => Some(AgentToolCall {
+                    id: id.clone(),
+                    name: name.clone(),
+                    args: args.clone(),
+                    provider_metadata: provider_metadata.clone(),
+                }),
+                _ => None,
+            })
+            .collect();
+
+        let tool_call_id = stored
+            .content
+            .iter()
+            .find_map(|block| match block {
+                ContentBlock::ToolResult { tool_call_id, .. } => Some(tool_call_id.clone()),
+                _ => None,
+            })
+            .unwrap_or(stored.tool_call_id);
+
+        Ok(AgentMessage {
+            role: stored.role,
+            content: stored.content,
+            thinking,
+            tool_calls,
+            tool_call_id,
+            name: stored.name,
+            tool_args: stored.tool_args,
+            metadata: stored.metadata,
+        })
+    }
 }
 
 impl AgentMessage {
@@ -373,6 +635,8 @@ pub struct AgentToolCall {
     pub id: String,
     pub name: String,
     pub args: serde_json::Value,
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub provider_metadata: ProviderMetadata,
 }
 
 // ─── Message (LLM wire format) ─────────────────────────────────────────────
@@ -496,6 +760,12 @@ pub struct Usage {
         skip_serializing_if = "Option::is_none"
     )]
     pub cache_write_tokens: Option<i64>,
+    #[serde(
+        rename = "reasoning_tokens",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reasoning_tokens: Option<i64>,
     /// Cost of this request as reported by the upstream API (Future platform
     /// returns `credit_cost` as a decimal string, e.g. "0.00019072").
     /// Parsed as f64 for accumulation; absent / null → None.
@@ -506,6 +776,8 @@ pub struct Usage {
         deserialize_with = "deserialize_credit_cost"
     )]
     pub credit_cost: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_metadata: Option<ProviderMetadata>,
 }
 
 /// Deserialize `credit_cost` which may be a string ("0.00019") or a number.
@@ -566,52 +838,6 @@ where
         }
     }
     deserializer.deserialize_option(CreditCostVisitor)
-}
-
-// ─── StreamEvent ────────────────────────────────────────────────────────────
-
-/// StreamEvent matches Go's types.StreamEvent exactly.
-/// JSON field names are camelCase as specified in Go struct tags.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct StreamEvent {
-    #[serde(rename = "type")]
-    pub event_type: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub text: String,
-    #[serde(rename = "toolCall", default, skip_serializing_if = "Option::is_none")]
-    pub tool_call: Option<ToolCall>,
-    #[serde(rename = "toolName", default, skip_serializing_if = "String::is_empty")]
-    pub tool_name: String,
-    #[serde(rename = "toolID", default, skip_serializing_if = "String::is_empty")]
-    pub tool_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub usage: Option<Usage>,
-    #[serde(
-        rename = "stopReason",
-        default,
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub stop_reason: String,
-    #[serde(
-        rename = "errorText",
-        default,
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub error_text: String,
-    /// Agent-owned semantic payload used after provider events are normalized.
-    /// Provider adapters never need to populate this; it is intentionally not
-    /// part of their JSON wire format.
-    #[serde(skip)]
-    pub payload: Option<serde_json::Value>,
-    /// Tool-call array index from the streaming SSE delta chunk.  Used to route
-    /// `toolcall_delta` events to the correct tool-call accumulator when the
-    /// model streams multiple tool calls in parallel.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub tc_index: usize,
-}
-
-fn is_zero(n: &usize) -> bool {
-    *n == 0
 }
 
 // ─── ToolDef / AgentTool ──────────────────────────────────────────────────
@@ -741,13 +967,10 @@ pub struct ModelCost {
 
 #[async_trait::async_trait]
 pub trait LLMProvider: Send + Sync {
-    async fn stream_chat(
+    async fn stream_model(
         &self,
-        model: String,
-        messages: Vec<Message>,
-        tools: Vec<ToolDef>,
-        system_prompt: String,
-    ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<StreamEvent>>;
+        request: crate::llm::schema::ModelRequest,
+    ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>>;
 
     /// Refresh only the API key at runtime, after an out-of-band credential
     /// change (FutureGene login/logout, custom-provider key edits). This leaves
@@ -768,50 +991,68 @@ pub trait LLMProvider: Send + Sync {
 
 impl AgentMessage {
     pub fn to_llm(&self) -> Message {
-        let content = if self.content.is_empty() {
-            None
-        } else {
-            let blocks: Vec<serde_json::Value> = self
-                .content
-                .iter()
-                .map(|b| serde_json::to_value(b).unwrap_or(serde_json::Value::Null))
-                .collect();
-            Some(serde_json::Value::Array(blocks))
-        };
+        let model_content = self.model_content();
+        let blocks: Vec<serde_json::Value> = model_content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text { .. } | ContentBlock::Image { .. } => {
+                    Some(serde_json::to_value(block).unwrap_or(serde_json::Value::Null))
+                }
+                ContentBlock::ToolResult { content, .. } => {
+                    Some(serde_json::json!({"type": "text", "text": content}))
+                }
+                ContentBlock::Reasoning { .. } | ContentBlock::ToolCall { .. } => None,
+            })
+            .collect();
+        let content = (!blocks.is_empty()).then_some(serde_json::Value::Array(blocks));
 
-        let tool_calls = if self.tool_calls.is_empty() {
+        let canonical_tool_calls: Vec<ToolCall> = model_content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::ToolCall { id, name, args, .. } => Some(ToolCall {
+                    id: id.clone(),
+                    call_type: "function".to_string(),
+                    function: ToolCallFn {
+                        name: name.clone(),
+                        arguments: match args {
+                            serde_json::Value::String(value) => {
+                                serde_json::Value::String(value.clone())
+                            }
+                            other => serde_json::Value::String(
+                                serde_json::to_string(other).unwrap_or_default(),
+                            ),
+                        },
+                    },
+                }),
+                _ => None,
+            })
+            .collect();
+        let tool_calls = if canonical_tool_calls.is_empty() {
             None
         } else {
-            Some(
-                self.tool_calls
-                    .iter()
-                    .map(|tc| ToolCall {
-                        id: tc.id.clone(),
-                        call_type: "function".to_string(),
-                        function: ToolCallFn {
-                            name: tc.name.clone(),
-                            arguments: match &tc.args {
-                                serde_json::Value::String(s) => {
-                                    serde_json::Value::String(s.clone())
-                                }
-                                other => serde_json::Value::String(
-                                    serde_json::to_string(other).unwrap_or_default(),
-                                ),
-                            },
-                        },
-                    })
-                    .collect(),
-            )
+            Some(canonical_tool_calls)
         };
+        let reasoning_content = model_content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Reasoning { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        let tool_result_id = model_content.iter().find_map(|block| match block {
+            ContentBlock::ToolResult { tool_call_id, .. } => Some(tool_call_id.clone()),
+            _ => None,
+        });
 
         Message {
             role: self.role.clone(),
             content,
             tool_calls,
-            tool_call_id: self.tool_call_id.clone(),
+            tool_call_id: tool_result_id.unwrap_or_else(|| self.tool_call_id.clone()),
             name: self.name.clone(),
             tool_args: self.tool_args.clone(),
-            reasoning_content: self.thinking.clone(),
+            reasoning_content,
         }
     }
 }
@@ -888,6 +1129,7 @@ pub fn convert_from_llm(msgs: Vec<Message>) -> Vec<AgentMessage> {
                             id: tc.id,
                             name: tc.function.name,
                             args: tc.function.arguments,
+                            provider_metadata: ProviderMetadata::new(),
                         })
                         .collect()
                 })
@@ -1126,30 +1368,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ─── StreamEvent tc_index ──────────────────────────────────────────────
-
-    #[test]
-    fn stream_event_tc_index_serialization() {
-        let event = StreamEvent {
-            event_type: "toolcall_delta".to_string(),
-            tc_index: 2,
-            ..Default::default()
-        };
-        let json = serde_json::to_value(&event).unwrap();
-        assert_eq!(json["tc_index"], 2);
-    }
-
-    #[test]
-    fn stream_event_tc_index_zero_skipped() {
-        let event = StreamEvent {
-            event_type: "toolcall_delta".to_string(),
-            tc_index: 0,
-            ..Default::default()
-        };
-        let json = serde_json::to_value(&event).unwrap();
-        assert!(json.get("tc_index").is_none());
-    }
-
     // ─── AgentTool / ToolCallFn ────────────────────────────────────────────
 
     #[test]
@@ -1161,6 +1379,7 @@ mod tests {
                 id: "c1".to_string(),
                 name: "shell".to_string(),
                 args: serde_json::json!("string-args"),
+                provider_metadata: ProviderMetadata::new(),
             }],
             ..Default::default()
         };
@@ -1380,11 +1599,62 @@ mod tests {
                 id: "call_1".to_string(),
                 name: "shell".to_string(),
                 args: serde_json::json!({"command": "ls"}),
+                provider_metadata: ProviderMetadata::new(),
             }],
             ..Default::default()
         };
         let json = serde_json::to_value(&msg).unwrap();
-        assert_eq!(json["tool_calls"][0]["name"], "shell");
+        assert_eq!(json["content"][0]["type"], "tool_call");
+        assert_eq!(json["content"][0]["name"], "shell");
+        assert!(json.get("tool_calls").is_none());
+    }
+
+    #[test]
+    fn legacy_agent_message_normalizes_to_canonical_blocks() {
+        let message: AgentMessage = serde_json::from_value(serde_json::json!({
+            "role": "assistant",
+            "content": [{"type": "text", "text": "answer"}],
+            "thinking": "summary",
+            "tool_calls": [{"id": "call_1", "name": "shell", "args": {"command": "ls"}}]
+        }))
+        .unwrap();
+        assert!(matches!(message.content[0], ContentBlock::Reasoning { .. }));
+        assert!(matches!(message.content[2], ContentBlock::ToolCall { .. }));
+
+        let stored = serde_json::to_value(message).unwrap();
+        assert!(stored.get("thinking").is_none());
+        assert!(stored.get("tool_calls").is_none());
+        assert_eq!(stored["content"][0]["type"], "reasoning");
+        assert_eq!(stored["content"][2]["type"], "tool_call");
+    }
+
+    #[test]
+    fn provider_metadata_roundtrips_on_reasoning_and_tool_call() {
+        let mut openai = ProviderMetadata::new();
+        openai.insert(
+            "openai".into(),
+            serde_json::json!({"id": "rs_1", "encrypted_content": "cipher"}),
+        );
+        let message = AgentMessage {
+            role: "assistant".into(),
+            content: vec![
+                ContentBlock::reasoning("summary", openai.clone()),
+                ContentBlock::tool_call("call_1", "read", serde_json::json!({}), openai),
+            ],
+            ..Default::default()
+        };
+        let stored = serde_json::to_string(&message).unwrap();
+        let loaded: AgentMessage = serde_json::from_str(&stored).unwrap();
+        assert!(matches!(
+            &loaded.content[0],
+            ContentBlock::Reasoning { provider_metadata, .. }
+                if provider_metadata["openai"]["encrypted_content"] == "cipher"
+        ));
+        assert!(matches!(
+            &loaded.content[1],
+            ContentBlock::ToolCall { provider_metadata, .. }
+                if provider_metadata["openai"]["id"] == "rs_1"
+        ));
     }
 
     // ─── Usage deserialization ─────────────────────────────────────────────
@@ -1433,42 +1703,6 @@ mod tests {
         assert!(u.credit_cost.is_none());
     }
 
-    // ─── StreamEvent ───────────────────────────────────────────────────────
-
-    #[test]
-    fn stream_event_serialization() {
-        let event = StreamEvent {
-            event_type: "text_chunk".to_string(),
-            text: "hello".to_string(),
-            ..Default::default()
-        };
-        let json = serde_json::to_value(&event).unwrap();
-        assert_eq!(json["type"], "text_chunk");
-        assert_eq!(json["text"], "hello");
-    }
-
-    #[test]
-    fn stream_event_deserialization() {
-        let json = r#"{"type":"tool_start","toolName":"shell","toolID":"call_1"}"#;
-        let e: StreamEvent = serde_json::from_str(json).unwrap();
-        assert_eq!(e.event_type, "tool_start");
-        assert_eq!(e.tool_name, "shell");
-        assert_eq!(e.tool_id, "call_1");
-    }
-
-    #[test]
-    fn stream_event_camel_case_fields() {
-        let event = StreamEvent {
-            event_type: "agent_end".to_string(),
-            stop_reason: "max_tokens".to_string(),
-            error_text: "some error".to_string(),
-            ..Default::default()
-        };
-        let json = serde_json::to_value(&event).unwrap();
-        assert_eq!(json["stopReason"], "max_tokens");
-        assert_eq!(json["errorText"], "some error");
-    }
-
     // ─── Message ↔ AgentMessage conversion ─────────────────────────────────
 
     #[test]
@@ -1493,6 +1727,7 @@ mod tests {
                 id: "c1".to_string(),
                 name: "shell".to_string(),
                 args: serde_json::json!({"command": "ls"}),
+                provider_metadata: ProviderMetadata::new(),
             }],
             ..Default::default()
         };
@@ -1747,13 +1982,12 @@ mod tests {
         struct MinimalProvider;
         #[async_trait::async_trait]
         impl LLMProvider for MinimalProvider {
-            async fn stream_chat(
+            async fn stream_model(
                 &self,
-                _model: String,
-                _messages: Vec<Message>,
-                _tools: Vec<ToolDef>,
-                _system_prompt: String,
-            ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<StreamEvent>> {
+                _request: crate::llm::schema::ModelRequest,
+            ) -> anyhow::Result<
+                tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>,
+            > {
                 let (_tx, rx) = tokio::sync::mpsc::channel(1);
                 Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
             }
@@ -1761,9 +1995,14 @@ mod tests {
         let provider = MinimalProvider;
         provider.set_api_key("ignored");
         provider.update_thinking("high", 1234);
-        // The default stream_chat implementation is callable too.
+        // The canonical model stream implementation is callable too.
         let mut stream = provider
-            .stream_chat("m".to_string(), vec![], vec![], String::new())
+            .stream_model(crate::llm::schema::ModelRequest {
+                model: "m".into(),
+                system_prompt: String::new(),
+                messages: vec![],
+                tools: vec![],
+            })
             .await
             .unwrap();
         use tokio_stream::StreamExt;

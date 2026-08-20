@@ -3,8 +3,9 @@ use std::path::PathBuf;
 
 use crate::{
     agent::Loop,
+    llm::schema::{FinishReason, ModelRequest, ModelStreamEvent},
     tools::coding_tools,
-    types::{AgentMessage, LLMProvider, Message, StreamEvent, ToolCall, ToolCallFn, ToolDef},
+    types::{AgentMessage, LLMProvider},
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::mpsc;
@@ -17,13 +18,10 @@ struct MockWriteProvider {
 
 #[async_trait::async_trait]
 impl LLMProvider for MockWriteProvider {
-    async fn stream_chat(
+    async fn stream_model(
         &self,
-        _model: String,
-        _messages: Vec<Message>,
-        _tools: Vec<ToolDef>,
-        _system_prompt: String,
-    ) -> anyhow::Result<ReceiverStream<StreamEvent>> {
+        _request: ModelRequest,
+    ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
         let (tx, rx) = mpsc::channel(8);
         let call_index = self.calls.fetch_add(1, Ordering::SeqCst);
         let outside_path = self.outside_path.clone();
@@ -35,17 +33,12 @@ impl LLMProvider for MockWriteProvider {
                     "content": "should not leave workspace"
                 });
                 let _ = tx
-                    .send(event_with_tool_call(
-                        "toolcall_start",
-                        "call_test",
-                        "write",
-                        arguments,
-                    ))
+                    .send(tool_start_event("call_test", "write", arguments))
                     .await;
-                let _ = tx.send(simple_event("toolcall_end")).await;
+                let _ = tx.send(tool_end_event()).await;
             } else {
                 let _ = tx.send(text_event("done")).await;
-                let _ = tx.send(simple_event("stop")).await;
+                let _ = tx.send(finish_event()).await;
             }
         });
 
@@ -53,40 +46,41 @@ impl LLMProvider for MockWriteProvider {
     }
 }
 
-fn simple_event(event_type: &str) -> StreamEvent {
-    StreamEvent {
-        event_type: event_type.to_string(),
-        ..Default::default()
+fn finish_event() -> ModelStreamEvent {
+    ModelStreamEvent::Finish {
+        reason: FinishReason::Stop,
+        usage: None,
     }
 }
 
-fn text_event(text: &str) -> StreamEvent {
-    StreamEvent {
-        event_type: "text_delta".to_string(),
+fn tool_end_event() -> ModelStreamEvent {
+    ModelStreamEvent::ToolInputEnd {
+        index: 0,
+        id: String::new(),
+        name: String::new(),
+        arguments: serde_json::Value::Null,
+        provider_metadata: Default::default(),
+    }
+}
+
+fn text_event(text: &str) -> ModelStreamEvent {
+    ModelStreamEvent::TextDelta {
+        id: "text".into(),
         text: text.to_string(),
-        ..Default::default()
     }
 }
 
-fn event_with_tool_call(
-    event_type: &str,
+fn tool_start_event(
     tool_id: &str,
     tool_name: &str,
     arguments: serde_json::Value,
-) -> StreamEvent {
-    StreamEvent {
-        event_type: event_type.to_string(),
-        tool_name: tool_name.to_string(),
-        tool_id: tool_id.to_string(),
-        tool_call: Some(ToolCall {
-            id: tool_id.to_string(),
-            call_type: "function".to_string(),
-            function: ToolCallFn {
-                name: tool_name.to_string(),
-                arguments,
-            },
-        }),
-        ..Default::default()
+) -> ModelStreamEvent {
+    ModelStreamEvent::ToolInputStart {
+        index: 0,
+        id: tool_id.to_string(),
+        name: tool_name.to_string(),
+        arguments: Some(arguments),
+        provider_metadata: Default::default(),
     }
 }
 
@@ -345,12 +339,12 @@ struct ScriptedProvider {
 }
 
 enum Script {
-    Events(Vec<StreamEvent>),
+    Events(Vec<ModelStreamEvent>),
     Fail(String),
     /// Send events, then hold the stream open (never closes).
-    Stall(Vec<StreamEvent>),
+    Stall(Vec<ModelStreamEvent>),
     /// Wait for the signal, then deliver the events.
-    Gated(Arc<tokio::sync::Notify>, Vec<StreamEvent>),
+    Gated(Arc<tokio::sync::Notify>, Vec<ModelStreamEvent>),
 }
 
 impl ScriptedProvider {
@@ -363,13 +357,10 @@ impl ScriptedProvider {
 
 #[async_trait::async_trait]
 impl LLMProvider for ScriptedProvider {
-    async fn stream_chat(
+    async fn stream_model(
         &self,
-        _model: String,
-        _messages: Vec<Message>,
-        _tools: Vec<ToolDef>,
-        _system_prompt: String,
-    ) -> anyhow::Result<ReceiverStream<StreamEvent>> {
+        _request: ModelRequest,
+    ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
         let script = self
             .scripts
             .lock()
@@ -449,7 +440,7 @@ async fn wait_for_run_end(session: &crate::rpc::ServerSession) {
 }
 
 fn text_turn(text: &str) -> Script {
-    Script::Events(vec![text_event(text), simple_event("stop")])
+    Script::Events(vec![text_event(text), finish_event()])
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -517,9 +508,9 @@ async fn prompt_tool_run_executes_and_records_tool_result() {
     let write_args = serde_json::json!({"path": "out.txt", "content": "from tool"});
     let provider = ScriptedProvider::new(vec![
         Script::Events(vec![
-            event_with_tool_call("toolcall_start", "call-1", "write", write_args),
-            simple_event("toolcall_end"),
-            simple_event("stop"),
+            tool_start_event("call-1", "write", write_args),
+            tool_end_event(),
+            finish_event(),
         ]),
         text_turn("written"),
     ]);
@@ -541,13 +532,108 @@ async fn prompt_tool_run_executes_and_records_tool_result() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn prompt_projects_typed_model_and_tool_events_end_to_end() {
+    let arguments = serde_json::json!({"path": "typed.txt", "content": "typed"});
+    let usage = crate::types::Usage {
+        prompt_tokens: 3,
+        completion_tokens: 2,
+        total_tokens: 5,
+        ..Default::default()
+    };
+    let provider = ScriptedProvider::new(vec![
+        Script::Events(vec![
+            ModelStreamEvent::ReasoningStart {
+                id: "reasoning".into(),
+            },
+            ModelStreamEvent::ReasoningDelta {
+                id: "reasoning".into(),
+                text: "plan".into(),
+            },
+            ModelStreamEvent::ReasoningEnd {
+                id: "reasoning".into(),
+                provider_metadata: Default::default(),
+            },
+            ModelStreamEvent::ToolInputStart {
+                index: 0,
+                id: "call-typed".into(),
+                name: "write".into(),
+                arguments: None,
+                provider_metadata: Default::default(),
+            },
+            ModelStreamEvent::ToolInputDelta {
+                index: 0,
+                id: "call-typed".into(),
+                delta: serde_json::to_string(&arguments).unwrap(),
+                snapshot: true,
+            },
+            ModelStreamEvent::ToolInputEnd {
+                index: 0,
+                id: "call-typed".into(),
+                name: "write".into(),
+                arguments,
+                provider_metadata: Default::default(),
+            },
+            ModelStreamEvent::Usage(usage.clone()),
+            ModelStreamEvent::Finish {
+                reason: FinishReason::ToolCalls,
+                usage: None,
+            },
+        ]),
+        Script::Events(vec![
+            text_event("done"),
+            ModelStreamEvent::Finish {
+                reason: FinishReason::Stop,
+                usage: Some(usage),
+            },
+        ]),
+    ]);
+    let fixture = run_fixture(provider, "typed-events");
+    let output_path = fixture.workspace().join("typed.txt");
+    let mut events = fixture.session.broadcaster.subscribe();
+    let mut session = fixture.session;
+    session.prompt("write typed", &[], &[], None, None).unwrap();
+
+    let mut event_types = Vec::new();
+    loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+            .await
+            .expect("run event timeout")
+            .expect("run event");
+        event_types.push(event.event_type.clone());
+        if event.event_type == "agent_end" {
+            break;
+        }
+    }
+
+    assert_eq!(
+        event_types,
+        vec![
+            "user_message",
+            "agent_start",
+            "thinking_start",
+            "thinking_delta",
+            "thinking_end",
+            "tool_start",
+            "tool_delta",
+            "usage",
+            "tool_start",
+            "tool_end",
+            "text_chunk",
+            "usage",
+            "agent_end",
+        ]
+    );
+    assert_eq!(std::fs::read_to_string(output_path).unwrap(), "typed");
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn prompt_permission_none_denies_tool_calls() {
     let write_args = serde_json::json!({"path": "nope.txt", "content": "x"});
     let provider = ScriptedProvider::new(vec![
         Script::Events(vec![
-            event_with_tool_call("toolcall_start", "call-1", "write", write_args),
-            simple_event("toolcall_end"),
-            simple_event("stop"),
+            tool_start_event("call-1", "write", write_args),
+            tool_end_event(),
+            finish_event(),
         ]),
         text_turn("cannot"),
     ]);
@@ -675,26 +761,19 @@ async fn prompt_auto_compaction_compacts_and_rewrites_history() {
     let big_text = "lorem ipsum dolor sit amet ".repeat(6000); // ~150 KB
     let provider = ScriptedProvider::new(vec![
         Script::Events(vec![
-            event_with_tool_call(
-                "toolcall_start",
-                "call-1",
-                "read",
-                serde_json::json!({"path": "x"}),
-            ),
-            simple_event("toolcall_end"),
-            StreamEvent {
-                event_type: "usage".to_string(),
-                usage: Some(crate::types::Usage {
-                    prompt_tokens: 50_000,
-                    completion_tokens: 100,
-                    total_tokens: 50_100,
-                    cache_read_tokens: None,
-                    cache_write_tokens: None,
-                    credit_cost: None,
-                }),
-                ..Default::default()
-            },
-            simple_event("stop"),
+            tool_start_event("call-1", "read", serde_json::json!({"path": "x"})),
+            tool_end_event(),
+            ModelStreamEvent::Usage(crate::types::Usage {
+                prompt_tokens: 50_000,
+                completion_tokens: 100,
+                total_tokens: 50_100,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+                reasoning_tokens: None,
+                credit_cost: None,
+                provider_metadata: None,
+            }),
+            finish_event(),
         ]),
         text_turn("done"),
     ]);
@@ -797,14 +876,13 @@ async fn run_sandbox_denial_escalates_through_session_wiring() {
         .join(format!("futureos-run-escalate-{}.txt", std::process::id()));
     let provider = ScriptedProvider::new(vec![
         Script::Events(vec![
-            event_with_tool_call(
-                "toolcall_start",
+            tool_start_event(
                 "call-1",
                 "shell",
                 serde_json::json!({"command": format!("touch {}", outside.display())}),
             ),
-            simple_event("toolcall_end"),
-            simple_event("stop"),
+            tool_end_event(),
+            finish_event(),
         ]),
         text_turn("done"),
     ]);
@@ -1048,26 +1126,19 @@ async fn prompt_auto_compaction_with_small_history_completes() {
     // ≥3 messages. That arm is covered by the run_loop unit test.)
     let provider = ScriptedProvider::new(vec![
         Script::Events(vec![
-            event_with_tool_call(
-                "toolcall_start",
-                "call-1",
-                "read",
-                serde_json::json!({"path": "x"}),
-            ),
-            simple_event("toolcall_end"),
-            StreamEvent {
-                event_type: "usage".to_string(),
-                usage: Some(crate::types::Usage {
-                    prompt_tokens: 50_000,
-                    completion_tokens: 100,
-                    total_tokens: 50_100,
-                    cache_read_tokens: None,
-                    cache_write_tokens: None,
-                    credit_cost: None,
-                }),
-                ..Default::default()
-            },
-            simple_event("stop"),
+            tool_start_event("call-1", "read", serde_json::json!({"path": "x"})),
+            tool_end_event(),
+            ModelStreamEvent::Usage(crate::types::Usage {
+                prompt_tokens: 50_000,
+                completion_tokens: 100,
+                total_tokens: 50_100,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+                reasoning_tokens: None,
+                credit_cost: None,
+                provider_metadata: None,
+            }),
+            finish_event(),
         ]),
         text_turn("compacted reply"),
     ]);
@@ -1105,7 +1176,7 @@ async fn prompt_journal_loss_marks_run_persistence_degraded() {
     let gate = Arc::new(tokio::sync::Notify::new());
     let provider = ScriptedProvider::new(vec![Script::Gated(
         gate.clone(),
-        vec![text_event("doomed reply"), simple_event("stop")],
+        vec![text_event("doomed reply"), finish_event()],
     )]);
     let fixture = run_fixture(provider, "journal-loss");
     let run_events = fixture
@@ -1150,7 +1221,7 @@ async fn prompt_mid_run_append_failure_heals_via_full_rewrite() {
     let gate = Arc::new(tokio::sync::Notify::new());
     let provider = ScriptedProvider::new(vec![Script::Gated(
         gate.clone(),
-        vec![text_event("late answer"), simple_event("stop")],
+        vec![text_event("late answer"), finish_event()],
     )]);
     let fixture = run_fixture(provider, "heal");
     let transcript = fixture.transcript_file();
@@ -1219,14 +1290,13 @@ async fn prompt_workspace_permission_routes_through_approval_gate() {
         .join(format!("futureos-gate-target-{}.txt", std::process::id()));
     let provider = ScriptedProvider::new(vec![
         Script::Events(vec![
-            event_with_tool_call(
-                "toolcall_start",
+            tool_start_event(
                 "call-1",
                 "write",
                 serde_json::json!({"path": outside.to_string_lossy(), "content": "ok"}),
             ),
-            simple_event("toolcall_end"),
-            simple_event("stop"),
+            tool_end_event(),
+            finish_event(),
         ]),
         text_turn("done"),
     ]);

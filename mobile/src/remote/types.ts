@@ -307,6 +307,7 @@ export interface RemoteCommand {
   entryId?: string;
   mode?: string;
   runId?: string;
+  promptId?: string;
   sinceIdx?: number;
   offset?: number;
   limit?: number;
