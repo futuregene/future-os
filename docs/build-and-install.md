@@ -240,6 +240,23 @@ make test           # all 7 suites: agent, channels, CLI, TUI, GUI, GUI Rust, mo
 make clean          # remove build artifacts (use make uninstall for installed binaries)
 ```
 
+### Start the desktop app from source
+
+After the prerequisites and clone above, run:
+
+```bash
+make setup
+make run-desktop
+```
+
+`make setup` installs the JavaScript workspaces, initializes built-in skills, and
+creates the Tauri sidecar placeholder. `make run-desktop` builds the local CLI
+sidecar and starts the desktop app in development mode — the app auto-starts the
+bundled agent sidecar on launch, so no separate `future agent` is needed. (If an
+agent is already running on `127.0.0.1:50051`, the app reuses it instead.)
+Android and iOS need their respective SDKs and an emulator or device; see the
+[mobile guide](../mobile/README.md).
+
 ### Proto
 
 The canonical API is `packages/rpc/proto/future.proto`. Generated Rust code is

@@ -72,24 +72,6 @@ iex (irm https://dl.future-os.cn/install.ps1)
 Step-by-step installation for every platform (desktop app, toolchains, GUI
 packaging) is in the **[Build & Install](docs/build-and-install.md)** guide.
 
-### Run from source
-
-After installing the platform prerequisites from the build guide, a fresh clone
-can start the desktop app with:
-
-```bash
-git clone https://github.com/futuregene/future-os.git
-cd future-os
-make setup
-make run-desktop
-```
-
-`make setup` installs the JavaScript workspaces, initializes built-in skills,
-and creates the Tauri sidecar placeholder. `make run-desktop` builds the local
-CLI sidecar and starts the desktop app in development mode. Android and iOS
-need their respective SDKs and an emulator or device; see the build guide and
-the [mobile guide](mobile/README.md).
-
 ### Configure a model
 
 The agent needs at least one model with an API key before it can answer.
