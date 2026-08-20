@@ -730,7 +730,7 @@ impl ServerSession {
             "sessionId": self.session_id(),
             "userMessages": msgs.iter().filter(|m| m.role == "user").count(),
             "assistantMessages": msgs.iter().filter(|m| m.role == "assistant").count(),
-            "toolCalls": msgs.iter().filter(|m| !m.tool_calls.is_empty()).count(),
+            "toolCalls": msgs.iter().filter(|m| m.has_tool_calls()).count(),
             "toolResults": msgs.iter().filter(|m| m.role == "tool").count(),
             "totalMessages": msgs.len(),
             "tokens": {

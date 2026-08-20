@@ -340,13 +340,6 @@ impl Serialize for ContentBlock {
 pub struct AgentMessage {
     pub role: String,
     pub content: Vec<ContentBlock>,
-    /// Legacy in-memory projection. New persistence stores reasoning as an
-    /// ordered `ContentBlock::Reasoning`; this field remains while callers are
-    /// migrated to content-block accessors.
-    pub thinking: String,
-    /// Legacy in-memory projection of `ContentBlock::ToolCall`.
-    pub tool_calls: Vec<AgentToolCall>,
-    pub tool_call_id: String,
     pub name: String,
     pub tool_args: String,
     pub metadata: Option<serde_json::Map<String, serde_json::Value>>,
@@ -369,55 +362,62 @@ impl Serialize for AgentMessage {
 }
 
 impl AgentMessage {
-    /// Return the canonical, ordered content used for persistence and protocol
-    /// lowering. Legacy side fields are projected only when their equivalent
-    /// block is not already present.
+    /// The canonical, ordered content used for persistence and protocol
+    /// lowering. `content` is the single source of truth; legacy JSONL side
+    /// fields are normalized into it at deserialization time.
     pub fn model_content(&self) -> Vec<ContentBlock> {
-        let mut content = self.content.clone();
-        if !self.thinking.is_empty()
-            && !content
-                .iter()
-                .any(|block| matches!(block, ContentBlock::Reasoning { .. }))
-        {
-            content.insert(
-                0,
-                ContentBlock::reasoning(self.thinking.clone(), ProviderMetadata::new()),
-            );
-        }
-        if !content
+        self.content.clone()
+    }
+
+    /// Concatenated reasoning text across all `Reasoning` content blocks.
+    pub fn reasoning_text(&self) -> String {
+        self.content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Reasoning { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    /// Reconstructed tool calls from `ToolCall` content blocks.
+    pub fn tool_calls(&self) -> Vec<AgentToolCall> {
+        self.content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::ToolCall {
+                    id,
+                    name,
+                    args,
+                    provider_metadata,
+                } => Some(AgentToolCall {
+                    id: id.clone(),
+                    name: name.clone(),
+                    args: args.clone(),
+                    provider_metadata: provider_metadata.clone(),
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The `tool_call_id` of the first `ToolResult` block (tool messages).
+    pub fn tool_call_id(&self) -> String {
+        self.content
+            .iter()
+            .find_map(|block| match block {
+                ContentBlock::ToolResult { tool_call_id, .. } => Some(tool_call_id.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    /// True when the message carries at least one tool-call block.
+    pub fn has_tool_calls(&self) -> bool {
+        self.content
             .iter()
             .any(|block| matches!(block, ContentBlock::ToolCall { .. }))
-        {
-            content.extend(self.tool_calls.iter().map(|call| {
-                ContentBlock::tool_call(
-                    call.id.clone(),
-                    call.name.clone(),
-                    call.args.clone(),
-                    call.provider_metadata.clone(),
-                )
-            }));
-        }
-        if self.role == "tool"
-            && !content
-                .iter()
-                .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
-        {
-            let text = content
-                .iter()
-                .filter_map(|block| match block {
-                    ContentBlock::Text { text } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("");
-            content.retain(|block| !matches!(block, ContentBlock::Text { .. }));
-            content.push(ContentBlock::tool_result(
-                self.tool_call_id.clone(),
-                text,
-                false,
-            ));
-        }
-        content
     }
 }
 
@@ -489,49 +489,9 @@ impl<'de> Deserialize<'de> for AgentMessage {
             ));
         }
 
-        let thinking = stored
-            .content
-            .iter()
-            .filter_map(|block| match block {
-                ContentBlock::Reasoning { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("");
-        let tool_calls = stored
-            .content
-            .iter()
-            .filter_map(|block| match block {
-                ContentBlock::ToolCall {
-                    id,
-                    name,
-                    args,
-                    provider_metadata,
-                } => Some(AgentToolCall {
-                    id: id.clone(),
-                    name: name.clone(),
-                    args: args.clone(),
-                    provider_metadata: provider_metadata.clone(),
-                }),
-                _ => None,
-            })
-            .collect();
-
-        let tool_call_id = stored
-            .content
-            .iter()
-            .find_map(|block| match block {
-                ContentBlock::ToolResult { tool_call_id, .. } => Some(tool_call_id.clone()),
-                _ => None,
-            })
-            .unwrap_or(stored.tool_call_id);
-
         Ok(AgentMessage {
             role: stored.role,
             content: stored.content,
-            thinking,
-            tool_calls,
-            tool_call_id,
             name: stored.name,
             tool_args: stored.tool_args,
             metadata: stored.metadata,
@@ -545,6 +505,7 @@ impl AgentMessage {
             .iter()
             .filter_map(|b| match b {
                 ContentBlock::Text { text } => Some(text.clone()),
+                ContentBlock::ToolResult { content, .. } => Some(content.clone()),
                 _ => None,
             })
             .collect::<Vec<_>>()
@@ -618,9 +579,6 @@ impl AgentMessage {
                 serde_json::Value::String(s) => vec![ContentBlock::text(s)],
                 _ => vec![],
             },
-            thinking: String::new(),
-            tool_calls: vec![],
-            tool_call_id: String::new(),
             name: String::new(),
             tool_args: String::new(),
             metadata: None,
@@ -1049,7 +1007,7 @@ impl AgentMessage {
             role: self.role.clone(),
             content,
             tool_calls,
-            tool_call_id: tool_result_id.unwrap_or_else(|| self.tool_call_id.clone()),
+            tool_call_id: tool_result_id.unwrap_or_default(),
             name: self.name.clone(),
             tool_args: self.tool_args.clone(),
             reasoning_content,
@@ -1059,14 +1017,19 @@ impl AgentMessage {
 
 pub fn convert_to_llm(msgs: &[AgentMessage]) -> Vec<Message> {
     msgs.iter()
-        // Drop empty assistant messages (no content and no tool_calls) before
-        // they reach the model. A crash/interrupt can leave a reasoning-only
-        // assistant entry in the journal; on resume the API rejects it with
-        // "content or tool_calls must be set". Filtering here — at the single
-        // AgentMessage → Message boundary every send path and every provider
-        // format (OpenAI, Anthropic, responses) flows through — keeps the
-        // model-bound context clean without touching display or the journal.
-        .filter(|m| !(m.role == "assistant" && m.content.is_empty() && m.tool_calls.is_empty()))
+        // Drop empty assistant messages (no visible content and no tool_calls)
+        // before they reach the model. A crash/interrupt can leave a
+        // reasoning-only assistant entry in the journal; on resume the API
+        // rejects it with "content or tool_calls must be set". Filtering here —
+        // at the single AgentMessage → Message boundary every send path and
+        // every provider format flows through — keeps the model-bound context
+        // clean without touching display or the journal.
+        .filter(|m| {
+            !(m.role == "assistant"
+                && m.content
+                    .iter()
+                    .all(|block| matches!(block, ContentBlock::Reasoning { .. })))
+        })
         .map(|m| m.to_llm())
         .collect()
 }
@@ -1074,7 +1037,7 @@ pub fn convert_to_llm(msgs: &[AgentMessage]) -> Vec<Message> {
 pub fn convert_from_llm(msgs: Vec<Message>) -> Vec<AgentMessage> {
     msgs.into_iter()
         .map(|m| {
-            let content = if let Some(c) = m.content {
+            let mut content = if let Some(c) = m.content {
                 match c {
                     serde_json::Value::Array(arr) => arr
                         .into_iter()
@@ -1121,26 +1084,38 @@ pub fn convert_from_llm(msgs: Vec<Message>) -> Vec<AgentMessage> {
                 vec![]
             };
 
-            let tool_calls = m
-                .tool_calls
-                .map(|tcs| {
-                    tcs.into_iter()
-                        .map(|tc| AgentToolCall {
-                            id: tc.id,
-                            name: tc.function.name,
-                            args: tc.function.arguments,
-                            provider_metadata: ProviderMetadata::new(),
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+            if !m.reasoning_content.is_empty() {
+                content.insert(
+                    0,
+                    ContentBlock::reasoning(m.reasoning_content, ProviderMetadata::new()),
+                );
+            }
+            if let Some(tcs) = m.tool_calls {
+                for tc in tcs {
+                    content.push(ContentBlock::tool_call(
+                        tc.id,
+                        tc.function.name,
+                        tc.function.arguments,
+                        ProviderMetadata::new(),
+                    ));
+                }
+            }
+            if m.role == "tool" {
+                let text = content
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                content.retain(|block| !matches!(block, ContentBlock::Text { .. }));
+                content.push(ContentBlock::tool_result(m.tool_call_id, text, false));
+            }
 
             AgentMessage {
                 role: m.role,
                 content,
-                thinking: m.reasoning_content,
-                tool_calls,
-                tool_call_id: m.tool_call_id,
                 name: m.name.clone(),
                 tool_args: m.tool_args.clone(),
                 metadata: None,
@@ -1374,13 +1349,12 @@ mod tests {
     fn agent_tool_call_args_string_preserved() {
         let msg = AgentMessage {
             role: "assistant".to_string(),
-            content: vec![],
-            tool_calls: vec![AgentToolCall {
-                id: "c1".to_string(),
-                name: "shell".to_string(),
-                args: serde_json::json!("string-args"),
-                provider_metadata: ProviderMetadata::new(),
-            }],
+            content: vec![ContentBlock::tool_call(
+                "c1",
+                "shell",
+                serde_json::json!("string-args"),
+                ProviderMetadata::new(),
+            )],
             ..Default::default()
         };
         let llm = msg.to_llm();
@@ -1594,13 +1568,12 @@ mod tests {
     fn agent_message_serialize_with_tool_calls() {
         let msg = AgentMessage {
             role: "assistant".to_string(),
-            content: vec![],
-            tool_calls: vec![AgentToolCall {
-                id: "call_1".to_string(),
-                name: "shell".to_string(),
-                args: serde_json::json!({"command": "ls"}),
-                provider_metadata: ProviderMetadata::new(),
-            }],
+            content: vec![ContentBlock::tool_call(
+                "call_1",
+                "shell",
+                serde_json::json!({"command": "ls"}),
+                ProviderMetadata::new(),
+            )],
             ..Default::default()
         };
         let json = serde_json::to_value(&msg).unwrap();
@@ -1722,13 +1695,12 @@ mod tests {
     fn agent_message_to_llm_with_tool_calls() {
         let msg = AgentMessage {
             role: "assistant".to_string(),
-            content: vec![],
-            tool_calls: vec![AgentToolCall {
-                id: "c1".to_string(),
-                name: "shell".to_string(),
-                args: serde_json::json!({"command": "ls"}),
-                provider_metadata: ProviderMetadata::new(),
-            }],
+            content: vec![ContentBlock::tool_call(
+                "c1",
+                "shell",
+                serde_json::json!({"command": "ls"}),
+                ProviderMetadata::new(),
+            )],
             ..Default::default()
         };
         let llm = msg.to_llm();
@@ -1772,7 +1744,10 @@ mod tests {
         let msgs = vec![
             AgentMessage {
                 role: "assistant".to_string(),
-                thinking: "thinking...".to_string(),
+                content: vec![ContentBlock::reasoning(
+                    "thinking...",
+                    ProviderMetadata::new(),
+                )],
                 ..Default::default()
             },
             AgentMessage {
@@ -1802,8 +1777,8 @@ mod tests {
             ..Default::default()
         }];
         let agent_msgs = convert_from_llm(msgs);
-        assert_eq!(agent_msgs[0].tool_calls.len(), 1);
-        assert_eq!(agent_msgs[0].tool_calls[0].name, "read");
+        assert_eq!(agent_msgs[0].tool_calls().len(), 1);
+        assert_eq!(agent_msgs[0].tool_calls()[0].name, "read");
     }
 
     #[test]
@@ -1815,7 +1790,7 @@ mod tests {
             ..Default::default()
         }];
         let agent_msgs = convert_from_llm(msgs);
-        assert_eq!(agent_msgs[0].thinking, "thinking...");
+        assert_eq!(agent_msgs[0].reasoning_text(), "thinking...");
     }
 
     #[test]
