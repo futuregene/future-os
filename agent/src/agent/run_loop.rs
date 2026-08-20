@@ -524,7 +524,7 @@ impl Loop {
                  reasoning_provider_metadata: &crate::types::ProviderMetadata,
                  tool_calls: &[AgentToolCall]| {
                     let first_new_message = messages.len();
-                    let mut msg = AgentMessage {
+                    let msg = AgentMessage {
                         role: "assistant".to_string(),
                         content: {
                             let mut content = Vec::new();
@@ -538,18 +538,21 @@ impl Loop {
                             if !assistant_text.is_empty() {
                                 content.push(ContentBlock::text(assistant_text));
                             }
+                            for tc in tool_calls {
+                                content.push(ContentBlock::tool_call(
+                                    tc.id.clone(),
+                                    tc.name.clone(),
+                                    tc.args.clone(),
+                                    tc.provider_metadata.clone(),
+                                ));
+                            }
                             content
                         },
-                        thinking: reasoning_text.to_string(),
-                        tool_calls: vec![],
                         ..Default::default()
                     };
-                    for tc in tool_calls {
-                        msg.tool_calls.push(tc.clone());
-                    }
                     // Don't push an empty assistant — the LLM API rejects
                     // messages with neither content nor tool_calls.
-                    if !msg.content.is_empty() || !msg.tool_calls.is_empty() {
+                    if !msg.content.is_empty() {
                         messages.push(msg);
                     }
                     // Append placeholder tool-result for every unexecuted
@@ -561,8 +564,11 @@ impl Loop {
                         );
                         messages.push(AgentMessage {
                             role: "tool".to_string(),
-                            content: vec![ContentBlock::text(&cancelled)],
-                            tool_call_id: tc.id.clone(),
+                            content: vec![ContentBlock::tool_result(
+                                tc.id.clone(),
+                                &cancelled,
+                                false,
+                            )],
                             name: tc.name.clone(),
                             ..Default::default()
                         });
@@ -606,7 +612,7 @@ impl Loop {
             // Emit message_end
 
             // Build assistant message
-            let mut assistant_msg = AgentMessage {
+            let assistant_msg = AgentMessage {
                 role: "assistant".to_string(),
                 content: {
                     let mut content = Vec::new();
@@ -619,28 +625,23 @@ impl Loop {
                     if !assistant_text.is_empty() {
                         content.push(ContentBlock::text(&assistant_text));
                     }
+                    for tc in &agent_tool_calls {
+                        content.push(ContentBlock::tool_call(
+                            tc.id.clone(),
+                            tc.name.clone(),
+                            tc.args.clone(),
+                            tc.provider_metadata.clone(),
+                        ));
+                    }
                     content
                 },
-                thinking: reasoning_text.clone(),
-                tool_calls: vec![],
                 ..Default::default()
             };
 
-            // Convert LLM tool calls to agent tool calls
-            for tc in &agent_tool_calls {
-                assistant_msg.tool_calls.push(tc.clone());
-            }
             // Skip truly empty assistant messages — the LLM API rejects them
-            // ("content or tool_calls must be set").  However, a message that
-            // has reasoning_content (thinking) is NOT empty: the thinking
-            // content was already streamed to the client, and dropping it here
-            // loses the entire response (the GUI shows "没有返回文本").
-            // convert_messages_to_openai sends reasoning_content even when the
-            // content field is omitted, matching the tool_calls-only pattern.
-            if !assistant_msg.content.is_empty()
-                || !assistant_msg.tool_calls.is_empty()
-                || !assistant_msg.thinking.is_empty()
-            {
+            // ("content or tool_calls must be set"). Reasoning and tool calls
+            // are content blocks, so a message carrying either is non-empty.
+            if !assistant_msg.content.is_empty() {
                 messages.push(assistant_msg);
                 // Persist the assistant response immediately so it survives a
                 // crash mid-run, even if no tools were called in this turn.
@@ -1269,13 +1270,13 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(messages[1].tool_calls.len(), 2);
+        assert_eq!(messages[1].tool_calls().len(), 2);
         assert_eq!(
-            messages[1].tool_calls[0].args,
+            messages[1].tool_calls()[0].args,
             serde_json::json!({"q": "rust"})
         );
         assert_eq!(
-            messages[1].tool_calls[0].provider_metadata["openai"]["item_id"],
+            messages[1].tool_calls()[0].provider_metadata["openai"]["item_id"],
             "fc_1_done"
         );
         let projected = projected.lock();
@@ -1366,7 +1367,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(text, "answer");
-        assert_eq!(messages[1].thinking, "deep thought");
+        assert_eq!(messages[1].reasoning_text(), "deep thought");
         assert_eq!(
             loop_
                 .cumulative_input_tokens
@@ -1457,8 +1458,8 @@ mod tests {
         assert_eq!(text, "done");
         // user, assistant(tool_calls), tool result, assistant(text)
         assert_eq!(messages.len(), 4);
-        assert_eq!(messages[1].tool_calls.len(), 1);
-        assert_eq!(messages[1].tool_calls[0].name, "echo");
+        assert_eq!(messages[1].tool_calls().len(), 1);
+        assert_eq!(messages[1].tool_calls()[0].name, "echo");
         assert_eq!(messages[2].role, "tool");
         assert!(messages[2].text().contains("echo:"));
         let tool_events = tool_events.lock().clone();
@@ -1935,13 +1936,14 @@ mod tests {
         let assistant = &messages[1];
         // The pre-start delta created a placeholder (empty id/name) that was
         // finalized when the real start arrived; then call-1 and call-2.
-        assert_eq!(assistant.tool_calls.len(), 3);
-        assert_eq!(assistant.tool_calls[0].name, "");
-        assert_eq!(assistant.tool_calls[1].id, "call-1");
-        assert_eq!(assistant.tool_calls[2].id, "call-2");
+        assert_eq!(assistant.tool_calls().len(), 3);
+        assert_eq!(assistant.tool_calls()[0].name, "");
+        assert_eq!(assistant.tool_calls()[1].id, "call-1");
+        assert_eq!(assistant.tool_calls()[2].id, "call-2");
         // call-1's args were concatenated verbatim (same-id start append +
         // non-'{' delta): `{"pre":1}` + `, "post":2}`.
-        let args = assistant.tool_calls[1].args.as_str().unwrap();
+        let calls = assistant.tool_calls();
+        let args = calls[1].args.as_str().unwrap();
         assert_eq!(args, "{\"pre\":1}, \"post\":2}");
     }
 
@@ -2165,7 +2167,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(text, "done");
-        assert_eq!(messages[1].tool_calls.len(), 1);
+        assert_eq!(messages[1].tool_calls().len(), 1);
         assert_eq!(
             loop_
                 .cumulative_input_tokens
@@ -2365,7 +2367,7 @@ mod tests {
         // Partial assistant carries the finalized tool call, followed by its
         // cancellation placeholder.
         assert_eq!(messages.len(), 3);
-        assert_eq!(messages[1].tool_calls.len(), 1);
+        assert_eq!(messages[1].tool_calls().len(), 1);
         assert_eq!(messages[2].role, "tool");
         assert!(messages[2]
             .text()
@@ -2426,7 +2428,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(text, "done");
-        let calls = &messages[1].tool_calls;
+        let calls = messages[1].tool_calls();
         assert_eq!(calls.len(), 4);
         assert_eq!(
             calls[0].args,

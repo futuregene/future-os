@@ -1865,45 +1865,9 @@ pub fn entries_to_agent_messages(
                 false,
             ));
         }
-        let thinking = content
-            .iter()
-            .filter_map(|block| match block {
-                ContentBlock::Reasoning { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("");
-        let tool_calls = content
-            .iter()
-            .filter_map(|block| match block {
-                ContentBlock::ToolCall {
-                    id,
-                    name,
-                    args,
-                    provider_metadata,
-                } => Some(AgentToolCall {
-                    id: id.clone(),
-                    name: name.clone(),
-                    args: args.clone(),
-                    provider_metadata: provider_metadata.clone(),
-                }),
-                _ => None,
-            })
-            .collect();
-        let tool_call_id = content
-            .iter()
-            .find_map(|block| match block {
-                ContentBlock::ToolResult { tool_call_id, .. } => Some(tool_call_id.clone()),
-                _ => None,
-            })
-            .unwrap_or_else(|| entry.tool_call_id.clone());
-
         msgs.push(crate::types::AgentMessage {
             role,
             content,
-            thinking,
-            tool_calls,
-            tool_call_id,
             name: entry.name.clone(),
             tool_args: entry.tool_args.clone(),
             metadata: entry.meta.as_ref().and_then(|m| m.as_object().cloned()),
@@ -1980,14 +1944,14 @@ pub fn agent_message_to_entry(msg: &crate::types::AgentMessage) -> SessionEntry 
     };
 
     let tool_calls: Vec<crate::types::ToolCall> = msg
-        .tool_calls
-        .iter()
+        .tool_calls()
+        .into_iter()
         .map(|tc| crate::types::ToolCall {
-            id: tc.id.clone(),
+            id: tc.id,
             call_type: "function".to_string(),
             function: crate::types::ToolCallFn {
-                name: tc.name.clone(),
-                arguments: tc.args.clone(),
+                name: tc.name,
+                arguments: tc.args,
             },
         })
         .collect();
@@ -1999,10 +1963,10 @@ pub fn agent_message_to_entry(msg: &crate::types::AgentMessage) -> SessionEntry 
         content,
         tool_calls,
         timestamp: Local::now(),
-        tool_call_id: msg.tool_call_id.clone(),
+        tool_call_id: msg.tool_call_id(),
         name: msg.name.clone(),
         tool_args: msg.tool_args.clone(),
-        thinking: msg.thinking.clone(),
+        thinking: msg.reasoning_text(),
         // Populated at the save site (session_prompt.rs): only the final
         // assistant entry of a run gets a non-zero value, and prior entries'
         // values are preserved from the previously-saved session.
@@ -2282,13 +2246,15 @@ mod tests {
     fn agent_message_to_entry_assistant_with_tool_calls() {
         let msg = crate::types::AgentMessage {
             role: "assistant".to_string(),
-            content: vec![crate::types::ContentBlock::text("answer")],
-            tool_calls: vec![crate::types::AgentToolCall {
-                id: "c1".to_string(),
-                name: "shell".to_string(),
-                args: serde_json::json!({"cmd": "ls"}),
-                provider_metadata: Default::default(),
-            }],
+            content: vec![
+                crate::types::ContentBlock::text("answer"),
+                crate::types::ContentBlock::tool_call(
+                    "c1",
+                    "shell",
+                    serde_json::json!({"cmd": "ls"}),
+                    Default::default(),
+                ),
+            ],
             ..Default::default()
         };
         let entry = agent_message_to_entry(&msg);
@@ -2301,8 +2267,9 @@ mod tests {
     fn agent_message_to_entry_tool() {
         let msg = crate::types::AgentMessage {
             role: "tool".to_string(),
-            content: vec![crate::types::ContentBlock::text("result")],
-            tool_call_id: "c1".to_string(),
+            content: vec![crate::types::ContentBlock::tool_result(
+                "c1", "result", false,
+            )],
             ..Default::default()
         };
         let entry = agent_message_to_entry(&msg);
@@ -2314,8 +2281,10 @@ mod tests {
     fn agent_message_to_entry_preserves_thinking() {
         let msg = crate::types::AgentMessage {
             role: "assistant".to_string(),
-            content: vec![crate::types::ContentBlock::text("answer")],
-            thinking: "reasoning here".to_string(),
+            content: vec![
+                crate::types::ContentBlock::text("answer"),
+                crate::types::ContentBlock::reasoning("reasoning here", Default::default()),
+            ],
             ..Default::default()
         };
         let entry = agent_message_to_entry(&msg);
@@ -2454,8 +2423,8 @@ mod tests {
             tool_calls,
         )];
         let msgs = entries_to_agent_messages(&entries, false);
-        assert_eq!(msgs[0].tool_calls.len(), 1);
-        assert_eq!(msgs[0].tool_calls[0].name, "read");
+        assert_eq!(msgs[0].tool_calls().len(), 1);
+        assert_eq!(msgs[0].tool_calls()[0].name, "read");
     }
 
     #[test]
@@ -3726,17 +3695,17 @@ mod tests {
                         "pending tool_call_ids ({:?}) before new assistant",
                         pending
                     );
-                    for tc in &msg.tool_calls {
+                    for tc in msg.tool_calls() {
                         pending.insert(tc.id.clone());
                     }
                 }
                 "tool" => {
-                    let removed = pending.remove(&msg.tool_call_id);
+                    let removed = pending.remove(&msg.tool_call_id());
                     assert!(
                         removed,
                         "tool entry with tool_call_id={} has no matching \
                          assistant tool_call",
-                        msg.tool_call_id
+                        msg.tool_call_id()
                     );
                 }
                 _ => {
@@ -4622,9 +4591,6 @@ mod image_persistence_tests {
                 ContentBlock::text("hi"),
                 ContentBlock::image("data:image/png;base64,AAAA"),
             ],
-            thinking: String::new(),
-            tool_calls: vec![],
-            tool_call_id: String::new(),
             name: String::new(),
             tool_args: String::new(),
             metadata: Some(meta),
@@ -4680,9 +4646,6 @@ mod image_persistence_tests {
                 ContentBlock::text("hi"),
                 ContentBlock::image("data:image/png;base64,ZZZZ"),
             ],
-            thinking: String::new(),
-            tool_calls: vec![],
-            tool_call_id: String::new(),
             name: String::new(),
             tool_args: String::new(),
             metadata: None,
@@ -4782,9 +4745,6 @@ mod fork_tests {
         msgs_with_prompt.push(AgentMessage {
             role: "user".to_string(),
             content: vec![crate::types::ContentBlock::text("new question")],
-            thinking: String::new(),
-            tool_calls: vec![],
-            tool_call_id: String::new(),
             name: String::new(),
             tool_args: String::new(),
             metadata: None,

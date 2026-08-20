@@ -461,8 +461,11 @@ impl Loop {
         };
         AgentMessage {
             role: "tool".to_string(),
-            content: vec![ContentBlock::text(&capped)],
-            tool_call_id: call_id.to_string(),
+            content: vec![ContentBlock::tool_result(
+                call_id.to_string(),
+                &capped,
+                false,
+            )],
             name: tool_name.to_string(),
             tool_args: tool_args.to_string(),
             ..Default::default()
@@ -534,7 +537,7 @@ mod tests {
         let loop_ = make_loop();
         let msg = loop_.new_tool_result("call_1", "shell", "{\"cmd\": \"ls\"}", "output", None);
         assert_eq!(msg.role, "tool");
-        assert_eq!(msg.tool_call_id, "call_1");
+        assert_eq!(msg.tool_call_id(), "call_1");
         assert_eq!(msg.text(), "output");
     }
 
