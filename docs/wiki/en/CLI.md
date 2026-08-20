@@ -37,6 +37,8 @@ alias future="/Applications/FutureOS.app/Contents/MacOS/future"
 
 Most commands connect to the FutureOS agent (the background service). If the **desktop app is open**, the agent is already running. Otherwise, start the agent with `future agent` (or the `future-agent` binary directly — both are the same code), or open the desktop app, which starts it automatically.
 
+`future auth login` and `future auth logout` are the exception: they also work with the agent stopped, writing the key change to `~/.future/agent/auth.json` for the agent to pick up on its next start.
+
 ---
 
 ## Command groups

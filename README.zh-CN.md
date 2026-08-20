@@ -98,6 +98,8 @@ Agent 至少需要一个带 API key 的模型才能回复。
 future auth login
 ```
 
+无论 agent 是否在运行都可以执行：agent 在线时 key 立即生效；未运行时 key 会写入 `~/.future/agent/auth.json`，agent 启动时自动读取。
+
 <details>
 <summary><strong>想用自己的 API key？（BYOK 与自定义 Provider）</strong></summary>
 
