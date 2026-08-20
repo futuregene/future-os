@@ -462,7 +462,11 @@ export function SessionsScreen() {
             </Pressable>
           </View>
           <View style={styles.topActions}>
-            <ConnectionBadge phase={remote.phase} desktopOnline={remote.desktopOnline} />
+            <ConnectionBadge
+              phase={remote.phase}
+              desktopOnline={remote.desktopOnline}
+              onReconnect={() => void remote.reconnect()}
+            />
             <Pressable
               accessibilityLabel={t("sessions.settings")}
               accessibilityRole="button"

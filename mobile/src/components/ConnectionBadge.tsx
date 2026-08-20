@@ -1,4 +1,4 @@
-import { StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import type { ConnectionPhase } from "../remote/types";
 import { colors, radius, spacing } from "../theme/tokens";
@@ -6,30 +6,31 @@ import { colors, radius, spacing } from "../theme/tokens";
 export function ConnectionBadge({
   phase,
   desktopOnline,
+  onReconnect,
 }: {
   phase: ConnectionPhase;
   desktopOnline: boolean;
+  onReconnect?: () => void;
 }) {
   const { t } = useTranslation();
-  const revoked = phase === "revoked";
-  const failed = phase === "failed";
   const connected = phase === "ready" && desktopOnline;
-  const reconnecting = phase === "connecting" || phase === "reconnecting" || phase === "refreshing";
-  const label = revoked
-    ? t("connection.revoked")
-    : failed
-      ? t("connection.failed")
-      : connected
-        ? t("connection.connected")
-        : reconnecting
-          ? t("connection.reconnecting")
-          : t("connection.offline");
+  const connecting = phase === "connecting" || phase === "reconnecting" || phase === "refreshing";
+  const disconnected = !connected && !connecting;
+  const label = connected
+    ? t("connection.connected")
+    : connecting
+      ? t("connection.connecting")
+      : t("connection.disconnected");
 
   return (
-    <View
+    <Pressable
+      accessibilityLabel={disconnected ? t("connection.reconnect") : label}
+      accessibilityRole={disconnected ? "button" : undefined}
+      disabled={!disconnected}
+      onPress={disconnected ? onReconnect : undefined}
       style={[
         styles.badge,
-        connected ? styles.connected : reconnecting ? styles.reconnecting : styles.offline,
+        connected ? styles.connected : connecting ? styles.connecting : styles.disconnected,
       ]}
     >
       <View
@@ -37,9 +38,9 @@ export function ConnectionBadge({
           styles.dot,
           connected
             ? styles.connectedDot
-            : reconnecting
-              ? styles.reconnectingDot
-              : styles.offlineDot,
+            : connecting
+              ? styles.connectingDot
+              : styles.disconnectedDot,
         ]}
       />
       <Text
@@ -47,14 +48,14 @@ export function ConnectionBadge({
           styles.label,
           connected
             ? styles.connectedLabel
-            : reconnecting
-              ? styles.reconnectingLabel
-              : styles.offlineLabel,
+            : connecting
+              ? styles.connectingLabel
+              : styles.disconnectedLabel,
         ]}
       >
         {label}
       </Text>
-    </View>
+    </Pressable>
   );
 }
 
@@ -69,14 +70,14 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   connected: { backgroundColor: colors.successSoft, borderColor: colors.successLine },
-  reconnecting: { backgroundColor: colors.warningSoft, borderColor: colors.warningLine },
-  offline: { backgroundColor: colors.dangerSoft, borderColor: colors.dangerLine },
+  connecting: { backgroundColor: colors.warningSoft, borderColor: colors.warningLine },
+  disconnected: { backgroundColor: colors.dangerSoft, borderColor: colors.dangerLine },
   dot: { width: 7, height: 7, borderRadius: 4 },
   connectedDot: { backgroundColor: colors.success },
-  reconnectingDot: { backgroundColor: colors.warning },
-  offlineDot: { backgroundColor: colors.danger },
+  connectingDot: { backgroundColor: colors.warning },
+  disconnectedDot: { backgroundColor: colors.danger },
   label: { fontSize: 12, fontWeight: "600" },
   connectedLabel: { color: colors.success },
-  reconnectingLabel: { color: colors.warning },
-  offlineLabel: { color: colors.danger },
+  connectingLabel: { color: colors.warning },
+  disconnectedLabel: { color: colors.danger },
 });

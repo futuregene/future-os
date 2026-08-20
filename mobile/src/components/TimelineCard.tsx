@@ -26,6 +26,7 @@ import type {
   TimelineSegment,
   TimelineToolRow,
 } from "../remote/types";
+import { basename } from "../remote/localPath";
 import { canRecoverMessage } from "../remote/recovery";
 import { colors, radius, spacing } from "../theme/tokens";
 import { Button } from "./Button";
@@ -95,6 +96,14 @@ function toolLabel(t: (key: string) => string, kind: ToolKind, complete: boolean
     case "shell":
       return t(complete ? "chat.runCompleted" : "chat.runningCommand");
   }
+}
+
+function toolDetail(kind: ToolKind, detail: string): string {
+  // Mobile intentionally shows only the filename for file tools. This differs
+  // from desktop's full-path activity detail by product request: a phone row
+  // cannot use the leading directories, and preserving the filename keeps the
+  // useful part visible. Shell commands remain verbatim.
+  return kind === "read" || kind === "write" || kind === "edit" ? basename(detail) : detail;
 }
 
 // Localized title/summary per approval kind — the agent ships English, so map
@@ -301,7 +310,7 @@ function ToolRow({ tool }: { tool: TimelineToolRow }) {
   const [expanded, setExpanded] = useState(false);
   const kind = toolKind(tool.name);
   const failed = tool.status === "failed";
-  const detail = tool.detail?.trim() ? tool.detail.trim() : null;
+  const detail = tool.detail?.trim() ? toolDetail(kind, tool.detail.trim()) : null;
   const children = tool.children && tool.children.length > 0 ? tool.children : null;
   const expandable = Boolean(detail || children);
   const label =
@@ -328,10 +337,11 @@ function ToolRow({ tool }: { tool: TimelineToolRow }) {
             <ChevronDown color={colors.inkMuted} size={14} />
           )
         ) : null}
-        {/* Desktop parity: a single call's target unfolds inline to the right of
-            the label on tap, monospace + truncated, rather than as a block below. */}
+        {/* A single call's target unfolds inline to the right of the label on
+            tap. Mobile intentionally uses the filename (see toolDetail), then
+            tail-truncates it instead of following desktop's full-path display. */}
         {expanded && detail && !children ? (
-          <Text numberOfLines={1} selectable style={styles.inlineToolTarget}>
+          <Text ellipsizeMode="tail" numberOfLines={1} selectable style={styles.inlineToolTarget}>
             {detail}
           </Text>
         ) : null}
@@ -341,9 +351,13 @@ function ToolRow({ tool }: { tool: TimelineToolRow }) {
           {children.map((child, index) => (
             <Text
               key={`${child.name}:${child.detail ?? ""}:${index}`}
+              ellipsizeMode="tail"
+              numberOfLines={1}
               style={styles.inlineToolChild}
             >
-              {child.detail ?? toolLabel(t, toolKind(child.name), child.complete)}
+              {child.detail
+                ? toolDetail(toolKind(child.name), child.detail)
+                : toolLabel(t, toolKind(child.name), child.complete)}
             </Text>
           ))}
         </View>
@@ -682,14 +696,19 @@ const styles = StyleSheet.create({
   },
   toolTextFailed: { color: colors.danger },
   inlineToolTarget: {
+    flex: 1,
     marginLeft: spacing.sm,
-    flexShrink: 1,
+    minWidth: 0,
     color: colors.inkSoft,
     fontFamily: "monospace",
     fontSize: 12,
+    lineHeight: 18,
+    maxHeight: 18,
+    overflow: "hidden",
   },
   inlineToolChildren: { gap: 2, marginTop: 2, paddingLeft: spacing.md + spacing.sm },
   inlineToolChild: {
+    flexShrink: 1,
     color: colors.inkSoft,
     fontFamily: "monospace",
     fontSize: 12,
