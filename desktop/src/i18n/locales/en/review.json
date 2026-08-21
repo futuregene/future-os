@@ -1,12 +1,12 @@
 {
   "lastRunHeading": "Last run changes",
   "tab": {
-    "gitChanges": "Git changes",
+    "gitChanges": "Current branch",
     "lastRun": "Last run changes"
   },
   "workingTree": {
     "emptyTitle": "No uncommitted changes in the working tree",
-    "emptyDetail": "The current branch has no changes relative to the selected base."
+    "emptyDetail": "The current branch has no changes relative to HEAD."
   },
   "expandAll": "Expand all",
   "collapseAll": "Collapse all",

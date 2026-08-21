@@ -1,11 +1,8 @@
-import type { ReviewBase } from "../../integrations/storage/review";
 import type { GitReview, GitReviewFile } from "../../integrations/storage/types";
 import { GitBranch } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { DiffView } from "../../components/ui/DiffView";
 import { EmptyState } from "../../components/ui/EmptyState";
-import { Select } from "../../components/ui/Select";
-import { TextInput } from "../../components/ui/TextInput";
 import { CollapsibleFileDiff, ExpandCollapseAll } from "./CollapsibleFileDiff";
 import { useExpandableFiles } from "./useExpandableFiles";
 
@@ -19,7 +16,7 @@ export function WorkingTreeReview({ files }: { files: GitReviewFile[] }) {
       {files.length > 0
         ? <ExpandCollapseAll allOpen={allOpen} onToggle={toggleAll} />
         : null}
-      <div className="space-y-3">
+      <div className="space-y-2">
         {files.length === 0
           ? <EmptyState title={t("workingTree.emptyTitle")} detail={t("workingTree.emptyDetail")} />
           : files.map(file => (
@@ -36,19 +33,9 @@ export function WorkingTreeReview({ files }: { files: GitReviewFile[] }) {
 }
 
 export function ReviewHeader({
-  customBase,
-  onCustomBaseChange,
-  onReviewBaseChange,
   review,
-  reviewBase,
-}: {
-  customBase: string;
-  onCustomBaseChange: (value: string) => void;
-  onReviewBaseChange: (value: ReviewBase) => void;
-  review: GitReview;
-  reviewBase: ReviewBase;
-}) {
-  const { t, i18n } = useTranslation("review");
+}: { review: GitReview }) {
+  const { i18n } = useTranslation("review");
   const numberFormat = new Intl.NumberFormat(i18n.language);
   return (
     <div className="space-y-2 border-b border-line-soft pb-3">
@@ -65,42 +52,6 @@ export function ReviewHeader({
           -
           {numberFormat.format(review.deletions)}
         </span>
-      </div>
-      {review.upstream
-        ? (
-            <div className="truncate text-xs text-ink-muted">
-              {review.branch ?? "HEAD"}
-              {" "}
-              <span className="text-ink-soft">→</span>
-              {" "}
-              {review.upstream}
-            </div>
-          )
-        : null}
-      <div className="grid grid-cols-1 gap-2">
-        <label className="text-xs font-medium text-ink-muted" htmlFor="review-base-select">{t("header.diffBase")}</label>
-        <Select
-          className="text-ink-soft hover:border-line"
-          id="review-base-select"
-          onChange={event => onReviewBaseChange(event.target.value as ReviewBase)}
-          size="sm"
-          value={reviewBase}
-        >
-          <option value="head">{t("header.base.head")}</option>
-          <option disabled={!review.upstream} value="upstream">{t("header.base.upstream")}</option>
-          <option disabled={!review.upstream} value="merge-base">{t("header.base.mergeBase")}</option>
-          <option value="custom">{t("header.base.custom")}</option>
-        </Select>
-        {reviewBase === "custom"
-          ? (
-              <TextInput
-                className="h-8 w-auto px-2 hover:border-line"
-                onChange={event => onCustomBaseChange(event.target.value)}
-                placeholder={t("header.customPlaceholder")}
-                value={customBase}
-              />
-            )
-          : null}
       </div>
     </div>
   );

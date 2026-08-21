@@ -1,5 +1,4 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
-import type { ReviewBase } from "../../integrations/storage/review";
 import type { StoredRun, StoredThread, StoredToolCall, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ContextTab } from "./hooks/useContextData";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
@@ -23,7 +22,6 @@ import { Select } from "../ui/Select";
 import { useContextData } from "./hooks/useContextData";
 
 export type { ContextTab };
-export type { ReviewBase };
 
 // The Files tab appears for every thread — its root is the thread's workspace
 // path (chat threads use their temporary workspace), which is available
@@ -109,10 +107,6 @@ export function ContextPanel({
     gitReview,
     reviewCapabilities,
     loading,
-    reviewBase,
-    setReviewBase,
-    reviewCustomBase,
-    setReviewCustomBase,
     refreshContext,
   } = useContextData({
     activeThreadId,
@@ -351,14 +345,9 @@ export function ContextPanel({
         {!showInitialLoading && activeThread && activeTab === "review"
           ? (
               <ReviewPanel
-                capabilities={reviewCapabilities}
                 changePreview={changePreview}
-                customBase={reviewCustomBase}
                 review={gitReview}
-                reviewBase={reviewBase}
                 threadId={activeThread.id}
-                onCustomBaseChange={setReviewCustomBase}
-                onReviewBaseChange={setReviewBase}
               />
             )
           : null}
