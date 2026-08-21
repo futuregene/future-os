@@ -372,3 +372,70 @@ W2 与 W4 可在 W1 契约冻结后并行开发，但 W4 的批准结果不得�
 - Windows 真实环境兼容性、ACL 恢复/重置、升级降级和失败回退均有自动化或可重复的 smoke 证据。
 
 **明确不做（第一版）**：shell deny-read、glob ACE、elevated 独立用户、防火墙/网络隔离、WSL 捆绑、笼统 error 5 整命令脱沙盒放行。
+
+---
+
+## 附录 A：Windows 真机调试踩坑记录
+
+> 记录 2026-08-21 在 Windows 11（10.0.26200，x86_64）真机上把 unelevated 写保护后端从「可编译」跑到「`test-windows-sandbox.ps1` 全绿」过程中踩过的坑。按调试时间顺序排列，每个条目给出症状、根因与修复。这些大多是无法从代码静态看出的 Win32 运行时行为，值得给后续维护者留下现场证据。
+
+### A1. `CreateWindowStationW` 对普通用户返回 `ERROR_ACCESS_DENIED`
+
+- **症状**：测试矩阵 8 个进程类用例全部 `拒绝访问 (os error 5)`，分步打点后定位在 `PrivateDesktop::create` 的 `CreateWindowStationW`，而非 `CreateProcessAsUserW`。
+- **根因**：创建独立 window station 需要 `SeCreateWindowStationPrivilege` 等特权，普通（非管理员）交互用户默认不持有。初版为了给受限 token 一个「不碰 `Winsta0`」的 USER 对象而试图自建 station，这条路线在免管理员约束下走不通。
+- **修复**：参考 Codex `windows-sandbox-rs/src/desktop.rs`，改为在交互 `Winsta0` 上创建 UUID 命名的私有 desktop，只授「当前用户 SID + restricting SIDs」ACL；删除 `CreateWindowStationW`/`SetProcessWindowStation` 及配套互斥锁。`Winsta0` 自身 DACL 已授予普通用户 `CreateProcessAsUserW` 挂载子进程所需的读取权。
+
+### A2. 仅 capability SID 无法初始化 Windows PowerShell（CLR `E_ACCESSDENIED`）
+
+- **症状**：修好 A1 后进程能创建，但 PowerShell 主 CLR 初始化即失败，stderr 解码后是 `HRESULT 80070005`（`E_ACCESSDENIED`），命令从未执行。
+- **根因**：PowerShell/CLR 启动时要对 session-scoped、Everyone 可访问的内核对象做写入；这些写入要同时过 `WRITE_RESTRICTED` 的第二道 restricting-SID 检查，而 token 里只有 capability SID，检查失败。
+- **修复**：参考 Codex `windows-sandbox-rs/src/token.rs` 的 legacy 后端，把 **logon SID + Everyone** 加入 `SidsToRestrict`（**不**加真实 User SID——它会命中普通文件 ACL 直接绕过写边界）。`access_check` 矩阵验证：external 目录的 `FILE_ADD_FILE` 仍被拒，写边界不因这两个 SID 松动。
+
+### A3. Constrained Language Mode 下 wrapper 编码设置污染 `$Error`
+
+- **症状**：受限 shell 里命令本应成功却 `exit 1`，stderr 出现 `CannotCreateTypeConstrainedLanguage`（CLIXML 序列化）。
+- **根因**：受限 token 让 Windows PowerShell 5.1 进入 Constrained Language Mode，`[System.Text.UTF8Encoding]::new($false)` 这类 .NET 类型构造被拒；异常写进 `$Error`，wrapper 的 `elseif ($Error.Count -gt 0) { exit 1 }` 把成功命令误判为失败。
+- **修复**：改用静态 `[System.Text.Encoding]::UTF8`；两个编码赋值各套一个 `try`；命令执行前先记录 `$Error.Count`，退出判定改为「增量 > 0」。
+
+### A4. `FILE_DELETE_CHILD` 不受 `WRITE_RESTRICTED` 限制（设计限制，非 bug）
+
+- **症状**：`file_approval_does_not_expand_to_parent_or_delete` 断言「file scope 批准后 `Remove-Item` 必须失败」真机失败——文件被删掉了。
+- **根因**：`WRITE_RESTRICTED` 只对写数据/追加/新建子项/`DELETE` 做第二道 restricting-SID 检查；删除文件实际走的是**父目录**的 `FILE_DELETE_CHILD`，该权限只用普通用户 SID 检查，不参与 restricted 检查。`access_check` 实测：`FILE_DELETE_CHILD=true`、`DELETE=false`、`FILE_WRITE_DATA=false`。
+- **修复**：这是 write-protect 模型的知情限制，无法用 ACL 修复（capability SID 的 deny ACE 也拦不住只用 normal SID 检查的删除）。删除测试里的「防删除」断言，改为只验证「file scope 不扩展到父目录/sibling」，并把限制写入 §11.6。
+
+### A5. 受限 PowerShell 5.1 无法输出 UTF-8（CLM 双重封死）
+
+- **症状**：新增的 `Write-Output '中文-stdout'` 断言失败，捕获到 `����-stdout`。
+- **根因**：CLM 下 `[Console]::OutputEncoding` 的 **setter 静默失效**（赋值不报错但读回仍是 936/GBK）；`.NET 方法调用（`GetBytes`/`OpenStandardOutput().Write`/`WriteAllBytes`）也一律抛 `MethodInvocationNotSupportedInConstrainedLanguage`；`chcp 65001` 在 stdout 为 pipe（无控制台）时本就不生效。三条路全封，受限 5.1 只能按控制台输出代码页发出字节。
+- **修复**：在**捕获端**按 shell 选择解码器——`powershell`（5.1）走 `MultiByteToWideChar`、`pwsh`（7）走 UTF-8（pwsh 硬编码 UTF-8，不受 CLM 影响）。这是唯一可靠的方案，PowerShell 端无解。
+
+### A6. `CP_ACP` 还是 `CP_OEMCP`（跨区域兼容性）
+
+- **症状**：中文系统上 A5 的修复「看起来」没问题，但在西欧/俄文/希腊文区域会解出乱码。
+- **根因**：`[Console]::OutputEncoding`（`Console.OutputEncoding`）映射 `GetConsoleOutputCP()`；stdout 被重定向到管道（无控制台）时它回退到 **`GetOEMCP()`（OEM 代码页）**，而非 `GetACP()`（ANSI 代码页）。CJK 区域两者恰好相同（如简体中文均 936/GBK），掩盖了差异；西文 1252 vs 437/850、俄文 1251 vs 866、希腊文 1253 vs 737 均不同。
+- **修复**：解码参数由 `CP_ACP` 改为 `CP_OEMCP`。注：OEM 代码页本身不含全部 Unicode，超出该页的字符在 PowerShell 端编码时已丢失为 `?`，这是 CLM 边界的必然产物，解码端只能保证「已发出的字节」被正确还原。
+
+---
+
+## 附录 B：Windows 真机测试报告
+
+**执行方式**：仓库根目录普通（非管理员）PowerShell 运行 `scripts/test-windows-sandbox.ps1`。脚本强制 `--test-threads=1`，完整输出落盘 `target/windows-sandbox-results/windows-sandbox-<时间戳>.log`，显式不接入 CI。
+
+**环境**（2026-08-21）：
+
+- OS：Microsoft Windows NT 10.0.26200（x86_64）
+- PowerShell：5.1（非管理员，`Elevated: False`）
+- Rust/Cargo：1.97.0（repo `rust-toolchain.toml` 锁定）
+- 工作区与 TEMP：本地 NTFS（脚本前置校验通过）
+
+**结果**：`RESULT: PASS`
+
+| 测试目标 | 结果 |
+|---|---|
+| `cargo test sandbox::windows`（原生 AccessCheck 矩阵 + 端到端 runner） | **44 passed, 0 failed** |
+| `cargo test windows_capability`（审批语义与回执绑定） | **10 passed, 0 failed** |
+| `cargo clippy --lib -- -D warnings`（Agent Clippy，非脚本默认项） | **通过，0 warning** |
+
+**覆盖要点**：capability SID 只开放对应写根且 deny carveout 恒赢；restricted PowerShell 保留 cwd/env/stdout/退出码；Job Object 树形终止；workspace 写成功/未声明的外部写失败；subtree 一次性批准精确且旧 ACE 不可复用；file scope 不扩展到父目录；reparse/UNC 在 ACL 变更前 fail-closed；Unicode 路径 + 管道重定向 + 70 万字节大输出不卡死；受限 5.1 中文 stdout 按 OEM 代码页正确还原。
+
+**未覆盖（已知，见 §11.7 W6/W7）**：活动代际 GC、重置/卸载清理、支持主机矩阵，以及 UI 与模式选择层；`platform_sandbox_available()` 在 Windows 仍保持 false，产品入口继续关闭。
