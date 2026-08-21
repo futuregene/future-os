@@ -6,11 +6,14 @@ use std::io;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
-use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GetLastError, LocalFree, ERROR_INSUFFICIENT_BUFFER, HANDLE, INVALID_HANDLE_VALUE,
+};
 use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
 use windows_sys::Win32::Security::{
-    AccessCheck, DuplicateTokenEx, SecurityImpersonation, TokenImpersonation,
-    DACL_SECURITY_INFORMATION, GENERIC_MAPPING, PRIVILEGE_SET, TOKEN_QUERY,
+    AccessCheck, DuplicateTokenEx, MakeAbsoluteSD, SecurityImpersonation, TokenImpersonation,
+    DACL_SECURITY_INFORMATION, GENERIC_MAPPING, GROUP_SECURITY_INFORMATION,
+    OWNER_SECURITY_INFORMATION, PRIVILEGE_SET, TOKEN_QUERY,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FileAttributeTagInfo, GetFileInformationByHandleEx, GetFinalPathNameByHandleW,
@@ -112,7 +115,7 @@ impl FrozenPath {
             GetSecurityInfo(
                 self.handle,
                 SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION,
+                OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
@@ -124,6 +127,7 @@ impl FrozenPath {
             return Err(io::Error::from_raw_os_error(status as i32));
         }
         let descriptor = LocalGuard(descriptor);
+        let absolute = AbsoluteSecurityDescriptor::from_self_relative(descriptor.0)?;
         let mapping = GENERIC_MAPPING {
             GenericRead: FILE_GENERIC_READ,
             GenericWrite: FILE_GENERIC_WRITE,
@@ -138,7 +142,7 @@ impl FrozenPath {
         let mut allowed = 0;
         let ok = unsafe {
             AccessCheck(
-                descriptor.0,
+                absolute.descriptor.as_ptr().cast_mut().cast(),
                 impersonation.0,
                 desired_access,
                 &mapping,
@@ -223,6 +227,80 @@ impl FrozenPath {
         let text = raw.to_string_lossy();
         let ordinary = text.strip_prefix(r"\\?\").unwrap_or(&text);
         Ok(PathBuf::from(ordinary))
+    }
+}
+
+/// `GetSecurityInfo` returns a self-relative descriptor, whereas AccessCheck
+/// requires its absolute form. Keep every backing allocation alive for the
+/// AccessCheck call.
+struct AbsoluteSecurityDescriptor {
+    descriptor: Vec<u8>,
+    dacl: Vec<u8>,
+    sacl: Vec<u8>,
+    owner: Vec<u8>,
+    group: Vec<u8>,
+}
+
+impl AbsoluteSecurityDescriptor {
+    fn from_self_relative(input: *mut core::ffi::c_void) -> io::Result<Self> {
+        let mut descriptor_size = 0;
+        let mut dacl_size = 0;
+        let mut sacl_size = 0;
+        let mut owner_size = 0;
+        let mut group_size = 0;
+        // The sizing call is documented to fail with INSUFFICIENT_BUFFER.
+        let ok = unsafe {
+            MakeAbsoluteSD(
+                input.cast(),
+                std::ptr::null_mut(),
+                &mut descriptor_size,
+                std::ptr::null_mut(),
+                &mut dacl_size,
+                std::ptr::null_mut(),
+                &mut sacl_size,
+                std::ptr::null_mut(),
+                &mut owner_size,
+                std::ptr::null_mut(),
+                &mut group_size,
+            )
+        };
+        if ok != 0 || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER {
+            return Err(io::Error::last_os_error());
+        }
+        let mut absolute = Self {
+            descriptor: vec![0; descriptor_size as usize],
+            dacl: vec![0; dacl_size as usize],
+            sacl: vec![0; sacl_size as usize],
+            owner: vec![0; owner_size as usize],
+            group: vec![0; group_size as usize],
+        };
+        let ok = unsafe {
+            MakeAbsoluteSD(
+                input.cast(),
+                absolute.descriptor.as_mut_ptr().cast(),
+                &mut descriptor_size,
+                ptr_or_null(&mut absolute.dacl).cast(),
+                &mut dacl_size,
+                ptr_or_null(&mut absolute.sacl).cast(),
+                &mut sacl_size,
+                ptr_or_null(&mut absolute.owner).cast(),
+                &mut owner_size,
+                ptr_or_null(&mut absolute.group).cast(),
+                &mut group_size,
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(absolute)
+    }
+}
+
+fn ptr_or_null(bytes: &mut Vec<u8>) -> *mut u8 {
+    if bytes.is_empty() {
+        std::ptr::null_mut()
+    } else {
+        bytes.as_mut_ptr()
     }
 }
 

@@ -9,10 +9,14 @@ use std::ptr;
 
 use sha2::{Digest, Sha256};
 
-use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, HANDLE};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, HANDLE, LUID,
+};
 use windows_sys::Win32::Security::{
-    CreateRestrictedToken, IsTokenRestricted, DISABLE_MAX_PRIVILEGE, LUA_TOKEN, PSID,
-    SID_AND_ATTRIBUTES, TOKEN_DUPLICATE, TOKEN_QUERY, WRITE_RESTRICTED,
+    AdjustTokenPrivileges, CreateRestrictedToken, IsTokenRestricted, LookupPrivilegeValueW,
+    DISABLE_MAX_PRIVILEGE, LUA_TOKEN, LUID_AND_ATTRIBUTES, PSID, SE_CHANGE_NOTIFY_NAME,
+    SE_PRIVILEGE_ENABLED, SID_AND_ATTRIBUTES, TOKEN_ADJUST_PRIVILEGES, TOKEN_ASSIGN_PRIMARY,
+    TOKEN_DUPLICATE, TOKEN_PRIVILEGES, TOKEN_QUERY, WRITE_RESTRICTED,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -66,7 +70,7 @@ impl RestrictedToken {
         if unsafe {
             OpenProcessToken(
                 GetCurrentProcess(),
-                TOKEN_DUPLICATE | TOKEN_QUERY,
+                TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_PRIVILEGES | TOKEN_DUPLICATE | TOKEN_QUERY,
                 &mut source,
             )
         } == 0
@@ -101,12 +105,47 @@ impl RestrictedToken {
                 "CreateRestrictedToken returned a token without restricting SIDs",
             ));
         }
+        // DISABLE_MAX_PRIVILEGE disables this normal-user privilege. Restoring
+        // it permits directory traversal without granting read/write access;
+        // without it CreateProcessAsUserW cannot reach ordinary executable
+        // paths and returns ERROR_ACCESS_DENIED.
+        enable_change_notify_privilege(token.0)?;
         Ok(token)
     }
 
     pub(crate) fn as_handle(&self) -> HANDLE {
         self.0
     }
+}
+
+fn enable_change_notify_privilege(token: HANDLE) -> io::Result<()> {
+    let mut luid = LUID {
+        LowPart: 0,
+        HighPart: 0,
+    };
+    if unsafe { LookupPrivilegeValueW(ptr::null(), SE_CHANGE_NOTIFY_NAME, &mut luid) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let privileges = TOKEN_PRIVILEGES {
+        PrivilegeCount: 1,
+        Privileges: [LUID_AND_ATTRIBUTES {
+            Luid: luid,
+            Attributes: SE_PRIVILEGE_ENABLED,
+        }],
+    };
+    // AdjustTokenPrivileges may return success while reporting a final error,
+    // so check GetLastError as required by the Win32 contract.
+    unsafe { windows_sys::Win32::Foundation::SetLastError(0) };
+    if unsafe { AdjustTokenPrivileges(token, 0, &privileges, 0, ptr::null_mut(), ptr::null_mut()) }
+        == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let error = unsafe { GetLastError() };
+    if error != 0 {
+        return Err(io::Error::from_raw_os_error(error as i32));
+    }
+    Ok(())
 }
 
 fn map_restricted_token_error(error: io::Error) -> io::Error {
