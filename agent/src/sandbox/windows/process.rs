@@ -189,6 +189,13 @@ struct PrivateDesktop {
     startup_name: Vec<u16>,
 }
 
+// HDESK is an owned Win32 handle, not a borrowed desktop pointer. This owner
+// never calls SetThreadDesktop; after creation it is only used to set the DACL
+// synchronously and then closed when the child is torn down. Windows permits
+// that handle ownership/close to move across Tokio worker threads.
+unsafe impl Send for PrivateDesktop {}
+unsafe impl Sync for PrivateDesktop {}
+
 impl PrivateDesktop {
     fn create(token: &RestrictedToken) -> io::Result<Self> {
         let nonce = SystemTime::now()
@@ -536,6 +543,13 @@ fn wide_nul(value: &OsStr) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    #[test]
+    fn restricted_child_stays_send_for_shell_futures() {
+        assert_send_sync::<RestrictedChild>();
+    }
 
     fn decode(line: Vec<u16>) -> String {
         String::from_utf16_lossy(&line[..line.len() - 1])
