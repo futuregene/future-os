@@ -290,9 +290,10 @@ impl NatsHealth {
                 }
             }
             Event::Disconnected => {
-                if let Some(line) = self.event_episode.record("network", "NATS disconnected") {
-                    eprintln!("{line}");
-                }
+                // Routine and self-healing: async-nats reconnects automatically,
+                // so a drop is expected noise. A real outage still surfaces via
+                // the ClientError/ServerError events fired on each failed
+                // reconnect attempt, so don't open a failure episode here.
             }
             Event::ServerError(ServerError::AuthorizationViolation) => {
                 self.mark_authorization_rejected();
@@ -315,12 +316,10 @@ impl NatsHealth {
             }
             Event::Closed => {
                 self.reconnect_required.store(true, Ordering::Release);
-                if let Some(line) = self
-                    .event_episode
-                    .record("network", "NATS connection closed")
-                {
-                    eprintln!("{line}");
-                }
+                // Routine: the socket closed (credential-refresh swap, app
+                // shutdown, or a terminal reconnect failure already surfaced via
+                // ClientError/ServerError). A real outage still logs, so this
+                // stays silent instead of opening a failure episode.
             }
             Event::SlowConsumer(subscription) => {
                 if let Some(line) = self.event_episode.record("slow_consumer", subscription) {

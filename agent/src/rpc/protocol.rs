@@ -437,13 +437,25 @@ impl SseBroadcaster {
                 .truncation_count
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 + 1;
-            tracing::warn!(
-                run_id,
-                requested_after_idx = after_idx,
-                min_available_idx = min_idx,
-                truncation_count = count,
-                "run replay ring truncated; returning projection snapshot"
-            );
+            if self.journal.lock().directory.is_some() {
+                // With a durable journal the client still gets the full history
+                // (disk replay), so this is a benign resync, not a data gap.
+                tracing::debug!(
+                    run_id,
+                    requested_after_idx = after_idx,
+                    min_available_idx = min_idx,
+                    truncation_count = count,
+                    "run replay ring truncated; falling back to disk journal replay"
+                );
+            } else {
+                tracing::warn!(
+                    run_id,
+                    requested_after_idx = after_idx,
+                    min_available_idx = min_idx,
+                    truncation_count = count,
+                    "run replay ring truncated; returning projection snapshot"
+                );
+            }
         }
         let disk_events = if truncated && self.journal.lock().directory.is_some() {
             Some(
@@ -622,13 +634,25 @@ impl SseBroadcaster {
                 .truncation_count
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 + 1;
-            tracing::warn!(
-                run_id,
-                requested_after_idx = since_idx,
-                min_available_idx = min_idx,
-                truncation_count = count,
-                "run event query crossed replay-ring boundary; returning projection snapshot"
-            );
+            if self.journal.lock().directory.is_some() {
+                // With a durable journal the client still gets the full history
+                // (disk replay), so this is a benign resync, not a data gap.
+                tracing::debug!(
+                    run_id,
+                    requested_after_idx = since_idx,
+                    min_available_idx = min_idx,
+                    truncation_count = count,
+                    "run event query crossed replay-ring boundary; falling back to disk journal replay"
+                );
+            } else {
+                tracing::warn!(
+                    run_id,
+                    requested_after_idx = since_idx,
+                    min_available_idx = min_idx,
+                    truncation_count = count,
+                    "run event query crossed replay-ring boundary; returning projection snapshot"
+                );
+            }
         }
         let disk_events = if truncated && self.journal.lock().directory.is_some() {
             Some(
