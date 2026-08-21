@@ -13,10 +13,11 @@ use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, HANDLE, LUID,
 };
 use windows_sys::Win32::Security::{
-    AdjustTokenPrivileges, CreateRestrictedToken, IsTokenRestricted, LookupPrivilegeValueW,
-    DISABLE_MAX_PRIVILEGE, LUA_TOKEN, LUID_AND_ATTRIBUTES, PSID, SE_CHANGE_NOTIFY_NAME,
-    SE_PRIVILEGE_ENABLED, SID_AND_ATTRIBUTES, TOKEN_ADJUST_PRIVILEGES, TOKEN_ASSIGN_PRIMARY,
-    TOKEN_DUPLICATE, TOKEN_PRIVILEGES, TOKEN_QUERY, WRITE_RESTRICTED,
+    AdjustTokenPrivileges, CopySid, CreateRestrictedToken, GetLengthSid, GetTokenInformation,
+    IsTokenRestricted, IsValidSid, LookupPrivilegeValueW, TokenUser, DISABLE_MAX_PRIVILEGE,
+    LUA_TOKEN, LUID_AND_ATTRIBUTES, PSID, SE_CHANGE_NOTIFY_NAME, SE_PRIVILEGE_ENABLED,
+    SID_AND_ATTRIBUTES, TOKEN_ADJUST_PRIVILEGES, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE,
+    TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_USER, WRITE_RESTRICTED,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -40,6 +41,9 @@ pub(crate) struct RestrictedToken {
     // Keep the exact trustees that passed CreateRestrictedToken so the process
     // launcher can grant only those identities access to its private desktop.
     sids: Vec<OwnedSid>,
+    // The private desktop must also pass the token's ordinary SID access check;
+    // this identity is never added to the restricting SID set.
+    normal_user_sid: OwnedSid,
 }
 
 unsafe impl Send for RestrictedToken {}
@@ -83,6 +87,7 @@ impl RestrictedToken {
             return Err(io::Error::last_os_error());
         }
         let source = HandleGuard(source);
+        let normal_user_sid = current_user_sid(source.0)?;
         let mut token = ptr::null_mut();
         // SAFETY: SID backing allocations and the array stay alive throughout
         // the synchronous call. Empty disable/privilege arrays are null.
@@ -105,6 +110,7 @@ impl RestrictedToken {
         let token = RestrictedToken {
             handle: token,
             sids,
+            normal_user_sid,
         };
         // IsTokenRestricted reports false when no restricting SID actually
         // made it into the token. Treat that as fail-closed initialization.
@@ -128,6 +134,51 @@ impl RestrictedToken {
     pub(crate) fn restricting_sids(&self) -> &[OwnedSid] {
         &self.sids
     }
+
+    pub(crate) fn normal_user_sid(&self) -> &OwnedSid {
+        &self.normal_user_sid
+    }
+}
+
+fn current_user_sid(token: HANDLE) -> io::Result<OwnedSid> {
+    let mut bytes = 0;
+    // The probe is expected to report required storage through `bytes`.
+    unsafe { GetTokenInformation(token, TokenUser, ptr::null_mut(), 0, &mut bytes) };
+    if bytes == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut storage = vec![0u8; bytes as usize];
+    if unsafe {
+        GetTokenInformation(
+            token,
+            TokenUser,
+            storage.as_mut_ptr().cast(),
+            bytes,
+            &mut bytes,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: successful TokenUser query initializes a TOKEN_USER at the
+    // beginning of `storage`; clone_sid copies its pointed-to SID immediately.
+    let user = unsafe { &*storage.as_ptr().cast::<TOKEN_USER>() };
+    clone_sid(user.User.Sid)
+}
+
+fn clone_sid(sid: PSID) -> io::Result<OwnedSid> {
+    if sid.is_null() || unsafe { IsValidSid(sid) } == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid Windows SID",
+        ));
+    }
+    let length = unsafe { GetLengthSid(sid) };
+    let mut bytes = vec![0u8; length as usize];
+    if unsafe { CopySid(length, bytes.as_mut_ptr().cast(), sid) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(OwnedSid(bytes))
 }
 
 fn enable_change_notify_privilege(token: HANDLE) -> io::Result<()> {

@@ -250,9 +250,13 @@ impl PrivateDesktop {
     }
 
     fn grant_restricted_access(&self, token: &RestrictedToken, access: u32) -> io::Result<()> {
-        let entries = token
-            .restricting_sids()
-            .iter()
+        // WRITE_RESTRICTED performs two checks. The ordinary token check needs
+        // the current user's SID; the restricted check needs a capability SID.
+        // These ACEs exist only on this short-lived desktop. In particular, do
+        // not add the user SID to `CreateRestrictedToken`'s restricting list,
+        // which could broaden ordinary filesystem writes.
+        let entries = std::iter::once(token.normal_user_sid())
+            .chain(token.restricting_sids())
             .map(|sid| EXPLICIT_ACCESS_W {
                 grfAccessPermissions: access,
                 grfAccessMode: GRANT_ACCESS,
