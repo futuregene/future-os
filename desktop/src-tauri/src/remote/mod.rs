@@ -1243,35 +1243,54 @@ pub fn stop() -> RemoteStatus {
 /// The mobile client treats this as immediate offline state; heartbeat expiry
 /// remains the fallback for crashes, forced power-off, and any lost packet.
 pub async fn stop_gracefully(reason: &str) -> RemoteStatus {
-    notify_mobile_disconnect(reason).await;
-    stop()
+    // Cancelling the bridge must not wait on a broker that is already down or
+    // reconnecting. Capture the best-effort presence notification while the
+    // generation still owns its client, then stop synchronously so it also
+    // cancels any automatic reconnect work immediately.
+    let notice = mobile_disconnect_notice(reason);
+    let status = stop();
+    if let Some((client, subject, payload)) = notice {
+        tauri::async_runtime::spawn(async move {
+            send_mobile_disconnect_notice(client, subject, payload).await;
+        });
+    }
+    status
 }
 
 pub async fn notify_mobile_disconnect(reason: &str) {
-    let Some((client, pair_id, bridge_instance_id)) = STATE.lock().unwrap().as_ref().map(|state| {
-        (
-            state.client.clone(),
-            state.pair_id.clone(),
-            state.bridge_instance_id.clone(),
-        )
-    }) else {
+    let Some((client, subject, payload)) = mobile_disconnect_notice(reason) else {
         return;
     };
-    let payload = serde_json::to_vec(&json!({
-        "online": false,
-        "disconnected": true,
-        "reason": reason,
-        "pairId": pair_id,
-        "bridgeInstanceId": bridge_instance_id,
-        "lastHeartbeatTs": unix_timestamp(),
-    }))
-    .unwrap_or_default();
+    send_mobile_disconnect_notice(client, subject, payload).await;
+}
+
+fn mobile_disconnect_notice(reason: &str) -> Option<(async_nats::Client, String, Vec<u8>)> {
+    STATE.lock().unwrap().as_ref().map(|state| {
+        let pair_id = state.pair_id.clone();
+        let bridge_instance_id = state.bridge_instance_id.clone();
+        (
+            state.client.clone(),
+            format!("p.{pair_id}.presence"),
+            serde_json::to_vec(&json!({
+                "online": false,
+                "disconnected": true,
+                "reason": reason,
+                "pairId": pair_id,
+                "bridgeInstanceId": bridge_instance_id,
+                "lastHeartbeatTs": unix_timestamp(),
+            }))
+            .unwrap_or_default(),
+        )
+    })
+}
+
+async fn send_mobile_disconnect_notice(
+    client: async_nats::Client,
+    subject: String,
+    payload: Vec<u8>,
+) {
     let send = async {
-        if client
-            .publish(format!("p.{pair_id}.presence"), payload.into())
-            .await
-            .is_ok()
-        {
+        if client.publish(subject, payload.into()).await.is_ok() {
             let _ = client.flush().await;
         }
     };
@@ -2743,6 +2762,20 @@ mod runtime_tests {
         let _home = HomeGuard::new("remote-stop-empty");
         let stopped = stop();
         assert!(!matches!(stopped.phase, RemotePhase::Ready));
+    }
+
+    #[tokio::test]
+    async fn graceful_stop_clears_the_bridge_before_sending_presence() {
+        let _home = HomeGuard::new("remote-graceful-stop");
+        let nats = FakeNats::start().await;
+        install_state(fake_state(&nats, "pair_graceful_stop").await);
+        START_REQUESTED.store(true, Ordering::Release);
+
+        let stopped = stop_gracefully("user_disconnect").await;
+
+        assert!(matches!(stopped.phase, RemotePhase::Stopped));
+        assert!(STATE.lock().unwrap().is_none());
+        assert!(!START_REQUESTED.load(Ordering::Acquire));
     }
 
     #[tokio::test]
