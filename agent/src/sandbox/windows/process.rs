@@ -14,18 +14,28 @@ use std::os::windows::io::{FromRawHandle, RawHandle};
 use std::path::Path;
 use std::ptr;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, WAIT_FAILED, WAIT_OBJECT_0,
+    CloseHandle, LocalFree, SetHandleInformation, ERROR_SUCCESS, HANDLE, HANDLE_FLAG_INHERIT,
+    WAIT_FAILED, WAIT_OBJECT_0,
 };
-use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+use windows_sys::Win32::Security::Authorization::{
+    SetEntriesInAclW, SetSecurityInfo, EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_MULTIPLE_TRUSTEE,
+    SE_WINDOW_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
+};
+use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, SECURITY_ATTRIBUTES};
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ,
     FILE_SHARE_WRITE, OPEN_EXISTING,
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
+use windows_sys::Win32::System::StationsAndDesktops::{
+    CloseDesktop, CreateDesktopW, DESKTOP_CREATEMENU, DESKTOP_CREATEWINDOW, DESKTOP_ENUMERATE,
+    DESKTOP_READOBJECTS, DESKTOP_WRITEOBJECTS, DESKTOP_WRITE_DAC, HDESK,
+};
 use windows_sys::Win32::System::Threading::{
-    CreateProcessAsUserW, DeleteProcThreadAttributeList, GetExitCodeProcess,
+    CreateProcessAsUserW, DeleteProcThreadAttributeList, GetCurrentProcessId, GetExitCodeProcess,
     InitializeProcThreadAttributeList, ResumeThread, TerminateProcess, UpdateProcThreadAttribute,
     WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
     EXTENDED_STARTUPINFO_PRESENT, INFINITE, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
@@ -38,6 +48,9 @@ use super::Job;
 pub(crate) struct RestrictedChild {
     process: Arc<ProcessHandle>,
     job: Job,
+    // Must outlive the child: the restricted process initializes against this
+    // private desktop after ResumeThread.
+    _desktop: PrivateDesktop,
     stdout: Option<File>,
     stderr: Option<File>,
     pid: u32,
@@ -63,6 +76,7 @@ impl RestrictedChild {
         let stdin = open_inheritable_null()?;
         let inherited = [stdin.raw(), stdout_write.raw(), stderr_write.raw()];
         let attributes = AttributeList::with_handle_list(&inherited)?;
+        let desktop = PrivateDesktop::create(token)?;
 
         let mut startup: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
         startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
@@ -74,13 +88,7 @@ impl RestrictedChild {
 
         let mut command_line = build_command_line(program, args);
         let cwd_wide = wide_nul(cwd.as_os_str());
-        // Some console hosts, including Windows PowerShell, exit with
-        // STATUS_DLL_INIT_FAILED when launched by CreateProcessAsUserW with a
-        // restricted token and no desktop. The interactive desktop is an
-        // execution prerequisite, not an authorization grant; filesystem
-        // access remains governed by the restricted token and ACLs.
-        let desktop_wide = wide_nul(OsStr::new("Winsta0\\Default"));
-        startup.StartupInfo.lpDesktop = desktop_wide.as_ptr().cast_mut();
+        startup.StartupInfo.lpDesktop = desktop.startup_name.as_ptr().cast_mut();
         let environment = build_environment_block(env_overrides)?;
         let mut info: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
         // SAFETY: all UTF-16 buffers are NUL-terminated and live through this
@@ -136,6 +144,7 @@ impl RestrictedChild {
         Ok(Self {
             process: Arc::new(ProcessHandle(process)),
             job,
+            _desktop: desktop,
             stdout: Some(stdout_read.into_file()),
             stderr: Some(stderr_read.into_file()),
             pid: info.dwProcessId,
@@ -168,6 +177,120 @@ impl RestrictedChild {
         // legacy detached-browser behavior.
         self.job.terminate();
         result
+    }
+}
+
+/// A process-private desktop grants only the restricted token's capability
+/// trustees enough desktop rights for DLL/console initialization. It avoids
+/// adding User, Logon, or Everyone to the token's restricting SID set, which
+/// could otherwise broaden filesystem writes through ordinary user ACLs.
+struct PrivateDesktop {
+    handle: HDESK,
+    startup_name: Vec<u16>,
+}
+
+impl PrivateDesktop {
+    fn create(token: &RestrictedToken) -> io::Result<Self> {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| io::Error::other(format!("system clock before Unix epoch: {error}")))?
+            .as_nanos();
+        let name = format!("FutureOSSandbox-{}-{nonce:032x}", unsafe {
+            GetCurrentProcessId()
+        });
+        let name_wide = wide_nul(OsStr::new(&name));
+        let access = DESKTOP_READOBJECTS
+            | DESKTOP_CREATEWINDOW
+            | DESKTOP_CREATEMENU
+            | DESKTOP_ENUMERATE
+            | DESKTOP_WRITEOBJECTS;
+        let handle = unsafe {
+            CreateDesktopW(
+                name_wide.as_ptr(),
+                ptr::null(),
+                ptr::null_mut(),
+                0,
+                access | DESKTOP_WRITE_DAC,
+                ptr::null(),
+            )
+        };
+        if handle.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let desktop = Self {
+            handle,
+            startup_name: wide_nul(OsStr::new(&format!("Winsta0\\{name}"))),
+        };
+        if let Err(error) = desktop.grant_restricted_access(token, access) {
+            drop(desktop);
+            return Err(error);
+        }
+        Ok(desktop)
+    }
+
+    fn grant_restricted_access(&self, token: &RestrictedToken, access: u32) -> io::Result<()> {
+        let entries = token
+            .restricting_sids()
+            .iter()
+            .map(|sid| EXPLICIT_ACCESS_W {
+                grfAccessPermissions: access,
+                grfAccessMode: GRANT_ACCESS,
+                grfInheritance: 0,
+                Trustee: TRUSTEE_W {
+                    pMultipleTrustee: ptr::null_mut(),
+                    MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+                    TrusteeForm: TRUSTEE_IS_SID,
+                    TrusteeType: TRUSTEE_IS_UNKNOWN,
+                    ptstrName: sid.as_psid().cast(),
+                },
+            })
+            .collect::<Vec<_>>();
+        let mut updated = ptr::null_mut();
+        let status = unsafe {
+            SetEntriesInAclW(
+                entries.len() as u32,
+                entries.as_ptr(),
+                ptr::null(),
+                &mut updated,
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return Err(io::Error::from_raw_os_error(status as i32));
+        }
+        let updated = LocalAcl(updated);
+        let status = unsafe {
+            SetSecurityInfo(
+                self.handle,
+                SE_WINDOW_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                updated.0,
+                ptr::null_mut(),
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return Err(io::Error::from_raw_os_error(status as i32));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for PrivateDesktop {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            unsafe { CloseDesktop(self.handle) };
+        }
+    }
+}
+
+struct LocalAcl(*mut windows_sys::Win32::Security::ACL);
+
+impl Drop for LocalAcl {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { LocalFree(self.0.cast()) };
+        }
     }
 }
 

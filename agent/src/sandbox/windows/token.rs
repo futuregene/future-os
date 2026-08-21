@@ -35,7 +35,12 @@ impl OwnedSid {
 /// A primary WRITE_RESTRICTED token. It preserves the caller's normal SID
 /// check, removes maximum privileges, applies LUA filtering, and adds only the
 /// explicitly supplied capability SIDs to the second (write-only) check.
-pub(crate) struct RestrictedToken(HANDLE);
+pub(crate) struct RestrictedToken {
+    handle: HANDLE,
+    // Keep the exact trustees that passed CreateRestrictedToken so the process
+    // launcher can grant only those identities access to its private desktop.
+    sids: Vec<OwnedSid>,
+}
 
 unsafe impl Send for RestrictedToken {}
 unsafe impl Sync for RestrictedToken {}
@@ -97,10 +102,13 @@ impl RestrictedToken {
         if ok == 0 {
             return Err(map_restricted_token_error(io::Error::last_os_error()));
         }
-        let token = RestrictedToken(token);
+        let token = RestrictedToken {
+            handle: token,
+            sids,
+        };
         // IsTokenRestricted reports false when no restricting SID actually
         // made it into the token. Treat that as fail-closed initialization.
-        if unsafe { IsTokenRestricted(token.0) } == 0 {
+        if unsafe { IsTokenRestricted(token.handle) } == 0 {
             return Err(io::Error::other(
                 "CreateRestrictedToken returned a token without restricting SIDs",
             ));
@@ -109,12 +117,16 @@ impl RestrictedToken {
         // it permits directory traversal without granting read/write access;
         // without it CreateProcessAsUserW cannot reach ordinary executable
         // paths and returns ERROR_ACCESS_DENIED.
-        enable_change_notify_privilege(token.0)?;
+        enable_change_notify_privilege(token.handle)?;
         Ok(token)
     }
 
     pub(crate) fn as_handle(&self) -> HANDLE {
-        self.0
+        self.handle
+    }
+
+    pub(crate) fn restricting_sids(&self) -> &[OwnedSid] {
+        &self.sids
     }
 }
 
@@ -165,7 +177,7 @@ fn map_restricted_token_error(error: io::Error) -> io::Error {
 
 impl Drop for RestrictedToken {
     fn drop(&mut self) {
-        unsafe { CloseHandle(self.0) };
+        unsafe { CloseHandle(self.handle) };
     }
 }
 
