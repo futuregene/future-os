@@ -362,10 +362,12 @@ pub fn shell_invocation(command: &str) -> (&'static str, Vec<String>) {
 ///   failure cannot turn a successful user command into `exit 1`.
 ///
 ///   Constrained Language Mode also rejects the `[Console]::OutputEncoding`
-///   setter outright, so a restricted PowerShell 5.1 keeps emitting ANSI (e.g.
-///   936/GBK) no matter what this script does. That is deliberate: the
-///   restricted-shell reader decodes it back with
-///   [`decode_restricted_shell_output`] (ANSI for 5.1, UTF-8 for pwsh 7).
+///   setter outright, so a restricted PowerShell 5.1 keeps emitting in its
+///   console output code page no matter what this script does. With stdout
+///   redirected to a pipe there is no console, so `[Console]::OutputEncoding`
+///   resolves to the OEM code page (`GetOEMCP`), not the ANSI code page
+///   (`GetACP`); the reader decodes it back with
+///   [`decode_restricted_shell_output`] (OEM for 5.1, UTF-8 for pwsh 7).
 ///   pwsh 7 always emits UTF-8 and is unaffected by either restriction.
 /// - `$ProgressPreference = 'SilentlyContinue'` suppresses progress records
 ///   (e.g. "Preparing modules for first use"). When powershell.exe's stderr is
@@ -403,16 +405,19 @@ fn encode_powershell_command(script: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(utf16)
 }
 
-/// Decode captured shell output using the system legacy ANSI code page
-/// (`GetACP`). Windows PowerShell 5.1 running under a WRITE_RESTRICTED token
+/// Decode captured shell output using the system legacy OEM code page
+/// (`GetOEMCP`). Windows PowerShell 5.1 running under a WRITE_RESTRICTED token
 /// enters Constrained Language Mode, where it cannot assign
-/// `[Console]::OutputEncoding`; its stdout/stderr are therefore emitted in the
-/// ANSI code page (e.g. 936/GBK) rather than UTF-8. pwsh 7 is unaffected
-/// because it hard-codes UTF-8 output, so callers only use this for the 5.1
-/// restricted path.
+/// `[Console]::OutputEncoding`; with stdout redirected to a pipe there is no
+/// console, so that property resolves to the OEM code page rather than the ANSI
+/// code page. On CJK locales the two coincide (e.g. both 936/GBK), which hides
+/// the distinction, but on Western/Russian/Greek locales they differ (ANSI
+/// 1252 vs OEM 437/850, 1251 vs 866, 1253 vs 737), so decoding with `CP_ACP`
+/// would corrupt non-ASCII output there. pwsh 7 hard-codes UTF-8 and is
+/// unaffected; callers only use this for the 5.1 restricted path.
 #[cfg(target_os = "windows")]
-pub(crate) fn decode_ansi_lossy(bytes: &[u8]) -> String {
-    use windows_sys::Win32::Globalization::{MultiByteToWideChar, CP_ACP};
+pub(crate) fn decode_oem_lossy(bytes: &[u8]) -> String {
+    use windows_sys::Win32::Globalization::{MultiByteToWideChar, CP_OEMCP};
 
     if bytes.is_empty() {
         return String::new();
@@ -420,7 +425,7 @@ pub(crate) fn decode_ansi_lossy(bytes: &[u8]) -> String {
     // First pass: query the required UTF-16 length.
     let wide_len = unsafe {
         MultiByteToWideChar(
-            CP_ACP,
+            CP_OEMCP,
             0,
             bytes.as_ptr(),
             bytes.len() as i32,
@@ -434,7 +439,7 @@ pub(crate) fn decode_ansi_lossy(bytes: &[u8]) -> String {
     let mut wide = vec![0u16; wide_len as usize];
     let written = unsafe {
         MultiByteToWideChar(
-            CP_ACP,
+            CP_OEMCP,
             0,
             bytes.as_ptr(),
             bytes.len() as i32,
@@ -450,12 +455,13 @@ pub(crate) fn decode_ansi_lossy(bytes: &[u8]) -> String {
 }
 
 /// Decode output captured from a restricted Windows shell. Windows PowerShell
-/// 5.1 cannot set UTF-8 under Constrained Language Mode and therefore emits
-/// ANSI; pwsh 7 always emits UTF-8. Everything else is UTF-8.
+/// 5.1 cannot set UTF-8 under Constrained Language Mode and therefore emits in
+/// its console output code page, which is the OEM code page when stdout is a
+/// pipe; pwsh 7 always emits UTF-8. Everything else is UTF-8.
 #[cfg(target_os = "windows")]
 pub(crate) fn decode_restricted_shell_output(bytes: &[u8]) -> String {
     if windows_shell().program == "powershell" {
-        decode_ansi_lossy(bytes)
+        decode_oem_lossy(bytes)
     } else {
         String::from_utf8_lossy(bytes).into_owned()
     }
@@ -1018,17 +1024,17 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "windows")]
-    fn decode_ansi_lossy_round_trips_ascii_and_cjk() {
-        use windows_sys::Win32::Globalization::GetACP;
+    fn decode_oem_lossy_round_trips_ascii_and_cjk() {
+        use windows_sys::Win32::Globalization::GetOEMCP;
 
-        // ASCII is identical in every ANSI code page.
-        assert_eq!(decode_ansi_lossy(b"hello"), "hello");
-        assert_eq!(decode_ansi_lossy(b""), "");
+        // ASCII is identical in every OEM code page.
+        assert_eq!(decode_oem_lossy(b"hello"), "hello");
+        assert_eq!(decode_oem_lossy(b""), "");
         // GBK (code page 936) encodes 中文 as D6 D0 CE C4. Only assert on
-        // systems whose ANSI code page is actually GBK; elsewhere the same
-        // bytes decode differently (e.g. cp1252) and this branch is skipped.
-        if unsafe { GetACP() } == 936 {
-            assert_eq!(decode_ansi_lossy(&[0xD6, 0xD0, 0xCE, 0xC4]), "中文");
+        // systems whose OEM code page is actually GBK; elsewhere the same
+        // bytes decode differently (e.g. cp437) and this branch is skipped.
+        if unsafe { GetOEMCP() } == 936 {
+            assert_eq!(decode_oem_lossy(&[0xD6, 0xD0, 0xCE, 0xC4]), "中文");
         }
     }
 
