@@ -1,12 +1,12 @@
 {
   "lastRunHeading": "上一轮变更",
   "tab": {
-    "gitChanges": "Git changes",
+    "gitChanges": "当前分支",
     "lastRun": "上一轮变更"
   },
   "workingTree": {
     "emptyTitle": "工作区没有未提交的更改",
-    "emptyDetail": "当前分支相对所选 base 没有变化。"
+    "emptyDetail": "当前分支相对 HEAD 没有变化。"
   },
   "expandAll": "全部展开",
   "collapseAll": "全部收起",

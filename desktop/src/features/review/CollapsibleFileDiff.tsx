@@ -30,15 +30,15 @@ export function CollapsibleFileDiff({
   return (
     <section className="overflow-hidden rounded-md border border-line-soft bg-surface">
       <button
-        className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
+        className="flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left"
         onClick={onToggle}
         type="button"
       >
-        <span className="flex min-w-0 items-center gap-2">
-          <FileDiff className="size-4 shrink-0 text-ink-soft" />
-          <span className="min-w-0 truncate text-sm font-medium text-ink-soft">{title}</span>
+        <span className="flex min-w-0 items-center gap-1.5">
+          <FileDiff className="size-3.5 shrink-0 text-ink-soft" />
+          <span className="min-w-0 truncate text-left text-xs font-medium text-ink-soft [direction:rtl]">{title}</span>
         </span>
-        <span className="flex shrink-0 items-center gap-2 text-xs">
+        <span className="flex shrink-0 items-center gap-1.5 text-xs">
           {headerExtras}
           {showCounts
             ? (
@@ -48,7 +48,7 @@ export function CollapsibleFileDiff({
                 </>
               )
             : null}
-          {open ? <ChevronDown className="size-4 text-ink-muted" /> : <ChevronRight className="size-4 text-ink-muted" />}
+          {open ? <ChevronDown className="size-3.5 text-ink-muted" /> : <ChevronRight className="size-3.5 text-ink-muted" />}
         </span>
       </button>
       {open ? <div className="border-t border-line-soft">{children}</div> : null}

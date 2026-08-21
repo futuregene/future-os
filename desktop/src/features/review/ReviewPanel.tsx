@@ -1,6 +1,5 @@
-import type { ReviewBase } from "../../integrations/storage/review";
-import type { GitReview, LastRunReviewData, WorkspaceReviewCapabilities } from "../../integrations/storage/types";
-import { useEffect, useRef, useState } from "react";
+import type { GitReview, LastRunReviewData } from "../../integrations/storage/types";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getLastRunReview, retryRunReview } from "../../integrations/storage/threadStore";
 import { errorMessage } from "../../lib/errors";
@@ -12,27 +11,18 @@ import { LastRunReview } from "./LastRunReview";
 type ReviewView = "git_changes" | "last_run";
 
 export function ReviewPanel({
-  capabilities,
   changePreview = "ready",
-  customBase,
-  onCustomBaseChange,
-  onReviewBaseChange,
   review,
-  reviewBase,
   threadId,
 }: {
-  capabilities: WorkspaceReviewCapabilities | null;
   changePreview?: "ready" | "unsupported_too_large";
-  customBase: string;
-  onCustomBaseChange: (value: string) => void;
-  onReviewBaseChange: (value: ReviewBase) => void;
   review: GitReview | null;
-  reviewBase: ReviewBase;
   threadId: string;
 }) {
   const { t } = useTranslation("review");
-  const isGit = review?.isGitWorkspace ?? false;
-  const [activeView, setActiveView] = useState<ReviewView>("last_run");
+  const reviewKind = review === null ? "loading" : review.isGitWorkspace ? "git" : "non_git";
+  const isGit = reviewKind === "git";
+  const [activeView, setActiveView] = useState<ReviewView>("git_changes");
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
 
@@ -48,21 +38,14 @@ export function ReviewPanel({
   const runReview = runResource.data;
   const { reload } = runResource;
 
-  // A non-git Workspace only ever shows the last-run view.
+  // Default each workspace review to the current branch against HEAD. A non-git
+  // workspace only has the last-run view.
   useEffect(() => {
-    if (!isGit)
+    if (reviewKind === "git")
+      setActiveView("git_changes");
+    else if (reviewKind === "non_git")
       setActiveView("last_run");
-  }, [isGit]);
-
-  // Capabilities load after mount, so seed the active view from the backend's
-  // default once per thread — but never override a later manual tab choice.
-  const appliedDefaultThreadRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (capabilities && appliedDefaultThreadRef.current !== threadId) {
-      appliedDefaultThreadRef.current = threadId;
-      setActiveView(capabilities.defaultView);
-    }
-  }, [capabilities, threadId]);
+  }, [threadId, reviewKind]);
 
   // Refresh when a Run on this thread finishes (its changeset just landed).
   useEffect(() => onFutureEvent("review-updated", (detail) => {
@@ -113,24 +96,18 @@ export function ReviewPanel({
 
   return (
     <div className="space-y-3">
-      {activeView === "git_changes"
-        ? (
-            <ReviewHeader
-              customBase={customBase}
-              review={reviewData}
-              reviewBase={reviewBase}
-              onCustomBaseChange={onCustomBaseChange}
-              onReviewBaseChange={onReviewBaseChange}
-            />
-          )
-        : null}
       <div className="grid grid-cols-2 gap-1 rounded-md bg-surface p-1">
         <ViewTab active={activeView === "git_changes"} label={t("tab.gitChanges")} onClick={() => setActiveView("git_changes")} />
         <ViewTab active={activeView === "last_run"} label={t("tab.lastRun")} onClick={() => setActiveView("last_run")} />
       </div>
       {activeView === "last_run"
         ? lastRun
-        : <WorkingTreeReview files={reviewData.files} />}
+        : (
+            <>
+              <ReviewHeader review={reviewData} />
+              <WorkingTreeReview files={reviewData.files} />
+            </>
+          )}
     </div>
   );
 }
