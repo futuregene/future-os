@@ -13,7 +13,7 @@ import { RunInspectPanel } from "../../features/runs/RunInspectPanel";
 import { RunsPanel } from "../../features/runs/RunsPanel";
 import {
   abortRun,
-  clearFinishedRuns,
+  archiveFinishedRuns,
 } from "../../integrations/storage/threadStore";
 import { onFutureEvent } from "../../lib/futureEvents";
 import { startWindowDrag } from "../../lib/windowDrag";
@@ -97,10 +97,13 @@ export function ContextPanel({
   const seededForOpenRef = useRef(false);
   const activeThreadId = activeThread?.id ?? null;
   const activeThreadMode = activeThread?.mode ?? null;
-  const activeWorkspaceId = activeWorkspace?.id ?? activeThread?.workspaceId ?? null;
+  const activeWorkspaceId = activeThread?.workspaceId ?? null;
+  const workspaceScopeReady = activeThreadId === null || activeWorkspace?.id === activeWorkspaceId;
+  const activeWorkspacePath = workspaceScopeReady ? activeWorkspace?.path ?? null : null;
 
   const {
     runs,
+    runsScope,
     toolsByRun,
     artifacts,
     gitReview,
@@ -111,7 +114,15 @@ export function ContextPanel({
     reviewCustomBase,
     setReviewCustomBase,
     refreshContext,
-  } = useContextData({ activeThreadId, activeThreadMode, activeWorkspaceId, activeTab, expanded });
+  } = useContextData({
+    activeThreadId,
+    activeThreadMode,
+    activeWorkspaceId,
+    activeWorkspacePath,
+    workspaceScopeReady,
+    activeTab,
+    expanded,
+  });
 
   // Workspace-mode threads (git or not) show Review (§14.6); chat keeps Artifacts.
   // Tab choice is driven by capabilities (cheap), not the whole-tree git diff (C3).
@@ -148,19 +159,13 @@ export function ContextPanel({
     }
   }, [activeTab, onTabChange, tabs]);
 
-  async function handleTerminateRun(run: StoredRun) {
-    if (!activeThreadId)
-      return;
-
-    await abortRun({ runId: run.id, threadId: activeThreadId });
+  async function handleTerminateRun(threadId: string, run: StoredRun) {
+    await abortRun({ runId: run.id, threadId });
     await refreshContext();
   }
 
-  async function handleClearFinishedRuns() {
-    if (!activeThreadId)
-      return;
-
-    await clearFinishedRuns(activeThreadId);
+  async function handleArchiveFinishedRuns(threadId: string) {
+    await archiveFinishedRuns(threadId);
     await refreshContext();
   }
 
@@ -336,8 +341,8 @@ export function ContextPanel({
                   <RunsPanel
                     runs={runs}
                     toolsByRun={toolsByRun}
-                    workspacePath={activeWorkspace?.path ?? null}
-                    onClearFinished={handleClearFinishedRuns}
+                    scope={runsScope}
+                    onArchiveFinished={handleArchiveFinishedRuns}
                     onInspectTool={handleSelectTool}
                     onTerminateRun={handleTerminateRun}
                   />

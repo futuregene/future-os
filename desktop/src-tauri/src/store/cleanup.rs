@@ -5,7 +5,6 @@ use rusqlite::{params, Connection};
 
 use super::db::connect;
 use super::records::ThreadCleanupSummary;
-use super::review_snapshots::delete_run_review_in;
 use super::status::TERMINAL_RUN_STATUSES_SQL;
 
 /// A run that was cancelled by startup convergence after a GUI crash.
@@ -401,73 +400,24 @@ pub fn get_thread_cleanup_summary(
     })
 }
 
-/// Cancel every non-terminal run. Returns the number of runs cancelled.
-pub fn clear_finished_runs(thread_id: &str) -> Result<usize, crate::AppError> {
+/// Hide terminal runs from the Runs panel while retaining their local metadata
+/// and Agent-owned event history for transcript inspection and deep links.
+pub fn archive_finished_runs(thread_id: &str) -> Result<usize, crate::AppError> {
     let mut conn = connect()?;
     let tx = conn.transaction()?;
-    // Terminal runs of this Thread, read once up front so the per-run review
-    // cascade below can reuse `delete_run_review_in` (the FK-safe delete order is
-    // owned by review_snapshots, not restated here). Scoped so the statement is
-    // dropped before the transaction's own `execute` calls borrow it.
-    let terminal_run_ids: Vec<String> = {
-        let mut stmt = tx.prepare(&format!(
-            "SELECT id FROM runs
-             WHERE thread_id = ?1 AND status IN ({TERMINAL_RUN_STATUSES_SQL})"
-        ))?;
-        let rows = stmt.query_map(params![thread_id], |row| row.get::<_, String>(0))?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()?
-    };
-    // messages table dropped — no longer needed
-    tx.execute(
+    let now = now_millis();
+    let archived_runs = tx.execute(
         &format!(
-            "UPDATE artifacts
-         SET run_id = NULL
-         WHERE thread_id = ?1
-           AND run_id IN (
-             SELECT id FROM runs
+            "UPDATE runs
+             SET archived_at = ?2, updated_at = ?2
              WHERE thread_id = ?1
-               AND status IN ({TERMINAL_RUN_STATUSES_SQL})
-           )"
+               AND archived_at IS NULL
+               AND status IN ({TERMINAL_RUN_STATUSES_SQL})"
         ),
-        params![thread_id],
-    )?;
-    // tool_outputs table dropped
-    // run_events table dropped
-    tx.execute(
-        &format!(
-            "DELETE FROM approval_requests
-         WHERE thread_id = ?1
-           AND run_id IN (
-             SELECT id FROM runs
-             WHERE thread_id = ?1
-               AND status IN ({TERMINAL_RUN_STATUSES_SQL})
-           )"
-        ),
-        params![thread_id],
-    )?;
-    // Review data (file changes → changeset → snapshots) for each terminal run,
-    // deleted in the FK-safe order encoded once by `delete_run_review_in`.
-    for run_id in &terminal_run_ids {
-        delete_run_review_in(&tx, run_id)?;
-    }
-    // tool_calls table dropped
-    let deleted_runs = tx.execute(
-        &format!(
-            "DELETE FROM runs
-         WHERE thread_id = ?1
-           AND status IN ({TERMINAL_RUN_STATUSES_SQL})"
-        ),
-        params![thread_id],
+        params![thread_id, now],
     )?;
     tx.commit()?;
-    // Event logs live outside SQLite, so remove them only after the database
-    // transaction commits. Keeping this paired with run deletion prevents the
-    // "clear finished" action from leaving orphaned JSONL files indefinitely.
-    for run_id in &terminal_run_ids {
-        super::delete_run_events_file(run_id);
-        super::clear_run_event_buffer(run_id);
-    }
-    Ok(deleted_runs)
+    Ok(archived_runs)
 }
 
 #[cfg(test)]
@@ -586,8 +536,8 @@ mod tests {
     }
 
     #[test]
-    fn clear_finished_runs_removes_event_log() {
-        let _home = HomeGuard::new("clear-finished-run-events");
+    fn archive_finished_runs_keeps_event_log() {
+        let _home = HomeGuard::new("archive-finished-run-events");
         crate::store::initialize_app_store().expect("initialize store");
         let workspace = crate::store::create_workspace(CreateWorkspaceInput {
             name: Some("test".to_string()),
@@ -636,17 +586,22 @@ mod tests {
         assert!(log_path.exists(), "event log should exist before cleanup");
 
         crate::store::update_run_status_if_active(UpdateRunStatusInput {
-            run_id: run.id,
+            run_id: run.id.clone(),
             status: "completed".to_string(),
             error_message: None,
             error_type: None,
         })
         .expect("complete run");
-        assert_eq!(clear_finished_runs(&thread.id).expect("clear runs"), 1);
+        assert_eq!(archive_finished_runs(&thread.id).expect("archive runs"), 1);
         assert!(
-            !log_path.exists(),
-            "event log should be removed with its run"
+            log_path.exists(),
+            "event log must remain available after archiving"
         );
+        assert!(crate::store::get_run(&run.id)
+            .expect("get run")
+            .expect("run retained")
+            .archived_at
+            .is_some());
     }
 
     #[test]

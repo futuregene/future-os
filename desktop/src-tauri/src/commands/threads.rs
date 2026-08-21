@@ -359,32 +359,8 @@ pub async fn get_session_entries(thread_id: String) -> Result<serde_json::Value,
 }
 
 #[tauri::command]
-pub async fn clear_finished_runs(thread_id: String) -> Result<usize, crate::AppError> {
-    let thread =
-        store::get_thread(&thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string())?;
-    let session_id = thread.agent_session_id.unwrap_or(thread.id);
-    let terminal_runs = store::list_runs(&thread_id)?
-        .into_iter()
-        .filter(|run| matches!(run.status.as_str(), "completed" | "failed" | "cancelled"))
-        .map(|run| run.id)
-        .collect::<Vec<_>>();
-    if !terminal_runs.is_empty() {
-        let mut client = agent_bridge::connect_agent().await?;
-        for run_id in terminal_runs {
-            let response = client
-                .execute_command(agent_bridge::prune_run_events_command(
-                    session_id.clone(),
-                    run_id,
-                ))
-                .await
-                .map_err(|status| agent_bridge::map_rpc_error("Agent event prune failed", status))?
-                .into_inner();
-            if !response.success {
-                return Err(format!("Agent event prune failed: {}", response.error).into());
-            }
-        }
-    }
-    store::clear_finished_runs(&thread_id)
+pub fn archive_finished_runs(thread_id: String) -> Result<usize, crate::AppError> {
+    store::archive_finished_runs(&thread_id)
 }
 
 #[tauri::command]
@@ -468,7 +444,7 @@ mod tests {
                 batch_delete_threads,
                 get_thread_agent_state,
                 get_session_entries,
-                clear_finished_runs,
+                archive_finished_runs,
                 attach_remote_stream
             ],
             &[
@@ -480,7 +456,7 @@ mod tests {
                 "batch_delete_threads",
                 "get_thread_agent_state",
                 "get_session_entries",
-                "clear_finished_runs",
+                "archive_finished_runs",
                 "attach_remote_stream",
             ],
         );
@@ -810,13 +786,12 @@ mod tests {
         assert_eq!(updated.id, thread.id);
     }
 
-    #[tokio::test]
-    async fn clear_finished_runs_without_terminal_runs_skips_the_agent() {
-        let _lock = mock_agent_lock();
-        let _home = init("cmd_clear_runs");
+    #[test]
+    fn archive_finished_runs_without_terminal_runs_returns_zero() {
+        let _home = init("cmd_archive_runs");
         let thread = make_thread(&_home, None);
-        let cleared = clear_finished_runs(thread.id.clone()).await.expect("clear");
-        assert_eq!(cleared, 0);
+        let archived = archive_finished_runs(thread.id).expect("archive");
+        assert_eq!(archived, 0);
     }
 
     #[tokio::test]
@@ -957,10 +932,9 @@ mod tests {
         script_mock_agent(MockScript::default());
     }
 
-    #[tokio::test]
-    async fn clear_finished_runs_prunes_terminal_runs_via_the_agent() {
-        let _lock = mock_agent_lock();
-        let _home = init("cmd_clear_runs_terminal");
+    #[test]
+    fn archive_finished_runs_keeps_terminal_run_for_transcript_inspection() {
+        let _home = init("cmd_archive_runs_terminal");
         let thread = make_thread(&_home, Some("sess_clear"));
         crate::store::create_run(store::CreateRunInput {
             id: Some("run_terminal".into()),
@@ -978,14 +952,12 @@ mod tests {
         })
         .expect("terminal");
 
-        crate::commands::agent_mock::ensure_mock_agent();
-        script_mock_agent(MockScript {
-            data: HashMap::from([("prune_run_events".to_string(), "{}".to_string())]),
-            ..Default::default()
-        });
-        let cleared = clear_finished_runs(thread.id.clone()).await.expect("clear");
-        assert_eq!(cleared, 1);
-        script_mock_agent(MockScript::default());
+        let archived = archive_finished_runs(thread.id).expect("archive");
+        assert_eq!(archived, 1);
+        let run = crate::store::get_run("run_terminal")
+            .expect("get run")
+            .expect("run retained");
+        assert!(run.archived_at.is_some());
     }
 
     #[tokio::test]
@@ -1129,36 +1101,6 @@ mod tests {
             .await
             .expect("missing session is a benign empty history");
         assert_eq!(value["entries"], serde_json::json!([]));
-        script_mock_agent(MockScript::default());
-    }
-
-    #[tokio::test]
-    async fn clear_finished_runs_errors_when_prune_rejected() {
-        let _lock = mock_agent_lock();
-        let _home = init("cmd_clear_runs_rej");
-        let thread = make_thread(&_home, Some("sess_clear_rej"));
-        crate::store::create_run(store::CreateRunInput {
-            id: Some("run_term_rej".into()),
-            thread_id: thread.id.clone(),
-            trigger_message_id: None,
-            model_provider: None,
-            model_id: None,
-        })
-        .expect("create run");
-        crate::store::update_run_status_if_active(store::UpdateRunStatusInput {
-            run_id: "run_term_rej".into(),
-            status: "completed".into(),
-            error_message: None,
-            error_type: None,
-        })
-        .expect("terminal");
-        crate::commands::agent_mock::ensure_mock_agent();
-        script_mock_agent(MockScript {
-            errors: HashMap::from([("prune_run_events".to_string(), "nope".to_string())]),
-            ..Default::default()
-        });
-        let err = clear_finished_runs(thread.id.clone()).await.unwrap_err();
-        assert!(!err.to_string().is_empty());
         script_mock_agent(MockScript::default());
     }
 

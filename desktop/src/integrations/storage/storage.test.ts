@@ -32,7 +32,7 @@ import {
 } from "./review";
 import {
   abortRun,
-  clearFinishedRuns,
+  archiveFinishedRuns,
   createRun,
   decideApprovalRequest,
   getLatestRun,
@@ -209,8 +209,8 @@ describe("storage invoke wrappers", () => {
     expect(invokeMock).toHaveBeenLastCalledWith("update_run_status", { input: { runId: "r", status: "completed" } });
     await abortRun({ threadId: "t", runId: "r" });
     expect(invokeMock).toHaveBeenLastCalledWith("abort_run", { threadId: "t", runId: "r" });
-    await clearFinishedRuns("t");
-    expect(invokeMock).toHaveBeenLastCalledWith("clear_finished_runs", { threadId: "t" });
+    await archiveFinishedRuns("t");
+    expect(invokeMock).toHaveBeenLastCalledWith("archive_finished_runs", { threadId: "t" });
     await listRunEvents("r");
     expect(invokeMock).toHaveBeenLastCalledWith("list_run_events", { runId: "r" });
     await listRunEventsSince("r", 5);

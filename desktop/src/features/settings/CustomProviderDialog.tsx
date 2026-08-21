@@ -226,7 +226,7 @@ export function CustomProviderDialog({
 
   return (
     <Dialog
-      bodyClassName="-mr-5 min-h-0 flex-1 overflow-y-auto pr-5"
+      bodyClassName="-ml-0.5 -mr-5 min-h-0 flex-1 overflow-y-auto pl-0.5 pr-5"
       className="flex max-h-[min(760px,calc(100vh-3rem))] max-w-lg flex-col"
       onClose={onClose}
       open={open}

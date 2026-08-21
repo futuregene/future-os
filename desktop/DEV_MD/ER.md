@@ -180,6 +180,7 @@ Run 表示一次 Agent 执行，通常由用户消息触发。
 | `ended_at` | 结束时间 |
 | `error_message` | 错误信息 |
 | `error_type` | 结构化错误分类（`stream_interrupted`、`command_failed`、`model_failed`、`abort_requested`、`timeout`、`interrupted`、`unknown` 等；配套 `run_error.rs`，未失败时为 NULL） |
+| `archived_at` | 归档时间；非空时不在右侧「运行」列表展示，但保留记录和 Agent 事件，供中间信息流的命令详情跳转使用 |
 | `created_at` | 创建时间 |
 | `updated_at` | 更新时间 |
 
@@ -199,6 +200,7 @@ Run 表示一次 Agent 执行，通常由用户消息触发。
 - 运行中 Run 可以被用户终止；终止后状态进入 `cancelled`，并同步取消该 Run 下仍然 pending 的 Approval Request。
 - 失败 / 已取消的 Run 支持恢复：『重试』用 `trigger_message_id` 对应的用户消息（含附件）重新发起；『继续』以「继续上一个任务」+ 失败消息摘要（Runs 面板触发时另附已执行内容摘要）发起。两者仅针对最新一轮且未中断的 Run，更早轮次或中断恢复改走 Thread 分叉（见 §4.2）。
 - 长任务恢复时，Thread 可以通过最近 Run 恢复上下文展示。
+- 「归档已结束的程序」只为 Runs 面板隐藏已结束 Run，不删除 SQLite Run 记录、Review 数据或 Agent 的 run-events journal；中间信息流可继续通过 `run_id` 打开命令详情。
 
 ### 4.5 Run Event
 

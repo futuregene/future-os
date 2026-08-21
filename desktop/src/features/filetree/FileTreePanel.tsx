@@ -173,7 +173,7 @@ export function FileTreePanel({ rootPath, isWorkspace }: { rootPath: string | nu
           size="sm"
           variant="toolbar"
         >
-          {refreshing ? t("refreshing") : t("refresh")}
+          {t("refresh")}
         </Button>
       </div>
 
