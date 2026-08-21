@@ -776,7 +776,7 @@ pub fn run() {
             logout_future_provider,
             get_future_profile,
             get_future_balance,
-            clear_finished_runs,
+            archive_finished_runs,
             list_threads,
             list_workspaces,
             create_workspace,

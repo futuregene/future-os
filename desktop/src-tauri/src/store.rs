@@ -32,7 +32,7 @@ pub use artifacts::{
     import_attachment_artifact, list_artifacts, ArtifactRecord,
 };
 pub use cleanup::{
-    clear_finished_runs, get_thread_cleanup_summary, list_active_runs, list_interrupted_runs,
+    archive_finished_runs, get_thread_cleanup_summary, list_active_runs, list_interrupted_runs,
     reanimate_run, reconcile_orphan_chat_workspaces, reconcile_orphan_images,
     reconcile_orphan_review_repos, reconcile_orphan_sessions, settle_interrupted_run_from_agent,
     ActiveRun,

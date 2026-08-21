@@ -28,6 +28,7 @@ pub struct RunRecord {
     /// 'abort_requested', 'timeout', 'unknown'. NULL when the run did not
     /// fail or the error type is unknown.
     pub error_type: Option<String>,
+    pub archived_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -69,7 +70,7 @@ pub struct ToolOutputRecord {
 
 sql_record!(pub(super) RUN_COLUMNS, run_from_row -> RunRecord {
     id, thread_id, trigger_message_id, status, model_provider, model_id,
-    started_at, ended_at, error_message, error_type, created_at, updated_at,
+    started_at, ended_at, error_message, error_type, archived_at, created_at, updated_at,
 });
 
 // TOOL_CALL_COLUMNS & tool_call_from_row removed — table dropped; ToolCallRecord

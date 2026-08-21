@@ -216,6 +216,7 @@ pub fn delete_session_command(session_id: String) -> RpcCommand {
     base_command("delete_session", session_id)
 }
 
+#[cfg(test)]
 pub fn prune_run_events_command(session_id: String, run_id: String) -> RpcCommand {
     RpcCommand {
         run_id,

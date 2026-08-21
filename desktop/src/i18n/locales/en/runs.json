@@ -32,10 +32,10 @@
   },
   "runsPanel": {
     "emptyTitle": "No background programs",
-    "emptyDetail": "Agent work will appear here while it is running.",
+    "emptyDetailNeverRun": "No programs have run yet.",
+    "emptyDetailArchived": "Finished programs have been archived.",
     "runningFinished": "{{running}} running / {{finished}} finished",
-    "clearing": "Clearing",
-    "clearFinished": "Clear finished",
+    "archiveFinished": "Archive finished",
     "commands_one": "{{count}} command",
     "commands_other": "{{count}} commands",
     "inspectRun": "Inspect run",

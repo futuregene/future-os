@@ -52,6 +52,8 @@ export interface StoredRun {
   endedAt?: number | null;
   errorMessage?: string | null;
   errorType?: "stream_disconnected" | "command_failed" | "model_failed" | "abort_requested" | "timeout" | "unknown" | null;
+  /** Set when hidden from the Runs panel; the record and Agent events remain available. */
+  archivedAt?: number | null;
   createdAt: number;
   updatedAt: number;
 }

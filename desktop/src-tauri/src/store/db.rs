@@ -11,7 +11,9 @@ use super::approvals::{
 use super::runs::{run_from_row, RunRecord, RUN_COLUMNS};
 use super::schema::{
     ADDED_COLUMNS, ADDED_INDEXES, DROPPED_COLUMNS, DROPPED_TABLES, RENAMED_COLUMNS, SCHEMA,
+    VERSIONED_MIGRATIONS,
 };
+use super::util::now_millis;
 
 pub(super) fn app_dir() -> Result<PathBuf, crate::AppError> {
     let home = crate::home_dir().ok_or("HOME/USERPROFILE environment variable is not set.")?;
@@ -165,6 +167,7 @@ pub(super) fn connect() -> Result<PooledConnection, crate::AppError> {
 
 pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
     conn.execute_batch(SCHEMA)?;
+    apply_versioned_migrations(conn)?;
     // Rename columns on databases created before the N-3 rename. `CREATE TABLE
     // IF NOT EXISTS` can't do it, and without this the store reads/writes
     // `artifact_type` against a table that still has the old `type` column —
@@ -211,6 +214,45 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
                 // DROP COLUMN can fail if the column is referenced by an index
                 // or is the last column — log and continue.
                 eprintln!("FutureOS migration: failed to drop {table}.{column}: {error}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Apply post-release migrations once and record their completion. A fresh
+/// database already has each column from `SCHEMA`, so it records the migration
+/// without re-running its `ALTER`; an upgraded database executes the `ALTER`
+/// and records both steps in one SQLite transaction.
+fn apply_versioned_migrations(conn: &Connection) -> Result<(), crate::AppError> {
+    for (version, table, column, sql) in VERSIONED_MIGRATIONS {
+        let applied = conn
+            .query_row(
+                "SELECT 1 FROM schema_migrations WHERE version = ?1",
+                [version],
+                |_| Ok(()),
+            )
+            .optional()?;
+        if applied.is_some() {
+            continue;
+        }
+
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| {
+            if !column_exists(conn, table, column)? {
+                conn.execute(sql, [])?;
+            }
+            conn.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+                params![version, now_millis()],
+            )?;
+            Ok::<(), crate::AppError>(())
+        })();
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT")?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
             }
         }
     }
@@ -344,6 +386,41 @@ mod tests {
     fn apply_schema_on_fresh_db_succeeds() {
         let conn = Connection::open_in_memory().unwrap();
         apply_schema(&conn).unwrap();
+    }
+
+    #[test]
+    fn apply_schema_migrates_v1_1_2_runs_with_archive_marker() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE runs (
+                id TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                trigger_message_id TEXT,
+                status TEXT NOT NULL,
+                model_provider TEXT,
+                model_id TEXT,
+                started_at INTEGER,
+                ended_at INTEGER,
+                error_message TEXT,
+                error_type TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );",
+        )
+        .unwrap();
+
+        apply_schema(&conn).unwrap();
+
+        assert!(column_exists(&conn, "runs", "archived_at").unwrap());
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 'v1.1.3-runs-archived-at'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1,
+        );
     }
 
     /// A migrated DB holding artifact rows, with FKs off — `dedupe_file_artifacts`

@@ -2,7 +2,7 @@ import { StatusBar } from "expo-status-bar";
 import { useEffect, useState, type PropsWithChildren } from "react";
 import { ActivityIndicator, Animated, Easing, StyleSheet, View } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
-import { ChatScreen } from "./src/screens/ChatScreen";
+import { ChatScreen } from "./src/features/chat/ChatScreen";
 import { PairingScreen } from "./src/screens/PairingScreen";
 import { SessionsScreen } from "./src/screens/SessionsScreen";
 import { RemoteProvider, useRemote } from "./src/remote/RemoteContext";
