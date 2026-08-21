@@ -138,18 +138,46 @@ fn entry_present(
         return Err(io::Error::from_raw_os_error(status as i32));
     }
     let entries_guard = LocalGuard(entries.cast());
-    let found = unsafe { std::slice::from_raw_parts(entries, count as usize) }
-        .iter()
-        .any(|entry| {
-            entry.grfAccessMode == mode
-                && entry.grfAccessPermissions & permissions == permissions
-                && entry.grfInheritance & inheritance == inheritance
-                && entry.Trustee.TrusteeForm == TRUSTEE_IS_SID
-                && !entry.Trustee.ptstrName.is_null()
-                && unsafe { EqualSid(entry.Trustee.ptstrName.cast(), sid) } != 0
-        });
+    let found = explicit_entries_contain(entries, count, sid, permissions, mode, inheritance)?;
     drop(entries_guard);
     Ok(found)
+}
+
+fn explicit_entries_contain(
+    entries: *const EXPLICIT_ACCESS_W,
+    count: u32,
+    sid: PSID,
+    permissions: u32,
+    mode: i32,
+    inheritance: u32,
+) -> io::Result<bool> {
+    // GetExplicitEntriesFromAclW legitimately returns count=0 with a null list
+    // when the ACL has no explicit entries. Rust slices require a non-null,
+    // aligned pointer even for length zero, so handle that Win32 representation
+    // before constructing a slice.
+    if count == 0 {
+        return Ok(false);
+    }
+    if entries.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Win32 returned a null explicit ACL list with a non-zero count",
+        ));
+    }
+    // SAFETY: a successful GetExplicitEntriesFromAclW call owns `count`
+    // initialized entries until the caller releases the enclosing LocalGuard.
+    Ok(
+        unsafe { std::slice::from_raw_parts(entries, count as usize) }
+            .iter()
+            .any(|entry| {
+                entry.grfAccessMode == mode
+                    && entry.grfAccessPermissions & permissions == permissions
+                    && entry.grfInheritance & inheritance == inheritance
+                    && entry.Trustee.TrusteeForm == TRUSTEE_IS_SID
+                    && !entry.Trustee.ptstrName.is_null()
+                    && unsafe { EqualSid(entry.Trustee.ptstrName.cast(), sid) } != 0
+            }),
+    )
 }
 
 struct LocalGuard(*mut core::ffi::c_void);
@@ -159,5 +187,25 @@ impl Drop for LocalGuard {
         if !self.0.is_null() {
             unsafe { LocalFree(self.0) };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_explicit_acl_list_does_not_construct_a_null_slice() {
+        assert!(
+            !explicit_entries_contain(ptr::null(), 0, ptr::null_mut(), 0, GRANT_ACCESS, 0,)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn null_explicit_acl_list_with_entries_is_rejected() {
+        let error = explicit_entries_contain(ptr::null(), 1, ptr::null_mut(), 0, GRANT_ACCESS, 0)
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 }
