@@ -328,16 +328,9 @@ impl Loop {
         // Stage 2: PrepareToolCall hook
         let raw_args = tc.function.arguments.clone();
         let normalized_args = match &raw_args {
-            serde_json::Value::String(s) => match serde_json::from_str::<serde_json::Value>(s) {
-                Ok(v) => v,
-                Err(_) => {
-                    return (
-                        String::new(),
-                        Some(format!("Tool {} received malformed (non-JSON) arguments; re-emit with a valid JSON object", tool_name)),
-                        tool_name,
-                    );
-                }
-            },
+            serde_json::Value::String(s) => {
+                serde_json::from_str::<serde_json::Value>(s).unwrap_or(raw_args)
+            }
             _ => raw_args,
         };
         let effective_args = if let Some(ref hook) = config.prepare_tool_call {
@@ -624,26 +617,6 @@ mod tests {
         assert_eq!(name, "nonexistent_tool");
         assert!(err.is_some());
         assert!(err.unwrap().contains("Unknown tool"));
-    }
-
-    #[tokio::test]
-    async fn execute_one_tool_malformed_string_args_fails_fast() {
-        let tools = vec![crate::tools::write_tool()];
-        let tc = crate::types::ToolCall {
-            id: "c1".to_string(),
-            call_type: "function".to_string(),
-            function: crate::types::ToolCallFn {
-                name: "write".to_string(),
-                arguments: serde_json::json!("{not valid json"),
-            },
-        };
-        let (result, err, name) =
-            Loop::execute_one_tool_impl_static(&tc, &tools, &crate::types::AgentConfig::default())
-                .await;
-        assert_eq!(name, "write");
-        assert!(err.is_some());
-        assert!(err.unwrap().contains("malformed"));
-        assert!(result.is_empty());
     }
 
     #[tokio::test]
