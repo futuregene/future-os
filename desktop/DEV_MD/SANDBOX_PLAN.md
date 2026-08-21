@@ -184,7 +184,7 @@ v2 决策（V1–V9）见 APPROVAL_PLAN §9。v1 期间沿用有效的：escalat
 
 ## 11. Windows 原生写保护（unelevated：RestrictedToken + ACL）
 
-状态：**W1–W5 已实现；W6 已接通 capability state/ACL/token/suspended process 内部执行链。** 初版误将 AppContainer capability SID 传给传统 `CreateRestrictedToken`，在纯净 Windows 11 Home 上得到 `ERROR_INVALID_PARAMETER`；现已改为稳定的 account-domain-shaped restricting SID，必须重新跑 Windows 真机矩阵确认。若该正确 SID 形式仍被 API 拒绝，才作为 fail-closed host feature-probe 结果。活动代际/GC、重置/卸载清理及支持主机的真实矩阵仍待完成。后端完成并通过 smoke 前，`platform_sandbox_available()` 在 Windows 必须保持 false，GUI 不显示该档。
+状态：**W1–W5 已实现；W6 内部执行链已在 Windows 11 Home 真机跑通。** AppContainer SID、private window station、PowerShell/CLM 等兼容问题均已按附录 A 的证据修正；活动 capability lease、旧代际 ACE/metadata GC 与无活动命令时的 reset primitive 也已实现。卸载调用、支持主机矩阵及产品入口仍待完成。在这些发布闭环完成前，`platform_sandbox_available()` 在 Windows 必须保持 false，GUI 不显示该档。
 
 Windows 与 macOS 共用 `SandboxTier::Sandbox` 协议值，但 UI 和保证不同：
 
@@ -296,11 +296,11 @@ RestrictedToken/NTFS 不向父进程可靠报告“刚才拒绝了哪个对象�
 执行层拆分为：
 
 - `windows_plan.rs`：纯规则投影，字段为 `writable_roots`、`write_carveouts`、`unenforced_read_rules`、`unsupported_write_globs`；`write_carveouts` 保留 `ask` / `deny` 决策，避免后续审批把不可覆盖的 deny 当成 ask。
-- `sandbox/windows/capability.rs`：用“规范化写根 + 规则指纹”生成稳定 capability name，再从该名称确定性构造仅供 FutureOS ACL trustee 与 `WRITE_RESTRICTED` 使用的 account-domain-shaped SID（不使用 AppContainer `DeriveCapabilitySidsFromName` SID）；一次批准为基础根和每个批准目标分别生成 request-scoped capability，identity 绑定 request id、规范化路径与 `file/subtree` scope。状态文件只持久化名称和语义，不持久化进程内 SID 指针，并采用同目录原子替换；只向 token 装入当前有效代际/请求 SID，旧 ACE 不等于当前授权。
+- `sandbox/windows/capability.rs`：用“规范化写根 + 规则指纹”生成稳定 capability name，再从该名称确定性构造仅供 FutureOS ACL trustee 与 `WRITE_RESTRICTED` 使用的 account-domain-shaped SID（不使用 AppContainer `DeriveCapabilitySidsFromName` SID）；一次批准为基础根和每个批准目标分别生成 request-scoped capability，identity 绑定 request id、规范化路径与 `file/subtree` scope。状态文件只持久化名称、语义及实际写入 deny ACE 的 carveout 路径，不持久化进程内 SID 指针，并采用同目录原子替换；只向 token 装入当前有效代际/请求 SID，旧 ACE 不等于当前授权。
 - `sandbox/windows/token.rs`：创建并验证 `WRITE_RESTRICTED` primary token；restricting 集含 capability + logon SID + Everyone，但不加入真实 User SID（避免普遍命中用户文件 ACL）。恢复 `SeChangeNotifyPrivilege` 以允许路径遍历，并把 token default DACL 收敛为当前用户 SID + capability SID，使子进程自建内核对象同时通过普通与 restricting 两次检查，但不把对象授予兼容性宽 SID，也不修改任何已有文件 ACL。
-- `sandbox/windows/acl.rs`：通过已冻结的对象 handle 和 `SetSecurityInfo` 幂等增加 capability allow-write ACE 与受保护子路径 deny-write ACE；保留原 DACL，只操作 FutureOS 自己的 SID/ACE，不设置 owner、不整体覆盖 DACL，也不向父目录授予会绕过受保护子项的 `FILE_DELETE_CHILD`。
+- `sandbox/windows/acl.rs`：通过已冻结的对象 handle 和 `SetSecurityInfo` 幂等增加 capability allow-write ACE 与受保护子路径 deny-write ACE；保留原 DACL，只操作 FutureOS 自己的 SID/ACE，不设置 owner、不整体覆盖 DACL，也不向父目录授予会绕过受保护子项的 `FILE_DELETE_CHILD`。回收沿用 Codex 的 `REVOKE_ACCESS` 模式，但只对 FutureOS 确定性派生的 capability SID 执行。
 - `sandbox/windows/audit.rs`：只接受绝对本地 NTFS 路径，以 `FILE_FLAG_OPEN_REPARSE_POINT` 打开并拒绝 reparse target，校验 handle final path 与已规范化审批路径完全一致；启动和按需检查 SID 映射/代际、关键 ACE 和异常宽写 ACL。可修复自身缺失 ACE 并 GC 不再被活动进程引用的旧 SID，但不得改 owner 或覆盖无关 DACL。
-- `sandbox/windows/process.rs`：每次启动在交互 `Winsta0` 上创建 UUID 命名的私有 desktop，DACL 只含当前用户 SID + 本次 capability SID（真机上 `CreateWindowStationW` 对该普通用户返回 `ERROR_ACCESS_DENIED`，故不把独立窗口站作为当前兼容基线）。随后以 `CreateProcessAsUserW(CREATE_SUSPENDED)` 配合 `STARTUPINFOEXW` handle allowlist，只继承 stdin/stdout/stderr；加入不允许 breakaway 的 Job Object后再 `ResumeThread`。失败时在恢复线程前终止进程；封装 Unicode command line/environment、cwd、stdout/stderr、wait 和整棵 Job terminate。restricted shell 正常退出后也关闭残留后代，不复用 unsandboxed 模式允许 detached browser 的 `BREAKAWAY_OK` / `disarm` 行为。
+- `sandbox/windows/process.rs`：每次启动在交互 `Winsta0` 上创建 UUID 命名的私有 desktop，DACL 只含当前用户 SID + 本次 capability SID（真机上使用自定义 station 名称的 `CreateWindowStationW` 对普通用户返回 `ERROR_ACCESS_DENIED`，故不把独立窗口站作为当前兼容基线）。随后以 `CreateProcessAsUserW(CREATE_SUSPENDED)` 配合 `STARTUPINFOEXW` handle allowlist，只继承 stdin/stdout/stderr；加入不允许 breakaway 的 Job Object后再 `ResumeThread`。失败时在恢复线程前终止进程；封装 Unicode command line/environment、cwd、stdout/stderr、wait 和整棵 Job terminate。restricted shell 正常退出后也关闭残留后代，不复用 unsandboxed 模式允许 detached browser 的 `BREAKAWAY_OK` / `disarm` 行为。每个 child 同时持有 capability lease；只要 Job 尚可能使用某 SID，GC 就不会撤销对应 ACE。
 - `sandbox/mod.rs`：将“构造 `tokio::process::Command`”升级为可承载 Windows 自定义 spawn driver 的 `spawn_shell` 抽象；approved capability 作为显式输入。
 - `agent/src/tools/mod.rs`：shell 参数增加 `additional_permissions.write[]`，执行前完成路径冻结、规则评估和 capability 请求；不解析 PowerShell 猜权限。
 - `agent/src/rpc/approval.rs`、`packages/rpc/proto/future.proto`、`packages/thread-projection/src/approval.ts`：传递可信用户语义和内部 enforcement payload，批准回执绑定 request/hash/path/scope。
@@ -337,7 +337,7 @@ RestrictedToken/NTFS 不向父进程可靠报告“刚才拒绝了哪个对象�
 | **W6 — 端到端安全与兼容性** | 将 W1–W5 串入真实 agent/desktop；增加 ACL audit/repair、活动代际跟踪、旧 SID GC、重置/卸载清理、日志脱敏和 feature probe；用仓库脚本进行 Windows 真实机手工批量 smoke，不加入 CI | 必过矩阵：workspace/temp 写成功；workspace 外写失败；一次批准仅开放完整列出的现有 file/subtree，未批准 sibling 仍失败；项目批准仅当前项目和新代际生效；父目录不被扩大；当前用户无权目标仍失败；现有关键对象 deny 硬化有效；不存在对象/glob 缺口与模式说明一致；崩溃/强杀/重启后无权限扩张；常见工具链可用；所有初始化失败均 fail closed |
 | **W7 — 灰度与发布** | 默认关闭 feature flag；仅对通过 capability probe 的本地 NTFS 工作区显示“写保护”；模式选择/首次启用/设置页说明“只限制写入，读取和网络开放”；保留一键退回 `manual` | Windows 目标版本手工 smoke 全绿；安全 review 无高优先级问题；升级、降级、重置 SID/ACL 可恢复；遥测不上传原始敏感路径；完成小范围灰度后才默认开放。发布后发现初始化/ACL 异常时自动回到 `manual`，不得无提示直跑 |
 
-**当前实现状态（2026-08-21）**：W1–W3 已实现；Windows 模块通过 `x86_64-pc-windows-msvc` 独立编译与 Clippy，原生 smoke 由 `scripts/test-windows-sandbox.ps1` 手工执行，明确不加入 CI。Windows 的 `std::fs::canonicalize` extended-length 前缀已在规则模型边界归一化，避免 `\\?\` 中的 `?` 被误判为 glob。真机发现初版把 AppContainer SID 误用于传统 restricted token，导致 `CreateRestrictedToken(ERROR_INVALID_PARAMETER)`；现在改成与 legacy Codex 同类的私有 account-domain-shaped SID，脚本只会在该正确实现仍被拒绝时返回 `UNSUPPORTED`，且绝不降级执行普通 token。后续真机定位还确认：仅 capability SID 不足以初始化 Windows PowerShell（CLR 以 `E_ACCESSDENIED` 退出），真实 User SID 可以启动但会破坏写边界；当前改用 capability + logon SID + Everyone restricting 集 + `Winsta0` 私有 desktop，原生/集成矩阵已通过 `test-windows-sandbox.ps1` 验证。W4 已加入 `additional_permissions.write[]`、最多 8 项、已存在 file/subtree 冻结、allow/ask/deny 判定、可信语义、request/command hash/path/scope 一次性回执；请求 SID 同时保留基础根和每个批准目标，scope 纳入 identity，避免父目录扩大及 file/subtree 复用；显式 ask carveout 会在审批前因 NTFS deny-wins 明确拒绝。W5 已让桌面和移动复用现有卡片，单目标标题表达“行为 + 目标”、多目标完整列出、命令折叠、malformed 禁止批准；桌面“此项目以后都允许”以一次原子写保存完整 1–8 项规则集并注入 session。W6 已接通 state 合并、handle/NTFS/reparse 复核、按 scope 添加 ACE、RestrictedToken、suspended/no-breakaway process、stdio/timeout/cancel 的内部路径，但活动代际/GC、重置/卸载清理和支持主机的 Windows 真机矩阵仍未完成。Windows 产品入口继续保持关闭。审查同时确认：普通 NTFS DACL 无法精确拒绝允许目录内尚不存在的未来文件名，因此第一版保证收敛为 workspace/temp 外部写边界与精确外部 capability，不能宣称 workspace 内 shell ask/deny 与 macOS 等价。
+**当前实现状态（2026-08-21）**：W1–W5 与 W6 内部执行链已实现；Windows 模块通过真机 `test-windows-sandbox.ps1`（44+10 项）及 Clippy，测试明确不加入 CI。活动 capability lease 与下次 spawn 的旧代际 GC 已接入：先持久化并应用新集合，再按 Codex 的 `REVOKE_ACCESS` 模式回收无活动引用的旧 SID；失败时保留 metadata 供以后重试。无活动 Job 时的 reset primitive 已实现，但桌面设置/卸载尚未调用。Windows 产品入口继续保持关闭，直到 reset/uninstall、支持主机 feature probe、灰度回退和额外主机矩阵完成。普通 NTFS DACL 仍无法精确拒绝允许目录内尚不存在的未来文件名，`FILE_DELETE_CHILD` 与 Everyone/logon 宽 ACL 也保留 §11.6 的已知边界，不能宣称与 macOS SBPL 等价。
 
 Windows 真机从仓库根目录用普通（非管理员）PowerShell 执行：
 
@@ -379,17 +379,17 @@ W2 与 W4 可在 W1 契约冻结后并行开发，但 W4 的批准结果不得�
 
 > 记录 2026-08-21 在 Windows 11（10.0.26200，x86_64）真机上把 unelevated 写保护后端从「可编译」跑到「`test-windows-sandbox.ps1` 全绿」过程中踩过的坑。按调试时间顺序排列，每个条目给出症状、根因与修复。这些大多是无法从代码静态看出的 Win32 运行时行为，值得给后续维护者留下现场证据。
 
-### A1. `CreateWindowStationW` 对普通用户返回 `ERROR_ACCESS_DENIED`
+### A1. 使用自定义名称的 `CreateWindowStationW` 对普通用户返回 `ERROR_ACCESS_DENIED`
 
 - **症状**：测试矩阵 8 个进程类用例全部 `拒绝访问 (os error 5)`，分步打点后定位在 `PrivateDesktop::create` 的 `CreateWindowStationW`，而非 `CreateProcessAsUserW`。
-- **根因**：创建独立 window station 需要 `SeCreateWindowStationPrivilege` 等特权，普通（非管理员）交互用户默认不持有。初版为了给受限 token 一个「不碰 `Winsta0`」的 USER 对象而试图自建 station，这条路线在免管理员约束下走不通。
-- **修复**：参考 Codex `windows-sandbox-rs/src/desktop.rs`，改为在交互 `Winsta0` 上创建 UUID 命名的私有 desktop，只授「当前用户 SID + restricting SIDs」ACL；删除 `CreateWindowStationW`/`SetProcessWindowStation` 及配套互斥锁。`Winsta0` 自身 DACL 已授予普通用户 `CreateProcessAsUserW` 挂载子进程所需的读取权。
+- **根因**：初版向 `CreateWindowStationW` 传入 FutureOS 自定义 station 名称；Win32 契约明确只有 Administrators 可以指定名称，并不存在 `SeCreateWindowStationPrivilege`。传空名称虽可让系统按 logon session 生成名称，但不能提供我们需要的每进程 UUID 隔离语义。
+- **修复**：参考 Codex `windows-sandbox-rs/src/desktop.rs`，改为在交互 `Winsta0` 上创建 UUID 命名的私有 desktop，只授「当前用户 SID + capability SIDs」ACL；删除 `CreateWindowStationW`/`SetProcessWindowStation` 及配套互斥锁。`Winsta0` 自身 DACL 已授予普通用户 `CreateProcessAsUserW` 挂载子进程所需的读取权。
 
 ### A2. 仅 capability SID 无法初始化 Windows PowerShell（CLR `E_ACCESSDENIED`）
 
 - **症状**：修好 A1 后进程能创建，但 PowerShell 主 CLR 初始化即失败，stderr 解码后是 `HRESULT 80070005`（`E_ACCESSDENIED`），命令从未执行。
 - **根因**：PowerShell/CLR 启动时要对 session-scoped、Everyone 可访问的内核对象做写入；这些写入要同时过 `WRITE_RESTRICTED` 的第二道 restricting-SID 检查，而 token 里只有 capability SID，检查失败。
-- **修复**：参考 Codex `windows-sandbox-rs/src/token.rs` 的 legacy 后端，把 **logon SID + Everyone** 加入 `SidsToRestrict`（**不**加真实 User SID——它会命中普通文件 ACL 直接绕过写边界）。`access_check` 矩阵验证：external 目录的 `FILE_ADD_FILE` 仍被拒，写边界不因这两个 SID 松动。
+- **修复**：参考 Codex `windows-sandbox-rs/src/token.rs` 的 legacy 后端，把 **logon SID + Everyone** 加入 `SidsToRestrict`（**不**加真实 User SID——它会普遍命中用户文件 ACL）。当前真机 fixture 的 `access_check` 验证 external 目录 `FILE_ADD_FILE` 仍被拒；这不是全局保证，Everyone/logon 本身可写的既有 ACL 仍属于 §11.6 的明确限制。
 
 ### A3. Constrained Language Mode 下 wrapper 编码设置污染 `$Error`
 

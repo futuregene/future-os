@@ -44,6 +44,7 @@ use windows_sys::Win32::System::Threading::{
     STARTF_USESTDHANDLES, STARTUPINFOEXW,
 };
 
+use super::runner::CapabilityLease;
 use super::token::RestrictedToken;
 use super::Job;
 
@@ -56,6 +57,7 @@ pub(crate) struct RestrictedChild {
     stdout: Option<File>,
     stderr: Option<File>,
     pid: u32,
+    _capability_lease: Option<CapabilityLease>,
 }
 
 impl RestrictedChild {
@@ -158,7 +160,13 @@ impl RestrictedChild {
             stdout: Some(stdout_read.into_file()),
             stderr: Some(stderr_read.into_file()),
             pid: info.dwProcessId,
+            _capability_lease: None,
         })
+    }
+
+    pub(crate) fn attach_capability_lease(&mut self, lease: CapabilityLease) {
+        debug_assert!(self._capability_lease.is_none());
+        self._capability_lease = Some(lease);
     }
 
     pub(crate) fn id(&self) -> u32 {
@@ -198,14 +206,14 @@ impl RestrictedChild {
 /// for PowerShell/CLR compatibility are deliberately not granted access to the
 /// desktop.
 ///
-/// `CreateWindowStationW` returned ERROR_ACCESS_DENIED on the current
-/// unelevated Windows test host, so a dedicated station is not a compatible
-/// baseline. Instead this creates a uniquely named desktop on the
+/// A custom-named `CreateWindowStationW` returned ERROR_ACCESS_DENIED on the
+/// current unelevated Windows test host, so a per-process named station is not a
+/// compatible baseline. Instead this creates a uniquely named desktop on the
 /// caller's existing `Winsta0` station — the same approach as Codex's legacy
 /// backend. `Winsta0`'s DACL already grants the ordinary token's user/groups
-/// the read rights `CreateProcessAsUserW` needs to attach the child; the
-/// desktop itself carries the normal-user + restricting-SID ACL so the
-/// WRITE_RESTRICTED access check on USER objects also passes.
+/// the read rights `CreateProcessAsUserW` needs to attach the child; the desktop
+/// itself carries the normal-user + capability-SID ACL so both access checks
+/// pass without granting logon/Everyone access to the desktop.
 struct PrivateDesktop {
     desktop: HDESK,
     startup_name: Vec<u16>,

@@ -165,6 +165,7 @@ mod native_tests {
             writable_root: root,
             request_id: None,
             approved_targets: vec![],
+            write_carveouts: vec![],
         }
     }
 
@@ -179,8 +180,9 @@ mod native_tests {
         }
     }
 
-    /// Real Windows AccessCheck matrix for the minimum restricting-SID set.
-    /// It intentionally does not add Everyone or the logon SID.
+    /// Real Windows AccessCheck matrix for the production restricting-SID set.
+    /// The fixture's ordinary DACL does not grant logon/Everyone write access,
+    /// so only its matching capability SID passes the second write check.
     #[test]
     fn capability_sid_allows_only_root_and_deny_carveout_wins() {
         let directory = tempfile::tempdir().unwrap();

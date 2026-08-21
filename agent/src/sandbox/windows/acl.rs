@@ -8,8 +8,8 @@ use std::ptr;
 use windows_sys::Win32::Foundation::{LocalFree, ERROR_SUCCESS};
 use windows_sys::Win32::Security::Authorization::{
     GetExplicitEntriesFromAclW, GetSecurityInfo, SetEntriesInAclW, SetSecurityInfo, DENY_ACCESS,
-    EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID,
-    TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
+    EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_MULTIPLE_TRUSTEE, REVOKE_ACCESS, SE_FILE_OBJECT,
+    TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::{
     EqualSid, ACL, DACL_SECURITY_INFORMATION, INHERIT_ONLY_ACE, OBJECT_INHERIT_ACE, PSID,
@@ -54,6 +54,100 @@ pub(crate) fn ensure_write_deny(target: &FrozenPath, sid: &OwnedSid) -> io::Resu
         DENY_ACCESS,
         SUB_CONTAINERS_AND_OBJECTS_INHERIT,
     )
+}
+
+/// Remove every explicit ACE for one FutureOS-owned capability SID from an
+/// object. Capability SIDs are unique to FutureOS, so `REVOKE_ACCESS` cannot
+/// remove an unrelated user's entry. Inherited ACEs disappear when the root
+/// entry is revoked; separately hardened carveouts are revoked explicitly.
+pub(crate) fn revoke_capability(target: &FrozenPath, sid: &OwnedSid) -> io::Result<()> {
+    let mut dacl: *mut ACL = ptr::null_mut();
+    let mut descriptor = ptr::null_mut();
+    let status = unsafe {
+        GetSecurityInfo(
+            target.handle(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &mut dacl,
+            ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    let descriptor = LocalGuard(descriptor);
+    let entry = EXPLICIT_ACCESS_W {
+        grfAccessPermissions: 0,
+        grfAccessMode: REVOKE_ACCESS,
+        // Match Codex's revoke_ace behavior. SetEntriesInAclW removes the
+        // trustee's explicit root ACE; inherited child ACEs then disappear as
+        // the parent ACL propagates.
+        grfInheritance: SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+        Trustee: TRUSTEE_W {
+            pMultipleTrustee: ptr::null_mut(),
+            MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_UNKNOWN,
+            ptstrName: sid.as_psid().cast(),
+        },
+    };
+    let mut updated: *mut ACL = ptr::null_mut();
+    let status = unsafe { SetEntriesInAclW(1, &entry, dacl, &mut updated) };
+    if status != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    let updated = LocalGuard(updated.cast());
+    let status = unsafe {
+        SetSecurityInfo(
+            target.handle(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            updated.0.cast(),
+            ptr::null(),
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    drop(descriptor);
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn capability_entry_present(target: &FrozenPath, sid: &OwnedSid) -> io::Result<bool> {
+    let mut dacl: *mut ACL = ptr::null_mut();
+    let mut descriptor = ptr::null_mut();
+    let status = unsafe {
+        GetSecurityInfo(
+            target.handle(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &mut dacl,
+            ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    let descriptor = LocalGuard(descriptor);
+    let mut count = 0;
+    let mut entries: *mut EXPLICIT_ACCESS_W = ptr::null_mut();
+    let status = unsafe { GetExplicitEntriesFromAclW(dacl, &mut count, &mut entries) };
+    if status != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    let entries = LocalGuard(entries.cast());
+    let found = explicit_entries_include_sid(entries.0.cast(), count, sid.as_psid())?;
+    drop(descriptor);
+    Ok(found)
 }
 
 fn ensure_entry(
@@ -180,6 +274,31 @@ fn explicit_entries_contain(
     )
 }
 
+fn explicit_entries_include_sid(
+    entries: *const EXPLICIT_ACCESS_W,
+    count: u32,
+    sid: PSID,
+) -> io::Result<bool> {
+    if count == 0 {
+        return Ok(false);
+    }
+    if entries.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Win32 returned a null explicit ACL list with a non-zero count",
+        ));
+    }
+    Ok(
+        unsafe { std::slice::from_raw_parts(entries, count as usize) }
+            .iter()
+            .any(|entry| {
+                entry.Trustee.TrusteeForm == TRUSTEE_IS_SID
+                    && !entry.Trustee.ptstrName.is_null()
+                    && unsafe { EqualSid(entry.Trustee.ptstrName.cast(), sid) } != 0
+            }),
+    )
+}
+
 struct LocalGuard(*mut core::ffi::c_void);
 
 impl Drop for LocalGuard {
@@ -206,6 +325,12 @@ mod tests {
     fn null_explicit_acl_list_with_entries_is_rejected() {
         let error = explicit_entries_contain(ptr::null(), 1, ptr::null_mut(), 0, GRANT_ACCESS, 0)
             .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn null_sid_scan_with_entries_is_rejected() {
+        let error = explicit_entries_include_sid(ptr::null(), 1, ptr::null_mut()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 }

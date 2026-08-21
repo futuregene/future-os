@@ -10,9 +10,12 @@ use std::path::{Path, PathBuf};
 
 use tokio::io::AsyncReadExt;
 
+use super::acl::capability_entry_present;
 use super::audit::FrozenPath;
 use super::runner;
+use super::token::derive_capability_sid;
 use crate::sandbox::rules::Decision;
+use crate::sandbox::windows_capability::{policy_records, CapabilityState};
 use crate::sandbox::windows_plan::{WindowsSandboxPlan, WindowsWriteCarveout};
 use crate::sandbox::windows_request::{ApprovalTarget, ApprovedWriteCapability, WriteScope};
 
@@ -157,6 +160,107 @@ async fn powershell_compatibility_sid_matrix_reports_minimum() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn stale_capability_gc_waits_for_active_process_tree() {
+    let fixture = Fixture::new();
+    let old_plan = fixture.plan();
+    let old_records = policy_records(&old_plan);
+    let old_names = old_records
+        .iter()
+        .map(|record| record.name.clone())
+        .collect::<Vec<_>>();
+    let old_sid = derive_capability_sid(&old_records[0].name).unwrap();
+    let old_root = FrozenPath::open_local_ntfs(&fixture.workspace).unwrap();
+
+    let old_child = runner::spawn_with_plan_for_test(
+        &old_plan,
+        "Start-Sleep -Seconds 30",
+        &fixture.workspace,
+        &[],
+        None,
+        &fixture.state_path,
+    )
+    .expect("spawn old generation");
+    assert!(capability_entry_present(&old_root, &old_sid).unwrap());
+
+    let new_plan = WindowsSandboxPlan {
+        writable_roots: vec![fixture.external.clone()],
+        ..WindowsSandboxPlan::default()
+    };
+    let first_new = runner::spawn_with_plan_for_test(
+        &new_plan,
+        "Write-Output 'new-generation'",
+        &fixture.workspace,
+        &[],
+        None,
+        &fixture.state_path,
+    )
+    .expect("spawn new generation while old is active");
+    assert_eq!(collect(first_new).await.unwrap().exit_code, 0);
+    let state = CapabilityState::load(&fixture.state_path).unwrap();
+    assert!(old_names
+        .iter()
+        .all(|name| state.records.iter().any(|record| &record.name == name)));
+    assert!(capability_entry_present(&old_root, &old_sid).unwrap());
+
+    old_child.terminate();
+    assert_ne!(old_child.wait().await.unwrap(), 0);
+    drop(old_child);
+
+    let second_new = runner::spawn_with_plan_for_test(
+        &new_plan,
+        "Write-Output 'gc-trigger'",
+        &fixture.workspace,
+        &[],
+        None,
+        &fixture.state_path,
+    )
+    .expect("spawn new generation after old exits");
+    assert_eq!(collect(second_new).await.unwrap().exit_code, 0);
+    let state = CapabilityState::load(&fixture.state_path).unwrap();
+    assert!(old_names
+        .iter()
+        .all(|name| state.records.iter().all(|record| &record.name != name)));
+    assert!(!capability_entry_present(&old_root, &old_sid).unwrap());
+}
+
+#[tokio::test]
+async fn capability_reset_refuses_active_jobs_then_removes_owned_aces() {
+    let fixture = Fixture::new();
+    let plan = fixture.plan();
+    let records = policy_records(&plan);
+    let sid = derive_capability_sid(&records[0].name).unwrap();
+    let root = FrozenPath::open_local_ntfs(&fixture.workspace).unwrap();
+    let child = runner::spawn_with_plan_for_test(
+        &plan,
+        "Start-Sleep -Seconds 30",
+        &fixture.workspace,
+        &[],
+        None,
+        &fixture.state_path,
+    )
+    .expect("spawn active generation");
+    assert!(capability_entry_present(&root, &sid).unwrap());
+    assert_eq!(
+        runner::reset_capabilities_for_test(&fixture.state_path)
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    assert!(fixture.state_path.exists());
+    assert!(capability_entry_present(&root, &sid).unwrap());
+
+    child.terminate();
+    assert_ne!(child.wait().await.unwrap(), 0);
+    drop(child);
+    assert_eq!(
+        runner::reset_capabilities_for_test(&fixture.state_path).unwrap(),
+        records.len()
+    );
+    assert!(!fixture.state_path.exists());
+    assert!(!capability_entry_present(&root, &sid).unwrap());
 }
 
 fn require_supported(result: std::io::Result<CommandResult>) -> Option<CommandResult> {

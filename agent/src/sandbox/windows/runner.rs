@@ -1,15 +1,16 @@
 //! W6 assembly of capability records, handle-audited ACLs, restricted token
 //! and the suspended W3 process driver. Product availability remains disabled
-//! until the native Windows matrix has passed.
+//! until the remaining reset/uninstall and host-probe release work is complete.
 
 #![allow(dead_code)]
 
+use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use super::acl::{ensure_write_deny, ensure_write_file, ensure_write_root};
+use super::acl::{ensure_write_deny, ensure_write_file, ensure_write_root, revoke_capability};
 use super::audit::FrozenPath;
 use super::process::RestrictedChild;
 use super::token::{derive_capability_sid, RestrictedToken};
@@ -21,6 +22,56 @@ use crate::sandbox::windows_request::{ApprovedWriteCapability, WriteScope};
 use crate::sandbox::{shell_invocation, ResolvedSandbox};
 
 static PREPARE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static ACTIVE_CAPABILITIES: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
+
+/// Keeps capability generations alive while their restricted process tree can
+/// still use inherited ACEs. GC only revokes a SID when no lease references it.
+pub(crate) struct CapabilityLease {
+    names: Vec<String>,
+}
+
+impl CapabilityLease {
+    fn acquire(records: &[CapabilityRecord]) -> io::Result<Self> {
+        let mut names = records
+            .iter()
+            .map(|record| record.name.clone())
+            .collect::<Vec<_>>();
+        names.sort();
+        names.dedup();
+        let mut active = active_capabilities()
+            .lock()
+            .map_err(|_| io::Error::other("active capability lock is poisoned"))?;
+        for name in &names {
+            *active.entry(name.clone()).or_default() += 1;
+        }
+        Ok(Self { names })
+    }
+}
+
+impl Drop for CapabilityLease {
+    fn drop(&mut self) {
+        let Ok(mut active) = active_capabilities().lock() else {
+            return;
+        };
+        for name in &self.names {
+            let remove = match active.get_mut(name) {
+                Some(count) if *count > 1 => {
+                    *count -= 1;
+                    false
+                }
+                Some(_) => true,
+                None => false,
+            };
+            if remove {
+                active.remove(name);
+            }
+        }
+    }
+}
+
+fn active_capabilities() -> &'static Mutex<HashMap<String, usize>> {
+    ACTIVE_CAPABILITIES.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 enum CompatibilitySidMode {
     Production,
@@ -77,8 +128,10 @@ fn spawn_with_plan_inner(
         .map_err(|_| io::Error::other("Windows capability preparation lock is poisoned"))?;
 
     let records = records_for(plan, approval)?;
-    persist_records(&records, state_path)?;
+    let lease = CapabilityLease::acquire(&records)?;
+    let mut state = persist_records(&records, state_path)?;
     apply_acl_plan(plan, &records)?;
+    reconcile_stale_records(&records, &mut state, state_path)?;
     let token = match compatibility {
         CompatibilitySidMode::Production => RestrictedToken::from_capabilities(&records)?,
         #[cfg(test)]
@@ -91,7 +144,9 @@ fn spawn_with_plan_inner(
     };
     let (program, args) = shell_invocation(command);
     let args = args.into_iter().map(OsString::from).collect::<Vec<_>>();
-    RestrictedChild::spawn(&token, OsStr::new(program), &args, cwd, env_overrides)
+    let mut child = RestrictedChild::spawn(&token, OsStr::new(program), &args, cwd, env_overrides)?;
+    child.attach_capability_lease(lease);
+    Ok(child)
 }
 
 /// Native integration tests use the exact production assembly while keeping
@@ -157,20 +212,127 @@ fn records_for(
     }
 }
 
-fn persist_records(records: &[CapabilityRecord], state_path: &Path) -> io::Result<()> {
+fn persist_records(records: &[CapabilityRecord], state_path: &Path) -> io::Result<CapabilityState> {
     let mut state = match CapabilityState::load(state_path) {
         Ok(state) => state,
         Err(error) if error.kind() == io::ErrorKind::NotFound => CapabilityState::default(),
         Err(error) => return Err(error),
     };
     state.merge(records.iter().cloned())?;
-    state.save_atomic(state_path)
+    state.save_atomic(state_path)?;
+    Ok(state)
+}
+
+fn reconcile_stale_records(
+    records: &[CapabilityRecord],
+    state: &mut CapabilityState,
+    state_path: &Path,
+) -> io::Result<()> {
+    let current = records
+        .iter()
+        .map(|record| record.name.as_str())
+        .collect::<HashSet<_>>();
+    let active = active_capabilities()
+        .lock()
+        .map_err(|_| io::Error::other("active capability lock is poisoned"))?
+        .keys()
+        .cloned()
+        .collect::<HashSet<_>>();
+    // A failed revoke leaves both the ACE and metadata intact so a later run
+    // can retry. Removing metadata first would turn recoverable cleanup into an
+    // undiscoverable persistent ACE.
+    let before = state.records.len();
+    state.records.retain(|record| {
+        current.contains(record.name.as_str())
+            || active.contains(&record.name)
+            || revoke_record(record).is_err()
+    });
+    if state.records.len() != before {
+        state.save_atomic(state_path)?;
+    }
+    Ok(())
+}
+
+fn revoke_record(record: &CapabilityRecord) -> io::Result<()> {
+    let sid = derive_capability_sid(&record.name)?;
+    let mut paths = std::iter::once(&record.writable_root)
+        .chain(record.write_carveouts.iter())
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    for path in paths {
+        let target = match FrozenPath::open_local_ntfs(path) {
+            Ok(target) => target,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        revoke_capability(&target, &sid)?;
+    }
+    Ok(())
 }
 
 fn capability_state_path() -> io::Result<PathBuf> {
     let home = dirs::home_dir()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "user home is unavailable"))?;
     Ok(home.join(".future/windows-capabilities.json"))
+}
+
+/// Remove all persisted FutureOS capability ACEs when no restricted process
+/// tree is active. This is the backend primitive for Settings reset/uninstall;
+/// callers must surface `WouldBlock` rather than terminating user commands.
+pub(crate) fn reset_capabilities() -> io::Result<usize> {
+    reset_capabilities_at(&capability_state_path()?)
+}
+
+fn reset_capabilities_at(state_path: &Path) -> io::Result<usize> {
+    let _guard = PREPARE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| io::Error::other("Windows capability preparation lock is poisoned"))?;
+    if !active_capabilities()
+        .lock()
+        .map_err(|_| io::Error::other("active capability lock is poisoned"))?
+        .is_empty()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "Windows sandbox permissions are in use by an active command",
+        ));
+    }
+    let mut state = match CapabilityState::load(state_path) {
+        Ok(state) => state,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error),
+    };
+    let before = state.records.len();
+    let mut first_error = None;
+    state.records.retain(|record| match revoke_record(record) {
+        Ok(()) => false,
+        Err(error) => {
+            if first_error.is_none() {
+                first_error = Some(error);
+            }
+            true
+        }
+    });
+    if state.records.is_empty() {
+        match std::fs::remove_file(state_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    } else {
+        state.save_atomic(state_path)?;
+    }
+    if let Some(error) = first_error {
+        return Err(error);
+    }
+    Ok(before)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_capabilities_for_test(state_path: &Path) -> io::Result<usize> {
+    reset_capabilities_at(state_path)
 }
 
 fn apply_acl_plan(plan: &WindowsSandboxPlan, records: &[CapabilityRecord]) -> io::Result<()> {

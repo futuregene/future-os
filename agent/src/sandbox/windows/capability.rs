@@ -41,6 +41,12 @@ pub struct CapabilityRecord {
     /// so persisted metadata remains self-contained for audit/recovery.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub approved_targets: Vec<ApprovedCapabilityTarget>,
+    /// Existing carveout objects that received a FutureOS deny ACE for this
+    /// SID. Persist them so lifecycle GC/reset can remove only our own ACEs.
+    /// Older schema-v1 files omit this field and remain readable; their inert
+    /// legacy deny ACEs cannot be discovered automatically.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub write_carveouts: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -107,9 +113,19 @@ pub fn policy_fingerprint(plan: &WindowsSandboxPlan) -> String {
 /// loaded into a token that is already running.
 pub fn policy_records(plan: &WindowsSandboxPlan) -> Vec<CapabilityRecord> {
     let fingerprint = policy_fingerprint(plan);
+    let write_carveouts = existing_carveout_paths(plan);
     plan.writable_roots
         .iter()
-        .map(|root| make_record(CapabilityKind::Policy, &fingerprint, root, None, &[]))
+        .map(|root| {
+            make_record(
+                CapabilityKind::Policy,
+                &fingerprint,
+                root,
+                None,
+                &[],
+                &write_carveouts,
+            )
+        })
         .collect()
 }
 
@@ -131,6 +147,7 @@ pub fn request_records(
         ));
     }
     let fingerprint = policy_fingerprint(plan);
+    let write_carveouts = existing_carveout_paths(plan);
     let mut seen = HashSet::new();
     let mut approved_targets = approved_roots
         .iter()
@@ -166,6 +183,7 @@ pub fn request_records(
                 root,
                 Some(request_id),
                 &approved_targets,
+                &write_carveouts,
             )
         })
         .collect())
@@ -177,6 +195,7 @@ fn make_record(
     root: &Path,
     request_id: Option<&str>,
     approved_targets: &[ApprovedCapabilityTarget],
+    write_carveouts: &[PathBuf],
 ) -> CapabilityRecord {
     let mut hasher = Sha256::new();
     hasher.update(b"futureos-windows-capability-v1\0");
@@ -205,7 +224,19 @@ fn make_record(
         writable_root: root.to_path_buf(),
         request_id: request_id.map(str::to_owned),
         approved_targets: approved_targets.to_vec(),
+        write_carveouts: write_carveouts.to_vec(),
     }
+}
+
+fn existing_carveout_paths(plan: &WindowsSandboxPlan) -> Vec<PathBuf> {
+    let mut paths = plan
+        .write_carveouts
+        .iter()
+        .map(|carveout| carveout.path.clone())
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    paths
 }
 
 fn scope_tag(scope: WriteScope) -> &'static str {
@@ -248,8 +279,24 @@ impl CapabilityState {
 
     pub fn merge(&mut self, records: impl IntoIterator<Item = CapabilityRecord>) -> io::Result<()> {
         for record in records {
-            if let Some(existing) = self.records.iter().find(|item| item.name == record.name) {
+            if let Some(existing) = self
+                .records
+                .iter_mut()
+                .find(|item| item.name == record.name)
+            {
                 if existing != &record {
+                    // Schema-v1 records predate write_carveouts. The SID
+                    // identity already binds the policy fingerprint, so allow
+                    // exactly this one-way metadata enrichment while keeping
+                    // every other same-name difference fail-closed.
+                    let mut upgraded = existing.clone();
+                    if upgraded.write_carveouts.is_empty() {
+                        upgraded.write_carveouts = record.write_carveouts.clone();
+                    }
+                    if upgraded == record {
+                        *existing = record;
+                        continue;
+                    }
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!("capability identity collision: {}", record.name),
@@ -314,6 +361,10 @@ impl CapabilityState {
                 || matches!(record.kind, CapabilityKind::Request) != record.request_id.is_some()
                 || (matches!(record.kind, CapabilityKind::Request)
                     != !record.approved_targets.is_empty())
+                || record
+                    .write_carveouts
+                    .iter()
+                    .any(|path| !path.is_absolute())
             {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -382,6 +433,10 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert_ne!(records[0].name, records[1].name);
         assert_eq!(records, policy_records(&plan()));
+        assert_eq!(
+            records[0].write_carveouts,
+            vec![plan().write_carveouts[0].path.clone()]
+        );
     }
 
     #[test]
@@ -484,5 +539,16 @@ mod tests {
             state.merge([conflicting]).unwrap_err().kind(),
             io::ErrorKind::InvalidData
         );
+    }
+
+    #[test]
+    fn state_upgrades_missing_v1_carveout_metadata_only() {
+        let record = policy_records(&plan()).remove(0);
+        let mut legacy = record.clone();
+        legacy.write_carveouts.clear();
+        let mut state = CapabilityState::default();
+        state.records.push(legacy);
+        state.merge([record.clone()]).unwrap();
+        assert_eq!(state.records, vec![record]);
     }
 }
