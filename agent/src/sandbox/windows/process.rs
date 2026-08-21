@@ -27,15 +27,17 @@ use windows_sys::Win32::Security::Authorization::{
 use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, SECURITY_ATTRIBUTES};
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, OPEN_EXISTING,
+    FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL, WRITE_DAC,
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::StationsAndDesktops::{
-    CloseDesktop, CreateDesktopW, DESKTOP_CREATEMENU, DESKTOP_CREATEWINDOW, DESKTOP_DELETE,
-    DESKTOP_ENUMERATE, DESKTOP_HOOKCONTROL, DESKTOP_JOURNALPLAYBACK, DESKTOP_JOURNALRECORD,
-    DESKTOP_READOBJECTS, DESKTOP_READ_CONTROL, DESKTOP_SWITCHDESKTOP, DESKTOP_WRITEOBJECTS,
-    DESKTOP_WRITE_DAC, DESKTOP_WRITE_OWNER, HDESK,
+    CloseDesktop, CloseWindowStation, CreateDesktopW, CreateWindowStationW,
+    GetProcessWindowStation, SetProcessWindowStation, DESKTOP_CREATEMENU, DESKTOP_CREATEWINDOW,
+    DESKTOP_DELETE, DESKTOP_ENUMERATE, DESKTOP_HOOKCONTROL, DESKTOP_JOURNALPLAYBACK,
+    DESKTOP_JOURNALRECORD, DESKTOP_READOBJECTS, DESKTOP_READ_CONTROL, DESKTOP_SWITCHDESKTOP,
+    DESKTOP_WRITEOBJECTS, DESKTOP_WRITE_DAC, DESKTOP_WRITE_OWNER, HDESK, HWINSTA,
 };
+use windows_sys::Win32::UI::WindowsAndMessaging::WINSTA_ALL_ACCESS;
 use windows_sys::Win32::System::Threading::{
     CreateProcessAsUserW, DeleteProcThreadAttributeList, GetCurrentProcessId, GetExitCodeProcess,
     InitializeProcThreadAttributeList, ResumeThread, TerminateProcess, UpdateProcThreadAttribute,
@@ -182,19 +184,28 @@ impl RestrictedChild {
     }
 }
 
-/// A process-private desktop grants only the restricted token's capability
-/// trustees enough desktop rights for DLL/console initialization. It avoids
-/// adding User, Logon, or Everyone to the token's restricting SID set, which
-/// could otherwise broaden filesystem writes through ordinary user ACLs.
+/// A process-private window station + desktop grants only the restricted
+/// token's capability trustees enough USER-object rights for DLL/console
+/// initialization. It avoids adding User, Logon, or Everyone to the token's
+/// restricting SID set, which could otherwise broaden filesystem writes through
+/// ordinary user ACLs.
+///
+/// The desktop alone is not enough: a WRITE_RESTRICTED token also needs access
+/// to the window station that owns the desktop, and the interactive `Winsta0`
+/// station's DACL does not contain the capability SIDs. A dedicated station
+/// (created, ACL'd, and used only by this sandbox child) satisfies both
+/// USER-object access checks without touching `Winsta0`.
 struct PrivateDesktop {
-    handle: HDESK,
+    station: HWINSTA,
+    desktop: HDESK,
     startup_name: Vec<u16>,
 }
 
-// HDESK is an owned Win32 handle, not a borrowed desktop pointer. This owner
-// never calls SetThreadDesktop; after creation it is only used to set the DACL
-// synchronously and then closed when the child is torn down. Windows permits
-// that handle ownership/close to move across Tokio worker threads.
+// HWINSTA/HDESK are owned Win32 handles, not borrowed window-station/desktop
+// pointers. This owner never calls SetThreadDesktop; after creation the handles
+// are only used to set DACLs synchronously and then closed when the child is
+// torn down. Windows permits that handle ownership/close to move across Tokio
+// worker threads.
 unsafe impl Send for PrivateDesktop {}
 unsafe impl Sync for PrivateDesktop {}
 
