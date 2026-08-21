@@ -79,7 +79,7 @@ async fn run(
     command: &str,
     approval: Option<&ApprovedWriteCapability>,
     environment: &[(OsString, OsString)],
-) -> CommandResult {
+) -> std::io::Result<CommandResult> {
     let mut child = runner::spawn_with_plan_for_test(
         plan,
         command,
@@ -87,8 +87,7 @@ async fn run(
         environment,
         approval,
         &fixture.state_path,
-    )
-    .expect("restricted runner must start");
+    )?;
     let mut stdout = tokio::fs::File::from_std(child.take_stdout().expect("stdout pipe"));
     let mut stderr = tokio::fs::File::from_std(child.take_stderr().expect("stderr pipe"));
     let stdout_task = tokio::spawn(async move {
@@ -101,11 +100,22 @@ async fn run(
         stderr.read_to_end(&mut bytes).await.expect("read stderr");
         bytes
     });
-    let exit_code = child.wait().await.expect("wait for restricted process");
-    CommandResult {
+    let exit_code = child.wait().await?;
+    Ok(CommandResult {
         exit_code,
         stdout: String::from_utf8_lossy(&stdout_task.await.expect("stdout task")).into_owned(),
         stderr: String::from_utf8_lossy(&stderr_task.await.expect("stderr task")).into_owned(),
+    })
+}
+
+fn require_supported(result: std::io::Result<CommandResult>) -> Option<CommandResult> {
+    match result {
+        Ok(result) => Some(result),
+        Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
+            eprintln!("SKIP: {error}");
+            None
+        }
+        Err(error) => panic!("restricted runner must start: {error}"),
     }
 }
 
@@ -133,26 +143,33 @@ async fn runner_allows_workspace_but_denies_undeclared_external_write() {
     let fixture = Fixture::new();
     let plan = fixture.plan();
     let workspace_file = fixture.workspace.join("created.txt");
-    let allowed = run(
-        &fixture,
-        &plan,
-        &write_command(&workspace_file, "workspace-ok"),
-        None,
-        &[],
-    )
-    .await;
+    let Some(allowed) = require_supported(
+        run(
+            &fixture,
+            &plan,
+            &write_command(&workspace_file, "workspace-ok"),
+            None,
+            &[],
+        )
+        .await,
+    ) else {
+        return;
+    };
     assert_eq!(allowed.exit_code, 0, "stderr: {}", allowed.stderr);
     assert_eq!(read_fixture_text(&workspace_file).trim(), "workspace-ok");
 
     let external_file = fixture.external.join("blocked.txt");
-    let denied = run(
-        &fixture,
-        &plan,
-        &write_command(&external_file, "must-not-exist"),
-        None,
-        &[],
+    let denied = require_supported(
+        run(
+            &fixture,
+            &plan,
+            &write_command(&external_file, "must-not-exist"),
+            None,
+            &[],
+        )
+        .await,
     )
-    .await;
+    .expect("host support was established by the first launch");
     assert_ne!(denied.exit_code, 0, "unexpected stdout: {}", denied.stdout);
     assert!(!external_file.exists());
     assert!(
@@ -173,21 +190,28 @@ async fn subtree_approval_is_exact_and_old_ace_is_not_reusable() {
         ps(&approved_file),
         ps(&sibling_file)
     );
-    let result = run(&fixture, &plan, &command, Some(&approval), &[]).await;
+    let Some(result) =
+        require_supported(run(&fixture, &plan, &command, Some(&approval), &[]).await)
+    else {
+        return;
+    };
     assert_ne!(result.exit_code, 0, "sibling write unexpectedly succeeded");
     assert_eq!(read_fixture_text(&approved_file).trim(), "approved");
     assert!(!sibling_file.exists());
 
     // The request ACE remains on disk, but a later policy-only token does not
     // contain that request SID and therefore cannot reuse the old approval.
-    let reuse = run(
-        &fixture,
-        &plan,
-        &write_command(&approved_file, "reused"),
-        None,
-        &[],
+    let reuse = require_supported(
+        run(
+            &fixture,
+            &plan,
+            &write_command(&approved_file, "reused"),
+            None,
+            &[],
+        )
+        .await,
     )
-    .await;
+    .expect("host support was established by the first launch");
     assert_ne!(reuse.exit_code, 0, "one-time SID was reusable");
     assert_eq!(read_fixture_text(&approved_file).trim(), "approved");
 }
@@ -201,39 +225,49 @@ async fn file_approval_does_not_expand_to_parent_or_delete() {
     std::fs::write(&approved_file, "before").unwrap();
     let approval = fixture.approval(&approved_file, WriteScope::File, "file-once");
 
-    let write = run(
-        &fixture,
-        &plan,
-        &write_command(&approved_file, "after"),
-        Some(&approval),
-        &[],
-    )
-    .await;
+    let Some(write) = require_supported(
+        run(
+            &fixture,
+            &plan,
+            &write_command(&approved_file, "after"),
+            Some(&approval),
+            &[],
+        )
+        .await,
+    ) else {
+        return;
+    };
     assert_eq!(write.exit_code, 0, "stderr: {}", write.stderr);
     assert_eq!(read_fixture_text(&approved_file).trim(), "after");
 
-    let create_sibling = run(
-        &fixture,
-        &plan,
-        &write_command(&sibling_file, "blocked"),
-        Some(&approval),
-        &[],
+    let create_sibling = require_supported(
+        run(
+            &fixture,
+            &plan,
+            &write_command(&sibling_file, "blocked"),
+            Some(&approval),
+            &[],
+        )
+        .await,
     )
-    .await;
+    .expect("host support was established by the first launch");
     assert_ne!(create_sibling.exit_code, 0);
     assert!(!sibling_file.exists());
 
-    let remove = run(
-        &fixture,
-        &plan,
-        &format!(
-            "$ErrorActionPreference='Stop'; Remove-Item -LiteralPath {} -Force",
-            ps(&approved_file)
-        ),
-        Some(&approval),
-        &[],
+    let remove = require_supported(
+        run(
+            &fixture,
+            &plan,
+            &format!(
+                "$ErrorActionPreference='Stop'; Remove-Item -LiteralPath {} -Force",
+                ps(&approved_file)
+            ),
+            Some(&approval),
+            &[],
+        )
+        .await,
     )
-    .await;
+    .expect("host support was established by the first launch");
     assert_ne!(
         remove.exit_code, 0,
         "file scope unexpectedly granted delete"
@@ -253,25 +287,32 @@ async fn existing_deny_carveout_wins_inside_writable_workspace() {
     });
 
     let ordinary_file = fixture.workspace.join("ordinary.txt");
-    let ordinary = run(
-        &fixture,
-        &plan,
-        &write_command(&ordinary_file, "ok"),
-        None,
-        &[],
-    )
-    .await;
+    let Some(ordinary) = require_supported(
+        run(
+            &fixture,
+            &plan,
+            &write_command(&ordinary_file, "ok"),
+            None,
+            &[],
+        )
+        .await,
+    ) else {
+        return;
+    };
     assert_eq!(ordinary.exit_code, 0, "stderr: {}", ordinary.stderr);
 
     let protected_file = protected.join("blocked.txt");
-    let denied = run(
-        &fixture,
-        &plan,
-        &write_command(&protected_file, "blocked"),
-        None,
-        &[],
+    let denied = require_supported(
+        run(
+            &fixture,
+            &plan,
+            &write_command(&protected_file, "blocked"),
+            None,
+            &[],
+        )
+        .await,
     )
-    .await;
+    .expect("host support was established by the first launch");
     assert_ne!(denied.exit_code, 0);
     assert!(!protected_file.exists());
 }
@@ -280,17 +321,21 @@ async fn existing_deny_carveout_wins_inside_writable_workspace() {
 async fn production_runner_preserves_cwd_env_output_and_exit_code() {
     let fixture = Fixture::new();
     let plan = fixture.plan();
-    let result = run(
-        &fixture,
-        &plan,
-        "Write-Output \"$env:FUTUREOS_INTEGRATION|$pwd\"; exit 23",
-        None,
-        &[(
-            OsString::from("FUTUREOS_INTEGRATION"),
-            OsString::from("ready"),
-        )],
-    )
-    .await;
+    let Some(result) = require_supported(
+        run(
+            &fixture,
+            &plan,
+            "Write-Output \"$env:FUTUREOS_INTEGRATION|$pwd\"; exit 23",
+            None,
+            &[(
+                OsString::from("FUTUREOS_INTEGRATION"),
+                OsString::from("ready"),
+            )],
+        )
+        .await,
+    ) else {
+        return;
+    };
     assert_eq!(result.exit_code, 23);
     let output = result.stdout.to_lowercase();
     assert!(output.contains("ready|"), "unexpected stdout: {output:?}");
@@ -314,7 +359,9 @@ async fn unicode_path_pipeline_redirection_and_large_output_do_not_deadlock() {
         "$ErrorActionPreference='Stop'; 1..3 | ForEach-Object {{ \"项目-$_\" }} | Set-Content -LiteralPath {} -Encoding UTF8; Write-Output ('x' * 700000)",
         ps(&unicode_file)
     );
-    let result = run(&fixture, &plan, &command, None, &[]).await;
+    let Some(result) = require_supported(run(&fixture, &plan, &command, None, &[]).await) else {
+        return;
+    };
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     assert!(read_fixture_text(&unicode_file).contains("项目-3"));
     assert!(

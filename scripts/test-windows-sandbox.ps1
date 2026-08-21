@@ -114,6 +114,12 @@ try {
             "--test-threads=1"
         )
 
+    $restrictedTokenUnsupported = Select-String `
+        -Path $logPath `
+        -SimpleMatch `
+        -Quiet `
+        -Pattern "SKIP: Windows host rejected CreateRestrictedToken"
+
     Invoke-LoggedNative `
         "Windows capability approval and receipt binding" `
         "cargo" `
@@ -134,6 +140,14 @@ try {
     }
 
     Write-LogLine ""
+    if ($restrictedTokenUnsupported) {
+        Write-LogLine "RESULT: UNSUPPORTED"
+        Write-LogLine "This Windows host rejected CreateRestrictedToken. No command was run without the sandbox."
+        Write-LogLine "Finished: $((Get-Date).ToString('o'))"
+        Write-Host ""
+        Write-Host "UNSUPPORTED. Send this log back for review: $logPath" -ForegroundColor Yellow
+        exit 2
+    }
     Write-LogLine "RESULT: PASS"
     Write-LogLine "Finished: $((Get-Date).ToString('o'))"
     Write-Host ""

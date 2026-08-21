@@ -184,7 +184,7 @@ v2 决策（V1–V9）见 APPROVAL_PLAN §9。v1 期间沿用有效的：escalat
 
 ## 11. Windows 原生写保护（unelevated：RestrictedToken + ACL）
 
-状态：**W1–W5 已实现；W6 已接通 capability state/ACL/token/suspended process 内部执行链，清理/feature probe/Windows 真机矩阵仍待完成。** 后端完成并通过 Windows smoke 前，`platform_sandbox_available()` 在 Windows 必须保持 false，GUI 不显示该档。
+状态：**W1–W5 已实现；W6 已接通 capability state/ACL/token/suspended process 内部执行链。** `CreateRestrictedToken(ERROR_INVALID_PARAMETER)` 已作为 fail-closed 的 host feature-probe 结果；活动代际/GC、重置/卸载清理及支持主机的真实矩阵仍待完成。后端完成并通过 Windows smoke 前，`platform_sandbox_available()` 在 Windows 必须保持 false，GUI 不显示该档。
 
 Windows 与 macOS 共用 `SandboxTier::Sandbox` 协议值，但 UI 和保证不同：
 
@@ -335,7 +335,7 @@ RestrictedToken/NTFS 不向父进程可靠报告“刚才拒绝了哪个对象�
 | **W6 — 端到端安全与兼容性** | 将 W1–W5 串入真实 agent/desktop；增加 ACL audit/repair、活动代际跟踪、旧 SID GC、重置/卸载清理、日志脱敏和 feature probe；用仓库脚本进行 Windows 真实机手工批量 smoke，不加入 CI | 必过矩阵：workspace/temp 写成功；workspace 外写失败；一次批准仅开放完整列出的现有 file/subtree，未批准 sibling 仍失败；项目批准仅当前项目和新代际生效；父目录不被扩大；当前用户无权目标仍失败；现有关键对象 deny 硬化有效；不存在对象/glob 缺口与模式说明一致；崩溃/强杀/重启后无权限扩张；常见工具链可用；所有初始化失败均 fail closed |
 | **W7 — 灰度与发布** | 默认关闭 feature flag；仅对通过 capability probe 的本地 NTFS 工作区显示“写保护”；模式选择/首次启用/设置页说明“只限制写入，读取和网络开放”；保留一键退回 `manual` | Windows 目标版本手工 smoke 全绿；安全 review 无高优先级问题；升级、降级、重置 SID/ACL 可恢复；遥测不上传原始敏感路径；完成小范围灰度后才默认开放。发布后发现初始化/ACL 异常时自动回到 `manual`，不得无提示直跑 |
 
-**当前实现状态（2026-08-21）**：W1–W3 已实现；Windows 模块通过 `x86_64-pc-windows-msvc` 独立编译与 Clippy，原生 smoke 由 `scripts/test-windows-sandbox.ps1` 手工执行，明确不加入 CI。W4 已加入 `additional_permissions.write[]`、最多 8 项、已存在 file/subtree 冻结、allow/ask/deny 判定、可信语义、request/command hash/path/scope 一次性回执；请求 SID 同时保留基础根和每个批准目标，scope 纳入 identity，避免父目录扩大及 file/subtree 复用；显式 ask carveout 会在审批前因 NTFS deny-wins 明确拒绝。W5 已让桌面和移动复用现有卡片，单目标标题表达“行为 + 目标”、多目标完整列出、命令折叠、malformed 禁止批准；桌面“此项目以后都允许”以一次原子写保存完整 1–8 项规则集并注入 session。W6 已接通 state 合并、handle/NTFS/reparse 复核、按 scope 添加 ACE、RestrictedToken、suspended/no-breakaway process、stdio/timeout/cancel 的内部路径，但 feature probe、活动代际/GC、重置/卸载清理和 Windows 真机矩阵仍未完成。Windows 产品入口继续保持关闭。审查同时确认：普通 NTFS DACL 无法精确拒绝允许目录内尚不存在的未来文件名，因此第一版保证收敛为 workspace/temp 外部写边界与精确外部 capability，不能宣称 workspace 内 shell ask/deny 与 macOS 等价。
+**当前实现状态（2026-08-21）**：W1–W3 已实现；Windows 模块通过 `x86_64-pc-windows-msvc` 独立编译与 Clippy，原生 smoke 由 `scripts/test-windows-sandbox.ps1` 手工执行，明确不加入 CI。Windows 的 `std::fs::canonicalize` extended-length 前缀已在规则模型边界归一化，避免 `\\?\` 中的 `?` 被误判为 glob；`CreateRestrictedToken(ERROR_INVALID_PARAMETER)` 被显式归类为不支持 host，脚本返回 `UNSUPPORTED`，绝不降级执行普通 token。W4 已加入 `additional_permissions.write[]`、最多 8 项、已存在 file/subtree 冻结、allow/ask/deny 判定、可信语义、request/command hash/path/scope 一次性回执；请求 SID 同时保留基础根和每个批准目标，scope 纳入 identity，避免父目录扩大及 file/subtree 复用；显式 ask carveout 会在审批前因 NTFS deny-wins 明确拒绝。W5 已让桌面和移动复用现有卡片，单目标标题表达“行为 + 目标”、多目标完整列出、命令折叠、malformed 禁止批准；桌面“此项目以后都允许”以一次原子写保存完整 1–8 项规则集并注入 session。W6 已接通 state 合并、handle/NTFS/reparse 复核、按 scope 添加 ACE、RestrictedToken、suspended/no-breakaway process、stdio/timeout/cancel 的内部路径，但活动代际/GC、重置/卸载清理和支持主机的 Windows 真机矩阵仍未完成。Windows 产品入口继续保持关闭。审查同时确认：普通 NTFS DACL 无法精确拒绝允许目录内尚不存在的未来文件名，因此第一版保证收敛为 workspace/temp 外部写边界与精确外部 capability，不能宣称 workspace 内 shell ask/deny 与 macOS 等价。
 
 Windows 真机从仓库根目录用普通（非管理员）PowerShell 执行：
 

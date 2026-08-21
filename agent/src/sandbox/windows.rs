@@ -146,6 +146,7 @@ impl Drop for Job {
 #[cfg(test)]
 mod native_tests {
     use std::ffi::{OsStr, OsString};
+    use std::io;
     use std::path::PathBuf;
 
     use windows_sys::Win32::Storage::FileSystem::{FILE_ADD_FILE, FILE_WRITE_DATA};
@@ -164,6 +165,17 @@ mod native_tests {
             writable_root: root,
             request_id: None,
             approved_targets: vec![],
+        }
+    }
+
+    fn token_or_skip(records: &[CapabilityRecord]) -> Option<RestrictedToken> {
+        match RestrictedToken::from_capabilities(records) {
+            Ok(token) => Some(token),
+            Err(error) if error.kind() == io::ErrorKind::Unsupported => {
+                eprintln!("SKIP: {error}");
+                None
+            }
+            Err(error) => panic!("restricted token setup failed: {error}"),
         }
     }
 
@@ -190,7 +202,9 @@ mod native_tests {
         ensure_write_root(&root, &sid).unwrap();
         ensure_write_deny(&carveout, &sid).unwrap();
 
-        let token = RestrictedToken::from_capabilities(&[record]).unwrap();
+        let Some(token) = token_or_skip(&[record]) else {
+            return;
+        };
         assert!(root.access_check(&token, FILE_ADD_FILE).unwrap());
         assert!(!external.access_check(&token, FILE_ADD_FILE).unwrap());
         assert!(!carveout.access_check(&token, FILE_WRITE_DATA).unwrap());
@@ -209,7 +223,9 @@ mod native_tests {
         let sid = derive_capability_sid(&record.name).unwrap();
         let root = FrozenPath::open_local_ntfs(&root_path).unwrap();
         ensure_write_root(&root, &sid).unwrap();
-        let token = RestrictedToken::from_capabilities(&[record]).unwrap();
+        let Some(token) = token_or_skip(&[record]) else {
+            return;
+        };
         let args = vec![
             OsString::from("-NoProfile"),
             OsString::from("-NonInteractive"),
@@ -259,7 +275,9 @@ mod native_tests {
         let sid = derive_capability_sid(&record.name).unwrap();
         let root = FrozenPath::open_local_ntfs(&root_path).unwrap();
         ensure_write_root(&root, &sid).unwrap();
-        let token = RestrictedToken::from_capabilities(&[record]).unwrap();
+        let Some(token) = token_or_skip(&[record]) else {
+            return;
+        };
         let args = vec![
             OsString::from("-NoProfile"),
             OsString::from("-NonInteractive"),

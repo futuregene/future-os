@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::io;
 use std::ptr;
 
-use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};
+use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, ERROR_INVALID_PARAMETER, HANDLE};
 use windows_sys::Win32::Security::{
     CopySid, CreateRestrictedToken, DeriveCapabilitySidsFromName, GetLengthSid, IsTokenRestricted,
     IsValidSid, DISABLE_MAX_PRIVILEGE, LUA_TOKEN, PSID, SID_AND_ATTRIBUTES, TOKEN_DUPLICATE,
@@ -90,7 +90,7 @@ impl RestrictedToken {
             )
         };
         if ok == 0 {
-            return Err(io::Error::last_os_error());
+            return Err(map_restricted_token_error(io::Error::last_os_error()));
         }
         let token = RestrictedToken(token);
         // IsTokenRestricted reports false when no restricting SID actually
@@ -105,6 +105,21 @@ impl RestrictedToken {
 
     pub(crate) fn as_handle(&self) -> HANDLE {
         self.0
+    }
+}
+
+fn map_restricted_token_error(error: io::Error) -> io::Error {
+    // Some Windows hosts reject CreateRestrictedToken with 87 even for a
+    // normal unelevated token and valid capability SIDs. Do not fall back to
+    // an ordinary token: this is a feature-probe failure and the Windows
+    // write-protection backend must remain unavailable.
+    if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Windows host rejected CreateRestrictedToken (ERROR_INVALID_PARAMETER); Windows write protection is unavailable on this host",
+        )
+    } else {
+        error
     }
 }
 
@@ -192,4 +207,18 @@ unsafe fn free_sid_array(array: *mut PSID, count: u32) {
         }
     }
     unsafe { LocalFree(array.cast()) };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_parameter_is_a_fail_closed_host_probe_result() {
+        let error = map_restricted_token_error(io::Error::from_raw_os_error(
+            ERROR_INVALID_PARAMETER as i32,
+        ));
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert!(error.to_string().contains("CreateRestrictedToken"));
+    }
 }
