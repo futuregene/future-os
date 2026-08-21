@@ -361,6 +361,13 @@ pub fn shell_invocation(command: &str) -> (&'static str, Vec<String>) {
 ///   no-op there.) Native tools that ignore the code page and hard-code OEM/
 ///   ANSI output can't be fixed here — those bytes become replacement chars
 ///   via `from_utf8_lossy` rather than corrupting the capture.
+///   The `[Console]::OutputEncoding`/`$OutputEncoding` assignment is guarded by
+///   a FullLanguage check: a WRITE_RESTRICTED token makes PowerShell enter
+///   Constrained Language Mode, where constructing `[System.Text.UTF8Encoding]`
+///   (or calling `$Error.Clear()`) throws
+///   `CannotCreateTypeConstrainedLanguage`. Skipping the assignment there keeps
+///   non-ASCII output at the OEM code page, but a failed assignment would
+///   otherwise poison `$Error` and turn a successful command into an `exit 1`.
 /// - `$ProgressPreference = 'SilentlyContinue'` suppresses progress records
 ///   (e.g. "Preparing modules for first use"). When powershell.exe's stderr is
 ///   a redirected pipe, PS 5.1 serializes such records as CLIXML (`#< CLIXML …`)
@@ -373,7 +380,7 @@ pub fn windows_wrapper_script(command: &str) -> String {
     let command = ResolvedSandbox::normalize_shell_quoting(command);
     format!(
         "chcp 65001 > $null; \
-         $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); \
+         if ($ExecutionContext.SessionState.LanguageMode -eq 'FullLanguage') {{ $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) }}; \
          $ProgressPreference = 'SilentlyContinue'; \
          $global:LASTEXITCODE = $null; \
          & {{ {} }} 2>&1 | ForEach-Object {{ \"$_\" }}; \

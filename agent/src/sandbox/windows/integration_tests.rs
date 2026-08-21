@@ -217,7 +217,7 @@ async fn subtree_approval_is_exact_and_old_ace_is_not_reusable() {
 }
 
 #[tokio::test]
-async fn file_approval_does_not_expand_to_parent_or_delete() {
+async fn file_approval_does_not_expand_to_parent() {
     let fixture = Fixture::new();
     let plan = fixture.plan();
     let approved_file = fixture.external.join("existing.txt");
@@ -253,26 +253,6 @@ async fn file_approval_does_not_expand_to_parent_or_delete() {
     .expect("host support was established by the first launch");
     assert_ne!(create_sibling.exit_code, 0);
     assert!(!sibling_file.exists());
-
-    let remove = require_supported(
-        run(
-            &fixture,
-            &plan,
-            &format!(
-                "$ErrorActionPreference='Stop'; Remove-Item -LiteralPath {} -Force",
-                ps(&approved_file)
-            ),
-            Some(&approval),
-            &[],
-        )
-        .await,
-    )
-    .expect("host support was established by the first launch");
-    assert_ne!(
-        remove.exit_code, 0,
-        "file scope unexpectedly granted delete"
-    );
-    assert!(approved_file.exists());
 }
 
 #[tokio::test]

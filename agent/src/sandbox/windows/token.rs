@@ -17,16 +17,19 @@ use windows_sys::Win32::Security::Authorization::{
     TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::{
-    AdjustTokenPrivileges, CopySid, CreateRestrictedToken, GetLengthSid, GetTokenInformation,
-    IsTokenRestricted, IsValidSid, LookupPrivilegeValueW, SetTokenInformation, TokenDefaultDacl,
-    TokenUser, DISABLE_MAX_PRIVILEGE, LUA_TOKEN, LUID_AND_ATTRIBUTES, PSID, SE_CHANGE_NOTIFY_NAME,
-    SE_PRIVILEGE_ENABLED, SID_AND_ATTRIBUTES, TOKEN_ADJUST_DEFAULT, TOKEN_ADJUST_PRIVILEGES,
-    TOKEN_ASSIGN_PRIMARY, TOKEN_DEFAULT_DACL, TOKEN_DUPLICATE, TOKEN_PRIVILEGES, TOKEN_QUERY,
-    TOKEN_USER, WRITE_RESTRICTED,
+    AdjustTokenPrivileges, CopySid, CreateRestrictedToken, CreateWellKnownSid, GetLengthSid,
+    GetTokenInformation, IsTokenRestricted, IsValidSid, LookupPrivilegeValueW, SetTokenInformation,
+    TokenDefaultDacl, TokenGroups, TokenUser, DISABLE_MAX_PRIVILEGE, LUA_TOKEN, LUID_AND_ATTRIBUTES,
+    PSID, SE_CHANGE_NOTIFY_NAME, SE_PRIVILEGE_ENABLED, SID_AND_ATTRIBUTES, TOKEN_ADJUST_DEFAULT,
+    TOKEN_ADJUST_PRIVILEGES, TOKEN_ASSIGN_PRIMARY, TOKEN_DEFAULT_DACL, TOKEN_DUPLICATE,
+    TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_USER, WRITE_RESTRICTED,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 use super::super::windows_capability::CapabilityRecord;
+
+const WIN_WORLD_SID: i32 = 1;
+const SE_GROUP_LOGON_ID: u32 = 0xC0000000;
 
 /// Owned, movable SID bytes. The backing allocation never moves when this
 /// wrapper moves, so pointers handed to synchronous Win32 calls remain stable.
@@ -62,21 +65,6 @@ impl RestrictedToken {
                 "a write-restricted token requires at least one capability",
             ));
         }
-        let mut names = HashSet::new();
-        let sids: Vec<OwnedSid> = records
-            .iter()
-            .filter(|record| names.insert(record.name.as_str()))
-            .map(|record| derive_capability_sid(&record.name))
-            .collect::<io::Result<_>>()?;
-        let restricted: Vec<SID_AND_ATTRIBUTES> = sids
-            .iter()
-            .map(|sid| SID_AND_ATTRIBUTES {
-                Sid: sid.as_psid(),
-                // Microsoft requires zero for SidsToRestrict; restricting SIDs
-                // are always enabled for their access-check pass.
-                Attributes: 0,
-            })
-            .collect();
 
         let mut source = ptr::null_mut();
         // SAFETY: pseudo process handle is valid; `source` is initialized on
@@ -97,6 +85,34 @@ impl RestrictedToken {
         }
         let source = HandleGuard(source);
         let normal_user_sid = current_user_sid(source.0)?;
+
+        let mut names = HashSet::new();
+        let mut sids: Vec<OwnedSid> = records
+            .iter()
+            .filter(|record| names.insert(record.name.as_str()))
+            .map(|record| derive_capability_sid(&record.name))
+            .collect::<io::Result<_>>()?;
+        // Codex's legacy unelevated backend adds the logon SID and Everyone to
+        // the restricting SID set. PowerShell/CLR performs writes against
+        // session-scoped and Everyone-accessible kernel objects while it boots;
+        // without these two trustees those writes fail the WRITE_RESTRICTED
+        // check and PowerShell exits with E_ACCESSDENIED before running any
+        // command. Neither SID appears on ordinary file ACLs with write
+        // authority beyond the current session, so the filesystem write
+        // boundary (driven solely by capability ACEs) is preserved.
+        sids.push(logon_sid(source.0)?);
+        sids.push(everyone_sid()?);
+
+        let restricted: Vec<SID_AND_ATTRIBUTES> = sids
+            .iter()
+            .map(|sid| SID_AND_ATTRIBUTES {
+                Sid: sid.as_psid(),
+                // Microsoft requires zero for SidsToRestrict; restricting SIDs
+                // are always enabled for their access-check pass.
+                Attributes: 0,
+            })
+            .collect();
+
         let mut token = ptr::null_mut();
         // SAFETY: SID backing allocations and the array stay alive throughout
         // the synchronous call. Empty disable/privilege arrays are null.
@@ -234,6 +250,65 @@ fn current_user_sid(token: HANDLE) -> io::Result<OwnedSid> {
     // beginning of `storage`; clone_sid copies its pointed-to SID immediately.
     let user = unsafe { &*storage.as_ptr().cast::<TOKEN_USER>() };
     clone_sid(user.User.Sid)
+}
+
+fn logon_sid(token: HANDLE) -> io::Result<OwnedSid> {
+    let mut bytes = 0;
+    unsafe { GetTokenInformation(token, TokenGroups, ptr::null_mut(), 0, &mut bytes) };
+    if bytes == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut storage = vec![0u8; bytes as usize];
+    if unsafe {
+        GetTokenInformation(
+            token,
+            TokenGroups,
+            storage.as_mut_ptr().cast(),
+            bytes,
+            &mut bytes,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    // TOKEN_GROUPS is a DWORD count followed by a variable-length, pointer-
+    // aligned array of SID_AND_ATTRIBUTES. Read the count first, then walk the
+    // array via raw pointers because Rust's fixed `[SID_AND_ATTRIBUTES; 1]`
+    // representation cannot index the variable tail safely.
+    let count = unsafe { *storage.as_ptr().cast::<u32>() } as usize;
+    let groups_offset = (std::mem::size_of::<u32>() + std::mem::align_of::<SID_AND_ATTRIBUTES>()
+        - 1)
+        & !(std::mem::align_of::<SID_AND_ATTRIBUTES>() - 1);
+    let groups = unsafe { storage.as_ptr().add(groups_offset).cast::<SID_AND_ATTRIBUTES>() };
+    for index in 0..count {
+        let entry = unsafe { std::ptr::read_unaligned(groups.add(index)) };
+        if entry.Attributes & SE_GROUP_LOGON_ID == SE_GROUP_LOGON_ID {
+            return clone_sid(entry.Sid);
+        }
+    }
+    Err(io::Error::other("token has no logon SID"))
+}
+
+fn everyone_sid() -> io::Result<OwnedSid> {
+    let mut bytes = 0;
+    // The sizing probe is expected to report required storage through `bytes`.
+    unsafe { CreateWellKnownSid(WIN_WORLD_SID, ptr::null_mut(), ptr::null_mut(), &mut bytes) };
+    if bytes == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut storage = vec![0u8; bytes as usize];
+    if unsafe {
+        CreateWellKnownSid(
+            WIN_WORLD_SID,
+            ptr::null_mut(),
+            storage.as_mut_ptr().cast(),
+            &mut bytes,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(OwnedSid(storage))
 }
 
 fn clone_sid(sid: PSID) -> io::Result<OwnedSid> {
