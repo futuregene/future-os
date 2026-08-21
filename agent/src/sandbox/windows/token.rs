@@ -10,14 +10,19 @@ use std::ptr;
 use sha2::{Digest, Sha256};
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, HANDLE, LUID,
+    CloseHandle, GetLastError, LocalFree, ERROR_INVALID_PARAMETER, GENERIC_ALL, HANDLE, LUID,
+};
+use windows_sys::Win32::Security::Authorization::{
+    SetEntriesInAclW, EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_MULTIPLE_TRUSTEE, TRUSTEE_IS_SID,
+    TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::{
     AdjustTokenPrivileges, CopySid, CreateRestrictedToken, GetLengthSid, GetTokenInformation,
-    IsTokenRestricted, IsValidSid, LookupPrivilegeValueW, TokenUser, DISABLE_MAX_PRIVILEGE,
-    LUA_TOKEN, LUID_AND_ATTRIBUTES, PSID, SE_CHANGE_NOTIFY_NAME, SE_PRIVILEGE_ENABLED,
-    SID_AND_ATTRIBUTES, TOKEN_ADJUST_PRIVILEGES, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE,
-    TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_USER, WRITE_RESTRICTED,
+    IsTokenRestricted, IsValidSid, LookupPrivilegeValueW, SetTokenInformation, TokenDefaultDacl,
+    TokenUser, DISABLE_MAX_PRIVILEGE, LUA_TOKEN, LUID_AND_ATTRIBUTES, PSID, SE_CHANGE_NOTIFY_NAME,
+    SE_PRIVILEGE_ENABLED, SID_AND_ATTRIBUTES, TOKEN_ADJUST_DEFAULT, TOKEN_ADJUST_PRIVILEGES,
+    TOKEN_ASSIGN_PRIMARY, TOKEN_DEFAULT_DACL, TOKEN_DUPLICATE, TOKEN_PRIVILEGES, TOKEN_QUERY,
+    TOKEN_USER, WRITE_RESTRICTED,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -79,7 +84,11 @@ impl RestrictedToken {
         if unsafe {
             OpenProcessToken(
                 GetCurrentProcess(),
-                TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_PRIVILEGES | TOKEN_DUPLICATE | TOKEN_QUERY,
+                TOKEN_ASSIGN_PRIMARY
+                    | TOKEN_ADJUST_DEFAULT
+                    | TOKEN_ADJUST_PRIVILEGES
+                    | TOKEN_DUPLICATE
+                    | TOKEN_QUERY,
                 &mut source,
             )
         } == 0
@@ -119,6 +128,7 @@ impl RestrictedToken {
                 "CreateRestrictedToken returned a token without restricting SIDs",
             ));
         }
+        set_default_dacl(&token)?;
         // DISABLE_MAX_PRIVILEGE disables this normal-user privilege. Restoring
         // it permits directory traversal without granting read/write access;
         // without it CreateProcessAsUserW cannot reach ordinary executable
@@ -137,6 +147,66 @@ impl RestrictedToken {
 
     pub(crate) fn normal_user_sid(&self) -> &OwnedSid {
         &self.normal_user_sid
+    }
+}
+
+fn set_default_dacl(token: &RestrictedToken) -> io::Result<()> {
+    // Named kernel objects created without an explicit descriptor inherit this
+    // DACL. Include one ordinary identity and every restricting capability so
+    // both WRITE_RESTRICTED access-check passes can reopen the child's own
+    // mutexes/events/pipes. This does not modify existing filesystem ACLs.
+    let entries = std::iter::once(token.normal_user_sid())
+        .chain(token.restricting_sids())
+        .map(|sid| EXPLICIT_ACCESS_W {
+            grfAccessPermissions: GENERIC_ALL,
+            grfAccessMode: GRANT_ACCESS,
+            grfInheritance: 0,
+            Trustee: TRUSTEE_W {
+                pMultipleTrustee: ptr::null_mut(),
+                MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+                TrusteeForm: TRUSTEE_IS_SID,
+                TrusteeType: TRUSTEE_IS_UNKNOWN,
+                ptstrName: sid.as_psid().cast(),
+            },
+        })
+        .collect::<Vec<_>>();
+    let mut dacl = ptr::null_mut();
+    let status = unsafe {
+        SetEntriesInAclW(
+            entries.len() as u32,
+            entries.as_ptr(),
+            ptr::null(),
+            &mut dacl,
+        )
+    };
+    if status != 0 {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    let dacl = LocalAcl(dacl);
+    let mut info = TOKEN_DEFAULT_DACL {
+        DefaultDacl: dacl.0,
+    };
+    if unsafe {
+        SetTokenInformation(
+            token.handle,
+            TokenDefaultDacl,
+            ptr::addr_of_mut!(info).cast(),
+            std::mem::size_of::<TOKEN_DEFAULT_DACL>() as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+struct LocalAcl(*mut windows_sys::Win32::Security::ACL);
+
+impl Drop for LocalAcl {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { LocalFree(self.0.cast()) };
+        }
     }
 }
 

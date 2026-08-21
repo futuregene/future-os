@@ -13,9 +13,9 @@ use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{FromRawHandle, RawHandle};
 use std::path::Path;
 use std::ptr;
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
 
+use uuid::Uuid;
 use windows_sys::Win32::Foundation::{
     CloseHandle, LocalFree, SetHandleInformation, ERROR_SUCCESS, HANDLE, HANDLE_FLAG_INHERIT,
     WAIT_FAILED, WAIT_OBJECT_0,
@@ -27,7 +27,7 @@ use windows_sys::Win32::Security::Authorization::{
 use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, SECURITY_ATTRIBUTES};
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL, WRITE_DAC,
+    FILE_SHARE_WRITE, OPEN_EXISTING,
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::StationsAndDesktops::{
@@ -37,17 +37,24 @@ use windows_sys::Win32::System::StationsAndDesktops::{
     DESKTOP_JOURNALRECORD, DESKTOP_READOBJECTS, DESKTOP_READ_CONTROL, DESKTOP_SWITCHDESKTOP,
     DESKTOP_WRITEOBJECTS, DESKTOP_WRITE_DAC, DESKTOP_WRITE_OWNER, HDESK, HWINSTA,
 };
-use windows_sys::Win32::UI::WindowsAndMessaging::WINSTA_ALL_ACCESS;
 use windows_sys::Win32::System::Threading::{
-    CreateProcessAsUserW, DeleteProcThreadAttributeList, GetCurrentProcessId, GetExitCodeProcess,
+    CreateProcessAsUserW, DeleteProcThreadAttributeList, GetExitCodeProcess,
     InitializeProcThreadAttributeList, ResumeThread, TerminateProcess, UpdateProcThreadAttribute,
     WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
     EXTENDED_STARTUPINFO_PRESENT, INFINITE, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
     STARTF_USESTDHANDLES, STARTUPINFOEXW,
 };
+use windows_sys::Win32::UI::WindowsAndMessaging::WINSTA_ALL_ACCESS;
 
 use super::token::RestrictedToken;
 use super::Job;
+
+// SetProcessWindowStation changes process-global USER state. Serialize the
+// short create/restore window so concurrent shell starts cannot attach their
+// desktops to each other's stations. The agent is headless and never assigns
+// its threads to these desktops.
+static WINDOW_STATION_SWITCH_LOCK: Mutex<()> = Mutex::new(());
+const WINDOW_STATION_ACCESS: u32 = WINSTA_ALL_ACCESS as u32;
 
 pub(crate) struct RestrictedChild {
     process: Arc<ProcessHandle>,
@@ -211,14 +218,32 @@ unsafe impl Sync for PrivateDesktop {}
 
 impl PrivateDesktop {
     fn create(token: &RestrictedToken) -> io::Result<Self> {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| io::Error::other(format!("system clock before Unix epoch: {error}")))?
-            .as_nanos();
-        let name = format!("FutureOSSandbox-{}-{nonce:032x}", unsafe {
-            GetCurrentProcessId()
-        });
-        let name_wide = wide_nul(OsStr::new(&name));
+        let _switch_lock = WINDOW_STATION_SWITCH_LOCK
+            .lock()
+            .map_err(|_| io::Error::other("window station switch lock is poisoned"))?;
+        let identity = Uuid::new_v4().simple().to_string();
+        let station_name = format!("FutureOSSandbox-{identity}");
+        let desktop_name = "Default";
+        let station_name_wide = wide_nul(OsStr::new(&station_name));
+
+        let station = unsafe {
+            CreateWindowStationW(
+                station_name_wide.as_ptr(),
+                0,
+                WINDOW_STATION_ACCESS,
+                ptr::null(),
+            )
+        };
+        if station.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let station = OwnedWindowStation(station);
+        grant_user_object_access(station.0, token, WINDOW_STATION_ACCESS)?;
+
+        // CreateDesktopW always targets the caller's current process window
+        // station. Switch only while creating the desktop and restore before
+        // spawning or returning to async code.
+        let station_restore = ProcessWindowStationRestore::switch_to(station.0)?;
         // Match the rights Codex gives its private desktop. This is not a
         // filesystem capability: the desktop is freshly created for this child
         // and its handle closes with the child. A narrower guessed subset made
@@ -236,9 +261,10 @@ impl PrivateDesktop {
             | DESKTOP_READ_CONTROL
             | DESKTOP_WRITE_DAC
             | DESKTOP_WRITE_OWNER;
-        let handle = unsafe {
+        let desktop_name_wide = wide_nul(OsStr::new(desktop_name));
+        let desktop = unsafe {
             CreateDesktopW(
-                name_wide.as_ptr(),
+                desktop_name_wide.as_ptr(),
                 ptr::null(),
                 ptr::null_mut(),
                 0,
@@ -246,76 +272,151 @@ impl PrivateDesktop {
                 ptr::null(),
             )
         };
-        if handle.is_null() {
+        if desktop.is_null() {
             return Err(io::Error::last_os_error());
         }
-        let desktop = Self {
-            handle,
-            startup_name: wide_nul(OsStr::new(&format!("Winsta0\\{name}"))),
-        };
-        if let Err(error) = desktop.grant_restricted_access(token, access) {
-            drop(desktop);
-            return Err(error);
-        }
-        Ok(desktop)
-    }
+        let desktop = OwnedDesktop(desktop);
+        grant_user_object_access(desktop.0, token, access)?;
+        station_restore.restore()?;
 
-    fn grant_restricted_access(&self, token: &RestrictedToken, access: u32) -> io::Result<()> {
-        // WRITE_RESTRICTED performs two checks. The ordinary token check needs
-        // the current user's SID; the restricted check needs a capability SID.
-        // These ACEs exist only on this short-lived desktop. In particular, do
-        // not add the user SID to `CreateRestrictedToken`'s restricting list,
-        // which could broaden ordinary filesystem writes.
-        let entries = std::iter::once(token.normal_user_sid())
-            .chain(token.restricting_sids())
-            .map(|sid| EXPLICIT_ACCESS_W {
-                grfAccessPermissions: access,
-                grfAccessMode: GRANT_ACCESS,
-                grfInheritance: 0,
-                Trustee: TRUSTEE_W {
-                    pMultipleTrustee: ptr::null_mut(),
-                    MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
-                    TrusteeForm: TRUSTEE_IS_SID,
-                    TrusteeType: TRUSTEE_IS_UNKNOWN,
-                    ptstrName: sid.as_psid().cast(),
-                },
-            })
-            .collect::<Vec<_>>();
-        let mut updated = ptr::null_mut();
-        let status = unsafe {
-            SetEntriesInAclW(
-                entries.len() as u32,
-                entries.as_ptr(),
-                ptr::null(),
-                &mut updated,
-            )
-        };
-        if status != ERROR_SUCCESS {
-            return Err(io::Error::from_raw_os_error(status as i32));
-        }
-        let updated = LocalAcl(updated);
-        let status = unsafe {
-            SetSecurityInfo(
-                self.handle,
-                SE_WINDOW_OBJECT,
-                DACL_SECURITY_INFORMATION,
-                ptr::null_mut(),
-                ptr::null_mut(),
-                updated.0,
-                ptr::null_mut(),
-            )
-        };
-        if status != ERROR_SUCCESS {
-            return Err(io::Error::from_raw_os_error(status as i32));
-        }
-        Ok(())
+        Ok(Self {
+            station: station.into_raw(),
+            desktop: desktop.into_raw(),
+            startup_name: wide_nul(OsStr::new(&format!("{station_name}\\{desktop_name}"))),
+        })
     }
 }
 
 impl Drop for PrivateDesktop {
     fn drop(&mut self) {
-        if !self.handle.is_null() {
-            unsafe { CloseDesktop(self.handle) };
+        if !self.desktop.is_null() {
+            unsafe { CloseDesktop(self.desktop) };
+        }
+        if !self.station.is_null() {
+            unsafe { CloseWindowStation(self.station) };
+        }
+    }
+}
+
+fn grant_user_object_access(
+    handle: HANDLE,
+    token: &RestrictedToken,
+    access: u32,
+) -> io::Result<()> {
+    // WRITE_RESTRICTED performs two checks. The ordinary token check needs the
+    // current user's SID; the restricted check needs a capability SID. These
+    // ACEs exist only on the short-lived USER object. Never add the real user
+    // SID to SidsToRestrict: that could authorize writes on ordinary user ACLs.
+    let entries = std::iter::once(token.normal_user_sid())
+        .chain(token.restricting_sids())
+        .map(|sid| EXPLICIT_ACCESS_W {
+            grfAccessPermissions: access,
+            grfAccessMode: GRANT_ACCESS,
+            grfInheritance: 0,
+            Trustee: TRUSTEE_W {
+                pMultipleTrustee: ptr::null_mut(),
+                MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+                TrusteeForm: TRUSTEE_IS_SID,
+                TrusteeType: TRUSTEE_IS_UNKNOWN,
+                ptstrName: sid.as_psid().cast(),
+            },
+        })
+        .collect::<Vec<_>>();
+    let mut updated = ptr::null_mut();
+    let status = unsafe {
+        SetEntriesInAclW(
+            entries.len() as u32,
+            entries.as_ptr(),
+            ptr::null(),
+            &mut updated,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    let updated = LocalAcl(updated);
+    let status = unsafe {
+        SetSecurityInfo(
+            handle,
+            SE_WINDOW_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            updated.0,
+            ptr::null_mut(),
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    Ok(())
+}
+
+struct ProcessWindowStationRestore {
+    original: HWINSTA,
+    active: bool,
+}
+
+impl ProcessWindowStationRestore {
+    fn switch_to(station: HWINSTA) -> io::Result<Self> {
+        let original = unsafe { GetProcessWindowStation() };
+        if original.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        if unsafe { SetProcessWindowStation(station) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self {
+            original,
+            active: true,
+        })
+    }
+
+    fn restore(mut self) -> io::Result<()> {
+        if unsafe { SetProcessWindowStation(self.original) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        self.active = false;
+        Ok(())
+    }
+}
+
+impl Drop for ProcessWindowStationRestore {
+    fn drop(&mut self) {
+        if self.active {
+            unsafe { SetProcessWindowStation(self.original) };
+        }
+    }
+}
+
+struct OwnedWindowStation(HWINSTA);
+
+impl OwnedWindowStation {
+    fn into_raw(mut self) -> HWINSTA {
+        std::mem::replace(&mut self.0, ptr::null_mut())
+    }
+}
+
+impl Drop for OwnedWindowStation {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { CloseWindowStation(self.0) };
+        }
+    }
+}
+
+struct OwnedDesktop(HDESK);
+
+impl OwnedDesktop {
+    fn into_raw(mut self) -> HDESK {
+        std::mem::replace(&mut self.0, ptr::null_mut())
+    }
+}
+
+impl Drop for OwnedDesktop {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { CloseDesktop(self.0) };
         }
     }
 }
