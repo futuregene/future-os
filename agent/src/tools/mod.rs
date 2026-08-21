@@ -373,7 +373,7 @@ fn edit_handler(args: serde_json::Value) -> Pin<Box<dyn Future<Output = Result<S
 pub fn edit_tool() -> AgentTool {
     make_tool(
         "edit",
-        "Edit a file using exact text replacement. Single replacement: pass `path` + `oldText` + `newText`. Multiple replacements in one call: pass `path` + `edits` (an array of {oldText, newText}). Never mix both forms, and never pass a bare array or a string in place of the arguments object.",
+        "Edit a file using exact text replacement. Supports multi-edit via edits array.",
         edit_schema(),
         edit_handler,
         vec!["Include enough context for unique matching"],

@@ -399,8 +399,6 @@ fn build_identity_section(opts: &PromptOptions) -> String {
 
 fn build_dynamic_tool_guidelines(tool_names: &[&str]) -> Vec<String> {
     let has_shell = tool_names.contains(&"shell");
-    let has_write = tool_names.contains(&"write");
-    let has_edit = tool_names.contains(&"edit");
 
     let mut guidelines = vec![];
 
@@ -415,17 +413,6 @@ fn build_dynamic_tool_guidelines(tool_names: &[&str]) -> Vec<String> {
         #[cfg(target_os = "windows")]
         guidelines.push(
             "Use the shell tool (PowerShell) for command-line exploration such as Get-ChildItem and Select-String; but to read a known file's contents use the read tool, not Get-Content. Prefer write/edit tools for ordinary file writes."
-                .to_string(),
-        );
-    }
-
-    if has_write || has_edit || has_shell {
-        guidelines.push(
-            "Tool call arguments must be a single valid JSON object: the value of `arguments` is one complete object such as {\"path\": ..., \"content\": ...}, never a bare fragment like {1,3}, {a:1}, {brace}, or an unquoted trailing chunk. When in doubt, write the arguments as one small, well-formed JSON object and keep `content`/`command` short."
-                .to_string(),
-        );
-        guidelines.push(
-            "If a tool returns a \"malformed (non-JSON) arguments\" error, re-emit that tool call with simpler arguments: split an over-long `content` or `command` into smaller pieces and avoid deeply nested escapes; never resend the identical call unchanged."
                 .to_string(),
         );
     }
@@ -940,32 +927,6 @@ mod tests {
     fn build_dynamic_tool_guidelines_returns_vec() {
         let guidelines = build_dynamic_tool_guidelines(&["shell", "read", "write", "edit"]);
         assert!(!guidelines.is_empty());
-    }
-
-    #[test]
-    fn dynamic_guidelines_include_malformed_args_recovery_when_write_tool_present() {
-        let guidelines = build_dynamic_tool_guidelines(&["read", "write", "edit", "shell"]);
-        assert!(guidelines
-            .iter()
-            .any(|g| g.contains("malformed (non-JSON) arguments")));
-        // With no write/edit/shell tools, the recovery hint is absent.
-        let guidelines = build_dynamic_tool_guidelines(&["read"]);
-        assert!(!guidelines
-            .iter()
-            .any(|g| g.contains("malformed (non-JSON) arguments")));
-    }
-
-    #[test]
-    fn dynamic_guidelines_include_valid_json_contract_when_write_tool_present() {
-        let guidelines = build_dynamic_tool_guidelines(&["read", "write", "edit", "shell"]);
-        assert!(guidelines
-            .iter()
-            .any(|g| g.contains("single valid JSON object")));
-        // Absent without write/edit/shell tools.
-        let guidelines = build_dynamic_tool_guidelines(&["read"]);
-        assert!(!guidelines
-            .iter()
-            .any(|g| g.contains("single valid JSON object")));
     }
 
     #[test]
