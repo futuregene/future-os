@@ -354,20 +354,17 @@ pub fn shell_invocation(command: &str) -> (&'static str, Vec<String>) {
 ///     native command's stdin — it defaults to ASCII in 5.1, mangling non-ASCII
 ///     to `?`, so it must be set too.
 ///
-///   All three use a BOM-less `UTF8Encoding($false)`: the default
-///   `[Text.Encoding]::UTF8` carries a BOM that, on a redirected stdout, PS 5.1
-///   prepends to the stream as a stray `EF BB BF` (a leading U+FEFF for us).
-///   (pwsh 7 already defaults to BOM-less UTF-8; setting these is a harmless
-///   no-op there.) Native tools that ignore the code page and hard-code OEM/
-///   ANSI output can't be fixed here — those bytes become replacement chars
-///   via `from_utf8_lossy` rather than corrupting the capture.
-///   The `[Console]::OutputEncoding`/`$OutputEncoding` assignment is guarded by
-///   a FullLanguage check: a WRITE_RESTRICTED token makes PowerShell enter
-///   Constrained Language Mode, where constructing `[System.Text.UTF8Encoding]`
-///   (or calling `$Error.Clear()`) throws
-///   `CannotCreateTypeConstrainedLanguage`. Skipping the assignment there keeps
-///   non-ASCII output at the OEM code page, but a failed assignment would
-///   otherwise poison `$Error` and turn a successful command into an `exit 1`.
+///   Use the existing `[Text.Encoding]::UTF8` static instance rather than
+///   constructing `UTF8Encoding($false)`: a WRITE_RESTRICTED token puts Windows
+///   PowerShell 5.1 in Constrained Language Mode, which rejects construction of
+///   that .NET type. Console redirection writes encoded characters rather than
+///   an encoding preamble, so this does not add a BOM to captured stdout.
+///   (pwsh 7 already defaults to UTF-8; setting these is harmless there.) Native
+///   tools that ignore the code page and hard-code OEM/ANSI output can't be
+///   fixed here — those bytes become replacement chars via `from_utf8_lossy`.
+///   The assignment remains inside `try` for hosts whose application-control
+///   policy also blocks the static property. Record `$Error.Count` afterwards
+///   so a setup failure cannot turn a successful user command into `exit 1`.
 /// - `$ProgressPreference = 'SilentlyContinue'` suppresses progress records
 ///   (e.g. "Preparing modules for first use"). When powershell.exe's stderr is
 ///   a redirected pipe, PS 5.1 serializes such records as CLIXML (`#< CLIXML …`)
@@ -380,12 +377,13 @@ pub fn windows_wrapper_script(command: &str) -> String {
     let command = ResolvedSandbox::normalize_shell_quoting(command);
     format!(
         "chcp 65001 > $null; \
-         if ($ExecutionContext.SessionState.LanguageMode -eq 'FullLanguage') {{ $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) }}; \
+         try {{ $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 }} catch {{}}; \
          $ProgressPreference = 'SilentlyContinue'; \
          $global:LASTEXITCODE = $null; \
+         $futureosInitialErrorCount = $Error.Count; \
          & {{ {} }} 2>&1 | ForEach-Object {{ \"$_\" }}; \
          if ($null -ne $LASTEXITCODE) {{ exit $LASTEXITCODE }} \
-         elseif ($Error.Count -gt 0) {{ exit 1 }} \
+         elseif ($Error.Count -gt $futureosInitialErrorCount) {{ exit 1 }} \
          else {{ exit 0 }}",
         command
     )
@@ -914,10 +912,12 @@ mod tests {
         // failures that never set $LASTEXITCODE.
         assert!(script.contains("exit $LASTEXITCODE"));
         assert!(script.contains("$Error.Count"));
-        // BOM-less UTF-8 on both stdout and pipe-to-native-stdin (PS 5.1
-        // defaults leak a BOM / ASCII respectively).
-        assert!(script.contains("[System.Text.UTF8Encoding]::new($false)"));
+        // Reuse the static UTF-8 encoding rather than constructing a .NET type,
+        // which is forbidden by Windows PowerShell Constrained Language Mode.
+        assert!(script.contains("[System.Text.Encoding]::UTF8"));
         assert!(script.contains("$OutputEncoding = [Console]::OutputEncoding"));
+        assert!(script.contains("$futureosInitialErrorCount = $Error.Count"));
+        assert!(script.contains("$Error.Count -gt $futureosInitialErrorCount"));
         // Progress suppressed so PS 5.1 doesn't serialize "Preparing modules…"
         // as CLIXML onto the redirected stderr we capture.
         assert!(script.contains("$ProgressPreference = 'SilentlyContinue'"));
