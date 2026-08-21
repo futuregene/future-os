@@ -31,8 +31,10 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::StationsAndDesktops::{
-    CloseDesktop, CreateDesktopW, DESKTOP_CREATEMENU, DESKTOP_CREATEWINDOW, DESKTOP_ENUMERATE,
-    DESKTOP_READOBJECTS, DESKTOP_WRITEOBJECTS, DESKTOP_WRITE_DAC, HDESK,
+    CloseDesktop, CreateDesktopW, DESKTOP_CREATEMENU, DESKTOP_CREATEWINDOW, DESKTOP_DELETE,
+    DESKTOP_ENUMERATE, DESKTOP_HOOKCONTROL, DESKTOP_JOURNALPLAYBACK, DESKTOP_JOURNALRECORD,
+    DESKTOP_READOBJECTS, DESKTOP_READ_CONTROL, DESKTOP_SWITCHDESKTOP, DESKTOP_WRITEOBJECTS,
+    DESKTOP_WRITE_DAC, DESKTOP_WRITE_OWNER, HDESK,
 };
 use windows_sys::Win32::System::Threading::{
     CreateProcessAsUserW, DeleteProcThreadAttributeList, GetCurrentProcessId, GetExitCodeProcess,
@@ -206,18 +208,30 @@ impl PrivateDesktop {
             GetCurrentProcessId()
         });
         let name_wide = wide_nul(OsStr::new(&name));
+        // Match the rights Codex gives its private desktop. This is not a
+        // filesystem capability: the desktop is freshly created for this child
+        // and its handle closes with the child. A narrower guessed subset made
+        // PowerShell fail during DLL initialization on clean Windows 11.
         let access = DESKTOP_READOBJECTS
             | DESKTOP_CREATEWINDOW
             | DESKTOP_CREATEMENU
+            | DESKTOP_HOOKCONTROL
+            | DESKTOP_JOURNALRECORD
+            | DESKTOP_JOURNALPLAYBACK
             | DESKTOP_ENUMERATE
-            | DESKTOP_WRITEOBJECTS;
+            | DESKTOP_WRITEOBJECTS
+            | DESKTOP_SWITCHDESKTOP
+            | DESKTOP_DELETE
+            | DESKTOP_READ_CONTROL
+            | DESKTOP_WRITE_DAC
+            | DESKTOP_WRITE_OWNER;
         let handle = unsafe {
             CreateDesktopW(
                 name_wide.as_ptr(),
                 ptr::null(),
                 ptr::null_mut(),
                 0,
-                access | DESKTOP_WRITE_DAC,
+                access,
                 ptr::null(),
             )
         };
