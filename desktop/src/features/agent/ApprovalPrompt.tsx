@@ -1,89 +1,141 @@
 import type { ApprovalAction } from "@future-os/thread-projection";
-import type {
-  StoredApprovalRequest,
-} from "../../integrations/storage/types";
-import { formatRequestedAction, parseAction, parseSaveSuggestion } from "@future-os/thread-projection";
+import type { StoredApprovalRequest } from "../../integrations/storage/types";
+import {
+  formatRequestedAction,
+  parseAction,
+  parseSaveSuggestion,
+} from "@future-os/thread-projection";
 import { AlertTriangle, Check, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { TextInput } from "../../components/ui/TextInput";
-import { saveApprovalRule } from "../../integrations/storage/runs";
+import {
+  saveApprovalRule,
+  saveApprovalRules,
+} from "../../integrations/storage/runs";
 
 // Localized title/summary per approval kind (the agent sends English). An
 // unmapped kind falls back to the agent-provided strings.
 const KIND_I18N: Record<string, { title: string; summary?: string }> = {
   file_read: { summary: "approval.readSummary", title: "approval.readTitle" },
-  file_write: { summary: "approval.writeSummary", title: "approval.writeTitle" },
+  file_write: {
+    summary: "approval.writeSummary",
+    title: "approval.writeTitle",
+  },
   outside_workspace_write: {
     summary: "approval.outsideWriteSummary",
     title: "approval.outsideWriteTitle",
   },
   sandbox_escalation: { title: "approval.escalationTitle" }, // note carries the rest
-  shell_command: { summary: "approval.shellSummary", title: "approval.shellTitle" },
+  shell_command: {
+    summary: "approval.shellSummary",
+    title: "approval.shellTitle",
+  },
 };
 
 interface ApprovalPromptProps {
   approval: StoredApprovalRequest;
-  onDecision: (approval: StoredApprovalRequest, status: "approved" | "rejected") => Promise<void>;
+  onDecision: (
+    approval: StoredApprovalRequest,
+    status: "approved" | "rejected",
+  ) => Promise<void>;
   /// Conversation type — a plain Chat's workspace is a throwaway temp dir, so
   /// "allow in this workspace" reads as "allow in this chat" to the user.
   threadMode?: "chat" | "workspace";
 }
 
-export function ApprovalPrompt({ approval, onDecision, threadMode }: ApprovalPromptProps) {
+export function ApprovalPrompt({
+  approval,
+  onDecision,
+  threadMode,
+}: ApprovalPromptProps) {
   const { t } = useTranslation("agent");
   const [error, setError] = useState<string | null>(null);
-  const [deciding, setDeciding] = useState<"approved" | "rejected" | null>(null);
+  const [deciding, setDeciding] = useState<"approved" | "rejected" | null>(
+    null,
+  );
 
-  const action = useMemo(() => parseAction(approval.actionPayload), [approval.actionPayload]);
+  const action = useMemo(
+    () => parseAction(approval.actionPayload),
+    [approval.actionPayload],
+  );
   // Title/summary come from the agent in English; localize by kind, falling
   // back to the agent strings for any unmapped kind.
   const kindI18n = KIND_I18N[approval.kind];
-  const titleText = kindI18n ? t(kindI18n.title) : approval.title;
-  const summaryText = kindI18n
-    ? (kindI18n.summary ? t(kindI18n.summary) : null)
-    : approval.summary;
+  const capabilityTargets
+    = action?.category === "windows_write_capability"
+      ? action.targets
+      : undefined;
+  const capabilityTarget
+    = capabilityTargets?.length === 1 ? capabilityTargets[0] : undefined;
+  const titleText = capabilityTargets
+    ? capabilityTarget
+      ? t(
+          capabilityTarget.scope === "file"
+            ? "approval.capabilityFileTitle"
+            : "approval.capabilitySubtreeTitle",
+          { path: capabilityTarget.path },
+        )
+      : t("approval.capabilityMultiTitle", { count: capabilityTargets.length })
+    : kindI18n
+      ? t(kindI18n.title)
+      : approval.title;
+  const summaryText = capabilityTargets
+    ? null
+    : kindI18n
+      ? kindI18n.summary
+        ? t(kindI18n.summary)
+        : null
+      : approval.summary;
   const saveSuggestion = useMemo(
     () => parseSaveSuggestion(approval.saveSuggestion),
     [approval.saveSuggestion],
   );
   const fallbackAction = useMemo(
-    () => (action ? null : formatRequestedAction(approval.requestedAction)),
-    [action, approval.requestedAction],
+    () =>
+      action || approval.kind === "windows_write_capability"
+        ? null
+        : formatRequestedAction(approval.requestedAction),
+    [action, approval.kind, approval.requestedAction],
   );
+  const malformedCapability
+    = approval.kind === "windows_write_capability" && !action;
 
   // Inline "allow in this workspace" editor: the editable path glob to persist.
   const [editorOpen, setEditorOpen] = useState(false);
   const [pattern, setPattern] = useState("");
 
   const openRuleEditor = useCallback(() => {
-    if (!saveSuggestion)
+    if (!saveSuggestion?.path || !saveSuggestion.access)
       return;
     setPattern(saveSuggestion.path);
     setEditorOpen(true);
   }, [saveSuggestion]);
 
-  const decide = useCallback(async (status: "approved" | "rejected") => {
-    if (deciding)
-      return;
+  const decide = useCallback(
+    async (status: "approved" | "rejected") => {
+      if (deciding)
+        return;
 
-    setError(null);
-    setDeciding(status);
-    try {
-      await onDecision(approval, status);
-    }
-    catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    }
-    finally {
-      setDeciding(null);
-    }
-  }, [approval, deciding, onDecision]);
+      setError(null);
+      setDeciding(status);
+      try {
+        await onDecision(approval, status);
+      }
+      catch (reason) {
+        setError(reason instanceof Error ? reason.message : String(reason));
+      }
+      finally {
+        setDeciding(null);
+      }
+    },
+    [approval, deciding, onDecision],
+  );
 
   // Save the (possibly edited) rule to the workspace file, then approve once.
   const confirmRule = useCallback(async () => {
-    if (deciding || !editorOpen || !saveSuggestion)
+    if (deciding || !editorOpen || !saveSuggestion?.access)
       return;
     const trimmed = pattern.trim();
     if (!trimmed) {
@@ -105,6 +157,24 @@ export function ApprovalPrompt({ approval, onDecision, threadMode }: ApprovalPro
       setDeciding(null);
     }
   }, [approval, deciding, editorOpen, onDecision, pattern, saveSuggestion, t]);
+
+  const confirmCapabilityRules = useCallback(async () => {
+    if (deciding || !saveSuggestion?.rules)
+      return;
+    setError(null);
+    setDeciding("approved");
+    try {
+      await saveApprovalRules({
+        threadId: approval.threadId,
+        rules: saveSuggestion.rules,
+      });
+      await onDecision(approval, "approved");
+    }
+    catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setDeciding(null);
+    }
+  }, [approval, deciding, onDecision, saveSuggestion]);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -139,10 +209,16 @@ export function ApprovalPrompt({ approval, onDecision, threadMode }: ApprovalPro
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
           <span className="size-2 shrink-0 rounded-full bg-warning" />
-          <h2 className="truncate text-base font-semibold text-ink">{titleText}</h2>
+          <h2 className="truncate text-base font-semibold text-ink">
+            {titleText}
+          </h2>
         </div>
       </div>
-      {summaryText ? <p className="mt-2 text-sm leading-5 text-ink-soft">{summaryText}</p> : null}
+      {summaryText
+        ? (
+            <p className="mt-2 text-sm leading-5 text-ink-soft">{summaryText}</p>
+          )
+        : null}
       {action ? <ActionDetails action={action} /> : null}
       {fallbackAction
         ? (
@@ -159,7 +235,15 @@ export function ApprovalPrompt({ approval, onDecision, threadMode }: ApprovalPro
             </div>
           )
         : null}
-      {editorOpen && saveSuggestion
+      {malformedCapability
+        ? (
+            <div className="mt-3 flex items-center gap-2 text-xs leading-5 text-danger">
+              <AlertTriangle className="size-3.5 shrink-0" />
+              <span>{t("approval.invalidRequest")}</span>
+            </div>
+          )
+        : null}
+      {editorOpen && saveSuggestion?.path
         ? (
             <div className="mt-3 rounded-md border border-line-soft bg-surface-subtle p-3">
               <div className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-ink-soft">
@@ -178,11 +262,15 @@ export function ApprovalPrompt({ approval, onDecision, threadMode }: ApprovalPro
                 value={pattern}
               />
               <div className="mt-2 flex items-center justify-end gap-2">
-                <Button disabled={deciding !== null} onClick={() => setEditorOpen(false)} variant="toolbar">
+                <Button
+                  disabled={deciding !== null}
+                  onClick={() => setEditorOpen(false)}
+                  variant="toolbar"
+                >
                   {t("approval.ruleCancel")}
                 </Button>
                 <Button
-                  disabled={deciding !== null}
+                  disabled={deciding !== null || malformedCapability}
                   leftIcon={<Check className="size-3.5" />}
                   onClick={() => void confirmRule()}
                   variant="primary"
@@ -207,22 +295,28 @@ export function ApprovalPrompt({ approval, onDecision, threadMode }: ApprovalPro
           {saveSuggestion
             ? (
                 <Button
-                  disabled={deciding !== null}
-                  onClick={() => openRuleEditor()}
+                  disabled={deciding !== null || malformedCapability}
+                  onClick={() => saveSuggestion.rules
+                    ? void confirmCapabilityRules()
+                    : openRuleEditor()}
                   variant="toolbar"
                 >
-                  {threadMode === "chat" ? t("approval.allowChat") : t("approval.allowWorkspace")}
+                  {threadMode === "chat"
+                    ? t("approval.allowChat")
+                    : t("approval.allowWorkspace")}
                 </Button>
               )
             : null}
           <Button
             className="shadow-xs"
-            disabled={deciding !== null}
+            disabled={deciding !== null || malformedCapability}
             leftIcon={<Check className="size-3.5" />}
             onClick={() => void decide("approved")}
             variant="primary"
           >
-            {deciding === "approved" ? t("approval.allowing") : t("approval.allowOnce")}
+            {deciding === "approved"
+              ? t("approval.allowing")
+              : t("approval.allowOnce")}
           </Button>
         </div>
       </div>
@@ -236,6 +330,48 @@ interface ActionDetailsProps {
 
 function ActionDetails({ action }: ActionDetailsProps) {
   const { t } = useTranslation("agent");
+  if (action.category === "windows_write_capability" && action.targets) {
+    return (
+      <div className="mt-3 space-y-2">
+        {action.targets.length > 1
+          ? (
+              <div>
+                <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-ink-soft">
+                  {t("approval.locations")}
+                </div>
+                <ul className="space-y-1 rounded-md bg-surface-subtle p-3 text-xs text-ink">
+                  {action.targets.map((target, index) => (
+                    <li
+                      className="flex items-start justify-between gap-3"
+                      key={`${target.path}-${String(index)}`}
+                    >
+                      <span className="break-all font-mono">{target.path}</span>
+                      <span className="shrink-0 text-ink-soft">
+                        {target.scope === "file"
+                          ? t("approval.thisFile")
+                          : t("approval.folderContents")}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )
+          : null}
+        {action.command
+          ? (
+              <details className="rounded-md bg-surface-subtle px-3 py-2 text-xs">
+                <summary className="cursor-pointer select-none text-ink-soft">
+                  {t("approval.viewCommand")}
+                </summary>
+                <pre className="mt-2 max-h-[33vh] overflow-auto whitespace-pre-wrap wrap-break-word font-mono leading-5 text-ink">
+                  <code className="block min-w-0">{action.command}</code>
+                </pre>
+              </details>
+            )
+          : null}
+      </div>
+    );
+  }
   if (action.command) {
     const isEscalation = action.category === "sandbox_escalation";
     return (
@@ -260,7 +396,9 @@ function ActionDetails({ action }: ActionDetailsProps) {
               </div>
             )
           : null}
-        {isEscalation && action.blockedPaths && action.blockedPaths.length > 0
+        {isEscalation
+          && action.blockedPaths
+          && action.blockedPaths.length > 0
           ? (
               <div>
                 <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-ink-soft">
@@ -268,7 +406,9 @@ function ActionDetails({ action }: ActionDetailsProps) {
                 </div>
                 <ul className="rounded-md bg-surface-subtle p-3 font-mono text-xs leading-5 text-ink">
                   {action.blockedPaths.map(path => (
-                    <li key={path} className="break-all">{path}</li>
+                    <li key={path} className="break-all">
+                      {path}
+                    </li>
                   ))}
                 </ul>
               </div>
@@ -289,7 +429,9 @@ function ActionDetails({ action }: ActionDetailsProps) {
     return (
       <div className="mt-3 space-y-2">
         <div className="text-[11px] font-medium uppercase tracking-wide text-ink-soft">
-          {action.writes.length === 1 ? t("approval.writeFile") : t("approval.writeFiles", { count: action.writes.length })}
+          {action.writes.length === 1
+            ? t("approval.writeFile")
+            : t("approval.writeFiles", { count: action.writes.length })}
         </div>
         {action.writes.map((entry, index) => (
           <div
@@ -314,7 +456,9 @@ function ActionDetails({ action }: ActionDetailsProps) {
     return (
       <div className="mt-3">
         <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-ink-soft">
-          {action.deletes.length === 1 ? t("approval.deleteFile") : t("approval.deleteFiles", { count: action.deletes.length })}
+          {action.deletes.length === 1
+            ? t("approval.deleteFile")
+            : t("approval.deleteFiles", { count: action.deletes.length })}
         </div>
         <ul className="space-y-1 rounded-md bg-surface-subtle p-3 font-mono text-xs text-ink">
           {action.deletes.map((entry, index) => (
@@ -356,8 +500,10 @@ function isEditableTarget(target: EventTarget | null) {
     return false;
 
   const tagName = target.tagName.toLowerCase();
-  return target.isContentEditable
+  return (
+    target.isContentEditable
     || tagName === "input"
     || tagName === "textarea"
-    || tagName === "select";
+    || tagName === "select"
+  );
 }

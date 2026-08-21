@@ -16,7 +16,10 @@ pub mod rules;
 mod seatbelt;
 #[cfg(windows)]
 pub mod windows;
+#[path = "windows/capability.rs"]
+mod windows_capability;
 mod windows_plan;
+pub(crate) mod windows_request;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

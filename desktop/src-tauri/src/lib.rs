@@ -821,6 +821,7 @@ pub fn run() {
             list_pending_approval_requests,
             decide_approval_request,
             save_approval_rule,
+            save_approval_rules,
             get_git_review,
             get_workspace_review_capabilities,
             get_last_run_review,

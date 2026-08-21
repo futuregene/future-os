@@ -20,6 +20,8 @@ pub type SandboxedNotifier = Arc<dyn Fn(&str) + Send + Sync>;
 pub struct ToolExecutionScope {
     workspace: PathBuf,
     approved_outside_paths: Arc<Mutex<Vec<PathBuf>>>,
+    approved_windows_capabilities:
+        Arc<Mutex<Vec<crate::sandbox::windows_request::ApprovedWriteCapability>>>,
     /// "all" | "workspace" | "none" — controls workspace boundary enforcement
     permission_level: String,
     /// Interrupt flag for cooperative cancellation of long-running tool operations
@@ -58,6 +60,7 @@ where
     let scope = ToolExecutionScope {
         workspace: crate::sandbox::paths::normalize_lexically(&PathBuf::from(options.workspace)),
         approved_outside_paths: Arc::new(Mutex::new(vec![])),
+        approved_windows_capabilities: Arc::new(Mutex::new(vec![])),
         permission_level: options.permission_level,
         interrupt_flag: options.interrupt_flag,
         sandbox: options.sandbox,
@@ -120,6 +123,38 @@ pub fn approve_outside_path(path: &str) {
     });
 }
 
+pub(crate) fn approve_windows_capability(
+    receipt: crate::sandbox::windows_request::ApprovedWriteCapability,
+) {
+    let _ = TOOL_SCOPE.try_with(|scope| {
+        scope.approved_windows_capabilities.lock().push(receipt);
+    });
+}
+
+fn consume_windows_capability(
+    prepared: &crate::sandbox::windows_request::PreparedWritePermissions,
+) -> Option<crate::sandbox::windows_request::ApprovedWriteCapability> {
+    let expected_targets = &prepared.approval.as_ref()?.targets;
+    TOOL_SCOPE
+        .try_with(|scope| {
+            let mut receipts = scope.approved_windows_capabilities.lock();
+            let index = receipts.iter().position(|receipt| {
+                windows_capability_receipt_matches(prepared, expected_targets, receipt)
+            })?;
+            Some(receipts.remove(index))
+        })
+        .ok()
+        .flatten()
+}
+
+fn windows_capability_receipt_matches(
+    prepared: &crate::sandbox::windows_request::PreparedWritePermissions,
+    expected_targets: &[crate::sandbox::windows_request::ApprovalTarget],
+    receipt: &crate::sandbox::windows_request::ApprovedWriteCapability,
+) -> bool {
+    receipt.command_hash == prepared.command_hash && receipt.targets == expected_targets
+}
+
 // ─── Tool definitions ────────────────────────────────────────────────────────
 
 use crate::types::AgentTool;
@@ -169,6 +204,38 @@ fn shell_schema() -> serde_json::Value {
             "justification": {
                 "type": "string",
                 "description": "One-sentence reason why escalated permissions are needed. Required when escalated is true."
+            },
+            "additional_permissions": {
+                "type": "object",
+                "description": "Windows write-protection only. Declare each additional path the command must write before execution. This never grants access by itself.",
+                "properties": {
+                    "write": {
+                        "type": "array",
+                        "maxItems": 8,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": "A literal path. Wildcards are not accepted."
+                                },
+                                "scope": {
+                                    "type": "string",
+                                    "enum": ["file", "subtree"],
+                                    "description": "file is one existing regular file; subtree is one existing directory and its descendants."
+                                },
+                                "reason": {
+                                    "type": "string",
+                                    "description": "A short diagnostic reason. The application generates the user-facing approval text itself."
+                                }
+                            },
+                            "required": ["path", "scope", "reason"],
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "required": ["write"],
+                "additionalProperties": false
             }
         },
         "required": ["command"]
@@ -184,13 +251,38 @@ fn shell_handler(args: serde_json::Value) -> Pin<Box<dyn Future<Output = Result<
             timeout: Option<u64>,
             escalated: Option<bool>,
             justification: Option<String>,
+            #[serde(
+                default,
+                rename = "additional_permissions",
+                alias = "additionalPermissions"
+            )]
+            additional_permissions: Option<crate::sandbox::windows_request::AdditionalPermissions>,
         }
         let params: ShellParams = serde_json::from_value(args)?;
-        run_shell(
+        let approved_capability = if let Some(permissions) = params.additional_permissions.as_ref()
+        {
+            let sandbox = TOOL_SCOPE
+                .try_with(|scope| scope.sandbox.clone())
+                .unwrap_or_default();
+            let prepared =
+                crate::sandbox::windows_request::prepare(&sandbox, &params.command, permissions)?;
+            if prepared.needs_approval() {
+                let receipt = consume_windows_capability(&prepared).ok_or_else(|| {
+                    anyhow!("additional write permission is missing an exact approval receipt")
+                })?;
+                Some(receipt)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        run_shell_with_capability(
             &params.command,
             params.timeout.unwrap_or(120),
             params.escalated.unwrap_or(false),
             params.justification.as_deref().unwrap_or(""),
+            approved_capability.as_ref(),
         )
         .await
     })
@@ -613,7 +705,9 @@ async fn pre_execution_escalation(
         failure_summary: String::new(),
     };
     Some(match requester(&request) {
-        EscalationDecision::Approved => spawn_shell(command, timeout_secs, sandbox, true).await,
+        EscalationDecision::Approved => {
+            spawn_shell(command, timeout_secs, sandbox, true, None).await
+        }
         EscalationDecision::Denied(note) => Err(anyhow!(
             "Escalated execution was not approved{}. Run the command inside the sandbox instead, or explain to the user why it needs these permissions.",
             if note.is_empty() { String::new() } else { format!(": {note}") }
@@ -643,7 +737,9 @@ async fn post_hoc_escalation(
         failure_summary: tail,
     };
     Some(match requester(&request) {
-        EscalationDecision::Approved => spawn_shell(command, timeout_secs, sandbox, true).await,
+        EscalationDecision::Approved => {
+            spawn_shell(command, timeout_secs, sandbox, true, None).await
+        }
         EscalationDecision::Denied(note) => Ok(format!(
             "{result}\n[sandbox] The command appears to have been blocked by the sandbox; running it without the sandbox was not approved{}.",
             if note.is_empty() { String::new() } else { format!(": {note}") }
@@ -651,11 +747,22 @@ async fn post_hoc_escalation(
     })
 }
 
+#[cfg(test)]
 async fn run_shell(
     command: &str,
     timeout_secs: u64,
     escalated: bool,
     justification: &str,
+) -> Result<String> {
+    run_shell_with_capability(command, timeout_secs, escalated, justification, None).await
+}
+
+async fn run_shell_with_capability(
+    command: &str,
+    timeout_secs: u64,
+    escalated: bool,
+    justification: &str,
+    approved_capability: Option<&crate::sandbox::windows_request::ApprovedWriteCapability>,
 ) -> Result<String> {
     // Defense-in-depth: reject obviously destructive commands before they
     // reach the OS.  The sandbox provides the primary enforcement boundary;
@@ -699,7 +806,7 @@ async fn run_shell(
             notify(command);
         }
     }
-    let result = spawn_shell(command, timeout_secs, &sandbox, false).await?;
+    let result = spawn_shell(command, timeout_secs, &sandbox, false, approved_capability).await?;
 
     // Post-hoc escalation: only when the failure narrowly looks like a sandbox
     // denial (conservative heuristic — ordinary failures go back to the model).
@@ -825,13 +932,125 @@ fn parse_result_failure(result: &str) -> (i32, String) {
 
 /// Spawn a shell command (sandbox-wrapped unless `escalated`) and wait for it
 /// with timeout + interrupt handling. Returns the formatted combined output.
+#[cfg(windows)]
+async fn spawn_windows_restricted_shell(
+    command: &str,
+    timeout_secs: u64,
+    sandbox: &ResolvedSandbox,
+    cwd: &Path,
+    approved_capability: Option<&crate::sandbox::windows_request::ApprovedWriteCapability>,
+) -> Result<String> {
+    use tokio::io::AsyncReadExt;
+
+    let mut env_overrides = vec![(
+        std::ffi::OsString::from("PWD"),
+        cwd.as_os_str().to_os_string(),
+    )];
+    if let Some(path) = path_with_own_dir(std::env::current_exe()) {
+        env_overrides.push((std::ffi::OsString::from("PATH"), path.into()));
+    }
+    let mut child = crate::sandbox::windows::runner::spawn(
+        sandbox,
+        command,
+        cwd,
+        &env_overrides,
+        approved_capability,
+    )
+    .map_err(|error| anyhow!("Failed to initialize Windows write protection: {error}"))?;
+    let mut stdout = tokio::fs::File::from_std(
+        child
+            .take_stdout()
+            .ok_or_else(|| anyhow!("Failed to capture restricted stdout"))?,
+    );
+    let mut stderr = tokio::fs::File::from_std(
+        child
+            .take_stderr()
+            .ok_or_else(|| anyhow!("Failed to capture restricted stderr"))?,
+    );
+    let stdout_task = tokio::spawn(async move {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).await.map(|_| bytes)
+    });
+    let stderr_task = tokio::spawn(async move {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).await.map(|_| bytes)
+    });
+    let interrupt_flag = TOOL_SCOPE
+        .try_with(|scope| scope.interrupt_flag.clone())
+        .unwrap_or_else(|_| Arc::new(AtomicBool::new(false)));
+    let timeout = std::time::Duration::from_secs(timeout_secs.max(1));
+
+    enum Completion {
+        Exit(std::io::Result<u32>),
+        Timeout,
+        Interrupted,
+    }
+    let completion = tokio::select! {
+        result = tokio::time::timeout(timeout, child.wait()) => match result {
+            Ok(exit) => Completion::Exit(exit),
+            Err(_) => Completion::Timeout,
+        },
+        _ = wait_for_interrupt(interrupt_flag) => Completion::Interrupted,
+    };
+    if matches!(&completion, Completion::Timeout | Completion::Interrupted) {
+        child.terminate();
+        let _ = child.wait().await;
+    }
+    let stdout = stdout_task
+        .await
+        .map_err(|error| anyhow!("restricted stdout task failed: {error}"))??;
+    let stderr = stderr_task
+        .await
+        .map_err(|error| anyhow!("restricted stderr task failed: {error}"))??;
+    let mut combined = stdout;
+    if !stderr.is_empty() {
+        if !combined.is_empty() && !combined.ends_with(b"\n") {
+            combined.push(b'\n');
+        }
+        combined.extend_from_slice(&stderr);
+    }
+    let combined = String::from_utf8_lossy(&combined);
+
+    match completion {
+        Completion::Exit(exit) => {
+            let exit = exit.map_err(|error| anyhow!("Restricted shell wait failed: {error}"))?;
+            Ok(format_shell_output(&combined, combined.len(), exit as i32))
+        }
+        Completion::Timeout if combined.is_empty() => Err(anyhow!(
+            "Shell command timed out after {} seconds (no output captured)",
+            timeout_secs.max(1)
+        )),
+        Completion::Timeout => Err(anyhow!(
+            "Shell command timed out after {} seconds.\nPartial output ({} total):\n{}",
+            timeout_secs.max(1),
+            human_size(combined.len()),
+            format_shell_output(&combined, combined.len(), -1),
+        )),
+        Completion::Interrupted => Err(anyhow!("Shell command interrupted by abort")),
+    }
+}
+
 async fn spawn_shell(
     command: &str,
     timeout_secs: u64,
     sandbox: &ResolvedSandbox,
     escalated: bool,
+    approved_capability: Option<&crate::sandbox::windows_request::ApprovedWriteCapability>,
 ) -> Result<String> {
     let cwd = active_workspace()?;
+    #[cfg(windows)]
+    if !escalated && sandbox.wraps_shell() {
+        return spawn_windows_restricted_shell(
+            command,
+            timeout_secs,
+            sandbox,
+            &cwd,
+            approved_capability,
+        )
+        .await;
+    }
+    #[cfg(not(windows))]
+    let _ = approved_capability;
     // Unix: wrap in a subshell to merge stderr into stdout, preserving the
     // original interleaving order that separate pipes lose. Internal
     // redirections in the user's command are respected inside the subshell;
@@ -1308,6 +1527,73 @@ fn is_approved_outside_path(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn capability_binding_fixture() -> (
+        crate::sandbox::windows_request::PreparedWritePermissions,
+        Vec<crate::sandbox::windows_request::ApprovalTarget>,
+        crate::sandbox::windows_request::ApprovedWriteCapability,
+    ) {
+        use crate::sandbox::windows_request::{
+            ApprovalTarget, ApprovedWriteCapability, CapabilityApprovalSemantics,
+            PreparedWritePermissions, WriteScope,
+        };
+        let targets = vec![ApprovalTarget {
+            path: r"D:\release".to_owned(),
+            scope: WriteScope::Subtree,
+        }];
+        let prepared = PreparedWritePermissions {
+            command_hash: "expected-command".to_owned(),
+            targets: vec![],
+            approval: Some(CapabilityApprovalSemantics {
+                behavior: "manage_files",
+                targets: targets.clone(),
+            }),
+        };
+        let receipt = ApprovedWriteCapability {
+            request_id: "request-1".to_owned(),
+            command_hash: prepared.command_hash.clone(),
+            targets: targets.clone(),
+        };
+        (prepared, targets, receipt)
+    }
+
+    #[test]
+    fn windows_capability_receipt_binds_exact_command_and_scope() {
+        let (prepared, targets, receipt) = capability_binding_fixture();
+        assert!(windows_capability_receipt_matches(
+            &prepared, &targets, &receipt
+        ));
+
+        let mut wrong_command = receipt.clone();
+        wrong_command.command_hash = "tampered-command".to_owned();
+        assert!(!windows_capability_receipt_matches(
+            &prepared,
+            &targets,
+            &wrong_command
+        ));
+
+        let mut wrong_scope = receipt;
+        wrong_scope.targets[0].scope = crate::sandbox::windows_request::WriteScope::File;
+        assert!(!windows_capability_receipt_matches(
+            &prepared,
+            &targets,
+            &wrong_scope
+        ));
+    }
+
+    #[test]
+    fn windows_capability_receipt_binds_complete_ordered_target_set() {
+        let (prepared, targets, mut receipt) = capability_binding_fixture();
+        receipt
+            .targets
+            .push(crate::sandbox::windows_request::ApprovalTarget {
+                path: r"D:\unexpected".to_owned(),
+                scope: crate::sandbox::windows_request::WriteScope::Subtree,
+            });
+        assert!(!windows_capability_receipt_matches(
+            &prepared, &targets, &receipt
+        ));
+    }
 
     #[test]
     #[cfg(windows)]

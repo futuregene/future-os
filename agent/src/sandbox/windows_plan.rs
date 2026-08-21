@@ -7,40 +7,59 @@
 //! `seatbelt::build_profile` (pure) vs `seatbelt::build_command` (syscalls).
 //!
 //! Two NTFS limitations shape what lands in the plan (see §11.3/§11.6):
-//!   - **No glob ACEs.** Rules whose matcher is a glob (e.g. workspace
-//!     `**/*.pem`) cannot be expressed as a path ACE, so they are counted in
-//!     `skipped_globs` and left to the in-process tool layer. Subtree / literal
-//!     rules (home secrets, credentials, rule files, literal `.env`) ARE
-//!     enforced.
-//!   - **NTFS is always deny-wins.** We collect deny paths and writable subtrees
-//!     separately; a deny ACE always beats the broad read / workspace-write
-//!     grant. This is stricter than the engine's first-match in the rare
-//!     higher-allow-over-lower-deny case, which errs safe (an extra escalation).
+//!   - `WRITE_RESTRICTED` provides a compatible write boundary but does not make
+//!     capability-SID deny-read ACEs participate in read access checks. Read
+//!     `ask`/`deny` rules are therefore diagnostics, not claimed enforcement.
+//!   - NTFS ACLs cannot express path globs. Write rules backed by a glob are
+//!     surfaced as structured unsupported entries and remain enforced only by
+//!     the in-process tool layer.
 
 #![allow(dead_code)] // Consumed by the `#[cfg(windows)]` executor (W1b).
 
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
-use super::rules::{Decision, MatcherSbpl};
+use super::rules::{Access, Decision, MatcherSbpl};
 use super::ResolvedSandbox;
 
-/// The enforcement plan for one sandboxed shell run: which subtrees the sandbox
-/// principal may write, which paths are denied, and how many glob rules could
-/// not be expressed as ACEs.
+/// A path matcher retained for diagnostics when the unelevated backend cannot
+/// enforce the corresponding rule.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum WindowsRuleMatcher {
+    Subtree(PathBuf),
+    Regex(String),
+}
+
+/// A rule that remains visible to diagnostics but is not enforced by the
+/// unelevated shell backend.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnenforcedWindowsRule {
+    pub matcher: WindowsRuleMatcher,
+    pub access: Access,
+    pub decision: Decision,
+}
+
+/// A literal/subtree write denial that can be projected to an NTFS ACE. `Ask`
+/// is retained separately from `Deny` because W4 may reopen only approved ask
+/// carveouts; deny rules are never approval-overridable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowsWriteCarveout {
+    pub path: PathBuf,
+    pub decision: Decision,
+}
+
+/// Pure enforcement plan for one sandboxed shell run.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct WindowsSandboxPlan {
-    /// Subtrees the sandbox SID gets an explicit write ACE on (workspace + temp
-    /// + allow-write subtree rules). Everything else stays unwritable.
-    pub writable: Vec<PathBuf>,
-    /// Paths denied read (home secrets, credentials, literal in-workspace
-    /// secrets) — an explicit deny-read ACE, which wins over the broad read.
-    pub deny_read: Vec<PathBuf>,
-    /// Paths denied write (rule files, credentials, in-workspace secrets) — an
-    /// explicit deny-write ACE, which wins over the workspace write grant.
-    pub deny_write: Vec<PathBuf>,
-    /// Count of glob rules NTFS ACLs cannot express, hence unenforced for shell runs
-    /// (still covered by the in-process tool layer). Surfaced for diagnostics.
-    pub skipped_globs: usize,
+    /// Subtrees that receive a write-capability ACE. Ancestor roots subsume
+    /// nested roots so the executor receives a deterministic minimal set.
+    pub writable_roots: Vec<PathBuf>,
+    /// Literal/subtree ask and deny rules compiled as deny-write carveouts.
+    pub write_carveouts: Vec<WindowsWriteCarveout>,
+    /// Read ask/deny rules the unelevated shell backend cannot enforce.
+    pub unenforced_read_rules: Vec<UnenforcedWindowsRule>,
+    /// Write rules backed by globs, which NTFS ACLs cannot represent.
+    pub unsupported_write_globs: Vec<UnenforcedWindowsRule>,
 }
 
 /// Derive the plan from a resolved sandbox's rule set. Reads stay broadly open
@@ -52,53 +71,88 @@ pub fn build_plan(sandbox: &ResolvedSandbox) -> WindowsSandboxPlan {
 
     // Base writable roots: workspace + temp (mirrors the engine's write
     // fallback and the Seatbelt base).
-    plan.writable.push(rules.workspace.clone());
+    plan.writable_roots.push(rules.workspace.clone());
     for tmp in super::rules::temp_roots() {
-        plan.writable.push(tmp);
+        plan.writable_roots.push(tmp);
     }
 
+    // Layers arrive highest-priority first. Suppress only an identical matcher
+    // already handled by a higher layer; partially-overlapping parent/child
+    // rules must remain visible because their effective path sets differ.
+    let mut seen_read = HashSet::new();
+    let mut seen_write = HashSet::new();
     for layer in rules.profile_layers() {
         for rule in &layer {
-            let base = match rule.matcher_sbpl() {
-                MatcherSbpl::Subtree(base) => base.to_path_buf(),
-                // Globs (e.g. workspace `**/*.pem`) have no ACE form.
-                MatcherSbpl::Regex(_) => {
-                    plan.skipped_globs += 1;
-                    continue;
-                }
-            };
+            let matcher = matcher(rule.matcher_sbpl());
             let access = rule.access();
-            match rule.decision() {
-                Decision::Allow => {
-                    // Only write grants need an ACE; reads are broadly open.
-                    if access.covers_write() {
-                        plan.writable.push(base);
+            let decision = rule.decision();
+
+            if access.covers_read()
+                && seen_read.insert(matcher.clone())
+                && matches!(decision, Decision::Ask | Decision::Deny)
+            {
+                plan.unenforced_read_rules.push(UnenforcedWindowsRule {
+                    matcher: matcher.clone(),
+                    access: Access::Read,
+                    decision,
+                });
+            }
+
+            if access.covers_write() && seen_write.insert(matcher.clone()) {
+                match (&matcher, decision) {
+                    (WindowsRuleMatcher::Subtree(path), Decision::Allow) => {
+                        plan.writable_roots.push(path.clone());
                     }
-                }
-                Decision::Ask | Decision::Deny => {
-                    // `ask` and `deny` both become an OS-level denial for shell runs
-                    // (it can't prompt mid-syscall) — same as Seatbelt.
-                    if access.covers_read() {
-                        plan.deny_read.push(base.clone());
+                    (WindowsRuleMatcher::Subtree(path), Decision::Ask | Decision::Deny) => {
+                        plan.write_carveouts.push(WindowsWriteCarveout {
+                            path: path.clone(),
+                            decision,
+                        });
                     }
-                    if access.covers_write() {
-                        plan.deny_write.push(base);
+                    (WindowsRuleMatcher::Regex(_), _) => {
+                        plan.unsupported_write_globs.push(UnenforcedWindowsRule {
+                            matcher,
+                            access: Access::Write,
+                            decision,
+                        });
                     }
                 }
             }
         }
     }
 
-    dedup(&mut plan.writable);
-    dedup(&mut plan.deny_read);
-    dedup(&mut plan.deny_write);
+    minimize_roots(&mut plan.writable_roots);
     plan
 }
 
-/// Stable de-duplication preserving first occurrence.
-fn dedup(paths: &mut Vec<PathBuf>) {
-    let mut seen = std::collections::HashSet::new();
-    paths.retain(|path| seen.insert(path.clone()));
+fn matcher(matcher: MatcherSbpl<'_>) -> WindowsRuleMatcher {
+    match matcher {
+        MatcherSbpl::Subtree(path) => WindowsRuleMatcher::Subtree(path.to_path_buf()),
+        MatcherSbpl::Regex(regex) => WindowsRuleMatcher::Regex(regex.to_owned()),
+    }
+}
+
+/// Sort roots deterministically and remove exact/nested roots already covered
+/// by an ancestor. This keeps ACL work bounded without changing write scope.
+fn minimize_roots(paths: &mut Vec<PathBuf>) {
+    paths.sort_by(|left, right| {
+        left.components()
+            .count()
+            .cmp(&right.components().count())
+            .then_with(|| left.cmp(right))
+    });
+    let mut roots: Vec<PathBuf> = Vec::with_capacity(paths.len());
+    for path in paths.drain(..) {
+        if roots.iter().any(|root| path_within(&path, root)) {
+            continue;
+        }
+        roots.push(path);
+    }
+    *paths = roots;
+}
+
+fn path_within(path: &Path, root: &Path) -> bool {
+    super::paths::path_within(path, root)
 }
 
 #[cfg(test)]
@@ -126,20 +180,37 @@ mod tests {
         build_plan(&sandbox)
     }
 
+    fn covers(roots: &[PathBuf], path: &Path) -> bool {
+        roots.iter().any(|root| path_within(path, root))
+    }
+
+    fn has_carveout(plan: &WindowsSandboxPlan, path: &Path, decision: Decision) -> bool {
+        plan.write_carveouts
+            .iter()
+            .any(|rule| rule.path == path && rule.decision == decision)
+    }
+
+    fn has_read_diagnostic(plan: &WindowsSandboxPlan, path: &Path, decision: Decision) -> bool {
+        plan.unenforced_read_rules.iter().any(|rule| {
+            rule.matcher == WindowsRuleMatcher::Subtree(path.to_path_buf())
+                && rule.decision == decision
+        })
+    }
+
     #[test]
     fn workspace_and_temp_are_writable() {
         let ws = temp_workspace();
         let plan = plan_for(&ws);
         let workspace = crate::sandbox::paths::canonicalize_lenient(std::path::Path::new(&ws));
         assert!(
-            plan.writable.contains(&workspace),
-            "workspace must be writable"
+            covers(&plan.writable_roots, &workspace),
+            "workspace must be covered by a writable root: {plan:?}"
         );
         assert!(
             super::super::rules::temp_roots()
                 .iter()
-                .all(|t| plan.writable.contains(t)),
-            "temp roots must be writable"
+                .all(|root| covers(&plan.writable_roots, root)),
+            "temp roots must be covered by writable roots: {plan:?}"
         );
     }
 
@@ -150,17 +221,17 @@ mod tests {
         let workspace = crate::sandbox::paths::canonicalize_lenient(std::path::Path::new(&ws));
         let rule_file = workspace.join(".future/approval_rule.json");
         assert!(
-            plan.deny_write.contains(&rule_file),
+            has_carveout(&plan, &rule_file, Decision::Deny),
             "rule file write must be denied"
         );
         assert!(
-            !plan.deny_read.contains(&rule_file),
-            "rule file is not a read secret"
+            !has_read_diagnostic(&plan, &rule_file, Decision::Deny),
+            "rule file is not a read restriction"
         );
     }
 
     #[test]
-    fn home_ssh_subtree_is_deny_read() {
+    fn home_ssh_read_is_diagnostic_and_write_is_ask_carveout() {
         let ws = temp_workspace();
         // Capture + canonicalize home ONCE (rule bases are canonicalized
         // during resolution; /var -> /private/var on macOS must not split
@@ -180,12 +251,12 @@ mod tests {
         let plan = build_plan(&sandbox);
         let ssh = home.join(".ssh");
         assert!(
-            plan.deny_read.contains(&ssh),
-            "~/.ssh subtree must be deny-read"
+            has_read_diagnostic(&plan, &ssh, Decision::Ask),
+            "~/.ssh read ask must be reported as unenforced"
         );
         assert!(
-            plan.deny_write.contains(&ssh),
-            "~/.ssh subtree must be deny-write (Both)"
+            has_carveout(&plan, &ssh, Decision::Ask),
+            "~/.ssh write must remain an ask carveout"
         );
     }
 
@@ -193,19 +264,19 @@ mod tests {
     fn allow_write_rule_lands_in_writable_allow_read_does_not() {
         use crate::sandbox::rules::{Access, Decision};
         let ws = temp_workspace();
-        let workspace = crate::sandbox::paths::canonicalize_lenient(std::path::Path::new(&ws));
+        let home = crate::sandbox::paths::canonicalize_lenient(&dirs::home_dir().unwrap());
         let rules = crate::sandbox::rules::RuleSet::resolve_isolated_with_home(
             std::path::Path::new(&ws),
-            std::path::Path::new("/nonexistent-home-for-plan-test"),
+            &home,
         );
-        let allow_write = workspace.join("vendor/granted");
+        let allow_write = home.join("futureos-winplan-external-write");
         rules.add_session_rule(
             &allow_write.to_string_lossy(),
             Access::Both,
             Decision::Allow,
         );
         // Read-only allow: broadly open already, so it must NOT add an ACE.
-        let allow_read = workspace.join("vendor/readable");
+        let allow_read = home.join("futureos-winplan-external-read");
         rules.add_session_rule(&allow_read.to_string_lossy(), Access::Read, Decision::Allow);
         let sandbox = ResolvedSandbox {
             tier: SandboxTier::Manual,
@@ -215,31 +286,126 @@ mod tests {
         };
         let plan = build_plan(&sandbox);
         assert!(
-            plan.writable.contains(&allow_write),
+            covers(&plan.writable_roots, &allow_write),
             "allow-write subtree must get a write ACE: {plan:?}"
         );
         assert!(
-            !plan.writable.contains(&allow_read),
+            !covers(&plan.writable_roots, &allow_read),
             "allow-read needs no ACE (reads are broadly open): {plan:?}"
         );
     }
 
     #[test]
-    fn literal_env_is_enforced_but_glob_secrets_are_skipped() {
+    fn literal_env_is_structured_and_globs_are_reported() {
         let ws = temp_workspace();
         let plan = plan_for(&ws);
         let workspace = crate::sandbox::paths::canonicalize_lenient(std::path::Path::new(&ws));
         // Literal `.env` (no glob metachars) → an enforceable deny.
         let env = workspace.join(".env");
         assert!(
-            plan.deny_read.contains(&env),
-            "literal workspace .env must be deny-read"
+            has_read_diagnostic(&plan, &env, Decision::Ask),
+            "literal workspace .env read ask must be diagnostic"
+        );
+        assert!(
+            has_carveout(&plan, &env, Decision::Ask),
+            "literal workspace .env write ask must be enforceable"
         );
         // Glob workspace secrets (`.env.*`, `**/*.pem`, `**/*.key`, `**/*.p12`,
         // `**/id_rsa*`) cannot be ACE'd → counted, not enforced.
         assert!(
-            plan.skipped_globs >= 5,
-            "workspace glob secrets must be counted as skipped"
+            plan.unsupported_write_globs.len() >= 5,
+            "workspace write globs must remain visible: {plan:?}"
         );
+        assert!(
+            plan.unenforced_read_rules
+                .iter()
+                .filter(|rule| matches!(rule.matcher, WindowsRuleMatcher::Regex(_)))
+                .count()
+                >= 5,
+            "workspace read globs must remain visible: {plan:?}"
+        );
+    }
+
+    #[test]
+    fn higher_priority_exact_match_suppresses_workspace_rule() {
+        let ws = temp_workspace();
+        let workspace = crate::sandbox::paths::canonicalize_lenient(Path::new(&ws));
+        let future_dir = workspace.join(".future");
+        std::fs::create_dir_all(&future_dir).unwrap();
+        let external = dirs::home_dir().unwrap().join("futureos-winplan-priority");
+        let rule_file = serde_json::json!({
+            "rules": [{
+                "path": external,
+                "access": "write",
+                "action": "deny"
+            }]
+        });
+        std::fs::write(
+            future_dir.join("approval_rule.json"),
+            serde_json::to_vec(&rule_file).unwrap(),
+        )
+        .unwrap();
+
+        let rules = crate::sandbox::rules::RuleSet::resolve_isolated_with_home(
+            &workspace,
+            Path::new("/nonexistent-home-for-plan-priority"),
+        );
+        rules.add_session_rule(&external.to_string_lossy(), Access::Write, Decision::Allow);
+        let sandbox = ResolvedSandbox {
+            tier: SandboxTier::Manual,
+            available: crate::sandbox::platform_sandbox_available(),
+            workspace: rules.workspace.clone(),
+            rules,
+        };
+        let plan = build_plan(&sandbox);
+
+        assert!(covers(&plan.writable_roots, &external));
+        assert!(!has_carveout(&plan, &external, Decision::Deny));
+    }
+
+    #[test]
+    fn ask_and_deny_write_carveouts_remain_distinguishable() {
+        let ws = temp_workspace();
+        let workspace = crate::sandbox::paths::canonicalize_lenient(Path::new(&ws));
+        let rules = crate::sandbox::rules::RuleSet::resolve_isolated_with_home(
+            &workspace,
+            Path::new("/nonexistent-home-for-plan-decisions"),
+        );
+        let ask_path = workspace.join("approval-required");
+        let deny_path = workspace.join("never-allow");
+        rules.add_session_rule(&ask_path.to_string_lossy(), Access::Write, Decision::Ask);
+        rules.add_session_rule(&deny_path.to_string_lossy(), Access::Write, Decision::Deny);
+        let sandbox = ResolvedSandbox {
+            tier: SandboxTier::Manual,
+            available: crate::sandbox::platform_sandbox_available(),
+            workspace: rules.workspace.clone(),
+            rules,
+        };
+        let plan = build_plan(&sandbox);
+
+        assert!(has_carveout(&plan, &ask_path, Decision::Ask));
+        assert!(has_carveout(&plan, &deny_path, Decision::Deny));
+    }
+
+    #[test]
+    fn writable_roots_are_minimized_by_ancestor() {
+        let ws = temp_workspace();
+        let workspace = crate::sandbox::paths::canonicalize_lenient(Path::new(&ws));
+        let home = crate::sandbox::paths::canonicalize_lenient(&dirs::home_dir().unwrap());
+        let rules = crate::sandbox::rules::RuleSet::resolve_isolated_with_home(&workspace, &home);
+        let parent = home.join("futureos-winplan-root");
+        let child = parent.join("nested");
+        rules.add_session_rule(&child.to_string_lossy(), Access::Write, Decision::Allow);
+        rules.add_session_rule(&parent.to_string_lossy(), Access::Write, Decision::Allow);
+        let sandbox = ResolvedSandbox {
+            tier: SandboxTier::Manual,
+            available: crate::sandbox::platform_sandbox_available(),
+            workspace: rules.workspace.clone(),
+            rules,
+        };
+        let plan = build_plan(&sandbox);
+
+        assert!(plan.writable_roots.contains(&parent));
+        assert!(!plan.writable_roots.contains(&child));
     }
 }

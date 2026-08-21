@@ -38,6 +38,20 @@ pub struct SaveApprovalRuleInput {
     pub access: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveApprovalRulesInput {
+    pub thread_id: String,
+    pub rules: Vec<SaveApprovalRuleEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveApprovalRuleEntry {
+    pub path: String,
+    pub access: String,
+}
+
 /// "Allow in this workspace/chat": append an allow rule to the workspace's
 /// `.future/approval_rule.json` (persist, read next prompt) AND inject it into
 /// the live agent session (same-run effect — APPROVAL_PLAN.md §6).
@@ -55,6 +69,27 @@ pub async fn save_approval_rule(input: SaveApprovalRuleInput) -> Result<(), crat
     )?;
     // Same-run effect (best-effort — persistence above already succeeded).
     agent_bridge::inject_session_rule(&input.thread_id, &input.path, &input.access).await
+}
+
+/// Persist a capability card's complete target set in one atomic config write,
+/// then inject each exact rule into the current session.
+#[tauri::command]
+pub async fn save_approval_rules(input: SaveApprovalRulesInput) -> Result<(), crate::AppError> {
+    let workspace_id = store::get_thread(&input.thread_id)?
+        .map(|thread| thread.workspace_id)
+        .ok_or_else(|| "Thread could not be loaded.".to_string())?;
+    let workspace = store::get_workspace(&workspace_id)?
+        .ok_or_else(|| "Workspace could not be loaded.".to_string())?;
+    let rules = input
+        .rules
+        .iter()
+        .map(|rule| (rule.path.clone(), rule.access.clone()))
+        .collect::<Vec<_>>();
+    crate::approval_rules::append_workspace_allow_rules(&workspace.path, &rules)?;
+    for rule in input.rules {
+        agent_bridge::inject_session_rule(&input.thread_id, &rule.path, &rule.access).await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -118,8 +153,16 @@ mod tests {
     #[test]
     fn async_command_wrappers_reject_malformed_bodies() {
         crate::commands::ipc_harness::assert_all_reject_bad_body(
-            tauri::generate_handler![decide_approval_request, save_approval_rule],
-            &["decide_approval_request", "save_approval_rule"],
+            tauri::generate_handler![
+                decide_approval_request,
+                save_approval_rule,
+                save_approval_rules
+            ],
+            &[
+                "decide_approval_request",
+                "save_approval_rule",
+                "save_approval_rules",
+            ],
         );
     }
 

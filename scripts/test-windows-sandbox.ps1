@@ -1,0 +1,135 @@
+[CmdletBinding()]
+param(
+    [string]$OutputDirectory = "target/windows-sandbox-results",
+    [switch]$IncludeClippy,
+    [switch]$AllowElevated
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+if ($env:OS -ne "Windows_NT") {
+    throw "This script must run on Windows."
+}
+
+$repoRoot = Split-Path -Parent $PSScriptRoot
+Set-Location $repoRoot
+
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = New-Object Security.Principal.WindowsPrincipal($identity)
+$isElevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if ($isElevated -and -not $AllowElevated) {
+    throw "Run this script from a normal, non-administrator PowerShell. Use -AllowElevated only for diagnosis; an elevated pass does not validate the unelevated product mode."
+}
+
+$outputRoot = if ([IO.Path]::IsPathRooted($OutputDirectory)) {
+    $OutputDirectory
+} else {
+    Join-Path $repoRoot $OutputDirectory
+}
+New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
+$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$logPath = Join-Path $outputRoot "windows-sandbox-$stamp.log"
+
+function Write-LogLine {
+    param([string]$Text)
+    $Text | Tee-Object -FilePath $logPath -Append
+}
+
+function Invoke-LoggedNative {
+    param(
+        [string]$Label,
+        [string]$FilePath,
+        [string[]]$Arguments
+    )
+
+    Write-LogLine ""
+    Write-LogLine "=== $Label ==="
+    Write-LogLine ("COMMAND: {0} {1}" -f $FilePath, ($Arguments -join " "))
+    $lines = @(& $FilePath @Arguments 2>&1)
+    $exitCode = $LASTEXITCODE
+    foreach ($line in $lines) {
+        Write-LogLine ([string]$line)
+    }
+    Write-LogLine "EXIT CODE: $exitCode"
+    if ($exitCode -ne 0) {
+        throw "$Label failed with exit code $exitCode"
+    }
+}
+
+try {
+    Write-LogLine "FutureOS Windows unelevated sandbox integration report"
+    Write-LogLine "Started: $((Get-Date).ToString('o'))"
+    Write-LogLine "Repository: $repoRoot"
+    Write-LogLine "PowerShell: $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition))"
+    Write-LogLine "OS: $([System.Environment]::OSVersion.VersionString)"
+    Write-LogLine "Architecture: $env:PROCESSOR_ARCHITECTURE"
+    Write-LogLine "User: $($identity.Name)"
+    Write-LogLine "Elevated: $isElevated"
+
+    $tempRoot = [IO.Path]::GetPathRoot([IO.Path]::GetFullPath($env:TEMP))
+    $driveLetter = $tempRoot.TrimEnd('\').TrimEnd(':')
+    try {
+        $tempVolume = Get-Volume -DriveLetter $driveLetter -ErrorAction Stop
+        Write-LogLine "TEMP volume: $tempRoot ($($tempVolume.FileSystem))"
+        if ($tempVolume.FileSystem -ne "NTFS") {
+            throw "The integration fixture requires local NTFS, but TEMP is on $($tempVolume.FileSystem)."
+        }
+    } catch {
+        Write-LogLine "TEMP volume probe failed: $($_.Exception.Message)"
+        throw
+    }
+
+    Invoke-LoggedNative "Git revision" "git" @("rev-parse", "HEAD")
+    Invoke-LoggedNative "Git worktree status" "git" @("status", "--short")
+    Invoke-LoggedNative "Rust compiler" "rustc" @("-Vv")
+    Invoke-LoggedNative "Cargo" "cargo" @("-V")
+
+    # Intentionally manual-only. This command is not added to GitHub Actions.
+    # A single test thread avoids overlapping ACL mutations between fixtures.
+    Invoke-LoggedNative `
+        "Windows sandbox native and end-to-end integration matrix" `
+        "cargo" `
+        @(
+            "test",
+            "--manifest-path", "agent/Cargo.toml",
+            "sandbox::windows",
+            "--",
+            "--nocapture",
+            "--test-threads=1"
+        )
+
+    Invoke-LoggedNative `
+        "Windows capability approval and receipt binding" `
+        "cargo" `
+        @(
+            "test",
+            "--manifest-path", "agent/Cargo.toml",
+            "windows_capability",
+            "--",
+            "--nocapture",
+            "--test-threads=1"
+        )
+
+    if ($IncludeClippy) {
+        Invoke-LoggedNative `
+            "Agent Clippy" `
+            "cargo" `
+            @("clippy", "--manifest-path", "agent/Cargo.toml", "--lib", "--", "-D", "warnings")
+    }
+
+    Write-LogLine ""
+    Write-LogLine "RESULT: PASS"
+    Write-LogLine "Finished: $((Get-Date).ToString('o'))"
+    Write-Host ""
+    Write-Host "PASS. Send this log back for review: $logPath" -ForegroundColor Green
+    exit 0
+} catch {
+    Write-LogLine ""
+    Write-LogLine "RESULT: FAIL"
+    Write-LogLine "ERROR: $($_.Exception.Message)"
+    Write-LogLine "Finished: $((Get-Date).ToString('o'))"
+    Write-Host ""
+    Write-Host "FAIL. Send this log back for review: $logPath" -ForegroundColor Red
+    exit 1
+}

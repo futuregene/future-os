@@ -48,6 +48,7 @@ import {
   listToolCallsBulk,
   listToolOutputs,
   saveApprovalRule,
+  saveApprovalRules,
   updateRunStatus,
 } from "./runs";
 import {
@@ -231,6 +232,8 @@ describe("storage invoke wrappers", () => {
     expect(invokeMock).toHaveBeenLastCalledWith("decide_approval_request", { input: { approvalRequestId: "a", status: "approved" } });
     await saveApprovalRule({ threadId: "t", path: "/p", access: "read" });
     expect(invokeMock).toHaveBeenLastCalledWith("save_approval_rule", { input: { threadId: "t", path: "/p", access: "read" } });
+    await saveApprovalRules({ threadId: "t", rules: [{ path: "/release", access: "write" }] });
+    expect(invokeMock).toHaveBeenLastCalledWith("save_approval_rules", { input: { threadId: "t", rules: [{ path: "/release", access: "write" }] } });
   });
 
   it("threads and workspaces", async () => {

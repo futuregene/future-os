@@ -1,6 +1,6 @@
 # FutureOS Sandbox 方案（SANDBOX_PLAN）
 
-状态：**v2 —— 强制执行层设计 + v1→v2 返工计划**（2026-07-04 按纯文件路径规则模型重写）
+状态：**v2 macOS 已实现；Windows unelevated 写保护后端设计中**（2026-07-04 按纯文件路径规则模型重写；2026-08-21 修订 Windows 能力边界与路径能力审批）
 
 > 规则系统的**语义主文档**是 [APPROVAL_PLAN.md](APPROVAL_PLAN.md)（规则模型、分层、规则文件、审批 UI、决策记录）。本文只管**强制执行**：Seatbelt 如何从规则编译、escalation、工具层拦截、协议、非 macOS 的两档回退，以及 v1 已实现资产的复用/返工清单。
 >
@@ -71,16 +71,16 @@
 - rename/mv 绕过（`mv x .future/approval_rule.json`）：SBPL `file-write*` 对 rename 目标路径生效，smoke test 显式覆盖这一条。
 - `mach-lookup`/`sysctl` 沿用 v1 的"先放宽、按 smoke tests 收窄"策略；v1 的 9 项 smoke tests 全部保留，网络两项改为断言"默认放行"。
 
-## 3. escalation（沿用 v1，语义不变）
+## 3. macOS escalation（沿用 v1）
 
-bash 在沙盒内失败且匹配拒绝特征（`Operation not permitted` 等，保守启发式），或模型显式带 `escalated: true` + `justification` 重试 → `sandbox_escalation` 审批 → **批准后该条命令出沙盒完整重跑一次**（原 Q2"按命令放行"）。
+macOS shell 在 Seatbelt 内失败且匹配拒绝特征（`Operation not permitted` 等，保守启发式），或模型显式带 `escalated: true` + `justification` 重试 → `sandbox_escalation` 审批 → **批准后该条命令脱离 Seatbelt 完整重跑一次**（原 Q2“按命令放行”）。
 
 - v1 的 `EscalationRequester` 回调架构（rpc 层构造、经 `ToolExecutionScope` 注入、tools 层不碰 RPC）原样复用。
 - 失败特征里删掉网络类 marker（`Could not resolve host` 等）——网络已放开，这些不再是沙盒拒绝的信号。
-- 在 v2 里 escalation 是 bash 版的 "ask"：规则里写 ask 的路径，bash 撞上时的体验就是"失败 → 弹窗问是否放行重跑"。
-- **escalation 也可「本对话/工作区允许」**（2026-07-04 补）：当被拦文件**都非敏感**时，卡片从被拦路径推出父目录 glob（写权限）作 `save_suggestion`，点「本对话允许」→ 写规则文件 + 当轮注入 → 之后 bash 写该目录在沙箱内放行、不再 escalation。这样 bash 越界写和 write 工具越界写的持久化体验一致。**敏感文件**（`~/.gnupg` 等）`save_suggestion=None`，仍只能"允许一次"（守卫不可被绕过）。
-- 已知残留（知情接受）："允许一次"批准的命令出沙盒后无任何限制；卡片如实展示命令全文与被拦文件。
-- 配套（源头治理）：系统提示强化为"写文件一律用 write/edit（支持绝对路径 / 工作区外），不要用 bash 重定向写文件"，减少 bash 旁路写（也修掉"文件找不到"——bash `>` 写的文件不登记 artifact）。
+- Seatbelt 拒绝不保证向父进程报告准确路径。卡片可展示从 stderr 推断的路径，但必须标注为推断；无法归因时显示“未知”，不得生成持久路径规则。
+- macOS escalation 仅提供拒绝/允许一次，不提供“本工作区允许”。“允许一次”批准后命令无文件限制；卡片必须如实展示命令全文和该风险。
+- Windows **不复用**本节的整命令脱沙盒语义，改用 §11.4 的声明式具体路径 capability；仅有 error 5 时不得弹出模糊批准。
+- 配套（源头治理）：系统提示强化为“写文件一律用 write/edit（支持绝对路径 / 工作区外），不要用 shell 重定向写文件”，减少 shell 旁路写（也修掉“文件找不到”——shell 重定向写的文件不登记 artifact）。
 
 ## 4. 工具层强制
 
@@ -123,21 +123,21 @@ v1（原 Phase 1 + Phase 2）已全部实现并通过验证（agent 67 测 + GUI
 - `seatbelt::build_profile` 改为从规则集编译（§2）。
 - `approval_shape`：bash 分支删除（无前置审批）；write/edit 分支按规则判定产出 ask 卡片；**新增 read 分支**。
 - `ensure_workspace_access` → 规则判定。
-- ApprovalPrompt 按钮与保存流程（"本会话/始终" → "本工作区允许" + 规则预览编辑，前端组件大半可改造复用）。
+- ApprovalPrompt 按钮与保存流程（R2 已从“本会话/始终”改为“本工作区允许”并加入规则预览；Windows W5 继续复用组件，同时按 APPROVAL_PLAN §6 收敛为“行为 + 目标”标题、折叠详情和非技术化持久允许，不保留普通卡片的 raw glob 编辑）。
 
 **废弃**：
 - `is_workspace_read_command` 白名单（启用会话中 bash 无前置审批；非启用会话保留现状，待 v2 稳定后随旧路径一起清理）。
 - `command_prefix` 规则、`save_suggestion` 的命令建议（路径建议保留）。
 - SQLite 规则链路（§5）；proto `SandboxPolicy` 旧字段；三模式/三策略枚举。
 
-## 7. 非 macOS：只有"手动审批 / 完全放开"两档
+## 7. 非 macOS：当前回退与 Windows 目标态
 
-> 已无"降级"概念——"沙箱保护"档只在 macOS 提供，非 mac 平台的 UI 根本不显示它，默认统一是"手动审批"。mac 只是多一个档位。
+> 当前发布态仍只有 macOS 提供 OS 沙盒；Windows unelevated 后端完成并通过 Windows smoke 之前，UI 不得提前显示 `sandbox`。完成后的 Windows 档名为“写保护”，能力不等同 macOS“沙箱保护”。
 
 - `platform_sandbox_available()` 非 macOS 恒 false → 即便某会话误发 `tier=sandbox`，`wraps_bash()` 也为假，bash 退回**手动审批档**行为（只读白名单免问 + 非白名单弹卡片审批），不裸跑无闸。
 - **工具层规则照常生效**（判定在 agent 进程内，不依赖平台）——read/write/edit 的 ask/deny、凭证 ask、第 0 层写保护在 Linux/Windows 依然工作。差别只在 bash 没有 Seatbelt 硬拦：`cat ~/.ssh/id_rsa` 若不在只读白名单里会弹卡片，但用户批准后仍能读（无 OS 强制）。
 - Linux bwrap 仍按"最后再做"排期：写侧 bind 白名单同构可编译；读侧 ask/deny 用 `--tmpfs`/`--ro-bind` 遮盖近似。届时可为 Linux 也开放"沙箱保护"档。
-- **Windows 原生沙盒方案已定（见 §11）**，把 bash 从"白名单+卡片"升级到"restricted token + ACL 强制"；落地后 Windows 亦可提供"沙箱保护"档。
+- **Windows 原生后端见 §11**：把 shell 从“白名单+命令卡片”升级到 RestrictedToken + ACL 的写边界；落地后提供“写保护”档，并使用具体路径 capability 审批，不宣称 shell deny-read。
 
 ## 8. 实施阶段
 
@@ -182,11 +182,22 @@ v1（原 Phase 1 + Phase 2）已全部实现并通过验证（agent 67 测 + GUI
 
 v2 决策（V1–V9）见 APPROVAL_PLAN §9。v1 期间沿用有效的：escalation 按命令放行（Q2）、channels 无审批 UI 按失败返回（Q3）、`.git` 不排除（Q4）、`sandbox-exec` deprecated 接受（Q5）、失败启发式保守（Q6）、默认切换不告知（Q7）、temp 读写全开、macOS→Linux→（无 Windows）平台顺序、R1–R6 安全 review 修正（详见 git history 本文件 v1 版）。
 
-## 11. Windows 原生沙盒（unelevated：restricted token + ACL）
+## 11. Windows 原生写保护（unelevated：RestrictedToken + ACL）
 
-状态：**W1a 已实现（2026-07-06）**，W1b（Win32 执行器）待 Windows CI。目标是给 **`Sandbox` 档**（`SandboxTier::Sandbox`）提供 Windows 的 OS 强制后端，把 bash 从"**读松写紧 + 密钥拒读**"落到 OS 层。规则引擎（`rules::RuleSet`）、escalation 架构、审批 UI 全部复用——本节只描述 Windows 的**强制后端**，对标 §2（Seatbelt）。
+状态：**W1–W5 已实现；W6 已接通 capability state/ACL/token/suspended process 内部执行链，清理/feature probe/Windows 真机矩阵仍待完成。** 后端完成并通过 Windows smoke 前，`platform_sandbox_available()` 在 Windows 必须保持 false，GUI 不显示该档。
 
-> **与三档模型的关系**（`SandboxTier`：`Off` / `Manual` / `Sandbox`）：Windows 默认仍是 `Manual`（bash 前置审批 + read-only allowlist 免问，见 §6/approval.rs）；本方案实现的是 `Sandbox` 档在 Windows 上的强制,让 `platform_sandbox_available()` 在 Windows 返回 true、`wraps_bash()` 成立 → bash 改走 OS 包裹 + escalation（不再前置审批）。GUI 需在 Windows 暴露 `Sandbox` 档选项（现被隐藏）作为配套。
+Windows 与 macOS 共用 `SandboxTier::Sandbox` 协议值，但 UI 和保证不同：
+
+| | macOS 沙箱保护 | Windows 写保护 |
+|---|---|---|
+| OS 后端 | Seatbelt profile（每命令、无状态） | `WRITE_RESTRICTED` token + capability SID + NTFS ACL（有状态） |
+| 硬保证 | shell 读写路径规则 | shell 写路径边界 |
+| 读取 | 敏感路径可由 Seatbelt deny | 普通用户读取保持开放；shell deny-read 不保证 |
+| 网络 | 开放 | 开放 |
+| `ask` 放行 | 现有命令级脱 Seatbelt重跑 | 具体写路径 capability；仍在 RestrictedToken 下重跑 |
+| UI 名称 | 沙箱保护 | 写保护 |
+
+规则引擎和 read/write/edit 工具审批继续跨平台复用；Windows 的差别只在 shell OS 强制层与 shell 能力审批。
 
 ### 11.1 选型：为什么是 unelevated
 
@@ -195,74 +206,167 @@ v2 决策（V1–V9）见 APPROVAL_PLAN §9。v1 期间沿用有效的：escalat
 | 候选 | 免管理员 | 读默认开 | bash 拦密钥 | 与我们模型贴合 | 结论 |
 |---|---|---|---|---|---|
 | elevated（独立用户）| ❌ 要管理员/企业易崩 | ❌ 需补读 | ✅ 天然 | 低（还自带多余的网络隔离）| 暂缓 |
-| **unelevated（受限令牌+ACL）** | ✅ | ⚠️ 可调到基本全开 | ✅ deny ACE | **高** | **选它** |
+| **unelevated（`WRITE_RESTRICTED` + ACL）** | ✅ | ✅ 沿用当前用户正常读能力 | ❌ 不可靠参与 read AccessCheck | **高（接受只做写保护）** | **选它** |
 | Low-IL（完整性级别）| ✅ | ✅ 天然 | ❌ 拦不住 | 中 | 备选 |
 | WSL2 复用 bwrap | ✅ | — | ✅ | — | 兜底腿，排在 Linux bwrap 之后 |
 
-关键差异 vs Codex：**我们网络全开**，故 Codex 最重、最容易在企业机器上崩的那半（防火墙 / offline-user / 本地策略，elevated 的 1385 之类）**全部不做**——只做文件系统边界这一半，比 Codex 简单。
+关键差异 vs Codex：FutureOS 网络全开，不做防火墙、offline-user、本地账号 provisioning。与 macOS 的关键差异则是 `WRITE_RESTRICTED` 只适合构建兼容性良好的写边界，不能可靠复刻 Seatbelt deny-read。第一版接受这一差异并在 UI 明示，不用提示词或 stderr 猜测冒充 OS 读保护。
 
 ### 11.2 强制模型
 
-`CreateRestrictedToken` 派生**受限令牌**：带 restricting SIDs 后每次访问检查跑两遍（正常 SID 列表 ∧ 受限 SID 列表，两遍都过才放行）。据此把规则引擎的语义映射到 NTFS ACL：
+`CreateRestrictedToken` 使用 `DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED` 派生 token。写访问必须同时通过当前用户正常 SID 与 restricting SID/capability SID 的检查；读取保持当前用户兼容性。规则映射如下：
 
 ```
-受限 SID 集 = { Users / Authenticated Users, RESTRICTED }   ← 读的宽度旋钮
-  → 读：系统 / Program Files / 授 Users 的东西"两遍都过"= 基本全开（免逐条补 ACE）
-  → 写：用户文件普遍只授本人 SID 写、不授 Users → 受限那遍挂掉 = 默认写不动
+token = 当前用户 primary token
+flags = DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED
+restricting SIDs = {本次有效写根对应的 capability SIDs}
+  → 读：保持当前用户读取兼容性，不声称 capability SID deny-read 生效
+  → 写：正常用户检查 ∧ restricting SID 检查；没有 capability write ACE 就失败
 
-写白名单 = 给一个自定义"沙盒 SID"加 **写 ACE**，仅贴在：
+写白名单 = 每个“规范化写根 + 有效规则指纹”分配 capability SID，并给该 SID 加 **写 ACE**，仅贴在：
   workspace  +  每会话专属 temp  +  用户 allow-write 规则路径
 
-密钥拒读 = 给密钥集 + 规则文件加**显式 deny ACE**（deny 永远赢）：
-  .env / *.pem / *.key / *.p12 / id_rsa* / home 凭证 / .future/approval_rule.json
+写保护 = workspace/session temp 之外默认不可写；对已存在的关键对象可附加 deny-write ACE，作为硬化而非完整规则保证
+
+读规则 = read/write/edit 工具层继续强制；shell 层记入 unenforced diagnostics
 
 网络 = 不动（v2 全开）
 进程组 kill = CreateJobObject + JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE（对标 mac 进程组 kill）
 ```
 
-**层序即安全**（同 §2）：deny ACE 必须在 allow 之前解析（NTFS 规范序里 deny 在前），密钥 deny 压过任何宽目录 allow —— 对应引擎里 `builtin_guards` 不可覆盖。
+deny-write ACE 必须压过 writable root 的 allow-write ACE。但 ACL 只能附着在已存在对象上：它不能在允许目录创建普通文件的同时，按一个未来文件名阻止尚不存在的 `.env`，也不能表达 glob。因此第一版**不声称 Windows shell 在 workspace 根内完整强制 ask/deny 规则**；现有字面对象的 deny ACE 只是额外硬化。若产品要求 workspace 内 shell 规则与 macOS 完整对齐，需要 minifilter/elevated broker，或改成所有 shell 写入都必须预声明的低兼容模式。
 
-### 11.3 读摩擦与已定取舍
+不能只按写根永久复用一个 SID：workspace 根 SID 若在 `.env` 等 `ask` 子路径上命中 deny ACE，Windows deny-wins 意味着再给 token 增加一个更窄的 allow SID 也无法重新开放该路径。FutureOS 第一版因此拒绝显式 `ask` carveout 的 shell capability，而不是展示一个批准后仍会失败的对话框。workspace/temp 外、由默认 fallback `ask` 产生且不与显式 carveout 冲突的具体目标，仍可按以下 request SID 精确批准：
 
-受限令牌天生"读也受限"（对象 ACL 不含沙盒可用 SID 就读不到）。按四个旋钮定档，全部偏**低摩擦**：
+- **基础计划**：SID 键为“规范化写根 + 当前 deny/ask carveout 规则指纹”。同一策略代际可稳定复用；token 只装入当前代际 SID。
+- **仅允许这一次**：本次命令为每个基础写根和每个批准目标生成 request-scoped ephemeral SID；批准目标保留独立 SID，不能因父根去重而消失。capability identity 同时绑定 request id、路径和 `file/subtree` scope，避免历史 subtree ACE 被同名 file 批准复用。
+- **此项目以后都允许**：仅对可表达的外部具体目标先持久化规则，再生成新的规则指纹和基础 SID；不得删除或改写仍可能被旧进程使用的旧代际 deny ACE。
+- 旧代际和一次性 SID 的残留 ACE 因未来 token 不再包含对应 SID 而不产生新授权；后台 GC/卸载清理负责回收，但安全性不依赖命令结束时同步清理成功。
 
-1. **#1 受限集放 `Users`**：系统 / Program Files / 大部分工具链"两遍都过",读基本全开、**免大规模补读 ACE**。副作用是"被授 `Users`/`Everyone` **可写**的异常目录"会成写洞 → **启动时扫描并警告**（仿 Codex 的 Everyone-writable 提示），不自动收紧。
-2. **精简 #2 预置读授权**：用户目录配置多按**所有者本人**授权、`Users` 盖不到（`~/.gitconfig`/`.config`、`~/.npmrc`、`~/.cargo`、`~/.rustup`、常用 `%APPDATA%` 工具目录）→ 只给这一小撮预置沙盒 SID 读 ACE，首跑不炸；系统/Program Files 靠 #1 免预置。
-3. **#3 密钥 deny ACE**：读放开的同时对密钥集显式 deny（§11.2）——**这是 unelevated 比 Low-IL 强的点：读默认开 + 精确拦密钥**，正好复刻引擎语义，直接补上 §7 里"bash 能读 `~/.ssh`"那个缺口。
-   - 白赚项：owner-ACL 的用户密钥本就不授 `Users`，即使不加 deny 也读不到；deny ACE 是对"落进 workspace / 被 #2 放宽目录里的密钥"的兜底。
-   - **⚠️ NTFS 表达力限制（W1a 已量化）：ACE 只能挂在子树/字面路径上，无法表达 glob。** 内置密钥里 `~/.ssh`/`~/.aws`/`~/.npmrc`/keychains 等 home 项、凭证文件、规则文件、以及**字面量 `.env`** 都是子树/字面 → **可 ACE 强制**；但 workspace 内的 `**/*.pem`/`**/*.key`/`**/*.p12`/`**/id_rsa*`/`.env.*` 是 glob → **bash 层拦不住**（`windows_plan` 里计入 `skipped_globs`，工具层仍拦 read/write/edit）。即：**跨用户凭证外泄向量全覆盖，唯一缺口是"workspace 内证书/密钥 glob 经 bash 读取"**——知情接受,工具层兜非 bash 访问。
-4. **#4 漏读兜底**：真·长尾漏读 → 弹一次审批"本工作区允许读该目录"（对标 Codex `/sandbox-add-read-dir`），批准落成规则。read 兜底不如 write escalation 可靠（发生在命令中途、`Access is denied` 太泛、归因难、要整命令重跑），故只当长尾，不作主力——主力是 #1+#2。
+SID 映射与代际文件属于应用安全配置，必须原子写入、限制普通子进程修改并接受启动完整性检查。
 
-### 11.4 escalation / 工具层（复用）
+Codex 的 legacy 后端还把 logon SID 与 Everyone 放入 restricting SID 集以兼容部分 Windows 对象。FutureOS 不直接照搬：W2 必须用 `AccessCheck` 与 PowerShell/管道/stdio smoke 验证最小集合。只有确认运行兼容性确实需要时才增加额外 restricting SID，并必须同时验证 Everyone/Logon 可写目录不会绕过写根边界。
 
-- bash 写被拒 → stderr 出现 `Access is denied` / 错误码 5 → `looks_like_sandbox_denial` 加 Windows 特征 → 批准后该命令**出沙盒以正常令牌重跑一次**（同 §3）。`EscalationRequester` 架构原样复用。
-- 工具层三态（read/write/edit 的路径 ask/allow/deny + 密钥守卫）本就跨平台，无需改。
+### 11.3 能力边界与明确取舍
+
+| 规则/能力 | Windows shell 第一版 | 说明 |
+|---|---|---|
+| workspace、session temp 写 | OS 强制 allow | 基础 writable roots |
+| workspace 外写 | OS 默认拒绝 | 必须经 §11.4 申请具体路径 capability |
+| allow-write 字面路径/子树 | OS 强制 allow | 编译为 capability SID write ACE |
+| workspace 内 ask/deny-write | **不作完整 shell 强制保证** | 已存在字面对象可加 deny ACE 硬化；不存在对象、未来文件名和 glob 无法由目录 ACL 精确表达。工具层仍完整强制 |
+| read ask/deny | **不由 shell OS 后端强制** | 工具层仍完整强制；UI 明示差异 |
+| glob read/write | shell 第一版不强制 | 分别计入 `unenforced_read_rules` / `unsupported_write_globs`；工具层仍强制 |
+| 网络 | 开放 | 与 macOS v2 一致 |
+
+不采用“完整 restricted token + 大量 read ACE”路线：它虽然可以限制读取，却会显著破坏 `%APPDATA%`、Cargo、Rustup、npm、Git、Python 和用户安装工具链，且需要广泛修改真实目录 ACL。第一版优先保证可验证的写边界。
+
+### 11.4 Windows 路径能力审批
+
+RestrictedToken/NTFS 不向父进程可靠报告“刚才拒绝了哪个对象路径”。因此 Windows 禁止仅凭 `Access is denied` / error 5 弹出整命令放行；shell 必须在调用前声明额外写能力：
+
+```json
+{
+  "additional_permissions": {
+    "write": [
+      { "path": "D:\\release", "scope": "subtree", "reason": "创建发布产物和符号文件" }
+    ]
+  }
+}
+```
+
+处理流程：
+
+1. agent 将路径解析为绝对路径并 canonicalize。第一版 `file` 只接受已存在普通文件，`subtree` 只接受已存在目录；创建、替换或 rename 必须由调用方明确申请已存在父目录 `subtree`，不得在后端静默扩大。拒绝 device/reparse、卷根和用户 Home 根。
+2. 同一 `RuleSet` 分别评估每个 `(path, write)`；`allow` 不询问，`ask` 合并为一张路径能力卡，`deny` 直接拒绝且不可审批覆盖。
+3. agent 根据实际授权范围生成可信的“行为 + 目标”语义。单目标直接组成标题；多目标完整列出且最多 8 项。原始/规范化路径、ACL 根、规则层、backend、hash 等只进入内部 payload，不进入普通用户界面。
+4. GUI 复用 macOS 的 `ApprovalPrompt`。普通卡片只显示标题、决策按钮和折叠的“查看命令”；不重复显示行为/目标/用途，不展示或编辑 glob、ACL、SID、规则层等技术结构。
+5. “仅允许这一次”把冻结的路径集合对应 SID 加入本次 token；“此项目以后都允许”保存同一行为和目标为 allow-write 路径规则并注入 session。两者都重新校验规则、重新编译计划，命令始终在 RestrictedToken 下运行。
+6. approval 绑定 `request_id + command hash + normalized paths + scopes`。GUI 对整组批准或拒绝，不允许原地增删/改范围；任何变化必须生成新请求。ACL 应用前再次按 handle 校验 final path，TOCTOU/reparse 变化使批准失效。
+7. 若可信行为或目标无法生成、payload 类型不匹配或解析失败，审批 fail closed，不显示批准按钮。
+
+若命令未声明能力而越界，命令失败并提示模型携带具体路径重试。stderr 中抽取的路径只能作为 `suspected path` 帮助重试，不能直接授权。Windows 第一版不提供“整条命令脱写保护运行一次”；确需完全放开由用户显式切换 `off` 档，不能藏在普通路径审批中。
+
+批准只增加 restricting/capability SID 的写许可，不提升当前用户自身权限。若当前用户对目标无写权限，即使批准也必须失败；unelevated 后端不得改 owner、覆盖无关 DACL 或触发 UAC。
+
+工具层 read/write/edit 继续使用现有真前置审批；Windows shell capability 卡片与其复用同一用户语义和共享组件，详见 APPROVAL_PLAN §6。Windows“只保护写入，读取和网络开放”的模式差异放在模式选择、首次启用说明和设置页，不在每次具体路径审批中重复。
 
 ### 11.5 代码接缝
 
-只改三处 + 新增一个后端文件，规则引擎/审批/escalation 不动：
+执行层拆分为：
 
-- `sandbox/mod.rs::platform_sandbox_available()`：Windows 分支返回 true（现代 Windows 恒可用）。
-- `sandbox/mod.rs::build_bash_command()`：加 `#[cfg(windows)]` → 委托 `windows::build_command`（对标现有 `seatbelt::build_command`）。
-- `sandbox/mod.rs::looks_like_sandbox_denial()`：加 Windows 拒绝特征（`Access is denied` / OS error 5）。
-- **新增 `agent/src/sandbox/windows.rs`**（对标 `seatbelt.rs`）：从 `rule_set()` 编译成"受限令牌 + 一组 ACE 变更 + Job 对象"，返回 `tokio::process::Command`。用 `windows-sys`：`CreateRestrictedToken`、`SetNamedSecurityInfo`（ACE 增删）、`CreateJobObject`/`AssignProcessToJobObject`、`CreateProcessAsUser`/`STARTUPINFOEX`。
+- `windows_plan.rs`：纯规则投影，字段为 `writable_roots`、`write_carveouts`、`unenforced_read_rules`、`unsupported_write_globs`；`write_carveouts` 保留 `ask` / `deny` 决策，避免后续审批把不可覆盖的 deny 当成 ask。
+- `sandbox/windows/capability.rs`：用“规范化写根 + 规则指纹”生成稳定 capability name，并由 Windows `DeriveCapabilitySidsFromName` 得到 AppAuthority SID；一次批准为基础根和每个批准目标分别生成 request-scoped capability，identity 绑定 request id、规范化路径与 `file/subtree` scope。状态文件只持久化名称和语义，不持久化进程内 SID 指针，并采用同目录原子替换；只向 token 装入当前有效代际/请求 SID，旧 ACE 不等于当前授权。
+- `sandbox/windows/token.rs`：创建并验证 `WRITE_RESTRICTED` primary token；最小 restricting SID 集由 W2 的 AccessCheck/兼容性矩阵确定，不假设必须包含 Everyone/Logon。
+- `sandbox/windows/acl.rs`：通过已冻结的对象 handle 和 `SetSecurityInfo` 幂等增加 capability allow-write ACE 与受保护子路径 deny-write ACE；保留原 DACL，只操作 FutureOS 自己的 SID/ACE，不设置 owner、不整体覆盖 DACL，也不向父目录授予会绕过受保护子项的 `FILE_DELETE_CHILD`。
+- `sandbox/windows/audit.rs`：只接受绝对本地 NTFS 路径，以 `FILE_FLAG_OPEN_REPARSE_POINT` 打开并拒绝 reparse target，校验 handle final path 与已规范化审批路径完全一致；启动和按需检查 SID 映射/代际、关键 ACE 和异常宽写 ACL。可修复自身缺失 ACE 并 GC 不再被活动进程引用的旧 SID，但不得改 owner 或覆盖无关 DACL。
+- `sandbox/windows/process.rs`：`CreateProcessAsUserW(CREATE_SUSPENDED)` 配合 `STARTUPINFOEXW` handle allowlist，只继承 stdin/stdout/stderr；加入不允许 breakaway 的 Job Object 后再 `ResumeThread`。失败时在恢复线程前终止进程；封装 Unicode command line/environment、cwd、stdout/stderr、wait 和整棵 Job terminate。restricted shell 正常退出后也关闭残留后代，不复用 unsandboxed 模式允许 detached browser 的 `BREAKAWAY_OK` / `disarm` 行为。
+- `sandbox/mod.rs`：将“构造 `tokio::process::Command`”升级为可承载 Windows 自定义 spawn driver 的 `spawn_shell` 抽象；approved capability 作为显式输入。
+- `agent/src/tools/mod.rs`：shell 参数增加 `additional_permissions.write[]`，执行前完成路径冻结、规则评估和 capability 请求；不解析 PowerShell 猜权限。
+- `agent/src/rpc/approval.rs`、`packages/rpc/proto/future.proto`、`packages/thread-projection/src/approval.ts`：传递可信用户语义和内部 enforcement payload，批准回执绑定 request/hash/path/scope。
+- `desktop/src/features/agent/ApprovalPrompt.tsx`：复用现有共享卡片，增加 Windows capability 变体并同步收敛普通审批 UI；解析失败不再回退到可批准的原始 JSON。
+- `mobile/src/components/TimelineCard.tsx`、`mobile/src/remote/types.ts`：移动端原生审批卡消费同一可信语义 payload，显示相同“行为 + 目标”；第一版只支持拒绝/允许一次，malformed payload 同样 fail closed。
+- GUI 设置：Windows 显示“写保护”及其一次性能力说明；后端完成并通过 smoke 后才让 `platform_sandbox_available()` 返回 true。
 
 ### 11.6 已知取舍 / 缺口（知情接受）
 
-- **glob 密钥缺口**（§11.3 ⚠️）：workspace 内 `*.pem`/`*.key` 等 glob 密钥 bash 读不拦，工具层兜底。
+- **shell deny-read 不保证**：不只是 glob；Windows write-protect 后端整体不声称拦截 shell 读取。工具层仍按规则审批。
+- **glob 不可表达**：NTFS ACE 不表达 glob；shell write glob 第一版不强制，必须改成具体路径/subtree capability。
+- **不存在对象不可按名称 carve out**：父目录拥有 `FILE_ADD_FILE` 时，普通 NTFS DACL 不能只拒绝某个尚不存在的未来子项名称。第一版保证的是 workspace/temp 外部写边界与精确外部 capability，不保证 workspace 内 shell 的未来 `.env`/规则文件名保护；模式说明必须明确，不能借用 macOS 的保证。若此取舍不可接受，Windows 产品入口必须继续关闭并升级为 broker/minifilter 方案。
 - **NTFS 恒 deny-wins**：`windows_plan` 把 deny 路径与可写子树分开收集，deny ACE 永远赢——无法表达"高优先级 allow 盖低优先级 deny"（SBPL 靠 last-match 可以）。极少数该场景会**偏严**（多一次 escalation），不造成安全洞，errs safe。
-- **有状态**：写授权与密钥 deny 靠在真实路径上增删 ACE，非 macOS 的纯 per-exec 无状态。需 **RAII guard** 在命令结束/崩溃时回滚；每会话独立 temp 目录；并发命令对同一 workspace 的 ACE 变更要串行或幂等。
-- **世界可写目录洞**：#1 放 `Users` 的代价，靠启动扫描 + 警告暴露，不自动改用户目录权限。
-- **网络不拦**：同 v2，外传不在本方案射程内（防泄露靠"密钥读不到"这一端）。
-- **shell 前提**：工具现走 `Command::new("bash")`，Windows 需 Git Bash/WSL bash 存在；沙盒对 shell 无关（包的是令牌 + Job），"Windows 该用哪个 shell / 要不要支持 PowerShell"是独立产品决策。
+- **有状态**：写授权修改真实 NTFS ACL。基础策略代际 SID 和幂等 ACE 避免普通命令反复增删；workspace/temp 外的具体目标批准使用 request-scoped SID。并发创建代际/SID/确保 ACE 必须按规范化根串行或事务化；GC 必须知道活动 token/Job 引用，不能提前删除旧代际 deny。卸载/重置提供独立清理流程，安全性不依赖普通命令结束时同步回滚成功。
+- **既有宽写 ACL**：若目标目录本身对 Everyone/相关 restricting SID 可写，可能削弱默认写边界；启动诊断与 smoke 必须覆盖，不能仅靠假设。
+- **网络与读取开放**：任何 shell 可读取当前用户能读的文件并经网络外传；这是 Windows 写保护的明确非目标，在模式选择、首次启用说明和设置页持续说明，不塞进每次路径审批卡片。
+- **shell**：Windows 使用现有 pwsh 7 / Windows PowerShell 5.1 选择逻辑；不再假设 Git Bash/WSL。
 - **elevated（独立用户强隔离）暂缓**：留给将来"要独立安全主体"的企业诉求。
 
 ### 11.7 实施阶段
 
-**Phase W1a — 平台无关核心 — ✅ 已完成（2026-07-06）**：`sandbox/windows_plan.rs`——从 `RuleSet` 纯推导 `WindowsSandboxPlan`（可写子树 = workspace + temp + allow-write 子树规则；deny_read/deny_write = ask/deny 的子树/字面规则；glob 计入 `skipped_globs`）。**mac 可测**（4 单测：workspace/temp 可写、规则文件 deny-write 非 deny-read、`~/.ssh` 子树 deny、字面 `.env` 强制而 glob 密钥 skip）。`cargo test/fmt/clippy` 全绿。**因 mac 无法编译 windows-sys，FFI 执行器不盲写。**
+实现按可独立验证、默认关闭的纵向阶段推进。每个阶段都必须在上一阶段的退出条件满足后再扩大产品可见范围；不得为了联调提前让 Windows `platform_sandbox_available()` 返回 true。
 
-**Phase W1b — Win32 执行器（需 Windows CI）**：`sandbox/windows.rs`（`#[cfg(windows)]`）消费 `WindowsSandboxPlan`：受限令牌 = {Users, RESTRICTED} + 沙盒 SID 写 ACE 贴 plan.writable + deny ACE 贴 plan.deny_read/deny_write + Job kill + RAII ACE 回滚 + 每会话 temp；`Cargo.toml` 加 `[target.'cfg(windows)'.dependencies] windows-sys`；`platform_sandbox_available`（Windows→true）/`build_bash_command`（`#[cfg(windows)]` 分支）/`looks_like_sandbox_denial`（+`Access is denied`/error 5）三处 cfg 分支;精简 #2 预置读根;GUI 暴露 Windows `Sandbox` 档;Windows smoke（写 workspace 通过、写外部被拒、`.env`/`~/.ssh` 读被拒、规则文件写被拒、git/python 不碎、escalation 触发）。
+| 阶段 | 实现内容 | 验证与退出条件 |
+|---|---|---|
+| **W0 — 契约与威胁模型冻结** | 本节和 APPROVAL_PLAN §6 作为实现契约；冻结第一版仅支持本地 NTFS 字面路径/子树、读和网络开放、deny 不可审批、无 error 5 整命令放行；列出用户语义字段与内部 enforcement 字段 | 文档无 macOS/Windows 保证混用；协议草案能表达行为、目标、scope、稳定请求绑定；UNC、非 NTFS、无法解析 reparse 明确拒绝而非静默降级 |
+| **W1 — 纯计划生成器返工** | 重构 `windows_plan.rs`：输出规范化写根、带原始决策的 `write_carveouts`、`unenforced_read_rules`、`unsupported_write_globs`；移除旧 `deny_read` 可强制的假设 | 平台无关单测覆盖规则优先级、workspace/temp、外部 allow/ask/deny、glob 诊断、受保护文件、路径去重/包含关系；macOS/Linux CI 可运行；纯计划不碰 ACL |
+| **W2 — capability、token 与 ACL 原语** | 新增“写根 + 规则指纹 → 基础 SID”代际存储、request-scoped ephemeral SID、`WRITE_RESTRICTED` token、幂等 allow/deny ACE、handle-based final-path 校验和启动 audit；先做独立测试工具，不接 shell/UI | Windows `AccessCheck` 矩阵证明：无 root SID 时外部写失败；当前代际 SID 只开放对应根；显式 ask/deny carveout 失败且不尝试用窄 SID 覆盖 deny；外部批准只开放精确目标；旧 SID/ACE 未装入 token 时无效；规则变化时新旧代际并存且旧进程权限不变；正常用户本无权限时仍失败；ACL 继承关闭、已有 DACL、并发创建、重启后映射均可预测。额外验证“仅 capability SID”与“增加 Logon/Everyone”的兼容/安全差异后冻结最小 SID 集 |
+| **W3 — 受限进程 driver** | `CreateProcessAsUserW(CREATE_SUSPENDED)`，先加入禁止 breakaway 的 Job Object 再恢复；接通 cwd/env/stdio/TTY、wait、timeout、cancel、kill；封装为 `spawn_shell`，保留现有 PowerShell 7 → 5.1 选择 | PowerShell 7 和 5.1 smoke 覆盖单命令、管道、重定向、子进程、退出码、UTF-8/Unicode 路径、大输出、超时和取消；子进程不能脱离 Job/token；初始化任一步失败时命令从未恢复执行；现有 Job Object 代码通过真实 Windows 测试而非仅编译 |
+| **W4 — shell 能力请求与审批核心** | shell schema 加 `additional_permissions.write[]`；路径冻结、规则评估、请求去重、最多 8 项、可信“行为 + 目标”生成；RPC 持久化内部 enforcement payload；批准回执绑定 request/command hash/path/scope；一次批准选择 request-scoped SID，持久批准写 workspace 规则并切换到新策略代际 | 单测/集成测试覆盖 allow 无弹窗、默认 fallback ask 前置弹窗、显式 ask carveout 因 deny-wins 在弹窗前拒绝、deny 不可覆盖、未声明越界只失败、过宽/过多/非法路径拒绝、file 不静默扩大、创建/rename 使用父目录、过期/篡改 hash 拒绝、reparse/TOCTOU 变化失效、多目标全有或全无、session 即时生效 |
+| **W5 — 共享审批语义与 UI** | 桌面在现有 `ApprovalPrompt` 增加 capability action，不新建 Windows 对话框；移动端 `PendingApprovalCard` 消费同一可信语义 payload。单目标只显示“行为 + 目标”标题，命令折叠；多目标完整列出；桌面按场景显示“不允许 / 仅允许这一次 / 此项目以后都允许”，移动端第一版只提供拒绝/允许一次；移除普通卡片的 raw glob 编辑和技术字段 | desktop/mobile 组件、投影和远程 payload 测试覆盖 Windows/macOS/手动档；普通 UI 不出现 ACL、SID、backend、hash、规则层或原始 JSON；模型 reason 不能覆盖可信标题；malformed payload 不显示批准按钮；敏感/过宽/macOS escalation 不出现持久允许；手机批准与桌面“一次允许”绑定同一 request/hash/path/scope；中英文文案结构一致，具体措辞可后续微调 |
+| **W6 — 端到端安全与兼容性** | 将 W1–W5 串入真实 agent/desktop；增加 ACL audit/repair、活动代际跟踪、旧 SID GC、重置/卸载清理、日志脱敏和 feature probe；用仓库脚本进行 Windows 真实机手工批量 smoke，不加入 CI | 必过矩阵：workspace/temp 写成功；workspace 外写失败；一次批准仅开放完整列出的现有 file/subtree，未批准 sibling 仍失败；项目批准仅当前项目和新代际生效；父目录不被扩大；当前用户无权目标仍失败；现有关键对象 deny 硬化有效；不存在对象/glob 缺口与模式说明一致；崩溃/强杀/重启后无权限扩张；常见工具链可用；所有初始化失败均 fail closed |
+| **W7 — 灰度与发布** | 默认关闭 feature flag；仅对通过 capability probe 的本地 NTFS 工作区显示“写保护”；模式选择/首次启用/设置页说明“只限制写入，读取和网络开放”；保留一键退回 `manual` | Windows 目标版本手工 smoke 全绿；安全 review 无高优先级问题；升级、降级、重置 SID/ACL 可恢复；遥测不上传原始敏感路径；完成小范围灰度后才默认开放。发布后发现初始化/ACL 异常时自动回到 `manual`，不得无提示直跑 |
 
-**Phase W2 — 打磨（可选）**：#4 漏读兜底的审批 UX（`add-read-dir` 等价）；世界可写目录扫描警告；GUI 降级/启用提示按平台区分。
+**当前实现状态（2026-08-21）**：W1–W3 已实现；Windows 模块通过 `x86_64-pc-windows-msvc` 独立编译与 Clippy，原生 smoke 由 `scripts/test-windows-sandbox.ps1` 手工执行，明确不加入 CI。W4 已加入 `additional_permissions.write[]`、最多 8 项、已存在 file/subtree 冻结、allow/ask/deny 判定、可信语义、request/command hash/path/scope 一次性回执；请求 SID 同时保留基础根和每个批准目标，scope 纳入 identity，避免父目录扩大及 file/subtree 复用；显式 ask carveout 会在审批前因 NTFS deny-wins 明确拒绝。W5 已让桌面和移动复用现有卡片，单目标标题表达“行为 + 目标”、多目标完整列出、命令折叠、malformed 禁止批准；桌面“此项目以后都允许”以一次原子写保存完整 1–8 项规则集并注入 session。W6 已接通 state 合并、handle/NTFS/reparse 复核、按 scope 添加 ACE、RestrictedToken、suspended/no-breakaway process、stdio/timeout/cancel 的内部路径，但 feature probe、活动代际/GC、重置/卸载清理和 Windows 真机矩阵仍未完成。Windows 产品入口继续保持关闭。审查同时确认：普通 NTFS DACL 无法精确拒绝允许目录内尚不存在的未来文件名，因此第一版保证收敛为 workspace/temp 外部写边界与精确外部 capability，不能宣称 workspace 内 shell ask/deny 与 macOS 等价。
 
-**明确不做（本期）**：elevated 独立用户 + 防火墙；网络隔离；WSL 捆绑。
+Windows 真机从仓库根目录用普通（非管理员）PowerShell 执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\test-windows-sandbox.ps1
+```
+
+脚本要求 `%TEMP%` 位于本地 NTFS，强制 `--test-threads=1`，记录系统/Rust/Git 信息与完整测试输出到 `target/windows-sandbox-results/windows-sandbox-<时间>.log`。失败时把该日志原样反馈；不要只截最后一行。可选 `-IncludeClippy` 追加 Agent Clippy，但它不属于原生行为验收。测试不包含 UI，也不接入 CI。
+
+### 11.8 开发切分与合并顺序
+
+建议按以下独立变更提交，所有中间状态都保持功能开关关闭：
+
+1. **PR W1**：只改纯计划和单测，修正文档已指出的 deny-read 漂移。
+2. **PR W2**：Windows capability/token/ACL 原语与 AccessCheck 测试程序，不接产品执行路径。
+3. **PR W3**：受限 spawn driver 与 Windows 进程生命周期测试。
+4. **PR W4**：shell 参数、approval/RPC 契约、规则注入和后端绑定测试；桌面尚不展示入口。
+5. **PR W5**：共享 `ApprovalPrompt` 和本地化/投影测试；同时收敛 macOS/手动档的普通用户呈现。
+6. **PR W6**：端到端接线、Windows 手工批量 smoke、audit/repair/清理和隐藏设置开关。
+7. **PR W7**：灰度开关与正式平台可用性判断。
+
+W2 与 W4 可在 W1 契约冻结后并行开发，但 W4 的批准结果不得在 W2/W3 验证完成前启动真实命令；W5 依赖 W4 的可信语义 payload；W6 必须同时通过 W2、W3、W4、W5 的退出条件。
+
+### 11.9 第一版完成定义
+
+只有同时满足以下条件，Windows unelevated 后端才算完成：
+
+- 用户看到的每个审批都有后端生成的明确“行为 + 目标”，且批准内容与实际 capability 完全一致。
+- 不批准时，shell 只能写 workspace、session temp 和既有 allow-write 根；批准不会扩展到 sibling、父目录或其他项目。
+- restricted token 及其全部后代始终处于 Job Object 和写边界内；任何初始化、解析或校验失败都不执行命令。
+- 读和网络开放的取舍只在模式说明中准确呈现，不伪装成 macOS 等价隔离，也不反复塞进具体审批卡片。
+- Windows 真实环境兼容性、ACL 恢复/重置、升级降级和失败回退均有自动化或可重复的 smoke 证据。
+
+**明确不做（第一版）**：shell deny-read、glob ACE、elevated 独立用户、防火墙/网络隔离、WSL 捆绑、笼统 error 5 整命令脱沙盒放行。
