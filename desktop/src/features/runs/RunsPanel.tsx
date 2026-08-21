@@ -1,5 +1,6 @@
+import type { RunsContextScope } from "../../components/layout/hooks/useContextData";
 import type { StoredRun, StoredToolCall } from "../../integrations/storage/threadStore";
-import { ChevronRight, CircleStop, Pencil, TerminalSquare, Trash2 } from "lucide-react";
+import { Archive, ChevronRight, CircleStop, Pencil, TerminalSquare } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
@@ -14,10 +15,10 @@ import { toolCommand, toolTarget } from "./toolInput";
 interface RunsPanelProps {
   runs: StoredRun[];
   toolsByRun: Record<string, StoredToolCall[]>;
-  workspacePath?: string | null;
-  onClearFinished: () => Promise<void>;
+  onArchiveFinished: (threadId: string) => Promise<void>;
   onInspectTool: (toolId: string) => void;
-  onTerminateRun: (run: StoredRun) => Promise<void>;
+  onTerminateRun: (threadId: string, run: StoredRun) => Promise<void>;
+  scope: RunsContextScope | null;
 }
 
 interface ToolEntry {
@@ -28,26 +29,33 @@ interface ToolEntry {
   terminable: boolean;
 }
 
-export function RunsPanel({ onClearFinished, onInspectTool, onTerminateRun, runs, toolsByRun, workspacePath }: RunsPanelProps) {
+export function RunsPanel({ onArchiveFinished, onInspectTool, onTerminateRun, runs, scope, toolsByRun }: RunsPanelProps) {
   const { t } = useTranslation("runs");
   const [confirmRunId, setConfirmRunId] = useState<string | null>(null);
   const [busyRunId, setBusyRunId] = useState<string | null>(null);
   const [actionErrors, setActionErrors] = useState<Record<string, string | undefined>>({});
-  const [clearing, setClearing] = useState(false);
-  const [clearError, setClearError] = useState<string | null>(null);
+  const [archiving, setArchiving] = useState(false);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
 
-  const entries = useMemo(() => buildToolEntries(runs, toolsByRun), [runs, toolsByRun]);
+  const allEntries = useMemo(() => buildToolEntries(runs, toolsByRun), [runs, toolsByRun]);
+  const entries = useMemo(() => allEntries.filter(entry => !entry.run.archivedAt), [allEntries]);
   const { runningCount, finishedCount } = useMemo(() => countEntries(entries), [entries]);
 
   if (entries.length === 0) {
-    return <EmptyState title={t("runsPanel.emptyTitle")} detail={t("runsPanel.emptyDetail")} />;
+    const hasArchivedPrograms = allEntries.some(entry => entry.run.archivedAt);
+    return (
+      <EmptyState
+        detail={t(hasArchivedPrograms ? "runsPanel.emptyDetailArchived" : "runsPanel.emptyDetailNeverRun")}
+        title={t("runsPanel.emptyTitle")}
+      />
+    );
   }
 
   async function terminate(run: StoredRun) {
     setBusyRunId(run.id);
     setActionErrors(current => ({ ...current, [run.id]: undefined }));
     try {
-      await onTerminateRun(run);
+      await onTerminateRun(scope?.threadId ?? run.threadId, run);
       setConfirmRunId(null);
     }
     catch (error) {
@@ -61,20 +69,21 @@ export function RunsPanel({ onClearFinished, onInspectTool, onTerminateRun, runs
     }
   }
 
-  async function clearFinished() {
-    if (clearing || finishedCount === 0)
+  async function archiveFinished() {
+    if (archiving || finishedCount === 0)
       return;
 
-    setClearing(true);
-    setClearError(null);
+    setArchiving(true);
+    setArchiveError(null);
     try {
-      await onClearFinished();
+      if (scope)
+        await onArchiveFinished(scope.threadId);
     }
     catch (error) {
-      setClearError(errorMessage(error));
+      setArchiveError(errorMessage(error));
     }
     finally {
-      setClearing(false);
+      setArchiving(false);
     }
   }
 
@@ -85,17 +94,17 @@ export function RunsPanel({ onClearFinished, onInspectTool, onTerminateRun, runs
           {t("runsPanel.runningFinished", { running: runningCount, finished: finishedCount })}
         </div>
         <Button
-          disabled={clearing || finishedCount === 0}
-          leftIcon={<Trash2 className="size-3.5" />}
-          onClick={() => void clearFinished()}
+          disabled={archiving || finishedCount === 0}
+          leftIcon={<Archive className="size-3.5" />}
+          onClick={() => void archiveFinished()}
           size="xs"
           variant="toolbar"
         >
-          {clearing ? t("runsPanel.clearing") : t("runsPanel.clearFinished")}
+          {t("runsPanel.archiveFinished")}
         </Button>
       </div>
-      {clearError
-        ? <div className="line-clamp-3 text-xs leading-5 text-danger">{clearError}</div>
+      {archiveError
+        ? <div className="line-clamp-3 text-xs leading-5 text-danger">{archiveError}</div>
         : null}
       <div className="space-y-2">
         {entries.map(entry => (
@@ -104,7 +113,7 @@ export function RunsPanel({ onClearFinished, onInspectTool, onTerminateRun, runs
             confirming={confirmRunId === entry.run.id}
             key={entry.tool.id}
             entry={entry}
-            workspacePath={workspacePath}
+            workspacePath={scope?.workspacePath}
             actionError={actionErrors[entry.run.id]}
             onCancelConfirm={() => setConfirmRunId(null)}
             onInspect={() => onInspectTool(entry.tool.id)}

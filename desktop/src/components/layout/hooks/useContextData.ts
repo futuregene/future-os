@@ -27,9 +27,25 @@ interface UseContextDataInput {
   activeThreadId: string | null;
   activeThreadMode: StoredThread["mode"] | null;
   activeWorkspaceId: string | null;
+  activeWorkspacePath: string | null;
+  workspaceScopeReady: boolean;
   activeTab: ContextTab;
   expanded: boolean;
 }
+
+export interface RunsContextScope {
+  threadId: string;
+  workspaceId: string | null;
+  workspacePath: string | null;
+}
+
+interface RunsContextSnapshot {
+  scope: RunsContextScope | null;
+  runs: StoredRun[];
+  toolsByRun: Record<string, StoredToolCall[]>;
+}
+
+const EMPTY_RUNS_SNAPSHOT: RunsContextSnapshot = { scope: null, runs: [], toolsByRun: {} };
 
 /**
  * Owns the right-context data pipeline: fetches runs/tools/artifacts/git-review
@@ -42,11 +58,15 @@ export function useContextData({
   activeThreadId,
   activeThreadMode,
   activeWorkspaceId,
+  activeWorkspacePath,
+  workspaceScopeReady,
   activeTab,
   expanded,
 }: UseContextDataInput) {
-  const [runs, setRuns] = useState<StoredRun[]>([]);
-  const [toolsByRun, setToolsByRun] = useState<Record<string, StoredToolCall[]>>({});
+  // Runs, their projected tool calls, and the workspace root that formats file
+  // targets form one scope-bound snapshot. Keeping them together prevents a
+  // thread switch from rendering stale rows through a newer workspace path.
+  const [runsSnapshot, setRunsSnapshot] = useState<RunsContextSnapshot>(EMPTY_RUNS_SNAPSHOT);
   const [artifacts, setArtifacts] = useState<StoredArtifact[]>([]);
   const [gitReview, setGitReview] = useState<GitReview | null>(null);
   const [reviewCapabilities, setReviewCapabilities] = useState<WorkspaceReviewCapabilities | null>(null);
@@ -64,13 +84,18 @@ export function useContextData({
     const isCurrentRefresh = () => refreshGenerationRef.current === refreshGeneration;
 
     if (!activeThreadId) {
-      setRuns([]);
-      setToolsByRun({});
+      setRunsSnapshot(EMPTY_RUNS_SNAPSHOT);
       setArtifacts([]);
       setGitReview(null);
       setLoading(false);
       return;
     }
+
+    // The store may briefly expose a fallback workspace while the active
+    // thread's actual workspace is still resolving. Keep the previous complete
+    // snapshot until the new thread and root can be committed together.
+    if (!workspaceScopeReady)
+      return;
 
     // Note: blanking + the loading spinner are driven by the thread-switch
     // bootstrap effect (delayed + min-duration), not here — so a fast local
@@ -113,21 +138,27 @@ export function useContextData({
       if (!isCurrentRefresh())
         return;
 
-      setRuns(nextRuns);
-      setToolsByRun(Object.fromEntries(toolEntries));
+      setRunsSnapshot({
+        scope: {
+          threadId: activeThreadId,
+          workspaceId: activeWorkspaceId,
+          workspacePath: activeWorkspacePath,
+        },
+        runs: nextRuns,
+        toolsByRun: Object.fromEntries(toolEntries),
+      });
       setArtifacts(nextArtifacts);
       setGitReview(nextGitReview);
       setReviewCapabilities(nextCapabilities);
     }
     catch {
       if (isCurrentRefresh()) {
-        setRuns([]);
-        setToolsByRun({});
+        setRunsSnapshot(EMPTY_RUNS_SNAPSHOT);
         setArtifacts([]);
         setGitReview(null);
       }
     }
-  }, [activeTab, activeThreadId, activeThreadMode, activeWorkspaceId, reviewBase, debouncedReviewCustomBase]);
+  }, [activeTab, activeThreadId, activeThreadMode, activeWorkspaceId, activeWorkspacePath, workspaceScopeReady, reviewBase, debouncedReviewCustomBase]);
 
   // Always invoke the latest refreshContext through this ref: it closes over
   // activeThreadId/activeTab/reviewBase/… so its identity changes on nearly
@@ -160,8 +191,7 @@ export function useContextData({
       if (cancelled)
         return;
       spinnerShownAt = performance.now();
-      setRuns([]);
-      setToolsByRun({});
+      setRunsSnapshot(EMPTY_RUNS_SNAPSHOT);
       setArtifacts([]);
       setGitReview(null);
       setLoading(true);
@@ -194,7 +224,7 @@ export function useContextData({
       if (minTimer)
         clearTimeout(minTimer);
     };
-  }, [activeThreadId]);
+  }, [activeThreadId, activeWorkspaceId, activeWorkspacePath, workspaceScopeReady]);
 
   // Parameter-driven refresh: re-fetch for the current tab / diff base without
   // blanking already-loaded state.
@@ -207,7 +237,7 @@ export function useContextData({
   // idle-panel data (git review, artifacts) moves rarely, and the expensive
   // queries behind it are already cached/batched. External changes (another
   // client driving the session) surface within the slow tick.
-  const hasActiveRun = runs.some(run => !matchesSettledRun(run.status));
+  const hasActiveRun = runsSnapshot.runs.some(run => !matchesSettledRun(run.status));
   usePolling(() => refreshContextRef.current(), hasActiveRun ? 1500 : 5000, {
     enabled: Boolean(activeThreadId) && expanded,
     // Intentionally no refreshContext dep: the parameter-driven effect above
@@ -216,8 +246,9 @@ export function useContextData({
   });
 
   return {
-    runs,
-    toolsByRun,
+    runs: runsSnapshot.runs,
+    runsScope: runsSnapshot.scope,
+    toolsByRun: runsSnapshot.toolsByRun,
     artifacts,
     gitReview,
     reviewCapabilities,

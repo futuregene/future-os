@@ -53,8 +53,16 @@ CREATE TABLE IF NOT EXISTS runs (
     ended_at INTEGER,
     error_message TEXT,
     error_type TEXT,
+    archived_at INTEGER,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
+);
+
+-- Applied database migrations. Fresh installs record every migration after the
+-- complete schema is created; upgrades apply only the migrations they lack.
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version TEXT PRIMARY KEY,
+    applied_at INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS approval_requests (
@@ -301,6 +309,15 @@ pub(super) const ADDED_COLUMNS: &[(&str, &str)] = &[
     // Phase 2 sandbox: suggested rule (JSON) for session/always-allow buttons.
     ("approval_requests", "save_suggestion TEXT"),
 ];
+
+/// Database migrations introduced after the v1.1.2 release. Existing entries
+/// are immutable once released; add a new entry for each future release.
+pub(super) const VERSIONED_MIGRATIONS: &[(&str, &str, &str, &str)] = &[(
+    "v1.1.3-runs-archived-at",
+    "runs",
+    "archived_at",
+    "ALTER TABLE runs ADD COLUMN archived_at INTEGER",
+)];
 
 /// Columns renamed after their table's initial creation (N-3 aligned the DB
 /// `type` columns with the Rust `*_type` fields). `CREATE TABLE IF NOT EXISTS`

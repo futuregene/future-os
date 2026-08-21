@@ -51,8 +51,8 @@ export async function abortRun(input: { threadId: string; runId: string }) {
   return invokeCommand<StoredRun>("abort_run", { threadId: input.threadId, runId: input.runId });
 }
 
-export async function clearFinishedRuns(threadId: string) {
-  return invokeCommand<number>("clear_finished_runs", { threadId });
+export async function archiveFinishedRuns(threadId: string) {
+  return invokeCommand<number>("archive_finished_runs", { threadId });
 }
 
 export async function listRunEvents(runId: string) {
