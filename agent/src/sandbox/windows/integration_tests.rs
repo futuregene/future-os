@@ -80,7 +80,7 @@ async fn run(
     approval: Option<&ApprovedWriteCapability>,
     environment: &[(OsString, OsString)],
 ) -> std::io::Result<CommandResult> {
-    let mut child = runner::spawn_with_plan_for_test(
+    let child = runner::spawn_with_plan_for_test(
         plan,
         command,
         &fixture.workspace,
@@ -88,6 +88,10 @@ async fn run(
         approval,
         &fixture.state_path,
     )?;
+    collect(child).await
+}
+
+async fn collect(mut child: super::process::RestrictedChild) -> std::io::Result<CommandResult> {
     let mut stdout = tokio::fs::File::from_std(child.take_stdout().expect("stdout pipe"));
     let mut stderr = tokio::fs::File::from_std(child.take_stderr().expect("stderr pipe"));
     let stdout_task = tokio::spawn(async move {
@@ -106,6 +110,49 @@ async fn run(
         stdout: String::from_utf8_lossy(&stdout_task.await.expect("stdout task")).into_owned(),
         stderr: String::from_utf8_lossy(&stderr_task.await.expect("stderr task")).into_owned(),
     })
+}
+
+#[tokio::test]
+async fn powershell_compatibility_sid_matrix_reports_minimum() {
+    let fixture = Fixture::new();
+    let plan = fixture.plan();
+    for (label, include_logon, include_everyone) in [
+        ("capability-only", false, false),
+        ("capability+logon", true, false),
+        ("capability+everyone", false, true),
+        ("capability+logon+everyone", true, true),
+    ] {
+        let result = match runner::spawn_with_compatibility_sids_for_test(
+            &plan,
+            "Write-Output 'sid-matrix-ok'",
+            &fixture.workspace,
+            &fixture.state_path,
+            include_logon,
+            include_everyone,
+        ) {
+            Ok(child) => collect(child).await,
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(result) => {
+                eprintln!(
+                    "SID MATRIX {label}: exit={} stdout={:?} stderr={:?}",
+                    result.exit_code,
+                    result.stdout.trim(),
+                    result.stderr.trim()
+                );
+                if include_logon && include_everyone {
+                    assert_eq!(result.exit_code, 0, "production SID set must start");
+                }
+            }
+            Err(error) => {
+                eprintln!("SID MATRIX {label}: spawn error: {error}");
+                if include_logon && include_everyone {
+                    panic!("production SID set must start: {error}");
+                }
+            }
+        }
+    }
 }
 
 fn require_supported(result: std::io::Result<CommandResult>) -> Option<CommandResult> {

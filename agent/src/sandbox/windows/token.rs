@@ -19,16 +19,15 @@ use windows_sys::Win32::Security::Authorization::{
 use windows_sys::Win32::Security::{
     AdjustTokenPrivileges, CopySid, CreateRestrictedToken, CreateWellKnownSid, GetLengthSid,
     GetTokenInformation, IsTokenRestricted, IsValidSid, LookupPrivilegeValueW, SetTokenInformation,
-    TokenDefaultDacl, TokenGroups, TokenUser, DISABLE_MAX_PRIVILEGE, LUA_TOKEN, LUID_AND_ATTRIBUTES,
-    PSID, SE_CHANGE_NOTIFY_NAME, SE_PRIVILEGE_ENABLED, SID_AND_ATTRIBUTES, TOKEN_ADJUST_DEFAULT,
-    TOKEN_ADJUST_PRIVILEGES, TOKEN_ASSIGN_PRIMARY, TOKEN_DEFAULT_DACL, TOKEN_DUPLICATE,
-    TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_USER, WRITE_RESTRICTED,
+    TokenDefaultDacl, TokenGroups, TokenUser, WinWorldSid, DISABLE_MAX_PRIVILEGE, LUA_TOKEN,
+    LUID_AND_ATTRIBUTES, PSID, SE_CHANGE_NOTIFY_NAME, SE_PRIVILEGE_ENABLED, SID_AND_ATTRIBUTES,
+    TOKEN_ADJUST_DEFAULT, TOKEN_ADJUST_PRIVILEGES, TOKEN_ASSIGN_PRIMARY, TOKEN_DEFAULT_DACL,
+    TOKEN_DUPLICATE, TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_USER, WRITE_RESTRICTED,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 use super::super::windows_capability::CapabilityRecord;
 
-const WIN_WORLD_SID: i32 = 1;
 const SE_GROUP_LOGON_ID: u32 = 0xC0000000;
 
 /// Owned, movable SID bytes. The backing allocation never moves when this
@@ -42,13 +41,15 @@ impl OwnedSid {
 }
 
 /// A primary WRITE_RESTRICTED token. It preserves the caller's normal SID
-/// check, removes maximum privileges, applies LUA filtering, and adds only the
-/// explicitly supplied capability SIDs to the second (write-only) check.
+/// check, removes maximum privileges, applies LUA filtering, and adds the
+/// explicitly supplied capability SIDs plus narrowly documented compatibility
+/// identities to the second (write-only) check.
 pub(crate) struct RestrictedToken {
     handle: HANDLE,
-    // Keep the exact trustees that passed CreateRestrictedToken so the process
-    // launcher can grant only those identities access to its private desktop.
+    // Keep every trustee passed to CreateRestrictedToken alive for the token's
+    // lifetime. Capability identities are always first in this vector.
     sids: Vec<OwnedSid>,
+    capability_sid_count: usize,
     // The private desktop must also pass the token's ordinary SID access check;
     // this identity is never added to the restricting SID set.
     normal_user_sid: OwnedSid,
@@ -59,6 +60,23 @@ unsafe impl Sync for RestrictedToken {}
 
 impl RestrictedToken {
     pub(crate) fn from_capabilities(records: &[CapabilityRecord]) -> io::Result<Self> {
+        Self::from_capabilities_inner(records, true, true)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_capabilities_for_test(
+        records: &[CapabilityRecord],
+        include_logon: bool,
+        include_everyone: bool,
+    ) -> io::Result<Self> {
+        Self::from_capabilities_inner(records, include_logon, include_everyone)
+    }
+
+    fn from_capabilities_inner(
+        records: &[CapabilityRecord],
+        include_logon: bool,
+        include_everyone: bool,
+    ) -> io::Result<Self> {
         if records.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -97,11 +115,16 @@ impl RestrictedToken {
         // session-scoped and Everyone-accessible kernel objects while it boots;
         // without these two trustees those writes fail the WRITE_RESTRICTED
         // check and PowerShell exits with E_ACCESSDENIED before running any
-        // command. Neither SID appears on ordinary file ACLs with write
-        // authority beyond the current session, so the filesystem write
-        // boundary (driven solely by capability ACEs) is preserved.
-        sids.push(logon_sid(source.0)?);
-        sids.push(everyone_sid()?);
+        // command. These identities are broader than capabilities and can
+        // match existing file ACLs, so the manual matrix must determine
+        // whether either can be removed before release.
+        let capability_sid_count = sids.len();
+        if include_logon {
+            sids.push(logon_sid(source.0)?);
+        }
+        if include_everyone {
+            sids.push(everyone_sid()?);
+        }
 
         let restricted: Vec<SID_AND_ATTRIBUTES> = sids
             .iter()
@@ -135,6 +158,7 @@ impl RestrictedToken {
         let token = RestrictedToken {
             handle: token,
             sids,
+            capability_sid_count,
             normal_user_sid,
         };
         // IsTokenRestricted reports false when no restricting SID actually
@@ -161,6 +185,12 @@ impl RestrictedToken {
         &self.sids
     }
 
+    /// Capability SIDs are safe trustees for FutureOS-created objects. Do not
+    /// use the broader PowerShell compatibility identities for object DACLs.
+    pub(crate) fn capability_sids(&self) -> &[OwnedSid] {
+        &self.sids[..self.capability_sid_count]
+    }
+
     pub(crate) fn normal_user_sid(&self) -> &OwnedSid {
         &self.normal_user_sid
     }
@@ -168,11 +198,13 @@ impl RestrictedToken {
 
 fn set_default_dacl(token: &RestrictedToken) -> io::Result<()> {
     // Named kernel objects created without an explicit descriptor inherit this
-    // DACL. Include one ordinary identity and every restricting capability so
+    // DACL. Include one ordinary identity and every capability identity so
     // both WRITE_RESTRICTED access-check passes can reopen the child's own
-    // mutexes/events/pipes. This does not modify existing filesystem ACLs.
+    // mutexes/events/pipes. Logon and Everyone exist only for compatibility in
+    // the restricting set; granting them GENERIC_ALL here would unnecessarily
+    // expose every child-created named object to other processes.
     let entries = std::iter::once(token.normal_user_sid())
-        .chain(token.restricting_sids())
+        .chain(token.capability_sids())
         .map(|sid| EXPLICIT_ACCESS_W {
             grfAccessPermissions: GENERIC_ALL,
             grfAccessMode: GRANT_ACCESS,
@@ -258,7 +290,13 @@ fn logon_sid(token: HANDLE) -> io::Result<OwnedSid> {
     if bytes == 0 {
         return Err(io::Error::last_os_error());
     }
-    let mut storage = vec![0u8; bytes as usize];
+    // TOKEN_GROUPS contains pointer-aligned SID_AND_ATTRIBUTES entries. A
+    // Vec<u8> does not promise that alignment, so use machine words as backing
+    // storage and still pass the exact byte capacity to Win32.
+    let storage_bytes = bytes as usize;
+    let word_size = std::mem::size_of::<usize>();
+    let word_count = storage_bytes.div_ceil(word_size);
+    let mut storage = vec![0usize; word_count];
     if unsafe {
         GetTokenInformation(
             token,
@@ -271,15 +309,38 @@ fn logon_sid(token: HANDLE) -> io::Result<OwnedSid> {
     {
         return Err(io::Error::last_os_error());
     }
-    // TOKEN_GROUPS is a DWORD count followed by a variable-length, pointer-
-    // aligned array of SID_AND_ATTRIBUTES. Read the count first, then walk the
-    // array via raw pointers because Rust's fixed `[SID_AND_ATTRIBUTES; 1]`
-    // representation cannot index the variable tail safely.
+    // TOKEN_GROUPS is a DWORD count followed by a variable-length array. Check
+    // the returned byte count before walking that tail; the kernel is trusted,
+    // but keeping the unsafe boundary explicit prevents accidental UB if this
+    // code is later reused with synthetic buffers.
+    let returned_bytes = bytes as usize;
+    if returned_bytes < std::mem::size_of::<u32>() || returned_bytes > storage_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid TokenGroups buffer length",
+        ));
+    }
     let count = unsafe { *storage.as_ptr().cast::<u32>() } as usize;
     let groups_offset = (std::mem::size_of::<u32>() + std::mem::align_of::<SID_AND_ATTRIBUTES>()
         - 1)
         & !(std::mem::align_of::<SID_AND_ATTRIBUTES>() - 1);
-    let groups = unsafe { storage.as_ptr().add(groups_offset).cast::<SID_AND_ATTRIBUTES>() };
+    let entries_bytes = count
+        .checked_mul(std::mem::size_of::<SID_AND_ATTRIBUTES>())
+        .and_then(|size| groups_offset.checked_add(size))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid TokenGroups count"))?;
+    if entries_bytes > returned_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "TokenGroups entries exceed returned buffer",
+        ));
+    }
+    let groups = unsafe {
+        storage
+            .as_ptr()
+            .cast::<u8>()
+            .add(groups_offset)
+            .cast::<SID_AND_ATTRIBUTES>()
+    };
     for index in 0..count {
         let entry = unsafe { std::ptr::read_unaligned(groups.add(index)) };
         if entry.Attributes & SE_GROUP_LOGON_ID == SE_GROUP_LOGON_ID {
@@ -292,14 +353,14 @@ fn logon_sid(token: HANDLE) -> io::Result<OwnedSid> {
 fn everyone_sid() -> io::Result<OwnedSid> {
     let mut bytes = 0;
     // The sizing probe is expected to report required storage through `bytes`.
-    unsafe { CreateWellKnownSid(WIN_WORLD_SID, ptr::null_mut(), ptr::null_mut(), &mut bytes) };
+    unsafe { CreateWellKnownSid(WinWorldSid, ptr::null_mut(), ptr::null_mut(), &mut bytes) };
     if bytes == 0 {
         return Err(io::Error::last_os_error());
     }
     let mut storage = vec![0u8; bytes as usize];
     if unsafe {
         CreateWellKnownSid(
-            WIN_WORLD_SID,
+            WinWorldSid,
             ptr::null_mut(),
             storage.as_mut_ptr().cast(),
             &mut bytes,

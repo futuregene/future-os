@@ -194,13 +194,13 @@ impl RestrictedChild {
 /// restricted token's capability trustees enough USER-object rights for
 /// DLL/console initialization. It avoids adding the real User SID to the
 /// token's restricting SID set, which would otherwise broaden filesystem writes
-/// through ordinary user ACLs (the logon SID and Everyone that the token does
-/// carry are added separately for PowerShell/CLR boot, and neither appears on
-/// ordinary file ACLs with write authority beyond the current session).
+/// through ordinary user ACLs. The logon SID and Everyone that the token carries
+/// for PowerShell/CLR compatibility are deliberately not granted access to the
+/// desktop.
 ///
-/// `CreateWindowStationW` requires privileges an unelevated process does not
-/// hold (it returns ERROR_ACCESS_DENIED), so the sandbox cannot build a
-/// dedicated station. Instead it creates a uniquely named desktop on the
+/// `CreateWindowStationW` returned ERROR_ACCESS_DENIED on the current
+/// unelevated Windows test host, so a dedicated station is not a compatible
+/// baseline. Instead this creates a uniquely named desktop on the
 /// caller's existing `Winsta0` station — the same approach as Codex's legacy
 /// backend. `Winsta0`'s DACL already grants the ordinary token's user/groups
 /// the read rights `CreateProcessAsUserW` needs to attach the child; the
@@ -288,7 +288,7 @@ fn grant_user_object_access(
     // ACEs exist only on the short-lived USER object. Never add the real user
     // SID to SidsToRestrict: that could authorize writes on ordinary user ACLs.
     let entries = std::iter::once(token.normal_user_sid())
-        .chain(token.restricting_sids())
+        .chain(token.capability_sids())
         .map(|sid| EXPLICIT_ACCESS_W {
             grfAccessPermissions: access,
             grfAccessMode: GRANT_ACCESS,

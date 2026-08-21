@@ -22,6 +22,15 @@ use crate::sandbox::{shell_invocation, ResolvedSandbox};
 
 static PREPARE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+enum CompatibilitySidMode {
+    Production,
+    #[cfg(test)]
+    Diagnostic {
+        include_logon: bool,
+        include_everyone: bool,
+    },
+}
+
 pub(crate) fn spawn(
     sandbox: &ResolvedSandbox,
     command: &str,
@@ -42,6 +51,26 @@ fn spawn_with_plan(
     approval: Option<&ApprovedWriteCapability>,
     state_path: &Path,
 ) -> io::Result<RestrictedChild> {
+    spawn_with_plan_inner(
+        plan,
+        command,
+        cwd,
+        env_overrides,
+        approval,
+        state_path,
+        CompatibilitySidMode::Production,
+    )
+}
+
+fn spawn_with_plan_inner(
+    plan: &WindowsSandboxPlan,
+    command: &str,
+    cwd: &Path,
+    env_overrides: &[(OsString, OsString)],
+    approval: Option<&ApprovedWriteCapability>,
+    state_path: &Path,
+    compatibility: CompatibilitySidMode,
+) -> io::Result<RestrictedChild> {
     let _guard = PREPARE_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
@@ -50,7 +79,16 @@ fn spawn_with_plan(
     let records = records_for(plan, approval)?;
     persist_records(&records, state_path)?;
     apply_acl_plan(plan, &records)?;
-    let token = RestrictedToken::from_capabilities(&records)?;
+    let token = match compatibility {
+        CompatibilitySidMode::Production => RestrictedToken::from_capabilities(&records)?,
+        #[cfg(test)]
+        CompatibilitySidMode::Diagnostic {
+            include_logon,
+            include_everyone,
+        } => {
+            RestrictedToken::from_capabilities_for_test(&records, include_logon, include_everyone)?
+        }
+    };
     let (program, args) = shell_invocation(command);
     let args = args.into_iter().map(OsString::from).collect::<Vec<_>>();
     RestrictedChild::spawn(&token, OsStr::new(program), &args, cwd, env_overrides)
@@ -68,6 +106,32 @@ pub(crate) fn spawn_with_plan_for_test(
     state_path: &Path,
 ) -> io::Result<RestrictedChild> {
     spawn_with_plan(plan, command, cwd, env_overrides, approval, state_path)
+}
+
+/// Manual Windows-only diagnostic used to determine the minimum compatibility
+/// SID set that can initialize PowerShell on real hosts. This is not reachable
+/// from the product runner.
+#[cfg(test)]
+pub(crate) fn spawn_with_compatibility_sids_for_test(
+    plan: &WindowsSandboxPlan,
+    command: &str,
+    cwd: &Path,
+    state_path: &Path,
+    include_logon: bool,
+    include_everyone: bool,
+) -> io::Result<RestrictedChild> {
+    spawn_with_plan_inner(
+        plan,
+        command,
+        cwd,
+        &[],
+        None,
+        state_path,
+        CompatibilitySidMode::Diagnostic {
+            include_logon,
+            include_everyone,
+        },
+    )
 }
 
 fn records_for(
