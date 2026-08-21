@@ -421,10 +421,6 @@ fn build_dynamic_tool_guidelines(tool_names: &[&str]) -> Vec<String> {
 
     if has_write || has_edit || has_shell {
         guidelines.push(
-            "Tool call arguments must be a single valid JSON object: the value of `arguments` is one complete object such as {\"path\": ..., \"content\": ...}, never a bare fragment like {1,3}, {a:1}, {brace}, or an unquoted trailing chunk. When in doubt, write the arguments as one small, well-formed JSON object and keep `content`/`command` short."
-                .to_string(),
-        );
-        guidelines.push(
             "If a tool returns a \"malformed (non-JSON) arguments\" error, re-emit that tool call with simpler arguments: split an over-long `content` or `command` into smaller pieces and avoid deeply nested escapes; never resend the identical call unchanged."
                 .to_string(),
         );
@@ -953,19 +949,6 @@ mod tests {
         assert!(!guidelines
             .iter()
             .any(|g| g.contains("malformed (non-JSON) arguments")));
-    }
-
-    #[test]
-    fn dynamic_guidelines_include_valid_json_contract_when_write_tool_present() {
-        let guidelines = build_dynamic_tool_guidelines(&["read", "write", "edit", "shell"]);
-        assert!(guidelines
-            .iter()
-            .any(|g| g.contains("single valid JSON object")));
-        // Absent without write/edit/shell tools.
-        let guidelines = build_dynamic_tool_guidelines(&["read"]);
-        assert!(!guidelines
-            .iter()
-            .any(|g| g.contains("single valid JSON object")));
     }
 
     #[test]
