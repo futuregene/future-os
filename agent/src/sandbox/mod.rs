@@ -357,14 +357,16 @@ pub fn shell_invocation(command: &str) -> (&'static str, Vec<String>) {
 ///   Use the existing `[Text.Encoding]::UTF8` static instance rather than
 ///   constructing `UTF8Encoding($false)`: a WRITE_RESTRICTED token puts Windows
 ///   PowerShell 5.1 in Constrained Language Mode, which rejects construction of
-///   that .NET type. Console redirection writes encoded characters rather than
-///   an encoding preamble, so this does not add a BOM to captured stdout.
-///   (pwsh 7 already defaults to UTF-8; setting these is harmless there.) Native
-///   tools that ignore the code page and hard-code OEM/ANSI output can't be
-///   fixed here — those bytes become replacement chars via `from_utf8_lossy`.
-///   The assignment remains inside `try` for hosts whose application-control
-///   policy also blocks the static property. Record `$Error.Count` afterwards
-///   so a setup failure cannot turn a successful user command into `exit 1`.
+///   that .NET type. Each assignment is wrapped in its own `try` so a blocked
+///   one cannot prevent the others; `$Error.Count` is recorded first so a setup
+///   failure cannot turn a successful user command into `exit 1`.
+///
+///   Constrained Language Mode also rejects the `[Console]::OutputEncoding`
+///   setter outright, so a restricted PowerShell 5.1 keeps emitting ANSI (e.g.
+///   936/GBK) no matter what this script does. That is deliberate: the
+///   restricted-shell reader decodes it back with
+///   [`decode_restricted_shell_output`] (ANSI for 5.1, UTF-8 for pwsh 7).
+///   pwsh 7 always emits UTF-8 and is unaffected by either restriction.
 /// - `$ProgressPreference = 'SilentlyContinue'` suppresses progress records
 ///   (e.g. "Preparing modules for first use"). When powershell.exe's stderr is
 ///   a redirected pipe, PS 5.1 serializes such records as CLIXML (`#< CLIXML …`)
@@ -377,7 +379,8 @@ pub fn windows_wrapper_script(command: &str) -> String {
     let command = ResolvedSandbox::normalize_shell_quoting(command);
     format!(
         "chcp 65001 > $null; \
-         try {{ $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 }} catch {{}}; \
+         try {{ $OutputEncoding = [System.Text.Encoding]::UTF8 }} catch {{}}; \
+         try {{ [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 }} catch {{}}; \
          $ProgressPreference = 'SilentlyContinue'; \
          $global:LASTEXITCODE = $null; \
          $futureosInitialErrorCount = $Error.Count; \
@@ -398,6 +401,64 @@ fn encode_powershell_command(script: &str) -> String {
         .flat_map(|unit| unit.to_le_bytes())
         .collect();
     base64::engine::general_purpose::STANDARD.encode(utf16)
+}
+
+/// Decode captured shell output using the system legacy ANSI code page
+/// (`GetACP`). Windows PowerShell 5.1 running under a WRITE_RESTRICTED token
+/// enters Constrained Language Mode, where it cannot assign
+/// `[Console]::OutputEncoding`; its stdout/stderr are therefore emitted in the
+/// ANSI code page (e.g. 936/GBK) rather than UTF-8. pwsh 7 is unaffected
+/// because it hard-codes UTF-8 output, so callers only use this for the 5.1
+/// restricted path.
+#[cfg(target_os = "windows")]
+pub(crate) fn decode_ansi_lossy(bytes: &[u8]) -> String {
+    use windows_sys::Win32::Globalization::{MultiByteToWideChar, CP_ACP};
+
+    if bytes.is_empty() {
+        return String::new();
+    }
+    // First pass: query the required UTF-16 length.
+    let wide_len = unsafe {
+        MultiByteToWideChar(
+            CP_ACP,
+            0,
+            bytes.as_ptr(),
+            bytes.len() as i32,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if wide_len <= 0 {
+        return String::from_utf8_lossy(bytes).into_owned();
+    }
+    let mut wide = vec![0u16; wide_len as usize];
+    let written = unsafe {
+        MultiByteToWideChar(
+            CP_ACP,
+            0,
+            bytes.as_ptr(),
+            bytes.len() as i32,
+            wide.as_mut_ptr(),
+            wide_len,
+        )
+    };
+    if written <= 0 {
+        return String::from_utf8_lossy(bytes).into_owned();
+    }
+    wide.truncate(written as usize);
+    String::from_utf16_lossy(&wide)
+}
+
+/// Decode output captured from a restricted Windows shell. Windows PowerShell
+/// 5.1 cannot set UTF-8 under Constrained Language Mode and therefore emits
+/// ANSI; pwsh 7 always emits UTF-8. Everything else is UTF-8.
+#[cfg(target_os = "windows")]
+pub(crate) fn decode_restricted_shell_output(bytes: &[u8]) -> String {
+    if windows_shell().program == "powershell" {
+        decode_ansi_lossy(bytes)
+    } else {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
 }
 
 /// The resolved Windows shell for command execution. pwsh (PowerShell 7+) is
@@ -915,7 +976,10 @@ mod tests {
         // Reuse the static UTF-8 encoding rather than constructing a .NET type,
         // which is forbidden by Windows PowerShell Constrained Language Mode.
         assert!(script.contains("[System.Text.Encoding]::UTF8"));
-        assert!(script.contains("$OutputEncoding = [Console]::OutputEncoding"));
+        // Each assignment is isolated so a CLM-blocked one cannot break the
+        // others (`[Console]::OutputEncoding` is blocked under CLM).
+        assert!(script.contains("$OutputEncoding = [System.Text.Encoding]::UTF8"));
+        assert!(script.contains("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8"));
         assert!(script.contains("$futureosInitialErrorCount = $Error.Count"));
         assert!(script.contains("$Error.Count -gt $futureosInitialErrorCount"));
         // Progress suppressed so PS 5.1 doesn't serialize "Preparing modules…"
@@ -950,6 +1014,22 @@ mod tests {
             .collect();
         let decoded = String::from_utf16(&utf16).expect("valid utf-16");
         assert!(decoded.contains("& { Get-ChildItem } 2>&1"));
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn decode_ansi_lossy_round_trips_ascii_and_cjk() {
+        use windows_sys::Win32::Globalization::GetACP;
+
+        // ASCII is identical in every ANSI code page.
+        assert_eq!(decode_ansi_lossy(b"hello"), "hello");
+        assert_eq!(decode_ansi_lossy(b""), "");
+        // GBK (code page 936) encodes 中文 as D6 D0 CE C4. Only assert on
+        // systems whose ANSI code page is actually GBK; elsewhere the same
+        // bytes decode differently (e.g. cp1252) and this branch is skipped.
+        if unsafe { GetACP() } == 936 {
+            assert_eq!(decode_ansi_lossy(&[0xD6, 0xD0, 0xCE, 0xC4]), "中文");
+        }
     }
 
     #[test]

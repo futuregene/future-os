@@ -319,6 +319,7 @@ RestrictedToken/NTFS 不向父进程可靠报告“刚才拒绝了哪个对象�
 - **既有宽写 ACL**：若目标目录本身对 Everyone/相关 restricting SID 可写，可能削弱默认写边界；启动诊断与 smoke 必须覆盖，不能仅靠假设。
 - **网络与读取开放**：任何 shell 可读取当前用户能读的文件并经网络外传；这是 Windows 写保护的明确非目标，在模式选择、首次启用说明和设置页持续说明，不塞进每次路径审批卡片。
 - **shell**：Windows 使用现有 pwsh 7 / Windows PowerShell 5.1 选择逻辑；不再假设 Git Bash/WSL。
+- **CLM 下的输出编码**：受限 token 使 Windows PowerShell 5.1 进入 Constrained Language Mode，而 CLM 禁止 `[Console]::OutputEncoding` 的 setter（也禁止 `GetBytes`/`OpenStandardOutput().Write` 等 .NET 方法），因此 5.1 的 stdout/stderr 只能用系统 ANSI 代码页（中文系统为 936/GBK）输出，wrapper 里设置 UTF-8 均无效。捕获端据此用 `MultiByteToWideChar(CP_ACP)` 解码（`decode_restricted_shell_output`：5.1→ANSI、pwsh 7→UTF-8，pwsh 7 硬编码 UTF-8 不受影响）。native 子进程的管道输出同样经过 PowerShell 的 ANSI 解码-重编码，`chcp 65001` 在 stdout 为 pipe（无控制台）时本就不生效，因此不引入额外不一致。
 - **elevated（独立用户强隔离）暂缓**：留给将来"要独立安全主体"的企业诉求。
 
 ### 11.7 实施阶段

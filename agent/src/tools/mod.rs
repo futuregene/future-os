@@ -1009,7 +1009,7 @@ async fn spawn_windows_restricted_shell(
         }
         combined.extend_from_slice(&stderr);
     }
-    let combined = String::from_utf8_lossy(&combined);
+    let combined = crate::sandbox::decode_restricted_shell_output(&combined);
 
     match completion {
         Completion::Exit(exit) => {

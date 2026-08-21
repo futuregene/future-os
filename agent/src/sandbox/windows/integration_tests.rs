@@ -107,8 +107,12 @@ async fn collect(mut child: super::process::RestrictedChild) -> std::io::Result<
     let exit_code = child.wait().await?;
     Ok(CommandResult {
         exit_code,
-        stdout: String::from_utf8_lossy(&stdout_task.await.expect("stdout task")).into_owned(),
-        stderr: String::from_utf8_lossy(&stderr_task.await.expect("stderr task")).into_owned(),
+        stdout: crate::sandbox::decode_restricted_shell_output(
+            &stdout_task.await.expect("stdout task"),
+        ),
+        stderr: crate::sandbox::decode_restricted_shell_output(
+            &stderr_task.await.expect("stderr task"),
+        ),
     })
 }
 
