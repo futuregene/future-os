@@ -46,10 +46,25 @@ function Invoke-LoggedNative {
     Write-LogLine ""
     Write-LogLine "=== $Label ==="
     Write-LogLine ("COMMAND: {0} {1}" -f $FilePath, ($Arguments -join " "))
-    $lines = @(& $FilePath @Arguments 2>&1)
-    $exitCode = $LASTEXITCODE
+    # Windows PowerShell 5.1 wraps every native stderr line in an ErrorRecord.
+    # With the script-wide Stop preference, harmless Cargo progress such as
+    # "Updating crates.io index" would otherwise terminate this function before
+    # Cargo can run its tests. Native success/failure is authoritative through
+    # LASTEXITCODE; stderr remains captured in the report.
+    $previousErrorActionPreference = $ErrorActionPreference
+    $global:LASTEXITCODE = $null
+    try {
+        $ErrorActionPreference = "Continue"
+        $lines = @(& $FilePath @Arguments 2>&1)
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
     foreach ($line in $lines) {
         Write-LogLine ([string]$line)
+    }
+    if ($null -eq $exitCode) {
+        throw "$Label did not start or did not report an exit code"
     }
     Write-LogLine "EXIT CODE: $exitCode"
     if ($exitCode -ne 0) {
