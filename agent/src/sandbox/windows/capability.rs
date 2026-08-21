@@ -26,9 +26,9 @@ pub enum CapabilityKind {
     Request,
 }
 
-/// One deterministic Windows capability name. On Windows the name is passed
-/// to `DeriveCapabilitySidsFromName`; metadata stores the name, never raw SID
-/// pointers or mutable ACL state.
+/// One deterministic Windows capability name. On Windows it deterministically
+/// derives a private account-domain-shaped restricting SID; metadata stores the
+/// name, never raw SID pointers or mutable ACL state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapabilityRecord {
     pub name: String,

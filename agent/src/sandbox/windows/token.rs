@@ -7,11 +7,12 @@ use std::collections::HashSet;
 use std::io;
 use std::ptr;
 
-use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, ERROR_INVALID_PARAMETER, HANDLE};
+use sha2::{Digest, Sha256};
+
+use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, HANDLE};
 use windows_sys::Win32::Security::{
-    CopySid, CreateRestrictedToken, DeriveCapabilitySidsFromName, GetLengthSid, IsTokenRestricted,
-    IsValidSid, DISABLE_MAX_PRIVILEGE, LUA_TOKEN, PSID, SID_AND_ATTRIBUTES, TOKEN_DUPLICATE,
-    TOKEN_QUERY, WRITE_RESTRICTED,
+    CreateRestrictedToken, IsTokenRestricted, DISABLE_MAX_PRIVILEGE, LUA_TOKEN, PSID,
+    SID_AND_ATTRIBUTES, TOKEN_DUPLICATE, TOKEN_QUERY, WRITE_RESTRICTED,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -137,76 +138,37 @@ impl Drop for HandleGuard {
     }
 }
 
-/// Derive the documented AppAuthority capability SID and copy it into Rust-
-/// owned bytes before releasing every LocalAlloc allocation returned by Win32.
+/// Build a stable, syntactically-valid account-domain SID for one FutureOS
+/// capability identity.
+///
+/// `DeriveCapabilitySidsFromName` returns an **AppContainer** capability SID.
+/// That type belongs in AppContainer tokens and is rejected by
+/// `CreateRestrictedToken` on normal desktop Windows (ERROR_INVALID_PARAMETER
+/// on a clean Windows 11 Home install). A WRITE_RESTRICTED token instead needs
+/// ordinary restricting SIDs. Like Codex's legacy Windows backend, we derive
+/// a private, stable account-domain-shaped SID from the immutable capability
+/// name. It need not correspond to a SAM account: it is only a DACL trustee
+/// and restricting SID.
 pub(crate) fn derive_capability_sid(name: &str) -> io::Result<OwnedSid> {
-    use std::os::windows::ffi::OsStrExt;
-
-    let wide: Vec<u16> = std::ffi::OsStr::new(name)
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
-    let mut group_sids: *mut PSID = ptr::null_mut();
-    let mut group_count = 0;
-    let mut capability_sids: *mut PSID = ptr::null_mut();
-    let mut capability_count = 0;
-    // SAFETY: all output pointers are valid and initialized; Win32 allocates
-    // both arrays and their SID elements on success.
-    let ok = unsafe {
-        DeriveCapabilitySidsFromName(
-            wide.as_ptr(),
-            &mut group_sids,
-            &mut group_count,
-            &mut capability_sids,
-            &mut capability_count,
-        )
-    };
-    if ok == 0 {
-        return Err(io::Error::last_os_error());
-    }
-
-    let result = if capability_count == 1 && !capability_sids.is_null() {
-        // SAFETY: successful API contract gives `capability_count` entries.
-        let sid = unsafe { *capability_sids };
-        clone_sid(sid)
-    } else {
-        Err(io::Error::other(format!(
-            "expected one capability SID, got {capability_count}"
-        )))
-    };
-    // SAFETY: Microsoft documents LocalFree for every SID and both arrays.
-    unsafe {
-        free_sid_array(group_sids, group_count);
-        free_sid_array(capability_sids, capability_count);
-    }
-    result
-}
-
-fn clone_sid(sid: PSID) -> io::Result<OwnedSid> {
-    if sid.is_null() || unsafe { IsValidSid(sid) } == 0 {
+    if name.trim().is_empty() {
         return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Win32 returned an invalid capability SID",
+            io::ErrorKind::InvalidInput,
+            "capability name must not be empty",
         ));
     }
-    let length = unsafe { GetLengthSid(sid) };
-    let mut bytes = vec![0u8; length as usize];
-    if unsafe { CopySid(length, bytes.as_mut_ptr().cast(), sid) } == 0 {
-        return Err(io::Error::last_os_error());
+    let mut hasher = Sha256::new();
+    hasher.update(b"futureos-windows-restricting-sid-v1\0");
+    hasher.update(name.as_bytes());
+    let digest = hasher.finalize();
+    // Binary SID: revision, subauthority count, identifier authority
+    // (big-endian), then subauthorities (little-endian): S-1-5-21-a-b-c-d.
+    let mut bytes = Vec::with_capacity(28);
+    bytes.extend_from_slice(&[1, 5, 0, 0, 0, 0, 0, 5]);
+    bytes.extend_from_slice(&21u32.to_le_bytes());
+    for chunk in digest[..16].chunks_exact(4) {
+        bytes.extend_from_slice(chunk);
     }
     Ok(OwnedSid(bytes))
-}
-
-unsafe fn free_sid_array(array: *mut PSID, count: u32) {
-    if array.is_null() {
-        return;
-    }
-    for sid in unsafe { std::slice::from_raw_parts(array, count as usize) } {
-        if !sid.is_null() {
-            unsafe { LocalFree(*sid) };
-        }
-    }
-    unsafe { LocalFree(array.cast()) };
 }
 
 #[cfg(test)]
@@ -220,5 +182,17 @@ mod tests {
         ));
         assert_eq!(error.kind(), io::ErrorKind::Unsupported);
         assert!(error.to_string().contains("CreateRestrictedToken"));
+    }
+
+    #[test]
+    fn capability_sid_is_stable_and_uses_account_domain_layout() {
+        let first = derive_capability_sid("futureos.windows.one").unwrap();
+        let same = derive_capability_sid("futureos.windows.one").unwrap();
+        let other = derive_capability_sid("futureos.windows.two").unwrap();
+        assert_eq!(first.0, same.0);
+        assert_ne!(first.0, other.0);
+        assert_eq!(&first.0[..8], &[1, 5, 0, 0, 0, 0, 0, 5]);
+        assert_eq!(u32::from_le_bytes(first.0[8..12].try_into().unwrap()), 21);
+        assert_eq!(first.0.len(), 28);
     }
 }
