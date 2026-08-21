@@ -74,6 +74,13 @@ impl RestrictedChild {
 
         let mut command_line = build_command_line(program, args);
         let cwd_wide = wide_nul(cwd.as_os_str());
+        // Some console hosts, including Windows PowerShell, exit with
+        // STATUS_DLL_INIT_FAILED when launched by CreateProcessAsUserW with a
+        // restricted token and no desktop. The interactive desktop is an
+        // execution prerequisite, not an authorization grant; filesystem
+        // access remains governed by the restricted token and ACLs.
+        let desktop_wide = wide_nul(OsStr::new("Winsta0\\Default"));
+        startup.StartupInfo.lpDesktop = desktop_wide.as_ptr().cast_mut();
         let environment = build_environment_block(env_overrides)?;
         let mut info: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
         // SAFETY: all UTF-16 buffers are NUL-terminated and live through this
