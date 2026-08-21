@@ -383,7 +383,7 @@ async fn unicode_path_pipeline_redirection_and_large_output_do_not_deadlock() {
     let plan = fixture.plan();
     let unicode_file = fixture.workspace.join("发布-结果.txt");
     let command = format!(
-        "$ErrorActionPreference='Stop'; 1..3 | ForEach-Object {{ \"项目-$_\" }} | Set-Content -LiteralPath {} -Encoding UTF8; Write-Output ('x' * 700000)",
+        "$ErrorActionPreference='Stop'; 1..3 | ForEach-Object {{ \"项目-$_\" }} | Set-Content -LiteralPath {} -Encoding UTF8; Write-Output '中文-stdout'; Write-Output ('x' * 700000)",
         ps(&unicode_file)
     );
     let Some(result) = require_supported(run(&fixture, &plan, &command, None, &[]).await) else {
@@ -391,6 +391,11 @@ async fn unicode_path_pipeline_redirection_and_large_output_do_not_deadlock() {
     };
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     assert!(read_fixture_text(&unicode_file).contains("项目-3"));
+    assert!(
+        result.stdout.contains("中文-stdout"),
+        "PowerShell stdout was not captured as UTF-8: {:?}",
+        result.stdout.chars().take(80).collect::<String>()
+    );
     assert!(
         result.stdout.len() >= 700_000,
         "large stdout was truncated unexpectedly: {} bytes",
