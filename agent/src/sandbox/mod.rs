@@ -806,6 +806,74 @@ pub fn platform_sandbox_available() -> bool {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowsSandboxProbe {
+    pub available: bool,
+    pub code: &'static str,
+    #[serde(skip)]
+    diagnostic: Option<String>,
+}
+
+impl WindowsSandboxProbe {
+    #[cfg(any(target_os = "windows", test))]
+    fn available() -> Self {
+        Self {
+            available: true,
+            code: "available",
+            diagnostic: None,
+        }
+    }
+
+    fn unavailable_without_error(code: &'static str) -> Self {
+        Self {
+            available: false,
+            code,
+            diagnostic: None,
+        }
+    }
+
+    #[cfg(any(target_os = "windows", test))]
+    fn unavailable(code: &'static str, error: impl std::fmt::Display) -> Self {
+        Self {
+            available: false,
+            code,
+            diagnostic: Some(error.to_string()),
+        }
+    }
+
+    pub(crate) fn diagnostic(&self) -> Option<&str> {
+        self.diagnostic.as_deref()
+    }
+}
+
+pub(crate) fn probe_windows_sandbox_host() -> std::io::Result<WindowsSandboxProbe> {
+    #[cfg(target_os = "windows")]
+    {
+        windows::runner::probe_host()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(WindowsSandboxProbe::unavailable_without_error(
+            "platform_not_windows",
+        ))
+    }
+}
+
+pub(crate) fn reset_windows_sandbox_capabilities() -> std::io::Result<usize> {
+    #[cfg(target_os = "windows")]
+    {
+        windows::runner::reset_capabilities()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Windows sandbox reset is only available on Windows",
+        ))
+    }
+}
+
 /// Expose the generated Seatbelt profile (for smoke tests and diagnostics).
 #[cfg(target_os = "macos")]
 pub fn seatbelt_profile(sandbox: &ResolvedSandbox) -> String {
@@ -849,6 +917,19 @@ pub fn looks_like_sandbox_denial(_sandbox: &ResolvedSandbox, exit_code: i32, std
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_probe_response_hides_internal_diagnostics() {
+        let result = WindowsSandboxProbe::unavailable("backend_initialization_failed", "secret");
+        let value = serde_json::to_value(result).unwrap();
+        assert_eq!(value["available"], false);
+        assert_eq!(value["code"], "backend_initialization_failed");
+        assert!(value.get("diagnostic").is_none());
+        assert_eq!(
+            serde_json::to_value(WindowsSandboxProbe::available()).unwrap()["code"],
+            "available"
+        );
+    }
 
     #[test]
     #[cfg(not(target_os = "windows"))]

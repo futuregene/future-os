@@ -10,6 +10,14 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
+use std::fs::File;
+use std::os::windows::io::AsRawHandle;
+use windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION;
+use windows_sys::Win32::Storage::FileSystem::{
+    LockFileEx, UnlockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+};
+use windows_sys::Win32::System::IO::OVERLAPPED;
+
 use super::acl::{ensure_write_deny, ensure_write_file, ensure_write_root, revoke_capability};
 use super::audit::FrozenPath;
 use super::process::RestrictedChild;
@@ -22,7 +30,76 @@ use crate::sandbox::windows_request::{ApprovedWriteCapability, WriteScope};
 use crate::sandbox::{shell_invocation, ResolvedSandbox};
 
 static PREPARE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-static ACTIVE_CAPABILITIES: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
+static ACTIVE_CAPABILITIES: OnceLock<Mutex<ActiveCapabilities>> = OnceLock::new();
+
+#[derive(Default)]
+struct ActiveCapabilities {
+    names: HashMap<String, usize>,
+    process_lock: Option<CapabilityFileLock>,
+}
+
+struct CapabilityFileLock {
+    file: File,
+    overlapped: OVERLAPPED,
+}
+
+// The lock is attached to a file handle, not to the acquiring thread. Windows
+// permits `UnlockFileEx` from another thread as long as the same handle and
+// OVERLAPPED byte range are supplied.
+unsafe impl Send for CapabilityFileLock {}
+
+impl CapabilityFileLock {
+    fn acquire(state_path: &Path) -> io::Result<Self> {
+        let parent = state_path.parent().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Windows capability state path has no parent",
+            )
+        })?;
+        std::fs::create_dir_all(parent)?;
+        let lock_path = parent.join("windows-capabilities.lock");
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(lock_path)?;
+        let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+        // A non-blocking exclusive byte-range lock is visible across FutureOS
+        // processes and is automatically released by Windows if one crashes.
+        // This closes the gap where an NSIS maintenance process could revoke
+        // ACEs still used by a separately running agent.
+        let ok = unsafe {
+            LockFileEx(
+                file.as_raw_handle(),
+                LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+                0,
+                1,
+                0,
+                &mut overlapped,
+            )
+        };
+        if ok == 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    format!("Windows sandbox permissions are in use: {error}"),
+                ));
+            }
+            return Err(error);
+        }
+        Ok(Self { file, overlapped })
+    }
+}
+
+impl Drop for CapabilityFileLock {
+    fn drop(&mut self) {
+        unsafe {
+            UnlockFileEx(self.file.as_raw_handle(), 0, 1, 0, &mut self.overlapped);
+        }
+    }
+}
 
 /// Keeps capability generations alive while their restricted process tree can
 /// still use inherited ACEs. GC only revokes a SID when no lease references it.
@@ -31,18 +108,28 @@ pub(crate) struct CapabilityLease {
 }
 
 impl CapabilityLease {
-    fn acquire(records: &[CapabilityRecord]) -> io::Result<Self> {
+    fn acquire(records: &[CapabilityRecord], state_path: &Path) -> io::Result<Self> {
         let mut names = records
             .iter()
             .map(|record| record.name.clone())
             .collect::<Vec<_>>();
         names.sort();
         names.dedup();
+        if names.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Windows sandbox has no capability records",
+            ));
+        }
         let mut active = active_capabilities()
             .lock()
             .map_err(|_| io::Error::other("active capability lock is poisoned"))?;
+        if active.names.is_empty() {
+            debug_assert!(active.process_lock.is_none());
+            active.process_lock = Some(CapabilityFileLock::acquire(state_path)?);
+        }
         for name in &names {
-            *active.entry(name.clone()).or_default() += 1;
+            *active.names.entry(name.clone()).or_default() += 1;
         }
         Ok(Self { names })
     }
@@ -54,7 +141,7 @@ impl Drop for CapabilityLease {
             return;
         };
         for name in &self.names {
-            let remove = match active.get_mut(name) {
+            let remove = match active.names.get_mut(name) {
                 Some(count) if *count > 1 => {
                     *count -= 1;
                     false
@@ -63,14 +150,17 @@ impl Drop for CapabilityLease {
                 None => false,
             };
             if remove {
-                active.remove(name);
+                active.names.remove(name);
             }
+        }
+        if active.names.is_empty() {
+            active.process_lock.take();
         }
     }
 }
 
-fn active_capabilities() -> &'static Mutex<HashMap<String, usize>> {
-    ACTIVE_CAPABILITIES.get_or_init(|| Mutex::new(HashMap::new()))
+fn active_capabilities() -> &'static Mutex<ActiveCapabilities> {
+    ACTIVE_CAPABILITIES.get_or_init(|| Mutex::new(ActiveCapabilities::default()))
 }
 
 enum CompatibilitySidMode {
@@ -128,7 +218,7 @@ fn spawn_with_plan_inner(
         .map_err(|_| io::Error::other("Windows capability preparation lock is poisoned"))?;
 
     let records = records_for(plan, approval)?;
-    let lease = CapabilityLease::acquire(&records)?;
+    let lease = CapabilityLease::acquire(&records, state_path)?;
     let mut state = persist_records(&records, state_path)?;
     apply_acl_plan(plan, &records)?;
     reconcile_stale_records(&records, &mut state, state_path)?;
@@ -235,6 +325,7 @@ fn reconcile_stale_records(
     let active = active_capabilities()
         .lock()
         .map_err(|_| io::Error::other("active capability lock is poisoned"))?
+        .names
         .keys()
         .cloned()
         .collect::<HashSet<_>>();
@@ -277,6 +368,72 @@ fn capability_state_path() -> io::Result<PathBuf> {
     Ok(home.join(".future/windows-capabilities.json"))
 }
 
+/// Exercise the complete unelevated backend in a disposable NTFS fixture.
+/// This intentionally probes more than `CreateRestrictedToken`: a host is only
+/// usable when the real shell/private-desktop pipeline can write the granted
+/// root while an adjacent user-writable path remains denied.
+pub(crate) fn probe_host() -> io::Result<crate::sandbox::WindowsSandboxProbe> {
+    let fixture = tempfile::tempdir()?;
+    let writable_root = fixture.path().join("allowed");
+    std::fs::create_dir(&writable_root)?;
+    let allowed_marker = writable_root.join("allowed.txt");
+    let denied_marker = fixture.path().join("denied.txt");
+    let state_path = fixture.path().join("capabilities.json");
+    let plan = WindowsSandboxPlan {
+        writable_roots: vec![writable_root.clone()],
+        ..WindowsSandboxPlan::default()
+    };
+    let env = [
+        (
+            OsString::from("FUTUREOS_SANDBOX_PROBE_ALLOW"),
+            allowed_marker.as_os_str().to_owned(),
+        ),
+        (
+            OsString::from("FUTUREOS_SANDBOX_PROBE_DENY"),
+            denied_marker.as_os_str().to_owned(),
+        ),
+    ];
+    let command = "$ErrorActionPreference = 'Stop'; \
+        Set-Content -LiteralPath $env:FUTUREOS_SANDBOX_PROBE_ALLOW -Value 'ok'; \
+        try { Set-Content -LiteralPath $env:FUTUREOS_SANDBOX_PROBE_DENY -Value 'bad'; exit 42 } \
+        catch { exit 0 }";
+    let child = match spawn_with_plan(&plan, command, &writable_root, &env, None, &state_path) {
+        Ok(child) => child,
+        Err(error) => {
+            let _ = reset_capabilities_at(&state_path);
+            return Ok(crate::sandbox::WindowsSandboxProbe::unavailable(
+                "backend_initialization_failed",
+                error,
+            ));
+        }
+    };
+    let exit_code = child.wait_blocking();
+    drop(child);
+    let cleanup = reset_capabilities_at(&state_path);
+    if let Err(error) = cleanup {
+        return Err(io::Error::other(format!(
+            "Windows sandbox probe cleanup failed: {error}"
+        )));
+    }
+    match exit_code {
+        Ok(0) if allowed_marker.is_file() && !denied_marker.exists() => {
+            Ok(crate::sandbox::WindowsSandboxProbe::available())
+        }
+        Ok(42) | Ok(0) if denied_marker.exists() => Ok(
+            crate::sandbox::WindowsSandboxProbe::unavailable_without_error("write_boundary_failed"),
+        ),
+        Ok(_) => Ok(
+            crate::sandbox::WindowsSandboxProbe::unavailable_without_error(
+                "restricted_shell_failed",
+            ),
+        ),
+        Err(error) => Ok(crate::sandbox::WindowsSandboxProbe::unavailable(
+            "restricted_shell_failed",
+            error,
+        )),
+    }
+}
+
 /// Remove all persisted FutureOS capability ACEs when no restricted process
 /// tree is active. This is the backend primitive for Settings reset/uninstall;
 /// callers must surface `WouldBlock` rather than terminating user commands.
@@ -292,6 +449,7 @@ fn reset_capabilities_at(state_path: &Path) -> io::Result<usize> {
     if !active_capabilities()
         .lock()
         .map_err(|_| io::Error::other("active capability lock is poisoned"))?
+        .names
         .is_empty()
     {
         return Err(io::Error::new(
@@ -299,6 +457,7 @@ fn reset_capabilities_at(state_path: &Path) -> io::Result<usize> {
             "Windows sandbox permissions are in use by an active command",
         ));
     }
+    let _process_lock = CapabilityFileLock::acquire(state_path)?;
     let mut state = match CapabilityState::load(state_path) {
         Ok(state) => state,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
@@ -377,6 +536,20 @@ fn approved_scope(record: &CapabilityRecord, path: &Path) -> Option<WriteScope> 
 mod tests {
     use super::*;
     use crate::sandbox::windows_request::ApprovalTarget;
+
+    #[test]
+    fn capability_file_lock_blocks_other_process_handles_and_recovers() {
+        let fixture = tempfile::tempdir().unwrap();
+        let state_path = fixture.path().join("capabilities.json");
+        let first = CapabilityFileLock::acquire(&state_path).unwrap();
+        let error = match CapabilityFileLock::acquire(&state_path) {
+            Ok(_) => panic!("second lock handle unexpectedly acquired the active range"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        drop(first);
+        CapabilityFileLock::acquire(&state_path).unwrap();
+    }
 
     #[test]
     fn approved_records_keep_exact_targets_and_scope() {

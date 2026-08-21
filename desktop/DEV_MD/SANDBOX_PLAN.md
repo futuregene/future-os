@@ -184,7 +184,7 @@ v2 决策（V1–V9）见 APPROVAL_PLAN §9。v1 期间沿用有效的：escalat
 
 ## 11. Windows 原生写保护（unelevated：RestrictedToken + ACL）
 
-状态：**W1–W5 已实现；W6 内部执行链已在 Windows 11 Home 真机跑通。** AppContainer SID、private window station、PowerShell/CLM 等兼容问题均已按附录 A 的证据修正；活动 capability lease、旧代际 ACE/metadata GC 与无活动命令时的 reset primitive 也已实现。卸载调用、支持主机矩阵及产品入口仍待完成。在这些发布闭环完成前，`platform_sandbox_available()` 在 Windows 必须保持 false，GUI 不显示该档。
+状态：**W1–W5 已实现；W6 内部执行链已在 Windows 11 Home 真机跑通。** AppContainer SID、private window station、PowerShell/CLM 等兼容问题均已按附录 A 的证据修正；活动 capability lease、跨进程占用锁、旧代际 ACE/metadata GC、完整 host probe、reset 及其设置页/NSIS/RPC/CLI 调用也已实现。新增生命周期与发布闭环仍待 Windows 真机复验，支持主机矩阵及产品入口仍待完成。在这些发布闭环完成前，`platform_sandbox_available()` 在 Windows 必须保持 false，GUI 不显示该档。
 
 Windows 与 macOS 共用 `SandboxTier::Sandbox` 协议值，但 UI 和保证不同：
 
@@ -300,7 +300,7 @@ RestrictedToken/NTFS 不向父进程可靠报告“刚才拒绝了哪个对象�
 - `sandbox/windows/token.rs`：创建并验证 `WRITE_RESTRICTED` primary token；restricting 集含 capability + logon SID + Everyone，但不加入真实 User SID（避免普遍命中用户文件 ACL）。恢复 `SeChangeNotifyPrivilege` 以允许路径遍历，并把 token default DACL 收敛为当前用户 SID + capability SID，使子进程自建内核对象同时通过普通与 restricting 两次检查，但不把对象授予兼容性宽 SID，也不修改任何已有文件 ACL。
 - `sandbox/windows/acl.rs`：通过已冻结的对象 handle 和 `SetSecurityInfo` 幂等增加 capability allow-write ACE 与受保护子路径 deny-write ACE；保留原 DACL，只操作 FutureOS 自己的 SID/ACE，不设置 owner、不整体覆盖 DACL，也不向父目录授予会绕过受保护子项的 `FILE_DELETE_CHILD`。回收沿用 Codex 的 `REVOKE_ACCESS` 模式，但只对 FutureOS 确定性派生的 capability SID 执行。
 - `sandbox/windows/audit.rs`：只接受绝对本地 NTFS 路径，以 `FILE_FLAG_OPEN_REPARSE_POINT` 打开并拒绝 reparse target，校验 handle final path 与已规范化审批路径完全一致；启动和按需检查 SID 映射/代际、关键 ACE 和异常宽写 ACL。可修复自身缺失 ACE 并 GC 不再被活动进程引用的旧 SID，但不得改 owner 或覆盖无关 DACL。
-- `sandbox/windows/process.rs`：每次启动在交互 `Winsta0` 上创建 UUID 命名的私有 desktop，DACL 只含当前用户 SID + 本次 capability SID（真机上使用自定义 station 名称的 `CreateWindowStationW` 对普通用户返回 `ERROR_ACCESS_DENIED`，故不把独立窗口站作为当前兼容基线）。随后以 `CreateProcessAsUserW(CREATE_SUSPENDED)` 配合 `STARTUPINFOEXW` handle allowlist，只继承 stdin/stdout/stderr；加入不允许 breakaway 的 Job Object后再 `ResumeThread`。失败时在恢复线程前终止进程；封装 Unicode command line/environment、cwd、stdout/stderr、wait 和整棵 Job terminate。restricted shell 正常退出后也关闭残留后代，不复用 unsandboxed 模式允许 detached browser 的 `BREAKAWAY_OK` / `disarm` 行为。每个 child 同时持有 capability lease；只要 Job 尚可能使用某 SID，GC 就不会撤销对应 ACE。
+- `sandbox/windows/process.rs`：每次启动在交互 `Winsta0` 上创建 UUID 命名的私有 desktop，DACL 只含当前用户 SID + 本次 capability SID（真机上使用自定义 station 名称的 `CreateWindowStationW` 对普通用户返回 `ERROR_ACCESS_DENIED`，故不把独立窗口站作为当前兼容基线）。随后以 `CreateProcessAsUserW(CREATE_SUSPENDED)` 配合 `STARTUPINFOEXW` handle allowlist，只继承 stdin/stdout/stderr；加入不允许 breakaway 的 Job Object后再 `ResumeThread`。失败时在恢复线程前终止进程；封装 Unicode command line/environment、cwd、stdout/stderr、wait 和整棵 Job terminate。restricted shell 正常退出后也关闭残留后代，不复用 unsandboxed 模式允许 detached browser 的 `BREAKAWAY_OK` / `disarm` 行为。每个 child 同时持有 capability lease；首个 lease 还持有同目录 byte-range 文件锁，Windows 在进程崩溃时自动释放。只要本进程或另一个 agent 的 Job 尚可能使用某 SID，GC/reset/卸载就不会撤销对应 ACE。
 - `sandbox/mod.rs`：将“构造 `tokio::process::Command`”升级为可承载 Windows 自定义 spawn driver 的 `spawn_shell` 抽象；approved capability 作为显式输入。
 - `agent/src/tools/mod.rs`：shell 参数增加 `additional_permissions.write[]`，执行前完成路径冻结、规则评估和 capability 请求；不解析 PowerShell 猜权限。
 - `agent/src/rpc/approval.rs`、`packages/rpc/proto/future.proto`、`packages/thread-projection/src/approval.ts`：传递可信用户语义和内部 enforcement payload，批准回执绑定 request/hash/path/scope。
@@ -337,7 +337,7 @@ RestrictedToken/NTFS 不向父进程可靠报告“刚才拒绝了哪个对象�
 | **W6 — 端到端安全与兼容性** | 将 W1–W5 串入真实 agent/desktop；增加 ACL audit/repair、活动代际跟踪、旧 SID GC、重置/卸载清理、日志脱敏和 feature probe；用仓库脚本进行 Windows 真实机手工批量 smoke，不加入 CI | 必过矩阵：workspace/temp 写成功；workspace 外写失败；一次批准仅开放完整列出的现有 file/subtree，未批准 sibling 仍失败；项目批准仅当前项目和新代际生效；父目录不被扩大；当前用户无权目标仍失败；现有关键对象 deny 硬化有效；不存在对象/glob 缺口与模式说明一致；崩溃/强杀/重启后无权限扩张；常见工具链可用；所有初始化失败均 fail closed |
 | **W7 — 灰度与发布** | 默认关闭 feature flag；仅对通过 capability probe 的本地 NTFS 工作区显示“写保护”；模式选择/首次启用/设置页说明“只限制写入，读取和网络开放”；保留一键退回 `manual` | Windows 目标版本手工 smoke 全绿；安全 review 无高优先级问题；升级、降级、重置 SID/ACL 可恢复；遥测不上传原始敏感路径；完成小范围灰度后才默认开放。发布后发现初始化/ACL 异常时自动回到 `manual`，不得无提示直跑 |
 
-**当前实现状态（2026-08-21）**：W1–W5 与 W6 内部执行链已实现；Windows 模块通过真机 `test-windows-sandbox.ps1`（44+10 项）及 Clippy，测试明确不加入 CI。活动 capability lease 与下次 spawn 的旧代际 GC 已接入：先持久化并应用新集合，再按 Codex 的 `REVOKE_ACCESS` 模式回收无活动引用的旧 SID；失败时保留 metadata 供以后重试。无活动 Job 时的 reset primitive 已实现，但桌面设置/卸载尚未调用。Windows 产品入口继续保持关闭，直到 reset/uninstall、支持主机 feature probe、灰度回退和额外主机矩阵完成。普通 NTFS DACL 仍无法精确拒绝允许目录内尚不存在的未来文件名，`FILE_DELETE_CHILD` 与 Everyone/logon 宽 ACL 也保留 §11.6 的已知边界，不能宣称与 macOS SBPL 等价。
+**当前实现状态（2026-08-21）**：W1–W5 与 W6 内部执行链已实现；最近一次 Windows 真机基线为 `test-windows-sandbox.ps1` 44+10 项及 Clippy 全绿，测试明确不加入 CI。本轮新增活动 capability lease、跨进程占用锁、下次 spawn 的旧代际 GC、reset 与 release probe 用例，等待下一次真机回归。回收顺序为先持久化并应用新集合，再按 Codex 的 `REVOKE_ACCESS` 模式回收无活动引用的旧 SID；失败时保留 metadata 供以后重试。完整 host probe 会在一次性本地 fixture 中实际启动受限 PowerShell，同时验证允许根可写、相邻未授权路径不可写并回收自身 ACE；对外只返回稳定 code，不返回路径/Win32 诊断。reset/probe 已提供 sessionless agent RPC 与 `future agent` 维护命令；Windows 设置页提供普通用户文案的手动 reset，NSIS 在删除 sidecar 前调用同一 CLI，失败即保留应用供重试。Windows 产品入口继续保持关闭，直到本轮真机回归、灰度回退和额外主机矩阵完成。普通 NTFS DACL 仍无法精确拒绝允许目录内尚不存在的未来文件名，`FILE_DELETE_CHILD` 与 Everyone/logon 宽 ACL 也保留 §11.6 的已知边界，不能宣称与 macOS SBPL 等价。
 
 Windows 真机从仓库根目录用普通（非管理员）PowerShell 执行：
 
@@ -345,7 +345,16 @@ Windows 真机从仓库根目录用普通（非管理员）PowerShell 执行：
 powershell -ExecutionPolicy Bypass -File .\scripts\test-windows-sandbox.ps1
 ```
 
-脚本要求 `%TEMP%` 位于本地 NTFS，强制 `--test-threads=1`，记录系统/Rust/Git 信息与完整测试输出到 `target/windows-sandbox-results/windows-sandbox-<时间>.log`。失败时把该日志原样反馈；不要只截最后一行。可选 `-IncludeClippy` 追加 Agent Clippy，但它不属于原生行为验收。测试不包含 UI，也不接入 CI。
+脚本要求 `%TEMP%` 位于本地 NTFS，强制 `--test-threads=1`，并通过 `future agent --probe-windows-sandbox` 再验证安装包 sidecar 使用的真实 CLI 路由；记录系统/Rust/Git 信息与完整测试输出到 `target/windows-sandbox-results/windows-sandbox-<时间>.log`。失败时把该日志原样反馈；不要只截最后一行。可选 `-IncludeClippy` 追加 Agent Clippy，但它不属于原生行为验收。测试不包含 UI，也不接入 CI。
+
+发布/维护入口同样必须以普通用户运行：
+
+```powershell
+future agent --probe-windows-sandbox
+future agent --reset-windows-sandbox
+```
+
+probe 成功执行时始终输出 JSON；`available=false` 是受支持的 fail-closed 结果而非崩溃。reset 只撤销状态文件中记录的 FutureOS capability ACE，存在活动 sandbox Job 时返回失败，不会终止用户命令。设置页只消费 `available` 和稳定 `code`；内部 diagnostic 仅写本机 agent 日志，不进入普通用户文案。
 
 ### 11.8 开发切分与合并顺序
 
@@ -438,4 +447,4 @@ W2 与 W4 可在 W1 契约冻结后并行开发，但 W4 的批准结果不得�
 
 **覆盖要点**：capability SID 只开放对应写根且 deny carveout 恒赢；restricted PowerShell 保留 cwd/env/stdout/退出码；Job Object 树形终止；workspace 写成功/未声明的外部写失败；subtree 一次性批准精确且旧 ACE 不可复用；file scope 不扩展到父目录；reparse/UNC 在 ACL 变更前 fail-closed；Unicode 路径 + 管道重定向 + 70 万字节大输出不卡死；受限 5.1 中文 stdout 按 OEM 代码页正确还原。
 
-**未覆盖（已知，见 §11.7 W6/W7）**：活动代际 GC、重置/卸载清理、支持主机矩阵，以及 UI 与模式选择层；`platform_sandbox_available()` 在 Windows 仍保持 false，产品入口继续关闭。
+**该次报告未覆盖（后续代码已补但仍待真机复验）**：活动代际 GC、跨进程占用锁、reset、完整 release probe 与 NSIS 卸载清理。额外支持主机矩阵以及模式选择层仍未实现；`platform_sandbox_available()` 在 Windows 继续保持 false，产品入口关闭。

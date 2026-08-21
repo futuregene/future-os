@@ -40,7 +40,8 @@ function Invoke-LoggedNative {
     param(
         [string]$Label,
         [string]$FilePath,
-        [string[]]$Arguments
+        [string[]]$Arguments,
+        [string]$RequiredOutput = ""
     )
 
     Write-LogLine ""
@@ -69,6 +70,9 @@ function Invoke-LoggedNative {
     Write-LogLine "EXIT CODE: $exitCode"
     if ($exitCode -ne 0) {
         throw "$Label failed with exit code $exitCode"
+    }
+    if ($RequiredOutput -and -not ($lines | Where-Object { ([string]$_).Contains($RequiredOutput) })) {
+        throw "$Label did not report the required result: $RequiredOutput"
     }
 }
 
@@ -131,6 +135,18 @@ try {
             "--nocapture",
             "--test-threads=1"
         )
+
+    if (-not $restrictedTokenUnsupported) {
+        Invoke-LoggedNative `
+            "Packaged-sidecar Windows sandbox release probe" `
+            "cargo" `
+            @(
+                "run", "--quiet",
+                "--manifest-path", "cli/Cargo.toml",
+                "--", "agent", "--probe-windows-sandbox"
+            ) `
+            '"available":true'
+    }
 
     if ($IncludeClippy) {
         Invoke-LoggedNative `

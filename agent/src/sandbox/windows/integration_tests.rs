@@ -162,6 +162,16 @@ async fn powershell_compatibility_sid_matrix_reports_minimum() {
     }
 }
 
+#[test]
+fn release_probe_validates_complete_write_boundary() {
+    let result = runner::probe_host().expect("Windows sandbox host probe completes");
+    assert!(
+        result.available,
+        "Windows sandbox host probe unavailable: {}",
+        result.code
+    );
+}
+
 #[tokio::test]
 async fn stale_capability_gc_waits_for_active_process_tree() {
     let fixture = Fixture::new();

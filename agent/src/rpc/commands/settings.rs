@@ -5,6 +5,43 @@ use std::sync::Arc;
 
 use crate::rpc::{AppState, RpcCommand, RpcResponse, ServerSession, SseEvent};
 
+pub(crate) fn handle_probe_windows_sandbox(id: &str) -> String {
+    match crate::sandbox::probe_windows_sandbox_host() {
+        Ok(result) => {
+            if let Some(diagnostic) = result.diagnostic() {
+                tracing::warn!(
+                    code = result.code,
+                    diagnostic,
+                    "Windows sandbox host probe unavailable"
+                );
+            }
+            RpcResponse::ok(
+                id,
+                "probe_windows_sandbox",
+                serde_json::to_value(result).unwrap_or_else(
+                    |_| serde_json::json!({"available": false, "code": "serialization_failed"}),
+                ),
+            )
+        }
+        Err(error) => RpcResponse::build_fail(
+            id,
+            "probe_windows_sandbox",
+            &format!("Windows sandbox probe could not complete: {error}"),
+        ),
+    }
+}
+
+pub(crate) fn handle_reset_windows_sandbox(id: &str) -> String {
+    match crate::sandbox::reset_windows_sandbox_capabilities() {
+        Ok(removed) => RpcResponse::ok(
+            id,
+            "reset_windows_sandbox",
+            serde_json::json!({"removedCapabilities": removed}),
+        ),
+        Err(error) => RpcResponse::build_fail(id, "reset_windows_sandbox", &error.to_string()),
+    }
+}
+
 pub(crate) fn handle_set_model(
     session: &Arc<parking_lot::RwLock<ServerSession>>,
     cmd: &RpcCommand,

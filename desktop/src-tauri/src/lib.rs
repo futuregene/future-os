@@ -835,6 +835,8 @@ pub fn run() {
             list_agent_models,
             sync_future_models,
             set_default_model,
+            probe_windows_sandbox,
+            reset_windows_sandbox,
             agent_prompt,
             list_installed_skills,
             list_available_skills,

@@ -92,6 +92,24 @@ async fn wait_for_streams_to_settle(sessions: &SessionsMap, timeout: std::time::
 #[command(name = "future-agent")]
 #[command(version = crate::utils::VERSION)]
 pub struct Cli {
+    /// Verify the complete Windows unelevated sandbox pipeline and print a
+    /// machine-readable result without starting the agent server.
+    #[arg(
+        long,
+        default_value_t = false,
+        conflicts_with = "reset_windows_sandbox"
+    )]
+    probe_windows_sandbox: bool,
+
+    /// Revoke all tracked FutureOS Windows sandbox ACL entries. Intended for
+    /// Settings reset and the installer/uninstaller maintenance path.
+    #[arg(
+        long,
+        default_value_t = false,
+        conflicts_with = "probe_windows_sandbox"
+    )]
+    reset_windows_sandbox: bool,
+
     /// gRPC server address (host:port, e.g., 127.0.0.1:50051)
     #[arg(long, default_value = "127.0.0.1:50051")]
     grpc_addr: String,
@@ -157,6 +175,19 @@ pub fn run_from_args(args: &[String]) -> Result<()> {
     let mut argv = vec!["future-agent".to_string()];
     argv.extend_from_slice(args);
     let cli = Cli::parse_from(argv);
+    if cli.probe_windows_sandbox {
+        let result = crate::sandbox::probe_windows_sandbox_host()?;
+        if let Some(diagnostic) = result.diagnostic() {
+            tracing::debug!(diagnostic, "Windows sandbox host probe unavailable");
+        }
+        println!("{}", serde_json::to_string(&result)?);
+        return Ok(());
+    }
+    if cli.reset_windows_sandbox {
+        let removed = crate::sandbox::reset_windows_sandbox_capabilities()?;
+        println!("{{\"removedCapabilities\":{removed}}}");
+        return Ok(());
+    }
     run(cli)
 }
 

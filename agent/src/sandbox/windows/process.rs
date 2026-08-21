@@ -196,6 +196,15 @@ impl RestrictedChild {
         self.job.terminate();
         result
     }
+
+    pub(crate) fn wait_blocking(&self) -> io::Result<u32> {
+        let result = self.process.wait();
+        // Keep the synchronous maintenance/probe path identical to async shell
+        // execution: once the shell exits, no descendant may retain the Job or
+        // its capability lease.
+        self.job.terminate();
+        result
+    }
 }
 
 /// A private desktop on the interactive `Winsta0` window station grants the

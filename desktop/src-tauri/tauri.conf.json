@@ -53,7 +53,8 @@
     },
     "windows": {
       "nsis": {
-        "languages": ["English", "SimpChinese"]
+        "languages": ["English", "SimpChinese"],
+        "installerHooks": "./windows/installer-hooks.nsh"
       }
     },
     "icon": [
