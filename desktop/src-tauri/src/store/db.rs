@@ -8,7 +8,7 @@ use std::{fs, path::PathBuf};
 use super::approvals::{
     approval_request_from_row, ApprovalRequestRecord, APPROVAL_REQUEST_COLUMNS,
 };
-use super::runs::{run_from_row, RunRecord, RUN_COLUMNS};
+use super::runs::{run_from_row, RunRecord};
 use super::schema::{
     ADDED_COLUMNS, ADDED_INDEXES, DROPPED_COLUMNS, DROPPED_TABLES, RENAMED_COLUMNS, SCHEMA,
     VERSIONED_MIGRATIONS,
@@ -167,7 +167,12 @@ pub(super) fn connect() -> Result<PooledConnection, crate::AppError> {
 
 pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
     conn.execute_batch(SCHEMA)?;
-    apply_versioned_migrations(conn)?;
+    // Run archiving is optional UI metadata. A failed upgrade must not block
+    // the Agent/file-tool main flow; read paths project its missing column as
+    // NULL and the archive action reports its own unavailable error.
+    if let Err(error) = apply_versioned_migrations(conn) {
+        eprintln!("FutureOS migration: optional run-archive migration failed: {error}");
+    }
     // Rename columns on databases created before the N-3 rename. `CREATE TABLE
     // IF NOT EXISTS` can't do it, and without this the store reads/writes
     // `artifact_type` against a table that still has the old `type` column —
@@ -310,7 +315,11 @@ fn is_duplicate_column_error(error: &rusqlite::Error) -> bool {
 
 /// Whether `table` has a column named `column`. `table`/`column` come from the
 /// `RENAMED_COLUMNS` constant (never user input), so interpolation is safe.
-fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, crate::AppError> {
+pub(super) fn column_exists(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+) -> Result<bool, crate::AppError> {
     let sql = format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'");
     let count: i64 = conn.query_row(&sql, [], |row| row.get(0))?;
     Ok(count > 0)
@@ -318,8 +327,9 @@ fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, c
 
 pub fn get_run(id: &str) -> Result<Option<RunRecord>, crate::AppError> {
     let conn = connect()?;
+    let columns = super::runs::run_columns(&conn)?;
     conn.query_row(
-        &format!("SELECT {RUN_COLUMNS} FROM runs WHERE id = ?1"),
+        &format!("SELECT {columns} FROM runs WHERE id = ?1"),
         params![id],
         run_from_row,
     )

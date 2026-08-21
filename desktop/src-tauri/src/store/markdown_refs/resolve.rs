@@ -13,7 +13,7 @@ use crate::store::records::*;
 use crate::store::review_snapshots::{
     review_changeset_from_row, ReviewChangesetRecord, REVIEW_CHANGESET_COLUMNS,
 };
-use crate::store::runs::{run_from_row, RunRecord, RUN_COLUMNS};
+use crate::store::runs::{qualified_run_columns, run_from_row, RunRecord};
 use crate::store::util::qualify_columns;
 
 pub fn resolve_markdown_references(
@@ -215,7 +215,7 @@ fn get_run_in_workspace(
     workspace_id: &str,
     id: &str,
 ) -> Result<Option<RunRecord>, crate::AppError> {
-    let cols = qualify_columns("r", RUN_COLUMNS);
+    let cols = qualified_run_columns(conn, "r")?;
     conn.query_row(
         &format!(
             "SELECT {cols} FROM runs r
