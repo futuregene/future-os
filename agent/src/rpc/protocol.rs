@@ -60,6 +60,13 @@ pub struct RpcCommand {
     pub session_id: String,
     #[serde(default)]
     pub entry_id: String,
+    /// Optional forward cursor for get_session_entries. Absent preserves the
+    /// released all-at-once response; remote clients already send offset=0 and
+    /// therefore opt into bounded pages.
+    #[serde(default)]
+    pub offset: Option<i64>,
+    #[serde(default)]
+    pub limit: Option<i64>,
     #[serde(default)]
     pub name: String,
     #[serde(default)]

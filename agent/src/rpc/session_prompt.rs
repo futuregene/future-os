@@ -523,12 +523,8 @@ impl ServerSession {
             // The shared Loop remains the next-run control plane and can be
             // updated immediately while this independent snapshot streams.
             let mut snapshot = shared.independent_copy();
-            // Auto-compaction callbacks report through these
-            // shared per-session cells; keep the snapshot wired to the same
-            // cells instead of the fresh defaults from independent_copy().
-            snapshot.last_compaction_result = shared.last_compaction_result.clone();
-            snapshot.compaction_failed = shared.compaction_failed.clone();
-            snapshot.compaction_occurred = shared.compaction_occurred.clone();
+            snapshot.context_manager = shared.context_manager.clone();
+            snapshot.active_checkpoint = shared.active_checkpoint.clone();
             (system_prompt, shared.verbose, snapshot)
         };
         run_loop.cumulative_input_tokens = self.tokens_in.clone();
@@ -606,14 +602,9 @@ impl ServerSession {
             run_lease.epoch as i64,
             run_lease.run_sequence,
         );
-        // This run starts with a clean persistence-error and compaction state so
-        // the run-end commit decision (append-only vs healing rewrite) reflects
-        // only this run. Runs are serialized per session, so no concurrent run
-        // can observe the reset.
+        // This run starts with a clean persistence-error state. Compaction state
+        // is durable and intentionally survives across runs via checkpoints.
         self.persistence.reset_error();
-        run_loop
-            .compaction_occurred
-            .store(false, std::sync::atomic::Ordering::SeqCst);
         run_loop
             .stream_incomplete
             .store(false, std::sync::atomic::Ordering::SeqCst);
@@ -631,6 +622,7 @@ impl ServerSession {
                 serde_json::Value::String(run_lease.run_id.clone()),
             );
         }
+        user_message.ensure_journal_entry_id();
         self.messages.write().push(user_message);
 
         // Log the user message so the run log shows the question alongside
@@ -708,10 +700,6 @@ impl ServerSession {
         let auto_compaction = self.auto_compaction;
         let approval_gate = self.approval_gate.clone();
         let is_ephemeral = self.ephemeral;
-        // Shared with the next-run control plane (re-shared in independent_copy),
-        // so the run task can read at finalize whether compaction diverged the
-        // in-memory history from the appended JSONL.
-        let compaction_occurred = run_loop.compaction_occurred.clone();
 
         // Resolve the sandbox boundary once per run: canonicalized writable
         // roots + platform availability. Shared by the approval closure (pre-
@@ -736,10 +724,11 @@ impl ServerSession {
         let save_persistence = self.persistence.clone();
         let persisted_run_id = run_lease.run_id.clone();
         let save_closure: crate::agent::PersistCallback =
-            Arc::new(move |msg: &crate::types::AgentMessage| {
+            Arc::new(move |msg: &mut crate::types::AgentMessage| {
                 if is_ephemeral {
                     return;
                 }
+                msg.ensure_journal_entry_id();
                 let mut persisted = msg.clone();
                 // Every entry of this run carries its run identity — not just
                 // assistant entries — so a message's home run never has to be
@@ -755,6 +744,12 @@ impl ServerSession {
                     tracing::error!("Failed to enqueue session entry: {error}");
                 }
             });
+        let checkpoint_persistence = self.persistence.clone();
+        let checkpoint_callback: crate::agent::CheckpointCallback =
+            Arc::new(move |checkpoint: &crate::compaction::ContextCheckpoint| {
+                checkpoint_persistence
+                    .commit_checkpoint(crate::session::checkpoint_to_entry(checkpoint))
+            });
         let stream_ctx = crate::agent::StreamContext {
             // Use the bare model ID from the Loop — the LLM API expects just
             // the model name, not the "provider/model" display format stored
@@ -763,6 +758,7 @@ impl ServerSession {
             system_prompt,
             on_tool_result: Some(save_closure.clone()),
             save_callback: Some(save_closure),
+            on_checkpoint: (!is_ephemeral).then_some(checkpoint_callback),
         };
 
         // Set approval/sandbox hooks on this session's Loop config (these
@@ -948,7 +944,6 @@ impl ServerSession {
             // replacing the message list, or a mid-run append failure. commit_run
             // reports the latter by refusing to commit, and we then heal via a
             // full rewrite (which also applies the compacted history).
-            let compaction_happened = compaction_occurred.load(std::sync::atomic::Ordering::SeqCst);
             let terminal_state = if was_cancelled {
                 crate::session::RUN_STATE_CANCELLED
             } else if run_error.is_some() {
@@ -1028,28 +1023,6 @@ impl ServerSession {
                     commit_run_error.as_deref(),
                 );
 
-                if compaction_happened {
-                    // Compaction replaced the in-memory history, so rewrite the
-                    // authoritative snapshot and retain its lifecycle journal.
-                    let messages = messages_arc.read().clone();
-                    let session = Self::build_rewrite_snapshot(
-                        &session_manager,
-                        &session_id,
-                        &persisted_session_cwd,
-                        &session_model,
-                        &resolved_name,
-                        &parent_session_id,
-                        &messages,
-                        info_entry,
-                        tokens_in.load(Ordering::Relaxed),
-                        tokens_out.load(Ordering::Relaxed),
-                        run_started,
-                        terminal,
-                    );
-                    session_persistence.rewrite_run_snapshot(session)?;
-                    return anyhow::Ok(());
-                }
-
                 // Append-only fast path: terminal marker + refreshed session_info,
                 // committed at a durable (fsync) boundary. commit_run is ordered
                 // after every mid-run append, so it refuses if any of them failed;
@@ -1074,8 +1047,6 @@ impl ServerSession {
                             &parent_session_id,
                             &messages,
                             info_entry,
-                            tokens_in.load(Ordering::Relaxed),
-                            tokens_out.load(Ordering::Relaxed),
                             run_started,
                             terminal,
                         );
@@ -1210,75 +1181,31 @@ impl ServerSession {
         r#loop.last_prompt_tokens = self.last_prompt_tokens.clone();
     }
 
-    /// Install the pre-call auto-compaction transform on the agent loop (a
-    /// no-op when auto-compaction is off), compacting context once usage
-    /// crosses ~90% of the model's window.
+    /// Install the journal-aware context manager and restore the latest durable
+    /// checkpoint. Provider-limit recovery uses the same manager even when
+    /// automatic threshold compaction is disabled.
     fn wire_auto_compaction(&self, r#loop: &mut crate::agent::Loop, enabled: bool, model: &str) {
-        if enabled {
-            let comp_tokens = self.last_prompt_tokens.clone();
-            let comp_result = r#loop.last_compaction_result.clone();
-            let comp_failed = r#loop.compaction_failed.clone();
-            let comp_occurred = r#loop.compaction_occurred.clone();
-            // Resolve context_window once — reuse cached registry
-            // to avoid re-deserialising the model catalog.
-            let context_window = self
-                .model_registry
-                .read()
-                .resolve(model)
-                .map(|m| m.context_window)
-                .unwrap_or(1_000_000); // Modern default: 1M (was 200K — too low for 1M models)
-            r#loop.config.transform_context = Some(Arc::new(move |msgs, _| {
-                use std::sync::atomic::Ordering;
-                let api_tokens = comp_tokens.load(Ordering::Relaxed) as i32;
-                // Fall back to heuristic estimate when API doesn't report usage.
-                let context_tokens = if api_tokens > 0 {
-                    api_tokens
-                } else {
-                    crate::compaction::estimate_context_tokens(&msgs)
-                };
-                if context_tokens == 0 {
-                    return msgs; // Truly empty — nothing to compact
-                }
-                // Compact when context usage exceeds 90% (10% reserve, min 16K).
-                // Keep more history: 50% of context window so the model retains
-                // substantial conversation continuity after compaction.
-                let reserve_tokens = ((context_window as f64 * 0.1) as i32).max(16384);
-                let keep_tokens = ((context_window as f64 * 0.2) as i32).max(reserve_tokens);
-                let needs_compact = context_tokens > context_window - reserve_tokens;
-                let (compacted, result) = crate::compaction::compact(
-                    msgs,
-                    &crate::compaction::CompactOptions {
-                        reserve_tokens,
-                        keep_recent_tokens: keep_tokens,
-                        context_window,
-                        tokens_before: context_tokens,
-                    },
-                );
-                if let Some(r) = result {
-                    *comp_result.lock() = Some(r);
-                    // Signal the run-end persistence path that compaction
-                    // replaced the in-memory history, so it diverges from the
-                    // appended JSONL and must be persisted via a full rewrite
-                    // rather than an append-only commit.
-                    comp_occurred.store(true, Ordering::SeqCst);
-                    compacted
-                } else if needs_compact {
-                    // Compaction was needed but compact() returned no result,
-                    // meaning it found no valid cut point. Signal failure so
-                    // the run loop can report an error instead of silently
-                    // proceeding with full (overflowing) context.
-                    tracing::error!(
-                        tokens = context_tokens,
-                        window = context_window,
-                        "auto-compaction needed but failed"
-                    );
-                    comp_failed.store(true, Ordering::SeqCst);
-                    compacted
-                } else {
-                    compacted
-                }
-            }));
-        }
+        let context_window = self
+            .model_registry
+            .read()
+            .resolve(model)
+            .map(|m| m.context_window)
+            .unwrap_or(1_000_000);
+        let reserve_tokens = ((context_window as f64 * 0.1) as i32).max(16384);
+        let keep_recent_tokens = ((context_window as f64 * 0.2) as i32).max(reserve_tokens);
+        r#loop.context_manager = Some(crate::compaction::ContextManager {
+            enabled,
+            reserve_tokens,
+            keep_recent_tokens,
+            context_window,
+            model: model.to_string(),
+        });
+        let checkpoint = self
+            .session_manager
+            .load(&self.session_id)
+            .ok()
+            .and_then(|session| crate::session::latest_context_checkpoint(&session.entries));
+        *r#loop.active_checkpoint.lock() = checkpoint;
     }
 
     fn build_system_prompt(&self, cwd: &str, tools: Vec<crate::types::AgentTool>) -> String {
@@ -1470,8 +1397,6 @@ impl ServerSession {
         parent_session_id: &str,
         messages: &[crate::types::AgentMessage],
         info_entry: crate::session::SessionEntry,
-        tokens_in: i64,
-        tokens_out: i64,
         run_started: crate::session::SessionEntry,
         terminal: crate::session::SessionEntry,
     ) -> crate::session::Session {
@@ -1499,62 +1424,52 @@ impl ServerSession {
             )
         };
         let old_session = session_manager.load(session_id).ok();
-        let old_msg_entries: Vec<SessionEntry> = old_session
+        let old_msg_entries: std::collections::HashMap<String, SessionEntry> = old_session
             .as_ref()
             .map(|session| {
                 session
                     .entries
                     .iter()
                     .filter(|e| is_message_entry(&e.entry_type))
-                    .cloned()
+                    .map(|entry| (entry.id.clone(), entry.clone()))
                     .collect()
             })
             .unwrap_or_default();
-        for (new_entry, old_entry) in entries.iter_mut().zip(old_msg_entries.iter()) {
-            new_entry.timestamp = old_entry.timestamp;
+        for new_entry in &mut entries {
+            if let Some(old_entry) = old_msg_entries.get(&new_entry.id) {
+                new_entry.timestamp = old_entry.timestamp;
+            }
             // NOTE: run output tokens + duration live in the run_terminal
             // marker's content (see the markers section below), not in an
             // assistant entry's block-array content — so there is nothing to
             // preserve/attach here (the old object-content arms were dead).
         }
 
-        // If the first user message is a compaction marker, replace it with a
-        // proper compaction entry so the JSONL records the compaction point.
-        if let Some(idx) = entries.iter().position(|e| {
-            e.role == "user"
-                && e.content
-                    .as_ref()
-                    .and_then(|c| c.as_array())
-                    .and_then(|arr| {
-                        arr.first()
-                            .and_then(|b| b.get("text"))
-                            .and_then(|t| t.as_str())
-                    })
-                    .is_some_and(|t| t.starts_with("[Context compaction:"))
-        }) {
-            // `idx` came from `position`, so `entries[idx]` is always in bounds
-            // — indexing (not a phantom `if let Some`) keeps this branch region
-            // single-path.
-            let marker = &entries[idx];
-            let summary = marker
+        // Healing a failed append must retain every durable checkpoint. Insert
+        // them in journal order immediately after their cutoff; chained
+        // checkpoints may reference an earlier checkpoint entry. Legacy
+        // checkpoints have no cutoff because their prefix was already removed.
+        let checkpoints: Vec<SessionEntry> = old_session
+            .as_ref()
+            .map(|session| {
+                session
+                    .entries
+                    .iter()
+                    .filter(|entry| entry.entry_type == crate::session::ENTRY_TYPE_COMPACTION)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        for checkpoint in checkpoints {
+            let cutoff = checkpoint
                 .content
                 .as_ref()
-                .and_then(|c| c.as_array())
-                .and_then(|arr| arr.first())
-                .and_then(|b| b.get("text"))
-                .and_then(|t| t.as_str())
-                .unwrap_or("");
-            let mut comp_entry = marker.clone();
-            comp_entry.id = crate::utils::generate_id();
-            comp_entry.entry_type = crate::session::ENTRY_TYPE_COMPACTION.to_string();
-            comp_entry.role = "system".to_string();
-            comp_entry.content = Some(serde_json::json!({
-                "summary": summary,
-                "tokens_in": tokens_in,
-                "tokens_out": tokens_out,
-            }));
-            entries.insert(idx + 1, comp_entry);
-            entries.remove(idx);
+                .and_then(|content| content.get("cutoff_entry_id"))
+                .and_then(serde_json::Value::as_str);
+            let insertion = cutoff
+                .and_then(|cutoff| entries.iter().position(|entry| entry.id == cutoff))
+                .map_or(0, |index| index + 1);
+            entries.insert(insertion, checkpoint);
         }
 
         // A rewrite is a journal compaction/repair, not permission to erase run
@@ -1568,10 +1483,11 @@ impl ServerSession {
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default();
         let mut markers: Vec<SessionEntry> = old_session
+            .as_ref()
             .map(|session| {
                 session
                     .entries
-                    .into_iter()
+                    .iter()
                     .filter(|entry| crate::session::is_run_marker(&entry.entry_type))
                     .filter(|entry| {
                         // Compute both legs eagerly: the content chain is pure,
@@ -1587,6 +1503,7 @@ impl ServerSession {
                             != Some(current_run_id);
                         !is_current_terminal || other_run
                     })
+                    .cloned()
                     .collect()
             })
             .unwrap_or_default();

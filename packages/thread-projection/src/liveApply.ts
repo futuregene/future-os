@@ -56,7 +56,7 @@ type Slot
   = | { type: "text"; text: string }
     | { type: "thinking"; text: string }
     | { type: "tool"; id: string }
-    | { type: "compaction"; tokensBefore: number };
+    | { type: "compaction"; id: string; tokensBefore: number };
 
 interface ToolActivity {
   id: string;
@@ -183,12 +183,16 @@ export function createRunProjector(options?: { preferEndTokens?: boolean }): Run
 
     // Context compaction ran this exchange (usually at the top, before any text).
     // Pin a marker at this point so the reply shows where history was summarized.
-    // `compaction_end` carries the pre-compaction token count; the retry-path
-    // variant reports 0. An aborted compaction changed nothing — skip it.
-    if (event.eventType === "compaction_end") {
+    // New runs emit only durable `compaction_committed`; released run journals
+    // may still contain `compaction_end`. Both project to the same marker.
+    if (event.eventType === "compaction_end" || event.eventType === "compaction_committed") {
       if (!isRecord(payload) || payload.aborted !== true) {
-        slots.push({
+        const id = isRecord(payload) && typeof payload.checkpoint_id === "string"
+          ? payload.checkpoint_id
+          : `legacy_${event.runId}_${event.sequence}`;
+        if (!slots.some(slot => slot.type === "compaction" && slot.id === id)) slots.push({
           type: "compaction",
+          id,
           tokensBefore: numberFromPayload(payload, ["tokens_before", "tokensBefore"]),
         });
         openText = null;
@@ -418,7 +422,7 @@ function buildSegments(
     if (slot.type === "compaction") {
       segments.push({
         kind: "compaction",
-        id: `compaction_${index}`,
+        id: slot.id,
         tokensBefore: slot.tokensBefore > 0 ? slot.tokensBefore : undefined,
       });
       index += 1;

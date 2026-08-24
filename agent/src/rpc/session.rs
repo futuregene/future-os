@@ -584,53 +584,82 @@ impl ServerSession {
         }
     }
 
-    pub fn compact(&self, _instructions: &str) -> Result<serde_json::Value> {
+    pub fn compact(&self, instructions: &str) -> Result<serde_json::Value> {
         use std::sync::atomic::Ordering;
-
-        let messages: Vec<crate::types::Message> = {
-            let msgs = self.messages.read();
-            ConvertToLLM(&msgs)
-        };
-
-        // Use API-reported prompt_tokens (same as getState's contextTokens)
-        let tokens_before = self.last_prompt_tokens.load(Ordering::Relaxed) as i32;
-
-        // Resolve context_window from model registry (same as getState's contextWindow)
+        let messages = self.messages.read().clone();
         let context_window = self
             .model_registry
             .read()
             .resolve(&self.model)
             .map(|m| m.context_window)
-            .unwrap_or(1_000_000); // Modern default: 1M
-
+            .unwrap_or(1_000_000);
         let reserve_tokens = ((context_window as f64 * 0.1) as i32).max(16384);
         let keep_tokens = ((context_window as f64 * 0.2) as i32).max(reserve_tokens);
-        let (compacted, result) = crate::compaction::compact(
-            messages,
-            &crate::compaction::CompactOptions {
-                reserve_tokens,
-                keep_recent_tokens: keep_tokens,
-                context_window,
-                tokens_before,
-            },
+        let active_checkpoint = self
+            .session_manager
+            .load(&self.session_id)
+            .ok()
+            .and_then(|session| crate::session::latest_context_checkpoint(&session.entries));
+        let reported = self
+            .last_prompt_tokens
+            .load(Ordering::Relaxed)
+            .try_into()
+            .ok()
+            .filter(|tokens: &u64| *tokens > 0);
+        let prompt = crate::compaction::project_prompt_context(
+            &messages,
+            active_checkpoint.as_ref(),
+            reported,
+            context_window.max(1) as u64,
         );
-
-        if let Some(r) = result {
-            let tokens_after = crate::compaction::estimate_context_tokens(&compacted);
-            let messages_removed = (tokens_before - tokens_after).max(0);
-            Ok(serde_json::json!({
-                "tokensBefore": tokens_before,
-                "tokensAfter": tokens_after,
-                "summary": r.summary,
-                "messagesRemoved": messages_removed,
-            }))
-        } else {
-            Ok(serde_json::json!({
-                "tokensBefore": tokens_before,
-                "tokensAfter": tokens_before,
+        let manager = crate::compaction::ContextManager {
+            enabled: true,
+            reserve_tokens,
+            keep_recent_tokens: keep_tokens,
+            context_window,
+            model: self.model.clone(),
+        };
+        match manager.prepare(
+            prompt,
+            crate::compaction::CompactionTrigger::Manual,
+            Some(instructions),
+        )? {
+            crate::compaction::ContextPreparation::Unchanged { prompt } => Ok(serde_json::json!({
+                "tokensBefore": prompt.usage.estimated_input_tokens,
+                "tokensAfter": prompt.usage.estimated_input_tokens,
                 "summary": "",
                 "messagesRemoved": 0,
-            }))
+            })),
+            crate::compaction::ContextPreparation::Compacted { checkpoint, .. } => {
+                self.persistence
+                    .commit_checkpoint(crate::session::checkpoint_to_entry(&checkpoint))?;
+                if let Ok(loop_) = self.agent_loop.try_write() {
+                    *loop_.active_checkpoint.lock() = Some((*checkpoint).clone());
+                }
+                if let Some(event) = super::prompt_helpers::run_event_to_sse(
+                    crate::agent::RunEvent::CompactionCommitted {
+                        checkpoint: (*checkpoint).clone(),
+                    },
+                ) {
+                    self.broadcaster.broadcast(event);
+                }
+                let summary = checkpoint
+                    .summary
+                    .iter()
+                    .filter_map(|block| match block {
+                        crate::types::ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Ok(serde_json::json!({
+                    "checkpointId": checkpoint.checkpoint_id,
+                    "tokensBefore": checkpoint.tokens_before,
+                    "tokensAfter": checkpoint.tokens_after,
+                    "summary": summary,
+                    "messagesRemoved": checkpoint.tokens_before.saturating_sub(checkpoint.tokens_after),
+                }))
+            }
         }
     }
 
@@ -2665,6 +2694,22 @@ mod tests {
                     ..Default::default()
                 });
             }
+            for message in messages.iter_mut() {
+                message.ensure_journal_entry_id();
+            }
+            let entries = messages
+                .iter()
+                .map(crate::session::agent_message_to_entry)
+                .collect();
+            let snapshot = crate::session::Session::snapshot(
+                session.session_id.clone(),
+                session.cwd.clone(),
+                session.model.clone(),
+                String::new(),
+                String::new(),
+                entries,
+            );
+            session.session_manager.save(&snapshot).unwrap();
         }
         let result = session.compact("").unwrap();
         assert!(result["messagesRemoved"].as_i64().unwrap() > 0);

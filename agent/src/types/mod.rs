@@ -500,6 +500,33 @@ impl<'de> Deserialize<'de> for AgentMessage {
 }
 
 impl AgentMessage {
+    /// Internal-only metadata key that binds an in-memory message to its
+    /// authoritative session-journal entry. It is stripped before `meta` is
+    /// serialized, so it never becomes user/provider-visible data.
+    pub const JOURNAL_ENTRY_ID_KEY: &'static str = "_future_journal_entry_id";
+
+    pub fn journal_entry_id(&self) -> Option<&str> {
+        self.metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get(Self::JOURNAL_ENTRY_ID_KEY))
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.is_empty())
+    }
+
+    pub fn ensure_journal_entry_id(&mut self) -> String {
+        if let Some(id) = self.journal_entry_id() {
+            return id.to_string();
+        }
+        let id = crate::utils::generate_entry_id();
+        self.metadata
+            .get_or_insert_with(serde_json::Map::new)
+            .insert(
+                Self::JOURNAL_ENTRY_ID_KEY.to_string(),
+                serde_json::Value::String(id.clone()),
+            );
+        id
+    }
+
     pub fn text(&self) -> String {
         self.content
             .iter()
@@ -854,7 +881,6 @@ pub struct AgentConfig {
     pub max_turns: i32,
     pub thinking_budget: i32,
     pub max_retries: i32,
-    pub transform_context: Option<Arc<dyn Fn(Vec<Message>, String) -> Vec<Message> + Send + Sync>>,
     pub stop_condition: Option<Arc<dyn Fn(Vec<Message>, &str) -> bool + Send + Sync>>,
     pub before_tool_call:
         Option<Arc<dyn Fn(&str, &str, &serde_json::Value) -> Option<ToolCallResult> + Send + Sync>>,
@@ -1412,7 +1438,6 @@ mod tests {
             max_turns: 10,
             thinking_budget: 0,
             max_retries: 3,
-            transform_context: None,
             stop_condition: None,
             before_tool_call: None,
             prepare_tool_call: None,

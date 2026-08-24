@@ -528,6 +528,30 @@ fn get_session_entries_renders_roles_and_run_stats() {
     assert_eq!(tool_entry["content"], "tool output");
 }
 
+#[test]
+fn get_session_entries_paginates_only_when_offset_is_explicit() {
+    let state = make_app_state();
+    let entries = (0..5)
+        .map(|i| crate::session::SessionEntry::new_user("user", serde_json::json!(format!("q{i}"))))
+        .collect();
+    save_via(&state, "default", "mock", entries);
+
+    let mut first_cmd = make_cmd("get_session_entries");
+    first_cmd.offset = Some(0);
+    first_cmd.limit = Some(2);
+    let first = parse_response(&handle_command_internal(&state, first_cmd));
+    assert_eq!(first["data"]["entries"].as_array().unwrap().len(), 2);
+    assert_eq!(first["data"]["hasMore"], true);
+    assert_eq!(first["data"]["nextOffset"], 2);
+
+    let legacy = parse_response(&handle_command_internal(
+        &state,
+        make_cmd("get_session_entries"),
+    ));
+    assert_eq!(legacy["data"]["entries"].as_array().unwrap().len(), 5);
+    assert!(legacy["data"].get("hasMore").is_none());
+}
+
 // ── coverage batch 1: fork / clone ──────────────────────────────────────
 
 #[test]

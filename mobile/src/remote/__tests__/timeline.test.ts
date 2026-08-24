@@ -127,6 +127,29 @@ describe("entry reducer", () => {
     });
   });
 
+  test("projects a durable checkpoint from reloaded history", () => {
+    const state = timelineFromEntries([{
+      id: "checkpoint-entry",
+      entry_type: "compaction",
+      role: "system",
+      content: "",
+      checkpoint: {
+        schema_version: 2,
+        checkpoint_id: "cp-history",
+        tokens_before: 190_000,
+        tokens_after: 20_000,
+      },
+    }]);
+    const divider = state.items.find(item =>
+      item.kind === "message" && item.segments?.some(segment => segment.kind === "compaction")
+    );
+    expect(divider).toMatchObject({
+      kind: "message",
+      id: "m_cp-history",
+      segments: [{ id: "seg_cp-history_compaction", kind: "compaction", tokensBefore: 190_000 }],
+    });
+  });
+
   test("keeps attachment-only user entries and drops malformed attachments", () => {
     const timeline = timelineFromEntries([
       {
@@ -832,6 +855,23 @@ describe("shared-projection semantic flags", () => {
     expect(reply.segments).toEqual([
       { id: expect.any(String), kind: "compaction", tokensBefore: 190_000 },
       { id: expect.any(String), kind: "text", text: "Continuing." },
+    ]);
+  });
+
+  test("a durable compaction_committed renders one checkpoint divider", () => {
+    const committed = {
+      type: "compaction_committed",
+      data: JSON.stringify({ checkpoint_id: "cp-1", tokens_before: 190_000 }),
+      runId: "run-1",
+      idx: 0,
+    };
+    let state = applyStreamEvent(emptyTimeline(), committed);
+    // Replayed delivery of the same durable checkpoint must be idempotent.
+    state = applyStreamEvent(state, { ...committed, idx: 1 });
+    const reply = state.items.find(item => item.kind === "message");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    expect(reply.segments?.filter(segment => segment.kind === "compaction")).toEqual([
+      { id: "cp-1", kind: "compaction", tokensBefore: 190_000 },
     ]);
   });
 

@@ -118,12 +118,16 @@ function entryKey(entry: SessionEntry): string {
  * "[Context compaction: …]" (compaction/mod.rs).
  */
 function isCompactionDivider(entry: SessionEntry): boolean {
-  return entry.role === "user" && entry.content.startsWith("[Context compaction:");
+  return entry.entry_type === "compaction"
+    || (entry.role === "user" && entry.content.startsWith("[Context compaction:"));
 }
 
 /** Render a compaction marker as a divider, not as a user bubble / new exchange. */
 function dividerMessage(entry: SessionEntry, now: string): AgentMessage {
-  const key = entryKey(entry);
+  const key = entry.checkpoint?.checkpoint_id || entryKey(entry);
+  const tokensBefore = typeof entry.checkpoint?.tokens_before === "number" && entry.checkpoint.tokens_before > 0
+    ? entry.checkpoint.tokens_before
+    : undefined;
   return {
     id: `m_${key}`,
     role: "assistant",
@@ -131,7 +135,7 @@ function dividerMessage(entry: SessionEntry, now: string): AgentMessage {
     content: "",
     status: "complete",
     createdAt: entry.timestamp ?? now,
-    segments: [{ id: `seg_${key}_compaction`, kind: "compaction" }],
+    segments: [{ id: `seg_${key}_compaction`, kind: "compaction", tokensBefore }],
   };
 }
 

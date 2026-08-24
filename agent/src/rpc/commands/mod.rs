@@ -147,7 +147,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "get_session_stats" => observability::handle_get_session_stats(&session, id),
         "get_runtime_metrics" => observability::handle_get_runtime_metrics(&session, id),
         "fork" => session_lifecycle::cmd_fork(state, &session, &cmd, id),
-        "get_session_entries" => session_lifecycle::cmd_get_session_entries(&session, id),
+        "get_session_entries" => session_lifecycle::cmd_get_session_entries(&session, &cmd, id),
         "get_last_assistant_text" => observability::handle_get_last_assistant_text(&session, id),
         "set_session_name" => settings::handle_set_session_name(&session, &cmd, id),
         "abort_retry" => run_control::handle_abort_retry(&session, id),

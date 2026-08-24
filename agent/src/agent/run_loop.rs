@@ -1,7 +1,5 @@
 use crate::llm::schema::{FinishReason, ModelStreamEvent};
-use crate::types::{
-    AgentMessage, AgentToolCall, ContentBlock, ConvertFromLLM, ConvertToLLM, Message, ToolCall,
-};
+use crate::types::{AgentMessage, AgentToolCall, ContentBlock, ConvertToLLM, Message, ToolCall};
 use anyhow::{anyhow, Result};
 use std::time::Duration;
 use tokio::time::sleep;
@@ -21,6 +19,13 @@ impl Loop {
         on_event: impl Fn(RunEvent) + Send + Sync + 'static,
         mut interrupt_rx: Option<tokio::sync::mpsc::Receiver<()>>,
     ) -> Result<(String, Vec<AgentMessage>)> {
+        // Every model-visible message is bound to a stable journal identity.
+        // Loaded messages already carry it; fresh/ephemeral callers receive one
+        // here so compaction provenance never depends on vector indices.
+        for message in &mut messages {
+            message.ensure_journal_entry_id();
+        }
+        let mut active_checkpoint = self.active_checkpoint.lock().clone();
         // Validate: last message must not be from assistant
         if let Some(last) = messages.last() {
             if last.role == "assistant" {
@@ -81,41 +86,61 @@ impl Loop {
 
             // Emit turn_start
 
-            // Apply TransformContext if configured (e.g., compaction)
-            let work_messages = if let Some(ref transform_fn) = self.config.transform_context {
-                let before_len = messages.len();
-                let llm_msgs: Vec<Message> = ConvertToLLM(&messages);
-                let transformed = transform_fn(llm_msgs, String::new());
-                let result = ConvertFromLLM(transformed);
-                if result.len() < before_len {
-                    // Compaction happened — replace in-memory messages with
-                    // compacted ones so the save path persists the trimmed
-                    // history instead of the full (now discarded) prefix.
-                    messages = result.clone();
-                    let compaction = self.last_compaction_result.lock().take();
-                    let (tokens_before, summary) = compaction
-                        .map(|result| (result.tokens_before, result.summary))
-                        .unwrap_or((0, String::new()));
-                    on_event(RunEvent::CompactionEnd {
-                        tokens_before,
-                        summary,
-                    });
-                }
-                result
+            // Build a model-only projection from the immutable journal view.
+            // A committed checkpoint changes this request's prompt but never
+            // replaces `messages`, which remains the complete transcript.
+            let context_window = self
+                .context_manager
+                .as_ref()
+                .map(|manager| manager.context_window.max(1) as u64)
+                .unwrap_or(1_000_000);
+            let reported_input = self
+                .last_prompt_tokens
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .try_into()
+                .ok()
+                .filter(|tokens: &u64| *tokens > 0);
+            let projected = crate::compaction::project_prompt_context(
+                &messages,
+                active_checkpoint.as_ref(),
+                reported_input,
+                context_window,
+            );
+            let prepared = if let Some(manager) = &self.context_manager {
+                manager.prepare(
+                    projected,
+                    crate::compaction::CompactionTrigger::Automatic,
+                    None,
+                )
             } else {
-                messages.clone()
+                Ok(crate::compaction::ContextPreparation::Unchanged { prompt: projected })
             };
-
-            // Auto-compaction was needed but failed — context is overflowing
-            // the model's window. Stop instead of silently proceeding.
-            if self
-                .compaction_failed
-                .swap(false, std::sync::atomic::Ordering::SeqCst)
-            {
-                return Err(anyhow!(
-                    "context compaction failed: conversation overflows model context window"
-                ));
-            }
+            let prompt = match prepared {
+                Ok(crate::compaction::ContextPreparation::Unchanged { prompt }) => prompt,
+                Ok(crate::compaction::ContextPreparation::Compacted { prompt, checkpoint }) => {
+                    if let Some(commit) = &ctx.on_checkpoint {
+                        commit(&checkpoint)?;
+                    }
+                    active_checkpoint = Some((*checkpoint).clone());
+                    *self.active_checkpoint.lock() = Some((*checkpoint).clone());
+                    on_event(RunEvent::CompactionCommitted {
+                        checkpoint: *checkpoint,
+                    });
+                    prompt
+                }
+                Err(error) => {
+                    on_event(RunEvent::CompactionFailed {
+                        trigger: crate::compaction::CompactionTrigger::Automatic,
+                        error: error.to_string(),
+                    });
+                    return Err(anyhow!(error));
+                }
+            };
+            let work_messages: Vec<AgentMessage> = prompt
+                .messages
+                .into_iter()
+                .map(|projected| projected.message)
+                .collect();
 
             // Emit message_start
 
@@ -182,41 +207,47 @@ impl Loop {
                             // derived from the app template (model_registry =
                             // None, e.g. tests) fall back to a fresh Registry
                             // so behaviour matches the pre-cache code.
-                            let context_window = self
-                                .model_registry
-                                .as_ref()
-                                .and_then(|r| r.read().resolve(&ctx.model))
-                                .or_else(|| crate::models::Registry::new().resolve(&ctx.model))
-                                .map(|m| m.context_window)
-                                .unwrap_or(1_000_000);
-                            let reserve = ((context_window as f64 * 0.1) as i32).max(16384);
-                            let keep_tokens = ((context_window as f64 * 0.2) as i32).max(reserve);
-                            let (compacted, compact_result) = crate::compaction::compact(
-                                ConvertToLLM(&messages),
-                                &crate::compaction::CompactOptions {
-                                    reserve_tokens: reserve,
-                                    keep_recent_tokens: keep_tokens,
-                                    context_window,
-                                    tokens_before: 999999, // force compaction
-                                },
-                            );
-                            messages = ConvertFromLLM(compacted);
-                            if let Some(r) = compact_result {
-                                on_event(RunEvent::CompactionEnd {
-                                    tokens_before: r.tokens_before,
-                                    summary: r.summary.clone(),
-                                });
-                                *self.last_compaction_result.lock() = Some(r);
-                            } else {
-                                // Forced compaction (context-length error) failed to
-                                // find any valid cut point. The conversation cannot
-                                // continue safely — report the error and stop.
-                                tracing::error!(
-                                    "forced compaction after context-length error failed"
-                                );
+                            let Some(manager) = &self.context_manager else {
                                 return Err(anyhow!(
-                                    "context compaction failed: conversation overflows model context window"
+                                    "context compaction is unavailable for provider-limit recovery"
                                 ));
+                            };
+                            let projected = crate::compaction::project_prompt_context(
+                                &messages,
+                                active_checkpoint.as_ref(),
+                                None,
+                                manager.context_window.max(1) as u64,
+                            );
+                            match manager.prepare(
+                                projected,
+                                crate::compaction::CompactionTrigger::ProviderContextLimit,
+                                None,
+                            ) {
+                                Ok(crate::compaction::ContextPreparation::Compacted {
+                                    checkpoint,
+                                    ..
+                                }) => {
+                                    if let Some(commit) = &ctx.on_checkpoint {
+                                        commit(&checkpoint)?;
+                                    }
+                                    active_checkpoint = Some((*checkpoint).clone());
+                                    *self.active_checkpoint.lock() = Some((*checkpoint).clone());
+                                    on_event(RunEvent::CompactionCommitted {
+                                        checkpoint: *checkpoint,
+                                    });
+                                }
+                                Ok(crate::compaction::ContextPreparation::Unchanged { .. }) => {
+                                    return Err(anyhow!(
+                                        "context compaction made no progress after provider limit"
+                                    ));
+                                }
+                                Err(error) => {
+                                    on_event(RunEvent::CompactionFailed {
+                                        trigger: crate::compaction::CompactionTrigger::ProviderContextLimit,
+                                        error: error.to_string(),
+                                    });
+                                    return Err(anyhow!(error));
+                                }
                             }
                         }
                         // Don't burn a retry (and its backoff) if the user
@@ -579,7 +610,7 @@ impl Loop {
                     // append-only terminal commit cannot leave memory and JSONL
                     // permanently divergent after abort/restart.
                     if let Some(ref save) = ctx.save_callback {
-                        for message in &messages[first_new_message..] {
+                        for message in &mut messages[first_new_message..] {
                             save(message);
                         }
                     }
@@ -646,7 +677,7 @@ impl Loop {
                 // Persist the assistant response immediately so it survives a
                 // crash mid-run, even if no tools were called in this turn.
                 if let Some(ref save) = ctx.save_callback {
-                    save(messages.last().unwrap());
+                    save(messages.last_mut().unwrap());
                 }
             }
 
@@ -1430,7 +1461,7 @@ mod tests {
             system_prompt: "sys".to_string(),
             save_callback: Some({
                 let saved = saved.clone();
-                Arc::new(move |m: &AgentMessage| saved.lock().push(m.role.clone()))
+                Arc::new(move |m: &mut AgentMessage| saved.lock().push(m.role.clone()))
             }),
             ..Default::default()
         };
@@ -1563,7 +1594,7 @@ mod tests {
         let ctx = StreamContext {
             save_callback: Some({
                 let saved = saved.clone();
-                Arc::new(move |m: &AgentMessage| saved.lock().push(m.role.clone()))
+                Arc::new(move |m: &mut AgentMessage| saved.lock().push(m.role.clone()))
             }),
             ..Default::default()
         };
@@ -1634,7 +1665,14 @@ mod tests {
             max_retries: 2,
             ..Default::default()
         };
-        let loop_ = Loop::new(provider, "mock").with_config(config);
+        let mut loop_ = Loop::new(provider, "mock").with_config(config);
+        loop_.context_manager = Some(crate::compaction::ContextManager {
+            enabled: false,
+            reserve_tokens: 1,
+            keep_recent_tokens: 100,
+            context_window: 100,
+            model: "mock".into(),
+        });
         let (text, _) = loop_
             .run_streaming_with_messages(
                 user_messages("hi"),
@@ -1682,11 +1720,20 @@ mod tests {
             max_retries: 1,
             ..Default::default()
         };
-        let loop_ = Loop::new(provider, "mock").with_config(config);
+        let mut loop_ = Loop::new(provider, "mock").with_config(config);
+        loop_.context_manager = Some(crate::compaction::ContextManager {
+            enabled: false,
+            reserve_tokens: 1,
+            keep_recent_tokens: 1,
+            context_window: 1,
+            model: "mock".into(),
+        });
         // A single short user message cannot be compacted → hard failure.
+        let mut messages = user_messages("hi");
+        messages[0].ensure_journal_entry_id();
         let result = loop_
             .run_streaming_with_messages(
-                user_messages("hi"),
+                messages,
                 &StreamContext::default(),
                 noop_on_text,
                 |_| {},
@@ -1697,7 +1744,7 @@ mod tests {
         assert!(result
             .unwrap_err()
             .to_string()
-            .contains("context compaction failed"));
+            .contains("no valid journal boundary"));
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
@@ -1713,7 +1760,14 @@ mod tests {
             max_retries: 1,
             ..Default::default()
         };
-        let loop_ = Loop::new(provider, "mock").with_config(config);
+        let mut loop_ = Loop::new(provider, "mock").with_config(config);
+        loop_.context_manager = Some(crate::compaction::ContextManager {
+            enabled: false,
+            reserve_tokens: 1,
+            keep_recent_tokens: 1,
+            context_window: 1,
+            model: "mock".into(),
+        });
         // A long multi-turn history gives compaction a valid cut point.
         let mut messages = Vec::new();
         for i in 0..12 {
@@ -1728,6 +1782,9 @@ mod tests {
             "user",
             serde_json::json!("fresh question"),
         ));
+        for message in &mut messages {
+            message.ensure_journal_entry_id();
+        }
         let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let (text, _) = loop_
             .run_streaming_with_messages(
@@ -1737,8 +1794,8 @@ mod tests {
                 {
                     let events = events.clone();
                     move |event| {
-                        if matches!(event, RunEvent::CompactionEnd { .. }) {
-                            events.lock().push("compaction_end")
+                        if matches!(event, RunEvent::CompactionCommitted { .. }) {
+                            events.lock().push("compaction_committed")
                         }
                     }
                 },
@@ -1747,7 +1804,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(text, "recovered");
-        assert!(events.lock().contains(&"compaction_end"));
+        assert!(events.lock().contains(&"compaction_committed"));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1770,16 +1827,16 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn run_applies_transform_context_and_emits_compaction_event() {
+    async fn run_commits_checkpoint_without_replacing_history() {
         let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
-        let config = crate::types::AgentConfig {
-            transform_context: Some(Arc::new(|messages: Vec<Message>, _| {
-                // Keep only the last message — a fake compaction.
-                messages.into_iter().last().into_iter().collect()
-            })),
-            ..Default::default()
-        };
-        let loop_ = Loop::new(provider, "mock").with_config(config);
+        let mut loop_ = Loop::new(provider, "mock");
+        loop_.context_manager = Some(crate::compaction::ContextManager {
+            enabled: true,
+            reserve_tokens: 1,
+            keep_recent_tokens: 1,
+            context_window: 1,
+            model: "mock".into(),
+        });
         let mut messages = user_messages("old");
         messages.push(AgentMessage {
             role: "assistant".to_string(),
@@ -1791,13 +1848,16 @@ mod tests {
         let (text, final_messages) = loop_
             .run_streaming_with_messages(
                 messages,
-                &StreamContext::default(),
+                &StreamContext {
+                    on_checkpoint: Some(Arc::new(|_| Ok(()))),
+                    ..Default::default()
+                },
                 noop_on_text,
                 {
                     let events = events.clone();
                     move |event| {
-                        if matches!(event, RunEvent::CompactionEnd { .. }) {
-                            events.lock().push("compaction_end")
+                        if matches!(event, RunEvent::CompactionCommitted { .. }) {
+                            events.lock().push("compaction_committed")
                         }
                     }
                 },
@@ -1806,22 +1866,21 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(text, "ok");
-        assert!(events.lock().contains(&"compaction_end"));
-        // The in-memory history was replaced by the compacted transform result.
-        assert!(final_messages.len() <= 3);
+        assert!(events.lock().contains(&"compaction_committed"));
+        assert_eq!(final_messages.len(), 4, "full journal history is retained");
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn run_errors_when_compaction_failed_flag_set() {
+    async fn run_errors_when_compaction_has_no_journal_boundary() {
         let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
-        let config = crate::types::AgentConfig {
-            transform_context: Some(Arc::new(|messages: Vec<Message>, _| messages)),
-            ..Default::default()
-        };
-        let loop_ = Loop::new(provider, "mock").with_config(config);
-        loop_
-            .compaction_failed
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut loop_ = Loop::new(provider, "mock");
+        loop_.context_manager = Some(crate::compaction::ContextManager {
+            enabled: true,
+            reserve_tokens: 1,
+            keep_recent_tokens: 1,
+            context_window: 1,
+            model: "mock".into(),
+        });
         let result = loop_
             .run_streaming_with_messages(
                 user_messages("hi"),
@@ -1835,7 +1894,7 @@ mod tests {
         assert!(result
             .unwrap_err()
             .to_string()
-            .contains("context compaction failed"));
+            .contains("no valid journal boundary"));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2350,7 +2409,7 @@ mod tests {
         let ctx = StreamContext {
             save_callback: Some({
                 let saved = saved.clone();
-                Arc::new(move |m: &AgentMessage| saved.lock().push(m.role.clone()))
+                Arc::new(move |m: &mut AgentMessage| saved.lock().push(m.role.clone()))
             }),
             ..Default::default()
         };

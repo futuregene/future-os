@@ -9,9 +9,12 @@ pub enum RunEvent {
         started_at_ms: u64,
     },
     Model(ModelStreamEvent),
-    CompactionEnd {
-        tokens_before: i32,
-        summary: String,
+    CompactionCommitted {
+        checkpoint: crate::compaction::ContextCheckpoint,
+    },
+    CompactionFailed {
+        trigger: crate::compaction::CompactionTrigger,
+        error: String,
     },
     ToolExecutionStarted {
         id: String,

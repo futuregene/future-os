@@ -19,17 +19,31 @@ pub(super) fn run_event_to_sse(event: crate::agent::RunEvent) -> Option<super::S
                 ("type", serde_json::json!("agent_start")),
             ]),
         ),
-        RunEvent::CompactionEnd {
-            tokens_before,
-            summary,
-        } => (
-            "compaction_end",
+        RunEvent::CompactionCommitted { checkpoint } => (
+            "compaction_committed",
             ordered_data([
-                ("tokens_before", serde_json::json!(tokens_before)),
-                ("summary", serde_json::json!(summary)),
-                ("aborted", serde_json::json!(false)),
-                ("reason", serde_json::json!("auto")),
-                ("type", serde_json::json!("compaction_end")),
+                ("type", serde_json::json!("compaction_committed")),
+                ("checkpoint_id", serde_json::json!(checkpoint.checkpoint_id)),
+                (
+                    "cutoff_entry_id",
+                    serde_json::json!(checkpoint.cutoff_entry_id),
+                ),
+                ("trigger", serde_json::json!(checkpoint.trigger)),
+                ("tokens_before", serde_json::json!(checkpoint.tokens_before)),
+                ("tokens_after", serde_json::json!(checkpoint.tokens_after)),
+                (
+                    "algorithm_version",
+                    serde_json::json!(checkpoint.algorithm_version),
+                ),
+                ("summary", serde_json::json!(checkpoint.summary)),
+            ]),
+        ),
+        RunEvent::CompactionFailed { trigger, error } => (
+            "compaction_failed",
+            ordered_data([
+                ("type", serde_json::json!("compaction_failed")),
+                ("trigger", serde_json::json!(trigger)),
+                ("error", serde_json::json!(error)),
             ]),
         ),
         RunEvent::ToolExecutionStarted {

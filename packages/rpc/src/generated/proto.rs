@@ -51,6 +51,12 @@ pub struct RpcCommand {
     /// Entry ID within a session (e.g. a specific tool-call for approval).
     #[prost(string, tag = "92")]
     pub entry_id: ::prost::alloc::string::String,
+    /// Optional get_session_entries pagination. Absence preserves the legacy
+    /// complete response; offset=0 explicitly opts into bounded forward pages.
+    #[prost(int64, optional, tag = "96")]
+    pub offset: ::core::option::Option<i64>,
+    #[prost(int64, optional, tag = "97")]
+    pub limit: ::core::option::Option<i64>,
     /// Session name (set by /name command).  Used with set_session_name.
     #[prost(string, tag = "93")]
     pub name: ::prost::alloc::string::String,
@@ -368,6 +374,10 @@ pub struct ListSessionsResponse {
 pub struct SessionEntriesResponse {
     #[prost(message, repeated, tag = "1")]
     pub entries: ::prost::alloc::vec::Vec<SessionEntry>,
+    #[prost(bool, tag = "2")]
+    pub has_more: bool,
+    #[prost(int64, tag = "3")]
+    pub next_offset: i64,
 }
 /// Acknowledgement of an accepted prompt command. Field names mirror the
 /// on-disk/wire JSON spelling (snake_case).
@@ -1097,6 +1107,13 @@ pub struct SessionEntry {
     /// input_tokens, not an addition to them.
     #[prost(int64, optional, tag = "14")]
     pub cache_read_tokens: ::core::option::Option<i64>,
+    /// Persisted journal discriminator. Added for non-message projections such as
+    /// durable context checkpoints; absent on responses from older agents.
+    #[prost(string, optional, tag = "15")]
+    pub entry_type: ::core::option::Option<::prost::alloc::string::String>,
+    /// Structured v2/legacy checkpoint payload serialized as JSON.
+    #[prost(string, optional, tag = "16")]
+    pub checkpoint: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// One event as replayed by get_events_since. Field names mirror the
 /// StreamEvent envelope.
@@ -1200,7 +1217,8 @@ pub struct StreamEvent {
     ///    approval_request / approval_decision
     ///    usage                        token accounting
     ///    error                        run error
-    ///    tool_sandboxed / persistence_error / compaction_end   sideband signals
+    ///    tool_sandboxed / persistence_error / compaction_end /
+    ///    compaction_committed                                  sideband signals
     ///    provider_config_changed  global provider/auth configuration committed
     ///
     /// Provider-specific aliases are normalized inside the Agent and never cross
