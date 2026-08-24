@@ -244,6 +244,7 @@ mod crate_helper {
             recorded_at: 0,
             spend_source: None,
             validation: None,
+            failure_kind: None,
         }
     }
 }

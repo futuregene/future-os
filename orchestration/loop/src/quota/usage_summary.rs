@@ -203,6 +203,7 @@ mod tests {
             recorded_at,
             spend_source: Some(source.to_string()),
             validation: None,
+            failure_kind: None,
         }
     }
 

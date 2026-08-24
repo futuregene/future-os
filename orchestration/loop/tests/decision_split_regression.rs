@@ -128,6 +128,20 @@ fn assert_packet_parity(goal: &Goal, now: SystemTime, agent_id: Option<&str>) ->
         map.remove("reason_code");
     }
 
+    // `reason` is diagnostic prose (a human/watchdog-facing explanation), not
+    // a wire-contract field — it evolves as diagnostics improve (e.g. the
+    // repair-budget reason now names the exhausted todo and its verify gate).
+    // Exclude it from the pre-split structural parity diff so a richer reason
+    // never reads as "field drift"; per-path semantic assertions still pin
+    // the reason's stable keywords (e.g. `p.reason.contains(...)` in each
+    // parity test below).
+    if let serde_json::Value::Object(map) = &mut current_json {
+        map.remove("reason");
+    }
+    if let serde_json::Value::Object(map) = &mut legacy_json {
+        map.remove("reason");
+    }
+
     assert_eq!(
         legacy_json, current_json,
         "packet field drift vs pre-split baseline (goal={:?}, agent={:?}) — \

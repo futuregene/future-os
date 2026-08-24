@@ -13,6 +13,56 @@ use crate::state::{
     ValidationStatus,
 };
 
+/// Backoff (seconds) a turn sleeps before the run exits when it ended in an
+/// HTTP 429 (engine overloaded / rate-limited). Relaunching immediately after
+/// a 429 re-hits the same throttle and burns turns without progress — a short
+/// sleep lets the orchestrator's next `run` land on a cooled-down engine.
+/// (Measured: 10 concurrent workers all hammering one model produced 22
+/// error turns in a single night, every one of them a 429.)
+pub const RATE_LIMIT_BACKOFF_SECS: u64 = 45;
+
+/// Whether a turn's error is a recoverable rate-limit (HTTP 429 / overloaded).
+/// These are NOT science failures — they are throttle events — so the loop
+/// must back off, not count them toward a repair budget or replan.
+pub fn is_rate_limit_error(error: Option<&str>) -> bool {
+    match error {
+        None => false,
+        Some(e) => {
+            let lower = e.to_lowercase();
+            lower.contains("429")
+                || lower.contains("rate limit")
+                || lower.contains("rate-limited")
+                || lower.contains("overloaded")
+        }
+    }
+}
+
+/// Classify a turn's failure into the writeback ledger (A). Backward-compat:
+/// a legacy record without `failure_kind` is derived from `terminal_state` +
+/// `validation` exactly as the writeback stamps it.
+pub fn classify_failure(record: &crate::state::RunRecord) -> crate::state::FailureKind {
+    use crate::state::{FailureKind, ValidationStatus};
+    // A verify-gate failure is the science failure regardless of terminal_state.
+    if let Some(v) = &record.validation {
+        if v.status == ValidationStatus::Failed && !v.ok {
+            return FailureKind::ScienceVerifyFailed;
+        }
+    }
+    if record.terminal_state == "error" {
+        return if is_rate_limit_error(record.error.as_deref()) {
+            FailureKind::InfraRecoverable
+        } else {
+            FailureKind::HardError
+        };
+    }
+    if record.terminal_state == "completed" {
+        return FailureKind::None;
+    }
+    // cancelled / incomplete / other non-terminal: treat as infra-recoverable
+    // (budget-truncated or externally stopped; not a science failure).
+    FailureKind::InfraRecoverable
+}
+
 /// A turn counts as succeeded only when the agent finished AND any attached
 /// independent validator passed (no validator ⇒ not required ⇒ ok).
 pub fn turn_succeeded(record: &RunRecord) -> bool {
@@ -32,6 +82,39 @@ pub fn no_progress_idle_secs(
 ) -> Option<u64> {
     let idle_secs = now.saturating_sub(last_write_tool_at.unwrap_or(turn_start_at));
     (idle_secs >= threshold_secs).then_some(idle_secs)
+}
+
+/// Detect a statically-tautological validator: a `--verify` command whose
+/// exit status is fixed regardless of the filesystem. Both directions are the
+/// fake-completion vector:
+/// - **always-false** (`test -n ""`): a `$(...)` substitution expanded to
+///   empty before the shell ever ran it — the gate can never pass, so the
+///   todo sits in an infinite repair loop (measured: one such validator cost
+///   79 failed turns on a single todo).
+/// - **always-true** (`test -z ""`): the gate never bites, so a placeholder
+///   payload is marked done.
+///
+/// Refuse both at `todo add/update --verify` time rather than discovering the
+/// loop minutes later. Returns a human reason for a tautological validator,
+/// `None` for a plausible one.
+pub fn validator_tautology(cmd: &str) -> Option<&'static str> {
+    // `-n` with an EMPTY string literal → always false. This is the exact
+    // accident: `test -n "$(ls ...)"` written in an outer shell with an empty
+    // `ls` result collapses to `test -n ""` before the loop ever runs it.
+    if cmd.contains("-n \"\"") || cmd.contains("-n ''") || cmd.contains("-n \"\"") {
+        return Some(
+            "`-n \"\"` is always false — a command substitution expanded to empty before the shell \
+             ran it, so the verify gate can never pass; assert a concrete file path or content instead",
+        );
+    }
+    // `-z` with an EMPTY string literal → always true (gate never bites).
+    if cmd.contains("-z \"\"") || cmd.contains("-z ''") {
+        return Some(
+            "`-z \"\"` is always true — the verify gate passes regardless of output; use a \
+             concrete `test -f <file>` / content assertion",
+        );
+    }
+    None
 }
 
 /// Run the todo's independent validator (if any) after a completed turn.
@@ -137,6 +220,8 @@ pub async fn execute_turn(
         // G-7: stamped by the caller (main.rs writeback) with the mode-based
         // spend source before the record hits the ledger.
         spend_source: None,
+        // A: failure classification, stamped at writeback (None until then).
+        failure_kind: None,
         validation: None,
     };
     // Independent validator (if any) runs after a completed turn; a failed or
@@ -154,6 +239,12 @@ pub async fn execute_turn(
 /// - failure → failed_attempts + 1 (kernel decides bounded retry)
 /// - monitor poll → update the monitor's own counter; a no-change poll never
 ///   spends (LoopX spend rules).
+///
+/// A: the repair budget charges ONLY science failures. An infra-recoverable
+/// turn (HTTP 429 / rate-limit / connection reset / agent crash) is a throttle
+/// event — it is backed off and retried by the orchestrator, but it never
+/// consumes `failed_attempts` (otherwise a 429 storm would blow through the
+/// bounded budget and replan the goal for a purely infrastructure cause).
 pub fn writeback(
     goal: &mut Goal,
     record: &RunRecord,
@@ -181,15 +272,19 @@ pub fn writeback(
         }
         return;
     }
+    let failure_kind = record
+        .failure_kind
+        .unwrap_or_else(|| classify_failure(record));
     if turn_succeeded(record) {
         let (no_follow_up, successors) = completion.unwrap_or((true, vec![]));
         if let Some(t) = goal.todo_mut(&record.todo_id) {
             t.complete(no_follow_up, successors);
         }
     } else if let Some(t) = goal.todo_mut(&record.todo_id) {
-        // Failed turn or failed independent validation → one repair attempt
-        // (bounded by max_validation_attempts in the run loop).
-        t.failed_attempts += 1;
+        // A: infra-recoverable failures do NOT consume the repair budget.
+        if failure_kind != crate::state::FailureKind::InfraRecoverable {
+            t.failed_attempts += 1;
+        }
     }
     // Outcome floor: a turn is material when it produced a validated artifact
     // (tools invoked + evidence). Surface-only turns accumulate the streak.
@@ -200,4 +295,45 @@ pub fn writeback(
         goal.outcome_streak += 1;
     }
     goal.history.push(record.clone());
+}
+
+#[cfg(test)]
+mod validator_tests {
+    use super::validator_tautology;
+
+    #[test]
+    fn empty_n_literal_is_always_false() {
+        assert!(validator_tautology("test -d out && test -n \"\"").is_some());
+        assert!(validator_tautology("test -n ''").is_some());
+        assert!(validator_tautology("[ -n \"\" ]").is_some());
+    }
+
+    #[test]
+    fn empty_z_literal_is_always_true() {
+        assert!(validator_tautology("test -z \"\"").is_some());
+        assert!(validator_tautology("[ -z '' ]").is_some());
+    }
+
+    #[test]
+    fn concrete_assertions_pass() {
+        assert_eq!(validator_tautology("test -f outputs/packing.json"), None);
+        assert_eq!(
+            validator_tautology("test -f out.json && python check.py"),
+            None
+        );
+        assert_eq!(validator_tautology("test -n \"$(ls outputs)\""), None);
+    }
+
+    #[test]
+    fn rate_limit_detection() {
+        use super::is_rate_limit_error;
+        assert!(is_rate_limit_error(Some(
+            "Rate limited (HTTP 429): The engine is currently overloaded"
+        )));
+        assert!(is_rate_limit_error(Some("rate limit exceeded")));
+        assert!(is_rate_limit_error(Some("server overloaded")));
+        assert!(!is_rate_limit_error(Some("validator exited 1")));
+        assert!(!is_rate_limit_error(Some("timeout")));
+        assert!(!is_rate_limit_error(None));
+    }
 }

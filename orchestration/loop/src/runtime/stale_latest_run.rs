@@ -76,6 +76,7 @@ mod tests {
             recorded_at,
             spend_source: Some("run".to_string()),
             validation: None,
+            failure_kind: None,
         }
     }
 

@@ -126,5 +126,6 @@ pub fn run_record(todo_id: &str, state: &str, recorded_at: u64) -> future_loop::
         recorded_at,
         spend_source: Some("run".to_string()),
         validation: None,
+        failure_kind: None,
     }
 }

@@ -134,6 +134,8 @@ pub async fn run_bridge(store: &mut Store, opts: &BridgeOptions) -> Result<()> {
             evidence: result.evidence.clone(),
             recorded_at: now_epoch(),
             spend_source: None,
+            // A: failure classification, stamped at writeback (None until then).
+            failure_kind: None,
             validation: None,
         };
         // Completion contract: last remaining todo closes with no-follow-up;

@@ -217,6 +217,7 @@ fn agent_lane_recommendation_attributes_runs_to_claiming_agent() {
         recorded_at: 100,
         spend_source: Some("run".into()),
         validation: None,
+        failure_kind: None,
     }];
     let rec = compact_agent_lane_recommendation(&goal, "agent-a").unwrap();
     assert_eq!(rec.agent_id, "agent-a");

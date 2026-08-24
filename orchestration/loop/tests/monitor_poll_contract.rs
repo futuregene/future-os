@@ -207,6 +207,7 @@ fn no_change_polls_never_enter_the_spend_ledger() {
         recorded_at: future_loop::state::now_epoch(),
         spend_source: Some("heartbeat".into()),
         validation: None,
+        failure_kind: None,
     };
     future_loop::executor::writeback(&mut goal, &record, Some(false), None);
     assert_eq!(goal.history.len(), 0, "no-change polls are quota-neutral");
@@ -215,6 +216,7 @@ fn no_change_polls_never_enter_the_spend_ledger() {
     let record2 = future_loop::state::RunRecord {
         spend_source: Some("heartbeat".into()),
         validation: None,
+        failure_kind: None,
         ..record
     };
     future_loop::executor::writeback(&mut goal, &record2, Some(true), None);

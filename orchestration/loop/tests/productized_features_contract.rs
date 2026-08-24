@@ -34,6 +34,7 @@ fn run_record(todo_id: &str, terminal: &str) -> RunRecord {
         recorded_at: now_epoch(),
         spend_source: Some("run".to_string()),
         validation: None,
+        failure_kind: None,
     }
 }
 
