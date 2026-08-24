@@ -54,6 +54,7 @@ pub(crate) struct RestrictedChild {
     _desktop: PrivateDesktop,
     stdout: Option<File>,
     stderr: Option<File>,
+    #[cfg(test)]
     pid: u32,
     _capability_lease: Option<CapabilityLease>,
 }
@@ -157,6 +158,7 @@ impl RestrictedChild {
             _desktop: desktop,
             stdout: Some(stdout_read.into_file()),
             stderr: Some(stderr_read.into_file()),
+            #[cfg(test)]
             pid: info.dwProcessId,
             _capability_lease: None,
         })
@@ -467,7 +469,9 @@ fn open_inheritable_null() -> io::Result<OwnedHandle> {
 }
 
 struct AttributeList {
-    storage: Vec<usize>,
+    // Keep the aligned backing allocation alive for the attribute list's
+    // lifetime; `pointer` points into it and the list is torn down in `Drop`.
+    _storage: Vec<usize>,
     pointer: *mut core::ffi::c_void,
 }
 
@@ -487,7 +491,10 @@ impl AttributeList {
         if unsafe { InitializeProcThreadAttributeList(pointer, 1, 0, &mut bytes) } == 0 {
             return Err(io::Error::last_os_error());
         }
-        let list = Self { storage, pointer };
+        let list = Self {
+            _storage: storage,
+            pointer,
+        };
         let ok = unsafe {
             UpdateProcThreadAttribute(
                 list.pointer,
