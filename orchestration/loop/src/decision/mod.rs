@@ -54,7 +54,7 @@ use self::identity::identity_gate;
 use self::monitor::{monitor_outcome, MonitorOutcome};
 use self::oscillation::oscillation_replan_reason;
 use self::primary_action::agent_channel;
-use self::stall::{is_monitor_stalled, outcome_floor_breach, repair_exhausted};
+use self::stall::{is_monitor_stalled, outcome_floor_breach, repair_exhausted, repair_exhausted_reason};
 use crate::quota::error_codes::DecisionReasonCode;
 
 pub use self::arbitration::{
@@ -67,6 +67,14 @@ pub use self::oscillation::OSCILLATION_PATTERN_LEN;
 pub use self::stall::{MAX_REPAIR_ATTEMPTS, MONITOR_NO_CHANGE_REPLAN_THRESHOLD};
 pub use crate::quota::slot_accounting::QUOTA_ALLOWED_SLOTS;
 pub use crate::state::now_epoch;
+
+/// B: LLM-zombie threshold — consecutive turns on one todo with NO
+/// write-class tool (write/edit/shell) that force a replan. A worker that
+/// lands nothing material is a silent-LLM-loop zombie; restarting the same
+/// session replays the same failing context. Two turns is tight enough to
+/// catch the loop before the burn compounds, loose enough that a single
+/// quiet-turn (e.g. a long think before the first write) never trips it.
+pub const LLM_ZOMBIE_TURN_THRESHOLD: u32 = 2;
 
 /// should-run decision compiler. Pure: injectable clock, no I/O.
 /// `agent_id`: when present, must be a registered peer (reference fail-closed:
@@ -229,11 +237,36 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
         );
     }
     if repair_exhausted(goal) {
-        return replan_packet(
-            goal,
-            DecisionReasonCode::RepairBudgetExhausted,
-            "advancement todo(s) exhausted repair budget",
-        );
+        let reason = repair_exhausted_reason(goal)
+            .unwrap_or_else(|| "advancement todo(s) exhausted repair budget".to_string());
+        return replan_packet(goal, DecisionReasonCode::RepairBudgetExhausted, &reason);
+    }
+
+    // ── 2d. B: LLM-health zombie detection — a worker whose recent turns all
+    //       ended with NO write-class tool activity (write/edit/shell) is not
+    //       making material progress; it is either stuck in a silent LLM loop
+    //       or reasoning without ever landing an artifact. Relaunching the
+    //       same session replays the same context and re-hits the same wall.
+    //       Surface a replan so the orchestrator restarts the worker with a
+    //       FRESH session (the durable loop state carries the context via the
+    //       turn envelope — nothing is lost). Counts only turns for this
+    //       todo, not the goal at large. ───────────────────────────────────
+    if let Some(todo) = retryable.first() {
+        let no_progress_turns = goal
+            .turn_no_progress
+            .iter()
+            .filter(|np| np.todo_id == todo.id)
+            .count() as u32;
+        if no_progress_turns >= LLM_ZOMBIE_TURN_THRESHOLD {
+            return replan_packet(
+                goal,
+                DecisionReasonCode::RepairBudgetExhausted,
+                &format!(
+                    "LLM zombie: todo {} produced {} turns with no write-class tool (write/edit/shell) — the worker is stuck without landing an artifact; restart it with a fresh session (context replays from the ledger)",
+                    todo.id, no_progress_turns
+                ),
+            );
+        }
     }
 
     // ── 2c. Blocked by an external blocker with no fallback: quiet wait. ──

@@ -42,6 +42,7 @@ fn delivery(turn: u32, ts: u64, validation_ok: Option<bool>) -> RunRecord {
                 )
             }
         }),
+        failure_kind: None,
     }
 }
 

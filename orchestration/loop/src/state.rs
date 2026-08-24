@@ -557,6 +557,42 @@ pub struct RunRecord {
     /// stamped at writeback time. Absent on legacy ledger lines → derived
     /// from `terminal_state` by [`crate::quota::slot_accounting`].
     pub spend_source: Option<String>,
+    /// A: failure classification, stamped at writeback. Absent on legacy
+    /// ledger lines → derived on read from `terminal_state` + `validation`
+    /// by [`Goal::failure_kind_of`].
+    #[serde(default)]
+    pub failure_kind: Option<FailureKind>,
+}
+
+/// Failure classification — WHY a turn did not deliver a verified outcome.
+/// The repair budget (`failed_attempts`) and the retry policy must key on
+/// this, not on the raw `terminal_state`: an infra throttle (HTTP 429) is not
+/// a science failure and must never consume the bounded repair budget, while a
+/// verify-gate failure IS the science failure the budget exists for.
+/// Stamped on the RunRecord at writeback time (serialized for replay).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureKind {
+    /// No failure — the turn delivered (succeeded or a monitor poll).
+    None,
+    /// Recoverable infrastructure: HTTP 429 / rate-limit / connection reset /
+    /// agent crash / stream gap. Back off and retry — does NOT count against
+    /// the repair budget (it is not a science failure).
+    InfraRecoverable,
+    /// The turn completed but the independent verify gate rejected the output.
+    /// This IS the science failure the bounded repair budget exists for.
+    ScienceVerifyFailed,
+    /// The turn ended in error without a recoverable infra cause (e.g. the
+    /// agent crashed mid-turn with a non-429 error) — treat as science-level
+    /// failure for budget purposes (the loop cannot tell it apart from a
+    /// genuinely bad run).
+    HardError,
+}
+
+impl Default for FailureKind {
+    fn default() -> Self {
+        FailureKind::None
+    }
 }
 
 /// An acceptance condition not yet satisfied by evidence. Terminal closure
@@ -1107,6 +1143,39 @@ impl Goal {
             .collect()
     }
 
+    /// Done advancement todos that carry a `--verify` validator but have NO
+    /// passed validation receipt in the run history — the "fake completion"
+    /// guard. A todo completed past its independent validator (which never
+    /// exited 0) is a delivery, not a verified outcome: it must NOT count
+    /// toward terminal closure, otherwise a worker that declares `complete`
+    /// with a placeholder payload closes the goal while the verify gate still
+    /// stands unproven (the incident: worker "completes" with empty evidence,
+    /// goal is mis-judged terminal, every worker parks in a skip loop).
+    pub fn unvalidated_deliveries(&self) -> Vec<&Todo> {
+        self.todos
+            .iter()
+            .filter(|t| {
+                t.class == TaskClass::Advancement
+                    && t.status == TodoStatus::Done
+                    && t.validator.is_some()
+                    && !self.has_passed_validation(&t.id)
+            })
+            .collect()
+    }
+
+    /// Whether any run record for `todo_id` carries a passed independent
+    /// validation receipt (`--verify` exit 0). Absent receipt on a validator
+    /// todo → unvalidated delivery (the fake-completion gap).
+    pub fn has_passed_validation(&self, todo_id: &str) -> bool {
+        self.history.iter().any(|r| {
+            r.todo_id == todo_id
+                && r.validation
+                    .as_ref()
+                    .map(|v| v.status == ValidationStatus::Passed)
+                    .unwrap_or(false)
+        })
+    }
+
     pub fn unsatisfied_gaps(&self) -> Vec<&AcceptanceGap> {
         self.acceptance.iter().filter(|g| !g.satisfied).collect()
     }
@@ -1135,6 +1204,7 @@ impl Goal {
                 && (t.status != TodoStatus::Deferred || t.is_due_deferred(now))
         }) && self.unsatisfied_gaps().is_empty()
             && self.completed_without_closure_intent().is_empty()
+            && self.unvalidated_deliveries().is_empty()
     }
 
     /// The validated terminal mode: `Some(())` only when closure is derived

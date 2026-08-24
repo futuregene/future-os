@@ -89,6 +89,7 @@ mod tests {
             recorded_at,
             spend_source: None,
             validation: None,
+            failure_kind: None,
         }
     }
 

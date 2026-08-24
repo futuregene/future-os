@@ -6702,6 +6702,7 @@ mod coverage_tests {
             evidence: "proof".to_string(),
             recorded_at: 1_700_000_000,
             spend_source: Some("run".to_string()),
+            failure_kind: None,
             validation: None,
         }
     }
@@ -7587,6 +7588,7 @@ mod cli_quirks_tests {
                     evidence: "run-ev".into(),
                     recorded_at: 2,
                     spend_source: None,
+                    failure_kind: None,
                 },
                 ts: 2,
             }),
@@ -8260,6 +8262,7 @@ mod residual_branch_tests {
             evidence: "proof".into(),
             recorded_at: 1,
             spend_source: Some("run".into()),
+            failure_kind: None,
             validation: None,
         };
         std::fs::write(
