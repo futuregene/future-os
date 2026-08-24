@@ -819,6 +819,34 @@ pub struct Goal {
     /// latest wins). `None` → the default rule set applies.
     #[serde(default)]
     pub replan_rule_set: Option<crate::decision::goal_frontier::replan_rules::ReplanRuleSet>,
+    /// Session retention: the last run's agent session that MAY be resumable.
+    /// The loop kernel never decides resume-vs-fresh itself — it only records
+    /// WHY the session was interrupted (the failure classification) and keeps
+    /// the session id on disk; the CALLER (orchestrator / `run --session-policy`)
+    /// decides whether to resume it or start fresh. Written at run exit.
+    #[serde(default)]
+    pub session_retention: Option<SessionRetention>,
+}
+
+/// Session-retention record: what the loop kernel knows about the last run's
+/// agent session. The kernel keeps this so the caller can make an informed
+/// resume-vs-fresh decision; it is NOT a directive (the caller may always
+/// choose fresh).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SessionRetention {
+    /// The agent session id from the last run.
+    pub session_id: String,
+    /// The failure classification of the last turn (`None` = succeeded).
+    pub failure_kind: FailureKind,
+    /// Whether the kernel judges this session resumable (advisory only):
+    /// `true` for `InfraRecoverable` (LLM state intact, e.g. 429 / transient
+    /// disconnect); `false` for `HardError` / `ScienceVerifyFailed` / zombie
+    /// (reasoning state is broken — resume would replay the same failure).
+    pub resumable: bool,
+    /// Human-readable reason (advisory).
+    pub reason: String,
+    /// Epoch secs when the run ended.
+    pub ended_at: u64,
 }
 
 /// P1-3①: one automation-liveness breach alert (LoopX automation_liveness):
@@ -916,6 +944,7 @@ impl Goal {
             frontier_change_ts: vec![],
             semantic_history: vec![],
             replan_rule_set: None,
+            session_retention: None,
         }
     }
 

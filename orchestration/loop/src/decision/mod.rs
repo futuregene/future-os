@@ -55,7 +55,7 @@ use self::monitor::{monitor_outcome, MonitorOutcome};
 use self::oscillation::oscillation_replan_reason;
 use self::primary_action::agent_channel;
 use self::stall::{
-    is_monitor_stalled, outcome_floor_breach, repair_exhausted, repair_exhausted_reason,
+    is_monitor_stalled, outcome_floor_breach,
 };
 use crate::quota::error_codes::DecisionReasonCode;
 
@@ -173,21 +173,47 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
     }
 
     // ── 2. Runnable advancement. ─────────────────────────────────────────
-    let retryable: Vec<&Todo> = runnable
-        .into_iter()
-        .filter(|t| t.failed_attempts <= MAX_REPAIR_ATTEMPTS)
-        .collect();
-    // ── 2b. Outcome floor (LoopX: surface-only progress loop). ──────────
-    if let Some(todo) = retryable.first() {
-        if let Some(reason) = outcome_floor_breach(goal) {
-            return replan_packet(goal, DecisionReasonCode::OutcomeFloorBreach, &reason);
+    // ARCHITECTURE-SIMPLIFICATION: a failed todo is STILL runnable — the
+    // kernel does NOT filter by `failed_attempts` (that would be the kernel
+    // deciding "you are stuck"). The agent (the decision maker) reads the
+    // signals below in the delivery reason and decides whether to supersede /
+    // re-split / ask the operator. The kernel is a kanban tool, not a policy
+    // engine. See ARCHITECTURE-SIMPLIFICATION.md.
+    let runnable_todos: Vec<&Todo> = runnable;
+    // ── 2b. Rule signals become advisories, NOT forced replans. ─────────
+    // Outcome-floor / oscillation / failure-count / LLM-zombie are
+    // observations the agent reads and acts on; the kernel surfaces them in
+    // the delivery reason but never converts them into a `replan`.
+    if let Some(todo) = runnable_todos.first() {
+        let mut advisories: Vec<String> = vec![];
+        if let Some(signal) = outcome_floor_breach(goal) {
+            advisories.push(format!(
+                "[signal: {signal} — consider changing strategy or superseding a stale todo]"
+            ));
         }
-        // Oscillation guard (LoopX 对比改进项 ③): the goal's recent delivery
-        // outcomes strictly alternate accept/reject (A→V→A→V) — the
-        // action/verify flip-flop that burns spend without converging.
-        // Force a frontier-changing replan instead of the next delivery.
-        if let Some(reason) = oscillation_replan_reason(goal) {
-            return replan_packet(goal, DecisionReasonCode::OscillationDetected, &reason);
+        if let Some(signal) = oscillation_replan_reason(goal) {
+            advisories.push(format!(
+                "[signal: {signal} — consider a different validator or splitting the todo]"
+            ));
+        }
+        if todo.failed_attempts > 0 {
+            advisories.push(format!(
+                "[signal: todo {} has {} failed attempt(s) — consider superseding or asking the operator]",
+                todo.id, todo.failed_attempts
+            ));
+        }
+        // LLM-zombie signal (was a forced replan in #343; now an advisory —
+        // the kernel surfaces it, the agent decides whether to restart with a
+        // fresh session).
+        let no_progress_turns = goal
+            .turn_no_progress
+            .iter()
+            .filter(|np| np.todo_id == todo.id)
+            .count() as u32;
+        if no_progress_turns >= LLM_ZOMBIE_TURN_THRESHOLD {
+            advisories.push(format!(
+                "[signal: {no_progress_turns} turns with no write-class tool (write/edit/shell) — the worker may be stuck; consider restarting with a fresh session]"
+            ));
         }
         let attempt = todo.failed_attempts + 1;
         let (reason, code) = if attempt > 1 {
@@ -200,6 +226,11 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
                 format!("runnable todo {}", todo.id),
                 DecisionReasonCode::RunnableTodo,
             )
+        };
+        let reason = if advisories.is_empty() {
+            reason
+        } else {
+            format!("{reason} {}", advisories.join(" "))
         };
         // Non-blocking user actions surface in the user channel alongside
         // delivery (LoopX: user_action never freezes the agent).
@@ -238,38 +269,8 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
             ),
         );
     }
-    if repair_exhausted(goal) {
-        let reason = repair_exhausted_reason(goal)
-            .unwrap_or_else(|| "advancement todo(s) exhausted repair budget".to_string());
-        return replan_packet(goal, DecisionReasonCode::RepairBudgetExhausted, &reason);
-    }
-
-    // ── 2d. B: LLM-health zombie detection — a worker whose recent turns all
-    //       ended with NO write-class tool activity (write/edit/shell) is not
-    //       making material progress; it is either stuck in a silent LLM loop
-    //       or reasoning without ever landing an artifact. Relaunching the
-    //       same session replays the same context and re-hits the same wall.
-    //       Surface a replan so the orchestrator restarts the worker with a
-    //       FRESH session (the durable loop state carries the context via the
-    //       turn envelope — nothing is lost). Counts only turns for this
-    //       todo, not the goal at large. ───────────────────────────────────
-    if let Some(todo) = retryable.first() {
-        let no_progress_turns = goal
-            .turn_no_progress
-            .iter()
-            .filter(|np| np.todo_id == todo.id)
-            .count() as u32;
-        if no_progress_turns >= LLM_ZOMBIE_TURN_THRESHOLD {
-            return replan_packet(
-                goal,
-                DecisionReasonCode::RepairBudgetExhausted,
-                &format!(
-                    "LLM zombie: todo {} produced {} turns with no write-class tool (write/edit/shell) — the worker is stuck without landing an artifact; restart it with a fresh session (context replays from the ledger)",
-                    todo.id, no_progress_turns
-                ),
-            );
-        }
-    }
+    // (repair-budget replan removed — a failed todo stays runnable and the
+    //  failure count is surfaced as an advisory above; the agent decides.)
 
     // ── 2c. Blocked by an external blocker with no fallback: quiet wait. ──
     let blockers: Vec<&Todo> = goal.open_of(TaskClass::Blocker).collect();
@@ -311,13 +312,22 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
     // ── 4. Monitors. ────────────────────────────────────────────────────
     match monitor_outcome(goal, now) {
         MonitorOutcome::Stalled(stalled) => {
-            return replan_packet(
+            // ARCHITECTURE-SIMPLIFICATION: a stalled monitor is a signal, not
+            // a directive — quiet wait with an advisory, the agent decides
+            // (watch-lane expiry / blocker / supersede the monitor).
+            return packet(
                 goal,
-                DecisionReasonCode::MonitorStalled,
+                DecisionReasonCode::MonitorBackoff,
+                "wait",
+                false,
+                "quiet_wait",
+                TurnMode::WaitMonitor,
                 &format!(
-                    "monitor {} stalled ({} consecutive no-change polls)",
+                    "monitor {} stalled ({} consecutive no-change polls) — signal, not a directive: consider watch-lane expiry, a blocker, or superseding the monitor",
                     stalled.id, stalled.consecutive_no_change
                 ),
+                UserChannel::none(),
+                agent_channel(None, None, None, false, false, true),
             );
         }
         MonitorOutcome::Due(due) => {

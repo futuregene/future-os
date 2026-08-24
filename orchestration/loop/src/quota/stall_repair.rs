@@ -9,7 +9,9 @@
 //! `decide_for` remains the single authority that actually flips a packet to
 //! replan (packet output unchanged — plan §5.2 G-7 risk note).
 
-use crate::decision::stall::{is_monitor_stalled, outcome_floor_breach, repair_exhausted};
+use crate::decision::stall::{
+    is_monitor_stalled, outcome_floor_breach, repair_exhausted, repair_exhausted_reason,
+};
 use crate::state::{Goal, TaskClass};
 
 /// A stall-return hint: which guard tripped, why, and what the host should do.
@@ -42,9 +44,11 @@ pub fn detect_stall(goal: &Goal) -> Option<StallRepairHint> {
         });
     }
     if repair_exhausted(goal) {
+        let reason = repair_exhausted_reason(goal)
+            .unwrap_or_else(|| "advancement todo(s) exhausted repair budget".to_string());
         return Some(StallRepairHint {
             kind: "repair_budget_exhausted".to_string(),
-            reason: "advancement todo(s) exhausted repair budget".to_string(),
+            reason,
             replan_hint: "record a frontier-changing replan delta (vision patch / successor / no-follow-up) to clear the stall".to_string(),
             blocked_action_scope: None,
         });

@@ -127,27 +127,34 @@ pub fn legacy_decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -
     }
 
     // ── 2. Runnable advancement. ─────────────────────────────────────────
-    let retryable: Vec<&Todo> = runnable
-        .into_iter()
-        .filter(|t| t.failed_attempts <= MAX_REPAIR_ATTEMPTS)
-        .collect();
-    // ── 2b. Outcome floor (LoopX: surface-only progress loop). ──────────
-    if let Some(todo) = retryable.first() {
+    // ARCHITECTURE-SIMPLIFICATION: a failed todo is STILL runnable — the
+    // kernel does NOT filter by `failed_attempts` (the agent decides).
+    let runnable_todos: Vec<&Todo> = runnable;
+    if let Some(todo) = runnable_todos.first() {
+        let mut advisories: Vec<String> = vec![];
         let threshold = goal.execution_profile.outcome_floor_streak_threshold;
         if threshold > 0 && goal.outcome_streak >= threshold {
-            return legacy_replan_packet(
-                goal,
-                &format!(
-                    "outcome floor: {surface_streak} consecutive turns without a material outcome (threshold {threshold})",
-                    surface_streak = goal.outcome_streak
-                ),
-            );
+            advisories.push(format!(
+                "[signal: outcome floor: {surface_streak} consecutive turns without a material outcome (threshold {threshold}) — consider changing strategy or superseding a stale todo]",
+                surface_streak = goal.outcome_streak
+            ));
+        }
+        if todo.failed_attempts > 0 {
+            advisories.push(format!(
+                "[signal: todo {} has {} failed attempt(s) — consider superseding or asking the operator]",
+                todo.id, todo.failed_attempts
+            ));
         }
         let attempt = todo.failed_attempts + 1;
         let reason = if attempt > 1 {
             format!("repair attempt {attempt} for todo {}", todo.id)
         } else {
             format!("runnable todo {}", todo.id)
+        };
+        let reason = if advisories.is_empty() {
+            reason
+        } else {
+            format!("{reason} {}", advisories.join(" "))
         };
         // Non-blocking user actions surface in the user channel alongside
         // delivery (LoopX: user_action never freezes the agent).
@@ -185,12 +192,8 @@ pub fn legacy_decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -
             },
         );
     }
-    if goal
-        .open_of(TaskClass::Advancement)
-        .any(|t| t.failed_attempts > MAX_REPAIR_ATTEMPTS)
-    {
-        return legacy_replan_packet(goal, "advancement todo(s) exhausted repair budget");
-    }
+    // (repair-budget replan removed — a failed todo stays runnable and the
+    //  failure count is surfaced as an advisory in the delivery reason.)
 
     // ── 2c. Blocked by an external blocker with no fallback: quiet wait. ──
     let blockers: Vec<&Todo> = goal.open_of(TaskClass::Blocker).collect();
@@ -240,12 +243,27 @@ pub fn legacy_decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -
         .iter()
         .find(|m| m.consecutive_no_change >= MONITOR_NO_CHANGE_REPLAN_THRESHOLD)
     {
-        return legacy_replan_packet(
+        // ARCHITECTURE-SIMPLIFICATION: a stalled monitor is a signal, not a
+        // directive — quiet wait with an advisory, the agent decides.
+        return legacy_packet(
             goal,
+            "wait",
+            false,
+            "quiet_wait",
+            TurnMode::WaitMonitor,
             &format!(
-                "monitor {} stalled ({} consecutive no-change polls)",
+                "monitor {} stalled ({} consecutive no-change polls) — signal, not a directive: consider watch-lane expiry, a blocker, or superseding the monitor",
                 stalled.id, stalled.consecutive_no_change
             ),
+            UserChannel::none(),
+            AgentChannel {
+                must_attempt: false,
+                delivery_allowed: false,
+                quiet_noop_allowed: true,
+                primary_action: None,
+                selected_todo: None,
+                fallback_todo: None,
+            },
         );
     }
     let due: Vec<&Todo> = monitors

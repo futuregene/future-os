@@ -215,16 +215,19 @@ fn full_goal_lifecycle_through_events() {
         future_loop::contract::TurnMode::MonitorPoll
     );
 
-    // No-change stall → replan (pure decision test on an in-memory goal).
+    // No-change stall → quiet wait + signal (ARCHITECTURE-SIMPLIFICATION: a
+    // stalled monitor is an advisory, not a forced replan).
     let mut g = store.replay("g3").unwrap().unwrap();
     let rec = crate_helper::run_record(1, "m1", "completed");
     for _ in 0..MONITOR_NO_CHANGE_REPLAN_THRESHOLD {
         future_loop::executor::writeback(&mut g, &rec, Some(false), None);
     }
+    let p = decide(&g, SystemTime::now());
     assert_eq!(
-        decide(&g, SystemTime::now()).interaction_contract.mode,
-        future_loop::contract::TurnMode::Replan
+        p.interaction_contract.mode,
+        future_loop::contract::TurnMode::WaitMonitor
     );
+    assert!(p.reason.contains("stalled"), "{}", p.reason);
 }
 
 /// Helper module (integration tests cannot use `#[path]` into the bin).

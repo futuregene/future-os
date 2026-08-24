@@ -319,22 +319,26 @@ fn repair_attempt_parity() {
 }
 
 #[test]
-fn repair_budget_exhausted_parity() {
+fn repair_budget_exhausted_stays_runnable_parity() {
+    // ARCHITECTURE-SIMPLIFICATION: a failed todo stays runnable (the failure
+    // count is an advisory, not a forced replan).
     let mut goal = Goal::new("g", "objective", "/tmp");
     goal.add(Todo::advancement("T1", "Flaky work"));
     goal.todo_mut("T1").unwrap().failed_attempts = 2; // > MAX_REPAIR_ATTEMPTS (1)
-    let p = check(&goal, now(), None, TurnMode::Replan);
-    assert!(p.reason.contains("exhausted repair budget"));
+    let p = check(&goal, now(), None, TurnMode::BoundedDelivery);
+    assert!(p.reason.contains("failed attempt"), "{}", p.reason);
 }
 
 #[test]
-fn outcome_floor_breach_parity() {
+fn outcome_floor_stays_runnable_parity() {
+    // ARCHITECTURE-SIMPLIFICATION: an outcome-floor breach is a signal in the
+    // delivery reason, not a forced replan.
     let mut goal = Goal::new("g", "objective", "/tmp");
     goal.add(Todo::advancement("T1", "Surface-only loop"));
     goal.execution_profile.outcome_floor_streak_threshold = 3;
     goal.outcome_streak = 3;
-    let p = check(&goal, now(), None, TurnMode::Replan);
-    assert!(p.reason.contains("outcome floor"));
+    let p = check(&goal, now(), None, TurnMode::BoundedDelivery);
+    assert!(p.reason.contains("outcome floor"), "{}", p.reason);
 }
 
 // ── Blockers ───────────────────────────────────────────────────────────────
@@ -357,11 +361,13 @@ fn silent_completion_replan_parity() {
 
 // ── Monitors ───────────────────────────────────────────────────────────────
 #[test]
-fn monitor_stalled_replan_parity() {
+fn monitor_stalled_quiet_wait_parity() {
+    // ARCHITECTURE-SIMPLIFICATION: a stalled monitor is a signal, not a
+    // directive — quiet wait with an advisory.
     let mut goal = Goal::new("g", "objective", "/tmp");
     goal.add(Todo::monitor("M1", "Watch CI", Duration::from_secs(3600)));
     goal.todo_mut("M1").unwrap().consecutive_no_change = MONITOR_NO_CHANGE_REPLAN_THRESHOLD;
-    let p = check(&goal, now(), None, TurnMode::Replan);
+    let p = check(&goal, now(), None, TurnMode::WaitMonitor);
     assert!(p.reason.contains("stalled"));
 }
 

@@ -33,6 +33,9 @@ pub struct MockState {
     pub tokens_in: u64,
     pub tokens_out: u64,
     pub cost: f64,
+    /// Live session ids (added by new_session, removed by delete_session) —
+    /// lets `session_alive` probe distinguish a live session from a missing one.
+    pub live_sessions: HashSet<String>,
     /// Events replayed by stream_events (any run).
     pub events: Vec<StreamEvent>,
     /// Command types that answer success=false with a mock error.
@@ -129,12 +132,34 @@ impl FutureAgent for MockAgent {
         let data = match cmd.r#type.as_str() {
             "new_session" => {
                 st.sessions_created += 1;
-                format!("{{\"sessionId\":\"mock-session-{}\"}}", st.sessions_created)
+                let id = format!("mock-session-{}", st.sessions_created);
+                st.live_sessions.insert(id.clone());
+                format!("{{\"sessionId\":\"{}\"}}", id)
             }
-            "get_state" => format!(
-                "{{\"tokensIn\":{},\"tokensOut\":{},\"totalCost\":{}}}",
-                st.tokens_in, st.tokens_out, st.cost
-            ),
+            "get_state" => {
+                // A session that was never created (or was deleted) probes
+                // dead — mirror the agent's real get_state behavior so
+                // `session_alive` has a meaningful false path. Only enforced
+                // once at least one session has been created via new_session
+                // (tests that drive `execute_turn` directly with a hardcoded
+                // session id predate session tracking and never create one).
+                if st.sessions_created > 0 && !st.live_sessions.contains(&cmd.session_id) {
+                    return Ok(response(
+                        &cmd,
+                        false,
+                        String::new(),
+                        "session not found".to_string(),
+                    ));
+                }
+                format!(
+                    "{{\"tokensIn\":{},\"tokensOut\":{},\"totalCost\":{}}}",
+                    st.tokens_in, st.tokens_out, st.cost
+                )
+            }
+            "delete_session" => {
+                st.live_sessions.remove(&cmd.session_id);
+                String::new()
+            }
             "prompt" => {
                 st.prompts += 1;
                 format!("{{\"run_id\":\"mock-run-{}\"}}", st.prompts)
