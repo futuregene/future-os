@@ -1780,15 +1780,14 @@ mod tests {
     }
 
     #[test]
-    fn queued_attachment_is_an_immutable_memory_snapshot() {
-        let mut session = make_test_session("attachment-snapshot");
+    fn queued_attachment_remains_a_live_path_reference() {
+        let mut session = make_test_session("attachment-reference");
         session
             .runtime
             .begin(Some("run-active"), Some("request-active"))
             .unwrap();
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("note.txt");
-        std::fs::write(&path, b"accepted bytes").unwrap();
         let attachment = crate::types::Attachment {
             path: path.to_string_lossy().into_owned(),
             kind: "file".to_string(),
@@ -1799,17 +1798,24 @@ mod tests {
             .enqueue_prompt(
                 "queued",
                 &[],
-                &[attachment],
+                std::slice::from_ref(&attachment),
                 Some("run-queued"),
                 "request-queued",
                 crate::runtime::BusyPolicy::EnqueueIfBusy,
             )
             .unwrap();
+        // Admission neither reads nor freezes the target. It may be created,
+        // replaced, or removed while the run waits; execution resolves the
+        // same path and therefore observes whichever contents are current.
         std::fs::write(&path, b"changed after ack").unwrap();
-        std::fs::remove_file(path).unwrap();
+        let queued = session.scheduled_attachments("run-queued").unwrap();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].path, attachment.path);
+        assert_eq!(queued[0].kind, attachment.kind);
+        assert_eq!(queued[0].name, attachment.name);
         assert_eq!(
-            session.scheduled_attachment_bytes("run-queued").unwrap(),
-            vec![b"accepted bytes".to_vec()]
+            std::fs::read(&queued[0].path).unwrap(),
+            b"changed after ack"
         );
     }
 

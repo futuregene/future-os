@@ -49,12 +49,14 @@ export type MessageSegment
 
 export interface MessageAttachment {
   name: string;
-  /** Original absolute local path — never copied; the agent reads it on demand. */
+  /** Absolute path read by the agent on demand. */
   path: string;
   /** image | file — images send inline (when supported); files send as a path. */
   kind?: "image" | "file" | null;
   /** Absolute path to a cached thumbnail (images only), rendered via convertFileSrc. */
   thumbnail?: string | null;
+  /** Composer-owned temporary input that must be promoted before sending. */
+  temporary?: boolean;
 }
 
 export interface AgentMessage {

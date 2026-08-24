@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { persistImageAttachments } from "./threadAttachments";
+import { finalizeTemporaryAttachmentSources, persistImageAttachments } from "./threadAttachments";
 
 const deleteTempAttachment = vi.fn();
 const generateImageThumbnail = vi.fn();
@@ -45,11 +45,18 @@ describe("persistImageAttachments", () => {
     // A thumbnail write failure must not reject the send: the image validated,
     // so it is persisted (durable path) and returned without a thumbnail.
     await expect(persistImageAttachments([
-      { kind: "image", name: "ok.png", path: "/tmp/futureos-attachments/ok.png" },
-    ], "thread-1")).resolves.toEqual([
-      { kind: "image", name: "ok.png", path: "/origin/ok.png" },
-    ]);
+      { kind: "image", name: "ok.png", path: "/tmp/futureos-attachments/ok.png", temporary: true },
+    ], "thread-1")).resolves.toEqual({
+      attachments: [{
+        kind: "image",
+        name: "ok.png",
+        path: "/origin/ok.png",
+        temporary: false,
+      }],
+      temporarySources: ["/tmp/futureos-attachments/ok.png"],
+    });
     expect(importEphemeralImage).toHaveBeenCalledTimes(1);
+    expect(deleteTempAttachment).not.toHaveBeenCalled();
   });
 
   it("rewrites a pasted image only after validation succeeds", async () => {
@@ -58,10 +65,23 @@ describe("persistImageAttachments", () => {
     deleteTempAttachment.mockResolvedValue(undefined);
 
     await expect(persistImageAttachments([
-      { kind: "image", name: "ok.png", path: "/tmp/futureos-attachments/ok.png" },
-    ], "thread-1")).resolves.toEqual([
-      { kind: "image", name: "ok.png", path: "/origin/ok.png", thumbnail: "/thumb/ok.jpg" },
-    ]);
+      { kind: "image", name: "ok.png", path: "/tmp/futureos-attachments/ok.png", temporary: true },
+    ], "thread-1")).resolves.toEqual({
+      attachments: [{
+        kind: "image",
+        name: "ok.png",
+        path: "/origin/ok.png",
+        temporary: false,
+        thumbnail: "/thumb/ok.jpg",
+      }],
+      temporarySources: ["/tmp/futureos-attachments/ok.png"],
+    });
+  });
+
+  it("deletes a promoted temp source only when the caller finalizes it", async () => {
+    deleteTempAttachment.mockResolvedValue(undefined);
+    await finalizeTemporaryAttachmentSources(["/tmp/futureos-attachments/ok.png"]);
+    expect(deleteTempAttachment).toHaveBeenCalledWith("/tmp/futureos-attachments/ok.png");
   });
 });
 
@@ -73,7 +93,7 @@ describe("persistImageAttachments non-image passthrough", () => {
   it("passes non-image attachments through both phases untouched", async () => {
     const file = { kind: "file" as const, path: "/a/b.pdf", name: "b.pdf" };
     const result = await persistImageAttachments([file], "t1");
-    expect(result).toEqual([file]);
+    expect(result).toEqual({ attachments: [file], temporarySources: [] });
     expect(validateImageAttachment).not.toHaveBeenCalled();
   });
 });

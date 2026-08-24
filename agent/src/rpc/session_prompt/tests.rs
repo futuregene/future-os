@@ -714,10 +714,13 @@ async fn prompt_ephemeral_session_skips_persistence() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn enqueue_prompt_starts_immediately_and_materializes_attachments() {
+async fn enqueue_prompt_starts_immediately_with_a_large_live_attachment_reference() {
     let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("got it")]), "enqueue");
     let attachment_path = fixture.workspace().join("note.txt");
-    std::fs::write(&attachment_path, "attachment body").unwrap();
+    std::fs::File::create(&attachment_path)
+        .unwrap()
+        .set_len(20 * 1024 * 1024)
+        .unwrap();
 
     let mut session = fixture.session;
     let ack = session
@@ -744,6 +747,10 @@ async fn enqueue_prompt_starts_immediately_and_materializes_attachments() {
     assert_eq!(messages.last().unwrap().text(), "got it");
     // The attachment became part of the user message context.
     assert!(messages[0].text().contains("read this"));
+    assert_eq!(
+        messages[0].metadata.as_ref().unwrap()["attachments"][0]["path"],
+        attachment_path.to_string_lossy().as_ref()
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

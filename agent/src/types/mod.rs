@@ -681,9 +681,10 @@ pub struct TextContent {
     pub text: String,
 }
 
-/// A local file attached to a prompt (GUI). Files are referenced by their
-/// original absolute path — never copied — and read on demand by the agent's
-/// tools. Images additionally carry base64 for an image_url block.
+/// A local file attached to a prompt (GUI). The Agent preserves the absolute
+/// path supplied by the caller and reads it on demand instead of copying it.
+/// Images are read from this path when a run starts and converted to an
+/// image_url block only for the model request; their bytes are not queued.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Attachment {
     #[serde(default)]

@@ -6,6 +6,7 @@ import { sendPromptToFutureAgent } from "../../integrations/agent/agentClient";
 import { createRun, getRun, listRunEvents, updateRunStatus } from "../../integrations/storage/threadStore";
 import { buildReferenceContext } from "./buildReferencePrompt";
 import { runSendPipeline } from "./sendPipeline";
+import { finalizeTemporaryAttachmentSources } from "./threadAttachments";
 
 vi.mock("../../integrations/storage/threadStore", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../integrations/storage/threadStore")>();
@@ -25,7 +26,8 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async () => () => {}),
 }));
 vi.mock("./threadAttachments", () => ({
-  persistImageAttachments: vi.fn(async () => []),
+  finalizeTemporaryAttachmentSources: vi.fn(async () => {}),
+  persistImageAttachments: vi.fn(async () => ({ attachments: [], temporarySources: [] })),
 }));
 vi.mock("./buildReferencePrompt", () => ({
   buildReferenceContext: vi.fn(async () => ""),
@@ -127,6 +129,7 @@ describe("runSendPipeline terminal-status handling", () => {
     await runSendPipeline(makeDeps(setMessages), { content: "hello", attachments: [] });
 
     expect(updateRunStatus).not.toHaveBeenCalled();
+    expect(finalizeTemporaryAttachmentSources).toHaveBeenCalledWith([]);
     const assistant = foldMessages(setMessages).filter(m => m.role === "assistant").pop();
     expect(assistant?.status).toBe("complete");
     expect(assistant?.content).toBe("final answer");
@@ -248,6 +251,7 @@ describe("runSendPipeline stream/failure edges", () => {
     vi.mocked(sendPromptToFutureAgent).mockRejectedValue(new Error("transport down"));
     const setMessages = vi.fn();
     await runSendPipeline(makeDeps(setMessages), { content: "hello", attachments: [] });
+    expect(finalizeTemporaryAttachmentSources).not.toHaveBeenCalled();
     expect(updateRunStatus).toHaveBeenCalledWith(
       expect.objectContaining({ runId: "run-1", status: "failed" }),
     );

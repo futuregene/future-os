@@ -59,8 +59,6 @@ pub enum RunQueueError {
     Deleting,
     #[error("session persistence is unavailable: {0}")]
     PersistenceUnavailable(String),
-    #[error("attachment `{path}` is unavailable: {reason}")]
-    AttachmentUnavailable { path: String, reason: String },
     #[error("run_id `{0}` contains unsafe characters")]
     InvalidRunId(String),
     #[error("client_request_id must not be empty")]
@@ -275,8 +273,9 @@ impl InMemoryRunQueue {
         }
     }
 
-    /// Accept a request into the process-local FIFO. The payload must already
-    /// contain an immutable snapshot of any path-backed attachment.
+    /// Accept a request into the process-local FIFO. The payload freezes run
+    /// configuration and attachment metadata; path-backed attachment contents
+    /// remain live and are resolved only when the run consumes them.
     pub fn accept(
         &self,
         client_request_id: &str,
