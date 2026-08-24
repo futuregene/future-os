@@ -53,6 +53,7 @@ impl Loop {
 
         let tool_defs: Vec<_> = self.tools.iter().map(|t| t.def.clone()).collect();
         let mut retry_attempt = 0;
+        let mut provider_limit_checkpoint_id: Option<String> = None;
 
         if self.verbose {
             tracing::info!(
@@ -107,11 +108,27 @@ impl Loop {
                 context_window,
             );
             let prepared = if let Some(manager) = &self.context_manager {
-                manager.prepare(
-                    projected,
-                    crate::compaction::CompactionTrigger::Automatic,
-                    None,
-                )
+                if provider_limit_checkpoint_id.is_some() {
+                    // The retry below must use exactly the checkpoint produced
+                    // for this failed model step. A second automatic checkpoint
+                    // here could hide a non-context provider failure in a loop.
+                    Ok(crate::compaction::ContextPreparation::Unchanged { prompt: projected })
+                } else {
+                    manager
+                        .prepare_semantic_with_phase(
+                            projected,
+                            crate::compaction::CompactionTrigger::Automatic,
+                            if turn == 0 {
+                                crate::compaction::CompactionPhase::PreTurn
+                            } else {
+                                crate::compaction::CompactionPhase::MidTurn
+                            },
+                            None,
+                            self.provider.as_ref(),
+                            self.interrupt_flag.as_ref(),
+                        )
+                        .await
+                }
             } else {
                 Ok(crate::compaction::ContextPreparation::Unchanged { prompt: projected })
             };
@@ -200,6 +217,11 @@ impl Loop {
                         // count), so it can't help on the first call.
                         let err_msg = format!("{last_error}");
                         if is_retryable_size_error(&err_msg) {
+                            if let Some(checkpoint_id) = provider_limit_checkpoint_id.as_deref() {
+                                return Err(anyhow!(
+                                    "provider still rejected context after checkpoint {checkpoint_id}; refusing repeated compaction for the same model step"
+                                ));
+                            }
                             // Resolve the model's actual context window so we don't
                             // over-compact large-context models (1M+).
                             // Use the cached registry from the loop to avoid
@@ -218,11 +240,17 @@ impl Loop {
                                 None,
                                 manager.context_window.max(1) as u64,
                             );
-                            match manager.prepare(
-                                projected,
-                                crate::compaction::CompactionTrigger::ProviderContextLimit,
-                                None,
-                            ) {
+                            match manager
+                                .prepare_semantic_with_phase(
+                                    projected,
+                                    crate::compaction::CompactionTrigger::ProviderContextLimit,
+                                    crate::compaction::CompactionPhase::MidTurn,
+                                    None,
+                                    self.provider.as_ref(),
+                                    self.interrupt_flag.as_ref(),
+                                )
+                                .await
+                            {
                                 Ok(crate::compaction::ContextPreparation::Compacted {
                                     checkpoint,
                                     ..
@@ -231,6 +259,8 @@ impl Loop {
                                         commit(&checkpoint)?;
                                     }
                                     active_checkpoint = Some((*checkpoint).clone());
+                                    provider_limit_checkpoint_id =
+                                        Some(checkpoint.checkpoint_id.clone());
                                     *self.active_checkpoint.lock() = Some((*checkpoint).clone());
                                     on_event(RunEvent::CompactionCommitted {
                                         checkpoint: *checkpoint,
@@ -277,6 +307,7 @@ impl Loop {
             };
 
             // Reset retry on successful stream
+            provider_limit_checkpoint_id = None;
             if retry_attempt > 0 {
                 retry_attempt = 0;
             }
@@ -1097,6 +1128,20 @@ mod tests {
             &self,
             request: crate::llm::schema::ModelRequest,
         ) -> Result<ReceiverStream<ModelStreamEvent>> {
+            if request
+                .system_prompt
+                .contains("context summarization agent")
+            {
+                let events = vec![
+                    ev_text("## Objective\n- Continue the test.\n\n## Important Details\n- Preserve history.\n\n## Work State\n### Completed\n- Earlier work.\n\n### Active\n- Current run.\n\n### Blocked\n- (none)\n\n## Next Move\n1. Continue.\n\n## Relevant Files\n- (none)"),
+                    ev_stop(),
+                ];
+                let (tx, rx) = mpsc::channel(events.len());
+                for event in events {
+                    let _ = tx.try_send(event);
+                }
+                return Ok(ReceiverStream::new(rx));
+            }
             self.system_prompts.lock().push(request.system_prompt);
             let script = self
                 .scripts
@@ -1805,6 +1850,64 @@ mod tests {
             .unwrap();
         assert_eq!(text, "recovered");
         assert!(events.lock().contains(&"compaction_committed"));
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn provider_limit_retry_commits_only_one_checkpoint_for_the_model_step() {
+        let provider = ScriptedProvider::new(vec![
+            Script::Fail("[CTX_LIMIT] maximum context length".to_string()),
+            Script::Fail("[CTX_LIMIT] maximum context length".to_string()),
+        ]);
+        let config = crate::types::AgentConfig {
+            max_retries: 2,
+            ..Default::default()
+        };
+        let mut loop_ = Loop::new(provider, "mock").with_config(config);
+        loop_.context_manager = Some(crate::compaction::ContextManager {
+            enabled: false,
+            reserve_tokens: 1,
+            keep_recent_tokens: 1,
+            context_window: 1,
+            model: "mock".into(),
+        });
+        let mut messages = Vec::new();
+        for index in 0..6 {
+            let role = if index % 2 == 0 { "user" } else { "assistant" };
+            let mut message = AgentMessage {
+                role: role.to_string(),
+                content: vec![ContentBlock::text(format!("history {index}"))],
+                ..Default::default()
+            };
+            message.ensure_journal_entry_id();
+            messages.push(message);
+        }
+        messages.push(AgentMessage::new_user("user", serde_json::json!("latest")));
+        messages.last_mut().unwrap().ensure_journal_entry_id();
+        let committed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let result = loop_
+            .run_streaming_with_messages(
+                messages,
+                &StreamContext {
+                    on_checkpoint: Some(Arc::new(|_| Ok(()))),
+                    ..Default::default()
+                },
+                noop_on_text,
+                {
+                    let committed = committed.clone();
+                    move |event| {
+                        if matches!(event, RunEvent::CompactionCommitted { .. }) {
+                            committed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                },
+                None,
+            )
+            .await;
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("refusing repeated compaction"));
+        assert_eq!(committed.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -359,8 +359,21 @@ impl ScriptedProvider {
 impl LLMProvider for ScriptedProvider {
     async fn stream_model(
         &self,
-        _request: ModelRequest,
+        request: ModelRequest,
     ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
+        if request
+            .system_prompt
+            .contains("context summarization agent")
+        {
+            let (tx, rx) = mpsc::channel(2);
+            tx.send(text_event(
+                "## Objective\n- Continue the test task.\n\n## Important Details\n- Preserve history.\n\n## Work State\n### Completed\n- Initial tool turn completed.\n\n### Active\n- Continue the run.\n\n### Blocked\n- (none)\n\n## Next Move\n1. Finish the response.\n\n## Relevant Files\n- x: test input",
+            ))
+            .await
+            .unwrap();
+            tx.send(finish_event()).await.unwrap();
+            return Ok(ReceiverStream::new(rx));
+        }
         let script = self
             .scripts
             .lock()
@@ -1563,6 +1576,11 @@ fn wire_auto_compaction_reports_no_valid_boundary() {
     let agent_loop = session.agent_loop.clone();
     let mut loop_ = agent_loop.try_write().unwrap();
     session.wire_auto_compaction(&mut loop_, true, "glm-4.5v");
+    assert_eq!(
+        loop_.context_manager.as_ref().unwrap().model,
+        loop_.model,
+        "summary requests use the provider-facing bare model id"
+    );
     let mut message = crate::types::AgentMessage::new_user("user", serde_json::json!("hi"));
     message.ensure_journal_entry_id();
     let prompt = crate::compaction::project_prompt_context(&[message], None, Some(50_000), 64_000);

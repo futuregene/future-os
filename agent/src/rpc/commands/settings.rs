@@ -129,13 +129,10 @@ pub(crate) fn handle_compact(
     cmd: &RpcCommand,
     id: &str,
 ) -> String {
-    // compact() never returns Err (its body has no error path), so
-    // the old Err arm was unreachable.
-    let result = session
-        .write()
-        .compact(&cmd.custom_instructions)
-        .expect("compact never fails");
-    RpcResponse::ok(id, "compact", result)
+    match session.read().compact(&cmd.custom_instructions) {
+        Ok(result) => RpcResponse::ok(id, "compact", result),
+        Err(error) => RpcResponse::build_fail(id, "compact", &error.to_string()),
+    }
 }
 
 pub(crate) fn handle_set_auto_compaction(

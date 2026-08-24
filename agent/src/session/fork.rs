@@ -396,6 +396,7 @@ mod tests {
             tokens_before: 100,
             tokens_after: 10,
             trigger: CompactionTrigger::Automatic,
+            phase: None,
             algorithm_version: "v2".into(),
             model: "test-model".into(),
             context_window: 200,

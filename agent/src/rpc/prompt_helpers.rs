@@ -29,6 +29,7 @@ pub(super) fn run_event_to_sse(event: crate::agent::RunEvent) -> Option<super::S
                     serde_json::json!(checkpoint.cutoff_entry_id),
                 ),
                 ("trigger", serde_json::json!(checkpoint.trigger)),
+                ("phase", serde_json::json!(checkpoint.phase)),
                 ("tokens_before", serde_json::json!(checkpoint.tokens_before)),
                 ("tokens_after", serde_json::json!(checkpoint.tokens_after)),
                 (

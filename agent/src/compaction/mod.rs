@@ -4,6 +4,8 @@ use crate::types::{AgentMessage, ContentBlock, ConvertToLLM, Message};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
+mod semantic;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CompactionSettings {
     pub enabled: bool,
@@ -45,6 +47,15 @@ pub enum CompactionTrigger {
     Automatic,
     ProviderContextLimit,
     Manual,
+    ModelContextDownshift,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionPhase {
+    PreTurn,
+    MidTurn,
+    Standalone,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -71,6 +82,8 @@ pub struct ContextCheckpoint {
     pub tokens_before: u64,
     pub tokens_after: u64,
     pub trigger: CompactionTrigger,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<CompactionPhase>,
     pub algorithm_version: String,
     pub model: String,
     pub context_window: u64,
@@ -111,6 +124,8 @@ pub enum ContextError {
     NoValidBoundary,
     #[error("context compaction produced an empty summary")]
     InvalidSummary,
+    #[error("context compaction was cancelled")]
+    Cancelled,
 }
 
 #[derive(Debug, Clone)]
@@ -123,153 +138,93 @@ pub struct ContextManager {
 }
 
 impl ContextManager {
+    /// Prepare context with a model-generated semantic summary. The selected
+    /// session model/provider is reused with tools disabled; no hidden
+    /// compaction model is involved. Provider failures fall back to a richer
+    /// deterministic summary, while cancellation remains observable.
+    pub async fn prepare_semantic(
+        &self,
+        prompt: PromptContext,
+        trigger: CompactionTrigger,
+        custom_instructions: Option<&str>,
+        provider: &dyn crate::types::LLMProvider,
+        interrupted: &std::sync::atomic::AtomicBool,
+    ) -> Result<ContextPreparation, ContextError> {
+        self.prepare_semantic_with_phase(
+            prompt,
+            trigger,
+            default_phase(trigger),
+            custom_instructions,
+            provider,
+            interrupted,
+        )
+        .await
+    }
+
+    pub async fn prepare_semantic_with_phase(
+        &self,
+        prompt: PromptContext,
+        trigger: CompactionTrigger,
+        phase: CompactionPhase,
+        custom_instructions: Option<&str>,
+        provider: &dyn crate::types::LLMProvider,
+        interrupted: &std::sync::atomic::AtomicBool,
+    ) -> Result<ContextPreparation, ContextError> {
+        self.prepare_semantic_with_phase_and_fallback(
+            prompt,
+            trigger,
+            phase,
+            custom_instructions,
+            provider,
+            interrupted,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn prepare_semantic_with_phase_and_fallback(
+        &self,
+        prompt: PromptContext,
+        trigger: CompactionTrigger,
+        phase: CompactionPhase,
+        custom_instructions: Option<&str>,
+        provider: &dyn crate::types::LLMProvider,
+        interrupted: &std::sync::atomic::AtomicBool,
+        fallback: Option<(&dyn crate::types::LLMProvider, &str)>,
+    ) -> Result<ContextPreparation, ContextError> {
+        semantic::prepare(
+            self,
+            prompt,
+            trigger,
+            phase,
+            custom_instructions,
+            provider,
+            interrupted,
+            fallback,
+        )
+        .await
+    }
+
+    /// Synchronous compatibility path used by legacy callers and unit tests.
+    /// Runtime automatic/manual compaction should use `prepare_semantic`.
     pub fn prepare(
         &self,
         prompt: PromptContext,
         trigger: CompactionTrigger,
         custom_instructions: Option<&str>,
     ) -> Result<ContextPreparation, ContextError> {
-        if prompt.messages.is_empty() {
-            return Ok(ContextPreparation::Unchanged { prompt });
-        }
-        if !self.enabled && trigger == CompactionTrigger::Automatic {
-            return Ok(ContextPreparation::Unchanged { prompt });
-        }
-        let messages: Vec<Message> = prompt
-            .messages
-            .iter()
-            .flat_map(|projected| ConvertToLLM(std::slice::from_ref(&projected.message)))
-            .collect();
-        let estimated = estimate_context_tokens(&messages).max(0) as u64;
-        let measured = prompt.usage.input_tokens.unwrap_or(0);
-        let tokens_before = estimated.max(measured);
-        let reserve = self.reserve_tokens.max(0) as u64;
-        let window = self.context_window.max(1) as u64;
-        let needs_compaction = tokens_before > window.saturating_sub(reserve);
-        if trigger == CompactionTrigger::Automatic && !needs_compaction {
-            return Ok(ContextPreparation::Unchanged { prompt });
-        }
+        semantic::prepare_deterministic(self, prompt, trigger, custom_instructions)
+    }
+}
 
-        let message_costs: Vec<i32> = prompt
-            .messages
-            .iter()
-            .map(|projected| {
-                ConvertToLLM(std::slice::from_ref(&projected.message))
-                    .iter()
-                    .map(estimate_tokens)
-                    .sum()
-            })
-            .collect();
-        let mut accumulated = 0_i32;
-        let mut cut = 0_usize;
-        for index in (0..prompt.messages.len()).rev() {
-            accumulated = accumulated.saturating_add(message_costs[index]);
-            if accumulated >= self.keep_recent_tokens {
-                cut = index;
-                break;
-            }
+fn default_phase(trigger: CompactionTrigger) -> CompactionPhase {
+    match trigger {
+        CompactionTrigger::Manual => CompactionPhase::Standalone,
+        CompactionTrigger::ProviderContextLimit => CompactionPhase::MidTurn,
+        CompactionTrigger::Automatic | CompactionTrigger::ModelContextDownshift => {
+            CompactionPhase::PreTurn
         }
-        if cut == 0 && prompt.messages.len() > 1 {
-            cut = 1;
-        }
-        while cut > 0 && cut < prompt.messages.len() && prompt.messages[cut].message.role == "tool"
-        {
-            cut -= 1;
-            if prompt.messages[cut].message.role == "assistant"
-                && prompt.messages[cut].message.has_tool_calls()
-            {
-                break;
-            }
-        }
-        if cut == 0 || cut >= prompt.messages.len() {
-            return Err(ContextError::NoValidBoundary);
-        }
-
-        let removed = &prompt.messages[..cut];
-        let covered_from_entry_id = removed
-            .iter()
-            .flat_map(|message| message.source_entry_ids.iter())
-            .find(|id| !id.is_empty())
-            .cloned()
-            .ok_or(ContextError::NoValidBoundary)?;
-        let cutoff_entry_id = removed
-            .iter()
-            .rev()
-            .flat_map(|message| message.source_entry_ids.iter().rev())
-            .find(|id| !id.is_empty())
-            .cloned()
-            .ok_or(ContextError::NoValidBoundary)?;
-
-        let (read_files, modified_files) = extract_file_operations(&messages);
-        let mut summary = format!(
-            "Previous conversation summarized. Files read: {}. Modified: {}.",
-            read_files.join(", "),
-            modified_files.join(", ")
-        );
-        if let Some(instructions) = custom_instructions.map(str::trim).filter(|s| !s.is_empty()) {
-            summary.push_str(" Compaction instructions: ");
-            summary.push_str(instructions);
-        }
-        if summary.trim().is_empty() {
-            return Err(ContextError::InvalidSummary);
-        }
-
-        let entry_id = crate::utils::generate_entry_id();
-        let checkpoint_id = format!("cp_{entry_id}");
-        let summary_blocks = vec![ContentBlock::text(summary.clone())];
-        let mut summary_message = AgentMessage::new_user(
-            "user",
-            serde_json::json!([{
-                "type": "text",
-                "text": format!("[Context compaction: {summary}]")
-            }]),
-        );
-        summary_message
-            .metadata
-            .get_or_insert_with(serde_json::Map::new)
-            .insert(
-                AgentMessage::JOURNAL_ENTRY_ID_KEY.to_string(),
-                serde_json::Value::String(entry_id.clone()),
-            );
-
-        let mut compacted_messages = Vec::with_capacity(prompt.messages.len() - cut + 1);
-        compacted_messages.push(ProjectedMessage {
-            message: summary_message,
-            source_entry_ids: vec![entry_id.clone()],
-        });
-        compacted_messages.extend(prompt.messages[cut..].iter().cloned());
-        let tokens_after = compacted_messages
-            .iter()
-            .flat_map(|projected| ConvertToLLM(std::slice::from_ref(&projected.message)))
-            .map(|message| estimate_tokens(&message).max(0) as u64)
-            .sum();
-        let checkpoint = ContextCheckpoint {
-            entry_id,
-            checkpoint_id,
-            covered_from_entry_id: Some(covered_from_entry_id),
-            cutoff_entry_id: Some(cutoff_entry_id),
-            summary: summary_blocks,
-            tokens_before,
-            tokens_after,
-            trigger,
-            algorithm_version: "v2".to_string(),
-            model: self.model.clone(),
-            context_window: window,
-            created_at: chrono::Utc::now(),
-            legacy_without_cutoff: false,
-        };
-        Ok(ContextPreparation::Compacted {
-            prompt: PromptContext {
-                messages: compacted_messages,
-                usage: ContextUsage {
-                    input_tokens: None,
-                    estimated_input_tokens: tokens_after,
-                    context_window: window,
-                    ..prompt.usage
-                },
-            },
-            checkpoint: Box::new(checkpoint),
-        })
     }
 }
 
@@ -859,6 +814,7 @@ mod tests {
             tokens_before: 100,
             tokens_after: 10,
             trigger: CompactionTrigger::Automatic,
+            phase: None,
             algorithm_version: "v2".into(),
             model: "model".into(),
             context_window: 200,

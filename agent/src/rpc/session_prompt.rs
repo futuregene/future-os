@@ -1193,12 +1193,15 @@ impl ServerSession {
             .unwrap_or(1_000_000);
         let reserve_tokens = ((context_window as f64 * 0.1) as i32).max(16384);
         let keep_recent_tokens = ((context_window as f64 * 0.2) as i32).max(reserve_tokens);
+        // The session model is canonical `provider/id` for persistence and
+        // registry lookup, while provider requests require the Loop's bare ID.
+        let summarizer_model = r#loop.model.clone();
         r#loop.context_manager = Some(crate::compaction::ContextManager {
             enabled,
             reserve_tokens,
             keep_recent_tokens,
             context_window,
-            model: model.to_string(),
+            model: summarizer_model,
         });
         let checkpoint = self
             .session_manager

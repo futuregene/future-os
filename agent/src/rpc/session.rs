@@ -407,6 +407,62 @@ impl ServerSession {
             .map(|m| format!("{}/{}", m.provider, m.id))
             .unwrap_or_else(|| model.to_string());
 
+        let current_context_window = self
+            .model_registry
+            .read()
+            .resolve(&self.model)
+            .map(|m| m.context_window)
+            .unwrap_or(1_000_000);
+
+        // Construct the selected provider before changing any session state.
+        // Besides making the switch atomic from the loop's perspective, this
+        // provider is the only allowed fallback when the old model cannot
+        // summarize a context that must fit the newly selected smaller window.
+        let new_provider = if let Some(model_config) = resolved.as_ref() {
+            let max_tokens = Some(crate::models::effective_max_tokens(model_config));
+            let auth = crate::AuthStore::load();
+            let api_key =
+                resolve_api_key(&auth, model, &model_config.provider, &model_config.api_key);
+            let target = crate::llm::schema::ResolvedModelTarget::from_model(
+                model_config,
+                api_key,
+                None,
+                max_tokens,
+            )?;
+            let mut client = crate::llm::Client::from_target(target);
+            if !self.thinking_level.is_empty() {
+                client = client.with_thinking_level(&self.thinking_level);
+            }
+            let thinking_budget = self
+                .agent_loop
+                .try_read()
+                .map_err(|_| anyhow::anyhow!("session configuration is busy; retry /model"))?
+                .config
+                .thinking_budget;
+            if thinking_budget > 0 {
+                client = client.with_thinking_budget(thinking_budget);
+            }
+            Some(std::sync::Arc::new(client) as std::sync::Arc<dyn crate::types::LLMProvider>)
+        } else {
+            None
+        };
+
+        if canonical_model != self.model {
+            if let Some(model_config) = resolved.as_ref() {
+                if model_config.context_window < current_context_window {
+                    self.compact_with_policy(
+                        "",
+                        crate::compaction::CompactionTrigger::ModelContextDownshift,
+                        crate::compaction::CompactionPhase::PreTurn,
+                        model_config.context_window,
+                        new_provider
+                            .clone()
+                            .map(|provider| (provider, model_config.id.clone())),
+                    )?;
+                }
+            }
+        }
+
         // Update the agent loop in one shot — both model name and provider endpoint.
         // Fail explicitly when the loop is busy so the caller knows to retry
         // rather than silently continuing with the old model. Active runs use
@@ -429,36 +485,11 @@ impl ServerSession {
                 self.strip_image_content_from_messages();
             }
 
-            let max_tokens = Some(crate::models::effective_max_tokens(&model_config));
-
-            let auth = crate::AuthStore::load();
-            let api_key =
-                resolve_api_key(&auth, model, &model_config.provider, &model_config.api_key);
-
-            // Build a FRESH provider (its own reqwest client) and swap it in,
-            // rather than mutating the existing provider's endpoint.  Each
-            // session owns its loop (minted from AppState::loop_template), so
-            // the fresh client is this session's alone: concurrent sessions
-            // use independent connections and never clobber each other's
-            // endpoint mid-run.
-            let target = crate::llm::schema::ResolvedModelTarget::from_model(
-                &model_config,
-                api_key,
-                None,
-                max_tokens,
-            )?;
-            let mut client = crate::llm::Client::from_target(target);
-            // Carry the session's current thinking level/budget onto the new
-            // client; an explicit set_thinking_level afterward still overrides.
-            if !self.thinking_level.is_empty() {
-                client = client.with_thinking_level(&self.thinking_level);
+            // The fresh provider was built and validated before downshift
+            // compaction, so the loop switch cannot expose a half-built client.
+            if let Some(provider) = new_provider {
+                loop_.provider = provider;
             }
-            let thinking_budget = loop_.config.thinking_budget;
-            if thinking_budget > 0 {
-                client = client.with_thinking_budget(thinking_budget);
-            }
-
-            loop_.provider = std::sync::Arc::new(client);
         }
         drop(loop_);
 
@@ -585,14 +616,31 @@ impl ServerSession {
     }
 
     pub fn compact(&self, instructions: &str) -> Result<serde_json::Value> {
-        use std::sync::atomic::Ordering;
-        let messages = self.messages.read().clone();
         let context_window = self
             .model_registry
             .read()
             .resolve(&self.model)
             .map(|m| m.context_window)
             .unwrap_or(1_000_000);
+        self.compact_with_policy(
+            instructions,
+            crate::compaction::CompactionTrigger::Manual,
+            crate::compaction::CompactionPhase::Standalone,
+            context_window,
+            None,
+        )
+    }
+
+    fn compact_with_policy(
+        &self,
+        instructions: &str,
+        trigger: crate::compaction::CompactionTrigger,
+        phase: crate::compaction::CompactionPhase,
+        context_window: i32,
+        fallback: Option<(std::sync::Arc<dyn crate::types::LLMProvider>, String)>,
+    ) -> Result<serde_json::Value> {
+        use std::sync::atomic::Ordering;
+        let messages = self.messages.read().clone();
         let reserve_tokens = ((context_window as f64 * 0.1) as i32).max(16384);
         let keep_tokens = ((context_window as f64 * 0.2) as i32).max(reserve_tokens);
         let active_checkpoint = self
@@ -619,11 +667,49 @@ impl ServerSession {
             context_window,
             model: self.model.clone(),
         };
-        match manager.prepare(
-            prompt,
-            crate::compaction::CompactionTrigger::Manual,
-            Some(instructions),
-        )? {
+        let (provider, interrupted, current_model) = {
+            let loop_ = self
+                .agent_loop
+                .try_read()
+                .map_err(|_| anyhow::anyhow!("session configuration is busy; retry /compact"))?;
+            (
+                loop_.provider.clone(),
+                loop_.interrupt_flag.clone(),
+                loop_.model.clone(),
+            )
+        };
+        let manager = crate::compaction::ContextManager {
+            model: current_model,
+            ..manager
+        };
+        let instructions = instructions.to_string();
+        // RPC dispatch is synchronous today. Run the async, tool-free summary
+        // request on a scoped runtime thread so this path also uses semantic
+        // compaction without nesting a Tokio runtime on the dispatch thread.
+        let prepared = std::thread::spawn(move || -> anyhow::Result<_> {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(anyhow::Error::from)?;
+            runtime
+                .block_on(
+                    manager.prepare_semantic_with_phase_and_fallback(
+                        prompt,
+                        trigger,
+                        phase,
+                        Some(&instructions),
+                        provider.as_ref(),
+                        interrupted.as_ref(),
+                        fallback
+                            .as_ref()
+                            .map(|(provider, model)| (provider.as_ref(), model.as_str())),
+                    ),
+                )
+                .map_err(anyhow::Error::from)
+        })
+        .join()
+        .map_err(|_| anyhow::anyhow!("context compaction worker panicked"))??;
+        match prepared {
             crate::compaction::ContextPreparation::Unchanged { prompt } => Ok(serde_json::json!({
                 "tokensBefore": prompt.usage.estimated_input_tokens,
                 "tokensAfter": prompt.usage.estimated_input_tokens,
@@ -951,6 +1037,33 @@ mod tests {
             _request: ModelRequest,
         ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
             let (_tx, rx) = mpsc::channel(1);
+            Ok(ReceiverStream::new(rx))
+        }
+    }
+
+    struct SummaryProvider;
+
+    #[async_trait::async_trait]
+    impl LLMProvider for SummaryProvider {
+        async fn stream_model(
+            &self,
+            _request: ModelRequest,
+        ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
+            let (tx, rx) = mpsc::channel(2);
+            tokio::spawn(async move {
+                let _ = tx
+                    .send(ModelStreamEvent::TextDelta {
+                        id: "summary".into(),
+                        text: "## Objective\n- retain the task\n\n## Important Details\n- preserve data\n\n## Work State\n### Completed\n- earlier work\n\n### Active\n- model switch\n\n### Blocked\n- (none)\n\n## Next Move\n1. continue\n\n## Relevant Files\n- (none)".into(),
+                    })
+                    .await;
+                let _ = tx
+                    .send(ModelStreamEvent::Finish {
+                        reason: FinishReason::Stop,
+                        usage: None,
+                    })
+                    .await;
+            });
             Ok(ReceiverStream::new(rx))
         }
     }
@@ -2697,10 +2810,12 @@ mod tests {
             for message in messages.iter_mut() {
                 message.ensure_journal_entry_id();
             }
-            let entries = messages
-                .iter()
-                .map(crate::session::agent_message_to_entry)
-                .collect();
+            let mut entries = vec![crate::session::SessionEntry::session_info(
+                serde_json::json!({"cwd": session.cwd, "model": session.model}),
+                session.model.clone(),
+                session.thinking_level.clone(),
+            )];
+            entries.extend(messages.iter().map(crate::session::agent_message_to_entry));
             let snapshot = crate::session::Session::snapshot(
                 session.session_id.clone(),
                 session.cwd.clone(),
@@ -2714,6 +2829,85 @@ mod tests {
         let result = session.compact("").unwrap();
         assert!(result["messagesRemoved"].as_i64().unwrap() > 0);
         assert!(result["summary"].is_string());
+    }
+
+    #[test]
+    fn model_context_downshift_compacts_before_switching_models() {
+        let mut session = make_test_session("model-downshift");
+        let model = |id: &str, context_window: i32| crate::models::Model {
+            id: id.to_string(),
+            name: id.to_string(),
+            provider: "test".to_string(),
+            api: "openai-completions".to_string(),
+            base_url: "http://127.0.0.1:1/v1".to_string(),
+            input: vec!["text".to_string()],
+            output: vec!["text".to_string()],
+            context_window,
+            max_tokens: 4_096,
+            ..Default::default()
+        };
+        {
+            let mut registry = session.model_registry.write();
+            registry.test_insert(model("large", 200_000));
+            registry.test_insert(model("small", 32_000));
+        }
+        session.model = "test/large".to_string();
+        {
+            let mut loop_ = session.agent_loop.try_write().unwrap();
+            loop_.model = "large".to_string();
+            loop_.provider = Arc::new(SummaryProvider);
+        }
+        session
+            .last_prompt_tokens
+            .store(100_000, std::sync::atomic::Ordering::Relaxed);
+        {
+            let mut messages = session.messages.write();
+            for index in 0..10 {
+                let role = if index % 2 == 0 { "user" } else { "assistant" };
+                let mut message = crate::types::AgentMessage {
+                    role: role.to_string(),
+                    content: vec![crate::types::ContentBlock::text(
+                        format!("history {index} ").repeat(4_000),
+                    )],
+                    ..Default::default()
+                };
+                message.ensure_journal_entry_id();
+                messages.push(message);
+            }
+            let mut entries = vec![crate::session::SessionEntry::session_info(
+                serde_json::json!({"cwd": session.cwd, "model": session.model}),
+                session.model.clone(),
+                session.thinking_level.clone(),
+            )];
+            entries.extend(messages.iter().map(crate::session::agent_message_to_entry));
+            session
+                .session_manager
+                .save(&crate::session::Session::snapshot(
+                    session.session_id.clone(),
+                    session.cwd.clone(),
+                    session.model.clone(),
+                    String::new(),
+                    String::new(),
+                    entries,
+                ))
+                .unwrap();
+        }
+
+        session.set_model("test/small").unwrap();
+
+        let loaded = session.session_manager.load(&session.session_id).unwrap();
+        let checkpoint = crate::session::latest_context_checkpoint(&loaded.entries).unwrap();
+        assert_eq!(
+            checkpoint.trigger,
+            crate::compaction::CompactionTrigger::ModelContextDownshift
+        );
+        assert_eq!(
+            checkpoint.phase,
+            Some(crate::compaction::CompactionPhase::PreTurn)
+        );
+        assert_eq!(checkpoint.context_window, 32_000);
+        assert_eq!(session.model, "test/small");
+        assert_eq!(session.agent_loop.try_read().unwrap().model, "small");
     }
 
     #[test]

@@ -165,6 +165,7 @@ export interface HistoryEntry {
     tokens_before?: number;
     tokens_after?: number;
     trigger?: string;
+    phase?: "pre_turn" | "mid_turn" | "standalone" | string;
     algorithm_version?: string;
     summary?: unknown;
   } | null;

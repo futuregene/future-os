@@ -6,23 +6,30 @@ use crate::types::ContentBlock;
 use chrono::Local;
 
 pub fn checkpoint_to_entry(checkpoint: &ContextCheckpoint) -> SessionEntry {
+    let mut content = serde_json::json!({
+        "schema_version": 2,
+        "checkpoint_id": checkpoint.checkpoint_id,
+        "covered_from_entry_id": checkpoint.covered_from_entry_id,
+        "cutoff_entry_id": checkpoint.cutoff_entry_id,
+        "summary": checkpoint.summary,
+        "tokens_before": checkpoint.tokens_before,
+        "tokens_after": checkpoint.tokens_after,
+        "trigger": checkpoint.trigger,
+        "algorithm_version": checkpoint.algorithm_version,
+        "model": checkpoint.model,
+        "context_window": checkpoint.context_window,
+    });
+    if let Some(phase) = checkpoint.phase {
+        content
+            .as_object_mut()
+            .expect("checkpoint content is an object")
+            .insert("phase".to_string(), serde_json::json!(phase));
+    }
     SessionEntry {
         id: checkpoint.entry_id.clone(),
         entry_type: ENTRY_TYPE_COMPACTION.to_string(),
         role: ENTRY_TYPE_SYSTEM.to_string(),
-        content: Some(serde_json::json!({
-            "schema_version": 2,
-            "checkpoint_id": checkpoint.checkpoint_id,
-            "covered_from_entry_id": checkpoint.covered_from_entry_id,
-            "cutoff_entry_id": checkpoint.cutoff_entry_id,
-            "summary": checkpoint.summary,
-            "tokens_before": checkpoint.tokens_before,
-            "tokens_after": checkpoint.tokens_after,
-            "trigger": checkpoint.trigger,
-            "algorithm_version": checkpoint.algorithm_version,
-            "model": checkpoint.model,
-            "context_window": checkpoint.context_window,
-        })),
+        content: Some(content),
         tool_calls: Vec::new(),
         timestamp: checkpoint.created_at.with_timezone(&Local),
         tool_call_id: String::new(),
@@ -125,6 +132,10 @@ fn compaction_entry_to_checkpoint(entry: &SessionEntry) -> Option<ContextCheckpo
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or_default(),
             trigger,
+            phase: content
+                .get("phase")
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok()),
             algorithm_version: content
                 .get("algorithm_version")
                 .and_then(serde_json::Value::as_str)
@@ -184,6 +195,7 @@ fn legacy_checkpoint(entry: &SessionEntry, raw_summary: &str) -> ContextCheckpoi
             .unwrap_or_default(),
         tokens_after: 0,
         trigger: CompactionTrigger::Automatic,
+        phase: None,
         algorithm_version: "legacy".to_string(),
         model: String::new(),
         context_window: 0,
@@ -208,6 +220,7 @@ mod tests {
             tokens_before: 120,
             tokens_after: 20,
             trigger: CompactionTrigger::ProviderContextLimit,
+            phase: Some(crate::compaction::CompactionPhase::MidTurn),
             algorithm_version: "v2".into(),
             model: "model".into(),
             context_window: 200,
@@ -219,6 +232,54 @@ mod tests {
         assert_eq!(parsed.checkpoint_id, checkpoint.checkpoint_id);
         assert_eq!(parsed.cutoff_entry_id, checkpoint.cutoff_entry_id);
         assert_eq!(parsed.tokens_after, 20);
+        assert_eq!(parsed.phase, checkpoint.phase);
+    }
+
+    #[test]
+    fn optional_phase_is_omitted_instead_of_serialized_as_null() {
+        let checkpoint = ContextCheckpoint {
+            entry_id: "entry-no-phase".into(),
+            checkpoint_id: "cp-no-phase".into(),
+            covered_from_entry_id: Some("entry-a".into()),
+            cutoff_entry_id: Some("entry-b".into()),
+            summary: vec![ContentBlock::text("summary")],
+            tokens_before: 120,
+            tokens_after: 20,
+            trigger: CompactionTrigger::Automatic,
+            phase: None,
+            algorithm_version: "v2".into(),
+            model: "model".into(),
+            context_window: 200,
+            created_at: chrono::Utc::now(),
+            legacy_without_cutoff: false,
+        };
+        let entry = checkpoint_to_entry(&checkpoint);
+        assert!(entry.content.unwrap().get("phase").is_none());
+    }
+
+    #[test]
+    fn released_v2_checkpoint_without_phase_remains_readable() {
+        let first = SessionEntry::new_user("user", serde_json::json!("first"));
+        let mut entry = SessionEntry::new_user("user", serde_json::json!(null));
+        entry.id = "entry-cp-old-v2".into();
+        entry.entry_type = ENTRY_TYPE_COMPACTION.into();
+        entry.role = ENTRY_TYPE_SYSTEM.into();
+        entry.content = Some(serde_json::json!({
+            "schema_version": 2,
+            "checkpoint_id": "cp-old-v2",
+            "covered_from_entry_id": first.id,
+            "cutoff_entry_id": first.id,
+            "summary": [{"type": "text", "text": "summary"}],
+            "tokens_before": 100,
+            "tokens_after": 10,
+            "trigger": "automatic",
+            "algorithm_version": "v2",
+            "model": "model",
+            "context_window": 200
+        }));
+        let parsed = entry_to_checkpoint(&entry).unwrap();
+        assert_eq!(parsed.checkpoint_id, "cp-old-v2");
+        assert_eq!(parsed.phase, None);
     }
 
     #[test]
@@ -247,6 +308,7 @@ mod tests {
             tokens_before: 100,
             tokens_after: 10,
             trigger: CompactionTrigger::Automatic,
+            phase: None,
             algorithm_version: "v2".into(),
             model: "model".into(),
             context_window: 200,
