@@ -281,11 +281,48 @@ describe("agentStateCache event listener", () => {
     const received: CustomEvent[] = [];
     window.addEventListener("future:agent-event", e => received.push(e as CustomEvent));
     emit({ _eventType: "user_message", sessionId: "s1", threadId: "t1", text: "hi" });
-    expect(received).toHaveLength(1);
+    emit({
+      _eventType: "compaction_started",
+      sessionId: "s1",
+      threadId: "t1",
+      operation_id: "cmp_1",
+      trigger: "manual",
+      phase: "before_model_switch",
+    });
+    emit({
+      _eventType: "compaction_committed",
+      sessionId: "s1",
+      threadId: "t1",
+      operation_id: "cmp_1",
+      checkpoint_id: "cp_1",
+    });
+    emit({
+      _eventType: "compaction_failed",
+      sessionId: "s1",
+      threadId: "t1",
+      operation_id: "cmp_2",
+      error: "provider unavailable",
+    });
+    expect(received).toHaveLength(4);
     expect(received[0]?.detail).toMatchObject({ threadId: "t1", eventType: "user_message" });
+    expect(received[1]?.detail).toMatchObject({
+      threadId: "t1",
+      eventType: "compaction_started",
+      payload: { operation_id: "cmp_1" },
+    });
+    expect(received[2]?.detail).toMatchObject({
+      threadId: "t1",
+      eventType: "compaction_committed",
+      payload: { operation_id: "cmp_1", checkpoint_id: "cp_1" },
+    });
+    expect(received[3]?.detail).toMatchObject({
+      threadId: "t1",
+      eventType: "compaction_failed",
+      payload: { operation_id: "cmp_2", error: "provider unavailable" },
+    });
     // Without a threadId the event is dropped.
     emit({ _eventType: "agent_end", sessionId: "s1" });
-    expect(received).toHaveLength(1);
+    expect(received).toHaveLength(4);
   });
 });
 

@@ -20,9 +20,49 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
         );
     }
     let mut entries: Vec<SessionEntry> = chain.into_iter().cloned().collect();
+    let mut id_map = std::collections::HashMap::with_capacity(entries.len());
     for e in &mut entries {
-        e.id = generate_entry_id();
+        let old_id = std::mem::replace(&mut e.id, generate_entry_id());
+        id_map.insert(old_id, e.id.clone());
     }
+    // V2 checkpoints reference message-entry ids. Forks deliberately re-id
+    // their copied entries, so rewrite both ends through the same complete map
+    // before the child is saved. A checkpoint whose range is not wholly inside
+    // the fork is dropped instead of leaving a dangling cutoff that could make
+    // the child's first prompt unexpectedly expand to the full transcript.
+    entries.retain_mut(|entry| {
+        if entry.entry_type != super::ENTRY_TYPE_COMPACTION {
+            return true;
+        }
+        let Some(content) = entry
+            .content
+            .as_mut()
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            return true;
+        };
+        if content
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+            != Some(2)
+        {
+            return true;
+        }
+        for key in ["covered_from_entry_id", "cutoff_entry_id"] {
+            let Some(old_id) = content
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+            else {
+                return false;
+            };
+            let Some(new_id) = id_map.get(&old_id) else {
+                return false;
+            };
+            content.insert(key.to_string(), serde_json::Value::String(new_id.clone()));
+        }
+        true
+    });
     // Read parent metadata from the authoritative (last) session_info snapshot.
     // The append-only commit path appends a fresh session_info per run, so the
     // fork must inherit the parent's CURRENT model/name/thinking level (last),
@@ -134,10 +174,12 @@ fn for_each_entry<'a>(entries: &'a [SessionEntry], from_id: &str) -> Vec<&'a Ses
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compaction::{CompactionTrigger, ContextCheckpoint};
     use crate::session::entry::{ENTRY_TYPE_ASSISTANT, ENTRY_TYPE_USER};
     use crate::session::manager::Manager;
     use crate::session::projection::{agent_message_to_entry, entries_to_agent_messages};
     use crate::session::run_journal::RUN_STATE_COMPLETED;
+    use crate::session::{checkpoint_to_entry, latest_context_checkpoint};
     use crate::types::AgentMessage;
 
     fn temp_manager(tag: &str) -> (std::path::PathBuf, Manager) {
@@ -338,5 +380,41 @@ mod tests {
             history_entry_count >= 3,
             "fixed code: history (2) + new user (1) = {history_entry_count} entries (expected >= 3)"
         );
+    }
+
+    #[test]
+    fn fork_remaps_v2_checkpoint_range_to_child_entry_ids() {
+        let mut parent = Session::new("/tmp/test", "test-model", "");
+        let first = make_entry("u1", ENTRY_TYPE_USER, "user", "old");
+        let cutoff = make_entry("a1", ENTRY_TYPE_ASSISTANT, "assistant", "answer");
+        let checkpoint = ContextCheckpoint {
+            entry_id: "cp-entry".into(),
+            checkpoint_id: "cp-1".into(),
+            covered_from_entry_id: Some(first.id.clone()),
+            cutoff_entry_id: Some(cutoff.id.clone()),
+            summary: vec![crate::types::ContentBlock::text("summary")],
+            tokens_before: 100,
+            tokens_after: 10,
+            trigger: CompactionTrigger::Automatic,
+            phase: None,
+            algorithm_version: "v2".into(),
+            model: "test-model".into(),
+            context_window: 200,
+            created_at: chrono::Utc::now(),
+            legacy_without_cutoff: false,
+        };
+        let checkpoint_entry = checkpoint_to_entry(&checkpoint);
+        let fork_point = checkpoint_entry.id.clone();
+        parent.entries = vec![first, cutoff, checkpoint_entry];
+
+        let forked = fork_session(&parent, &fork_point);
+        let remapped = latest_context_checkpoint(&forked.entries).expect("valid child checkpoint");
+        assert_eq!(remapped.checkpoint_id, "cp-1");
+        assert_ne!(remapped.covered_from_entry_id.as_deref(), Some("u1"));
+        assert_ne!(remapped.cutoff_entry_id.as_deref(), Some("a1"));
+        assert!(forked
+            .entries
+            .iter()
+            .any(|entry| Some(entry.id.as_str()) == remapped.cutoff_entry_id.as_deref()));
     }
 }

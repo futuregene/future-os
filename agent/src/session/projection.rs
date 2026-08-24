@@ -128,12 +128,17 @@ pub fn entries_to_agent_messages(
                 false,
             ));
         }
+        let mut metadata = entry.meta.as_ref().and_then(|m| m.as_object().cloned());
+        metadata.get_or_insert_with(serde_json::Map::new).insert(
+            crate::types::AgentMessage::JOURNAL_ENTRY_ID_KEY.to_string(),
+            serde_json::Value::String(entry.id.clone()),
+        );
         msgs.push(crate::types::AgentMessage {
             role,
             content,
             name: entry.name.clone(),
             tool_args: entry.tool_args.clone(),
-            metadata: entry.meta.as_ref().and_then(|m| m.as_object().cloned()),
+            metadata,
         });
     }
     msgs
@@ -219,8 +224,14 @@ pub fn agent_message_to_entry(msg: &crate::types::AgentMessage) -> SessionEntry 
         })
         .collect();
 
+    let mut persisted_metadata = msg.metadata.clone().unwrap_or_default();
+    persisted_metadata.remove(crate::types::AgentMessage::JOURNAL_ENTRY_ID_KEY);
+
     SessionEntry {
-        id: generate_entry_id(),
+        id: msg
+            .journal_entry_id()
+            .map(str::to_owned)
+            .unwrap_or_else(generate_entry_id),
         entry_type: entry_type.to_string(),
         role: msg.role.clone(),
         content,
@@ -236,7 +247,8 @@ pub fn agent_message_to_entry(msg: &crate::types::AgentMessage) -> SessionEntry 
         // Carry structured metadata (e.g. user attachments) into the JSONL so it
         // survives reload; the reverse mapping restores it in
         // entries_to_agent_messages.
-        meta: msg.metadata.clone().map(serde_json::Value::Object),
+        meta: (!persisted_metadata.is_empty())
+            .then(|| serde_json::Value::Object(persisted_metadata)),
     }
 }
 

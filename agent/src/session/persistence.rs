@@ -185,6 +185,19 @@ impl SessionPersistence {
         receive_ack(ack_rx)
     }
 
+    /// Commit a context checkpoint in FIFO order after all message appends.
+    /// Reuses the same fsync boundary as a run commit, but carries no terminal
+    /// marker; a prior append failure therefore prevents a checkpoint from
+    /// claiming coverage over journal data that is not durable.
+    pub fn commit_checkpoint(&self, entry: SessionEntry) -> Result<()> {
+        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+        self.send_boundary(PersistenceCommand::CommitRun {
+            entries: vec![entry],
+            ack: ack_tx,
+        })?;
+        receive_ack(ack_rx)
+    }
+
     /// Clear any recorded append error. Called at run start so the run-end
     /// commit decision (append-only commit vs healing rewrite) reflects only the
     /// current run's append health, not a stale error from an earlier run.

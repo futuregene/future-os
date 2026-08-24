@@ -1,229 +1,96 @@
-use std::io::Write;
+use future_agent::compaction::{
+    project_prompt_context, CompactionTrigger, ContextManager, ContextPreparation,
+};
+use future_agent::session::{
+    agent_message_to_entry, checkpoint_to_entry, latest_context_checkpoint, Manager, Session,
+};
+use future_agent::types::{AgentMessage, ContentBlock};
 
 #[test]
-fn compaction_discards_history_and_records_marker() {
+fn compaction_appends_checkpoint_without_discarding_jsonl_history() {
     let temp = tempfile::tempdir().unwrap();
-    let jsonl_path = temp.path().join("test-session.jsonl");
-
-    // ── 1. Build simulated long conversation ───────────────────────────────
+    let manager = Manager::new(temp.path().to_path_buf());
     let padding = "x".repeat(10_000);
-    let mut messages: Vec<future_agent::types::Message> = vec![future_agent::types::Message {
-        role: "system".into(),
-        content: Some(serde_json::json!([{"type":"text","text":"sys prompt"}])),
-        ..Default::default()
-    }];
+    let mut messages = Vec::new();
     for i in 0..40 {
-        messages.push(future_agent::types::Message {
+        messages.push(AgentMessage {
             role: "user".into(),
-            content: Some(
-                serde_json::json!([{"type":"text","text":format!("turn {i}: {padding}")}]),
-            ),
+            content: vec![ContentBlock::text(format!("turn {i}: {padding}"))],
             ..Default::default()
         });
-        messages.push(future_agent::types::Message {
+        messages.push(AgentMessage {
             role: "assistant".into(),
-            content: Some(
-                serde_json::json!([{"type":"text","text":format!("response {i}: {padding}")}]),
-            ),
+            content: vec![ContentBlock::text(format!("response {i}: {padding}"))],
             ..Default::default()
         });
     }
-    let estimated = future_agent::compaction::estimate_context_tokens(&messages);
-    eprintln!(
-        "Built {} messages, est {} tokens",
-        messages.len(),
-        estimated
-    );
+    for message in &mut messages {
+        message.ensure_journal_entry_id();
+    }
 
-    // ── 2. Compact with small window to force it ───────────────────────────
-    let context_window = 50_000i32;
-    let reserve = ((context_window as f64 * 0.1) as i32).max(16384);
-    let keep = ((context_window as f64 * 0.2) as i32).max(reserve);
-    let (compacted, result) = future_agent::compaction::compact(
-        messages.clone(),
-        &future_agent::compaction::CompactOptions {
-            reserve_tokens: reserve,
-            keep_recent_tokens: keep,
-            context_window,
-            tokens_before: estimated,
-        },
-    );
-    assert!(
-        result.is_some(),
-        "Compaction should trigger: est={estimated} tokens, window={context_window}"
-    );
-    eprintln!(
-        "Compacted: {} -> {} messages",
-        messages.len(),
-        compacted.len()
-    );
-
-    // ── 3. Verify history discarded, recent kept ───────────────────────────
-    assert!(
-        compacted.len() < messages.len(),
-        "Compacted ({}) should be fewer than original ({})",
-        compacted.len(),
-        messages.len()
-    );
-    assert!(
-        !compacted.iter().any(|m| m
-            .content
-            .as_ref()
-            .map(|c| c.to_string().contains("turn 0"))
-            .unwrap_or(false)),
-        "Turn 0 should be discarded"
-    );
-    assert!(
-        compacted.iter().any(|m| m
-            .content
-            .as_ref()
-            .map(|c| c.to_string().contains("turn 39"))
-            .unwrap_or(false)),
-        "Turn 39 should be kept (most recent)"
-    );
-
-    // ── 4. Compaction marker is first user message ─────────────────────────
-    let marker_idx = compacted.iter().position(|m| m.role == "user").unwrap();
-    let text = compacted[marker_idx]
-        .content
-        .as_ref()
-        .unwrap()
-        .as_array()
-        .unwrap()[0]
-        .get("text")
-        .unwrap()
-        .as_str()
-        .unwrap();
-    assert!(
-        text.starts_with("[Context compaction:"),
-        "Compaction marker not found: {text}"
-    );
-
-    // ── 5. Simulate save path: detect marker, replace with compaction entry
-    let mut entries: Vec<serde_json::Value> = compacted
+    let original_entries = messages
         .iter()
-        .map(|m| {
-            serde_json::json!({
-                "id": "x", "type": m.role, "role": m.role,
-                "content": m.content,
-                "timestamp": chrono::Local::now().to_rfc3339(),
-            })
-        })
-        .collect();
-
-    // Prepend session_info
-    entries.insert(
-        0,
-        serde_json::json!({
-            "id": "si", "type": "session_info", "role": "system",
-            "content": {"session_name": "compaction-test"},
-            "timestamp": chrono::Local::now().to_rfc3339(),
-        }),
+        .map(agent_message_to_entry)
+        .collect::<Vec<_>>();
+    let original_ids = original_entries
+        .iter()
+        .map(|entry| entry.id.clone())
+        .collect::<Vec<_>>();
+    let session = Session::snapshot(
+        "test-session".into(),
+        "/tmp".into(),
+        "test-model".into(),
+        "compaction-test".into(),
+        String::new(),
+        original_entries,
     );
+    manager.save(&session).unwrap();
 
-    // Debug: show entries before marker replacement
-    eprintln!(
-        "Entries before marker replacement ({} total):",
-        entries.len()
-    );
-    for (i, e) in entries.iter().enumerate() {
-        let r = e.get("role").and_then(|v| v.as_str()).unwrap_or("?");
-        let c = e.get("content").map(|c| c.to_string()).unwrap_or_default();
-        let c = if c.len() > 80 {
-            format!("{}…", &c[..80])
-        } else {
-            c
-        };
-        eprintln!("  {i:3} role={r:12} content={c}");
-    }
-
-    // Replace compaction marker with proper entry (same logic as save path)
-    if let Some(idx) = entries.iter().position(|e| {
-        e.get("role").and_then(|r| r.as_str()) == Some("user")
-            && e.get("content")
-                .and_then(|c| c.as_array())
-                .and_then(|arr| arr.first())
-                .and_then(|b| b.get("text"))
-                .and_then(|t| t.as_str())
-                .is_some_and(|t| t.starts_with("[Context compaction:"))
-    }) {
-        // Build clean compaction entry (matches save path format)
-        let summary = entries[idx]
-            .get("content")
-            .and_then(|c| c.as_array())
-            .and_then(|arr| arr.first())
-            .and_then(|b| b.get("text"))
-            .and_then(|t| t.as_str())
-            .unwrap_or("");
-        entries.insert(
-            idx + 1,
-            serde_json::json!({
-                "id": "comp-1",
-                "type": "compaction",
-                "role": "system",
-                "content": {"summary": summary},
-                "label": "compacted",
-                "timestamp": chrono::Local::now().to_rfc3339(),
-            }),
-        );
-        entries.remove(idx);
-    }
-
-    // ── 6. Write and read back JSONL ──────────────────────────────────────
+    let prompt = project_prompt_context(&messages, None, Some(300_000), 50_000);
+    let checkpoint = match (ContextManager {
+        enabled: true,
+        reserve_tokens: 16_384,
+        keep_recent_tokens: 16_384,
+        context_window: 50_000,
+        model: "test-model".into(),
+    })
+    .prepare(prompt, CompactionTrigger::Automatic, None)
+    .unwrap()
     {
-        let file = std::fs::File::create(&jsonl_path).unwrap();
-        let mut writer = std::io::BufWriter::new(file);
-        for e in &entries {
-            serde_json::to_writer(&mut writer, e).unwrap();
-            writer.write_all(b"\n").unwrap();
-        }
-        writer.flush().unwrap();
-    }
+        ContextPreparation::Compacted { checkpoint, .. } => checkpoint,
+        ContextPreparation::Unchanged { .. } => panic!("long context should compact"),
+    };
+    manager
+        .append_entries("test-session", &[checkpoint_to_entry(&checkpoint)])
+        .unwrap();
 
-    let content = std::fs::read_to_string(&jsonl_path).unwrap();
-    let read_entries: Vec<serde_json::Value> = content
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| serde_json::from_str(l).unwrap())
-        .collect();
-
-    // ── 7. Verify JSONL contents ──────────────────────────────────────────
-    assert!(
-        read_entries
-            .iter()
-            .any(|e| e.get("type").and_then(|t| t.as_str()) == Some("compaction")),
-        "JSONL MUST have 'compaction' entry"
+    let reloaded = manager.load("test-session").unwrap();
+    let reloaded_message_ids = reloaded
+        .entries
+        .iter()
+        .filter(|entry| matches!(entry.role.as_str(), "user" | "assistant" | "tool"))
+        .map(|entry| entry.id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        reloaded_message_ids, original_ids,
+        "checkpoint commit must not delete, reorder, or re-id user-visible history"
     );
-    assert!(
-        !read_entries.iter().any(|e| e
-            .get("content")
-            .map(|c| c.to_string().contains("turn 0"))
-            .unwrap_or(false)),
-        "Turn 0 MUST be discarded from JSONL"
+    assert!(reloaded.entries.iter().any(|entry| {
+        entry
+            .content
+            .as_ref()
+            .is_some_and(|content| content.to_string().contains("turn 0"))
+    }));
+    assert!(reloaded.entries.iter().any(|entry| {
+        entry
+            .content
+            .as_ref()
+            .is_some_and(|content| content.to_string().contains("turn 39"))
+    }));
+    assert_eq!(
+        latest_context_checkpoint(&reloaded.entries)
+            .expect("durable v2 checkpoint")
+            .checkpoint_id,
+        checkpoint.checkpoint_id
     );
-    assert!(
-        read_entries.iter().any(|e| e
-            .get("content")
-            .map(|c| c.to_string().contains("turn 39"))
-            .unwrap_or(false)),
-        "Turn 39 MUST be kept in JSONL"
-    );
-
-    eprintln!("\n=== ALL CHECKS PASSED ===");
-    eprintln!("JSONL entries ({} total):", read_entries.len());
-    for (i, e) in read_entries.iter().enumerate() {
-        let t = e.get("type").and_then(|v| v.as_str()).unwrap_or("?");
-        let preview = e
-            .get("content")
-            .map(|c| {
-                let s = c.to_string();
-                if s.len() > 100 {
-                    format!("{}…", &s[..100])
-                } else {
-                    s
-                }
-            })
-            .unwrap_or_default();
-        eprintln!("  {i:3} {t:15} {preview}");
-    }
 }

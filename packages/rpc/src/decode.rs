@@ -71,7 +71,12 @@ fn typed_response_data(resp: &proto::RpcResponse) -> Option<Value> {
                 .map(|entry| serde_json::to_value(&entry))
                 .collect::<Result<_, _>>()
                 .ok()?;
-            Some(json!({ "entries": entries }))
+            let mut value = json!({ "entries": entries });
+            if response.has_more {
+                value["hasMore"] = Value::Bool(true);
+                value["nextOffset"] = Value::Number(response.next_offset.into());
+            }
+            Some(value)
         }
         Kind::GetEventsSince(events) => {
             let payload = events_since_from_proto(events);
@@ -397,6 +402,7 @@ pub(crate) fn session_summary_from_proto(row: &proto::SessionSummary) -> Session
 pub(crate) fn session_entry_from_proto(entry: &proto::SessionEntry) -> SessionEntryPayload {
     SessionEntryPayload {
         id: entry.id.clone(),
+        entry_type: entry.entry_type.clone(),
         role: entry.role.clone(),
         content: if entry.content_is_object {
             inflate_json_value(&entry.content)
@@ -413,6 +419,7 @@ pub(crate) fn session_entry_from_proto(entry: &proto::SessionEntry) -> SessionEn
         duration_ms: entry.duration_ms,
         input_tokens: entry.input_tokens,
         cache_read_tokens: entry.cache_read_tokens,
+        checkpoint: entry.checkpoint.as_ref().map(|raw| inflate_json_value(raw)),
     }
 }
 
@@ -985,6 +992,7 @@ mod tests {
                 duration_ms: Some(11),
                 ..Default::default()
             }],
+            ..Default::default()
         }));
         let entries = decode_session_entries(&resp).unwrap();
         assert_eq!(entries[0].content, json!({"schema": 1}));

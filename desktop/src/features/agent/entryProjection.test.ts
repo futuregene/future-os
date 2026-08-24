@@ -209,6 +209,30 @@ describe("entriesToMessages", () => {
     expect(messages.some(message => message.role === "user" && message.content.startsWith("[Context compaction:"))).toBe(false);
   });
 
+  it("renders a durable v2 checkpoint with its stable checkpoint id", () => {
+    const messages = entriesToMessages([{
+      id: "checkpoint-entry",
+      entry_type: "compaction",
+      role: "system",
+      content: "",
+      timestamp: "2026-07-01T10:00:00+08:00",
+      checkpoint: {
+        schema_version: 2,
+        checkpoint_id: "cp-1",
+        cutoff_entry_id: "a1",
+        tokens_before: 190_000,
+        tokens_after: 20_000,
+        trigger: "manual",
+      },
+    }]);
+
+    expect(messages).toEqual([expect.objectContaining({
+      id: "m_cp-1",
+      role: "assistant",
+      segments: [{ id: "seg_cp-1_compaction", kind: "compaction", tokensBefore: 190_000, trigger: "manual" }],
+    })]);
+  });
+
   it("groups entries positionally — a user entry opens a new exchange", () => {
     const entries: SessionEntry[] = [
       { id: "u1", role: "user", content: "first question" },

@@ -341,19 +341,36 @@ function useCopyState(resetMs = 1400) {
 // (history summarized to fit the context window). A hairline rule with a small
 // muted label — the only surfacing of compaction in the UI, since the agent
 // otherwise continues silently. Shows the pre-compaction token count when known.
-function CompactionDivider({ tokensBefore }: { tokensBefore?: number }) {
+function CompactionDivider({
+  tokensBefore,
+  status = "completed",
+  trigger,
+}: {
+  tokensBefore?: number;
+  status?: "running" | "completed" | "failed";
+  trigger?: string;
+}) {
   const { t, i18n } = useTranslation();
+  const manual = trigger === "manual";
   const label =
-    tokensBefore && tokensBefore > 0
+    status === "running"
+      ? manual ? t("chat.manuallyCompacting") : t("chat.compacting")
+      : status === "failed"
+        ? manual ? t("chat.manualCompactionFailed") : t("chat.compactionFailed")
+        : manual
+          ? t("chat.manuallyCompacted")
+        : tokensBefore && tokensBefore > 0
       ? t("chat.compactedTokens", {
           formattedCount: new Intl.NumberFormat(i18n.language).format(tokensBefore),
         })
       : t("chat.compacted");
+  const color = status === "failed" ? colors.danger : colors.inkMuted;
+  const lineColor = status === "failed" ? colors.dangerLine : colors.line;
   return (
-    <View style={styles.compactionDivider}>
-      <View style={styles.compactionLine} />
-      <Text style={styles.compactionLabel}>{label}</Text>
-      <View style={styles.compactionLine} />
+    <View accessibilityLabel={label} accessibilityRole={status === "failed" ? "alert" : "text"} style={styles.compactionDivider}>
+      <View style={[styles.compactionLine, { backgroundColor: lineColor }]} />
+      <Text style={[styles.compactionLabel, { color }]}>{label}</Text>
+      <View style={[styles.compactionLine, { backgroundColor: lineColor }]} />
     </View>
   );
 }
@@ -478,7 +495,7 @@ function SegmentBlock({
     return <ToolRow tool={segment.tool} />;
   }
   // compaction
-  return <CompactionDivider tokensBefore={segment.tokensBefore} />;
+  return <CompactionDivider status={segment.status} tokensBefore={segment.tokensBefore} trigger={segment.trigger} />;
 }
 
 /**

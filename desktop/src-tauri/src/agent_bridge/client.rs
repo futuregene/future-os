@@ -189,6 +189,13 @@ pub fn get_state_command(session_id: String) -> RpcCommand {
     base_command("get_state", session_id)
 }
 
+pub fn compact_command(session_id: String, instructions: String) -> RpcCommand {
+    RpcCommand {
+        custom_instructions: instructions,
+        ..base_command("compact", session_id)
+    }
+}
+
 pub fn get_run_state_command(session_id: String, run_id: String) -> RpcCommand {
     RpcCommand {
         run_id,
@@ -419,6 +426,8 @@ pub(super) fn base_command(command_type: &str, session_id: String) -> RpcCommand
         run_id: String::new(),
         since_idx: 0,
         max_events: 0,
+        offset: None,
+        limit: None,
         requested_run_id: String::new(),
         client_request_id: String::new(),
         busy_policy: String::new(),

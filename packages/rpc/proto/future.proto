@@ -114,6 +114,11 @@ message RpcCommand {
   // Entry ID within a session (e.g. a specific tool-call for approval).
   string entry_id = 92;
 
+  // Optional get_session_entries pagination. Absence preserves the legacy
+  // complete response; offset=0 explicitly opts into bounded forward pages.
+  optional int64 offset = 96;
+  optional int64 limit = 97;
+
   // Session name (set by /name command).  Used with set_session_name.
   string name = 93;
 
@@ -429,6 +434,8 @@ message ListSessionsResponse {
 // get_session_entries response wrapper.
 message SessionEntriesResponse {
   repeated SessionEntry entries = 1;
+  bool has_more = 2;
+  int64 next_offset = 3;
 }
 
 // Acknowledgement of an accepted prompt command. Field names mirror the
@@ -1021,6 +1028,11 @@ message SessionEntry {
   // informational: on most providers these are a discounted subset of
   // input_tokens, not an addition to them.
   optional int64 cache_read_tokens = 14;
+  // Persisted journal discriminator. Added for non-message projections such as
+  // durable context checkpoints; absent on responses from older agents.
+  optional string entry_type = 15;
+  // Structured v2/legacy checkpoint payload serialized as JSON.
+  optional string checkpoint = 16;
 }
 
 // One event as replayed by get_events_since. Field names mirror the
@@ -1122,7 +1134,9 @@ message StreamEvent {
   //   approval_request / approval_decision
   //   usage                        token accounting
   //   error                        run error
-  //   tool_sandboxed / persistence_error / compaction_end   sideband signals
+  //   tool_sandboxed / persistence_error / compaction_end /
+  //   compaction_started / compaction_committed /
+  //   compaction_failed                                     sideband signals
   //   provider_config_changed  global provider/auth configuration committed
   //
   // Provider-specific aliases are normalized inside the Agent and never cross

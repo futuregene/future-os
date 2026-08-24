@@ -481,6 +481,7 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
 
 pub(crate) fn cmd_get_session_entries(
     session: &Arc<parking_lot::RwLock<ServerSession>>,
+    cmd: &RpcCommand,
     id: &str,
 ) -> String {
     // Return displayable entries from a session plus the session_info
@@ -564,7 +565,7 @@ pub(crate) fn cmd_get_session_entries(
                 .filter(|e| {
                     if !matches!(
                         e.entry_type.as_str(),
-                        "user" | "assistant" | "tool" | "session_info"
+                        "user" | "assistant" | "tool" | "session_info" | "compaction"
                     ) {
                         return false;
                     }
@@ -636,6 +637,7 @@ pub(crate) fn cmd_get_session_entries(
                     // the on-disk entry schema (snake_case keys).
                     let mut payload = crate::rpc::payloads::SessionEntryPayload {
                         id: e.id.clone(),
+                        entry_type: Some(e.entry_type.clone()),
                         role: e.role.clone(),
                         content: serde_json::Value::String(full_content),
                         name: e.name.clone(),
@@ -648,7 +650,12 @@ pub(crate) fn cmd_get_session_entries(
                         duration_ms: None,
                         input_tokens: None,
                         cache_read_tokens: None,
+                        checkpoint: None,
                     };
+                    if e.entry_type == crate::session::ENTRY_TYPE_COMPACTION {
+                        payload.content = serde_json::Value::String(String::new());
+                        payload.checkpoint = e.content.clone();
+                    }
                     // Include thinking and tool_calls for the new agent-based
                     // message display (entryProjection.ts).
                     if !e.thinking.is_empty() {
@@ -702,6 +709,25 @@ pub(crate) fn cmd_get_session_entries(
                 .collect()
         })
         .unwrap_or_default();
+    if let Some(raw_offset) = cmd.offset {
+        let offset = raw_offset.max(0) as usize;
+        let limit = cmd.limit.unwrap_or(250).clamp(1, 1_000) as usize;
+        let end = offset.saturating_add(limit).min(entries.len());
+        let page = entries
+            .get(offset..end)
+            .map(<[serde_json::Value]>::to_vec)
+            .unwrap_or_default();
+        let has_more = end < entries.len();
+        return RpcResponse::ok(
+            id,
+            "get_session_entries",
+            serde_json::json!({
+                "entries": page,
+                "hasMore": has_more,
+                "nextOffset": end,
+            }),
+        );
+    }
     RpcResponse::ok(
         id,
         "get_session_entries",

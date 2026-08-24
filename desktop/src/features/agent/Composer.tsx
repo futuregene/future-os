@@ -2,11 +2,11 @@ import type { MessageAttachment } from "@future-os/thread-projection";
 import type { FormEvent } from "react";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
-import type { MentionEditorHandle, SkillMentionOption } from "./MentionEditor";
+import type { ContextToolOption, MentionEditorHandle, SkillMentionOption } from "./MentionEditor";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ArrowUp, ChevronDown, Paperclip, ShieldCheck, ShieldOff, ShieldQuestion, Square, TriangleAlert, X } from "lucide-react";
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
 import { localizedModelDescription, modelKey, modelLabel, modelOption, normalizeThinkingLevel, thinkingLevels } from "../../integrations/agent/agentClient";
@@ -77,6 +77,8 @@ interface ComposerProps {
   sending?: boolean;
   /** Interrupt the in-flight reply (only meaningful while `sending`). */
   onAbort?: () => void;
+  /** Run a standalone compaction for the current conversation. */
+  onCompactContext?: () => void | Promise<void>;
   placeholder?: string;
   textareaClassName?: string;
   workspaceId?: string | null;
@@ -110,6 +112,7 @@ function ComposerImpl({
   onChangeApprovalTier,
   sending,
   onAbort,
+  onCompactContext,
   placeholder,
   textareaClassName,
   workspaceId,
@@ -134,7 +137,28 @@ function ComposerImpl({
   // An async onSend is in flight (see ComposerProps.onSend) — block re-submits
   // until it settles.
   const [sendPending, setSendPending] = useState(false);
+  const [contextActionPending, setContextActionPending] = useState(false);
   const editorRef = useRef<MentionEditorHandle | null>(null);
+
+  const contextTools = useMemo<ContextToolOption[]>(() => {
+    if (!onCompactContext || sending || contextActionPending)
+      return [];
+    return [{
+      id: "compact",
+      name: t("composer.compactContext"),
+      description: t("composer.compactContextDescription"),
+      searchText: "compact compaction compress context 压缩 上下文",
+    }];
+  }, [contextActionPending, onCompactContext, sending, t]);
+  const handleContextToolSelect = useCallback((toolId: string) => {
+    if (toolId !== "compact" || !onCompactContext || contextActionPending)
+      return;
+    const result = onCompactContext();
+    if (result) {
+      setContextActionPending(true);
+      result.catch(() => {}).finally(() => setContextActionPending(false));
+    }
+  }, [contextActionPending, onCompactContext]);
 
   // Installed skills for the `/` menu. The name stays the English slash-command
   // name; the description follows the UI language (mirrors SkillsView). Skill
@@ -538,11 +562,13 @@ function ComposerImpl({
         className={textareaClassName}
         workspaceId={workspaceId}
         skills={skills}
+        contextTools={contextTools}
         disabled={disabled}
         placeholder={placeholder ?? t("composer.placeholder")}
         onSubmit={submitValue}
         onEmptyChange={setInputEmpty}
         onChange={saveDraft}
+        onContextToolSelect={handleContextToolSelect}
         onPasteImages={files => void attachImageFiles(files)}
       />
       {attachError

@@ -155,8 +155,20 @@ export interface DownloadInfo {
  */
 export interface HistoryEntry {
   id?: string;
+  entry_type?: string;
   role: string;
   content?: string | null;
+  checkpoint?: {
+    schema_version?: number;
+    checkpoint_id?: string;
+    cutoff_entry_id?: string;
+    tokens_before?: number;
+    tokens_after?: number;
+    trigger?: string;
+    phase?: "pre_turn" | "mid_turn" | "standalone" | string;
+    algorithm_version?: string;
+    summary?: unknown;
+  } | null;
   /** Model reasoning for an assistant entry — rendered as a thinking row. */
   thinking?: string | null;
   /** Tool calls an assistant entry introduced — rendered as activity rows. */
@@ -231,7 +243,14 @@ export type TimelineSegment =
   | { id: string; kind: "text"; text: string }
   | { id: string; kind: "thinking"; text: string }
   | { id: string; kind: "tool"; tool: TimelineToolRow }
-  | { id: string; kind: "compaction"; tokensBefore?: number };
+  | {
+      id: string;
+      kind: "compaction";
+      tokensBefore?: number;
+      trigger?: string;
+      status?: "running" | "completed" | "failed";
+      error?: string;
+    };
 
 export type TimelineItem =
   | {

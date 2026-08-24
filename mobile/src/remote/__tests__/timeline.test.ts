@@ -127,6 +127,30 @@ describe("entry reducer", () => {
     });
   });
 
+  test("projects a durable checkpoint from reloaded history", () => {
+    const state = timelineFromEntries([{
+      id: "checkpoint-entry",
+      entry_type: "compaction",
+      role: "system",
+      content: "",
+      checkpoint: {
+        schema_version: 2,
+        checkpoint_id: "cp-history",
+        tokens_before: 190_000,
+        tokens_after: 20_000,
+        trigger: "manual",
+      },
+    }]);
+    const divider = state.items.find(item =>
+      item.kind === "message" && item.segments?.some(segment => segment.kind === "compaction")
+    );
+    expect(divider).toMatchObject({
+      kind: "message",
+      id: "m_cp-history",
+      segments: [{ id: "seg_cp-history_compaction", kind: "compaction", tokensBefore: 190_000, trigger: "manual" }],
+    });
+  });
+
   test("keeps attachment-only user entries and drops malformed attachments", () => {
     const timeline = timelineFromEntries([
       {
@@ -832,6 +856,92 @@ describe("shared-projection semantic flags", () => {
     expect(reply.segments).toEqual([
       { id: expect.any(String), kind: "compaction", tokensBefore: 190_000 },
       { id: expect.any(String), kind: "text", text: "Continuing." },
+    ]);
+  });
+
+  test("a durable compaction_committed renders one checkpoint divider", () => {
+    const committed = {
+      type: "compaction_committed",
+      data: JSON.stringify({ checkpoint_id: "cp-1", tokens_before: 190_000 }),
+      runId: "run-1",
+      idx: 0,
+    };
+    let state = applyStreamEvent(emptyTimeline(), committed);
+    // Replayed delivery of the same durable checkpoint must be idempotent.
+    state = applyStreamEvent(state, { ...committed, idx: 1 });
+    const reply = state.items.find(item => item.kind === "message");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    expect(reply.segments?.filter(segment => segment.kind === "compaction")).toEqual([
+      { id: "cp-1", kind: "compaction", tokensBefore: 190_000 },
+    ]);
+  });
+
+  test("compaction lifecycle replaces running state and retains failures", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "compaction_started",
+      data: JSON.stringify({ operation_id: "cmp-1", trigger: "automatic", phase: "pre_turn" }),
+      runId: "run-1",
+      idx: 0,
+    });
+    let reply = state.items.find(item => item.kind === "message");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    expect(reply.segments).toEqual([
+      { id: "cmp-1", kind: "compaction", status: "running", trigger: "automatic" },
+    ]);
+
+    state = applyStreamEvent(state, {
+      type: "compaction_committed",
+      data: JSON.stringify({ operation_id: "cmp-1", checkpoint_id: "cp-1", tokens_before: 42_000 }),
+      runId: "run-1",
+      idx: 1,
+    });
+    reply = state.items.find(item => item.kind === "message");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    expect(reply.segments).toEqual([
+      { id: "cp-1", kind: "compaction", tokensBefore: 42_000, trigger: "automatic" },
+    ]);
+
+    let failedState = applyStreamEvent(emptyTimeline(), {
+      type: "compaction_started",
+      data: JSON.stringify({ operation_id: "cmp-2" }),
+      runId: "run-2",
+      idx: 0,
+    });
+    failedState = applyStreamEvent(failedState, {
+      type: "compaction_failed",
+      data: JSON.stringify({ operation_id: "cmp-2", error: "summary failed" }),
+      runId: "run-2",
+      idx: 1,
+    });
+    const failedReply = failedState.items.find(item => item.kind === "message");
+    if (!failedReply || failedReply.kind !== "message") throw new Error("reply bubble missing");
+    expect(failedReply.segments).toEqual([
+      { id: "cmp-2", kind: "compaction", status: "failed", error: "summary failed" },
+    ]);
+
+    let interruptedState = applyStreamEvent(emptyTimeline(), {
+      type: "compaction_started",
+      data: JSON.stringify({ operation_id: "cmp-3" }),
+      runId: "run-3",
+      idx: 0,
+    });
+    interruptedState = applyStreamEvent(interruptedState, {
+      type: "agent_end",
+      data: JSON.stringify({ state: "cancelled" }),
+      runId: "run-3",
+      idx: 1,
+    });
+    const interruptedReply = interruptedState.items.find(item => item.kind === "message");
+    if (!interruptedReply || interruptedReply.kind !== "message") {
+      throw new Error("reply bubble missing");
+    }
+    expect(interruptedReply.segments).toEqual([
+      {
+        id: "cmp-3",
+        kind: "compaction",
+        status: "failed",
+        error: "compaction interrupted before completion",
+      },
     ]);
   });
 

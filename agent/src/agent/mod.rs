@@ -2,7 +2,7 @@
 
 mod events;
 mod run_loop;
-use crate::types::{AgentMessage, AgentTool, ContentBlock, LLMProvider, Message, ToolCall};
+use crate::types::{AgentMessage, AgentTool, ContentBlock, LLMProvider, ToolCall};
 use anyhow::{anyhow, Result};
 pub use events::RunEvent;
 use parking_lot::Mutex;
@@ -19,7 +19,9 @@ const C_MAGENTA: &str = "\x1b[35m";
 
 pub const DEFAULT_MAX_TURNS: i32 = 0; // 0 = unlimited
 
-pub type PersistCallback = Arc<dyn Fn(&crate::types::AgentMessage) + Send + Sync>;
+pub type PersistCallback = Arc<dyn Fn(&mut crate::types::AgentMessage) + Send + Sync>;
+pub type CheckpointCallback =
+    Arc<dyn Fn(&crate::compaction::ContextCheckpoint) -> Result<()> + Send + Sync>;
 
 /// Per-session state passed into `run_streaming_with_messages`.  Callbacks
 /// are session-specific (they capture session_id, messages_arc, broadcaster)
@@ -32,6 +34,9 @@ pub struct StreamContext {
     #[allow(clippy::type_complexity)]
     pub on_tool_result: Option<PersistCallback>,
     pub save_callback: Option<PersistCallback>,
+    /// Durable checkpoint commit. A successful return means the checkpoint
+    /// journal entry was fsync'd and a committed event may be emitted.
+    pub on_checkpoint: Option<CheckpointCallback>,
 }
 
 pub struct Loop {
@@ -44,7 +49,8 @@ pub struct Loop {
     pub session_id: String,
     pub parallel_tools: bool,
     pub(crate) interrupt_flag: Arc<AtomicBool>,
-    pub(crate) last_compaction_result: Arc<Mutex<Option<crate::compaction::CompactionResult>>>,
+    pub context_manager: Option<crate::compaction::ContextManager>,
+    pub active_checkpoint: Arc<Mutex<Option<crate::compaction::ContextCheckpoint>>>,
     pub cumulative_input_tokens: Arc<std::sync::atomic::AtomicI64>,
     pub cumulative_output_tokens: Arc<std::sync::atomic::AtomicI64>,
     pub cumulative_cache_read_tokens: Arc<std::sync::atomic::AtomicI64>,
@@ -53,16 +59,6 @@ pub struct Loop {
     pub cumulative_cost: Arc<parking_lot::Mutex<f64>>,
     /// Last API call's prompt_tokens (actual context size, not cumulative across turns)
     pub last_prompt_tokens: Arc<std::sync::atomic::AtomicI64>,
-    /// Set to true when auto-compaction is needed but fails to find a valid cut
-    /// point. The run loop checks this after transform_context and returns an
-    /// error instead of silently proceeding with full context.
-    pub compaction_failed: Arc<AtomicBool>,
-    /// Set to true when auto-compaction actually replaced the in-memory message
-    /// history during a run. The run-end persistence path reads this to decide
-    /// between an append-only commit (history unchanged) and a full rewrite
-    /// (compaction made the in-memory history diverge from the appended JSONL).
-    /// Cleared at the start of each run.
-    pub compaction_occurred: Arc<AtomicBool>,
     /// Set when the provider stream ended without a genuine terminal event.
     /// Read by the run commit path so both the journal and `agent_end` preserve
     /// `incomplete` instead of presenting a truncated prefix as completed.
@@ -90,15 +86,14 @@ impl Loop {
             session_id: String::new(),
             parallel_tools: false,
             interrupt_flag: Arc::new(AtomicBool::new(false)),
-            last_compaction_result: Arc::new(Mutex::new(None)),
+            context_manager: None,
+            active_checkpoint: Arc::new(Mutex::new(None)),
             cumulative_input_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             cumulative_output_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             cumulative_cache_read_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             cumulative_cache_write_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             cumulative_cost: Arc::new(parking_lot::Mutex::new(0.0)),
             last_prompt_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
-            compaction_failed: Arc::new(AtomicBool::new(false)),
-            compaction_occurred: Arc::new(AtomicBool::new(false)),
             stream_incomplete: Arc::new(AtomicBool::new(false)),
             model_registry: None,
             steering_notes: Arc::new(Mutex::new(vec![])),
@@ -139,18 +134,12 @@ impl Loop {
         copy.verbose = self.verbose;
         copy.parallel_tools = self.parallel_tools;
         copy.model_registry = self.model_registry.clone();
+        copy.context_manager = self.context_manager.clone();
+        copy.active_checkpoint = self.active_checkpoint.clone();
         // Share the steering cell with the snapshot so notes pushed while the
         // snapshot runs are delivered at its next step boundary.
         copy.steering_notes = self.steering_notes.clone();
         copy
-    }
-
-    pub fn with_transform_context(
-        mut self,
-        f: Arc<dyn Fn(Vec<Message>, String) -> Vec<Message> + Send + Sync>,
-    ) -> Self {
-        self.config.transform_context = Some(f);
-        self
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -275,7 +264,7 @@ impl Loop {
             );
             messages.push(tool_msg);
             if let Some(ref cb) = on_tool_result {
-                cb(messages.last().unwrap());
+                cb(messages.last_mut().unwrap());
             }
             executed += 1;
         }
@@ -480,7 +469,6 @@ impl Default for crate::types::AgentConfig {
             max_turns: DEFAULT_MAX_TURNS,
             thinking_budget: 0,
             max_retries: 3,
-            transform_context: None,
             stop_condition: None,
             before_tool_call: None,
             prepare_tool_call: None,
@@ -588,15 +576,6 @@ mod tests {
         assert!(!copy
             .interrupt_flag()
             .load(std::sync::atomic::Ordering::SeqCst));
-    }
-
-    #[test]
-    fn loop_with_transform_context() {
-        let f: std::sync::Arc<
-            dyn Fn(Vec<crate::types::Message>, String) -> Vec<crate::types::Message> + Send + Sync,
-        > = std::sync::Arc::new(|msgs, _| msgs);
-        let loop_ = make_loop().with_transform_context(f);
-        assert!(loop_.config.transform_context.is_some());
     }
 
     // ─── execute_one_tool_impl_static ──────────────────────────────────────

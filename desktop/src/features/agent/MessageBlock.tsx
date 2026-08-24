@@ -111,7 +111,12 @@ function MessageBlockImpl({
     return (
       <article className="flex justify-center">
         <div className="min-w-0 w-full max-w-3xl" data-message-id={dataMessageId}>
-          <CompactionDivider tokensBefore={segments[0]!.tokensBefore} />
+          <CompactionDivider
+            error={segments[0]!.error}
+            status={segments[0]!.status}
+            tokensBefore={segments[0]!.tokensBefore}
+            trigger={segments[0]!.trigger}
+          />
         </div>
       </article>
     );
@@ -173,7 +178,15 @@ function MessageBlockImpl({
                         : null;
                     }
                     if (segment.kind === "compaction") {
-                      return <CompactionDivider key={segment.id} tokensBefore={segment.tokensBefore} />;
+                      return (
+                        <CompactionDivider
+                          error={segment.error}
+                          key={segment.id}
+                          status={segment.status}
+                          tokensBefore={segment.tokensBefore}
+                          trigger={segment.trigger}
+                        />
+                      );
                     }
                     return <AgentActivityLine item={segment.item} key={segment.id} workspacePath={workspacePath} runId={message.runId} />;
                   })}
@@ -329,18 +342,41 @@ function UserMessageText({ content }: { content: string }) {
  * muted label — the only surfacing of compaction in the UI, since the agent
  * otherwise continues silently. Shows the pre-compaction token count when known.
  */
-function CompactionDivider({ tokensBefore }: { tokensBefore?: number }) {
+function CompactionDivider({
+  tokensBefore,
+  status = "completed",
+  error,
+  trigger,
+}: {
+  tokensBefore?: number;
+  status?: "running" | "completed" | "failed";
+  error?: string;
+  trigger?: string;
+}) {
   const { t, i18n } = useTranslation("agent");
-  const label = tokensBefore && tokensBefore > 0
-    ? t("message.compactedTokens", {
-        formattedCount: formatNumber(tokensBefore, i18n.language),
-      })
-    : t("message.compacted");
+  const manual = trigger === "manual";
+  const label = status === "running"
+    ? manual ? t("message.manuallyCompacting") : t("message.compacting")
+    : status === "failed"
+      ? manual ? t("message.manualCompactionFailed") : t("message.compactionFailed")
+      : manual
+        ? t("message.manuallyCompacted")
+        : tokensBefore && tokensBefore > 0
+          ? t("message.compactedTokens", {
+              formattedCount: formatNumber(tokensBefore, i18n.language),
+            })
+          : t("message.compacted");
+  const failed = status === "failed";
   return (
-    <div aria-label={label} className="flex select-none items-center gap-3 py-1" role="separator">
-      <span className="h-px flex-1 bg-line" />
-      <span className="whitespace-nowrap text-xs text-ink-muted">{label}</span>
-      <span className="h-px flex-1 bg-line" />
+    <div
+      aria-label={label}
+      className={`flex select-none items-center gap-3 py-1 ${status === "running" ? "animate-pulse" : ""}`}
+      role={failed ? "alert" : "status"}
+      title={error}
+    >
+      <span className={`h-px flex-1 ${failed ? "bg-danger/40" : "bg-line"}`} />
+      <span className={`whitespace-nowrap text-xs ${failed ? "text-danger" : "text-ink-muted"}`}>{label}</span>
+      <span className={`h-px flex-1 ${failed ? "bg-danger/40" : "bg-line"}`} />
     </div>
   );
 }

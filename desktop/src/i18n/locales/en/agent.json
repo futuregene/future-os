@@ -85,7 +85,7 @@
     }
   },
   "composer": {
-    "placeholder": "Describe the task, @ to add files, / to use skills",
+    "placeholder": "Describe the task, @ to add files, / for tools and skills",
     "attachFiles": "Attach files",
     "attachFilesHint": "Attach files (images, PDF, text)",
     "attachLimitReached": "Attachment limit reached (4 per message)",
@@ -111,6 +111,12 @@
     "stop": "Stop",
     "noFiles": "No matching files.",
     "noSkillMatches": "No matching skills.",
+    "noSlashMatches": "No matching tools or skills.",
+    "skillsSection": "Skills",
+    "compactContext": "Compact",
+    "compactContextDescription": "Compact this conversation's context",
+    "compactionNotNeeded": "This conversation does not need compaction yet.",
+    "compactionRequestFailed": "Context compaction failed: {{message}}",
     "approval": "Approval mode",
     "approvalTier": {
       "manual": "Manual",
@@ -212,7 +218,12 @@
     "tokens": "{{formattedCount}} tokens",
     "fork": "Fork",
     "forkFailed": "Fork failed: {{message}}",
+    "compacting": "Compacting context…",
+    "manuallyCompacting": "You’re compacting context…",
+    "compactionFailed": "Context compaction failed",
+    "manualCompactionFailed": "Your context compaction failed",
     "compacted": "Context compacted",
+    "manuallyCompacted": "You compacted this conversation's context",
     "compactedTokens": "Context compacted · {{formattedCount}} tokens"
   },
   "skillGuide": {

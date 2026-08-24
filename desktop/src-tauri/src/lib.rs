@@ -799,6 +799,7 @@ pub fn run() {
             fork_thread,
             get_session_entries,
             get_thread_agent_state,
+            compact_thread_context,
             list_streaming_thread_ids,
             get_thread_cleanup_summary,
             attach_remote_stream,
