@@ -285,3 +285,54 @@ Notes:
 - 保留退回 `manual` 的恢复路径。
 
 通过后再进入 W7：接通 Windows 平台可用性判断、隐藏灰度开关和小范围发布。不得为了联调提前把 Windows 产品入口默认打开。
+
+---
+
+## 9. 真机验证运行记录（2026-08-24）
+
+### 9.1 结果：PASS
+
+主验收脚本 `powershell -ExecutionPolicy Bypass -File .\scripts\test-windows-sandbox.ps1 -IncludeClippy` 完整通过，报告末尾满足 §4.1 的全部 PASS 条件：
+
+```text
+{"available":true,"code":"available"}          ← Release CLI probe
+Remaining persisted Windows capability records: 0
+RESULT: PASS
+```
+
+日志文件：`target\windows-sandbox-results\windows-sandbox-20260824-102215.log`
+
+| 验证组 | 结果 |
+|---|---|
+| Windows sandbox native/end-to-end | 50 通过 |
+| Capability approval/receipt | 11 通过 |
+| Agent singleton lifecycle | 1 通过 |
+| Agent Clippy（`-D warnings`） | 通过 |
+| Desktop graceful shutdown | 2 通过 |
+| Desktop Clippy（`-D warnings`） | 通过 |
+| Release CLI probe | `available:true` |
+| 残留 capability 记录 | 0 |
+
+### 9.2 主机环境
+
+```text
+Commit: a55c558200a80d2c2008c6ee2ef0c0c0ce86aa8e
+Windows edition/build: Windows NT 10.0.26200（AMD64）
+User elevated: False
+Workspace filesystem: NTFS
+TEMP filesystem: NTFS
+PowerShell tested: 5.1
+Rust toolchain: 1.97.0（x86_64-pc-windows-msvc）
+```
+
+### 9.3 过程中修复的问题（5 处，均已落到工作区）
+
+1. **`agent/Cargo.toml`** — `probe_host()`（生产代码，供 `--probe-windows-sandbox` 调用）使用 `tempfile::tempdir()`，但 `tempfile` 只声明在 `[dev-dependencies]`，Windows 编译 lib 报 `E0433`。已补到 `[target.'cfg(windows)'.dependencies]`。
+2. **`agent/src/utils/mod.rs`** — 单例测试失败（"first agent did not acquire its instance lock"）。根因：锁路径用外部 `dirs` crate 的 `home_dir()`，在 Windows 上读系统 token profile、忽略 `HOME`/`USERPROFILE` 环境变量，导致测试 home 隔离失效。新增 `home_dir()`（环境变量优先、系统 API 回退），与 `auth` 模块既有行为一致。
+3. **`desktop/src-tauri/build.rs`** — Desktop 测试二进制启动即崩 `0xc0000139`（STATUS_ENTRYPOINT_NOT_FOUND）。根因链：`tauri-plugin-dialog`→`rfd` 静态链接 `TaskDialogIndirect`（仅存在于 comctl32 v6），而 Tauri 仅通过 `rustc-link-arg-bins` 将含 v6 manifest 的 `resource.lib` 给 bin，`cargo test` 的 lib-test 二进制无 manifest → 回退到 comctl32 v5 → 入口点缺失。修复：禁用 Tauri 的 bin-only manifest（`new_without_app_manifest()`），改由 build.rs 统一为所有目标嵌入 v6 manifest（已用 mt.exe 验证 bin 与 lib-test 均正确，正式 bin 无回归）。
+4. **`desktop/src-tauri/src/lib.rs`** — Rust 1.97 clippy 新 lint（`unnecessary_map_or`→`is_none_or`、`needless_borrow`）被 `-D warnings` 拦截。
+5. **`desktop/src-tauri/src/remote/transfer.rs`** — `ensure_private_dir` 仅在 `#[cfg(unix)]` 测试中使用，Windows 上触发 `unused import`，改为 `#[cfg(unix)] use`。
+
+### 9.4 尚未执行
+
+§5 的安装包生命周期验证（RM-01 ~ RM-07）需要包含本分支代码的 Windows portable/installer 构建，属于主脚本通过后的下一阶段，本次未执行。

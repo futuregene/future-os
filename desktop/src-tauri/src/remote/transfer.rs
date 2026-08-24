@@ -1168,8 +1168,10 @@ async fn publish_download_chunk(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use super::ensure_private_dir;
     use super::{
-        attachment_is_in_session, display_name, ensure_private_dir, is_animated_image,
+        attachment_is_in_session, display_name, is_animated_image,
         is_mobile_download_allowed, mime_type_for_name, prepare_preview, safe_disk_name,
         validate_mobile_image, MAX_FILE_BYTES, MAX_JSON_RICH_PREVIEW_BYTES,
     };

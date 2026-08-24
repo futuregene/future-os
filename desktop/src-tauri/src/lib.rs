@@ -176,7 +176,7 @@ fn set_windows_taskbar_icon(app: &tauri::App) {
             } else {
                 (target - w) * 2 + 1
             };
-            if best.map_or(true, |(_, _, bs)| score < bs) {
+            if best.is_none_or(|(_, _, bs)| score < bs) {
                 best = Some((offset, entry_size, score));
             }
         }
@@ -214,8 +214,8 @@ fn set_windows_taskbar_icon(app: &tauri::App) {
     let small_target = 128u32;
 
     unsafe {
-        if let Some((offset, size)) = find_best_entry(&ico_data, big_target) {
-            if let Some(hicon) = hicon_from_ico_entry(&ico_data, offset, size) {
+        if let Some((offset, size)) = find_best_entry(ico_data, big_target) {
+            if let Some(hicon) = hicon_from_ico_entry(ico_data, offset, size) {
                 SendMessageW(
                     hwnd,
                     WM_SETICON,
@@ -224,8 +224,8 @@ fn set_windows_taskbar_icon(app: &tauri::App) {
                 );
             }
         }
-        if let Some((offset, size)) = find_best_entry(&ico_data, small_target) {
-            if let Some(hicon) = hicon_from_ico_entry(&ico_data, offset, size) {
+        if let Some((offset, size)) = find_best_entry(ico_data, small_target) {
+            if let Some(hicon) = hicon_from_ico_entry(ico_data, offset, size) {
                 SendMessageW(
                     hwnd,
                     WM_SETICON,

@@ -84,6 +84,7 @@ pprof = { version = "0.15", features = ["flamegraph"] }
 # Windows: Job Object for process-tree kill; restricted token + ACLs for the
 # bash sandbox (SANDBOX_PLAN §11). Feature set grows with W1b.
 [target.'cfg(windows)'.dependencies]
+tempfile.workspace = true
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Globalization",

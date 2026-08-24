@@ -150,16 +150,27 @@ pub fn image_data_url_for_model(path: &str) -> Option<String> {
 /// carry a `-<hash>` suffix (`+local[.dirty]` for local builds).
 pub const VERSION: &str = env!("FUTURE_VERSION");
 
+/// User home directory. `HOME`/`USERPROFILE` are honoured first so that
+/// isolated home redirects (integration tests, portable setups) apply on every
+/// platform; the OS profile from the `dirs` crate is the fallback. On Windows
+/// the `dirs` crate alone ignores these env vars (it reads the token profile),
+/// which would break the singleton-lock fixture's home isolation.
+pub fn home_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+}
+
 /// Default base session directory (contains per-cwd subdirectories)
 pub fn default_session_dir(_cwd: &str) -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    home.join(".future/agent").join("sessions")
+    home_dir().join(".future/agent").join("sessions")
 }
 
 /// Default config directory
 pub fn default_config_dir() -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    home.join(".future/agent")
+    home_dir().join(".future/agent")
 }
 
 /// Get default settings paths (global and project-level)
