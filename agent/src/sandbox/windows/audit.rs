@@ -4,25 +4,26 @@ use std::io;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
-use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, LocalFree, ERROR_INSUFFICIENT_BUFFER, HANDLE, INVALID_HANDLE_VALUE,
-};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+#[cfg(test)]
+use windows_sys::Win32::Foundation::{GetLastError, LocalFree, ERROR_INSUFFICIENT_BUFFER};
+#[cfg(test)]
 use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
 #[cfg(test)]
 use windows_sys::Win32::Security::{
-    AccessCheck, DuplicateTokenEx, SecurityImpersonation, TokenImpersonation, GENERIC_MAPPING,
-    PRIVILEGE_SET, TOKEN_QUERY,
-};
-use windows_sys::Win32::Security::{
-    MakeAbsoluteSD, DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION,
-    OWNER_SECURITY_INFORMATION,
+    AccessCheck, DuplicateTokenEx, MakeAbsoluteSD, SecurityImpersonation, TokenImpersonation,
+    DACL_SECURITY_INFORMATION, GENERIC_MAPPING, GROUP_SECURITY_INFORMATION,
+    OWNER_SECURITY_INFORMATION, PRIVILEGE_SET, TOKEN_QUERY,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FileAttributeTagInfo, GetFileInformationByHandleEx, GetFinalPathNameByHandleW,
-    GetVolumeInformationByHandleW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_READ_ATTRIBUTES,
+    GetVolumeInformationByHandleW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
     FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL, WRITE_DAC,
+};
+#[cfg(test)]
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_ALL_ACCESS, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
 };
 
 #[cfg(test)]
@@ -232,6 +233,7 @@ impl FrozenPath {
 /// `GetSecurityInfo` returns a self-relative descriptor, whereas AccessCheck
 /// requires its absolute form. Keep every backing allocation alive for the
 /// AccessCheck call.
+#[cfg(test)]
 struct AbsoluteSecurityDescriptor {
     descriptor: Vec<u8>,
     dacl: Vec<u8>,
@@ -240,6 +242,7 @@ struct AbsoluteSecurityDescriptor {
     group: Vec<u8>,
 }
 
+#[cfg(test)]
 impl AbsoluteSecurityDescriptor {
     fn from_self_relative(input: *mut core::ffi::c_void) -> io::Result<Self> {
         let mut descriptor_size = 0;
@@ -295,6 +298,7 @@ impl AbsoluteSecurityDescriptor {
     }
 }
 
+#[cfg(test)]
 fn ptr_or_null(bytes: &mut Vec<u8>) -> *mut u8 {
     if bytes.is_empty() {
         std::ptr::null_mut()
@@ -311,16 +315,20 @@ impl Drop for FrozenPath {
     }
 }
 
+#[cfg(test)]
 struct HandleGuard(HANDLE);
 
+#[cfg(test)]
 impl Drop for HandleGuard {
     fn drop(&mut self) {
         unsafe { CloseHandle(self.0) };
     }
 }
 
+#[cfg(test)]
 struct LocalGuard(*mut core::ffi::c_void);
 
+#[cfg(test)]
 impl Drop for LocalGuard {
     fn drop(&mut self) {
         if !self.0.is_null() {

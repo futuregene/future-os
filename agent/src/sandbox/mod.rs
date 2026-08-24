@@ -893,7 +893,7 @@ pub(crate) fn probe_windows_sandbox_host() -> std::io::Result<WindowsSandboxProb
 pub(crate) fn probe_windows_sandbox_product() -> std::io::Result<WindowsSandboxProbe> {
     #[cfg(target_os = "windows")]
     {
-        return Ok(cached_windows_sandbox_probe().clone());
+        Ok(cached_windows_sandbox_probe().clone())
     }
     #[cfg(not(target_os = "windows"))]
     probe_windows_sandbox_host()
