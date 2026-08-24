@@ -239,8 +239,8 @@ pub fn run_from_args(args: &[String]) -> Result<()> {
     let cli = Cli::parse_from(argv);
     if cli.probe_windows_sandbox {
         let result = crate::sandbox::probe_windows_sandbox_host()?;
-        if let Some(diagnostic) = result.diagnostic() {
-            tracing::debug!(diagnostic, "Windows sandbox host probe unavailable");
+        if result.diagnostic().is_some() {
+            tracing::debug!(code = result.code, "Windows sandbox host probe unavailable");
         }
         println!("{}", serde_json::to_string(&result)?);
         return Ok(());

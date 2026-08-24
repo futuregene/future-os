@@ -6,14 +6,10 @@ use std::sync::Arc;
 use crate::rpc::{AppState, RpcCommand, RpcResponse, ServerSession, SseEvent};
 
 pub(crate) fn handle_probe_windows_sandbox(id: &str) -> String {
-    match crate::sandbox::probe_windows_sandbox_host() {
+    match crate::sandbox::probe_windows_sandbox_product() {
         Ok(result) => {
-            if let Some(diagnostic) = result.diagnostic() {
-                tracing::warn!(
-                    code = result.code,
-                    diagnostic,
-                    "Windows sandbox host probe unavailable"
-                );
+            if result.diagnostic().is_some() {
+                tracing::warn!(code = result.code, "Windows sandbox host probe unavailable");
             }
             RpcResponse::ok(
                 id,

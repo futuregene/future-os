@@ -1,6 +1,7 @@
 import type { AppSettings } from "../../../integrations/storage/appSettings";
 import { useEffect, useRef, useState } from "react";
 import i18n from "../../../i18n";
+import { useSandboxAvailability } from "../../../integrations/agent/useSandboxAvailability";
 import { DEFAULT_APP_SETTINGS, getAppSettings, updateAppSettings } from "../../../integrations/storage/appSettings";
 import { errorMessage } from "../../../lib/errors";
 import { emitFutureEvent } from "../../../lib/futureEvents";
@@ -32,6 +33,8 @@ export function useAppSettings(): UseAppSettingsResult {
   // overwrite a newer setting with an older full-settings response.
   const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
   const mutationGenerationRef = useRef(0);
+  const sandboxFallbackRef = useRef(false);
+  const sandboxAvailability = useSandboxAvailability();
 
   useEffect(() => {
     if (dirtyRef.current)
@@ -74,6 +77,19 @@ export function useAppSettings(): UseAppSettingsResult {
     writeQueueRef.current = write;
     await write;
   }
+
+  useEffect(() => {
+    if (!sandboxAvailability.resolved || sandboxAvailability.available) {
+      sandboxFallbackRef.current = false;
+      return;
+    }
+    if (appSettings.approvalTier !== "sandbox" || sandboxFallbackRef.current)
+      return;
+    sandboxFallbackRef.current = true;
+    void changeSettings({ approvalTier: "manual" }).finally(() => {
+      sandboxFallbackRef.current = false;
+    });
+  }, [appSettings.approvalTier, sandboxAvailability.available, sandboxAvailability.resolved]);
 
   return { appSettings, changeSettings };
 }

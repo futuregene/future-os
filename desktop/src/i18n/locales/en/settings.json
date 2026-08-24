@@ -11,6 +11,7 @@
     "description": {
       "manual": "Prompts before file reads and writes; read-only commands run automatically.",
       "sandbox": "Commands run in the macOS sandbox; file operations still prompt.",
+      "sandboxWindows": "Protects Windows writes and asks before writing outside allowed locations. Reads and network access remain unrestricted.",
       "off": "No prompts, no sandbox — everything runs."
     }
   },

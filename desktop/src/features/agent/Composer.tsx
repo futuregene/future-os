@@ -11,17 +11,18 @@ import { Trans, useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
 import { localizedModelDescription, modelKey, modelLabel, modelOption, normalizeThinkingLevel, thinkingLevels } from "../../integrations/agent/agentClient";
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
+import { useSandboxAvailability } from "../../integrations/agent/useSandboxAvailability";
 import { listAvailableSkills, listInstalledSkills } from "../../integrations/skills/skillsClient";
 import { deleteTempAttachment, savePastedImage } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { formatBytes } from "../../lib/format";
 import { onFutureEvent } from "../../lib/futureEvents";
-import { isMacOS } from "../../lib/platform";
+import { isWindows } from "../../lib/platform";
 import { classifyAttachment, fileNameFromPath, imageExtensionFromMime, MAX_IMAGES_PER_TURN, READ_SOURCE_MAX_BYTES, splitFileName } from "./attachments";
 import { clearComposerDraft, loadComposerDraft, saveComposerDraft } from "./composerDraft";
 import { MentionEditor } from "./MentionEditor";
 
-/** Approval-tier order for the composer dropdown (sandbox is macOS-only). */
+/** Approval-tier order for the composer dropdown (availability is host-gated). */
 const APPROVAL_TIERS: ApprovalTier[] = ["manual", "sandbox", "off"];
 
 /**
@@ -116,6 +117,7 @@ function ComposerImpl({
   onDragStateChange,
 }: ComposerProps) {
   const { t, i18n } = useTranslation("agent");
+  const sandboxAvailability = useSandboxAvailability();
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
   // Drag-over verdict: null (no drag), "accept" (droppable), "reject"
@@ -582,7 +584,7 @@ function ComposerImpl({
                     </button>
                   )}
                 >
-                  {APPROVAL_TIERS.filter(tier => tier !== "sandbox" || isMacOS).map(tier => (
+                  {APPROVAL_TIERS.filter(tier => tier !== "sandbox" || sandboxAvailability.available).map(tier => (
                     <SelectMenuItem
                       className="py-1.5"
                       key={tier}
@@ -598,7 +600,9 @@ function ComposerImpl({
                         <span className="block text-xs leading-tight text-ink-muted">
                           {tier === "off"
                             ? <Trans t={t} i18nKey="composer.approvalTierDesc.off" components={{ em: <span className="font-semibold" /> }} />
-                            : t(`composer.approvalTierDesc.${tier}`)}
+                            : t(tier === "sandbox" && isWindows
+                                ? "composer.approvalTierDesc.sandboxWindows"
+                                : `composer.approvalTierDesc.${tier}`)}
                         </span>
                       </span>
                     </SelectMenuItem>

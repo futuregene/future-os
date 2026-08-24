@@ -1,6 +1,6 @@
 # FutureOS Windows Unelevated Sandbox 真机验证手册
 
-状态：**底层批量验收已 PASS；安装包生命周期与发布矩阵待执行**
+状态：**底层批量验收已 PASS；当前可执行的生命周期项已 PASS，安装器与多主机矩阵延后**
 
 适用分支：`codex/windows-unelevated-sandbox`
 
@@ -315,7 +315,7 @@ Notes:
 
 ## 8. 发布门槛
 
-以下条件全部满足前，`platform_sandbox_available()` 在 Windows 必须继续返回 false，桌面不得向普通用户开放 sandbox 档：
+以下条件全部满足前，Windows 默认启动的 `platform_sandbox_available()` 必须继续返回 false，桌面不得向普通用户开放 sandbox 档。只允许按 §11 显式设置进程级灰度闸门的测试会话例外：
 
 - 目标 Home/Pro 主机的批量脚本均 `PASS`；
 - RM-01 至 RM-07 的适用项目通过；
@@ -385,6 +385,22 @@ Rust toolchain: 1.97.0（x86_64-pc-windows-msvc）
 
 SID 兼容矩阵还给出一项后续硬化证据：本主机 `capability + Everyone` 可启动 PowerShell，`capability + logon` 不可启动，说明 logon SID 在此主机不是必要条件。生产 restricting 集暂不只凭单台主机改变；P2 在额外主机复测后再决定是否移除 logon SID。
 
+### 9.6 Packaged 生命周期本机结果
+
+PowerShell 5.1 首次运行 `Snapshot` 暴露了空数组经 `if` 输出后折叠为 `$null` 的兼容问题；提交 `41d458b3` 改为显式初始化数组后，`Snapshot` 通过。后续本机结果：
+
+| 项目 | 结果 | 证据/边界 |
+|---|---|---|
+| RM-01 bundled 单例与归属 | PASS | `ExpectClean` 和 `ExpectBundled` 均通过 |
+| RM-02 正常退出 | PASS | 夹具记录由 1 清理为 0，Desktop/Agent 均退出 |
+| RM-03 Desktop 重启入口 | NOT RUN | 当前包无法触发对应产品路径 |
+| RM-04 外部 Agent 归属 | PASS | Desktop 退出后外部 Agent 与 1 条记录保留；外部 Agent Ctrl+C 后清为 0 |
+| RM-05 异常退出/启动恢复 | PASS | 本次强制结束后已自动达到 `0/0/0`；在停止状态人工放入 1 条残留后，重启恢复为 `1/1/0` |
+| RM-06 统一 CLI reset | PASS | reset 和最终 `ExpectClean` 均通过 |
+| RM-07 NSIS 卸载 | NOT RUN | 当前无法执行真实安装/卸载验证 |
+
+Windows 11 Pro、PowerShell 7、中文用户名等 P2 多主机矩阵因当前无可用主机，明确记为 `NOT RUN`。可继续开发默认关闭的 W7 灰度接入，但 RM-03、RM-07 和 P2 不因跳过而视为通过，仍是正式默认开放前的发布门槛。
+
 ## 10. 后续任务与执行顺序
 
 下面是发布前唯一剩余清单。每一步都保留对应日志/截图或命令输出；前一优先级失败时先修复，不提前打开 Windows 产品入口。
@@ -392,13 +408,28 @@ SID 兼容矩阵还给出一项后续硬化证据：本主机 `capability + Ever
 | 优先级 | 任务 | 测试方法 | 通过标准 |
 |---|---|---|---|
 | ✅ P0 | 最新提交底层回归 | 普通 PowerShell 运行 §3 的完整脚本 | 2026-08-24，提交 `471a8cd7`：probe `available:true`；Agent home 正确；残留记录 0；`RESULT: PASS` |
-| P1 | portable/installer 单例与正常退出 | 按 RM-01、RM-02 检查进程与 capability record | 同用户仅一个 Agent；正常退出先清理再结束；记录数 0 |
+| ✅ P1 | 单例与正常退出 | 按 RM-01、RM-02 检查进程与 capability record | 本机 PASS：同用户仅一个 Agent；正常退出后记录数 0 |
 | P1 | 三种桌面重启路径 | 按 RM-03 分别执行清数据、切环境、更新重启 | 旧 Agent 退出、新 Agent 单例、端口释放、记录数 0；不可触发的项目明确记 `NOT RUN` |
-| P1 | 外部 Agent 归属 | 按 RM-04 手工启动 Agent，再启动/退出桌面 | Desktop 不接管或终止外部 Agent；外部 Agent 自行退出后清理为 0 |
-| P1 | 崩溃恢复 | 按 RM-05 强杀桌面和 Agent，再重新启动 | 锁由 OS 释放；启动回收旧记录；不能回收时 fail closed，不误删活动授权 |
-| P1 | reset 与活动 Job | 按 RM-06 分别在无任务、活动 sandbox Job 下运行统一 CLI | 空闲时成功且记录归零；活动时拒绝 reset 且不终止任务；结束后可重试成功 |
+| ✅ P1 | 外部 Agent 归属 | 按 RM-04 手工启动 Agent，再启动/退出桌面 | 本机 PASS：Desktop 不接管外部 Agent；外部 Agent 自行退出后清理为 0 |
+| ✅ P1 | 崩溃恢复 | 按 RM-05 强杀桌面和 Agent，再重新启动 | 本机 PASS：异常退出自动清理；人工残留后启动恢复为 `1/1/0` |
+| ✅ P1 | reset 与活动 Job | 按 RM-06 分别在无任务、活动 sandbox Job 下运行统一 CLI | 本机空闲 reset PASS；活动 Job 拒绝分支已由 P0 原生测试覆盖 |
 | P1 | NSIS 卸载 | 按 RM-07 使用真实安装包卸载 | 只撤销 FutureOS ACE/metadata；不删用户文件、不覆盖其他 DACL；失败时保留可重试工具 |
-| P2 | 支持矩阵 | 在 Windows 11 Pro、PowerShell 7、中文用户名/路径上重跑 §3，并至少覆盖 portable | 各主机独立 PASS 日志；差异均 fail closed 或有已记录的产品边界 |
-| P3 | W7 产品接入 | 完成上述证据后实现动态 probe gate、灰度开关、`manual` 回退和非敏感遥测 | 安全 review 无高优先级问题；不上传原始路径；探测/初始化异常自动回到 `manual` |
+| NOT RUN P2 | 支持矩阵 | 在 Windows 11 Pro、PowerShell 7、中文用户名/路径上重跑 §3，并至少覆盖 portable | 当前无额外主机，延后但不取消默认开放前的发布门槛 |
+| 开发完成/待灰度 P3 | W7 产品接入 | 默认关闭的动态 probe gate、Desktop/手机选项和 `manual` 回退已实现；按 §11 真机验证 | 安全 review 无高优先级问题；不上传原始路径；探测/初始化异常自动回到 `manual` |
 
 测试分层保持不变：P0 是无 UI 的底层逻辑/原生集成测试；P1 是进程、安装包和 ACL 生命周期手工验收，不要求 UI 自动化；P2 是兼容矩阵；P3 才允许接通产品入口。详细操作以 §3、§5、§6 为准，表格不替代这些步骤。
+
+## 11. W7 默认关闭的灰度验证
+
+Windows 产品入口由 Agent 进程环境变量 `FUTURE_WINDOWS_SANDBOX_ROLLOUT` 统一控制，只接受 `1`/`true`/`yes`（不区分大小写）。默认未设置时，Windows 仍不显示“沙箱保护”，也不运行受限命令。
+
+仅灰度测试时，在同一个普通 PowerShell 会话中启动 FutureOS：
+
+```powershell
+$env:FUTURE_WINDOWS_SANDBOX_ROLLOUT = "1"
+.\FutureOS.exe
+```
+
+bundled Agent 继承该变量；外部 Agent 必须在它自己的进程环境中显式设置，其结果仍以 Agent 为准。界面只在“灰度闸门开启 + 完整 host probe 通过”时显示该档。probe 失败、Agent 不可用或保存过的 sandbox 档在当前主机不可用时，都必须回退并持久化为 `manual`；日志只记录稳定 code，不记录原始路径或 Win32 诊断。
+
+灰度验证至少包括：不设变量时选项隐藏；设置后 probe 通过时选项显示；一条 workspace 写入成功且一条越界写入触发普通用户审批；取消变量并重启后自动回到手动审批。这些通过也不自动免除 RM-03、RM-07 和 P2 的正式发布门槛。

@@ -20,6 +20,23 @@ static COMMAND_EPISODE: LazyLock<super::FailureEpisode> = LazyLock::new(Default:
 
 type ReplySlot = Arc<tokio::sync::Mutex<Option<Vec<u8>>>>;
 
+async fn product_sandbox_available() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        true
+    }
+    #[cfg(target_os = "windows")]
+    {
+        crate::agent_bridge::probe_windows_sandbox()
+            .await
+            .is_ok_and(|result| result.rollout_enabled && result.available)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        false
+    }
+}
+
 /// Command-id → in-flight/completed response cache (single-flight). Created
 /// once per bridge start and SHARED across command loops: credential refresh
 /// swaps the loop every JWT TTL, and a cache local to the loop would be wiped
@@ -766,17 +783,17 @@ async fn handle_command(
         "get_settings" => {
             match crate::store::get_app_settings() {
                 Ok(settings) => {
+                    let sandbox_available = product_sandbox_available().await;
                     reply(
                         client,
                         &msg,
                         true,
                         json!({
                             "approvalTier": settings.approval_tier,
-                            // The macOS Seatbelt sandbox tier only exists on macOS;
-                            // the phone gates its "sandbox" option on this flag so a
-                            // Windows/Linux user never picks a tier that silently
-                            // provides no isolation.
-                            "sandboxAvailable": cfg!(target_os = "macos"),
+                            // Windows is exposed only when both the default-off
+                            // rollout gate and the real host probe pass. The
+                            // phone never receives paths or native diagnostics.
+                            "sandboxAvailable": sandbox_available,
                         }),
                         None,
                     )
@@ -790,8 +807,13 @@ async fn handle_command(
             // here is the same as flipping it in the desktop Settings. It takes
             // effect on the next session establishment, where the bridge pushes
             // it to the agent via `set_agent_sandbox_policy`.
+            let tier = if cmd.tier == "sandbox" && !product_sandbox_available().await {
+                "manual".to_string()
+            } else {
+                cmd.tier.clone()
+            };
             match crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
-                approval_tier: Some(cmd.tier.clone()),
+                approval_tier: Some(tier),
                 ..Default::default()
             }) {
                 Ok(settings) => {
@@ -2874,7 +2896,14 @@ mod bridge_tests {
             .call(json!({ "id": unique("cmd"), "type": "set_approval_tier", "tier": "sandbox" }))
             .await;
         assert_eq!(reply["success"], json!(true), "got: {reply}");
-        assert_eq!(reply["data"]["approvalTier"], json!("sandbox"));
+        assert_eq!(
+            reply["data"]["approvalTier"],
+            json!(if cfg!(target_os = "macos") {
+                "sandbox"
+            } else {
+                "manual"
+            })
+        );
 
         bridge.stop();
     }

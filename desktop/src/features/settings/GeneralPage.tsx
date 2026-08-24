@@ -3,7 +3,8 @@ import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import { useTranslation } from "react-i18next";
 import { Select } from "../../components/ui/Select";
 import { getLanguage, LANGUAGE_LABELS, setLanguage, SUPPORTED_LANGUAGES } from "../../i18n";
-import { isMacOS } from "../../lib/platform";
+import { useSandboxAvailability } from "../../integrations/agent/useSandboxAvailability";
+import { isWindows } from "../../lib/platform";
 import { SettingsList, SettingsRow, SettingsSection, Switch } from "./SettingsPrimitives";
 
 export function GeneralPage({
@@ -22,6 +23,7 @@ export function GeneralPage({
   onToggleAutoUpgradeSkills: (value: boolean) => void;
 }) {
   const { t } = useTranslation("settings");
+  const sandboxAvailability = useSandboxAvailability();
 
   return (
     <SettingsSection>
@@ -45,7 +47,11 @@ export function GeneralPage({
         </SettingsRow>
         <SettingsRow
           title={t("approvalTier.title")}
-          description={t(`approvalTier.description.${approvalTier}`)}
+          description={t(
+            approvalTier === "sandbox" && isWindows
+              ? "approvalTier.description.sandboxWindows"
+              : `approvalTier.description.${approvalTier}`,
+          )}
         >
           <Select
             size="sm"
@@ -54,7 +60,9 @@ export function GeneralPage({
             onChange={e => onChangeApprovalTier(e.target.value as ApprovalTier)}
           >
             <option value="manual">{t("approvalTier.manual")}</option>
-            {isMacOS ? <option value="sandbox">{t("approvalTier.sandbox")}</option> : null}
+            {sandboxAvailability.available
+              ? <option value="sandbox">{t("approvalTier.sandbox")}</option>
+              : null}
             <option value="off">{t("approvalTier.off")}</option>
           </Select>
         </SettingsRow>

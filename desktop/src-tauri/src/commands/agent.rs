@@ -106,7 +106,7 @@ mod tests {
             data: HashMap::from([
                 (
                     "probe_windows_sandbox".to_string(),
-                    r#"{"available":true,"code":"available"}"#.to_string(),
+                    r#"{"available":true,"code":"available","rolloutEnabled":true}"#.to_string(),
                 ),
                 (
                     "reset_windows_sandbox".to_string(),
@@ -118,6 +118,7 @@ mod tests {
         let probe = probe_windows_sandbox().await.expect("probe");
         assert!(probe.available);
         assert_eq!(probe.code, "available");
+        assert!(probe.rollout_enabled);
         assert_eq!(reset_windows_sandbox().await.expect("reset"), 3);
         script_mock_agent(MockScript::default());
     }

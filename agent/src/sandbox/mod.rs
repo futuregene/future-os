@@ -35,8 +35,7 @@ pub enum SandboxTier {
     /// sandbox. The default, all platforms.
     #[default]
     Manual,
-    /// Sandbox — approval rules on; shell runs inside the OS sandbox (macOS
-    /// only; the GUI hides this option elsewhere).
+    /// Sandbox — approval rules on; shell runs inside the available OS sandbox.
     Sandbox,
 }
 
@@ -69,7 +68,7 @@ pub struct SandboxPolicy {
 #[derive(Debug, Clone)]
 pub struct ResolvedSandbox {
     pub tier: SandboxTier,
-    /// Whether the platform sandbox (sandbox-exec) is usable here.
+    /// Whether the platform OS sandbox is usable here.
     pub available: bool,
     /// Canonicalized workspace directory.
     pub workspace: PathBuf,
@@ -800,17 +799,76 @@ pub fn platform_sandbox_available() -> bool {
     {
         Path::new("/usr/bin/sandbox-exec").exists()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        if !windows_sandbox_rollout_enabled() {
+            return false;
+        }
+        cached_windows_sandbox_probe().available
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         false
     }
 }
+
+#[cfg(target_os = "windows")]
+fn cached_windows_sandbox_probe() -> &'static WindowsSandboxProbe {
+    WINDOWS_SANDBOX_PROBE.get_or_init(|| match probe_windows_sandbox_host() {
+        Ok(result) => {
+            tracing::info!(
+                available = result.available,
+                code = result.code,
+                "Windows sandbox rollout probe completed"
+            );
+            result
+        }
+        Err(error) => {
+            tracing::warn!(
+                error_kind = ?error.kind(),
+                "Windows sandbox rollout probe failed"
+            );
+            WindowsSandboxProbe::unavailable("probe_failed", error)
+        }
+    })
+}
+
+#[cfg(target_os = "windows")]
+const WINDOWS_SANDBOX_ROLLOUT_ENV: &str = "FUTURE_WINDOWS_SANDBOX_ROLLOUT";
+
+#[cfg(any(target_os = "windows", test))]
+fn rollout_value_enabled(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes"
+        )
+    })
+}
+
+/// Hidden, default-off W7 rollout gate. The bundled Agent inherits the
+/// Desktop environment; an externally managed Agent remains authoritative for
+/// its own process. Host support is still verified independently by the probe.
+pub fn windows_sandbox_rollout_enabled() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        rollout_value_enabled(std::env::var(WINDOWS_SANDBOX_ROLLOUT_ENV).ok().as_deref())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
+#[cfg(target_os = "windows")]
+static WINDOWS_SANDBOX_PROBE: std::sync::OnceLock<WindowsSandboxProbe> = std::sync::OnceLock::new();
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowsSandboxProbe {
     pub available: bool,
     pub code: &'static str,
+    pub rollout_enabled: bool,
     #[serde(skip)]
     diagnostic: Option<String>,
 }
@@ -821,6 +879,7 @@ impl WindowsSandboxProbe {
         Self {
             available: true,
             code: "available",
+            rollout_enabled: windows_sandbox_rollout_enabled(),
             diagnostic: None,
         }
     }
@@ -829,6 +888,7 @@ impl WindowsSandboxProbe {
         Self {
             available: false,
             code,
+            rollout_enabled: windows_sandbox_rollout_enabled(),
             diagnostic: None,
         }
     }
@@ -838,6 +898,7 @@ impl WindowsSandboxProbe {
         Self {
             available: false,
             code,
+            rollout_enabled: windows_sandbox_rollout_enabled(),
             diagnostic: Some(error.to_string()),
         }
     }
@@ -858,6 +919,19 @@ pub(crate) fn probe_windows_sandbox_host() -> std::io::Result<WindowsSandboxProb
             "platform_not_windows",
         ))
     }
+}
+
+/// Product-facing probe. Once the rollout gate is enabled, UI availability and
+/// command execution share one cached result so a transient second probe can
+/// never make the UI promise protection that the session will not apply.
+pub(crate) fn probe_windows_sandbox_product() -> std::io::Result<WindowsSandboxProbe> {
+    #[cfg(target_os = "windows")]
+    {
+        if windows_sandbox_rollout_enabled() {
+            return Ok(cached_windows_sandbox_probe().clone());
+        }
+    }
+    probe_windows_sandbox_host()
 }
 
 pub(crate) fn reset_windows_sandbox_capabilities() -> std::io::Result<usize> {
@@ -924,11 +998,23 @@ mod tests {
         let value = serde_json::to_value(result).unwrap();
         assert_eq!(value["available"], false);
         assert_eq!(value["code"], "backend_initialization_failed");
+        assert_eq!(value["rolloutEnabled"], false);
         assert!(value.get("diagnostic").is_none());
         assert_eq!(
             serde_json::to_value(WindowsSandboxProbe::available()).unwrap()["code"],
             "available"
         );
+    }
+
+    #[test]
+    fn windows_rollout_gate_accepts_only_explicit_values() {
+        for enabled in ["1", "true", "TRUE", " yes "] {
+            assert!(rollout_value_enabled(Some(enabled)), "value: {enabled}");
+        }
+        for disabled in ["", "0", "false", "on", "enabled", "no"] {
+            assert!(!rollout_value_enabled(Some(disabled)), "value: {disabled}");
+        }
+        assert!(!rollout_value_enabled(None));
     }
 
     #[test]

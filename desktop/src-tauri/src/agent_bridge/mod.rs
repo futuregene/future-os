@@ -342,6 +342,8 @@ pub async fn get_available_models() -> Result<serde_json::Value, crate::AppError
 pub struct WindowsSandboxProbeResult {
     pub available: bool,
     pub code: String,
+    #[serde(default)]
+    pub rollout_enabled: bool,
 }
 
 pub async fn probe_windows_sandbox() -> Result<WindowsSandboxProbeResult, crate::AppError> {
