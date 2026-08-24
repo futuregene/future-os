@@ -639,7 +639,25 @@ impl ServerSession {
         fallback: Option<(std::sync::Arc<dyn crate::types::LLMProvider>, String)>,
     ) -> Result<serde_json::Value> {
         use std::sync::atomic::Ordering;
-        let messages = self.messages.read().clone();
+        // A standalone manual compaction can arrive immediately after the
+        // session was reattached/recovered. Rehydrate from the append-only
+        // journal if its in-memory cache has not been populated yet; otherwise
+        // `/压缩` would incorrectly report "nothing to compact" for a visible
+        // conversation. Keep the restored cache for the next prompt as well.
+        let mut messages = self.messages.read().clone();
+        if messages.is_empty() {
+            if let Ok(session) = self.session_manager.load(&self.session_id) {
+                let supports_images = crate::models::model_accepts_images_with(
+                    &self.model_registry.read(),
+                    &self.model,
+                );
+                messages =
+                    crate::session::entries_to_agent_messages(&session.entries, supports_images);
+                if !messages.is_empty() {
+                    *self.messages.write() = messages.clone();
+                }
+            }
+        }
         let reserve_tokens = ((context_window as f64 * 0.1) as i32).max(16384);
         let keep_tokens = ((context_window as f64 * 0.2) as i32).max(reserve_tokens);
         let active_checkpoint = self
@@ -2872,6 +2890,9 @@ mod tests {
             );
             session.session_manager.save(&snapshot).unwrap();
         }
+        // The standalone slash command must work even if this recovered
+        // session has not filled its in-memory message cache yet.
+        session.messages.write().clear();
         let result = session.compact("").unwrap();
         assert!(result["messagesRemoved"].as_i64().unwrap() > 0);
         assert!(result["summary"].is_string());

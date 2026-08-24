@@ -247,6 +247,7 @@ export type TimelineSegment =
       id: string;
       kind: "compaction";
       tokensBefore?: number;
+      trigger?: string;
       status?: "running" | "completed" | "failed";
       error?: string;
     };

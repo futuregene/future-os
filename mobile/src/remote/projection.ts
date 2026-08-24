@@ -768,6 +768,7 @@ function segmentToTimeline(segment: MessageSegment): TimelineSegment {
         id: segment.id,
         kind: "compaction",
         ...(segment.tokensBefore ? { tokensBefore: segment.tokensBefore } : {}),
+        ...(segment.trigger ? { trigger: segment.trigger } : {}),
         ...(segment.status ? { status: segment.status } : {}),
         ...(segment.error ? { error: segment.error } : {}),
       };

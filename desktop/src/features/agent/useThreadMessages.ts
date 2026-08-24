@@ -322,6 +322,9 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
         const error = typeof detail.payload.error === "string"
           ? detail.payload.error
           : undefined;
+        const trigger = typeof detail.payload.trigger === "string"
+          ? detail.payload.trigger
+          : undefined;
         const status = detail.eventType === "compaction_started"
           ? "running" as const
           : detail.eventType === "compaction_failed"
@@ -332,6 +335,7 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
             id: checkpointId,
             kind: "compaction" as const,
             ...(tokensBefore != null && tokensBefore > 0 ? { tokensBefore } : {}),
+            ...(trigger ? { trigger } : {}),
             ...(status !== "completed" ? { status } : {}),
             ...(error ? { error } : {}),
           };

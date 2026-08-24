@@ -61,7 +61,7 @@ describe("buildAssistantRunProjection segments", () => {
       ]),
     );
     expect(completed.segments).toEqual([
-      { id: "cp-1", kind: "compaction", tokensBefore: 42_000 },
+      { id: "cp-1", kind: "compaction", tokensBefore: 42_000, trigger: "automatic" },
     ]);
 
     const failed = buildAssistantRunProjection(
@@ -71,7 +71,13 @@ describe("buildAssistantRunProjection segments", () => {
       ]),
     );
     expect(failed.segments).toEqual([
-      { id: "cmp-2", kind: "compaction", status: "failed", error: "summary failed" },
+      {
+        id: "cmp-2",
+        kind: "compaction",
+        trigger: "manual",
+        status: "failed",
+        error: "summary failed",
+      },
     ]);
 
     const interrupted = buildAssistantRunProjection(
@@ -84,6 +90,7 @@ describe("buildAssistantRunProjection segments", () => {
       {
         id: "cmp-3",
         kind: "compaction",
+        trigger: "automatic",
         status: "failed",
         error: "compaction interrupted before completion",
       },

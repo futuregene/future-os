@@ -215,8 +215,11 @@
     "fork": "分叉",
     "forkFailed": "分叉失败：{{message}}",
     "compacting": "正在压缩上下文…",
+    "manuallyCompacting": "你正在压缩上下文…",
     "compactionFailed": "上下文压缩失败",
+    "manualCompactionFailed": "你发起的上下文压缩失败",
     "compacted": "上下文已压缩",
+    "manuallyCompacted": "你手动压缩了此对话的上下文",
     "compactedTokens": "上下文已压缩 · {{formattedCount}} tokens"
   },
   "skillGuide": {

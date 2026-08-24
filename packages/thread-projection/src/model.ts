@@ -41,6 +41,8 @@ export type MessageSegment
         kind: "compaction";
         id: string;
         tokensBefore?: number;
+        /** Why the checkpoint was created; `manual` marks an explicit user action. */
+        trigger?: string;
         status?: "running" | "completed" | "failed";
         error?: string;
       };

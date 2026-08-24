@@ -138,6 +138,7 @@ describe("entry reducer", () => {
         checkpoint_id: "cp-history",
         tokens_before: 190_000,
         tokens_after: 20_000,
+        trigger: "manual",
       },
     }]);
     const divider = state.items.find(item =>
@@ -146,7 +147,7 @@ describe("entry reducer", () => {
     expect(divider).toMatchObject({
       kind: "message",
       id: "m_cp-history",
-      segments: [{ id: "seg_cp-history_compaction", kind: "compaction", tokensBefore: 190_000 }],
+      segments: [{ id: "seg_cp-history_compaction", kind: "compaction", tokensBefore: 190_000, trigger: "manual" }],
     });
   });
 
@@ -885,7 +886,7 @@ describe("shared-projection semantic flags", () => {
     let reply = state.items.find(item => item.kind === "message");
     if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
     expect(reply.segments).toEqual([
-      { id: "cmp-1", kind: "compaction", status: "running" },
+      { id: "cmp-1", kind: "compaction", status: "running", trigger: "automatic" },
     ]);
 
     state = applyStreamEvent(state, {
@@ -897,7 +898,7 @@ describe("shared-projection semantic flags", () => {
     reply = state.items.find(item => item.kind === "message");
     if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
     expect(reply.segments).toEqual([
-      { id: "cp-1", kind: "compaction", tokensBefore: 42_000 },
+      { id: "cp-1", kind: "compaction", tokensBefore: 42_000, trigger: "automatic" },
     ]);
 
     let failedState = applyStreamEvent(emptyTimeline(), {

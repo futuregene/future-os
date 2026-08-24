@@ -344,16 +344,21 @@ function useCopyState(resetMs = 1400) {
 function CompactionDivider({
   tokensBefore,
   status = "completed",
+  trigger,
 }: {
   tokensBefore?: number;
   status?: "running" | "completed" | "failed";
+  trigger?: string;
 }) {
   const { t, i18n } = useTranslation();
+  const manual = trigger === "manual";
   const label =
     status === "running"
-      ? t("chat.compacting")
+      ? manual ? t("chat.manuallyCompacting") : t("chat.compacting")
       : status === "failed"
-        ? t("chat.compactionFailed")
+        ? manual ? t("chat.manualCompactionFailed") : t("chat.compactionFailed")
+        : manual
+          ? t("chat.manuallyCompacted")
         : tokensBefore && tokensBefore > 0
       ? t("chat.compactedTokens", {
           formattedCount: new Intl.NumberFormat(i18n.language).format(tokensBefore),
@@ -490,7 +495,7 @@ function SegmentBlock({
     return <ToolRow tool={segment.tool} />;
   }
   // compaction
-  return <CompactionDivider status={segment.status} tokensBefore={segment.tokensBefore} />;
+  return <CompactionDivider status={segment.status} tokensBefore={segment.tokensBefore} trigger={segment.trigger} />;
 }
 
 /**

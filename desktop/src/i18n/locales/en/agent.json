@@ -219,8 +219,11 @@
     "fork": "Fork",
     "forkFailed": "Fork failed: {{message}}",
     "compacting": "Compacting context…",
+    "manuallyCompacting": "You’re compacting context…",
     "compactionFailed": "Context compaction failed",
+    "manualCompactionFailed": "Your context compaction failed",
     "compacted": "Context compacted",
+    "manuallyCompacted": "You compacted this conversation's context",
     "compactedTokens": "Context compacted · {{formattedCount}} tokens"
   },
   "skillGuide": {

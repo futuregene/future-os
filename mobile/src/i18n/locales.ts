@@ -104,8 +104,11 @@ export const resources = {
         retry: "Retry",
         continue: "Continue",
         compacting: "Compacting context…",
+        manuallyCompacting: "You’re compacting context…",
         compactionFailed: "Context compaction failed",
+        manualCompactionFailed: "Your context compaction failed",
         compacted: "Context compacted",
+        manuallyCompacted: "You compacted this conversation's context",
         compactedTokens: "Context compacted · {{formattedCount}} tokens",
       },
       failure: {
@@ -350,8 +353,11 @@ export const resources = {
         retry: "重试",
         continue: "继续",
         compacting: "正在压缩上下文…",
+        manuallyCompacting: "你正在压缩上下文…",
         compactionFailed: "上下文压缩失败",
+        manualCompactionFailed: "你发起的上下文压缩失败",
         compacted: "上下文已压缩",
+        manuallyCompacted: "你手动压缩了此对话的上下文",
         compactedTokens: "上下文已压缩 · {{formattedCount}} tokens",
       },
       failure: {

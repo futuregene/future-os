@@ -60,6 +60,7 @@ type Slot
         type: "compaction";
         id: string;
         tokensBefore: number;
+        trigger?: string;
         status: "running" | "completed" | "failed";
         error?: string;
       };
@@ -201,6 +202,7 @@ export function createRunProjector(options?: { preferEndTokens?: boolean }): Run
         type: "compaction",
         id,
         tokensBefore: 0,
+        ...(isRecord(payload) && typeof payload.trigger === "string" ? { trigger: payload.trigger } : {}),
         status: "running",
       });
       openText = null;
@@ -211,12 +213,13 @@ export function createRunProjector(options?: { preferEndTokens?: boolean }): Run
     // Context compaction committed durably. Replace its pending marker when
     // possible; released run journals may still contain `compaction_end`.
     if (event.eventType === "compaction_end" || event.eventType === "compaction_committed") {
-      if (!isRecord(payload) || payload.aborted !== true) {
-        const operationId = isRecord(payload) && typeof payload.operation_id === "string"
-          ? payload.operation_id
+      const record = isRecord(payload) ? payload : null;
+      if (!record || record.aborted !== true) {
+        const operationId = record && typeof record.operation_id === "string"
+          ? record.operation_id
           : null;
-        const id = isRecord(payload) && typeof payload.checkpoint_id === "string"
-          ? payload.checkpoint_id
+        const id = record && typeof record.checkpoint_id === "string"
+          ? record.checkpoint_id
           : `legacy_${event.runId}_${event.sequence}`;
         const pending = operationId
           ? slots.find(slot => slot.type === "compaction" && slot.id === operationId)
@@ -224,6 +227,8 @@ export function createRunProjector(options?: { preferEndTokens?: boolean }): Run
         if (pending?.type === "compaction") {
           pending.id = id;
           pending.tokensBefore = numberFromPayload(payload, ["tokens_before", "tokensBefore"]);
+          if (record && typeof record.trigger === "string")
+            pending.trigger = record.trigger;
           pending.status = "completed";
           delete pending.error;
         } else if (!slots.some(slot => slot.type === "compaction" && slot.id === id)) {
@@ -231,6 +236,7 @@ export function createRunProjector(options?: { preferEndTokens?: boolean }): Run
             type: "compaction",
             id,
             tokensBefore: numberFromPayload(payload, ["tokens_before", "tokensBefore"]),
+            ...(record && typeof record.trigger === "string" ? { trigger: record.trigger } : {}),
             status: "completed",
           });
         }
@@ -256,6 +262,7 @@ export function createRunProjector(options?: { preferEndTokens?: boolean }): Run
           type: "compaction",
           id: operationId,
           tokensBefore: 0,
+          ...(isRecord(payload) && typeof payload.trigger === "string" ? { trigger: payload.trigger } : {}),
           status: "failed",
           ...(error ? { error } : {}),
         });
@@ -487,7 +494,8 @@ function buildSegments(
       segments.push({
         kind: "compaction",
         id: slot.id,
-        tokensBefore: slot.tokensBefore > 0 ? slot.tokensBefore : undefined,
+        ...(slot.tokensBefore > 0 ? { tokensBefore: slot.tokensBefore } : {}),
+        ...(slot.trigger ? { trigger: slot.trigger } : {}),
         ...(slot.status !== "completed" ? { status: slot.status } : {}),
         ...(slot.error ? { error: slot.error } : {}),
       });

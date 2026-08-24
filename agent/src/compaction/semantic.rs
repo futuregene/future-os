@@ -184,11 +184,16 @@ fn plan(
     let tokens_before = estimated.max(prompt.usage.input_tokens.unwrap_or(0));
     let window = manager.context_window.max(1) as u64;
     let reserve = manager.reserve_tokens.max(0) as u64;
-    if matches!(
+    // A user-selected manual compaction deliberately bypasses the automatic
+    // threshold: `/压缩` is an explicit request to compact history, not a
+    // suggestion to wait until the next context-limit guard. It still needs a
+    // real turn/tool boundary below, so a tiny one-message conversation is
+    // never rewritten into an invalid checkpoint.
+    let threshold_gated = matches!(
         trigger,
         CompactionTrigger::Automatic | CompactionTrigger::ModelContextDownshift
-    ) && tokens_before <= window.saturating_sub(reserve)
-    {
+    );
+    if threshold_gated && tokens_before <= window.saturating_sub(reserve) {
         return Ok(PlannedPreparation::Unchanged(prompt));
     }
     if let Some(on_started) = on_started {
@@ -1231,6 +1236,31 @@ mod tests {
             .unwrap();
         assert!(matches!(prepared, ContextPreparation::Unchanged { .. }));
         assert!(provider.requests.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn manual_compaction_bypasses_the_automatic_threshold() {
+        let provider = ScriptedProvider::new([ScriptedReply::Summary(VALID_SUMMARY)]);
+        let mut prompt = test_prompt();
+        prompt.usage.input_tokens = Some(100);
+        prompt.usage.estimated_input_tokens = 100;
+        let prepared = test_manager()
+            .prepare_semantic_with_phase(
+                prompt,
+                CompactionTrigger::Manual,
+                CompactionPhase::Standalone,
+                None,
+                &provider,
+                &AtomicBool::new(false),
+            )
+            .await
+            .unwrap();
+        let ContextPreparation::Compacted { checkpoint, .. } = prepared else {
+            panic!("manual compaction must not be threshold-gated")
+        };
+        assert_eq!(checkpoint.trigger, CompactionTrigger::Manual);
+        assert_eq!(checkpoint.phase, Some(CompactionPhase::Standalone));
+        assert_eq!(provider.requests.lock().len(), 1);
     }
 
     #[tokio::test]

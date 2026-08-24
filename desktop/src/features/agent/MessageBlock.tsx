@@ -115,6 +115,7 @@ function MessageBlockImpl({
             error={segments[0]!.error}
             status={segments[0]!.status}
             tokensBefore={segments[0]!.tokensBefore}
+            trigger={segments[0]!.trigger}
           />
         </div>
       </article>
@@ -183,6 +184,7 @@ function MessageBlockImpl({
                           key={segment.id}
                           status={segment.status}
                           tokensBefore={segment.tokensBefore}
+                          trigger={segment.trigger}
                         />
                       );
                     }
@@ -344,21 +346,26 @@ function CompactionDivider({
   tokensBefore,
   status = "completed",
   error,
+  trigger,
 }: {
   tokensBefore?: number;
   status?: "running" | "completed" | "failed";
   error?: string;
+  trigger?: string;
 }) {
   const { t, i18n } = useTranslation("agent");
+  const manual = trigger === "manual";
   const label = status === "running"
-    ? t("message.compacting")
+    ? manual ? t("message.manuallyCompacting") : t("message.compacting")
     : status === "failed"
-      ? t("message.compactionFailed")
-      : tokensBefore && tokensBefore > 0
-        ? t("message.compactedTokens", {
-            formattedCount: formatNumber(tokensBefore, i18n.language),
-          })
-        : t("message.compacted");
+      ? manual ? t("message.manualCompactionFailed") : t("message.compactionFailed")
+      : manual
+        ? t("message.manuallyCompacted")
+        : tokensBefore && tokensBefore > 0
+          ? t("message.compactedTokens", {
+              formattedCount: formatNumber(tokensBefore, i18n.language),
+            })
+          : t("message.compacted");
   const failed = status === "failed";
   return (
     <div

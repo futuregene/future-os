@@ -135,7 +135,12 @@ function dividerMessage(entry: SessionEntry, now: string): AgentMessage {
     content: "",
     status: "complete",
     createdAt: entry.timestamp ?? now,
-    segments: [{ id: `seg_${key}_compaction`, kind: "compaction", tokensBefore }],
+    segments: [{
+      id: `seg_${key}_compaction`,
+      kind: "compaction",
+      ...(tokensBefore ? { tokensBefore } : {}),
+      ...(entry.checkpoint?.trigger ? { trigger: entry.checkpoint.trigger } : {}),
+    }],
   };
 }
 

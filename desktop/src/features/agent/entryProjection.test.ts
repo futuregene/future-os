@@ -222,13 +222,14 @@ describe("entriesToMessages", () => {
         cutoff_entry_id: "a1",
         tokens_before: 190_000,
         tokens_after: 20_000,
+        trigger: "manual",
       },
     }]);
 
     expect(messages).toEqual([expect.objectContaining({
       id: "m_cp-1",
       role: "assistant",
-      segments: [{ id: "seg_cp-1_compaction", kind: "compaction", tokensBefore: 190_000 }],
+      segments: [{ id: "seg_cp-1_compaction", kind: "compaction", tokensBefore: 190_000, trigger: "manual" }],
     })]);
   });
 

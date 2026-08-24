@@ -270,7 +270,7 @@ provider 返回 context-length/body-size 错误时，强制进入相同 `Context
 
 手动压缩使用与自动压缩相同的结构化摘要、tail selection、持久化和兼容路径。
 
-Desktop 在已有 Agent session 的对话输入框 `/` 菜单顶部提供「压缩 / Compact」上下文工具。选择后直接调用 standalone `compact` RPC，不生成 `/compact` 用户消息，也不把它建模成 Skill。菜单同时命中上下文工具与 Skill 时工具在上、Skill 在下，并只在混合结果的 Skill 前显示「技能 / Skills」分隔文案；单一类别结果不显示分隔文案。中英文名称和描述都参与搜索。
+Desktop 在已有 Agent session 的对话输入框 `/` 菜单顶部提供「压缩 / Compact」上下文工具。选择后直接调用 standalone `compact` RPC，不生成 `/compact` 用户消息、普通 Agent 回复或新的 Run；摘要请求是该操作唯一的 LLM 通信。`Manual` 明确跳过自动 context-window 阈值，但仍必须找到有效 turn/tool 边界。成功 checkpoint 以 `trigger: "manual"` 追加到 JSONL，Desktop/Mobile 以“你手动压缩了此对话的上下文”分割线显示该用户选择；失败也保留 manual 标识。菜单同时命中上下文工具与 Skill 时工具在上、Skill 在下，并只在混合结果的 Skill 前显示「技能 / Skills」分隔文案；单一类别结果不显示分隔文案。中英文名称和描述都参与搜索。
 
 ### 7.4 ModelContextDownshift
 
