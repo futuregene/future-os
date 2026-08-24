@@ -111,7 +111,7 @@ pub(super) async fn set_agent_permission_level(
 /// Push the session's approval tier to the agent. The agent reads the rule
 /// files (`${WS}/.future/approval_rule.json`, `~/.future/approval_rule.json`)
 /// directly — only the tier travels over the wire (APPROVAL_PLAN.md):
-/// `"manual"` (ask), `"sandbox"` (macOS Seatbelt wraps shell commands), or `"off"`
+/// `"manual"` (ask), `"sandbox"` (the available OS sandbox wraps shell commands), or `"off"`
 /// (fully open). The tier is a global app preference, defaulting to `"manual"`.
 pub(super) async fn set_agent_sandbox_policy(
     client: &mut FutureAgentClient<Channel>,
@@ -121,13 +121,33 @@ pub(super) async fn set_agent_sandbox_policy(
     let tier = store::get_app_settings()
         .map(|settings| settings.approval_tier)
         .unwrap_or_else(|_| "off".to_string());
-    let policy = crate::agent_proto::SandboxPolicy { tier };
-    client
+    let policy = crate::agent_proto::SandboxPolicy { tier: tier.clone() };
+    let response = client
         .execute_command(set_sandbox_policy_command(policy, session_id.to_string()))
         .await
         .map_err(|error| format!("Unable to set Future Agent sandbox policy: {error}"))?
         .into_inner()
         .ok_or_rpc_error("Future Agent rejected the sandbox policy.")?;
+
+    let sandbox_available = future_rpc::decode::response_data(&response)
+        .get("sandboxAvailable")
+        .and_then(serde_json::Value::as_bool);
+    if tier == "sandbox" && sandbox_available == Some(false) {
+        eprintln!("FutureOS: sandbox unavailable [SB001]; using manual approval");
+        store::update_app_settings(store::UpdateAppSettingsInput {
+            approval_tier: Some("manual".to_string()),
+            ..Default::default()
+        })?;
+        let manual = crate::agent_proto::SandboxPolicy {
+            tier: "manual".to_string(),
+        };
+        client
+            .execute_command(set_sandbox_policy_command(manual, session_id.to_string()))
+            .await
+            .map_err(|error| format!("Unable to apply fallback sandbox policy: {error}"))?
+            .into_inner()
+            .ok_or_rpc_error("Future Agent rejected the fallback sandbox policy.")?;
+    }
     Ok(())
 }
 
@@ -649,6 +669,35 @@ mod tests {
             "sandbox"
         );
 
+        // If the Agent reports that the selected OS sandbox is unavailable,
+        // persist the safe manual tier and apply it to the live session too.
+        mock.push_data(
+            "set_sandbox_policy",
+            serde_json::json!({ "sandboxAvailable": false }),
+        );
+        mock.push_data(
+            "set_sandbox_policy",
+            serde_json::json!({ "sandboxAvailable": true }),
+        );
+        set_agent_sandbox_policy(&mut client, "sess-1", "thread-1")
+            .await
+            .expect("sandbox fallback");
+        let policies = mock.requests_of("set_sandbox_policy");
+        assert_eq!(
+            policies[2].sandbox_policy.as_ref().expect("policy").tier,
+            "sandbox"
+        );
+        assert_eq!(
+            policies[3].sandbox_policy.as_ref().expect("policy").tier,
+            "manual"
+        );
+        assert_eq!(
+            crate::store::get_app_settings()
+                .expect("settings after fallback")
+                .approval_tier,
+            "manual"
+        );
+
         // Store unreadable → falls back to "off".
         let prev = break_home();
         mock.push("set_sandbox_policy", Reply::Data("{}".to_string()));
@@ -657,7 +706,7 @@ mod tests {
             .expect("sandbox policy");
         restore_home(prev);
         assert_eq!(
-            mock.requests_of("set_sandbox_policy")[2]
+            mock.requests_of("set_sandbox_policy")[4]
                 .sandbox_policy
                 .clone()
                 .expect("policy")

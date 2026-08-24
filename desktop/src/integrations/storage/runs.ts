@@ -111,3 +111,10 @@ export async function saveApprovalRule(input: {
 }) {
   return invokeCommand<void>("save_approval_rule", { input });
 }
+
+export async function saveApprovalRules(input: {
+  threadId: string;
+  rules: Array<{ path: string; access: "read" | "write" }>;
+}) {
+  return invokeCommand<void>("save_approval_rules", { input });
+}

@@ -98,6 +98,8 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "get_commands" => return session_lifecycle::cmd_get_commands(id),
         // System-wide, no session needed: invalidates the skills discovery cache.
         "refresh_skills" => return providers::cmd_refresh_skills(state, id),
+        "probe_windows_sandbox" => return settings::handle_probe_windows_sandbox(id),
+        "reset_windows_sandbox" => return settings::handle_reset_windows_sandbox(id),
         "set_enabled_models" => {
             // Scoped models are managed entirely by the TUI/client; the agent
             // returns all available models. Kept as a no-op for compatibility.

@@ -15,7 +15,12 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
 import { Alert, Linking, Pressable, StyleSheet, Text, View } from "react-native";
-import { approvalCommand, approvalDeletes, approvalPaths } from "@future-os/thread-projection";
+import {
+  approvalCommand,
+  approvalDeletes,
+  approvalPaths,
+  parseAction,
+} from "@future-os/thread-projection";
 import { friendlyRunError } from "./errorMessage";
 import { MarkdownText } from "./MarkdownText";
 import { splitUserTextSegments } from "./userTextSegments";
@@ -137,19 +142,41 @@ export function PendingApprovalCard({
   onDecision,
 }: PendingApprovalCardProps) {
   const { t } = useTranslation();
+  const [commandExpanded, setCommandExpanded] = useState(false);
+  const action = parseAction(payload.action);
+  const capabilityTargets =
+    action?.category === "windows_write_capability" ? action.targets : undefined;
+  const capabilityTarget = capabilityTargets?.length === 1 ? capabilityTargets[0] : undefined;
+  const malformedCapability = payload.kind === "windows_write_capability" && !capabilityTargets;
   const kindI18n = APPROVAL_KIND_I18N[payload.kind ?? ""];
-  const titleText = kindI18n
-    ? t(kindI18n.title)
-    : payload.title || payload.tool_name || t("approval.title");
-  const summaryText = kindI18n?.summary ? t(kindI18n.summary) : payload.summary;
+  const titleText = capabilityTargets
+    ? capabilityTarget
+      ? t(
+          capabilityTarget.scope === "file"
+            ? "approval.capabilityFileTitle"
+            : "approval.capabilitySubtreeTitle",
+          { path: capabilityTarget.path },
+        )
+      : t("approval.capabilityMultiTitle", { count: capabilityTargets.length })
+    : kindI18n
+      ? t(kindI18n.title)
+      : payload.title || payload.tool_name || t("approval.title");
+  const summaryText = capabilityTargets
+    ? null
+    : kindI18n?.summary
+      ? t(kindI18n.summary)
+      : payload.summary;
   const paths = approvalPaths(payload);
   const deletes = approvalDeletes(payload);
   const command = approvalCommand(payload);
   const isWrite =
     paths.length > 0 &&
     (payload.kind === "file_write" || payload.kind === "outside_workspace_write");
-  const detailLabel =
-    deletes.length > 0
+  const detailLabel = capabilityTargets
+    ? capabilityTargets.length > 1
+      ? t("approval.locations")
+      : null
+    : deletes.length > 0
       ? deletes.length === 1
         ? t("approval.deleteFile")
         : t("approval.deleteFiles", { count: deletes.length })
@@ -176,7 +203,13 @@ export function PendingApprovalCard({
         <>
           <Text style={styles.approvalDetailLabel}>{detailLabel}</Text>
           <View style={styles.approvalDetail}>
-            {command && deletes.length === 0 ? (
+            {capabilityTargets ? (
+              capabilityTargets.map((target, index) => (
+                <Text key={`${target.path}-${index}`} selectable style={styles.approvalPath}>
+                  {target.path}
+                </Text>
+              ))
+            ) : command && deletes.length === 0 ? (
               <Text selectable style={styles.approvalPath}>
                 {command}
               </Text>
@@ -195,6 +228,33 @@ export function PendingApprovalCard({
           </View>
         </>
       ) : null}
+      {capabilityTargets && command ? (
+        <View style={styles.approvalDetail}>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => setCommandExpanded(value => !value)}
+            style={styles.approvalCommandToggle}
+          >
+            <Text style={styles.approvalDetailLabel}>{t("approval.viewCommand")}</Text>
+            {commandExpanded ? (
+              <ChevronUp color={colors.inkMuted} size={14} />
+            ) : (
+              <ChevronDown color={colors.inkMuted} size={14} />
+            )}
+          </Pressable>
+          {commandExpanded ? (
+            <Text selectable style={styles.approvalPath}>
+              {command}
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
+      {malformedCapability ? (
+        <View style={styles.approvalError}>
+          <AlertTriangle color={colors.danger} size={13} />
+          <Text style={styles.approvalErrorText}>{t("approval.invalidRequest")}</Text>
+        </View>
+      ) : null}
       {!!error && (
         <View style={styles.approvalError}>
           <AlertTriangle color={colors.danger} size={13} />
@@ -205,7 +265,7 @@ export function PendingApprovalCard({
         <View style={styles.approvalActionLeft}>
           <Button
             compact
-            disabled={submitting}
+            disabled={submitting || malformedCapability}
             icon={<X color={colors.ink} size={15} />}
             label={submitting ? t("approval.denying") : t("approval.deny")}
             loading={submitting}
@@ -807,6 +867,11 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     backgroundColor: colors.surfaceSubtle,
     gap: 2,
+  },
+  approvalCommandToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
   },
   approvalPath: { color: colors.ink, fontFamily: "monospace", fontSize: 12, lineHeight: 18 },
   approvalError: { flexDirection: "row", alignItems: "center", gap: spacing.xs },

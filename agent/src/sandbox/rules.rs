@@ -414,7 +414,7 @@ impl RuleSet {
     /// Resolve, sharing `session` so runtime injections (same-run "allow in
     /// this workspace") are visible to the live sandbox.
     pub fn resolve_with_session(workspace: &Path, session: SessionRules) -> Self {
-        let home = dirs::home_dir();
+        let home = crate::utils::home_dir_opt();
         let user_rule_file = home.as_ref().map(|h| h.join(".future/approval_rule.json"));
         Self::resolve_impl(
             workspace,

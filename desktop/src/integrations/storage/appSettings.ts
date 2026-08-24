@@ -1,6 +1,6 @@
 import { invokeCommand } from "../tauri/invoke";
 
-/** Approval tier: fully open (default), ask everything, or sandbox-protect (macOS only). */
+/** Approval tier: fully open (default), ask everything, or use the available OS sandbox. */
 export type ApprovalTier = "off" | "manual" | "sandbox";
 
 export interface AppSettings {

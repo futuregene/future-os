@@ -124,8 +124,7 @@ pub struct ServerSession {
 
 /// Default workspace directory for new sessions.
 pub fn default_workspace() -> String {
-    dirs::home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+    crate::utils::home_dir()
         .join(".future")
         .join("agent")
         .join("workspace")

@@ -176,7 +176,7 @@ fn set_windows_taskbar_icon(app: &tauri::App) {
             } else {
                 (target - w) * 2 + 1
             };
-            if best.map_or(true, |(_, _, bs)| score < bs) {
+            if best.is_none_or(|(_, _, bs)| score < bs) {
                 best = Some((offset, entry_size, score));
             }
         }
@@ -214,8 +214,8 @@ fn set_windows_taskbar_icon(app: &tauri::App) {
     let small_target = 128u32;
 
     unsafe {
-        if let Some((offset, size)) = find_best_entry(&ico_data, big_target) {
-            if let Some(hicon) = hicon_from_ico_entry(&ico_data, offset, size) {
+        if let Some((offset, size)) = find_best_entry(ico_data, big_target) {
+            if let Some(hicon) = hicon_from_ico_entry(ico_data, offset, size) {
                 SendMessageW(
                     hwnd,
                     WM_SETICON,
@@ -224,8 +224,8 @@ fn set_windows_taskbar_icon(app: &tauri::App) {
                 );
             }
         }
-        if let Some((offset, size)) = find_best_entry(&ico_data, small_target) {
-            if let Some(hicon) = hicon_from_ico_entry(&ico_data, offset, size) {
+        if let Some((offset, size)) = find_best_entry(ico_data, small_target) {
+            if let Some(hicon) = hicon_from_ico_entry(ico_data, offset, size) {
                 SendMessageW(
                     hwnd,
                     WM_SETICON,
@@ -822,6 +822,7 @@ pub fn run() {
             list_pending_approval_requests,
             decide_approval_request,
             save_approval_rule,
+            save_approval_rules,
             get_git_review,
             get_workspace_review_capabilities,
             get_last_run_review,
@@ -835,6 +836,8 @@ pub fn run() {
             list_agent_models,
             sync_future_models,
             set_default_model,
+            probe_windows_sandbox,
+            reset_windows_sandbox,
             agent_prompt,
             list_installed_skills,
             list_available_skills,
@@ -878,7 +881,7 @@ pub fn run() {
                 // once instead of waiting for heartbeat expiry. Crashes and
                 // power loss cannot run this handler and remain timeout-based.
                 tauri::async_runtime::block_on(remote::stop_gracefully("app_exit"));
-                agent_supervisor::shutdown_agent();
+                agent_supervisor::shutdown_agent_gracefully();
             }
             _ => {}
         });
