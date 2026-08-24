@@ -2,8 +2,8 @@
 //!
 //! This module deliberately does not launch a process or mutate an ACL. It
 //! freezes the model-declared targets, evaluates the normal approval rules and
-//! produces trusted user semantics. W4 approval wiring consumes this result;
-//! until that wiring is complete no approval result reaches the W3 driver.
+//! produces trusted user semantics consumed by the approval flow and bound to
+//! the exact receipt passed into the Windows process driver.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -41,7 +41,7 @@ pub enum WriteScope {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrozenWriteTarget {
-    /// Canonical, absolute path used by rules, request binding and W2 audit.
+    /// Canonical, absolute path used by rules, request binding, and path audit.
     pub normalized_path: PathBuf,
     pub scope: WriteScope,
     /// Model-provided explanation retained for diagnostics only. It must never
@@ -88,7 +88,7 @@ impl PreparedWritePermissions {
 
 /// Server-side receipt. It is held in the active tool scope and never sent to
 /// the ordinary-user card. Exact equality is required again immediately before
-/// the W3 process driver may consume it.
+/// the Windows process driver may consume it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovedWriteCapability {
     pub request_id: String,

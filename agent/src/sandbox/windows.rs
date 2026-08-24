@@ -1,13 +1,9 @@
 //! Windows sandbox executor (SANDBOX_PLAN §11), `#[cfg(windows)]` only.
 //!
-//! W2/W3 land in slices so each can be compiled/verified on Windows:
-//!   1. **Job Object** (this file so far) — process-tree teardown, the Windows
-//!      analog of the unix process-group kill. Needed for every shell run, not
-//!      just sandboxed ones, so it ships before the enforcement layer.
-//!   2. restricted token + capability SID derivation — W2, kept disconnected
-//!      from product execution until the Windows AccessCheck matrix passes.
-//!   3. additive FutureOS-owned ACE application/audit — W2, likewise opt-in.
-//!   4. suspended launch glue — W3.
+//! The product path combines a no-breakaway Job Object, a WRITE_RESTRICTED
+//! token, capability-scoped NTFS ACEs, handle-audited paths, and suspended
+//! process creation. Native and end-to-end coverage lives in the test modules
+//! below and in `windows/integration_tests.rs`.
 
 #[path = "windows/acl.rs"]
 mod acl;

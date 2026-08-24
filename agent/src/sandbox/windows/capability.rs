@@ -2,7 +2,7 @@
 //! unelevated sandbox. This module is platform-independent so policy identity
 //! and persistence behavior can be tested on macOS/Linux CI.
 
-#![allow(dead_code)] // Consumed by the Windows-only W2 executor.
+#![cfg_attr(not(any(windows, test)), allow(dead_code))]
 
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};

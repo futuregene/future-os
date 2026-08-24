@@ -306,7 +306,7 @@ RestrictedToken/NTFS 不向父进程可靠报告“刚才拒绝了哪个对象�
 - `agent/src/rpc/approval.rs`、`packages/rpc/proto/future.proto`、`packages/thread-projection/src/approval.ts`：传递可信用户语义和内部 enforcement payload，批准回执绑定 request/hash/path/scope。
 - `desktop/src/features/agent/ApprovalPrompt.tsx`：复用现有共享卡片，增加 Windows capability 变体并同步收敛普通审批 UI；解析失败不再回退到可批准的原始 JSON。
 - `mobile/src/components/TimelineCard.tsx`、`mobile/src/remote/types.ts`：移动端原生审批卡消费同一可信语义 payload，显示相同“行为 + 目标”；第一版只支持拒绝/允许一次，malformed payload 同样 fail closed。
-- GUI 设置：Windows 显示“写保护”及其一次性能力说明；后端完成并通过 smoke 后才让 `platform_sandbox_available()` 返回 true。
+- GUI 设置：Windows 完整 host probe 通过后显示“写保护”及其一次性能力说明；probe 失败时隐藏入口并回退 `manual`。
 
 ### 11.6 已知取舍 / 缺口（知情接受）
 
@@ -338,7 +338,7 @@ RestrictedToken/NTFS 不向父进程可靠报告“刚才拒绝了哪个对象�
 | **W6 — 端到端安全与兼容性** | 将 W1–W5 串入真实 agent/desktop；增加 ACL audit/repair、活动代际跟踪、旧 SID GC、重置/卸载清理、日志脱敏和 feature probe；用仓库脚本进行 Windows 真实机手工批量 smoke，不加入 CI | 必过矩阵：workspace/temp 写成功；workspace 外写失败；一次批准仅开放完整列出的现有 file/subtree，未批准 sibling 仍失败；项目批准仅当前项目和新代际生效；父目录不被扩大；当前用户无权目标仍失败；现有关键对象 deny 硬化有效；不存在对象/glob 缺口与模式说明一致；崩溃/强杀/重启后无权限扩张；常见工具链可用；所有初始化失败均 fail closed |
 | **W7 — 产品与发布** | Windows 启动后直接运行 capability probe；仅通过时显示“写保护”；普通用户文案聚焦写入保护与何时审批，能力差异保留在开发文档；保留一键退回 `manual` | Windows 目标版本手工 smoke 全绿；安全 review 无高优先级问题；升级、降级、重置 SID/ACL 可恢复；遥测不上传原始敏感路径；初始化/ACL 异常时自动回到 `manual`，不得无提示直跑 |
 
-**当前实现状态（2026-08-24）**：Windows 11 Home 非管理员主机上的 `test-windows-sandbox.ps1 -IncludeClippy` 已通过 50 项原生/端到端测试、11 项 capability 审批测试、Agent 用户级单例、2 项 Desktop graceful shutdown、Agent/Desktop Clippy、release CLI probe，并确认退出后 capability record 为 0；测试明确不加入 CI。P1 的 RM-01、RM-02、RM-04～RM-07 已在本机 PASS；RM-03 因当前包无法触发而 `NOT RUN`，P2 额外主机矩阵因无可用主机延后。当前本地测试分支已移除 W7 独立开关；Windows 直接运行完整 host probe，通过时 Desktop/手机显示 sandbox 档并让 Agent 运行受限命令。probe/Agent 失败会 fail closed 并将已保存的 sandbox 档回退为 `manual`；日志仅使用稳定 code，不向产品状态输出原始路径。回收顺序仍为先持久化并应用新集合，再按 Codex 的 `REVOKE_ACCESS` 模式回收无活动引用的旧 SID；失败时保留 metadata 供以后重试。reset/probe 已提供 sessionless agent RPC 与 `future agent` 维护命令；Windows 设置页提供普通用户文案的手动 reset，NSIS 卸载清理已真机 PASS。RM-03、P2 和安全 review 仍是正式发布前需补的证据，但不再阻止本分支本地测试。普通 NTFS DACL 仍无法精确拒绝允许目录内尚不存在的未来文件名，`FILE_DELETE_CHILD` 与 Everyone/logon 宽 ACL 也保留 §11.6 的已知边界，不能宣称与 macOS SBPL 等价。
+**当前实现状态（2026-08-24）**：Windows 11 Home 非管理员主机上的 `test-windows-sandbox.ps1 -IncludeClippy` 已通过 50 项原生/端到端测试、11 项 capability 审批测试、Agent 用户级单例、2 项 Desktop graceful shutdown、Agent/Desktop Clippy、release CLI probe，并确认退出后 capability record 为 0；测试明确不加入 CI。P1 的 RM-01、RM-02、RM-04～RM-07 已在本机 PASS；RM-03 因当前包无法触发而 `NOT RUN`，P2 额外主机矩阵因无可用主机延后。GUI 手工验证确认 host probe 通过后入口可见、workspace 内写入不拦截、未批准的 workspace 外写入被拦截、正常退出后 capability record 为 0。当前分支没有 W7 独立开关；probe/Agent 失败会 fail closed 并将已保存的 sandbox 档回退为 `manual`；日志仅使用稳定 code，不向产品状态输出原始路径。回收顺序仍为先持久化并应用新集合，再按 Codex 的 `REVOKE_ACCESS` 模式回收无活动引用的旧 SID；失败时保留 metadata 供以后重试。reset/probe 已提供 sessionless agent RPC 与 `future agent` 维护命令；Windows 设置页提供普通用户文案的手动 reset，NSIS 卸载清理已真机 PASS。RM-03、P2 和安全 review 仍是正式发布前需补的证据，但不再阻止本分支本地测试。普通 NTFS DACL 仍无法精确拒绝允许目录内尚不存在的未来文件名，`FILE_DELETE_CHILD` 与 Everyone/logon 宽 ACL 也保留 §11.6 的已知边界，不能宣称与 macOS SBPL 等价。
 
 Windows 真机从仓库根目录用普通（非管理员）PowerShell 执行：
 
@@ -359,19 +359,9 @@ future agent --reset-windows-sandbox
 
 probe 成功执行时始终输出 JSON；`available=false` 是受支持的 fail-closed 结果而非崩溃。reset 只撤销状态文件中记录的 FutureOS capability ACE，存在活动 sandbox Job 时返回失败，不会终止用户命令。设置页只消费 `available` 和稳定 `code`；内部 diagnostic 仅写本机 agent 日志，不进入普通用户文案。
 
-### 11.8 开发切分与合并顺序
+### 11.8 合并范围
 
-建议按以下独立变更提交，所有中间状态都保持功能开关关闭：
-
-1. **PR W1**：只改纯计划和单测，修正文档已指出的 deny-read 漂移。
-2. **PR W2**：Windows capability/token/ACL 原语与 AccessCheck 测试程序，不接产品执行路径。
-3. **PR W3**：受限 spawn driver 与 Windows 进程生命周期测试。
-4. **PR W4**：shell 参数、approval/RPC 契约、规则注入和后端绑定测试；桌面尚不展示入口。
-5. **PR W5**：共享 `ApprovalPrompt` 和本地化/投影测试；同时收敛 macOS/手动档的普通用户呈现。
-6. **PR W6**：端到端接线、Windows 手工批量 smoke、audit/repair/清理和隐藏设置开关。
-7. **PR W7**：正式平台可用性判断、产品入口与 fail-closed 回退。
-
-W2 与 W4 可在 W1 契约冻结后并行开发，但 W4 的批准结果不得在 W2/W3 验证完成前启动真实命令；W5 依赖 W4 的可信语义 payload；W6 必须同时通过 W2、W3、W4、W5 的退出条件。
+W1～W7 已在当前开发分支形成一个完整纵向闭环：规则计划、capability/token/ACL、受限进程、审批语义、Desktop/手机呈现、生命周期维护和产品探测必须一起合并，避免主分支出现“入口可见但后端未强制”或“已写 ACE 但无回收路径”的中间状态。两个 Windows PowerShell 验证脚本作为不进入 CI 的真机回归工具保留。
 
 ### 11.9 第一版完成定义
 
@@ -380,7 +370,7 @@ W2 与 W4 可在 W1 契约冻结后并行开发，但 W4 的批准结果不得�
 - 用户看到的每个审批都有后端生成的明确“行为 + 目标”，且批准内容与实际 capability 完全一致。
 - 不批准时，shell 只能写 workspace、session temp 和既有 allow-write 根；批准不会扩展到 sibling、父目录或其他项目。
 - restricted token 及其全部后代始终处于 Job Object 和写边界内；任何初始化、解析或校验失败都不执行命令。
-- 读和网络开放的取舍只在模式说明中准确呈现，不伪装成 macOS 等价隔离，也不反复塞进具体审批卡片。
+- 读和网络开放的取舍在开发文档和发布说明中准确呈现，不伪装成 macOS 等价隔离，也不塞进普通用户的具体审批卡片。
 - Windows 真实环境兼容性、ACL 恢复/重置、升级降级和失败回退均有自动化或可重复的 smoke 证据。
 
 **明确不做（第一版）**：shell deny-read、glob ACE、elevated 独立用户、防火墙/网络隔离、WSL 捆绑、笼统 error 5 整命令脱沙盒放行。
@@ -426,28 +416,3 @@ W2 与 W4 可在 W1 契约冻结后并行开发，但 W4 的批准结果不得�
 - **症状**：中文系统上 A5 的修复「看起来」没问题，但在西欧/俄文/希腊文区域会解出乱码。
 - **根因**：`[Console]::OutputEncoding`（`Console.OutputEncoding`）映射 `GetConsoleOutputCP()`；stdout 被重定向到管道（无控制台）时它回退到 **`GetOEMCP()`（OEM 代码页）**，而非 `GetACP()`（ANSI 代码页）。CJK 区域两者恰好相同（如简体中文均 936/GBK），掩盖了差异；西文 1252 vs 437/850、俄文 1251 vs 866、希腊文 1253 vs 737 均不同。
 - **修复**：解码参数由 `CP_ACP` 改为 `CP_OEMCP`。注：OEM 代码页本身不含全部 Unicode，超出该页的字符在 PowerShell 端编码时已丢失为 `?`，这是 CLM 边界的必然产物，解码端只能保证「已发出的字节」被正确还原。
-
----
-
-## 附录 B：Windows 真机测试报告
-
-**执行方式**：仓库根目录普通（非管理员）PowerShell 运行 `scripts/test-windows-sandbox.ps1`。脚本强制 `--test-threads=1`，完整输出落盘 `target/windows-sandbox-results/windows-sandbox-<时间戳>.log`，显式不接入 CI。
-
-**环境**（2026-08-21）：
-
-- OS：Microsoft Windows NT 10.0.26200（x86_64）
-- PowerShell：5.1（非管理员，`Elevated: False`）
-- Rust/Cargo：1.97.0（repo `rust-toolchain.toml` 锁定）
-- 工作区与 TEMP：本地 NTFS（脚本前置校验通过）
-
-**结果**：`RESULT: PASS`
-
-| 测试目标 | 结果 |
-|---|---|
-| `cargo test sandbox::windows`（原生 AccessCheck 矩阵 + 端到端 runner） | **44 passed, 0 failed** |
-| `cargo test windows_capability`（审批语义与回执绑定） | **10 passed, 0 failed** |
-| `cargo clippy --lib -- -D warnings`（Agent Clippy，非脚本默认项） | **通过，0 warning** |
-
-**覆盖要点**：capability SID 只开放对应写根且 deny carveout 恒赢；restricted PowerShell 保留 cwd/env/stdout/退出码；Job Object 树形终止；workspace 写成功/未声明的外部写失败；subtree 一次性批准精确且旧 ACE 不可复用；file scope 不扩展到父目录；reparse/UNC 在 ACL 变更前 fail-closed；Unicode 路径 + 管道重定向 + 70 万字节大输出不卡死；受限 5.1 中文 stdout 按 OEM 代码页正确还原。
-
-**该次报告未覆盖（后续代码已补但仍待真机复验）**：活动代际 GC、跨进程占用锁、reset、完整 release probe、NSIS 卸载清理，以及 Agent 用户级单例与正常退出权限回收。Agent 的正常、错误和 unwind 退出均由 RAII 清理守卫覆盖；明确强退/崩溃由下次启动回收。上述生命周期测试已加入同一个 Windows 手工脚本，具体步骤见 [`WINDOWS_SANDBOX_REAL_MACHINE_VALIDATION.md`](WINDOWS_SANDBOX_REAL_MACHINE_VALIDATION.md)；额外支持主机矩阵以及模式选择层仍未实现；`platform_sandbox_available()` 在 Windows 继续保持 false，产品入口关闭。

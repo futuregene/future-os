@@ -14,8 +14,6 @@
 //!     surfaced as structured unsupported entries and remain enforced only by
 //!     the in-process tool layer.
 
-#![allow(dead_code)] // Consumed by the `#[cfg(windows)]` executor (W1b).
-
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 

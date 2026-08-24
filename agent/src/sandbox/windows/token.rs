@@ -1,7 +1,4 @@
-//! Windows restricted-token primitives. Deliberately not connected to shell
-//! spawning until the W2 AccessCheck matrix has run on Windows.
-
-#![allow(dead_code)]
+//! Windows restricted-token primitives used by the production sandbox runner.
 
 use std::collections::HashSet;
 use std::io;
@@ -179,10 +176,6 @@ impl RestrictedToken {
 
     pub(crate) fn as_handle(&self) -> HANDLE {
         self.handle
-    }
-
-    pub(crate) fn restricting_sids(&self) -> &[OwnedSid] {
-        &self.sids
     }
 
     /// Capability SIDs are safe trustees for FutureOS-created objects. Do not

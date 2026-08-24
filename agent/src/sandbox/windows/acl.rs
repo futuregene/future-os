@@ -1,7 +1,5 @@
 //! Additive ACL mutation for FutureOS-owned capability SIDs.
 
-#![allow(dead_code)]
-
 use std::io;
 use std::ptr;
 
@@ -274,6 +272,7 @@ fn explicit_entries_contain(
     )
 }
 
+#[cfg(test)]
 fn explicit_entries_include_sid(
     entries: *const EXPLICIT_ACCESS_W,
     count: u32,

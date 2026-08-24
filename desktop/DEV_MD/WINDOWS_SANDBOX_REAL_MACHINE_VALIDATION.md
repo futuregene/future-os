@@ -1,6 +1,6 @@
 # FutureOS Windows Unelevated Sandbox 真机验证手册
 
-状态：**底层批量验收已 PASS；当前可执行的生命周期项已 PASS，安装器与多主机矩阵延后**
+状态：**底层、当前可执行生命周期、NSIS 卸载及 GUI 核心写边界已 PASS；不可触发的重启路径与多主机矩阵延后**
 
 适用分支：`codex/windows-unelevated-sandbox`
 
@@ -157,7 +157,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\test-windows-sandbox-lifecycl
 
 每次调用都会在 `target\windows-sandbox-results\windows-sandbox-lifecycle-<时间戳>.log` 留下独立报告。脚本只观察 FutureOS/Agent 的数量和父子归属、读取 capability record 数量，不记录完整命令行，也不会停止进程或卸载软件。
 
-由于 Windows 产品入口在 W7 前保持关闭，单纯启动应用通常不会生成 capability record。为了验证 packaged shutdown/startup/uninstall **确实调用**清理路径，可在指定步骤执行：
+为了不依赖某次 GUI 操作是否恰好生成 capability record，并精确验证 packaged shutdown/startup/uninstall **确实调用**清理路径，可在指定步骤执行：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\test-windows-sandbox-lifecycle.ps1 -Action SeedCleanupFixture
@@ -401,6 +401,19 @@ PowerShell 5.1 首次运行 `Snapshot` 暴露了空数组经 `if` 输出后折�
 
 Windows 11 Pro、PowerShell 7、中文用户名等 P2 多主机矩阵因当前无可用主机，明确记为 `NOT RUN`。当前本地测试分支已直接开放 W7，但 RM-03 和 P2 不因跳过而视为通过，仍应在正式发布前补齐。
 
+### 9.7 GUI 核心写边界本机结果
+
+2026-08-24 在 Windows 11 Home 普通用户、本地 NTFS 环境完成当前测试包的 GUI 手工验证：
+
+| 场景 | 结果 | 结论 |
+|---|---|---|
+| Agent probe 与 Desktop 入口 | PASS | `future.exe agent --probe-windows-sandbox` 返回 `{"available":true,"code":"available"}`，Desktop 显示 Windows 沙箱保护选项 |
+| workspace 内写入 | PASS | 沙箱模式下正常写入 workspace，不产生越界拦截 |
+| workspace 外写入 | PASS | 未批准的 workspace 外写入被拦截，没有静默脱离沙箱执行 |
+| 正常退出清理 | PASS | 退出 FutureOS 后 capability record 清理为 0 |
+
+这是 GUI 驱动的真机手工验证，不是 UI 自动化。它覆盖 W7-01、W7-03 和 W7-08 的核心结论；审批按钮各 scope、手机端对齐、重启回退与 sibling 精确边界仍分别按 §11 的对应条目记录，未执行的项目不借本次结果推定为通过。
+
 ## 10. 后续任务与执行顺序
 
 下面是发布前唯一剩余清单。每一步都保留对应日志/截图或命令输出；前一优先级失败时先修复，不提前打开 Windows 产品入口。
@@ -415,7 +428,7 @@ Windows 11 Pro、PowerShell 7、中文用户名等 P2 多主机矩阵因当前�
 | ✅ P1 | reset 与活动 Job | 按 RM-06 分别在无任务、活动 sandbox Job 下运行统一 CLI | 本机空闲 reset PASS；活动 Job 拒绝分支已由 P0 原生测试覆盖 |
 | ✅ P1 | NSIS 卸载 | 按 RM-07 使用真实安装包卸载 | 本机 PASS：卸载清理后 `ExpectClean`；安装目录移除，夹具与用户文件保留 |
 | NOT RUN P2 | 支持矩阵 | 在 Windows 11 Pro、PowerShell 7、中文用户名/路径上重跑 §3，并至少覆盖 portable | 当前无额外主机，延后但不取消默认开放前的发布门槛 |
-| 开发完成/待真机 P3 | W7 产品接入 | Windows 直接动态 probe、Desktop/手机选项和 `manual` 回退已实现；按 §11 真机验证 | probe 通过才显示；不上传原始路径；探测/初始化异常自动回到 `manual` |
+| 部分 PASS P3 | W7 产品接入 | Windows 直接动态 probe、Desktop/手机选项和 `manual` 回退已实现；按 §11 真机验证 | 本机 W7-01、W7-03、W7-08 核心结论 PASS；其余条目继续按 §11 验证 |
 
 测试分层保持不变：P0 是无 UI 的底层逻辑/原生集成测试；P1 是进程、安装包和 ACL 生命周期手工验收，不要求 UI 自动化；P2 是兼容矩阵；P3 才允许接通产品入口。详细操作以 §3、§5、§6 为准，表格不替代这些步骤。
 

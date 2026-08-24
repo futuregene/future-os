@@ -1,10 +1,8 @@
-//! Suspended restricted-token process creation for W3.
+//! Suspended restricted-token process creation for the Windows sandbox.
 //!
 //! The process is created suspended with an explicit inherited-handle list,
 //! assigned to a no-breakaway Job Object, and only then resumed. Any failure
 //! before `ResumeThread` terminates the still-suspended process fail-closed.
-
-#![allow(dead_code)] // Product wiring remains disabled until W4/W6.
 
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -169,6 +167,7 @@ impl RestrictedChild {
         self._capability_lease = Some(lease);
     }
 
+    #[cfg(test)]
     pub(crate) fn id(&self) -> u32 {
         self.pid
     }

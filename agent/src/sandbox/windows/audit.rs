@@ -1,6 +1,4 @@
-//! Handle-based path freezing and local-NTFS validation for W2.
-
-#![allow(dead_code)]
+//! Handle-based path freezing and local-NTFS validation.
 
 use std::io;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
@@ -10,10 +8,14 @@ use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, LocalFree, ERROR_INSUFFICIENT_BUFFER, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
+#[cfg(test)]
 use windows_sys::Win32::Security::{
-    AccessCheck, DuplicateTokenEx, MakeAbsoluteSD, SecurityImpersonation, TokenImpersonation,
-    DACL_SECURITY_INFORMATION, GENERIC_MAPPING, GROUP_SECURITY_INFORMATION,
-    OWNER_SECURITY_INFORMATION, PRIVILEGE_SET, TOKEN_QUERY,
+    AccessCheck, DuplicateTokenEx, SecurityImpersonation, TokenImpersonation, GENERIC_MAPPING,
+    PRIVILEGE_SET, TOKEN_QUERY,
+};
+use windows_sys::Win32::Security::{
+    MakeAbsoluteSD, DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION,
+    OWNER_SECURITY_INFORMATION,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FileAttributeTagInfo, GetFileInformationByHandleEx, GetFinalPathNameByHandleW,
@@ -23,6 +25,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL, WRITE_DAC,
 };
 
+#[cfg(test)]
 use super::token::RestrictedToken;
 
 /// An existing, non-reparse object frozen by handle. ACL operations use this
@@ -82,13 +85,9 @@ impl FrozenPath {
         self.handle
     }
 
-    pub(crate) fn final_path(&self) -> &Path {
-        &self.final_path
-    }
-
     /// Evaluate this object's current security descriptor against the exact
-    /// restricted token. This is W2 probe machinery; kernel object opens remain
-    /// the eventual enforcement path.
+    /// restricted token for the native access-check matrix.
+    #[cfg(test)]
     pub(crate) fn access_check(
         &self,
         token: &RestrictedToken,

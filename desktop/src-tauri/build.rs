@@ -62,10 +62,7 @@ fn embed_common_controls_manifest() -> Result<(), Box<dyn std::error::Error>> {
 "#,
     )?;
     println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
-    println!(
-        "cargo:rustc-link-arg=/MANIFESTINPUT:{}",
-        manifest.display()
-    );
+    println!("cargo:rustc-link-arg=/MANIFESTINPUT:{}", manifest.display());
     Ok(())
 }
 

@@ -137,7 +137,7 @@ workspace 规则文件在 workspace 里 = 兜底可写；它又是最高优先�
 |---|---|
 | **read / write / edit 工具**（agent 进程内，路径确切已知） | 真前置审批：工具执行前弹卡片，等用户决定。**read 工具本次新接入审批**（v1 它完全不受控，是已知漏洞）。 |
 | **shell / macOS sandbox** | 子进程无法中途询问；`ask` 与 `deny` 编译为 Seatbelt 拒绝。命中后进入现有 escalation：卡片展示原命令、失败摘要和可推断路径；当前批准语义仍是整条命令脱离 Seatbelt 重跑一次。无法可靠归因的路径必须标为“未知”，不得伪装成精确路径审批。 |
-| **shell / Windows write-protect** | RestrictedToken 无法可靠报告刚才拒绝的对象路径，因此采用**声明式路径能力前置审批**：shell 调用附带 workspace/session temp 之外所需的额外写路径；GUI 在执行前以普通用户能理解的“行为 + 目标”展示实际能力。批准后只扩展本次 capability 或持久路径规则，命令仍在 RestrictedToken 下执行。未声明的外部写只失败，不提供模糊的整命令放行。普通 NTFS ACL 无法完整强制 workspace 内尚不存在文件名/glob 的 shell ask/deny，这项取舍必须在模式说明中明确。 |
+| **shell / Windows write-protect** | RestrictedToken 无法可靠报告刚才拒绝的对象路径，因此采用**声明式路径能力前置审批**：shell 调用附带 workspace/session temp 之外所需的额外写路径；GUI 在执行前以普通用户能理解的“行为 + 目标”展示实际能力。批准后只扩展本次 capability 或持久路径规则，命令仍在 RestrictedToken 下执行。未声明的外部写只失败，不提供模糊的整命令放行。普通 NTFS ACL 无法完整强制 workspace 内尚不存在文件名/glob 的 shell ask/deny，这项取舍必须在开发文档和发布说明中明确，不加入普通用户的具体审批卡片。 |
 | **shell / manual** | 无 OS 沙盒，使用只读白名单：`ls/cat/grep/git status` 等免问，其余命令弹 `shell_command` 卡片前置审批（仅“允许一次”，不落规则）。 |
 
 推论：macOS Seatbelt 与手动档仍无法自动获得 shell 将访问的完整路径；Windows write-protect 后端则通过 shell 调用显式声明 `additional_permissions` 建立路径级前置审批。它不是命令前缀规则，也不尝试静态解析 PowerShell，而是把模型声明的路径能力交给同一套规则引擎评估。未声明访问继续由 OS 写边界拒绝。

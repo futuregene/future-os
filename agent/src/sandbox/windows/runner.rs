@@ -1,8 +1,5 @@
-//! W6 assembly of capability records, handle-audited ACLs, restricted token
-//! and the suspended W3 process driver. Product availability remains disabled
-//! until the remaining reset/uninstall and host-probe release work is complete.
-
-#![allow(dead_code)]
+//! Production assembly of capability records, handle-audited ACLs, restricted
+//! tokens, and the suspended Windows process driver.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
