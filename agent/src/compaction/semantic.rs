@@ -17,13 +17,17 @@ const SUMMARY_OUTPUT_RESERVE: u64 = 4_096;
 const SUMMARY_SAFETY_MARGIN: u64 = 2_048;
 const SUMMARY_EVENT_TIMEOUT: Duration = Duration::from_secs(45);
 const MAX_TRANSIENT_RETRIES: usize = 2;
+// A very large model window must not turn an explicit manual compaction into
+// an almost-no-op. OpenCode uses a similarly bounded recent-tail budget. Keep
+// smaller configured values intact, but cap the manual tail at a useful size.
+const MANUAL_RECENT_TAIL_MAX_TOKENS: u64 = 15_000;
 
-const SUMMARY_SYSTEM_PROMPT: &str = r#"You are a context summarization agent. Produce only a structured handoff summary for another coding agent. Do not continue the conversation or answer questions from it. Use the same primary language as the conversation. Preserve exact paths, symbols, commands, error strings, URLs, and identifiers when known."#;
+const SUMMARY_SYSTEM_PROMPT: &str = r#"You are a context summarization agent. Produce only a structured handoff summary for another coding agent that will resume the work. Do not continue the conversation or answer questions from it. Use the same primary language as the conversation. Preserve exact paths, symbols, commands, error strings, URLs, and identifiers when known."#;
 
 const SUMMARY_TEMPLATE: &str = r#"Output exactly this Markdown structure and keep every section:
 
 ## Objective
-- [what the user is trying to accomplish]
+- [one or two brief sentences describing the user's currently unresolved objective; if every request was answered, use (none — waiting for the user's next instruction)]
 
 ## Important Details
 - [constraints, preferences, decisions and why, important facts, or (none)]
@@ -39,7 +43,7 @@ const SUMMARY_TEMPLATE: &str = r#"Output exactly this Markdown structure and kee
 - [blockers, failed commands, and unknowns, or (none)]
 
 ## Next Move
-1. [immediate concrete action, or (none)]
+1. [immediate concrete action for an unresolved objective; otherwise wait for the user's next instruction]
 
 ## Relevant Files
 - [exact path and why it matters, or (none)]
@@ -47,6 +51,11 @@ const SUMMARY_TEMPLATE: &str = r#"Output exactly this Markdown structure and kee
 Rules:
 - Use terse bullets, not prose paragraphs.
 - Carry forward every still-relevant user directive and constraint.
+- Preserve exact paths, symbols, commands, error strings, URLs, and identifiers when known.
+- Put requests and questions that were already answered under Completed, not Objective or Active.
+- Do not treat the most recent user message as unresolved merely because it is recent.
+- Move resolved blockers out of Blocked, and update Objective and Next Move to match the current work state.
+- Omit platform-internal explanations unless they constrain what the next agent can do.
 - Do not mention compaction or the summary process."#;
 
 #[derive(Clone, Copy)]
@@ -187,8 +196,8 @@ fn plan(
     // A user-selected manual compaction deliberately bypasses the automatic
     // threshold: `/压缩` is an explicit request to compact history, not a
     // suggestion to wait until the next context-limit guard. It still needs a
-    // real turn/tool boundary below, so a tiny one-message conversation is
-    // never rewritten into an invalid checkpoint.
+    // real journal boundary below; unlike automatic compaction, it may cover
+    // the entire committed conversation and retain only the new summary.
     let threshold_gated = matches!(
         trigger,
         CompactionTrigger::Automatic | CompactionTrigger::ModelContextDownshift
@@ -205,13 +214,23 @@ fn plan(
         .iter()
         .map(projected_token_cost)
         .collect::<Vec<_>>();
+    let compact_all_when_every_turn_fits = trigger == CompactionTrigger::Manual;
+    let keep_recent_tokens = if compact_all_when_every_turn_fits {
+        (manager.keep_recent_tokens.max(1) as u64).min(MANUAL_RECENT_TAIL_MAX_TOKENS)
+    } else {
+        manager.keep_recent_tokens.max(1) as u64
+    };
     let cut = turn_aware_cut(
         &prompt.messages,
         &costs,
-        manager.keep_recent_tokens.max(1) as u64,
+        keep_recent_tokens,
+        compact_all_when_every_turn_fits,
     )
     .ok_or(ContextError::NoValidBoundary)?;
-    if cut == 0 || cut >= prompt.messages.len() {
+    if cut == 0
+        || cut > prompt.messages.len()
+        || (cut == prompt.messages.len() && !compact_all_when_every_turn_fits)
+    {
         return Err(ContextError::NoValidBoundary);
     }
 
@@ -262,6 +281,7 @@ fn turn_aware_cut(
     messages: &[ProjectedMessage],
     costs: &[u64],
     keep_recent_tokens: u64,
+    compact_all_when_every_turn_fits: bool,
 ) -> Option<usize> {
     let user_starts = messages
         .iter()
@@ -272,6 +292,12 @@ fn turn_aware_cut(
         })
         .collect::<Vec<_>>();
     if user_starts.is_empty() {
+        if compact_all_when_every_turn_fits
+            && !messages.is_empty()
+            && costs.iter().copied().sum::<u64>() <= keep_recent_tokens
+        {
+            return Some(messages.len());
+        }
         return fallback_cut(messages, costs, keep_recent_tokens);
     }
 
@@ -291,6 +317,15 @@ fn turn_aware_cut(
     }
 
     match retained_start {
+        // Manual compaction of a short conversation should summarize the
+        // complete committed history. Retaining every turn verbatim would
+        // provide no useful compaction; the old fallback forced cut=1 and
+        // produced misleading summaries of only the first message.
+        Some(start)
+            if compact_all_when_every_turn_fits && user_starts.first().copied() == Some(start) =>
+        {
+            Some(messages.len())
+        }
         // A single provider-reported oversized turn may look small to the
         // local estimator (for example, hidden attachment/tool overhead).
         // Preserve progress by finding an atomic boundary inside that turn.
@@ -474,7 +509,7 @@ fn summary_prompt(
 ) -> String {
     let prior = previous_summary.map(|summary| {
         format!(
-            "The <prior-summary> contains everything before this conversation chunk. The new summary completely replaces it, so carry forward every still-relevant objective, constraint, decision, workstream, blocker, and next step. The newer conversation wins conflicts.\n\n<prior-summary>\n{summary}\n</prior-summary>\n\n"
+            "The <prior-summary> contains everything before this conversation chunk. The new summary completely replaces it, so anything omitted is lost. Carry forward every still-relevant objective, constraint, user directive, decision, workstream, blocker, and next step. The newer conversation wins conflicts. Move completed work from Active to Completed, remove resolved blockers, and update Objective and Next Move to reflect the current work state.\n\n<prior-summary>\n{summary}\n</prior-summary>\n\n"
         )
     }).unwrap_or_default();
     let instructions = instructions
@@ -1026,6 +1061,20 @@ mod tests {
     }
 
     #[test]
+    fn summary_prompt_distinguishes_completed_requests_from_active_objectives() {
+        let prompt = summary_prompt(
+            None,
+            "[User]: explain the result\n[Assistant]: explained",
+            None,
+        );
+
+        assert!(prompt.contains("currently unresolved objective"));
+        assert!(prompt.contains("already answered under Completed"));
+        assert!(prompt.contains("merely because it is recent"));
+        assert!(prompt.contains("resolved blockers"));
+    }
+
+    #[test]
     fn summary_serialization_truncates_tool_output_without_mutating_message() {
         let content = "x".repeat(3_000);
         let message = AgentMessage {
@@ -1261,6 +1310,88 @@ mod tests {
         assert_eq!(checkpoint.trigger, CompactionTrigger::Manual);
         assert_eq!(checkpoint.phase, Some(CompactionPhase::Standalone));
         assert_eq!(provider.requests.lock().len(), 1);
+    }
+
+    #[test]
+    fn manual_cut_summarizes_all_when_every_turn_fits() {
+        let messages = vec![
+            projected("user", "hello", "e1"),
+            projected("assistant", "hi", "e2"),
+            projected("user", "write a poem", "e3"),
+            projected("assistant", "poem", "e4"),
+        ];
+        let costs = vec![1, 1, 1, 1];
+
+        assert_eq!(turn_aware_cut(&messages, &costs, 10, true), Some(4));
+        assert_eq!(turn_aware_cut(&messages, &costs, 10, false), Some(1));
+    }
+
+    #[test]
+    fn manual_cut_retains_complete_recent_turn_when_history_exceeds_budget() {
+        let messages = vec![
+            projected("user", "old request", "e1"),
+            projected("assistant", "large old result", "e2"),
+            projected("user", "recent request", "e3"),
+            projected("assistant", "recent result", "e4"),
+        ];
+        let costs = vec![10_000, 10_000, 500, 500];
+
+        assert_eq!(turn_aware_cut(&messages, &costs, 15_000, true), Some(2));
+    }
+
+    #[tokio::test]
+    async fn manual_compaction_of_short_history_replaces_every_turn_with_summary() {
+        let provider = ScriptedProvider::new([ScriptedReply::Summary(VALID_SUMMARY)]);
+        let mut manager = test_manager();
+        manager.keep_recent_tokens = 200_000;
+        manager.context_window = 1_000_000;
+        let prompt = PromptContext {
+            messages: vec![
+                projected("user", "你好", "e1"),
+                projected("assistant", "你好，有什么可以帮你？", "e2"),
+                projected("user", "测试工具调用", "e3"),
+                projected("assistant", "工具调用正常", "e4"),
+                projected("user", "写一首长诗", "e5"),
+                projected("assistant", "这是完整长诗", "e6"),
+            ],
+            usage: ContextUsage {
+                input_tokens: Some(5_143),
+                estimated_input_tokens: 5_143,
+                context_window: 1_000_000,
+                ..Default::default()
+            },
+        };
+
+        let prepared = manager
+            .prepare_semantic_with_phase(
+                prompt,
+                CompactionTrigger::Manual,
+                CompactionPhase::Standalone,
+                None,
+                &provider,
+                &AtomicBool::new(false),
+            )
+            .await
+            .unwrap();
+        let ContextPreparation::Compacted { prompt, checkpoint } = prepared else {
+            panic!("expected full manual compaction")
+        };
+
+        assert_eq!(checkpoint.covered_from_entry_id.as_deref(), Some("e1"));
+        assert_eq!(checkpoint.cutoff_entry_id.as_deref(), Some("e6"));
+        assert_eq!(prompt.messages.len(), 1, "only the summary should remain");
+        let requests = provider.requests.lock();
+        let summary_input = requests[0].messages[0]
+            .content
+            .iter()
+            .find_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(summary_input.contains("你好，有什么可以帮你？"));
+        assert!(summary_input.contains("工具调用正常"));
+        assert!(summary_input.contains("这是完整长诗"));
     }
 
     #[tokio::test]

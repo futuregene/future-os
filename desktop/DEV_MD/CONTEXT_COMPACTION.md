@@ -268,7 +268,9 @@ provider 返回 context-length/body-size 错误时，强制进入相同 `Context
 特别保留 JSONL 兼容性、SQLite 边界和未完成测试。
 ```
 
-手动压缩使用与自动压缩相同的结构化摘要、tail selection、持久化和兼容路径。
+手动压缩使用与自动压缩相同的结构化摘要、turn/tool 安全边界、持久化和兼容路径，但使用有界的 recent-tail 预算：保留配置中的更小值，同时将上限限制为 15K token，避免超大 context window 把显式压缩退化成近似 no-op。
+
+如果全部真实 turn 都能放入该预算，手动压缩不应强制制造第一条消息后的 cutoff。此时整个已提交历史（包括上一个 checkpoint summary 与其后的完整 tail）都进入新摘要，`cutoff_entry_id` 指向最新可持久化消息，压缩后的 prompt 只保留新摘要。只有历史超过 recent-tail 预算时，才保留最近的完整原文 tail。
 
 Desktop 在已有 Agent session 的对话输入框 `/` 菜单顶部提供「压缩 / Compact」上下文工具。选择后直接调用 standalone `compact` RPC，不生成 `/compact` 用户消息、普通 Agent 回复或新的 Run；摘要请求是该操作唯一的 LLM 通信。`Manual` 明确跳过自动 context-window 阈值，但仍必须找到有效 turn/tool 边界。成功 checkpoint 以 `trigger: "manual"` 追加到 JSONL，Desktop/Mobile 以“你手动压缩了此对话的上下文”分割线显示该用户选择；失败也保留 manual 标识。菜单同时命中上下文工具与 Skill 时工具在上、Skill 在下，并只在混合结果的 Skill 前显示「技能 / Skills」分隔文案；单一类别结果不显示分隔文案。中英文名称和描述都参与搜索。
 
@@ -294,7 +296,9 @@ current_prompt_tokens > new_context_window - new_reserve_tokens
 
 一个 retained turn 从真实 user message 开始，到下一条真实 user message 之前结束。内部 checkpoint summary、UI-only entry 和 run marker 不应被误判为新 user turn。
 
-选择过程从最新 turn 向前累计，直到达到 `keep_recent_tokens`。优先保留完整 turn；只有单个 turn 本身超过预算时，才允许在 turn 内寻找安全边界。
+选择过程从最新 turn 向前累计，直到达到 `keep_recent_tokens`。自动压缩使用模型窗口派生的预算；手动压缩将有效预算封顶为 15K token。优先保留完整 turn；只有单个 turn 本身超过预算时，才允许在 turn 内寻找安全边界。
+
+当手动压缩发现从第一个真实 turn 开始的全部历史都能放入 recent-tail 预算时，选择“全量摘要”而不是“全部原文保留”：cutoff 前移到最新完整 journal 边界，retained tail 为空。该规则保证短对话执行 `/压缩` 后确实缩成一份覆盖完整对话的摘要，而不是只摘要第一条消息。
 
 ### 8.2 Tool 原子边界
 
@@ -429,6 +433,8 @@ final_summary = summarize(summary_n + 最后 chunk)
 ```
 
 每个 chunk 必须优先落在完整 turn/tool 边界。每一步都使用同一结构化模板和“旧 summary 会被替代”的合并规则。只有 final summary 会写入 checkpoint；中间 summary 不写 journal、不发 UI marker。
+
+摘要中的 `Objective` 只描述仍未完成的用户目标。已经回答、验证或交付的最新请求必须归入 `Completed`；当所有请求均已完成时，`Objective` 写为“等待用户下一条指令”，不得仅因该请求是最后一条 user message 就把它错误地保留为进行中目标。
 
 ### 10.3 Context-limit retry
 
