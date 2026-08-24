@@ -1,4 +1,3 @@
-import type { ReviewBase } from "../../../integrations/storage/review";
 import type { GitReview, StoredArtifact, StoredRun, StoredThread, StoredToolCall } from "../../../integrations/storage/threadStore";
 import type { WorkspaceReviewCapabilities } from "../../../integrations/storage/types";
 import { matchesSettledRun } from "@future-os/thread-projection";
@@ -49,10 +48,10 @@ const EMPTY_RUNS_SNAPSHOT: RunsContextSnapshot = { scope: null, runs: [], toolsB
 
 /**
  * Owns the right-context data pipeline: fetches runs/tools/artifacts/git-review
- * for the active thread, drives the flash-free loading spinner, debounces the
- * custom review base, polls while the panel is open, and mirrors the fetched
- * objects into the markdown reference store. Kept out of `ContextPanel` so the
- * panel is a pure view over this data (GUI principle 5).
+ * for the active thread, drives the flash-free loading spinner, polls while the
+ * panel is open, and mirrors the fetched objects into the markdown reference
+ * store. Kept out of `ContextPanel` so the panel is a pure view over this data
+ * (GUI principle 5).
  */
 export function useContextData({
   activeThreadId,
@@ -70,11 +69,6 @@ export function useContextData({
   const [artifacts, setArtifacts] = useState<StoredArtifact[]>([]);
   const [gitReview, setGitReview] = useState<GitReview | null>(null);
   const [reviewCapabilities, setReviewCapabilities] = useState<WorkspaceReviewCapabilities | null>(null);
-  const [reviewBase, setReviewBase] = useState<ReviewBase>("head");
-  const [reviewCustomBase, setReviewCustomBase] = useState("");
-  // Debounced so typing a custom base doesn't refire the whole-tree diff (and
-  // listRuns / N×listToolCalls) on every keystroke — only the settled value does.
-  const [debouncedReviewCustomBase, setDebouncedReviewCustomBase] = useState("");
   const [loading, setLoading] = useState(false);
   const refreshGenerationRef = useRef(0);
 
@@ -121,8 +115,7 @@ export function useContextData({
         // C3: only run the whole-tree git diff while the Review tab is showing it.
         activeWorkspaceId && activeTab === "review"
           ? getGitReview({
-              base: reviewBase,
-              customBase: debouncedReviewCustomBase,
+              base: "head",
               workspaceId: activeWorkspaceId,
             })
           : Promise.resolve(null),
@@ -158,20 +151,15 @@ export function useContextData({
         setGitReview(null);
       }
     }
-  }, [activeTab, activeThreadId, activeThreadMode, activeWorkspaceId, activeWorkspacePath, workspaceScopeReady, reviewBase, debouncedReviewCustomBase]);
+  }, [activeTab, activeThreadId, activeThreadMode, activeWorkspaceId, activeWorkspacePath, workspaceScopeReady]);
 
   // Always invoke the latest refreshContext through this ref: it closes over
-  // activeThreadId/activeTab/reviewBase/… so its identity changes on nearly
+  // activeThreadId/activeTab/… so its identity changes on nearly
   // every navigation, but its callers have their own narrower triggers (the
   // poll's fixed interval, the effects' explicit dep keys). Depending on the
   // callback directly would refire all of them on every identity change.
   const refreshContextRef = useRef(refreshContext);
   refreshContextRef.current = refreshContext;
-
-  useEffect(() => {
-    const timer = setTimeout(setDebouncedReviewCustomBase, 300, reviewCustomBase);
-    return () => clearTimeout(timer);
-  }, [reviewCustomBase]);
 
   // Thread-changed bootstrap: fetch the new thread's context (and ensure git),
   // but avoid the loading flash on fast local switches. We keep showing the
@@ -226,11 +214,11 @@ export function useContextData({
     };
   }, [activeThreadId, activeWorkspaceId, activeWorkspacePath, workspaceScopeReady]);
 
-  // Parameter-driven refresh: re-fetch for the current tab / diff base without
-  // blanking already-loaded state.
+  // Parameter-driven refresh: re-fetch for the current tab without blanking
+  // already-loaded state.
   useEffect(() => {
     void refreshContextRef.current();
-  }, [activeTab, reviewBase, debouncedReviewCustomBase]);
+  }, [activeTab]);
 
   // Poll cadence follows activity: fast while a run is live (tool calls and
   // statuses accumulate in near real time), slow once everything settles —
@@ -253,10 +241,6 @@ export function useContextData({
     gitReview,
     reviewCapabilities,
     loading,
-    reviewBase,
-    setReviewBase,
-    reviewCustomBase,
-    setReviewCustomBase,
     refreshContext,
   };
 }

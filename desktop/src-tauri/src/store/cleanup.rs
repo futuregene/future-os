@@ -404,6 +404,12 @@ pub fn get_thread_cleanup_summary(
 /// and Agent-owned event history for transcript inspection and deep links.
 pub fn archive_finished_runs(thread_id: &str) -> Result<usize, crate::AppError> {
     let mut conn = connect()?;
+    if !super::runs::run_archive_supported(&conn)? {
+        return Err(
+            "Run archiving is unavailable because the local database upgrade did not complete."
+                .into(),
+        );
+    }
     let tx = conn.transaction()?;
     let now = now_millis();
     let archived_runs = tx.execute(

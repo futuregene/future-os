@@ -170,6 +170,10 @@ static HEARTBEAT_PUBLISH_EPISODE: FailureEpisode =
 
 /// Port for the embedded web client HTTP server.
 const WEB_PORT: u16 = 8022;
+/// The remote browser client is a single self-contained HTML file. Embed it so
+/// release bundles do not depend on the build machine's source checkout.
+const EMBEDDED_WEB_INDEX: &[u8] =
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../web/index.html"));
 /// A shutdown notification is advisory: never delay closing the desktop for a
 /// slow or unreachable broker, but give a healthy connection a short window to
 /// flush the packet before its tasks are torn down.
@@ -290,9 +294,10 @@ impl NatsHealth {
                 }
             }
             Event::Disconnected => {
-                if let Some(line) = self.event_episode.record("network", "NATS disconnected") {
-                    eprintln!("{line}");
-                }
+                // Routine and self-healing: async-nats reconnects automatically,
+                // so a drop is expected noise. A real outage still surfaces via
+                // the ClientError/ServerError events fired on each failed
+                // reconnect attempt, so don't open a failure episode here.
             }
             Event::ServerError(ServerError::AuthorizationViolation) => {
                 self.mark_authorization_rejected();
@@ -315,12 +320,10 @@ impl NatsHealth {
             }
             Event::Closed => {
                 self.reconnect_required.store(true, Ordering::Release);
-                if let Some(line) = self
-                    .event_episode
-                    .record("network", "NATS connection closed")
-                {
-                    eprintln!("{line}");
-                }
+                // Routine: the socket closed (credential-refresh swap, app
+                // shutdown, or a terminal reconnect failure already surfaced via
+                // ClientError/ServerError). A real outage still logs, so this
+                // stays silent instead of opening a failure episode.
             }
             Event::SlowConsumer(subscription) => {
                 if let Some(line) = self.event_episode.record("slow_consumer", subscription) {
@@ -1244,35 +1247,54 @@ pub fn stop() -> RemoteStatus {
 /// The mobile client treats this as immediate offline state; heartbeat expiry
 /// remains the fallback for crashes, forced power-off, and any lost packet.
 pub async fn stop_gracefully(reason: &str) -> RemoteStatus {
-    notify_mobile_disconnect(reason).await;
-    stop()
+    // Cancelling the bridge must not wait on a broker that is already down or
+    // reconnecting. Capture the best-effort presence notification while the
+    // generation still owns its client, then stop synchronously so it also
+    // cancels any automatic reconnect work immediately.
+    let notice = mobile_disconnect_notice(reason);
+    let status = stop();
+    if let Some((client, subject, payload)) = notice {
+        tauri::async_runtime::spawn(async move {
+            send_mobile_disconnect_notice(client, subject, payload).await;
+        });
+    }
+    status
 }
 
 pub async fn notify_mobile_disconnect(reason: &str) {
-    let Some((client, pair_id, bridge_instance_id)) = STATE.lock().unwrap().as_ref().map(|state| {
-        (
-            state.client.clone(),
-            state.pair_id.clone(),
-            state.bridge_instance_id.clone(),
-        )
-    }) else {
+    let Some((client, subject, payload)) = mobile_disconnect_notice(reason) else {
         return;
     };
-    let payload = serde_json::to_vec(&json!({
-        "online": false,
-        "disconnected": true,
-        "reason": reason,
-        "pairId": pair_id,
-        "bridgeInstanceId": bridge_instance_id,
-        "lastHeartbeatTs": unix_timestamp(),
-    }))
-    .unwrap_or_default();
+    send_mobile_disconnect_notice(client, subject, payload).await;
+}
+
+fn mobile_disconnect_notice(reason: &str) -> Option<(async_nats::Client, String, Vec<u8>)> {
+    STATE.lock().unwrap().as_ref().map(|state| {
+        let pair_id = state.pair_id.clone();
+        let bridge_instance_id = state.bridge_instance_id.clone();
+        (
+            state.client.clone(),
+            format!("p.{pair_id}.presence"),
+            serde_json::to_vec(&json!({
+                "online": false,
+                "disconnected": true,
+                "reason": reason,
+                "pairId": pair_id,
+                "bridgeInstanceId": bridge_instance_id,
+                "lastHeartbeatTs": unix_timestamp(),
+            }))
+            .unwrap_or_default(),
+        )
+    })
+}
+
+async fn send_mobile_disconnect_notice(
+    client: async_nats::Client,
+    subject: String,
+    payload: Vec<u8>,
+) {
     let send = async {
-        if client
-            .publish(format!("p.{pair_id}.presence"), payload.into())
-            .await
-            .is_ok()
-        {
+        if client.publish(subject, payload.into()).await.is_ok() {
             let _ = client.flush().await;
         }
     };
@@ -2401,8 +2423,16 @@ async fn handle_web_request(stream: &mut tokio::net::TcpStream, web_dir: &std::p
         return;
     }
     let file_path = web_dir.join(path);
-    match tokio::fs::read(&file_path).await {
-        Ok(content) => {
+    // In development, serve the on-disk file so browser refreshes pick up web
+    // client edits. Release bundles do not contain the source checkout, so
+    // fall back to the copy embedded at compile time for the entry page.
+    let content = match tokio::fs::read(&file_path).await {
+        Ok(content) => Some(content),
+        Err(_) if path == "index.html" => Some(EMBEDDED_WEB_INDEX.to_vec()),
+        Err(_) => None,
+    };
+    match content {
+        Some(content) => {
             let content_type = if path.ends_with(".html") {
                 "text/html; charset=utf-8"
             } else if path.ends_with(".js") {
@@ -2419,7 +2449,7 @@ async fn handle_web_request(stream: &mut tokio::net::TcpStream, web_dir: &std::p
             let _ = stream.write_all(header.as_bytes()).await;
             let _ = stream.write_all(&content).await;
         }
-        Err(_) => {
+        None => {
             let body = "Not Found";
             let resp = format!(
                 "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -2744,6 +2774,20 @@ mod runtime_tests {
         let _home = HomeGuard::new("remote-stop-empty");
         let stopped = stop();
         assert!(!matches!(stopped.phase, RemotePhase::Ready));
+    }
+
+    #[tokio::test]
+    async fn graceful_stop_clears_the_bridge_before_sending_presence() {
+        let _home = HomeGuard::new("remote-graceful-stop");
+        let nats = FakeNats::start().await;
+        install_state(fake_state(&nats, "pair_graceful_stop").await);
+        START_REQUESTED.store(true, Ordering::Release);
+
+        let stopped = stop_gracefully("user_disconnect").await;
+
+        assert!(matches!(stopped.phase, RemotePhase::Stopped));
+        assert!(STATE.lock().unwrap().is_none());
+        assert!(!START_REQUESTED.load(Ordering::Acquire));
     }
 
     #[tokio::test]
@@ -3891,6 +3935,13 @@ mod runtime_tests {
 
         let response = request(&dir, "GET /missing.txt HTTP/1.1\r\n\r\n").await;
         assert!(response.contains("404"), "{response}");
+
+        // Release bundles do not have the source checkout. The root page is
+        // embedded so it remains available when its on-disk directory is gone.
+        let missing_dir = std::env::temp_dir().join(unique("futureos-web-missing"));
+        let response = request(&missing_dir, "GET / HTTP/1.1\r\n\r\n").await;
+        assert!(response.contains("200 OK"), "{response}");
+        assert!(response.contains("Remote Control"), "{response}");
 
         let response = request(&dir, "GET /../secret HTTP/1.1\r\n\r\n").await;
         assert!(response.contains("403"), "{response}");

@@ -73,6 +73,36 @@ sql_record!(pub(super) RUN_COLUMNS, run_from_row -> RunRecord {
     started_at, ended_at, error_message, error_type, archived_at, created_at, updated_at,
 });
 
+/// Legacy projection used only when the optional archive migration could not
+/// be applied. Keep the result shape stable so normal run reads still work.
+pub(super) const RUN_COLUMNS_WITHOUT_ARCHIVE: &str = "id, thread_id, trigger_message_id, status, model_provider, model_id, started_at, ended_at, error_message, error_type, NULL AS archived_at, created_at, updated_at";
+
+pub(super) fn run_archive_supported(conn: &rusqlite::Connection) -> Result<bool, crate::AppError> {
+    column_exists(conn, "runs", "archived_at")
+}
+
+pub(super) fn run_columns(conn: &rusqlite::Connection) -> Result<&'static str, crate::AppError> {
+    Ok(if run_archive_supported(conn)? {
+        RUN_COLUMNS
+    } else {
+        RUN_COLUMNS_WITHOUT_ARCHIVE
+    })
+}
+
+pub(super) fn qualified_run_columns(
+    conn: &rusqlite::Connection,
+    alias: &str,
+) -> Result<String, crate::AppError> {
+    if run_archive_supported(conn)? {
+        return Ok(super::util::qualify_columns(alias, RUN_COLUMNS));
+    }
+    Ok(format!(
+        "{}, NULL AS archived_at, {}",
+        super::util::qualify_columns(alias, "id, thread_id, trigger_message_id, status, model_provider, model_id, started_at, ended_at, error_message, error_type"),
+        super::util::qualify_columns(alias, "created_at, updated_at"),
+    ))
+}
+
 // TOOL_CALL_COLUMNS & tool_call_from_row removed — table dropped; ToolCallRecord
 // is now reconstructed from run events (`project_tool_calls`).
 // TOOL_OUTPUT_COLUMNS & tool_output_from_row removed — table dropped
@@ -125,8 +155,9 @@ pub fn active_run_sessions() -> Result<Vec<String>, crate::AppError> {
 
 pub fn list_runs(thread_id: &str) -> Result<Vec<RunRecord>, crate::AppError> {
     let conn = connect()?;
+    let columns = run_columns(&conn)?;
     let mut stmt = conn.prepare(&format!(
-        "SELECT {RUN_COLUMNS}
+        "SELECT {columns}
              FROM runs
              WHERE thread_id = ?1
              ORDER BY created_at DESC"
@@ -146,9 +177,10 @@ pub fn find_run_by_trigger_message_id(
         return Ok(None);
     }
     let conn = connect()?;
+    let columns = run_columns(&conn)?;
     conn.query_row(
         &format!(
-            "SELECT {RUN_COLUMNS}
+            "SELECT {columns}
                  FROM runs
                  WHERE trigger_message_id = ?1
                  ORDER BY created_at DESC, id DESC
@@ -166,9 +198,10 @@ pub fn find_run_by_trigger_message_id(
 /// reconciliation without transferring the thread's entire run history.
 pub fn latest_run(thread_id: &str) -> Result<Option<RunRecord>, crate::AppError> {
     let conn = connect()?;
+    let columns = run_columns(&conn)?;
     conn.query_row(
         &format!(
-            "SELECT {RUN_COLUMNS}
+            "SELECT {columns}
                  FROM runs
                  WHERE thread_id = ?1
                  ORDER BY created_at DESC, id DESC

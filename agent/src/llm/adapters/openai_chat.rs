@@ -361,7 +361,11 @@ fn normalize_tool_delta(current: &str, incoming: &str) -> (String, bool) {
         if let Some(suffix) = incoming.strip_prefix(current) {
             return (suffix.to_string(), false);
         }
-        return (incoming.to_string(), true);
+        // A standard incremental fragment can itself start with `{` when the
+        // tool argument contains JSON text (for example write.content).  It is
+        // not a cumulative snapshot unless it extends the already accumulated
+        // prefix; replacing here would discard earlier fields such as `path`.
+        return (incoming.to_string(), false);
     }
     (incoming.to_string(), false)
 }
@@ -469,6 +473,73 @@ mod tests {
             normalize_tool_delta("{\"a\":", "{\"a\":1}"),
             ("1}".into(), false)
         );
+    }
+
+    #[test]
+    fn opening_brace_inside_json_string_remains_incremental() {
+        let current = r#"{"path":"/tmp/data.json","content":""#;
+        let incoming = r#"{\"metadata\":{\"version\":1}"#;
+
+        assert_eq!(
+            normalize_tool_delta(current, incoming),
+            (incoming.into(), false)
+        );
+    }
+
+    #[test]
+    fn decodes_json_content_fragment_without_losing_path() {
+        let adapter = OpenAiChatAdapter;
+        let mut state = adapter.new_stream_state();
+        let mut events = adapter
+            .decode_frame(
+                &frame(json!({
+                    "choices": [{"delta": {"tool_calls": [{
+                        "index": 0,
+                        "id": "call_write",
+                        "function": {
+                            "name": "write",
+                            "arguments": r#"{"path":"/tmp/data.json","content":""#,
+                        },
+                    }]}}],
+                })),
+                state.as_mut(),
+            )
+            .unwrap();
+        events.extend(
+            adapter
+                .decode_frame(
+                    &frame(json!({
+                        "choices": [{"delta": {"tool_calls": [{
+                            "index": 0,
+                            "function": {
+                                "arguments": r#"{\"metadata\":{\"version\":1}}"}"#,
+                            },
+                        }]}}],
+                    })),
+                    state.as_mut(),
+                )
+                .unwrap(),
+        );
+        events.extend(
+            adapter
+                .decode_frame(
+                    &frame(json!({
+                        "choices": [{"delta": {}, "finish_reason": "tool_calls"}],
+                    })),
+                    state.as_mut(),
+                )
+                .unwrap(),
+        );
+
+        let arguments = events
+            .iter()
+            .find_map(|event| match event {
+                ModelStreamEvent::ToolInputEnd { arguments, .. } => Some(arguments),
+                _ => None,
+            })
+            .expect("tool input should finish");
+        assert_eq!(arguments["path"], "/tmp/data.json");
+        assert_eq!(arguments["content"], r#"{"metadata":{"version":1}}"#);
     }
 
     #[test]
