@@ -90,6 +90,18 @@ export async function loadAgentModelOptions() {
   return normalizeAgentModelOptions(await invokeCommand<AgentModelOption[]>("list_agent_models"));
 }
 
+export interface CompactContextResult {
+  checkpointId?: string;
+  messagesRemoved?: number;
+  tokensBefore?: number;
+  tokensAfter?: number;
+}
+
+/** Run standalone semantic compaction for an existing conversation. */
+export function compactThreadContext(threadId: string) {
+  return invokeCommand<CompactContextResult>("compact_thread_context", { threadId });
+}
+
 /** Result of the post-login Future model sync (agent warms its cache + registry). */
 export interface SyncFutureModelsResult {
   synced: boolean;

@@ -270,6 +270,8 @@ provider 返回 context-length/body-size 错误时，强制进入相同 `Context
 
 手动压缩使用与自动压缩相同的结构化摘要、tail selection、持久化和兼容路径。
 
+Desktop 在已有 Agent session 的对话输入框 `/` 菜单顶部提供「压缩 / Compact」上下文工具。选择后直接调用 standalone `compact` RPC，不生成 `/compact` 用户消息，也不把它建模成 Skill。菜单同时命中上下文工具与 Skill 时工具在上、Skill 在下，并只在混合结果的 Skill 前显示「技能 / Skills」分隔文案；单一类别结果不显示分隔文案。中英文名称和描述都参与搜索。
+
 ### 7.4 ModelContextDownshift
 
 建议增加 trigger：

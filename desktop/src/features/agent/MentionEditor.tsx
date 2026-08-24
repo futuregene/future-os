@@ -1,11 +1,12 @@
 import type { ClipboardEvent as ReactClipboardEvent, KeyboardEvent as ReactKeyboardEvent, Ref } from "react";
 import type { WorkspaceFileResult } from "../../integrations/storage/threadStore";
-import { Blocks, FileText } from "lucide-react";
+import { Blocks, FileText, Minimize2 } from "lucide-react";
 import { useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { searchWorkspaceFiles } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { parseMentionSegments } from "./mentionMarkdown";
+import { buildSlashMenuGroups, hasMixedSlashResults } from "./slashMenu";
 
 /** A skill offered by the `/` menu; `name` is the English slash-command name. */
 export interface SkillMentionOption {
@@ -17,6 +18,24 @@ export interface SkillMentionOption {
   descriptionZh?: string | null;
 }
 
+/** A non-skill action offered above skills in the `/` menu. */
+export interface ContextToolOption {
+  id: string;
+  /** Localized display name and description. */
+  name: string;
+  description: string;
+  /** Hidden bilingual aliases used by search. */
+  searchText: string;
+}
+
+export type SlashMenuItem
+  = | { kind: "context-tool"; tool: ContextToolOption }
+    | { kind: "skill"; skill: SkillMentionOption };
+
+/**
+ * Filter and order `/` results. Context tools always precede skills. The UI
+ * only renders a Skills separator when both groups have results.
+ */
 export interface MentionEditorHandle {
   /** Serialize to markdown: text verbatim, each file pill → `[name](./path)`. */
   getContent: () => string;
@@ -41,6 +60,9 @@ interface MentionEditorProps {
   workspaceId?: string | null;
   /** Installed skills for the `/` menu; omit/empty to disable the menu. */
   skills?: SkillMentionOption[];
+  /** Common context actions shown above skills in the `/` menu. */
+  contextTools?: ContextToolOption[];
+  onContextToolSelect?: (toolId: string) => void;
   disabled?: boolean;
   placeholder: string;
   className?: string;
@@ -73,6 +95,8 @@ const PILL_ATTR = "data-mention";
 export function MentionEditor({
   workspaceId,
   skills,
+  contextTools = [],
+  onContextToolSelect,
   disabled,
   placeholder,
   className,
@@ -90,25 +114,22 @@ export function MentionEditor({
   const [results, setResults] = useState<WorkspaceFileResult[]>([]);
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState(0);
-  // `/` skill trigger: null → inactive; "" → bare `/` (full skill list).
+  // `/` trigger: null → inactive; "" → bare `/` (all tools and skills).
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
-  const [selectedSkill, setSelectedSkill] = useState(0);
+  const [selectedSlashItem, setSelectedSlashItem] = useState(0);
   const [empty, setEmpty] = useState(true);
 
-  // Skills matching the active `/` query (EN/ZH name + description substring).
-  const filteredSkills = useMemo(() => {
-    if (slashQuery === null || !skills || skills.length === 0)
-      return [];
-    const needle = slashQuery.toLowerCase();
-    return skills
-      .filter(skill =>
-        skill.name.toLowerCase().includes(needle)
-        || skill.description.toLowerCase().includes(needle)
-        || (skill.nameZh ?? "").toLowerCase().includes(needle)
-        || (skill.descriptionZh ?? "").toLowerCase().includes(needle))
-      .slice(0, 20);
-  }, [slashQuery, skills]);
-  const skillMenuOpen = slashQuery !== null && !!skills && skills.length > 0;
+  const slashGroups = useMemo(
+    () => slashQuery === null
+      ? { contextTools: [], skills: [] }
+      : buildSlashMenuGroups(slashQuery, contextTools, skills ?? []),
+    [contextTools, skills, slashQuery],
+  );
+  const slashItems = useMemo<SlashMenuItem[]>(() => [
+    ...slashGroups.contextTools.map(tool => ({ kind: "context-tool" as const, tool })),
+    ...slashGroups.skills.map(skill => ({ kind: "skill" as const, skill })),
+  ], [slashGroups]);
+  const slashMenuOpen = slashQuery !== null && (contextTools.length > 0 || (skills?.length ?? 0) > 0);
 
   // Live mirror of the skills prop so the imperative restore() can rebuild
   // skill pills from `/name` tokens without re-declaring the handle.
@@ -182,9 +203,9 @@ export function MentionEditor({
     setSlashQuery(slash ? slash.query : null);
   }
 
-  // Reset the highlighted skill whenever the `/` query changes.
+  // Reset the highlighted slash item whenever the `/` query changes.
   useEffect(() => {
-    setSelectedSkill(0);
+    setSelectedSlashItem(0);
   }, [slashQuery]);
 
   // Debounced workspace-file search driven by the active-mention query.
@@ -314,6 +335,34 @@ export function MentionEditor({
     placePill(range, buildSkillPill(skill.name));
   }
 
+  /** Remove the typed `/query` and immediately run a context action. */
+  function runContextTool(tool: ContextToolOption) {
+    const editor = editorRef.current;
+    const context = slashContext(editor);
+    if (!editor || !context)
+      return;
+    const range = document.createRange();
+    range.setStart(context.textNode, context.slashOffset);
+    range.setEnd(context.textNode, context.caretOffset);
+    range.deleteContents();
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    closeMenu();
+    editor.focus();
+    syncEmpty();
+    onChange?.();
+    onContextToolSelect?.(tool.id);
+  }
+
+  function selectSlashItem(item: SlashMenuItem) {
+    if (item.kind === "context-tool")
+      runContextTool(item.tool);
+    else
+      insertSkill(item.skill);
+  }
+
   function insertMention(file: { path: string; name: string }) {
     const editor = editorRef.current;
     if (!editor)
@@ -396,26 +445,26 @@ export function MentionEditor({
         return;
       }
     }
-    if (skillMenuOpen && filteredSkills.length > 0) {
+    if (slashMenuOpen && slashItems.length > 0) {
       if (event.key === "ArrowDown") {
         event.preventDefault();
-        setSelectedSkill(index => (index + 1) % filteredSkills.length);
+        setSelectedSlashItem(index => (index + 1) % slashItems.length);
         return;
       }
       if (event.key === "ArrowUp") {
         event.preventDefault();
-        setSelectedSkill(index => (index - 1 + filteredSkills.length) % filteredSkills.length);
+        setSelectedSlashItem(index => (index - 1 + slashItems.length) % slashItems.length);
         return;
       }
       if (event.key === "Enter" || event.key === "Tab") {
         event.preventDefault();
-        const skill = filteredSkills[selectedSkill];
-        if (skill)
-          insertSkill(skill);
+        const item = slashItems[selectedSlashItem];
+        if (item)
+          selectSlashItem(item);
         return;
       }
     }
-    if (event.key === "Escape" && (open || skillMenuOpen)) {
+    if (event.key === "Escape" && (open || slashMenuOpen)) {
       event.preventDefault();
       closeMenu();
       return;
@@ -475,13 +524,14 @@ export function MentionEditor({
             />
           )
         : null}
-      {skillMenuOpen
+      {slashMenuOpen
         ? (
-            <SkillMenu
-              skills={filteredSkills}
-              selectedIndex={selectedSkill}
-              emptyLabel={t("composer.noSkillMatches")}
-              onSelect={insertSkill}
+            <SlashMenu
+              groups={slashGroups}
+              selectedIndex={selectedSlashItem}
+              emptyLabel={t("composer.noSlashMatches")}
+              skillsLabel={t("composer.skillsSection")}
+              onSelect={selectSlashItem}
             />
           )
         : null}
@@ -581,16 +631,18 @@ function FileMenu({
   );
 }
 
-function SkillMenu({
+function SlashMenu({
   emptyLabel,
+  groups,
   onSelect,
   selectedIndex,
-  skills,
+  skillsLabel,
 }: {
   emptyLabel: string;
-  onSelect: (skill: SkillMentionOption) => void;
+  groups: { contextTools: ContextToolOption[]; skills: SkillMentionOption[] };
+  onSelect: (item: SlashMenuItem) => void;
   selectedIndex: number;
-  skills: SkillMentionOption[];
+  skillsLabel: string;
 }) {
   // Keep the keyboard-highlighted row visible while the list scrolls.
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -600,37 +652,47 @@ function SkillMenu({
       ?.scrollIntoView({ block: "nearest" });
   }, [selectedIndex]);
 
+  const items: SlashMenuItem[] = [
+    ...groups.contextTools.map(tool => ({ kind: "context-tool" as const, tool })),
+    ...groups.skills.map(skill => ({ kind: "skill" as const, skill })),
+  ];
+  const mixed = hasMixedSlashResults(groups);
   return (
     <div ref={listRef} className="absolute bottom-full left-2 z-30 mb-2 max-h-72 w-[min(30rem,calc(100%-1rem))] overflow-y-auto rounded-lg border border-line-soft bg-surface p-1 shadow-panel">
-      {skills.length === 0
+      {items.length === 0
         ? <div className="px-2 py-2 text-sm text-ink-muted">{emptyLabel}</div>
         : null}
-      {skills.map((skill, index) => (
-        <button
-          className={cn(
-            "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left transition-colors",
-            index === selectedIndex ? "bg-surface-subtle" : "hover:bg-surface-subtle",
-          )}
-          data-menu-index={index}
-          key={skill.name}
-          onMouseDown={(event) => {
-            // Keep the editor's selection/focus so insertion targets the caret.
-            event.preventDefault();
-            onSelect(skill);
-          }}
-          type="button"
-        >
-          <Blocks className="mt-0.5 size-4 shrink-0 text-ink-soft" />
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-medium text-ink">
-              /
-              {skill.name}
+      {items.map((item, index) => (
+        <div key={item.kind === "context-tool" ? `tool:${item.tool.id}` : `skill:${item.skill.name}`}>
+          {mixed && index === groups.contextTools.length
+            ? <div className="px-2 pb-1 pt-2 text-xs font-medium text-ink-muted">{skillsLabel}</div>
+            : null}
+          <button
+            className={cn(
+              "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left transition-colors",
+              index === selectedIndex ? "bg-surface-subtle" : "hover:bg-surface-subtle",
+            )}
+            data-menu-index={index}
+            onMouseDown={(event) => {
+              // Keep the editor's selection/focus so insertion targets the caret.
+              event.preventDefault();
+              onSelect(item);
+            }}
+            type="button"
+          >
+            {item.kind === "context-tool"
+              ? <Minimize2 className="mt-0.5 size-4 shrink-0 text-ink-soft" />
+              : <Blocks className="mt-0.5 size-4 shrink-0 text-ink-soft" />}
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-medium text-ink">
+                {item.kind === "context-tool" ? item.tool.name : `/${item.skill.name}`}
+              </span>
+              {(item.kind === "context-tool" ? item.tool.description : item.skill.description)
+                ? <span className="block truncate text-xs text-ink-muted">{item.kind === "context-tool" ? item.tool.description : item.skill.description}</span>
+                : null}
             </span>
-            {skill.description
-              ? <span className="block truncate text-xs text-ink-muted">{skill.description}</span>
-              : null}
-          </span>
-        </button>
+          </button>
+        </div>
       ))}
     </div>
   );
