@@ -54,9 +54,7 @@ use self::identity::identity_gate;
 use self::monitor::{monitor_outcome, MonitorOutcome};
 use self::oscillation::oscillation_replan_reason;
 use self::primary_action::agent_channel;
-use self::stall::{
-    is_monitor_stalled, outcome_floor_breach,
-};
+use self::stall::{is_monitor_stalled, outcome_floor_breach};
 use crate::quota::error_codes::DecisionReasonCode;
 
 pub use self::arbitration::{

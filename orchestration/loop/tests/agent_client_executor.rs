@@ -86,7 +86,10 @@ fn session_and_command_happy_paths() {
         assert_eq!(totals.tokens_in, 0);
 
         // session_alive: a live session probes true; a missing one probes false.
-        assert!(client.session_alive(&session).await, "live session must probe alive");
+        assert!(
+            client.session_alive(&session).await,
+            "live session must probe alive"
+        );
         assert!(
             !client.session_alive("missing-session").await,
             "a missing session must probe dead"
