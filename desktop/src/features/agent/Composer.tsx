@@ -323,7 +323,7 @@ function ComposerImpl({
     clearComposer();
   }
 
-  const addAttachmentPaths = useCallback(async (paths: string[]) => {
+  const addAttachmentPaths = useCallback(async (paths: string[], temporary = false) => {
     const classified = await Promise.all(
       paths.map(async path => ({ path, result: await classifyAttachment(path) })),
     );
@@ -353,7 +353,7 @@ function ComposerImpl({
           continue;
         }
       }
-      next.push({ kind: result.kind, name: fileNameFromPath(path), path });
+      next.push({ kind: result.kind, name: fileNameFromPath(path), path, ...(temporary ? { temporary: true } : {}) });
     }
     attachmentsRef.current = next;
     setAttachments(next);
@@ -389,7 +389,7 @@ function ComposerImpl({
       }
     }
     if (saved.length > 0) {
-      await addAttachmentPaths(saved);
+      await addAttachmentPaths(saved, true);
       const accepted = new Set(attachmentsRef.current.map(attachment => attachment.path));
       // Files written for this paste but rejected by classification/model limits
       // are no longer referenced by the draft and can be reclaimed immediately.
@@ -416,10 +416,11 @@ function ComposerImpl({
   }
 
   function removeAttachment(path: string) {
+    const removed = attachmentsRef.current.find(attachment => attachment.path === path);
     const next = attachmentsRef.current.filter(attachment => attachment.path !== path);
     attachmentsRef.current = next;
     setAttachments(next);
-    if (path.includes("futureos-attachments"))
+    if (removed?.temporary)
       void deleteTempAttachment(path).catch(() => {});
   }
 

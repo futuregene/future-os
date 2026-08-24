@@ -80,11 +80,14 @@ pub(crate) fn handle_prompt(
                     | crate::runtime::RunQueueError::GlobalQueueFull { limit } => {
                         ("queue_full", serde_json::json!({"limit": limit}))
                     }
-                    crate::runtime::RunQueueError::RequestTooLarge { actual, limit }
-                    | crate::runtime::RunQueueError::QueueBytesExceeded { actual, limit }
+                    crate::runtime::RunQueueError::RequestTooLarge { actual, limit } => (
+                        "request_too_large",
+                        serde_json::json!({"actual_bytes": actual, "limit_bytes": limit}),
+                    ),
+                    crate::runtime::RunQueueError::QueueBytesExceeded { actual, limit }
                     | crate::runtime::RunQueueError::GlobalQueueBytesExceeded { actual, limit } => {
                         (
-                            "attachment_too_large",
+                            "queue_memory_limit",
                             serde_json::json!({"actual_bytes": actual, "limit_bytes": limit}),
                         )
                     }
@@ -96,9 +99,6 @@ pub(crate) fn handle_prompt(
                         "persistence_unavailable",
                         serde_json::json!({"reason": reason}),
                     ),
-                    crate::runtime::RunQueueError::AttachmentUnavailable { path, .. } => {
-                        ("attachment_unavailable", serde_json::json!({"path": path}))
-                    }
                     crate::runtime::RunQueueError::InvalidRunId(run_id) => {
                         ("invalid_run_id", serde_json::json!({"run_id": run_id}))
                     }

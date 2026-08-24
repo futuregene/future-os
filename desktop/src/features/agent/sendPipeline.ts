@@ -15,7 +15,7 @@ import {
 } from "./agentMessageFormatters";
 import { buildReferenceContext } from "./buildReferencePrompt";
 import { attachmentInputs } from "./messageContent";
-import { persistImageAttachments } from "./threadAttachments";
+import { finalizeTemporaryAttachmentSources, persistImageAttachments } from "./threadAttachments";
 import {
   clientId,
   deriveRenderFields,
@@ -56,7 +56,8 @@ export async function runSendPipeline(
   // Validate and prepare images before adding optimistic messages. A failed
   // decode rejects the send, leaves the composer draft intact, and surfaces a
   // concrete error instead of showing an attachment the model never received.
-  const importedAttachments = await persistImageAttachments(attachments, thread.id);
+  const preparedAttachments = await persistImageAttachments(attachments, thread.id);
+  const importedAttachments = preparedAttachments.attachments;
 
   let stopStreamUpdates: (() => void) | null = null;
   const clearStreamUpdates = () => {
@@ -144,13 +145,14 @@ export async function runSendPipeline(
       sessionId: agentSessionId,
       runId: run.id,
       modelId,
-      // All attachments (images + files) travel by original path. The agent
+      // All attachments (images + files) travel by their current local path. The agent
       // decides per attachment: an image goes inline (image_url) when the model
       // accepts image input, otherwise — and for every non-image file — the path
       // is surfaced for the agent's own tools to read.
       attachments: attachmentInputs(importedAttachments),
       thinkingLevel,
     });
+    await finalizeTemporaryAttachmentSources(preparedAttachments.temporarySources);
     clearStreamUpdates();
 
     if (reply.sessionRecreated) {
@@ -164,9 +166,9 @@ export async function runSendPipeline(
       });
     }
 
-    // No cleanup here: non-image files were never copied, and pasted/downloaded
-    // images already had their temp original moved into the thread's origin dir
-    // by persistImageAttachments (which deletes the temp copy).
+    // Non-image files remain live references. Pasted/downloaded images now use
+    // their promoted thread-owned path, and their temp source was deleted only
+    // after the successful agent response above.
 
     const currentRun = await loadCurrentRun(run.id);
     // A terminal row while this send still awaits the agent means someone else

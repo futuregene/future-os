@@ -1,5 +1,4 @@
 use anyhow::Result;
-use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -17,14 +16,8 @@ struct ScheduledPromptPayload {
     #[serde(default)]
     model_context: String,
     images: Vec<crate::types::ImageContent>,
-    attachments: Vec<QueuedAttachmentSnapshot>,
+    attachments: Vec<crate::types::Attachment>,
     settings: ScheduledSettingsSnapshot,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct QueuedAttachmentSnapshot {
-    attachment: crate::types::Attachment,
-    bytes_base64: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,22 +107,17 @@ impl ServerSession {
     }
 
     #[cfg(test)]
-    pub(super) fn scheduled_attachment_bytes(&self, run_id: &str) -> Option<Vec<Vec<u8>>> {
+    pub(super) fn scheduled_attachments(
+        &self,
+        run_id: &str,
+    ) -> Option<Vec<crate::types::Attachment>> {
         let request = self
             .scheduler
             .queued()
             .into_iter()
             .find(|run| run.run_id == run_id)?;
         let payload: ScheduledPromptPayload = serde_json::from_value(request.payload).ok()?;
-        payload
-            .attachments
-            .iter()
-            .map(|snapshot| {
-                base64::engine::general_purpose::STANDARD
-                    .decode(&snapshot.bytes_base64)
-                    .ok()
-            })
-            .collect()
+        Some(payload.attachments)
     }
 
     pub fn enqueue_prompt(
@@ -209,21 +197,6 @@ impl ServerSession {
         {
             return Err(crate::runtime::RunQueueError::Busy.into());
         }
-        let attachment_snapshots = attachments
-            .iter()
-            .map(|attachment| {
-                let bytes = std::fs::read(&attachment.path).map_err(|error| {
-                    crate::runtime::RunQueueError::AttachmentUnavailable {
-                        path: attachment.path.clone(),
-                        reason: error.to_string(),
-                    }
-                })?;
-                Ok(QueuedAttachmentSnapshot {
-                    attachment: attachment.clone(),
-                    bytes_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
-                })
-            })
-            .collect::<std::result::Result<Vec<_>, crate::runtime::RunQueueError>>()?;
         let settings = ScheduledSettingsSnapshot {
             settings_schema_version: 1,
             model: self.model.clone(),
@@ -249,7 +222,11 @@ impl ServerSession {
             message: prompt.message.to_string(),
             model_context: prompt.model_context.to_string(),
             images: images.to_vec(),
-            attachments: attachment_snapshots,
+            // Attachments are live filesystem references. Configuration is
+            // frozen at admission, but file contents are deliberately resolved
+            // only when the run starts (images) or when a tool reads them
+            // (ordinary files), so queued work observes the latest contents.
+            attachments: attachments.to_vec(),
             settings: settings.clone(),
         })?;
         let (ack, superseded, superseded_active) = if busy_policy
@@ -344,12 +321,10 @@ impl ServerSession {
                 }
             }
         }
-        let materialized_attachments =
-            self.materialize_queued_attachments(&request.run_id, &payload.attachments)?;
         let lease = self.prompt_internal(
             PromptText::new(&payload.message, &payload.model_context),
             &payload.images,
-            &materialized_attachments,
+            &payload.attachments,
             Some(&request.run_id),
             Some(&request.client_request_id),
             Some(&request),
@@ -362,46 +337,6 @@ impl ServerSession {
             run_sequence: lease.run_sequence,
             queue_position: None,
         })
-    }
-
-    fn materialize_queued_attachments(
-        &self,
-        run_id: &str,
-        snapshots: &[QueuedAttachmentSnapshot],
-    ) -> Result<Vec<crate::types::Attachment>> {
-        if snapshots.is_empty() {
-            return Ok(Vec::new());
-        }
-        let directory = self
-            .session_manager
-            .run_data_path(&self.session_id)
-            .join("attachments")
-            .join(run_id);
-        std::fs::create_dir_all(&directory)?;
-        snapshots
-            .iter()
-            .enumerate()
-            .map(|(index, snapshot)| {
-                let bytes =
-                    base64::engine::general_purpose::STANDARD.decode(&snapshot.bytes_base64)?;
-                let extension = std::path::Path::new(&snapshot.attachment.name)
-                    .extension()
-                    .and_then(|value| value.to_str())
-                    .filter(|value| {
-                        !value.is_empty()
-                            && value.len() <= 16
-                            && value.bytes().all(|byte| byte.is_ascii_alphanumeric())
-                    });
-                let file_name = extension
-                    .map(|extension| format!("{index:04}.{extension}"))
-                    .unwrap_or_else(|| format!("{index:04}.bin"));
-                let path = directory.join(file_name);
-                std::fs::write(&path, bytes)?;
-                let mut attachment = snapshot.attachment.clone();
-                attachment.path = path.to_string_lossy().to_string();
-                Ok(attachment)
-            })
-            .collect()
     }
 
     pub fn prompt(

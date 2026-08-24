@@ -441,8 +441,15 @@ fn prompt_duplicate_run_id_maps_to_scheduler_error() {
 }
 
 #[test]
-fn prompt_reports_attachment_unavailable() {
+fn prompt_accepts_attachment_as_a_live_path_reference() {
     let state = make_app_state();
+    state
+        .get_session("default")
+        .unwrap()
+        .read()
+        .runtime
+        .begin(Some("run-active"), Some("request-active"))
+        .unwrap();
     let mut cmd = make_cmd("prompt");
     cmd.message = "with attachment".to_string();
     cmd.busy_policy = "enqueue_if_busy".to_string();
@@ -452,12 +459,7 @@ fn prompt_reports_attachment_unavailable() {
         ..Default::default()
     }];
     let resp = parse_response(&handle_command_internal(&state, cmd));
-    assert_eq!(resp["success"], false);
-    assert_eq!(resp["error_code"], "attachment_unavailable");
-    assert_eq!(
-        resp["error_data"]["path"],
-        "/definitely/not/a/real/file.pdf"
-    );
+    assert_eq!(resp["success"], true, "response: {resp}");
 }
 
 #[test]
@@ -515,7 +517,7 @@ fn prompt_reports_request_too_large() {
     cmd.busy_policy = "enqueue_if_busy".to_string();
     let resp = parse_response(&handle_command_internal(&state, cmd));
     assert_eq!(resp["success"], false);
-    assert_eq!(resp["error_code"], "attachment_too_large");
+    assert_eq!(resp["error_code"], "request_too_large");
 }
 
 #[test]
@@ -543,7 +545,7 @@ fn prompt_reports_global_queue_bytes_exceeded() {
     cmd.busy_policy = "enqueue_if_busy".to_string();
     let resp = parse_response(&handle_command_internal(&state, cmd));
     assert_eq!(resp["success"], false);
-    assert_eq!(resp["error_code"], "attachment_too_large");
+    assert_eq!(resp["error_code"], "queue_memory_limit");
 }
 
 #[test]
@@ -662,7 +664,7 @@ fn prompt_reports_session_queue_bytes_exceeded() {
     cmd.busy_policy = "enqueue_if_busy".to_string();
     let resp = parse_response(&handle_command_internal(&state, cmd));
     assert_eq!(resp["success"], false);
-    assert_eq!(resp["error_code"], "attachment_too_large");
+    assert_eq!(resp["error_code"], "queue_memory_limit");
 }
 
 #[test]
