@@ -1,5 +1,6 @@
 //! Thread lifecycle Tauri commands plus thread-scoped cleanup queries.
 
+use crate::agent_bridge::RpcResponseExt;
 use crate::{agent_bridge, store};
 
 #[tauri::command]
@@ -311,6 +312,37 @@ pub async fn get_thread_agent_state(
         }
     }
     Ok(value)
+}
+
+/// Manually compact the current Agent session without creating a user message.
+#[tauri::command]
+pub async fn compact_thread_context(
+    thread_id: String,
+) -> Result<serde_json::Value, crate::AppError> {
+    let thread = store::get_thread(&thread_id)?.ok_or_else(|| "Thread not found.".to_string())?;
+    let session_id = thread
+        .agent_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| "This conversation has no context to compact.".to_string())?;
+    let mut client = agent_bridge::connect_agent()
+        .await
+        .map_err(|error| format!("Future Agent unreachable: {error}"))?;
+    let response = client
+        .execute_command(agent_bridge::compact_command(
+            session_id.to_string(),
+            String::new(),
+        ))
+        .await
+        .map_err(|error| format!("compact RPC failed: {error}"))?
+        .into_inner()
+        .ok_or_rpc_error("compact returned an error")?;
+    if response.data.is_empty() {
+        return Ok(serde_json::json!({}));
+    }
+    serde_json::from_str(&response.data)
+        .map_err(|error| format!("compact response parse error: {error}").into())
 }
 
 /// Fetch session entries from the agent (user, assistant, tool messages).
@@ -633,6 +665,28 @@ mod tests {
     async fn get_thread_agent_state_errors_for_unknown_thread() {
         let _home = init("cmd_agent_state_ghost");
         assert!(get_thread_agent_state("ghost".into()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn compact_thread_context_targets_the_thread_session() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_compact_context");
+        let thread = make_thread(&_home, Some("sess_compact"));
+        let agent = crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript::default());
+
+        compact_thread_context(thread.id).await.expect("compact");
+
+        assert!(agent.served("compact", "sess_compact"));
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn compact_thread_context_requires_an_existing_session() {
+        let _home = init("cmd_compact_context_empty");
+        let thread = make_thread(&_home, None);
+        let error = compact_thread_context(thread.id).await.unwrap_err();
+        assert!(error.to_string().contains("no context to compact"));
     }
 
     #[tokio::test]

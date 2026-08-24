@@ -359,8 +359,21 @@ impl ScriptedProvider {
 impl LLMProvider for ScriptedProvider {
     async fn stream_model(
         &self,
-        _request: ModelRequest,
+        request: ModelRequest,
     ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
+        if request
+            .system_prompt
+            .contains("context summarization agent")
+        {
+            let (tx, rx) = mpsc::channel(2);
+            tx.send(text_event(
+                "## Objective\n- Continue the test task.\n\n## Important Details\n- Preserve history.\n\n## Work State\n### Completed\n- Initial tool turn completed.\n\n### Active\n- Continue the run.\n\n### Blocked\n- (none)\n\n## Next Move\n1. Finish the response.\n\n## Relevant Files\n- x: test input",
+            ))
+            .await
+            .unwrap();
+            tx.send(finish_event()).await.unwrap();
+            return Ok(ReceiverStream::new(rx));
+        }
         let script = self
             .scripts
             .lock()
@@ -755,7 +768,7 @@ async fn enqueue_prompt_fails_while_loop_is_locked() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn prompt_auto_compaction_compacts_and_rewrites_history() {
+async fn prompt_auto_compaction_appends_checkpoint_and_retains_history() {
     // glm-4.5v has a 64k context window in the builtin catalog: a 50k-token
     // first turn crosses the 90% threshold and forces compaction before turn 2.
     let big_text = "lorem ipsum dolor sit amet ".repeat(6000); // ~150 KB
@@ -783,12 +796,21 @@ async fn prompt_auto_compaction_compacts_and_rewrites_history() {
     session.prompt(&big_text, &[], &[], None, None).unwrap();
     wait_for_run_end(&session).await;
 
-    let loop_ = session.agent_loop.read().await;
+    let persisted = session.session_manager.load(&session.session_id).unwrap();
+    assert!(persisted
+        .entries
+        .iter()
+        .any(|entry| entry.entry_type == crate::session::ENTRY_TYPE_COMPACTION));
     assert!(
-        loop_
-            .compaction_occurred
-            .load(std::sync::atomic::Ordering::SeqCst),
-        "compaction fired before the second turn"
+        persisted
+            .entries
+            .iter()
+            .any(|entry| entry.entry_type == crate::session::ENTRY_TYPE_USER
+                && entry
+                    .content
+                    .as_ref()
+                    .is_some_and(|content| content.to_string().contains("lorem ipsum"))),
+        "covered history remains in the append-only journal"
     );
 }
 
@@ -1543,7 +1565,7 @@ async fn prompt_empty_message_hits_empty_context_early_return() {
 }
 
 #[test]
-fn wire_auto_compaction_flags_failure_when_needed_but_no_cut_point() {
+fn wire_auto_compaction_reports_no_valid_boundary() {
     use std::sync::atomic::Ordering;
     let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("x")]), "compact-fail");
     let session = fixture.session;
@@ -1554,15 +1576,23 @@ fn wire_auto_compaction_flags_failure_when_needed_but_no_cut_point() {
     let agent_loop = session.agent_loop.clone();
     let mut loop_ = agent_loop.try_write().unwrap();
     session.wire_auto_compaction(&mut loop_, true, "glm-4.5v");
-    let transform = loop_.config.transform_context.clone().unwrap();
-    let messages = vec![crate::types::Message {
-        role: "user".to_string(),
-        content: Some(serde_json::json!([{"type": "text", "text": "hi"}])),
-        tool_calls: None,
-        ..Default::default()
-    }];
-    let _ = transform(messages, String::new());
-    assert!(loop_.compaction_failed.load(Ordering::SeqCst));
+    assert_eq!(
+        loop_.context_manager.as_ref().unwrap().model,
+        loop_.model,
+        "summary requests use the provider-facing bare model id"
+    );
+    let mut message = crate::types::AgentMessage::new_user("user", serde_json::json!("hi"));
+    message.ensure_journal_entry_id();
+    let prompt = crate::compaction::project_prompt_context(&[message], None, Some(50_000), 64_000);
+    let result = loop_.context_manager.as_ref().unwrap().prepare(
+        prompt,
+        crate::compaction::CompactionTrigger::Automatic,
+        None,
+    );
+    assert!(matches!(
+        result,
+        Err(crate::compaction::ContextError::NoValidBoundary)
+    ));
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -122,7 +122,9 @@ export function messageToItems(message: AgentMessage): TimelineItem[] {
 /** History entries (mobile wire shape) → the shared session-entry shape. */
 function toSessionEntries(entries: HistoryEntry[]): SessionEntry[] {
   return entries.map((entry, index) => {
-    const role = entry.role === "assistant" || entry.role === "tool" ? entry.role : "user";
+    const role = entry.role === "assistant" || entry.role === "tool" || entry.role === "system"
+      ? entry.role
+      : "user";
     const toolCalls = (entry.tool_calls ?? [])
       .filter(call => !!call && typeof call?.function?.name === "string")
       .map(call => ({
@@ -134,8 +136,10 @@ function toSessionEntries(entries: HistoryEntry[]): SessionEntry[] {
       }));
     return {
       id: entry.id ?? `entry_${index}`,
+      ...(entry.entry_type ? { entry_type: entry.entry_type } : {}),
       role,
       content: typeof entry.content === "string" ? entry.content : "",
+      ...(entry.checkpoint ? { checkpoint: entry.checkpoint } : {}),
       ...(entry.thinking != null ? { thinking: entry.thinking } : {}),
       ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
       ...(entry.meta
@@ -557,6 +561,9 @@ function isRunEvent(type: string): boolean {
     type === "tool_result" ||
     type === "usage" ||
     type === "compaction_end" ||
+    type === "compaction_started" ||
+    type === "compaction_committed" ||
+    type === "compaction_failed" ||
     type === "agent_end"
   );
 }
@@ -761,6 +768,9 @@ function segmentToTimeline(segment: MessageSegment): TimelineSegment {
         id: segment.id,
         kind: "compaction",
         ...(segment.tokensBefore ? { tokensBefore: segment.tokensBefore } : {}),
+        ...(segment.trigger ? { trigger: segment.trigger } : {}),
+        ...(segment.status ? { status: segment.status } : {}),
+        ...(segment.error ? { error: segment.error } : {}),
       };
   }
 }

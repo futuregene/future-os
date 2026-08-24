@@ -53,6 +53,50 @@ describe("buildAssistantRunProjection segments", () => {
     expect(projection.content).toBe("Continuing.");
   });
 
+  it("projects compaction started, committed, and failed as correlated UI messages", () => {
+    const completed = buildAssistantRunProjection(
+      events([
+        ["compaction_started", { operation_id: "cmp-1", trigger: "automatic", phase: "pre_turn" }],
+        ["compaction_committed", { operation_id: "cmp-1", checkpoint_id: "cp-1", tokens_before: 42_000 }],
+      ]),
+    );
+    expect(completed.segments).toEqual([
+      { id: "cp-1", kind: "compaction", tokensBefore: 42_000, trigger: "automatic" },
+    ]);
+
+    const failed = buildAssistantRunProjection(
+      events([
+        ["compaction_started", { operation_id: "cmp-2", trigger: "manual", phase: "standalone" }],
+        ["compaction_failed", { operation_id: "cmp-2", error: "summary failed" }],
+      ]),
+    );
+    expect(failed.segments).toEqual([
+      {
+        id: "cmp-2",
+        kind: "compaction",
+        trigger: "manual",
+        status: "failed",
+        error: "summary failed",
+      },
+    ]);
+
+    const interrupted = buildAssistantRunProjection(
+      events([
+        ["compaction_started", { operation_id: "cmp-3", trigger: "automatic", phase: "mid_turn" }],
+        ["agent_end", { reason: "incomplete" }],
+      ]),
+    );
+    expect(interrupted.segments).toEqual([
+      {
+        id: "cmp-3",
+        kind: "compaction",
+        trigger: "automatic",
+        status: "failed",
+        error: "compaction interrupted before completion",
+      },
+    ]);
+  });
+
   it("omits the token count for the retry-path compaction (tokens_before 0) and skips aborted ones", () => {
     const retryPath = buildAssistantRunProjection(
       events([["compaction_end", { tokens_before: 0, summary: "", aborted: false, reason: "auto" }]]),

@@ -19,10 +19,10 @@ mod test_support;
 pub use self::approval::{decide_approval, inject_session_rule, reconcile_pending_approvals};
 pub(crate) use self::client::raw_agent_addr;
 pub use self::client::{
-    connect_agent, delete_session_command, get_available_models_command, get_run_state_command,
-    get_session_entries_command, get_state_command, list_streaming_sessions_command, map_rpc_error,
-    set_default_model_command, set_model_command, set_session_name_command,
-    set_thinking_level_command, RpcResponseExt,
+    compact_command, connect_agent, delete_session_command, get_available_models_command,
+    get_run_state_command, get_session_entries_command, get_state_command,
+    list_streaming_sessions_command, map_rpc_error, set_default_model_command, set_model_command,
+    set_session_name_command, set_thinking_level_command, RpcResponseExt,
 };
 pub use self::config_observer::spawn_provider_config_observer;
 pub use self::headless::{

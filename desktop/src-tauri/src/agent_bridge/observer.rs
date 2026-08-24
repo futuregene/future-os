@@ -96,13 +96,17 @@ fn idle_check_interval() -> Duration {
 
 /// Event types forwarded to the webview as `agent-event`. Same whitelist as
 /// the retired single-slot observer: settings changes applied by
-/// `agentStateCache`, plus `user_message` (zero-latency user bubble in the
-/// open thread). Per-token content (`text_chunk`, `thinking_delta`, `tool_*`)
+/// `agentStateCache`, `user_message` (zero-latency user bubble in the open
+/// thread), and compaction lifecycle signals (including standalone/manual
+/// compaction). Per-token content (`text_chunk`, `thinking_delta`, `tool_*`)
 /// is never forwarded — the frontend renders content from the persisted
 /// run-event log.
 const FORWARDED_EVENTS: &[&str] = &[
     "agent_start",
     "agent_end",
+    "compaction_started",
+    "compaction_committed",
+    "compaction_failed",
     "user_message",
     "model_changed",
     "thinking_level_changed",

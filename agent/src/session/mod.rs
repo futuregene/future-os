@@ -14,6 +14,7 @@
 //! Every public item is re-exported here so callers keep using
 //! `crate::session::…` unchanged.
 
+mod checkpoint;
 mod entry;
 mod fork;
 mod manager;
@@ -24,6 +25,7 @@ mod repair;
 mod run_journal;
 mod summary;
 
+pub use checkpoint::{checkpoint_to_entry, entry_to_checkpoint, latest_context_checkpoint};
 pub use entry::{
     SessionEntry, ENTRY_TYPE_ASSISTANT, ENTRY_TYPE_COMPACTION, ENTRY_TYPE_CUSTOM,
     ENTRY_TYPE_CUSTOM_MESSAGE, ENTRY_TYPE_LABEL, ENTRY_TYPE_MODEL_CHANGE, ENTRY_TYPE_RUN_STARTED,

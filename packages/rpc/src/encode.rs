@@ -272,7 +272,19 @@ fn get_session_entries(data: &Value) -> Option<proto::SessionEntriesResponse> {
         let payload: SessionEntryPayload = serde_json::from_value(row.clone()).ok()?;
         entries.push(session_entry_to_proto(&payload));
     }
-    Some(proto::SessionEntriesResponse { entries })
+    Some(proto::SessionEntriesResponse {
+        entries,
+        has_more: data
+            .get("hasMore")
+            .or_else(|| data.get("has_more"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        next_offset: data
+            .get("nextOffset")
+            .or_else(|| data.get("next_offset"))
+            .and_then(Value::as_i64)
+            .unwrap_or_default(),
+    })
 }
 
 pub(crate) fn session_entry_to_proto(entry: &SessionEntryPayload) -> proto::SessionEntry {
@@ -285,6 +297,7 @@ pub(crate) fn session_entry_to_proto(entry: &SessionEntryPayload) -> proto::Sess
     };
     proto::SessionEntry {
         id: entry.id.clone(),
+        entry_type: entry.entry_type.clone(),
         role: entry.role.clone(),
         content,
         content_is_object,
@@ -304,6 +317,10 @@ pub(crate) fn session_entry_to_proto(entry: &SessionEntryPayload) -> proto::Sess
         duration_ms: entry.duration_ms,
         input_tokens: entry.input_tokens,
         cache_read_tokens: entry.cache_read_tokens,
+        checkpoint: entry
+            .checkpoint
+            .as_ref()
+            .map(|value| serde_json::to_string(value).unwrap_or_default()),
     }
 }
 

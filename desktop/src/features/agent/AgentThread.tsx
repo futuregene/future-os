@@ -8,6 +8,7 @@ import { ArrowDown, History } from "lucide-react";
 import { useCallback, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
+import { compactThreadContext } from "../../integrations/agent/agentClient";
 import { forkThread } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { errorMessage } from "../../lib/errors";
@@ -257,6 +258,22 @@ export function AgentThread({
   const handleComposerSend = useCallback((payload: ComposerSendPayload) => {
     void handleSend(payload);
   }, [handleSend]);
+  const handleCompactContext = useCallback(async () => {
+    if (!thread)
+      return;
+    try {
+      const result = await compactThreadContext(thread.id);
+      if (!result.checkpointId) {
+        emitFutureEvent("toast", { message: t("composer.compactionNotNeeded"), tone: "info" });
+      }
+    }
+    catch (error) {
+      emitFutureEvent("toast", {
+        message: t("composer.compactionRequestFailed", { message: errorMessage(error) }),
+        tone: "error",
+      });
+    }
+  }, [thread, t]);
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-surface">
@@ -365,6 +382,7 @@ export function AgentThread({
               onChangeApprovalTier={onChangeApprovalTier}
               sending={isSending}
               onAbort={handleComposerAbort}
+              onCompactContext={thread?.agentSessionId ? handleCompactContext : undefined}
               onSend={handleComposerSend}
               workspaceId={thread?.workspaceId}
               draftKey={thread?.id}

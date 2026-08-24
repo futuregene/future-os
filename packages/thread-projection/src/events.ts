@@ -18,7 +18,8 @@ export interface RunEvent {
 /** Raw entry from agent get_session_entries RPC. */
 export interface SessionEntry {
   id: string;
-  role: "user" | "assistant" | "tool";
+  entry_type?: string;
+  role: "user" | "assistant" | "tool" | "system";
   content: string;
   name?: string;
   tool_args?: string;
@@ -45,5 +46,17 @@ export interface SessionEntry {
       name: string;
       thumbnail?: string | null;
     }>;
+  };
+  /** Durable context-checkpoint payload for entry_type=compaction. */
+  checkpoint?: {
+    schema_version?: number;
+    checkpoint_id?: string;
+    cutoff_entry_id?: string;
+    tokens_before?: number;
+    tokens_after?: number;
+    trigger?: string;
+    phase?: string;
+    algorithm_version?: string;
+    summary?: unknown;
   };
 }

@@ -208,6 +208,8 @@ pub struct SessionSummaryPayload {
 #[derive(Serialize, Deserialize)]
 pub struct SessionEntryPayload {
     pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry_type: Option<String>,
     pub role: String,
     pub content: Value,
     pub name: String,
@@ -227,6 +229,8 @@ pub struct SessionEntryPayload {
     pub input_tokens: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_read_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<Value>,
 }
 
 /// One replayed event (get_events_since; proto `ReplayEvent`). Keys mirror
@@ -451,6 +455,7 @@ mod tests {
     fn session_entry_payload_skips_absent_optionals() {
         let payload = SessionEntryPayload {
             id: "e1".to_string(),
+            entry_type: None,
             role: "user".to_string(),
             content: Value::String("hi".to_string()),
             name: String::new(),
@@ -463,6 +468,7 @@ mod tests {
             duration_ms: None,
             input_tokens: None,
             cache_read_tokens: None,
+            checkpoint: None,
         };
         let value = serde_json::to_value(&payload).unwrap();
         assert_eq!(value["content"], json!("hi"));

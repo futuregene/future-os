@@ -226,9 +226,9 @@ let eventListenerInstalled = false;
 
 /**
  * Install a one-time Tauri event listener that processes ALL agent events
- * (user_message, text_chunk, settings changes, etc.) forwarded from the
- * StreamEvents observer.  This gives the GUI the same real-time latency
- * as the TUI — no polling, no synthetic run delay.
+ * (user messages, compaction lifecycle, settings changes, etc.) forwarded
+ * from the StreamEvents observer. This gives the GUI the same real-time
+ * latency as the TUI — no polling, no synthetic run delay.
  */
 export function installAgentEventListener() {
   if (eventListenerInstalled)
@@ -278,6 +278,9 @@ export function installAgentEventListener() {
       case "user_message":
       case "agent_start":
       case "agent_end":
+      case "compaction_started":
+      case "compaction_committed":
+      case "compaction_failed":
         if (!threadId)
           return;
         window.dispatchEvent(new CustomEvent("future:agent-event", {

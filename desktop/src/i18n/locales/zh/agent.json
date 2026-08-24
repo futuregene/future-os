@@ -81,7 +81,7 @@
     }
   },
   "composer": {
-    "placeholder": "描述任务，@文件 添加到上下文，按 / 使用技能",
+    "placeholder": "描述任务，@文件 添加到上下文，按 / 使用工具或技能",
     "attachFiles": "添加附件",
     "attachFilesHint": "添加附件（图片、PDF、文本）",
     "attachLimitReached": "已达到附件上限（每条消息 4 个）",
@@ -107,6 +107,12 @@
     "stop": "停止",
     "noFiles": "未找到文件。",
     "noSkillMatches": "没有匹配的技能。",
+    "noSlashMatches": "没有匹配的工具或技能。",
+    "skillsSection": "技能",
+    "compactContext": "压缩",
+    "compactContextDescription": "压缩此对话的上下文",
+    "compactionNotNeeded": "当前对话暂时不需要压缩。",
+    "compactionRequestFailed": "上下文压缩失败：{{message}}",
     "approval": "审批模式",
     "approvalTier": {
       "manual": "手动审批",
@@ -208,7 +214,12 @@
     "tokens": "{{formattedCount}} tokens",
     "fork": "分叉",
     "forkFailed": "分叉失败：{{message}}",
+    "compacting": "正在压缩上下文…",
+    "manuallyCompacting": "你正在压缩上下文…",
+    "compactionFailed": "上下文压缩失败",
+    "manualCompactionFailed": "你发起的上下文压缩失败",
     "compacted": "上下文已压缩",
+    "manuallyCompacted": "你手动压缩了此对话的上下文",
     "compactedTokens": "上下文已压缩 · {{formattedCount}} tokens"
   },
   "skillGuide": {

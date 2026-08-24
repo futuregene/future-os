@@ -56,7 +56,14 @@ type Slot
   = | { type: "text"; text: string }
     | { type: "thinking"; text: string }
     | { type: "tool"; id: string }
-    | { type: "compaction"; tokensBefore: number };
+    | {
+        type: "compaction";
+        id: string;
+        tokensBefore: number;
+        trigger?: string;
+        status: "running" | "completed" | "failed";
+        error?: string;
+      };
 
 interface ToolActivity {
   id: string;
@@ -125,6 +132,12 @@ export function createRunProjector(options?: { preferEndTokens?: boolean }): Run
 
     if (event.eventType === "agent_end") {
       agentEndOutput = usageOutputTokens(payload);
+      for (const slot of slots) {
+        if (slot.type === "compaction" && slot.status === "running") {
+          slot.status = "failed";
+          slot.error = "compaction interrupted before completion";
+        }
+      }
       if (isRecord(payload)) {
         if (payload.reason === "incomplete")
           truncated = true;
@@ -181,19 +194,81 @@ export function createRunProjector(options?: { preferEndTokens?: boolean }): Run
       return;
     }
 
-    // Context compaction ran this exchange (usually at the top, before any text).
-    // Pin a marker at this point so the reply shows where history was summarized.
-    // `compaction_end` carries the pre-compaction token count; the retry-path
-    // variant reports 0. An aborted compaction changed nothing — skip it.
-    if (event.eventType === "compaction_end") {
-      if (!isRecord(payload) || payload.aborted !== true) {
-        slots.push({
-          type: "compaction",
-          tokensBefore: numberFromPayload(payload, ["tokens_before", "tokensBefore"]),
-        });
+    if (event.eventType === "compaction_started") {
+      const id = isRecord(payload) && typeof payload.operation_id === "string"
+        ? payload.operation_id
+        : `pending_${event.runId}_${event.sequence}`;
+      if (!slots.some(slot => slot.type === "compaction" && slot.id === id)) slots.push({
+        type: "compaction",
+        id,
+        tokensBefore: 0,
+        ...(isRecord(payload) && typeof payload.trigger === "string" ? { trigger: payload.trigger } : {}),
+        status: "running",
+      });
+      openText = null;
+      openThinking = null;
+      return;
+    }
+
+    // Context compaction committed durably. Replace its pending marker when
+    // possible; released run journals may still contain `compaction_end`.
+    if (event.eventType === "compaction_end" || event.eventType === "compaction_committed") {
+      const record = isRecord(payload) ? payload : null;
+      if (!record || record.aborted !== true) {
+        const operationId = record && typeof record.operation_id === "string"
+          ? record.operation_id
+          : null;
+        const id = record && typeof record.checkpoint_id === "string"
+          ? record.checkpoint_id
+          : `legacy_${event.runId}_${event.sequence}`;
+        const pending = operationId
+          ? slots.find(slot => slot.type === "compaction" && slot.id === operationId)
+          : undefined;
+        if (pending?.type === "compaction") {
+          pending.id = id;
+          pending.tokensBefore = numberFromPayload(payload, ["tokens_before", "tokensBefore"]);
+          if (record && typeof record.trigger === "string")
+            pending.trigger = record.trigger;
+          pending.status = "completed";
+          delete pending.error;
+        } else if (!slots.some(slot => slot.type === "compaction" && slot.id === id)) {
+          slots.push({
+            type: "compaction",
+            id,
+            tokensBefore: numberFromPayload(payload, ["tokens_before", "tokensBefore"]),
+            ...(record && typeof record.trigger === "string" ? { trigger: record.trigger } : {}),
+            status: "completed",
+          });
+        }
         openText = null;
         openThinking = null;
       }
+      return;
+    }
+
+    if (event.eventType === "compaction_failed") {
+      const operationId = isRecord(payload) && typeof payload.operation_id === "string"
+        ? payload.operation_id
+        : `failed_${event.runId}_${event.sequence}`;
+      const error = isRecord(payload) && typeof payload.error === "string"
+        ? payload.error
+        : undefined;
+      const pending = slots.find(slot => slot.type === "compaction" && slot.id === operationId);
+      if (pending?.type === "compaction") {
+        pending.status = "failed";
+        pending.error = error;
+      } else {
+        slots.push({
+          type: "compaction",
+          id: operationId,
+          tokensBefore: 0,
+          ...(isRecord(payload) && typeof payload.trigger === "string" ? { trigger: payload.trigger } : {}),
+          status: "failed",
+          ...(error ? { error } : {}),
+        });
+      }
+      openText = null;
+      openThinking = null;
       return;
     }
 
@@ -418,8 +493,11 @@ function buildSegments(
     if (slot.type === "compaction") {
       segments.push({
         kind: "compaction",
-        id: `compaction_${index}`,
-        tokensBefore: slot.tokensBefore > 0 ? slot.tokensBefore : undefined,
+        id: slot.id,
+        ...(slot.tokensBefore > 0 ? { tokensBefore: slot.tokensBefore } : {}),
+        ...(slot.trigger ? { trigger: slot.trigger } : {}),
+        ...(slot.status !== "completed" ? { status: slot.status } : {}),
+        ...(slot.error ? { error: slot.error } : {}),
       });
       index += 1;
       continue;
