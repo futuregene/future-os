@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { invokeCommand } from "../../integrations/tauri/invoke";
+import { isWindows } from "../../lib/platform";
 import { SettingsSection } from "./SettingsPrimitives";
 
 export function ResetPage() {
@@ -9,6 +10,8 @@ export function ResetPage() {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sandboxBusy, setSandboxBusy] = useState(false);
+  const [sandboxStatus, setSandboxStatus] = useState<"success" | "error" | null>(null);
 
   async function handleClear() {
     setBusy(true);
@@ -25,8 +28,44 @@ export function ResetPage() {
     }
   }
 
+  async function handleResetWriteProtection() {
+    setSandboxBusy(true);
+    setSandboxStatus(null);
+    try {
+      await invokeCommand<number>("reset_windows_sandbox");
+      setSandboxStatus("success");
+    }
+    catch {
+      // The ordinary-user surface intentionally does not expose SID/ACL,
+      // state-file paths, Win32 errors, or other backend diagnostics.
+      setSandboxStatus("error");
+    }
+    finally {
+      setSandboxBusy(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
+      {isWindows
+        ? (
+            <SettingsSection>
+              <div className="space-y-3 rounded-lg border border-line-soft p-4">
+                <div>
+                  <div className="text-sm font-medium text-ink">{t("reset.writeProtection")}</div>
+                  <p className="mt-1 text-xs leading-5 text-ink-muted">
+                    {t("reset.writeProtectionDescription")}
+                  </p>
+                </div>
+                {sandboxStatus === "success" ? <p className="text-xs text-success">{t("reset.writeProtectionSuccess")}</p> : null}
+                {sandboxStatus === "error" ? <p className="text-xs text-danger">{t("reset.writeProtectionFailed")}</p> : null}
+                <Button disabled={sandboxBusy} onClick={() => void handleResetWriteProtection()} size="sm" variant="secondary">
+                  {sandboxBusy ? t("reset.writeProtectionResetting") : t("reset.writeProtectionReset")}
+                </Button>
+              </div>
+            </SettingsSection>
+          )
+        : null}
       <SettingsSection>
         <div className="space-y-3 rounded-lg border border-line-soft p-4">
           <div>

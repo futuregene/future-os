@@ -13,7 +13,7 @@ use std::path::{Component, Path, PathBuf};
 /// contradicts what the OS sandbox enforces (real `$HOME/x`). Boundary
 /// decisions must use this function instead.
 pub fn expand_tilde(path: &str) -> PathBuf {
-    expand_tilde_with_home(path, dirs::home_dir().as_deref())
+    expand_tilde_with_home(path, crate::utils::home_dir_opt().as_deref())
 }
 
 /// `expand_tilde` with the home directory injected, so the no-home fallback
@@ -67,7 +67,7 @@ pub fn normalize_lexically(path: &Path) -> PathBuf {
 pub fn canonicalize_lenient(path: &Path) -> PathBuf {
     let path = normalize_lexically(path);
     if let Ok(canonical) = path.canonicalize() {
-        return canonical;
+        return ordinary_platform_path(canonical);
     }
     // Walk up to the nearest existing ancestor.
     let mut ancestor = path.as_path();
@@ -83,13 +83,36 @@ pub fn canonicalize_lenient(path: &Path) -> PathBuf {
                     for part in remainder.iter().rev() {
                         result.push(part);
                     }
-                    return result;
+                    return ordinary_platform_path(result);
                 }
                 ancestor = parent;
             }
             None => return path,
         }
     }
+}
+
+/// `std::fs::canonicalize` returns the Windows extended-length spelling
+/// (`\\?\C:\...`). Keep that kernel spelling at the Win32-handle boundary, but
+/// never leak it into the cross-platform rule model: `?` would be interpreted
+/// as a glob metacharacter and ordinary `C:\...` user rules would no longer
+/// compare equal to canonicalized paths.
+#[cfg(target_os = "windows")]
+fn ordinary_platform_path(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy();
+    let Some(rest) = text.strip_prefix(r"\\?\") else {
+        return path;
+    };
+    if let Some(unc) = rest.strip_prefix("UNC\\") {
+        PathBuf::from(format!(r"\\{unc}"))
+    } else {
+        PathBuf::from(rest)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn ordinary_platform_path(path: PathBuf) -> PathBuf {
+    path
 }
 
 /// Whether `path` is `root` itself or lies under `root`.
@@ -197,6 +220,17 @@ mod tests {
         let resolved = canonicalize_lenient(&missing);
         assert!(path_within(&resolved, &dir));
         assert!(resolved.ends_with("no/such/file.txt"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn canonicalize_lenient_removes_windows_extended_length_prefix() {
+        let dir = temp_dir("ordinary-windows-path");
+        let resolved = canonicalize_lenient(&dir);
+        assert!(
+            !resolved.to_string_lossy().starts_with(r"\\?\"),
+            "rule-model paths must not expose the extended-length prefix: {resolved:?}"
+        );
     }
 
     #[cfg(unix)]

@@ -26,11 +26,32 @@ pub fn append_workspace_allow_rule(
     rule_path: &str,
     access: &str,
 ) -> Result<(), crate::AppError> {
-    // Guard the access scope before it lands in a persisted rule.
-    if access != "read" && access != "write" {
-        return Err(
-            format!("approval access must be \"read\" or \"write\", got {access:?}").into(),
-        );
+    append_workspace_allow_rules(
+        workspace_dir,
+        &[(rule_path.to_string(), access.to_string())],
+    )
+}
+
+/// Atomically append a complete approval target set. Validation happens before
+/// the config lock/write, so a malformed item cannot leave a partially saved
+/// multi-target approval.
+pub fn append_workspace_allow_rules(
+    workspace_dir: &str,
+    rules_to_add: &[(String, String)],
+) -> Result<(), crate::AppError> {
+    if rules_to_add.is_empty() || rules_to_add.len() > 8 {
+        return Err("approval rule batch must contain 1 to 8 items".into());
+    }
+    for (rule_path, access) in rules_to_add {
+        if rule_path.trim().is_empty() {
+            return Err("approval rule path must not be empty".into());
+        }
+        // Guard the access scope before it lands in a persisted rule.
+        if access != "read" && access != "write" {
+            return Err(
+                format!("approval access must be \"read\" or \"write\", got {access:?}").into(),
+            );
+        }
     }
 
     let dir = Path::new(workspace_dir).join(".future");
@@ -48,9 +69,11 @@ pub fn append_workspace_allow_rule(
         }
         let arr = rules.as_array_mut().expect("array ensured above");
 
-        let new_rule = json!({ "path": rule_path, "access": access, "action": "allow" });
-        if !arr.iter().any(|existing| existing == &new_rule) {
-            arr.push(new_rule);
+        for (rule_path, access) in rules_to_add {
+            let new_rule = json!({ "path": rule_path, "access": access, "action": "allow" });
+            if !arr.iter().any(|existing| existing == &new_rule) {
+                arr.push(new_rule);
+            }
         }
 
         config_io::write_json_atomic(&file, &root, false)
@@ -98,6 +121,35 @@ mod tests {
         append_workspace_allow_rule(&dir, "a/*", "read").unwrap(); // dup
         let v = read(&ws);
         assert_eq!(v["rules"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn appends_multi_target_batch_atomically() {
+        let ws = temp_ws("batch");
+        append_workspace_allow_rules(
+            ws.to_string_lossy().as_ref(),
+            &[
+                ("D:\\release".to_string(), "write".to_string()),
+                ("D:\\symbols".to_string(), "write".to_string()),
+            ],
+        )
+        .unwrap();
+        let value = read(&ws);
+        assert_eq!(value["rules"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn invalid_multi_target_batch_writes_nothing() {
+        let ws = temp_ws("batch-invalid");
+        let result = append_workspace_allow_rules(
+            ws.to_string_lossy().as_ref(),
+            &[
+                ("D:\\release".to_string(), "write".to_string()),
+                ("D:\\bad".to_string(), "execute".to_string()),
+            ],
+        );
+        assert!(result.is_err());
+        assert!(!ws.join(".future/approval_rule.json").exists());
     }
 
     #[test]

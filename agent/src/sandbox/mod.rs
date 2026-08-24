@@ -16,7 +16,10 @@ pub mod rules;
 mod seatbelt;
 #[cfg(windows)]
 pub mod windows;
+#[path = "windows/capability.rs"]
+mod windows_capability;
 mod windows_plan;
+pub(crate) mod windows_request;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -32,8 +35,7 @@ pub enum SandboxTier {
     /// sandbox. The default, all platforms.
     #[default]
     Manual,
-    /// Sandbox — approval rules on; shell runs inside the OS sandbox (macOS
-    /// only; the GUI hides this option elsewhere).
+    /// Sandbox — approval rules on; shell runs inside the available OS sandbox.
     Sandbox,
 }
 
@@ -66,7 +68,7 @@ pub struct SandboxPolicy {
 #[derive(Debug, Clone)]
 pub struct ResolvedSandbox {
     pub tier: SandboxTier,
-    /// Whether the platform sandbox (sandbox-exec) is usable here.
+    /// Whether the platform OS sandbox is usable here.
     pub available: bool,
     /// Canonicalized workspace directory.
     pub workspace: PathBuf,
@@ -351,13 +353,21 @@ pub fn shell_invocation(command: &str) -> (&'static str, Vec<String>) {
 ///     native command's stdin — it defaults to ASCII in 5.1, mangling non-ASCII
 ///     to `?`, so it must be set too.
 ///
-///   All three use a BOM-less `UTF8Encoding($false)`: the default
-///   `[Text.Encoding]::UTF8` carries a BOM that, on a redirected stdout, PS 5.1
-///   prepends to the stream as a stray `EF BB BF` (a leading U+FEFF for us).
-///   (pwsh 7 already defaults to BOM-less UTF-8; setting these is a harmless
-///   no-op there.) Native tools that ignore the code page and hard-code OEM/
-///   ANSI output can't be fixed here — those bytes become replacement chars
-///   via `from_utf8_lossy` rather than corrupting the capture.
+///   Use the existing `[Text.Encoding]::UTF8` static instance rather than
+///   constructing `UTF8Encoding($false)`: a WRITE_RESTRICTED token puts Windows
+///   PowerShell 5.1 in Constrained Language Mode, which rejects construction of
+///   that .NET type. Each assignment is wrapped in its own `try` so a blocked
+///   one cannot prevent the others; `$Error.Count` is recorded first so a setup
+///   failure cannot turn a successful user command into `exit 1`.
+///
+///   Constrained Language Mode also rejects the `[Console]::OutputEncoding`
+///   setter outright, so a restricted PowerShell 5.1 keeps emitting in its
+///   console output code page no matter what this script does. With stdout
+///   redirected to a pipe there is no console, so `[Console]::OutputEncoding`
+///   resolves to the OEM code page (`GetOEMCP`), not the ANSI code page
+///   (`GetACP`); the reader decodes it back with
+///   [`decode_restricted_shell_output`] (OEM for 5.1, UTF-8 for pwsh 7).
+///   pwsh 7 always emits UTF-8 and is unaffected by either restriction.
 /// - `$ProgressPreference = 'SilentlyContinue'` suppresses progress records
 ///   (e.g. "Preparing modules for first use"). When powershell.exe's stderr is
 ///   a redirected pipe, PS 5.1 serializes such records as CLIXML (`#< CLIXML …`)
@@ -370,12 +380,14 @@ pub fn windows_wrapper_script(command: &str) -> String {
     let command = ResolvedSandbox::normalize_shell_quoting(command);
     format!(
         "chcp 65001 > $null; \
-         $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); \
+         try {{ $OutputEncoding = [System.Text.Encoding]::UTF8 }} catch {{}}; \
+         try {{ [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 }} catch {{}}; \
          $ProgressPreference = 'SilentlyContinue'; \
          $global:LASTEXITCODE = $null; \
+         $futureosInitialErrorCount = $Error.Count; \
          & {{ {} }} 2>&1 | ForEach-Object {{ \"$_\" }}; \
          if ($null -ne $LASTEXITCODE) {{ exit $LASTEXITCODE }} \
-         elseif ($Error.Count -gt 0) {{ exit 1 }} \
+         elseif ($Error.Count -gt $futureosInitialErrorCount) {{ exit 1 }} \
          else {{ exit 0 }}",
         command
     )
@@ -390,6 +402,68 @@ fn encode_powershell_command(script: &str) -> String {
         .flat_map(|unit| unit.to_le_bytes())
         .collect();
     base64::engine::general_purpose::STANDARD.encode(utf16)
+}
+
+/// Decode captured shell output using the system legacy OEM code page
+/// (`GetOEMCP`). Windows PowerShell 5.1 running under a WRITE_RESTRICTED token
+/// enters Constrained Language Mode, where it cannot assign
+/// `[Console]::OutputEncoding`; with stdout redirected to a pipe there is no
+/// console, so that property resolves to the OEM code page rather than the ANSI
+/// code page. On CJK locales the two coincide (e.g. both 936/GBK), which hides
+/// the distinction, but on Western/Russian/Greek locales they differ (ANSI
+/// 1252 vs OEM 437/850, 1251 vs 866, 1253 vs 737), so decoding with `CP_ACP`
+/// would corrupt non-ASCII output there. pwsh 7 hard-codes UTF-8 and is
+/// unaffected; callers only use this for the 5.1 restricted path.
+#[cfg(target_os = "windows")]
+pub(crate) fn decode_oem_lossy(bytes: &[u8]) -> String {
+    use windows_sys::Win32::Globalization::{MultiByteToWideChar, CP_OEMCP};
+
+    if bytes.is_empty() {
+        return String::new();
+    }
+    // First pass: query the required UTF-16 length.
+    let wide_len = unsafe {
+        MultiByteToWideChar(
+            CP_OEMCP,
+            0,
+            bytes.as_ptr(),
+            bytes.len() as i32,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if wide_len <= 0 {
+        return String::from_utf8_lossy(bytes).into_owned();
+    }
+    let mut wide = vec![0u16; wide_len as usize];
+    let written = unsafe {
+        MultiByteToWideChar(
+            CP_OEMCP,
+            0,
+            bytes.as_ptr(),
+            bytes.len() as i32,
+            wide.as_mut_ptr(),
+            wide_len,
+        )
+    };
+    if written <= 0 {
+        return String::from_utf8_lossy(bytes).into_owned();
+    }
+    wide.truncate(written as usize);
+    String::from_utf16_lossy(&wide)
+}
+
+/// Decode output captured from a restricted Windows shell. Windows PowerShell
+/// 5.1 cannot set UTF-8 under Constrained Language Mode and therefore emits in
+/// its console output code page, which is the OEM code page when stdout is a
+/// pipe; pwsh 7 always emits UTF-8. Everything else is UTF-8.
+#[cfg(target_os = "windows")]
+pub(crate) fn decode_restricted_shell_output(bytes: &[u8]) -> String {
+    if windows_shell().program == "powershell" {
+        decode_oem_lossy(bytes)
+    } else {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
 }
 
 /// The resolved Windows shell for command execution. pwsh (PowerShell 7+) is
@@ -725,9 +799,117 @@ pub fn platform_sandbox_available() -> bool {
     {
         Path::new("/usr/bin/sandbox-exec").exists()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        cached_windows_sandbox_probe().available
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         false
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn cached_windows_sandbox_probe() -> &'static WindowsSandboxProbe {
+    WINDOWS_SANDBOX_PROBE.get_or_init(|| match probe_windows_sandbox_host() {
+        Ok(result) => {
+            tracing::info!(
+                available = result.available,
+                code = result.code,
+                "Windows sandbox host probe completed"
+            );
+            result
+        }
+        Err(error) => {
+            tracing::warn!(
+                error_kind = ?error.kind(),
+                "Windows sandbox host probe failed"
+            );
+            WindowsSandboxProbe::unavailable("probe_failed", error)
+        }
+    })
+}
+
+#[cfg(target_os = "windows")]
+static WINDOWS_SANDBOX_PROBE: std::sync::OnceLock<WindowsSandboxProbe> = std::sync::OnceLock::new();
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowsSandboxProbe {
+    pub available: bool,
+    pub code: &'static str,
+    #[serde(skip)]
+    diagnostic: Option<String>,
+}
+
+impl WindowsSandboxProbe {
+    #[cfg(any(target_os = "windows", test))]
+    fn available() -> Self {
+        Self {
+            available: true,
+            code: "available",
+            diagnostic: None,
+        }
+    }
+
+    fn unavailable_without_error(code: &'static str) -> Self {
+        Self {
+            available: false,
+            code,
+            diagnostic: None,
+        }
+    }
+
+    #[cfg(any(target_os = "windows", test))]
+    fn unavailable(code: &'static str, error: impl std::fmt::Display) -> Self {
+        Self {
+            available: false,
+            code,
+            diagnostic: Some(error.to_string()),
+        }
+    }
+
+    pub(crate) fn diagnostic(&self) -> Option<&str> {
+        self.diagnostic.as_deref()
+    }
+}
+
+pub(crate) fn probe_windows_sandbox_host() -> std::io::Result<WindowsSandboxProbe> {
+    #[cfg(target_os = "windows")]
+    {
+        windows::runner::probe_host()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(WindowsSandboxProbe::unavailable_without_error(
+            "platform_not_windows",
+        ))
+    }
+}
+
+/// Product-facing probe. UI availability and command execution share one
+/// cached result so a transient second probe can never make the UI promise
+/// protection that the session will not apply.
+pub(crate) fn probe_windows_sandbox_product() -> std::io::Result<WindowsSandboxProbe> {
+    #[cfg(target_os = "windows")]
+    {
+        return Ok(cached_windows_sandbox_probe().clone());
+    }
+    #[cfg(not(target_os = "windows"))]
+    probe_windows_sandbox_host()
+}
+
+pub(crate) fn reset_windows_sandbox_capabilities() -> std::io::Result<usize> {
+    #[cfg(target_os = "windows")]
+    {
+        windows::runner::reset_capabilities()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Windows sandbox reset is only available on Windows",
+        ))
     }
 }
 
@@ -774,6 +956,19 @@ pub fn looks_like_sandbox_denial(_sandbox: &ResolvedSandbox, exit_code: i32, std
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_probe_response_hides_internal_diagnostics() {
+        let result = WindowsSandboxProbe::unavailable("backend_initialization_failed", "secret");
+        let value = serde_json::to_value(result).unwrap();
+        assert_eq!(value["available"], false);
+        assert_eq!(value["code"], "backend_initialization_failed");
+        assert!(value.get("diagnostic").is_none());
+        assert_eq!(
+            serde_json::to_value(WindowsSandboxProbe::available()).unwrap()["code"],
+            "available"
+        );
+    }
 
     #[test]
     #[cfg(not(target_os = "windows"))]
@@ -904,10 +1099,15 @@ mod tests {
         // failures that never set $LASTEXITCODE.
         assert!(script.contains("exit $LASTEXITCODE"));
         assert!(script.contains("$Error.Count"));
-        // BOM-less UTF-8 on both stdout and pipe-to-native-stdin (PS 5.1
-        // defaults leak a BOM / ASCII respectively).
-        assert!(script.contains("[System.Text.UTF8Encoding]::new($false)"));
-        assert!(script.contains("$OutputEncoding = [Console]::OutputEncoding"));
+        // Reuse the static UTF-8 encoding rather than constructing a .NET type,
+        // which is forbidden by Windows PowerShell Constrained Language Mode.
+        assert!(script.contains("[System.Text.Encoding]::UTF8"));
+        // Each assignment is isolated so a CLM-blocked one cannot break the
+        // others (`[Console]::OutputEncoding` is blocked under CLM).
+        assert!(script.contains("$OutputEncoding = [System.Text.Encoding]::UTF8"));
+        assert!(script.contains("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8"));
+        assert!(script.contains("$futureosInitialErrorCount = $Error.Count"));
+        assert!(script.contains("$Error.Count -gt $futureosInitialErrorCount"));
         // Progress suppressed so PS 5.1 doesn't serialize "Preparing modules…"
         // as CLIXML onto the redirected stderr we capture.
         assert!(script.contains("$ProgressPreference = 'SilentlyContinue'"));
@@ -940,6 +1140,22 @@ mod tests {
             .collect();
         let decoded = String::from_utf16(&utf16).expect("valid utf-16");
         assert!(decoded.contains("& { Get-ChildItem } 2>&1"));
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn decode_oem_lossy_round_trips_ascii_and_cjk() {
+        use windows_sys::Win32::Globalization::GetOEMCP;
+
+        // ASCII is identical in every OEM code page.
+        assert_eq!(decode_oem_lossy(b"hello"), "hello");
+        assert_eq!(decode_oem_lossy(b""), "");
+        // GBK (code page 936) encodes 中文 as D6 D0 CE C4. Only assert on
+        // systems whose OEM code page is actually GBK; elsewhere the same
+        // bytes decode differently (e.g. cp437) and this branch is skipped.
+        if unsafe { GetOEMCP() } == 936 {
+            assert_eq!(decode_oem_lossy(&[0xD6, 0xD0, 0xCE, 0xC4]), "中文");
+        }
     }
 
     #[test]

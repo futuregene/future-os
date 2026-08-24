@@ -150,16 +150,47 @@ pub fn image_data_url_for_model(path: &str) -> Option<String> {
 /// carry a `-<hash>` suffix (`+local[.dirty]` for local builds).
 pub const VERSION: &str = env!("FUTURE_VERSION");
 
+/// Resolve the user home directory consistently for every Agent subsystem.
+///
+/// `HOME`/`USERPROFILE` are honoured first so isolated home redirects
+/// (integration tests, portable setups) apply on every platform. Empty and
+/// relative values are ignored: neither is safe as the root of credentials,
+/// sandbox policy or capability state. On Windows the `dirs` crate alone reads
+/// the token profile and therefore does not observe a redirected portable home.
+pub fn home_dir_opt() -> Option<PathBuf> {
+    home_dir_from(
+        std::env::var_os("HOME"),
+        std::env::var_os("USERPROFILE"),
+        dirs::home_dir(),
+    )
+}
+
+fn home_dir_from(
+    home: Option<std::ffi::OsString>,
+    userprofile: Option<std::ffi::OsString>,
+    system_home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    home.into_iter()
+        .chain(userprofile)
+        .map(PathBuf::from)
+        .find(|path| !path.as_os_str().is_empty() && path.is_absolute())
+        .or(system_home)
+}
+
+/// User home directory, falling back to the OS temporary directory only on a
+/// host where neither environment nor the platform profile API yields one.
+pub fn home_dir() -> PathBuf {
+    home_dir_opt().unwrap_or_else(std::env::temp_dir)
+}
+
 /// Default base session directory (contains per-cwd subdirectories)
 pub fn default_session_dir(_cwd: &str) -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    home.join(".future/agent").join("sessions")
+    home_dir().join(".future/agent").join("sessions")
 }
 
 /// Default config directory
 pub fn default_config_dir() -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    home.join(".future/agent")
+    home_dir().join(".future/agent")
 }
 
 /// Get default settings paths (global and project-level)
@@ -187,8 +218,7 @@ pub fn is_tty() -> bool {
 /// repair them. A user-chosen workspace directory never qualifies — it must
 /// not be silently recreated or chmod'ed.
 pub fn is_future_managed_dir(path: &Path) -> bool {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-    path.starts_with(home.join(".future"))
+    home_dir_opt().is_some_and(|home| path.starts_with(home.join(".future")))
 }
 
 /// Ensure a workspace directory exists and is writable. Creates the directory
@@ -363,6 +393,46 @@ mod util_tests {
     use super::*;
 
     #[test]
+    fn home_resolution_prefers_valid_environment_paths() {
+        let home = std::env::temp_dir().join("futureos-home-env");
+        let profile = std::env::temp_dir().join("futureos-profile-env");
+        let system = std::env::temp_dir().join("futureos-system-home");
+
+        assert_eq!(
+            home_dir_from(
+                Some(home.clone().into_os_string()),
+                Some(profile.into_os_string()),
+                Some(system),
+            ),
+            Some(home)
+        );
+    }
+
+    #[test]
+    fn home_resolution_ignores_empty_and_relative_environment_paths() {
+        let profile = std::env::temp_dir().join("futureos-profile-env");
+        let system = std::env::temp_dir().join("futureos-system-home");
+
+        assert_eq!(
+            home_dir_from(
+                Some(std::ffi::OsString::new()),
+                Some(profile.clone().into_os_string()),
+                Some(system.clone()),
+            ),
+            Some(profile)
+        );
+        assert_eq!(
+            home_dir_from(
+                Some(std::ffi::OsString::from("relative-home")),
+                Some(std::ffi::OsString::from("relative-profile")),
+                Some(system.clone()),
+            ),
+            Some(system)
+        );
+        assert_eq!(home_dir_from(None, None, None), None);
+    }
+
+    #[test]
     fn generate_id_is_unique() {
         let id1 = generate_id();
         let id2 = generate_id();
@@ -451,7 +521,7 @@ mod util_tests {
 
     #[test]
     fn is_future_managed_dir_detects_future_root() {
-        let home = dirs::home_dir().unwrap();
+        let home = home_dir();
         assert!(is_future_managed_dir(
             &home
                 .join(".future")

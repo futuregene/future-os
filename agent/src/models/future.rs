@@ -134,7 +134,7 @@ fn inject_test_panic() {
 }
 
 fn future_models_cache_path() -> String {
-    future_models_cache_path_in(dirs::home_dir())
+    future_models_cache_path_in(crate::utils::home_dir_opt())
 }
 
 /// `future_models_cache_path` with the home dir injected, so the no-home
@@ -200,9 +200,7 @@ pub(crate) fn cached_model_count() -> usize {
 
 fn resolve_future_platform_url() -> String {
     // Try to read base_url or platform_base_url from auth.json
-    let auth_path = dirs::home_dir()
-        .map(|h| h.join(".future/agent/auth.json"))
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/.future/agent/auth.json"));
+    let auth_path = crate::utils::default_config_dir().join("auth.json");
 
     std::fs::read_to_string(&auth_path)
         .ok()

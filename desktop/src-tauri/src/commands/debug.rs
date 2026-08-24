@@ -24,7 +24,7 @@ fn clear_app_data_with<R: tauri::Runtime>(
     relaunch: impl FnOnce(tauri::AppHandle<R>) -> Result<(), AppError>,
 ) -> Result<(), AppError> {
     store::clear_all_data()?;
-    agent_supervisor::shutdown_agent();
+    agent_supervisor::shutdown_agent_gracefully();
     relaunch(app)
 }
 
@@ -89,7 +89,7 @@ fn enforce_release_lock(is_release: bool, environment: &str) -> Result<(), AppEr
 /// `auth login --url`) and drops the stale key; both the agent and the GUI
 /// re-read `auth.json` on launch. `restart()` does not return.
 ///
-/// Why the explicit `shutdown_agent()` is load-bearing, not optional:
+/// Why the explicit `shutdown_agent_gracefully()` is load-bearing, not optional:
 ///
 /// The agent resolves the FutureGene `base_url` from `auth.json` **once, at
 /// startup** (agent/src/main.rs builds the registry via `resolve_future_base_url`
@@ -100,7 +100,7 @@ fn enforce_release_lock(is_release: bool, environment: &str) -> Result<(), AppEr
 /// But `app.restart()` on the main thread (all sync `#[tauri::command]`s run
 /// there) deliberately **skips** `RunEvent::Exit` — Tauri's own source says it
 /// "cannot guarantee the delivery of those events, so we skip them" and calls
-/// `process::restart()` directly. Our `shutdown_agent()` lives in that skipped
+/// `process::restart()` directly. Our graceful shutdown lives in that skipped
 /// `RunEvent::Exit` handler (see lib.rs), so without this call the old agent is
 /// never killed: it survives as an orphan still bound to the gRPC port, pointing
 /// at the *previous* environment. The relaunched GUI then finds the port already
@@ -125,7 +125,7 @@ fn set_future_environment_with<R: tauri::Runtime>(
     // agent, so there is nothing to RPC — the relaunched agent reads the new
     // `base_url` from auth.json at startup.
     auth_store::set_future_base_url(&format!("{platform_url}/api"))?;
-    agent_supervisor::shutdown_agent();
+    agent_supervisor::shutdown_agent_gracefully();
     relaunch(app)
 }
 

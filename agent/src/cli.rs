@@ -8,7 +8,69 @@ use crate::{Engine, EngineConfig, Manager, ModelRegistry};
 use anyhow::Result;
 use chrono::Local;
 use clap::Parser;
+use std::fs::{File, OpenOptions};
+use std::io::{Seek, SeekFrom, Write};
+use std::path::Path;
 use std::sync::Arc;
+
+type AgentInstanceGuard = fd_lock::RwLockWriteGuard<'static, File>;
+
+struct CleanupGuard<F: FnOnce()>(Option<F>);
+
+impl<F: FnOnce()> CleanupGuard<F> {
+    fn new(cleanup: F) -> Self {
+        Self(Some(cleanup))
+    }
+}
+
+impl<F: FnOnce()> Drop for CleanupGuard<F> {
+    fn drop(&mut self) {
+        if let Some(cleanup) = self.0.take() {
+            cleanup();
+        }
+    }
+}
+
+/// Hold a user-scoped process lock for the full server lifetime. The gRPC port
+/// is not a sufficient singleton boundary because a second agent can choose a
+/// different `--grpc-addr` while still sharing sessions, approval state, and
+/// Windows sandbox capability metadata with the first one.
+fn acquire_agent_instance_lock() -> Result<AgentInstanceGuard> {
+    acquire_agent_instance_lock_at(&crate::utils::default_config_dir().join("agent-instance.lock"))
+}
+
+fn acquire_agent_instance_lock_at(path: &Path) -> Result<AgentInstanceGuard> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        // Do not truncate until after the exclusive lock is held; a rejected
+        // second process must not erase the running Agent's diagnostic PID.
+        .truncate(false)
+        .open(path)?;
+    // The lock object must outlive its write guard. This function runs once per
+    // server process, so retaining the tiny allocation until process exit is
+    // intentional; the OS releases the file lock even after a crash/force-kill.
+    let lock = Box::leak(Box::new(fd_lock::RwLock::new(file)));
+    let mut guard = lock.try_write().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            anyhow::anyhow!(
+                "Future Agent is already running for this user (lock: {})",
+                path.display()
+            )
+        } else {
+            anyhow::Error::from(error)
+        }
+    })?;
+    guard.seek(SeekFrom::Start(0))?;
+    guard.set_len(0)?;
+    writeln!(guard, "{}", std::process::id())?;
+    guard.flush()?;
+    Ok(guard)
+}
 
 /// Map of live server sessions shared with the shutdown paths.
 type SessionsMap = Arc<
@@ -92,6 +154,24 @@ async fn wait_for_streams_to_settle(sessions: &SessionsMap, timeout: std::time::
 #[command(name = "future-agent")]
 #[command(version = crate::utils::VERSION)]
 pub struct Cli {
+    /// Verify the complete Windows unelevated sandbox pipeline and print a
+    /// machine-readable result without starting the agent server.
+    #[arg(
+        long,
+        default_value_t = false,
+        conflicts_with = "reset_windows_sandbox"
+    )]
+    probe_windows_sandbox: bool,
+
+    /// Revoke all tracked FutureOS Windows sandbox ACL entries. Intended for
+    /// Settings reset and the installer/uninstaller maintenance path.
+    #[arg(
+        long,
+        default_value_t = false,
+        conflicts_with = "probe_windows_sandbox"
+    )]
+    reset_windows_sandbox: bool,
+
     /// gRPC server address (host:port, e.g., 127.0.0.1:50051)
     #[arg(long, default_value = "127.0.0.1:50051")]
     grpc_addr: String,
@@ -150,14 +230,65 @@ pub struct Cli {
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
 /// Parse `future-agent` args (argv without the program name) and run the
-/// agent to completion. Returns an error only for early (pre-runtime)
-/// failures; runtime failures exit the process with code 1, exactly like the
-/// standalone binary.
+/// agent to completion. Both startup and runtime failures are returned to the
+/// standalone/unified CLI entry point, which reports exit code 1 after process
+/// guards (singleton lock, Windows permission cleanup, profilers) are dropped.
 pub fn run_from_args(args: &[String]) -> Result<()> {
     let mut argv = vec!["future-agent".to_string()];
     argv.extend_from_slice(args);
     let cli = Cli::parse_from(argv);
-    run(cli)
+    if cli.probe_windows_sandbox {
+        let result = crate::sandbox::probe_windows_sandbox_host()?;
+        if result.diagnostic().is_some() {
+            tracing::debug!(code = result.code, "Windows sandbox host probe unavailable");
+        }
+        println!("{}", serde_json::to_string(&result)?);
+        return Ok(());
+    }
+    if cli.reset_windows_sandbox {
+        let removed = crate::sandbox::reset_windows_sandbox_capabilities()?;
+        println!("{{\"removedCapabilities\":{removed}}}");
+        return Ok(());
+    }
+    // Maintenance commands above are deliberately sessionless and must remain
+    // usable while the server is running. Only the long-lived server owns the
+    // user-scoped singleton lock.
+    let _instance_guard = acquire_agent_instance_lock()?;
+    run_agent_lifecycle(
+        cleanup_windows_sandbox_on_startup,
+        || run(cli),
+        cleanup_windows_sandbox_on_exit,
+    )
+}
+
+fn run_agent_lifecycle<T>(
+    startup_cleanup: impl FnOnce(),
+    run_server: impl FnOnce() -> Result<T>,
+    exit_cleanup: impl FnOnce(),
+) -> Result<T> {
+    startup_cleanup();
+    // RAII makes cleanup cover successful shutdown, server/config errors, and
+    // unwindable panics. Process abort/force-exit cannot run destructors and is
+    // intentionally recovered by the next startup cleanup instead.
+    let _exit_cleanup = CleanupGuard::new(exit_cleanup);
+    run_server()
+}
+
+/// Once the singleton is held, no other Future Agent for this user can own a
+/// live restricted process tree. Reclaim ACEs left by a previous crash before
+/// accepting commands; the separate capability lock still fails safely if an
+/// installer/maintenance process is concurrently touching the state.
+fn cleanup_windows_sandbox_on_startup() {
+    #[cfg(target_os = "windows")]
+    match crate::sandbox::reset_windows_sandbox_capabilities() {
+        Ok(removed) if removed > 0 => {
+            eprintln!("Future Agent: cleaned {removed} stale Windows sandbox permission(s)")
+        }
+        Ok(_) => {}
+        Err(error) => {
+            eprintln!("Future Agent: could not clean stale Windows sandbox permissions: {error}")
+        }
+    }
 }
 
 /// Test-only failure injection for the profiler error arms. The spawned
@@ -232,7 +363,7 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
     // disk when dropped, so it must outlive the tokio runtime — it lives
     // here in run() and is dropped explicitly before any early exit.
     #[cfg(feature = "dhat-heap")]
-    let heap_profiler = cli.profile_heap.as_ref().map(|path| {
+    let _heap_profiler = cli.profile_heap.as_ref().map(|path| {
         tracing::info!("Heap profiling enabled → will write dhat report to {path}");
         dhat::Profiler::builder().file_name(path).build()
     });
@@ -362,14 +493,11 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
     #[cfg(windows)]
     let _ = (profiler_guard, profile_path);
 
-    // Propagate async_main's failure as a non-zero exit code so callers
-    // (CLI/TUI/service managers) can detect an abnormal exit.
+    // Propagate async_main's failure so the standalone/unified entry point can
+    // report exit code 1 *after* process-lifetime cleanup guards have run.
     if let Err(e) = run_result {
         tracing::error!("Agent exited with error: {e}");
-        // process::exit skips destructors — flush the heap report first.
-        #[cfg(feature = "dhat-heap")]
-        drop(heap_profiler);
-        std::process::exit(1);
+        return Err(e);
     }
     Ok(())
 }
@@ -378,10 +506,7 @@ async fn async_main(
     model_registry: Arc<parking_lot::RwLock<ModelRegistry>>,
     cli: Cli,
 ) -> Result<()> {
-    let cwd = dirs::home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-        .to_string_lossy()
-        .to_string();
+    let cwd = crate::utils::home_dir().to_string_lossy().to_string();
 
     let all_models = model_registry.read().all_models();
 
@@ -682,6 +807,20 @@ async fn async_main(
     Ok(())
 }
 
+/// A graceful standalone-agent exit has already stopped accepting work and
+/// settled/aborted streams. Revoke the now-unused persistent Windows ACEs.
+/// Failure is best-effort: metadata is retained so startup GC, Settings reset,
+/// or uninstall can retry after a crash, active lease, or transient I/O error.
+fn cleanup_windows_sandbox_on_exit() {
+    #[cfg(target_os = "windows")]
+    match crate::sandbox::reset_windows_sandbox_capabilities() {
+        Ok(removed) => tracing::info!(removed, "Cleaned Windows sandbox permissions on exit"),
+        Err(error) => {
+            tracing::warn!(%error, "Could not clean Windows sandbox permissions on exit")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -701,6 +840,58 @@ mod tests {
     fn load_project_context_empty_when_nothing_readable() {
         let dir = tempfile::tempdir().unwrap();
         assert!(load_project_context(&dir.path().to_string_lossy()).is_empty());
+    }
+
+    #[test]
+    fn agent_instance_lock_is_exclusive_and_reusable_after_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent-instance.lock");
+        let first = acquire_agent_instance_lock_at(&path).expect("first agent owns lock");
+        let error = acquire_agent_instance_lock_at(&path).expect_err("second agent is rejected");
+        assert!(error.to_string().contains("already running"));
+        drop(first);
+        let _next = acquire_agent_instance_lock_at(&path).expect("lock released on exit");
+    }
+
+    #[test]
+    fn agent_lifecycle_cleans_on_success_error_and_panic() {
+        let success = std::cell::RefCell::new(Vec::new());
+        let result: Result<i32> = run_agent_lifecycle(
+            || success.borrow_mut().push("startup"),
+            || {
+                success.borrow_mut().push("run");
+                Ok(7)
+            },
+            || success.borrow_mut().push("exit"),
+        );
+        assert_eq!(result.unwrap(), 7);
+        assert_eq!(*success.borrow(), ["startup", "run", "exit"]);
+
+        let error = std::cell::RefCell::new(Vec::new());
+        let result: Result<()> = run_agent_lifecycle(
+            || error.borrow_mut().push("startup"),
+            || {
+                error.borrow_mut().push("run");
+                anyhow::bail!("server failed")
+            },
+            || error.borrow_mut().push("exit"),
+        );
+        assert_eq!(result.unwrap_err().to_string(), "server failed");
+        assert_eq!(*error.borrow(), ["startup", "run", "exit"]);
+
+        let panic_steps = std::cell::RefCell::new(Vec::new());
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = run_agent_lifecycle::<()>(
+                || panic_steps.borrow_mut().push("startup"),
+                || {
+                    panic_steps.borrow_mut().push("run");
+                    panic!("server panic")
+                },
+                || panic_steps.borrow_mut().push("exit"),
+            );
+        }));
+        assert!(panic.is_err());
+        assert_eq!(*panic_steps.borrow(), ["startup", "run", "exit"]);
     }
 
     fn sessions_with(streaming: bool) -> SessionsMap {
