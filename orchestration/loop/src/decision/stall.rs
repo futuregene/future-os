@@ -59,7 +59,9 @@ pub(crate) fn repair_exhausted_reason(goal: &Goal) -> Option<String> {
                 .validator
                 .as_deref()
                 .map(|v| format!(" (--verify `{v}` failed {})", t.failed_attempts))
-                .unwrap_or_else(|| format!(" (no --verify; {} failed attempts)", t.failed_attempts));
+                .unwrap_or_else(|| {
+                    format!(" (no --verify; {} failed attempts)", t.failed_attempts)
+                });
             format!("{}{}", t.id, gate)
         })
         .collect();
@@ -67,7 +69,10 @@ pub(crate) fn repair_exhausted_reason(goal: &Goal) -> Option<String> {
         "check (a) is the --verify gate tautological/always-false (e.g. `test -n \"\"` from an empty $() expansion), or (b) does it assert a file only present at grading time (data injected into /app/data)? Fix the gate or supersede the todo — don't relaunch the same turn"
             .to_string(),
     );
-    Some(format!("advancement todo(s) exhausted repair budget: {}", parts.join("; ")))
+    Some(format!(
+        "advancement todo(s) exhausted repair budget: {}",
+        parts.join("; ")
+    ))
 }
 
 #[cfg(test)]
@@ -127,7 +132,10 @@ mod tests {
         let reason = repair_exhausted_reason(&g).expect("reason present");
         assert!(reason.contains("T1"), "{reason}");
         assert!(reason.contains("--verify"), "{reason}");
-        assert!(reason.contains("tautological") || reason.contains("grading time"), "{reason}");
+        assert!(
+            reason.contains("tautological") || reason.contains("grading time"),
+            "{reason}"
+        );
     }
 
     #[test]

@@ -572,8 +572,10 @@ pub struct RunRecord {
 /// Stamped on the RunRecord at writeback time (serialized for replay).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum FailureKind {
     /// No failure — the turn delivered (succeeded or a monitor poll).
+    #[default]
     None,
     /// Recoverable infrastructure: HTTP 429 / rate-limit / connection reset /
     /// agent crash / stream gap. Back off and retry — does NOT count against
@@ -587,12 +589,6 @@ pub enum FailureKind {
     /// failure for budget purposes (the loop cannot tell it apart from a
     /// genuinely bad run).
     HardError,
-}
-
-impl Default for FailureKind {
-    fn default() -> Self {
-        FailureKind::None
-    }
 }
 
 /// An acceptance condition not yet satisfied by evidence. Terminal closure

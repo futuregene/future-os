@@ -93,6 +93,7 @@ pub fn no_progress_idle_secs(
 ///   79 failed turns on a single todo).
 /// - **always-true** (`test -z ""`): the gate never bites, so a placeholder
 ///   payload is marked done.
+///
 /// Refuse both at `todo add/update --verify` time rather than discovering the
 /// loop minutes later. Returns a human reason for a tautological validator,
 /// `None` for a plausible one.
@@ -320,10 +321,7 @@ mod validator_tests {
             validator_tautology("test -f out.json && python check.py"),
             None
         );
-        assert_eq!(
-            validator_tautology("test -n \"$(ls outputs)\""),
-            None
-        );
+        assert_eq!(validator_tautology("test -n \"$(ls outputs)\""), None);
     }
 
     #[test]
