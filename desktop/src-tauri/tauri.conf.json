@@ -53,6 +53,7 @@
     },
     "windows": {
       "nsis": {
+        "installMode": "currentUser",
         "languages": ["English", "SimpChinese"],
         "installerHooks": "./windows/installer-hooks.nsh"
       }

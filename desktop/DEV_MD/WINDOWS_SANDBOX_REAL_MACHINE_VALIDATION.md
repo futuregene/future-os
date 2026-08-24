@@ -133,45 +133,63 @@ Get-ChildItem .\target\windows-sandbox-results\windows-sandbox-*.log |
 
 此阶段需要包含本分支代码的 Windows portable/installer 构建。仍使用普通用户会话。
 
-### RM-01：bundled Agent 单例与归属
+### 5.0 构建与检查工具
 
-1. 确认没有 FutureOS/Future Agent 进程。
-2. 启动 FutureOS，等待 Agent 可连接。
-3. 再次启动 FutureOS。
-4. 检查进程：
+在干净的待测提交上分别构建 portable 和 NSIS。PowerShell 5.1 可直接运行两个构建脚本；已有依赖时可加 `-SkipDeps`：
 
 ```powershell
-Get-CimInstance Win32_Process |
-    Where-Object { $_.Name -in @('future.exe', 'future-agent.exe') } |
-    Select-Object ProcessId, Name, CommandLine
+powershell -ExecutionPolicy Bypass -File .\scripts\build-desktop-windows-portable.ps1 -SkipDeps
+powershell -ExecutionPolicy Bypass -File .\scripts\build-desktop-windows-installer.ps1 -SkipDeps
 ```
 
-预期：同一用户只有一个带 `agent` 子命令的 Agent；第二次启动应用不会产生第二个 Agent。
+portable 产物为仓库根目录的 `FutureOS-portable-windows.zip`；NSIS 产物位于 `desktop\src-tauri\target\release\bundle\nsis\`。解压 portable 后保持 `FutureOS.exe` 与 `future.exe` 同目录。开始前记录两者版本：
+
+```powershell
+.\future.exe --version
+git rev-parse HEAD
+```
+
+本阶段使用无 UI 自动化的生命周期检查脚本：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\test-windows-sandbox-lifecycle.ps1 -Action Snapshot
+```
+
+每次调用都会在 `target\windows-sandbox-results\windows-sandbox-lifecycle-<时间戳>.log` 留下独立报告。脚本只观察 FutureOS/Agent 的数量和父子归属、读取 capability record 数量，不记录完整命令行，也不会停止进程或卸载软件。
+
+由于 Windows 产品入口在 W7 前保持关闭，单纯启动应用通常不会生成 capability record。为了验证 packaged shutdown/startup/uninstall **确实调用**清理路径，可在指定步骤执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\test-windows-sandbox-lifecycle.ps1 -Action SeedCleanupFixture
+```
+
+该动作仅在当前 record 数量为 0 时，写入一条指向 `%TEMP%\FutureOS-Sandbox-Lifecycle-Fixture` 的合法测试 metadata；它不添加 ACL ACE，也不覆盖真实记录。P0 已单独证明真实 ACE 的添加/撤销，P1 用此夹具证明应用/安装器生命周期能够到达同一个 reset 原语。若后续步骤中断，可在确认没有活动任务后运行 `future.exe agent --reset-windows-sandbox` 恢复。
+
+### RM-01：bundled Agent 单例与归属
+
+1. 确认没有 FutureOS/Future Agent 进程，并执行 `-Action ExpectClean`。
+2. 启动 FutureOS，等待 Agent 可连接。
+3. 再次启动 FutureOS。
+4. 执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\test-windows-sandbox-lifecycle.ps1 -Action ExpectBundled
+```
+
+预期：同一用户只有一个 FutureOS 和一个带 `agent` 子命令的 Agent；Agent 的父进程是 FutureOS，第二次启动应用不会产生第二组进程。
 
 ### RM-02：正常退出
 
-1. 正常关闭 FutureOS。
-2. 等待最多 10 秒。
-3. 再次执行上述进程查询。
-4. 检查 capability 状态：
+1. FutureOS/Agent 处于 RM-01 的 `ExpectBundled` 状态。
+2. 执行 `-Action SeedCleanupFixture`，确认报告为 `RESULT: SEEDED` 且 record 数量为 1。
+3. 正常关闭 FutureOS，等待最多 20 秒。
+4. 执行：
 
 ```powershell
-$agentHome = @($env:HOME, $env:USERPROFILE) |
-    Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and [IO.Path]::IsPathRooted($_) } |
-    Select-Object -First 1
-if ([string]::IsNullOrWhiteSpace($agentHome)) {
-    $agentHome = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
-}
-$statePath = Join-Path $agentHome '.future\windows-capabilities.json'
-if (Test-Path -LiteralPath $statePath) {
-    $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
-    @($state.records).Count
-} else {
-    0
-}
+powershell -ExecutionPolicy Bypass -File .\scripts\test-windows-sandbox-lifecycle.ps1 -Action ExpectStopped
 ```
 
-预期：bundled Agent 已退出，记录数为 `0`。不要把完整状态文件内容贴入公开报告，因为其中可能包含本机路径。
+预期：FutureOS 与 bundled Agent 均已退出，退出清理消费了夹具，记录数为 `0`。不要把完整状态文件内容贴入公开报告，因为其中可能包含本机路径。
 
 ### RM-03：应用重启路径
 
@@ -189,52 +207,69 @@ if (Test-Path -LiteralPath $statePath) {
 - capability 记录数为 `0`；
 - 没有旧 Agent 占用 gRPC 端口。
 
+每条可执行路径都先运行 `-Action SeedCleanupFixture`，触发重启后运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\test-windows-sandbox-lifecycle.ps1 -Action ExpectRecovered
+```
+
 如果当前测试包无法触发某一条路径，在反馈中标为 `NOT RUN`，不要用其他路径的结果代替。
 
 ### RM-04：外部 Agent 不归桌面管理
 
-1. 在普通 PowerShell 中手工启动与桌面配置相同地址的 Agent。
+1. 在 portable 解压目录或安装目录中，用普通 PowerShell 手工启动与桌面配置相同地址的 Agent：
+
+   ```powershell
+   .\future.exe agent --grpc-addr 127.0.0.1:50051
+   ```
+
+   若测试环境通过 `FUTURE_AGENT_GRPC_ADDR` 使用其他地址，这里也必须使用同一值。
 2. 启动 FutureOS，确认桌面连接到该 Agent，而不是再生成 bundled Agent。
-3. 关闭 FutureOS。
-4. 确认手工 Agent 仍在运行。
-5. 用一次 Ctrl+C 正常结束手工 Agent。
+   执行 `-Action ExpectExternalAttached`，验证 Agent 的父进程不是 FutureOS。
+3. 执行 `-Action SeedCleanupFixture`，给外部 Agent 的生命周期放入一条测试记录。
+4. 关闭 FutureOS。
+5. 执行 `-Action ExpectExternalSurvives`，确认手工 Agent 仍在运行且测试记录仍为 1，证明 Desktop 没有替外部 Agent 清理。
+6. 用一次 Ctrl+C 正常结束手工 Agent。
+7. 执行 `-Action ExpectClean`，确认外部 Agent 自己退出时把记录清为 0。
 
 预期：桌面不终止、不替外部 Agent 清理；外部 Agent 自己正常退出时执行清理。测试结束后确认 capability 记录数为 `0`。
 
 ### RM-05：异常退出与启动恢复
 
-1. 启动 FutureOS/Agent。
-2. 从任务管理器强制结束 FutureOS 与 bundled Agent，模拟无法执行退出回调的崩溃。
+1. 启动 FutureOS/Agent，执行 `-Action ExpectBundled`，再执行 `-Action SeedCleanupFixture`。
+2. 从任务管理器强制结束 FutureOS 与 bundled Agent，模拟无法执行退出回调的崩溃；此时 `-Action Snapshot` 应显示两个进程均不存在但 record 仍为 1。
 3. 确认 Agent 进程锁不会永久阻止下一次启动。
 4. 再次启动 FutureOS。
-5. 检查只有一个 Agent，且 capability 记录数最终为 `0`。
+5. 执行 `-Action ExpectRecovered`，检查只有一个 bundled Agent，且 capability 记录数最终为 `0`。
 
 预期：强杀本身不承诺同步清理；下一次 Agent 成功获取单例锁后执行启动回收。若仍有活动 capability 文件锁，回收必须失败关闭而不是误删活动权限。
 
 ### RM-06：设置 reset 与统一 CLI reset
 
-在没有活动任务时执行：
+先关闭 FutureOS/Agent并执行 `-Action ExpectClean`，然后执行 `-Action SeedCleanupFixture`，再使用 portable 或安装目录中实际发布的统一 CLI：
 
 ```powershell
-cargo run --quiet --manifest-path .\cli\Cargo.toml -- agent --reset-windows-sandbox
+.\future.exe agent --reset-windows-sandbox
+powershell -ExecutionPolicy Bypass -File .\scripts\test-windows-sandbox-lifecycle.ps1 -Action ExpectClean
 ```
 
 预期输出形如：
 
 ```json
-{"removedCapabilities":0}
+{"removedCapabilities":1}
 ```
 
-若存在活动 sandbox Job，reset 应失败并保留记录，不能终止命令；任务结束后重试应成功。设置页的“重置写保护”必须调用同一 RPC 语义，但本手册不要求 UI 自动化。
+若存在活动 sandbox Job，reset 应失败并保留记录，不能终止命令；这一分支已由 P0 的 `capability_reset_refuses_active_jobs_then_removes_owned_aces` 真机测试覆盖，P1 不为了重复它而提前打开产品入口。设置页的“重置写保护”必须调用同一 RPC 语义，但本手册不要求 UI 自动化。
 
 ### RM-07：卸载清理
 
-使用包含本分支 NSIS hook 的安装包：
+使用包含本分支 NSIS hook 的安装包。NSIS `installMode` 已显式固定为 `currentUser`，确保卸载清理与 Agent 使用同一个普通用户 profile，不得用管理员身份启动卸载器：
 
-1. 确认 FutureOS 已退出且没有活动 Agent/Job。
-2. 正常卸载。
-3. 确认 FutureOS 自己记录的 capability ACE/metadata 已清理。
-4. 确认用户文件未被删除，原有非 FutureOS DACL 未被覆盖。
+1. 确认 FutureOS 已退出且没有活动 Agent/Job，执行 `-Action ExpectClean`。
+2. 执行 `-Action SeedCleanupFixture`，确认 record 数量为 1。
+3. 正常卸载。
+4. 执行 `-Action ExpectClean`，确认 NSIS pre-uninstall hook 已清理 metadata。
+5. 确认安装目录已移除，测试夹具目录和其他用户文件未被删除，原有非 FutureOS DACL 未被覆盖。
 
 如果卸载前 reset 失败，卸载必须保留可重试的应用/sidecar，而不是先删除清理工具。失败时保留安装器日志和 capability record 数量，不要手工使用 `icacls /reset`，因为它会修改与 FutureOS 无关的 ACL。
 
@@ -344,9 +379,11 @@ Rust toolchain: 1.97.0（x86_64-pc-windows-msvc）
 
 §5 的安装包生命周期验证（RM-01 ~ RM-07）需要包含本分支代码的 Windows portable/installer 构建，属于主脚本通过后的下一阶段，本次未执行。
 
-### 9.5 本次收口后的复验要求
+### 9.5 最新提交复验：PASS
 
-本次又统一了用户目录解析，因此 9.1 的 PASS 仍是核心后端有效证据，但不能替代对最新提交的回归。更新分支后先重跑 §3；报告中新增的 `Agent home` 必须是预期目录，末尾仍须为 `Remaining persisted Windows capability records: 0` 和 `RESULT: PASS`。不需要为该复验新增 CI，仍只使用本手册的 Windows 真机脚本。
+2026-08-24 11:21 在提交 `471a8cd79da99c3186a88448a0b685c0130cb2e4` 上完成复验：工作区干净、非管理员、`Agent home: C:\Users\FgClaw01`、本地 NTFS；50 项 Windows 原生/端到端、11 项 capability 审批、Agent 单例、2 项 Desktop graceful shutdown 和 release probe 全部通过，末尾为 `Remaining persisted Windows capability records: 0`、`RESULT: PASS`。该报告未带 `-IncludeClippy`；同提交的 Agent `--all-targets -D warnings` 已在开发端通过，不影响本轮 Windows 原生行为结论。
+
+SID 兼容矩阵还给出一项后续硬化证据：本主机 `capability + Everyone` 可启动 PowerShell，`capability + logon` 不可启动，说明 logon SID 在此主机不是必要条件。生产 restricting 集暂不只凭单台主机改变；P2 在额外主机复测后再决定是否移除 logon SID。
 
 ## 10. 后续任务与执行顺序
 
@@ -354,7 +391,7 @@ Rust toolchain: 1.97.0（x86_64-pc-windows-msvc）
 
 | 优先级 | 任务 | 测试方法 | 通过标准 |
 |---|---|---|---|
-| P0 | 最新提交底层回归 | 普通 PowerShell 运行 §3 的完整脚本并带 `-IncludeClippy` | 所有命令 exit 0；probe `available:true`；Agent home 正确；残留记录 0；`RESULT: PASS` |
+| ✅ P0 | 最新提交底层回归 | 普通 PowerShell 运行 §3 的完整脚本 | 2026-08-24，提交 `471a8cd7`：probe `available:true`；Agent home 正确；残留记录 0；`RESULT: PASS` |
 | P1 | portable/installer 单例与正常退出 | 按 RM-01、RM-02 检查进程与 capability record | 同用户仅一个 Agent；正常退出先清理再结束；记录数 0 |
 | P1 | 三种桌面重启路径 | 按 RM-03 分别执行清数据、切环境、更新重启 | 旧 Agent 退出、新 Agent 单例、端口释放、记录数 0；不可触发的项目明确记 `NOT RUN` |
 | P1 | 外部 Agent 归属 | 按 RM-04 手工启动 Agent，再启动/退出桌面 | Desktop 不接管或终止外部 Agent；外部 Agent 自行退出后清理为 0 |
