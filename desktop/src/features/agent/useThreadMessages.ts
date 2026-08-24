@@ -299,6 +299,61 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
           });
         return;
       }
+      if (
+        detail.eventType === "compaction_started"
+        || detail.eventType === "compaction_committed"
+        || detail.eventType === "compaction_failed"
+      ) {
+        // Run-scoped compaction is already projected from the persisted run
+        // event log. This direct path is for standalone/manual and model-switch
+        // compaction, which has no active run bubble to host its status.
+        if (isRunActive || attachedRef.current)
+          return;
+        const operationId = typeof detail.payload.operation_id === "string"
+          ? detail.payload.operation_id
+          : `session_${Date.now()}`;
+        const messageId = `compaction_${operationId}`;
+        const checkpointId = typeof detail.payload.checkpoint_id === "string"
+          ? detail.payload.checkpoint_id
+          : operationId;
+        const tokensBefore = typeof detail.payload.tokens_before === "number"
+          ? detail.payload.tokens_before
+          : undefined;
+        const error = typeof detail.payload.error === "string"
+          ? detail.payload.error
+          : undefined;
+        const status = detail.eventType === "compaction_started"
+          ? "running" as const
+          : detail.eventType === "compaction_failed"
+            ? "failed" as const
+            : "completed" as const;
+        setMessages((prev) => {
+          const segment = {
+            id: checkpointId,
+            kind: "compaction" as const,
+            ...(tokensBefore != null && tokensBefore > 0 ? { tokensBefore } : {}),
+            ...(status !== "completed" ? { status } : {}),
+            ...(error ? { error } : {}),
+          };
+          const existing = prev.findIndex(message => message.id === messageId);
+          const message: AgentMessage = {
+            id: messageId,
+            role: "assistant",
+            authorKey: "author.researchCopilot",
+            content: "",
+            status: "complete",
+            createdAt: new Date().toISOString(),
+            segments: [segment],
+          };
+          if (existing < 0)
+            return [...prev, message];
+          const next = [...prev];
+          next[existing] = message;
+          return next;
+        });
+        messagesGenRef.current += 1;
+        return;
+      }
       if (detail.eventType !== "user_message")
         return;
 

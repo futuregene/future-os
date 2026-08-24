@@ -243,7 +243,13 @@ export type TimelineSegment =
   | { id: string; kind: "text"; text: string }
   | { id: string; kind: "thinking"; text: string }
   | { id: string; kind: "tool"; tool: TimelineToolRow }
-  | { id: string; kind: "compaction"; tokensBefore?: number };
+  | {
+      id: string;
+      kind: "compaction";
+      tokensBefore?: number;
+      status?: "running" | "completed" | "failed";
+      error?: string;
+    };
 
 export type TimelineItem =
   | {

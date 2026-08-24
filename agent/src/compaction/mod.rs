@@ -193,6 +193,31 @@ impl ContextManager {
         interrupted: &std::sync::atomic::AtomicBool,
         fallback: Option<(&dyn crate::types::LLMProvider, &str)>,
     ) -> Result<ContextPreparation, ContextError> {
+        self.prepare_semantic_with_lifecycle(
+            prompt,
+            trigger,
+            phase,
+            custom_instructions,
+            provider,
+            interrupted,
+            fallback,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn prepare_semantic_with_lifecycle(
+        &self,
+        prompt: PromptContext,
+        trigger: CompactionTrigger,
+        phase: CompactionPhase,
+        custom_instructions: Option<&str>,
+        provider: &dyn crate::types::LLMProvider,
+        interrupted: &std::sync::atomic::AtomicBool,
+        fallback: Option<(&dyn crate::types::LLMProvider, &str)>,
+        on_started: Option<&(dyn Fn() + Sync)>,
+    ) -> Result<ContextPreparation, ContextError> {
         semantic::prepare(
             self,
             prompt,
@@ -202,6 +227,7 @@ impl ContextManager {
             provider,
             interrupted,
             fallback,
+            on_started,
         )
         .await
     }

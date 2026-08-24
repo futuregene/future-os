@@ -135,13 +135,21 @@ loader 已同时接受：
 
 ### 3.5 Durable commit 与 UI marker
 
+每次真正进入压缩流程时生成唯一 `operation_id`，并通过 run-event journal 发出完整生命周期：
+
+1. `compaction_started`：摘要请求开始前发出，UI 显示“正在压缩”；
+2. `compaction_committed`：checkpoint durable commit 成功后发出，UI 将同一 marker 原位更新为成功；
+3. `compaction_failed`：摘要、边界规划或持久化任一步失败时发出，UI 将同一 marker 原位更新为失败并保留错误详情。
+
+三种事件都携带同一个 `operation_id`；`trigger` 和 `phase` 在 started/failed 中明确携带，committed 从 checkpoint 携带。未达到阈值、无需压缩的 `Unchanged` 路径不发 started，避免产生虚假状态。
+
 checkpoint 与消息 append 共用同一个 FIFO 持久化队列。只有此前 append、checkpoint append、flush 和 `fsync` 全部成功后，才允许：
 
 1. 激活新的内存 checkpoint；
 2. 发出 `compaction_committed`；
-3. 在 UI 中创建永久 marker。
+3. 将 UI marker 更新为成功。
 
-重启、reconnect 和历史加载从 journal checkpoint 恢复同一个 marker；live event 只承担低延迟通知。旧 `compaction_end` 继续兼容读取，并与 checkpoint marker 去重。
+重启、reconnect 和历史加载从 checkpoint 与 run-event journal 恢复状态；live event 只承担低延迟通知。旧 `compaction_end` 继续兼容读取，并与 checkpoint marker 去重。进程在 committed 之前被强制终止时，不激活 checkpoint、不改变 prompt projection；恢复时未闭合的 running marker 必须按中断处理，不能永久显示“正在压缩”。
 
 ### 3.6 Fork、分页与存储边界
 
@@ -464,21 +472,23 @@ deterministic-emergency-v1
 ```text
 1. 从 ProjectedMessage.source_entry_ids 计算连续 covered range
 2. 验证 covered_from、cutoff 和 tool 边界
-3. 生成 final summary
-4. 构建 summary + recent tail 的候选 PromptContext
-5. 计算 tokens_before/tokens_after
-6. append checkpoint 到 session JSONL
-7. flush + fsync
-8. 激活 active_checkpoint
-9. 发出 compaction_committed
-10. 用新 PromptContext 调用或重试模型
+3. 生成 operation_id 并发出 compaction_started
+4. 生成 final summary
+5. 构建 summary + recent tail 的候选 PromptContext
+6. 计算 tokens_before/tokens_after
+7. append checkpoint 到 session JSONL
+8. flush + fsync
+9. 激活 active_checkpoint
+10. 发出携带同一 operation_id 的 compaction_committed
+11. 用新 PromptContext 调用或重试模型
 ```
 
-步骤 6 或 7 失败时：
+步骤 4 至 8 任一步失败时：
 
 - 不修改 active checkpoint；
 - 不发送 committed event；
-- 不显示永久 UI marker；
+- 发送携带同一 operation_id、trigger、phase 和错误详情的 `compaction_failed`；
+- UI 将 running marker 原位更新为失败；
 - 不使用只存在内存中的 summary 调用普通模型；
 - 返回结构化 persistence error。
 
@@ -500,7 +510,7 @@ deterministic-emergency-v1
 
 ### 12.2 Run-event 与 RPC
 
-`compaction_committed` 延续现有 payload，可加法携带 `phase`。分页、历史重放和 reconnect 继续以 checkpoint journal entry 为事实来源。旧 `compaction_end` 和旧 marker 去重规则不变。
+新增 `compaction_started`；`compaction_committed` 与 `compaction_failed` 加法携带 `operation_id`/`phase`，不删除或改名任何既有字段。三态事件进入现有 run-event journal 和 RPC `StreamEvent`，不新增 session JSONL 顶层行类型。成功后的 prompt projection 仍只以 checkpoint journal entry 为事实来源；started/failed 只描述操作状态，不得改变历史上下文。旧 `compaction_end`、缺少 `operation_id` 的旧 committed 事件和旧 marker 去重规则保持兼容。
 
 ### 12.3 SQLite
 
@@ -552,6 +562,8 @@ deterministic-emergency-v1
 - MidTurn 压缩后继续同一个 run，不生成 synthetic user message；
 - provider-limit 每次 retry 绑定唯一 checkpoint，阻止循环压缩；
 - phase/trigger 加法贯通 agent、RPC、desktop、mobile 和 thread projection。
+- started/committed/failed 使用 operation_id 关联，Desktop/Mobile 原位展示 running/completed/failed 分割线；
+- agent/process 中断时不得遗留永久 running 状态，且 committed 前不得改变 active checkpoint。
 
 ### Phase S4：兼容、可观察性与发布收口
 
@@ -617,6 +629,8 @@ S1–S4 可以按独立提交交付，但只有 S1 与 S2 同时完成后才允�
 - 旧会话继续运行不会改写既有 JSONL；
 - fork 后 checkpoint 范围仍有效；
 - UI/reconnect/event replay 不重复 marker；
+- started → committed 与 started → failed 都只显示一个原位更新的 marker；
+- 强制退出后未 committed 的操作不改变 checkpoint，恢复 UI 不永久停留在 running；
 - 完整导出继续包含所有原始消息与 tool output；
 - desktop SQLite schema snapshot 完全不变。
 

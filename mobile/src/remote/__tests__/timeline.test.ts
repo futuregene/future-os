@@ -875,6 +875,75 @@ describe("shared-projection semantic flags", () => {
     ]);
   });
 
+  test("compaction lifecycle replaces running state and retains failures", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "compaction_started",
+      data: JSON.stringify({ operation_id: "cmp-1", trigger: "automatic", phase: "pre_turn" }),
+      runId: "run-1",
+      idx: 0,
+    });
+    let reply = state.items.find(item => item.kind === "message");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    expect(reply.segments).toEqual([
+      { id: "cmp-1", kind: "compaction", status: "running" },
+    ]);
+
+    state = applyStreamEvent(state, {
+      type: "compaction_committed",
+      data: JSON.stringify({ operation_id: "cmp-1", checkpoint_id: "cp-1", tokens_before: 42_000 }),
+      runId: "run-1",
+      idx: 1,
+    });
+    reply = state.items.find(item => item.kind === "message");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    expect(reply.segments).toEqual([
+      { id: "cp-1", kind: "compaction", tokensBefore: 42_000 },
+    ]);
+
+    let failedState = applyStreamEvent(emptyTimeline(), {
+      type: "compaction_started",
+      data: JSON.stringify({ operation_id: "cmp-2" }),
+      runId: "run-2",
+      idx: 0,
+    });
+    failedState = applyStreamEvent(failedState, {
+      type: "compaction_failed",
+      data: JSON.stringify({ operation_id: "cmp-2", error: "summary failed" }),
+      runId: "run-2",
+      idx: 1,
+    });
+    const failedReply = failedState.items.find(item => item.kind === "message");
+    if (!failedReply || failedReply.kind !== "message") throw new Error("reply bubble missing");
+    expect(failedReply.segments).toEqual([
+      { id: "cmp-2", kind: "compaction", status: "failed", error: "summary failed" },
+    ]);
+
+    let interruptedState = applyStreamEvent(emptyTimeline(), {
+      type: "compaction_started",
+      data: JSON.stringify({ operation_id: "cmp-3" }),
+      runId: "run-3",
+      idx: 0,
+    });
+    interruptedState = applyStreamEvent(interruptedState, {
+      type: "agent_end",
+      data: JSON.stringify({ state: "cancelled" }),
+      runId: "run-3",
+      idx: 1,
+    });
+    const interruptedReply = interruptedState.items.find(item => item.kind === "message");
+    if (!interruptedReply || interruptedReply.kind !== "message") {
+      throw new Error("reply bubble missing");
+    }
+    expect(interruptedReply.segments).toEqual([
+      {
+        id: "cmp-3",
+        kind: "compaction",
+        status: "failed",
+        error: "compaction interrupted before completion",
+      },
+    ]);
+  });
+
   test("the settled totals prefer agent_end usage over the late-join partial sum", () => {
     let state = applyStreamEvent(emptyTimeline(), {
       type: "text_chunk",

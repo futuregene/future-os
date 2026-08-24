@@ -90,8 +90,16 @@ pub(super) async fn prepare(
     provider: &dyn LLMProvider,
     interrupted: &AtomicBool,
     fallback: Option<(&dyn LLMProvider, &str)>,
+    on_started: Option<&(dyn Fn() + Sync)>,
 ) -> Result<ContextPreparation, ContextError> {
-    let plan = match plan(manager, prompt, trigger, phase, custom_instructions)? {
+    let plan = match plan(
+        manager,
+        prompt,
+        trigger,
+        phase,
+        custom_instructions,
+        on_started,
+    )? {
         PlannedPreparation::Unchanged(prompt) => {
             return Ok(ContextPreparation::Unchanged { prompt });
         }
@@ -141,6 +149,7 @@ pub(super) fn prepare_deterministic(
         trigger,
         super::default_phase(trigger),
         custom_instructions,
+        None,
     )? {
         PlannedPreparation::Unchanged(prompt) => Ok(ContextPreparation::Unchanged { prompt }),
         PlannedPreparation::Compact(plan) => {
@@ -157,6 +166,7 @@ fn plan(
     trigger: CompactionTrigger,
     phase: CompactionPhase,
     custom_instructions: Option<&str>,
+    on_started: Option<&(dyn Fn() + Sync)>,
 ) -> Result<PlannedPreparation, ContextError> {
     if prompt.messages.is_empty() {
         return Ok(PlannedPreparation::Unchanged(prompt));
@@ -180,6 +190,9 @@ fn plan(
     ) && tokens_before <= window.saturating_sub(reserve)
     {
         return Ok(PlannedPreparation::Unchanged(prompt));
+    }
+    if let Some(on_started) = on_started {
+        on_started();
     }
 
     let costs = prompt

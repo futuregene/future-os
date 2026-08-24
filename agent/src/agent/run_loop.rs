@@ -107,6 +107,19 @@ impl Loop {
                 reported_input,
                 context_window,
             );
+            let automatic_phase = if turn == 0 {
+                crate::compaction::CompactionPhase::PreTurn
+            } else {
+                crate::compaction::CompactionPhase::MidTurn
+            };
+            let automatic_operation_id = format!("cmp_{}", crate::utils::generate_entry_id());
+            let emit_automatic_started = || {
+                on_event(RunEvent::CompactionStarted {
+                    operation_id: automatic_operation_id.clone(),
+                    trigger: crate::compaction::CompactionTrigger::Automatic,
+                    phase: automatic_phase,
+                });
+            };
             let prepared = if let Some(manager) = &self.context_manager {
                 if provider_limit_checkpoint_id.is_some() {
                     // The retry below must use exactly the checkpoint produced
@@ -115,17 +128,15 @@ impl Loop {
                     Ok(crate::compaction::ContextPreparation::Unchanged { prompt: projected })
                 } else {
                     manager
-                        .prepare_semantic_with_phase(
+                        .prepare_semantic_with_lifecycle(
                             projected,
                             crate::compaction::CompactionTrigger::Automatic,
-                            if turn == 0 {
-                                crate::compaction::CompactionPhase::PreTurn
-                            } else {
-                                crate::compaction::CompactionPhase::MidTurn
-                            },
+                            automatic_phase,
                             None,
                             self.provider.as_ref(),
                             self.interrupt_flag.as_ref(),
+                            None,
+                            Some(&emit_automatic_started),
                         )
                         .await
                 }
@@ -136,18 +147,29 @@ impl Loop {
                 Ok(crate::compaction::ContextPreparation::Unchanged { prompt }) => prompt,
                 Ok(crate::compaction::ContextPreparation::Compacted { prompt, checkpoint }) => {
                     if let Some(commit) = &ctx.on_checkpoint {
-                        commit(&checkpoint)?;
+                        if let Err(error) = commit(&checkpoint) {
+                            on_event(RunEvent::CompactionFailed {
+                                operation_id: automatic_operation_id.clone(),
+                                trigger: crate::compaction::CompactionTrigger::Automatic,
+                                phase: automatic_phase,
+                                error: error.to_string(),
+                            });
+                            return Err(error);
+                        }
                     }
                     active_checkpoint = Some((*checkpoint).clone());
                     *self.active_checkpoint.lock() = Some((*checkpoint).clone());
                     on_event(RunEvent::CompactionCommitted {
+                        operation_id: automatic_operation_id.clone(),
                         checkpoint: *checkpoint,
                     });
                     prompt
                 }
                 Err(error) => {
                     on_event(RunEvent::CompactionFailed {
+                        operation_id: automatic_operation_id.clone(),
                         trigger: crate::compaction::CompactionTrigger::Automatic,
+                        phase: automatic_phase,
                         error: error.to_string(),
                     });
                     return Err(anyhow!(error));
@@ -229,10 +251,27 @@ impl Loop {
                             // derived from the app template (model_registry =
                             // None, e.g. tests) fall back to a fresh Registry
                             // so behaviour matches the pre-cache code.
+                            let provider_limit_phase = crate::compaction::CompactionPhase::MidTurn;
+                            let provider_limit_operation_id =
+                                format!("cmp_{}", crate::utils::generate_entry_id());
                             let Some(manager) = &self.context_manager else {
-                                return Err(anyhow!(
+                                let error = anyhow!(
                                     "context compaction is unavailable for provider-limit recovery"
-                                ));
+                                );
+                                on_event(RunEvent::CompactionStarted {
+                                    operation_id: provider_limit_operation_id.clone(),
+                                    trigger:
+                                        crate::compaction::CompactionTrigger::ProviderContextLimit,
+                                    phase: provider_limit_phase,
+                                });
+                                on_event(RunEvent::CompactionFailed {
+                                    operation_id: provider_limit_operation_id,
+                                    trigger:
+                                        crate::compaction::CompactionTrigger::ProviderContextLimit,
+                                    phase: provider_limit_phase,
+                                    error: error.to_string(),
+                                });
+                                return Err(error);
                             };
                             let projected = crate::compaction::project_prompt_context(
                                 &messages,
@@ -240,14 +279,24 @@ impl Loop {
                                 None,
                                 manager.context_window.max(1) as u64,
                             );
+                            let emit_provider_limit_started = || {
+                                on_event(RunEvent::CompactionStarted {
+                                    operation_id: provider_limit_operation_id.clone(),
+                                    trigger:
+                                        crate::compaction::CompactionTrigger::ProviderContextLimit,
+                                    phase: provider_limit_phase,
+                                });
+                            };
                             match manager
-                                .prepare_semantic_with_phase(
+                                .prepare_semantic_with_lifecycle(
                                     projected,
                                     crate::compaction::CompactionTrigger::ProviderContextLimit,
-                                    crate::compaction::CompactionPhase::MidTurn,
+                                    provider_limit_phase,
                                     None,
                                     self.provider.as_ref(),
                                     self.interrupt_flag.as_ref(),
+                                    None,
+                                    Some(&emit_provider_limit_started),
                                 )
                                 .await
                             {
@@ -256,24 +305,42 @@ impl Loop {
                                     ..
                                 }) => {
                                     if let Some(commit) = &ctx.on_checkpoint {
-                                        commit(&checkpoint)?;
+                                        if let Err(error) = commit(&checkpoint) {
+                                            on_event(RunEvent::CompactionFailed {
+                                                operation_id: provider_limit_operation_id.clone(),
+                                                trigger: crate::compaction::CompactionTrigger::ProviderContextLimit,
+                                                phase: provider_limit_phase,
+                                                error: error.to_string(),
+                                            });
+                                            return Err(error);
+                                        }
                                     }
                                     active_checkpoint = Some((*checkpoint).clone());
                                     provider_limit_checkpoint_id =
                                         Some(checkpoint.checkpoint_id.clone());
                                     *self.active_checkpoint.lock() = Some((*checkpoint).clone());
                                     on_event(RunEvent::CompactionCommitted {
+                                        operation_id: provider_limit_operation_id.clone(),
                                         checkpoint: *checkpoint,
                                     });
                                 }
                                 Ok(crate::compaction::ContextPreparation::Unchanged { .. }) => {
-                                    return Err(anyhow!(
+                                    let error = anyhow!(
                                         "context compaction made no progress after provider limit"
-                                    ));
+                                    );
+                                    on_event(RunEvent::CompactionFailed {
+                                        operation_id: provider_limit_operation_id.clone(),
+                                        trigger: crate::compaction::CompactionTrigger::ProviderContextLimit,
+                                        phase: provider_limit_phase,
+                                        error: error.to_string(),
+                                    });
+                                    return Err(error);
                                 }
                                 Err(error) => {
                                     on_event(RunEvent::CompactionFailed {
+                                        operation_id: provider_limit_operation_id.clone(),
                                         trigger: crate::compaction::CompactionTrigger::ProviderContextLimit,
+                                        phase: provider_limit_phase,
                                         error: error.to_string(),
                                     });
                                     return Err(anyhow!(error));
@@ -1838,10 +1905,17 @@ mod tests {
                 noop_on_text,
                 {
                     let events = events.clone();
-                    move |event| {
-                        if matches!(event, RunEvent::CompactionCommitted { .. }) {
+                    move |event| match event {
+                        RunEvent::CompactionStarted { .. } => {
+                            events.lock().push("compaction_started")
+                        }
+                        RunEvent::CompactionCommitted { .. } => {
                             events.lock().push("compaction_committed")
                         }
+                        RunEvent::CompactionFailed { .. } => {
+                            events.lock().push("compaction_failed")
+                        }
+                        _ => {}
                     }
                 },
                 None,
@@ -1849,7 +1923,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(text, "recovered");
-        assert!(events.lock().contains(&"compaction_committed"));
+        assert_eq!(
+            events.lock().as_slice(),
+            ["compaction_started", "compaction_committed"]
+        );
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
@@ -1971,6 +2048,61 @@ mod tests {
         assert_eq!(text, "ok");
         assert!(events.lock().contains(&"compaction_committed"));
         assert_eq!(final_messages.len(), 4, "full journal history is retained");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn checkpoint_commit_failure_emits_compaction_failed_after_started() {
+        let provider = ScriptedProvider::new(vec![]);
+        let mut loop_ = Loop::new(provider, "mock");
+        loop_.context_manager = Some(crate::compaction::ContextManager {
+            enabled: true,
+            reserve_tokens: 1,
+            keep_recent_tokens: 1,
+            context_window: 1,
+            model: "mock".into(),
+        });
+        let mut messages = user_messages("old");
+        messages.push(AgentMessage {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::text("older reply")],
+            ..Default::default()
+        });
+        messages.push(AgentMessage::new_user("user", serde_json::json!("latest")));
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let result = loop_
+            .run_streaming_with_messages(
+                messages,
+                &StreamContext {
+                    on_checkpoint: Some(Arc::new(|_| Err(anyhow!("checkpoint commit failed")))),
+                    ..Default::default()
+                },
+                noop_on_text,
+                {
+                    let events = events.clone();
+                    move |event| match event {
+                        RunEvent::CompactionStarted { .. } => {
+                            events.lock().push("compaction_started")
+                        }
+                        RunEvent::CompactionFailed { .. } => {
+                            events.lock().push("compaction_failed")
+                        }
+                        RunEvent::CompactionCommitted { .. } => {
+                            events.lock().push("compaction_committed")
+                        }
+                        _ => {}
+                    }
+                },
+                None,
+            )
+            .await;
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("checkpoint commit failed"));
+        assert_eq!(
+            events.lock().as_slice(),
+            ["compaction_started", "compaction_failed"]
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

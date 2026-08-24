@@ -683,6 +683,9 @@ impl ServerSession {
             ..manager
         };
         let instructions = instructions.to_string();
+        let operation_id = format!("cmp_{}", crate::utils::generate_entry_id());
+        let worker_operation_id = operation_id.clone();
+        let started_broadcaster = self.broadcaster.clone();
         // RPC dispatch is synchronous today. Run the async, tool-free summary
         // request on a scoped runtime thread so this path also uses semantic
         // compaction without nesting a Tokio runtime on the dispatch thread.
@@ -693,7 +696,7 @@ impl ServerSession {
                 .map_err(anyhow::Error::from)?;
             runtime
                 .block_on(
-                    manager.prepare_semantic_with_phase_and_fallback(
+                    manager.prepare_semantic_with_lifecycle(
                         prompt,
                         trigger,
                         phase,
@@ -703,12 +706,40 @@ impl ServerSession {
                         fallback
                             .as_ref()
                             .map(|(provider, model)| (provider.as_ref(), model.as_str())),
+                        Some(&|| {
+                            if let Some(event) = super::prompt_helpers::run_event_to_sse(
+                                crate::agent::RunEvent::CompactionStarted {
+                                    operation_id: worker_operation_id.clone(),
+                                    trigger,
+                                    phase,
+                                },
+                            ) {
+                                started_broadcaster.broadcast(event);
+                            }
+                        }),
                     ),
                 )
                 .map_err(anyhow::Error::from)
         })
         .join()
-        .map_err(|_| anyhow::anyhow!("context compaction worker panicked"))??;
+        .map_err(|_| anyhow::anyhow!("context compaction worker panicked"))
+        .and_then(std::convert::identity);
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                if let Some(event) = super::prompt_helpers::run_event_to_sse(
+                    crate::agent::RunEvent::CompactionFailed {
+                        operation_id,
+                        trigger,
+                        phase,
+                        error: error.to_string(),
+                    },
+                ) {
+                    self.broadcaster.broadcast(event);
+                }
+                return Err(error);
+            }
+        };
         match prepared {
             crate::compaction::ContextPreparation::Unchanged { prompt } => Ok(serde_json::json!({
                 "tokensBefore": prompt.usage.estimated_input_tokens,
@@ -717,13 +748,28 @@ impl ServerSession {
                 "messagesRemoved": 0,
             })),
             crate::compaction::ContextPreparation::Compacted { checkpoint, .. } => {
-                self.persistence
-                    .commit_checkpoint(crate::session::checkpoint_to_entry(&checkpoint))?;
+                if let Err(error) = self
+                    .persistence
+                    .commit_checkpoint(crate::session::checkpoint_to_entry(&checkpoint))
+                {
+                    if let Some(event) = super::prompt_helpers::run_event_to_sse(
+                        crate::agent::RunEvent::CompactionFailed {
+                            operation_id,
+                            trigger,
+                            phase,
+                            error: error.to_string(),
+                        },
+                    ) {
+                        self.broadcaster.broadcast(event);
+                    }
+                    return Err(error);
+                }
                 if let Ok(loop_) = self.agent_loop.try_write() {
                     *loop_.active_checkpoint.lock() = Some((*checkpoint).clone());
                 }
                 if let Some(event) = super::prompt_helpers::run_event_to_sse(
                     crate::agent::RunEvent::CompactionCommitted {
+                        operation_id,
                         checkpoint: (*checkpoint).clone(),
                     },
                 ) {
@@ -2791,6 +2837,7 @@ mod tests {
     #[test]
     fn compact_with_real_history_reports_summary() {
         let mut session = make_test_session("compact");
+        let mut events = session.broadcaster.subscribe();
         session.model = "glm-4.5v".to_string(); // 64k catalog window
         session
             .last_prompt_tokens
@@ -2829,6 +2876,13 @@ mod tests {
         let result = session.compact("").unwrap();
         assert!(result["messagesRemoved"].as_i64().unwrap() > 0);
         assert!(result["summary"].is_string());
+        let started = events.try_recv().unwrap();
+        let committed = events.try_recv().unwrap();
+        assert_eq!(started.event_type, "compaction_started");
+        assert_eq!(committed.event_type, "compaction_committed");
+        let started_data: serde_json::Value = serde_json::from_str(&started.data).unwrap();
+        let committed_data: serde_json::Value = serde_json::from_str(&committed.data).unwrap();
+        assert_eq!(started_data["operation_id"], committed_data["operation_id"]);
     }
 
     #[test]

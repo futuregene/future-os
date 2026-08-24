@@ -55,6 +55,7 @@ export interface SessionEntry {
     tokens_before?: number;
     tokens_after?: number;
     trigger?: string;
+    phase?: string;
     algorithm_version?: string;
     summary?: unknown;
   };

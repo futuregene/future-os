@@ -199,6 +199,8 @@
     "tokens": "{{formattedCount}} tokens",
     "fork": "分叉",
     "forkFailed": "分叉失败：{{message}}",
+    "compacting": "正在压缩上下文…",
+    "compactionFailed": "上下文压缩失败",
     "compacted": "上下文已压缩",
     "compactedTokens": "上下文已压缩 · {{formattedCount}} tokens"
   },

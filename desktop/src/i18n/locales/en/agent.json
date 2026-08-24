@@ -203,6 +203,8 @@
     "tokens": "{{formattedCount}} tokens",
     "fork": "Fork",
     "forkFailed": "Fork failed: {{message}}",
+    "compacting": "Compacting context…",
+    "compactionFailed": "Context compaction failed",
     "compacted": "Context compacted",
     "compactedTokens": "Context compacted · {{formattedCount}} tokens"
   },

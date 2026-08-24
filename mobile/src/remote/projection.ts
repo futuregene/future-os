@@ -561,7 +561,9 @@ function isRunEvent(type: string): boolean {
     type === "tool_result" ||
     type === "usage" ||
     type === "compaction_end" ||
+    type === "compaction_started" ||
     type === "compaction_committed" ||
+    type === "compaction_failed" ||
     type === "agent_end"
   );
 }
@@ -766,6 +768,8 @@ function segmentToTimeline(segment: MessageSegment): TimelineSegment {
         id: segment.id,
         kind: "compaction",
         ...(segment.tokensBefore ? { tokensBefore: segment.tokensBefore } : {}),
+        ...(segment.status ? { status: segment.status } : {}),
+        ...(segment.error ? { error: segment.error } : {}),
       };
   }
 }

@@ -37,7 +37,13 @@ export type MessageSegment
     // A context-compaction marker (history summarized mid-run). `tokensBefore` is
     // the pre-compaction token count when the agent reported one (0/omitted for
     // the retry-path compaction, which carries no count).
-    | { kind: "compaction"; id: string; tokensBefore?: number };
+    | {
+        kind: "compaction";
+        id: string;
+        tokensBefore?: number;
+        status?: "running" | "completed" | "failed";
+        error?: string;
+      };
 
 export interface MessageAttachment {
   name: string;

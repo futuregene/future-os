@@ -1218,7 +1218,8 @@ pub struct StreamEvent {
     ///    usage                        token accounting
     ///    error                        run error
     ///    tool_sandboxed / persistence_error / compaction_end /
-    ///    compaction_committed                                  sideband signals
+    ///    compaction_started / compaction_committed /
+    ///    compaction_failed                                     sideband signals
     ///    provider_config_changed  global provider/auth configuration committed
     ///
     /// Provider-specific aliases are normalized inside the Agent and never cross
