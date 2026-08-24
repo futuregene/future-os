@@ -254,7 +254,13 @@ try {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     do {
         $state = Get-LifecycleState
-        $errors = if ($Action -eq "Snapshot") { @() } else { @(Get-ExpectationErrors $Action $state) }
+        # In Windows PowerShell 5.1, assigning an empty array emitted by an
+        # `if` statement produces $null. Keep an actual array so StrictMode can
+        # safely read Count for the observation-only Snapshot action.
+        $errors = @()
+        if ($Action -ne "Snapshot") {
+            $errors = @(Get-ExpectationErrors $Action $state)
+        }
         if ($errors.Count -eq 0) { break }
         Start-Sleep -Milliseconds 250
     } while ([DateTime]::UtcNow -lt $deadline)
