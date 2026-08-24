@@ -11,6 +11,69 @@ fn isolated_home() -> tempfile::TempDir {
 }
 
 #[test]
+fn agent_is_singleton_per_user_even_on_different_ports() {
+    let home = isolated_home();
+    let mut first = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "30"])
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .spawn()
+        .expect("spawn first agent");
+    let lock_path = home.path().join(".future/agent/agent-instance.lock");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !lock_path.exists() {
+        assert!(
+            first.try_wait().expect("poll first agent").is_none(),
+            "first agent exited before acquiring its instance lock"
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "first agent did not acquire its instance lock"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    let second = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "0"])
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .output()
+        .expect("spawn second agent");
+    assert!(!second.status.success());
+    assert!(
+        String::from_utf8_lossy(&second.stderr).contains("already running"),
+        "unexpected second-agent error: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+
+    let maintenance = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        .arg("--probe-windows-sandbox")
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .output()
+        .expect("run maintenance probe beside live agent");
+    assert!(
+        maintenance.status.success(),
+        "maintenance command was incorrectly blocked by the singleton: {}",
+        String::from_utf8_lossy(&maintenance.stderr)
+    );
+
+    first.kill().expect("force-stop first agent");
+    first.wait().expect("reap first agent");
+    let replacement = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "0"])
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .output()
+        .expect("spawn replacement agent");
+    assert!(
+        replacement.status.success(),
+        "replacement agent could not acquire released lock: {}",
+        String::from_utf8_lossy(&replacement.stderr)
+    );
+}
+
+#[test]
 fn agent_starts_serves_and_shuts_down_via_profile_timer() {
     let home = isolated_home();
     let profile = home.path().join("flame.svg");
@@ -225,6 +288,20 @@ fn agent_exits_nonzero_when_grpc_bind_fails() {
         .output()
         .expect("spawn future-agent");
     assert_eq!(output.status.code(), Some(1));
+
+    // Runtime errors return through the lifecycle guard instead of calling
+    // process::exit, so the user-level singleton lock is immediately reusable.
+    let replacement = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "0"])
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .output()
+        .expect("spawn replacement after bind failure");
+    assert!(
+        replacement.status.success(),
+        "lifecycle lock remained held after runtime error: {}",
+        String::from_utf8_lossy(&replacement.stderr)
+    );
 }
 
 #[test]

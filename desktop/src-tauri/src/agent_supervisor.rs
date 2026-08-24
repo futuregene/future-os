@@ -136,27 +136,90 @@ fn handle_agent_event(event: CommandEvent) {
     }
 }
 
-/// Kill the bundled agent if we started it. Idempotent, and a no-op when we
-/// attached to an externally-managed agent (`AGENT_CHILD` is `None`) — we only
-/// ever kill a child we own.
+#[cfg(test)]
+fn shutdown_agent() {
+    shutdown_owned_agent_with(
+        AGENT_CHILD.lock().unwrap().take(),
+        || {},
+        kill_bundled_agent,
+    );
+}
+
+/// Revoke persistent Windows sandbox permissions while our bundled Agent is
+/// still alive, then terminate it. Idempotent; externally managed agents are
+/// intentionally untouched because their owner controls both process and
+/// capability lifetime.
 ///
-/// Called from two places:
-///   1. The `RunEvent::Exit` handler in lib.rs (normal window-close shutdown).
-///   2. Explicitly, *before* `app.restart()`, by the commands that relaunch the
-///      app (`set_future_environment`, `clear_app_data`). This second path is
-///      mandatory: a main-thread `restart()` skips `RunEvent::Exit`, so path 1
-///      never fires on restart and the sidecar would otherwise be orphaned. See
-///      `commands/debug.rs::set_future_environment` for the full rationale.
+/// Cleanup is best-effort and bounded so application exit cannot hang. A
+/// failure retains capability metadata for startup GC, Settings reset, and the
+/// uninstall fallback to retry later.
 ///
-/// After the child dies its gRPC port is released immediately (the listening
-/// socket closes with the process — no TIME_WAIT lingering on a dead listener),
-/// so the relaunched GUI's `ensure_agent_running` probe correctly sees the port
-/// as free and spawns a fresh agent.
-pub fn shutdown_agent() {
-    if let Some(child) = AGENT_CHILD.lock().unwrap().take() {
-        if let Err(error) = child.kill() {
-            eprintln!("FutureOS: failed to kill bundled agent on shutdown: {error}");
+/// This must be called both from `RunEvent::Exit` and explicitly before every
+/// `app.restart()`: Tauri skips the Exit event for main-thread restart. After
+/// the child dies its listening socket closes immediately, so the relaunched
+/// GUI sees a free port and starts a fresh Agent.
+pub fn shutdown_agent_gracefully() {
+    let child = AGENT_CHILD.lock().unwrap().take();
+    shutdown_owned_agent_with(
+        child,
+        cleanup_windows_sandbox_permissions,
+        kill_bundled_agent,
+    );
+}
+
+fn shutdown_owned_agent_with<T>(child: Option<T>, cleanup: impl FnOnce(), kill: impl FnOnce(T)) {
+    if let Some(child) = child {
+        cleanup();
+        kill(child);
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+#[derive(Debug, PartialEq, Eq)]
+enum AgentCleanupOutcome {
+    Cleaned(usize),
+    Failed(String),
+    TimedOut,
+}
+
+#[cfg(any(target_os = "windows", test))]
+async fn bounded_agent_cleanup<F, E>(cleanup: F, timeout: Duration) -> AgentCleanupOutcome
+where
+    F: std::future::Future<Output = Result<usize, E>>,
+    E: std::fmt::Display,
+{
+    match tokio::time::timeout(timeout, cleanup).await {
+        Ok(Ok(removed)) => AgentCleanupOutcome::Cleaned(removed),
+        Ok(Err(error)) => AgentCleanupOutcome::Failed(error.to_string()),
+        Err(_) => AgentCleanupOutcome::TimedOut,
+    }
+}
+
+fn cleanup_windows_sandbox_permissions() {
+    #[cfg(target_os = "windows")]
+    tauri::async_runtime::block_on(async {
+        match bounded_agent_cleanup(
+            crate::agent_bridge::reset_windows_sandbox(),
+            Duration::from_secs(5),
+        )
+        .await
+        {
+            AgentCleanupOutcome::Cleaned(removed) => {
+                eprintln!("FutureOS: cleaned {removed} Windows sandbox permission(s) on shutdown")
+            }
+            AgentCleanupOutcome::Failed(error) => {
+                eprintln!("FutureOS: failed to clean Windows sandbox permissions: {error}")
+            }
+            AgentCleanupOutcome::TimedOut => {
+                eprintln!("FutureOS: timed out cleaning Windows sandbox permissions")
+            }
         }
+    });
+}
+
+fn kill_bundled_agent(child: CommandChild) {
+    if let Err(error) = child.kill() {
+        eprintln!("FutureOS: failed to kill bundled agent on shutdown: {error}");
     }
 }
 
@@ -284,8 +347,9 @@ fn confirmed_quit_flow<R: tauri::Runtime>(
         futures::future::join_all(wait_futs).await;
     });
     let _ = app;
-    // Kill the bundled sidecar if we own it (no-op for an external agent).
-    shutdown_agent();
+    // Clean permissions and kill the bundled sidecar if we own it (no-op for
+    // an external agent).
+    shutdown_agent_gracefully();
     exit();
 }
 
@@ -362,6 +426,48 @@ mod tests {
         // `AGENT_CHILD` is `None` by default in tests (no real sidecar spawn),
         // so this exercises the idempotent no-op path.
         shutdown_agent();
+    }
+
+    #[test]
+    fn graceful_shutdown_cleans_before_killing_owned_agent_only() {
+        let steps = std::cell::RefCell::new(Vec::new());
+        shutdown_owned_agent_with(
+            Some(()),
+            || steps.borrow_mut().push("cleanup"),
+            |_| steps.borrow_mut().push("kill"),
+        );
+        assert_eq!(*steps.borrow(), ["cleanup", "kill"]);
+
+        let touched = std::cell::Cell::new(false);
+        shutdown_owned_agent_with::<()>(None, || touched.set(true), |_| touched.set(true));
+        assert!(!touched.get());
+    }
+
+    #[test]
+    fn graceful_shutdown_cleanup_reports_success_failure_and_timeout() {
+        tauri::async_runtime::block_on(async {
+            assert_eq!(
+                bounded_agent_cleanup(async { Ok::<_, std::io::Error>(4) }, Duration::from_secs(1))
+                    .await,
+                AgentCleanupOutcome::Cleaned(4)
+            );
+            assert_eq!(
+                bounded_agent_cleanup(
+                    async { Err::<usize, _>(std::io::Error::other("reset failed")) },
+                    Duration::from_secs(1)
+                )
+                .await,
+                AgentCleanupOutcome::Failed("reset failed".to_string())
+            );
+            assert_eq!(
+                bounded_agent_cleanup(
+                    std::future::pending::<Result<usize, std::io::Error>>(),
+                    Duration::from_millis(1)
+                )
+                .await,
+                AgentCleanupOutcome::TimedOut
+            );
+        });
     }
 
     #[test]

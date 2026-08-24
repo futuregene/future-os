@@ -316,6 +316,7 @@ RestrictedToken/NTFS 不向父进程可靠报告“刚才拒绝了哪个对象�
 - **NTFS 恒 deny-wins**：`windows_plan` 把 deny 路径与可写子树分开收集，deny ACE 永远赢——无法表达"高优先级 allow 盖低优先级 deny"（SBPL 靠 last-match 可以）。极少数该场景会**偏严**（多一次 escalation），不造成安全洞，errs safe。
 - **`FILE_DELETE_CHILD` 不受 `WRITE_RESTRICTED` 限制**：`WRITE_RESTRICTED` 只对写数据/追加/新建子项/`DELETE` 做第二道 restricting-SID 检查，删除文件实际走的父目录 `FILE_DELETE_CHILD` 不在其列。因此 `scope=file` 只授 `FILE_GENERIC_WRITE`（不授 `DELETE`），只能阻止改文件内容，**不能阻止删除该文件**——只要当前用户对父目录有普通删除权，受限 token 就仍能 `Remove-Item`。真机 AccessCheck 已验证 `FILE_DELETE_CHILD` 在 external 目录上返回 true、`DELETE`/`FILE_WRITE_DATA` 返回 false。这是 write-protect 模型的知情限制，不是可修复的 ACL 缺陷；文档与测试均不得声称 file scope 阻止删除。
 - **有状态**：写授权修改真实 NTFS ACL。基础策略代际 SID 和幂等 ACE 避免普通命令反复增删；workspace/temp 外的具体目标批准使用 request-scoped SID。并发创建代际/SID/确保 ACE 必须按规范化根串行或事务化；GC 必须知道活动 token/Job 引用，不能提前删除旧代际 deny。卸载/重置提供独立清理流程，安全性不依赖普通命令结束时同步回滚成功。
+- **单例与退出回收**：长驻 Agent 持有 `~/.future/agent/agent-instance.lock` 的用户级文件锁，不能通过改 gRPC 端口启动第二份共享同一状态的 Agent；probe/reset 等无服务维护命令不占该锁。桌面正常退出、强制退出确认后的任务收敛、清数据重启、环境切换和更新重启，都会在 bundled Agent 仍存活时先请求 reset，再终止子进程；独立 Agent 的 Ctrl+C 正常退出也会幂等 reset。桌面不清理或终止外部管理的 Agent。该步骤有超时且是 best-effort：崩溃、强杀、活动 lease 或临时失败时保留元数据，由下次启动 GC、设置重置和卸载流程继续回收。
 - **既有宽写 ACL**：若目标目录本身对 Everyone/相关 restricting SID 可写，可能削弱默认写边界；启动诊断与 smoke 必须覆盖，不能仅靠假设。
 - **网络与读取开放**：任何 shell 可读取当前用户能读的文件并经网络外传；这是 Windows 写保护的明确非目标，在模式选择、首次启用说明和设置页持续说明，不塞进每次路径审批卡片。
 - **shell**：Windows 使用现有 pwsh 7 / Windows PowerShell 5.1 选择逻辑；不再假设 Git Bash/WSL。
@@ -344,6 +345,8 @@ Windows 真机从仓库根目录用普通（非管理员）PowerShell 执行：
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\test-windows-sandbox.ps1
 ```
+
+完整的执行前提、结果判定、安装包生命周期场景、主机矩阵和反馈模板见独立手册 [`WINDOWS_SANDBOX_REAL_MACHINE_VALIDATION.md`](WINDOWS_SANDBOX_REAL_MACHINE_VALIDATION.md)。该手册是 Windows 真机验收的唯一操作清单；本文件保留设计契约与实现边界。
 
 脚本要求 `%TEMP%` 位于本地 NTFS，强制 `--test-threads=1`，并通过 `future agent --probe-windows-sandbox` 再验证安装包 sidecar 使用的真实 CLI 路由；记录系统/Rust/Git 信息与完整测试输出到 `target/windows-sandbox-results/windows-sandbox-<时间>.log`。失败时把该日志原样反馈；不要只截最后一行。可选 `-IncludeClippy` 追加 Agent Clippy，但它不属于原生行为验收。测试不包含 UI，也不接入 CI。
 
@@ -447,4 +450,4 @@ W2 与 W4 可在 W1 契约冻结后并行开发，但 W4 的批准结果不得�
 
 **覆盖要点**：capability SID 只开放对应写根且 deny carveout 恒赢；restricted PowerShell 保留 cwd/env/stdout/退出码；Job Object 树形终止；workspace 写成功/未声明的外部写失败；subtree 一次性批准精确且旧 ACE 不可复用；file scope 不扩展到父目录；reparse/UNC 在 ACL 变更前 fail-closed；Unicode 路径 + 管道重定向 + 70 万字节大输出不卡死；受限 5.1 中文 stdout 按 OEM 代码页正确还原。
 
-**该次报告未覆盖（后续代码已补但仍待真机复验）**：活动代际 GC、跨进程占用锁、reset、完整 release probe 与 NSIS 卸载清理。额外支持主机矩阵以及模式选择层仍未实现；`platform_sandbox_available()` 在 Windows 继续保持 false，产品入口关闭。
+**该次报告未覆盖（后续代码已补但仍待真机复验）**：活动代际 GC、跨进程占用锁、reset、完整 release probe、NSIS 卸载清理，以及 Agent 用户级单例与正常退出权限回收。Agent 的正常、错误和 unwind 退出均由 RAII 清理守卫覆盖；明确强退/崩溃由下次启动回收。上述生命周期测试已加入同一个 Windows 手工脚本，具体步骤见 [`WINDOWS_SANDBOX_REAL_MACHINE_VALIDATION.md`](WINDOWS_SANDBOX_REAL_MACHINE_VALIDATION.md)；额外支持主机矩阵以及模式选择层仍未实现；`platform_sandbox_available()` 在 Windows 继续保持 false，产品入口关闭。

@@ -76,6 +76,20 @@ function Invoke-LoggedNative {
     }
 }
 
+function Get-WindowsCapabilityRecordCount {
+    param([string]$StatePath)
+
+    if (-not (Test-Path -LiteralPath $StatePath)) {
+        return 0
+    }
+    try {
+        $state = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
+        return @($state.records).Count
+    } catch {
+        throw "Windows capability state is unreadable: $($_.Exception.Message)"
+    }
+}
+
 try {
     Write-LogLine "FutureOS Windows unelevated sandbox integration report"
     Write-LogLine "Started: $((Get-Date).ToString('o'))"
@@ -85,6 +99,9 @@ try {
     Write-LogLine "Architecture: $env:PROCESSOR_ARCHITECTURE"
     Write-LogLine "User: $($identity.Name)"
     Write-LogLine "Elevated: $isElevated"
+    $capabilityStatePath = Join-Path $env:USERPROFILE ".future/windows-capabilities.json"
+    $initialCapabilityRecords = Get-WindowsCapabilityRecordCount $capabilityStatePath
+    Write-LogLine "Initial persisted Windows capability records: $initialCapabilityRecords"
 
     $tempRoot = [IO.Path]::GetPathRoot([IO.Path]::GetFullPath($env:TEMP))
     $driveLetter = $tempRoot.TrimEnd('\').TrimEnd(':')
@@ -136,6 +153,80 @@ try {
             "--test-threads=1"
         )
 
+    Invoke-LoggedNative `
+        "Agent user-scoped singleton lifecycle" `
+        "cargo" `
+        @(
+            "test",
+            "--manifest-path", "agent/Cargo.toml",
+            "--test", "cli_smoke",
+            "agent_is_singleton_per_user_even_on_different_ports",
+            "--",
+            "--nocapture",
+            "--test-threads=1"
+        )
+
+    if ($IncludeClippy) {
+        Invoke-LoggedNative `
+            "Agent Clippy" `
+            "cargo" `
+            @(
+                "clippy",
+                "--manifest-path", "agent/Cargo.toml",
+                "--all-targets",
+                "--",
+                "-D", "warnings"
+            )
+    }
+
+    # tauri-build requires the configured externalBin to exist even for a Rust
+    # unit test. A clean checkout does not contain build artifacts, so create an
+    # empty host-triple placeholder and remove it afterward only if this script
+    # created it. Never overwrite or delete a real locally-built sidecar.
+    $hostTripleLine = (& rustc -Vv | Select-String '^host:' | Select-Object -First 1)
+    if ($null -eq $hostTripleLine) {
+        throw "rustc -Vv did not report a host triple"
+    }
+    $hostTriple = ([string]$hostTripleLine).Substring(5).Trim()
+    $sidecarDirectory = Join-Path $repoRoot "desktop/src-tauri/binaries"
+    $sidecarPath = Join-Path $sidecarDirectory "future-$hostTriple.exe"
+    $createdSidecarPlaceholder = $false
+    if (-not (Test-Path -LiteralPath $sidecarPath)) {
+        New-Item -ItemType Directory -Force -Path $sidecarDirectory | Out-Null
+        New-Item -ItemType File -Force -Path $sidecarPath | Out-Null
+        $createdSidecarPlaceholder = $true
+    }
+    try {
+        Invoke-LoggedNative `
+            "Desktop graceful Agent shutdown lifecycle" `
+            "cargo" `
+            @(
+                "test",
+                "--manifest-path", "desktop/src-tauri/Cargo.toml",
+                "agent_supervisor::tests::graceful_shutdown_",
+                "--",
+                "--nocapture",
+                "--test-threads=1"
+            )
+
+        if ($IncludeClippy) {
+            Invoke-LoggedNative `
+                "Desktop backend Clippy" `
+                "cargo" `
+                @(
+                    "clippy",
+                    "--manifest-path", "desktop/src-tauri/Cargo.toml",
+                    "--all-targets",
+                    "--",
+                    "-D", "warnings"
+                )
+        }
+    } finally {
+        if ($createdSidecarPlaceholder -and (Test-Path -LiteralPath $sidecarPath)) {
+            Remove-Item -LiteralPath $sidecarPath -Force
+        }
+    }
+
     if (-not $restrictedTokenUnsupported) {
         Invoke-LoggedNative `
             "Packaged-sidecar Windows sandbox release probe" `
@@ -148,11 +239,10 @@ try {
             '"available":true'
     }
 
-    if ($IncludeClippy) {
-        Invoke-LoggedNative `
-            "Agent Clippy" `
-            "cargo" `
-            @("clippy", "--manifest-path", "agent/Cargo.toml", "--lib", "--", "-D", "warnings")
+    $remainingCapabilityRecords = Get-WindowsCapabilityRecordCount $capabilityStatePath
+    Write-LogLine "Remaining persisted Windows capability records: $remainingCapabilityRecords"
+    if ($remainingCapabilityRecords -ne 0) {
+        throw "Windows sandbox lifecycle left $remainingCapabilityRecords persisted capability record(s)"
     }
 
     Write-LogLine ""

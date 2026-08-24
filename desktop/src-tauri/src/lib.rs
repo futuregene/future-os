@@ -880,7 +880,7 @@ pub fn run() {
                 // once instead of waiting for heartbeat expiry. Crashes and
                 // power loss cannot run this handler and remain timeout-based.
                 tauri::async_runtime::block_on(remote::stop_gracefully("app_exit"));
-                agent_supervisor::shutdown_agent();
+                agent_supervisor::shutdown_agent_gracefully();
             }
             _ => {}
         });
