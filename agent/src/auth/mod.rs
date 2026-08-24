@@ -23,13 +23,10 @@ pub struct AuthStore {
 impl AuthStore {
     /// Load auth from standard paths
     pub fn load() -> Self {
+        let home = crate::utils::home_dir();
         let paths = vec![
-            dirs::home_dir()
-                .map(|h| h.join(".future/agent-app/auth.json"))
-                .unwrap_or_default(),
-            dirs::home_dir()
-                .map(|h| h.join(".future/agent/auth.json"))
-                .unwrap_or_default(),
+            home.join(".future/agent-app/auth.json"),
+            home.join(".future/agent/auth.json"),
         ];
 
         for path in paths {
@@ -142,17 +139,6 @@ impl AuthStore {
             }
         }
         None
-    }
-}
-
-// Simple dirs helper
-mod dirs {
-    use std::path::PathBuf;
-
-    pub fn home_dir() -> Option<PathBuf> {
-        std::env::var_os("HOME")
-            .or_else(|| std::env::var_os("USERPROFILE"))
-            .map(PathBuf::from)
     }
 }
 

@@ -1,6 +1,6 @@
 # FutureOS Sandbox 方案（SANDBOX_PLAN）
 
-状态：**v2 macOS 已实现；Windows unelevated 写保护后端设计中**（2026-07-04 按纯文件路径规则模型重写；2026-08-21 修订 Windows 能力边界与路径能力审批）
+状态：**v2 macOS 已实现；Windows unelevated 写保护底层已通过首台真机验收，产品入口仍关闭**（2026-07-04 按纯文件路径规则模型重写；2026-08-24 收口 Windows 底层与发布验证）
 
 > 规则系统的**语义主文档**是 [APPROVAL_PLAN.md](APPROVAL_PLAN.md)（规则模型、分层、规则文件、审批 UI、决策记录）。本文只管**强制执行**：Seatbelt 如何从规则编译、escalation、工具层拦截、协议、非 macOS 的两档回退，以及 v1 已实现资产的复用/返工清单。
 >
@@ -184,7 +184,7 @@ v2 决策（V1–V9）见 APPROVAL_PLAN §9。v1 期间沿用有效的：escalat
 
 ## 11. Windows 原生写保护（unelevated：RestrictedToken + ACL）
 
-状态：**W1–W5 已实现；W6 内部执行链已在 Windows 11 Home 真机跑通。** AppContainer SID、private window station、PowerShell/CLM 等兼容问题均已按附录 A 的证据修正；活动 capability lease、跨进程占用锁、旧代际 ACE/metadata GC、完整 host probe、reset 及其设置页/NSIS/RPC/CLI 调用也已实现。新增生命周期与发布闭环仍待 Windows 真机复验，支持主机矩阵及产品入口仍待完成。在这些发布闭环完成前，`platform_sandbox_available()` 在 Windows 必须保持 false，GUI 不显示该档。
+状态：**W1–W5 已实现；W6 底层批量验收已在 Windows 11 Home 真机 PASS。** AppContainer SID、private desktop、PowerShell/CLM、Unicode/大输出、用户级单例、活动 capability lease、跨进程占用锁、旧代际 ACE/metadata GC、完整 host probe、reset、Desktop graceful shutdown 及 RPC/CLI 调用均已有自动化证据。portable/installer 的 RM-01～RM-07 生命周期、额外主机矩阵和 W7 产品入口仍待完成。在这些发布闭环完成前，`platform_sandbox_available()` 在 Windows 必须保持 false，GUI 不显示该档。
 
 Windows 与 macOS 共用 `SandboxTier::Sandbox` 协议值，但 UI 和保证不同：
 
@@ -338,7 +338,7 @@ RestrictedToken/NTFS 不向父进程可靠报告“刚才拒绝了哪个对象�
 | **W6 — 端到端安全与兼容性** | 将 W1–W5 串入真实 agent/desktop；增加 ACL audit/repair、活动代际跟踪、旧 SID GC、重置/卸载清理、日志脱敏和 feature probe；用仓库脚本进行 Windows 真实机手工批量 smoke，不加入 CI | 必过矩阵：workspace/temp 写成功；workspace 外写失败；一次批准仅开放完整列出的现有 file/subtree，未批准 sibling 仍失败；项目批准仅当前项目和新代际生效；父目录不被扩大；当前用户无权目标仍失败；现有关键对象 deny 硬化有效；不存在对象/glob 缺口与模式说明一致；崩溃/强杀/重启后无权限扩张；常见工具链可用；所有初始化失败均 fail closed |
 | **W7 — 灰度与发布** | 默认关闭 feature flag；仅对通过 capability probe 的本地 NTFS 工作区显示“写保护”；模式选择/首次启用/设置页说明“只限制写入，读取和网络开放”；保留一键退回 `manual` | Windows 目标版本手工 smoke 全绿；安全 review 无高优先级问题；升级、降级、重置 SID/ACL 可恢复；遥测不上传原始敏感路径；完成小范围灰度后才默认开放。发布后发现初始化/ACL 异常时自动回到 `manual`，不得无提示直跑 |
 
-**当前实现状态（2026-08-21）**：W1–W5 与 W6 内部执行链已实现；最近一次 Windows 真机基线为 `test-windows-sandbox.ps1` 44+10 项及 Clippy 全绿，测试明确不加入 CI。本轮新增活动 capability lease、跨进程占用锁、下次 spawn 的旧代际 GC、reset 与 release probe 用例，等待下一次真机回归。回收顺序为先持久化并应用新集合，再按 Codex 的 `REVOKE_ACCESS` 模式回收无活动引用的旧 SID；失败时保留 metadata 供以后重试。完整 host probe 会在一次性本地 fixture 中实际启动受限 PowerShell，同时验证允许根可写、相邻未授权路径不可写并回收自身 ACE；对外只返回稳定 code，不返回路径/Win32 诊断。reset/probe 已提供 sessionless agent RPC 与 `future agent` 维护命令；Windows 设置页提供普通用户文案的手动 reset，NSIS 在删除 sidecar 前调用同一 CLI，失败即保留应用供重试。Windows 产品入口继续保持关闭，直到本轮真机回归、灰度回退和额外主机矩阵完成。普通 NTFS DACL 仍无法精确拒绝允许目录内尚不存在的未来文件名，`FILE_DELETE_CHILD` 与 Everyone/logon 宽 ACL 也保留 §11.6 的已知边界，不能宣称与 macOS SBPL 等价。
+**当前实现状态（2026-08-24）**：Windows 11 Home 非管理员主机上的 `test-windows-sandbox.ps1 -IncludeClippy` 已通过 50 项原生/端到端测试、11 项 capability 审批测试、Agent 用户级单例、2 项 Desktop graceful shutdown、Agent/Desktop Clippy、release CLI probe，并确认退出后 capability record 为 0；测试明确不加入 CI。后续又将单例锁、capability 状态、认证、模型设置、规则和默认工作区统一到同一用户目录解析规则，避免 portable/test home 重定向只覆盖部分状态；最新提交需要按独立手册 P0 再跑一次确认。回收顺序仍为先持久化并应用新集合，再按 Codex 的 `REVOKE_ACCESS` 模式回收无活动引用的旧 SID；失败时保留 metadata 供以后重试。完整 host probe 在一次性本地 fixture 中实际启动受限 PowerShell，同时验证允许根可写、相邻未授权路径不可写并回收自身 ACE；对外只返回稳定 code，不返回路径/Win32 诊断。reset/probe 已提供 sessionless agent RPC 与 `future agent` 维护命令；Windows 设置页提供普通用户文案的手动 reset，NSIS 在删除 sidecar 前调用同一 CLI，失败即保留应用供重试。Windows 产品入口继续保持关闭，直到 portable/installer 的 RM-01～RM-07、额外主机矩阵、安全 review 和 W7 灰度回退完成。普通 NTFS DACL 仍无法精确拒绝允许目录内尚不存在的未来文件名，`FILE_DELETE_CHILD` 与 Everyone/logon 宽 ACL 也保留 §11.6 的已知边界，不能宣称与 macOS SBPL 等价。
 
 Windows 真机从仓库根目录用普通（非管理员）PowerShell 执行：
 

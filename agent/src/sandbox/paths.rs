@@ -13,7 +13,7 @@ use std::path::{Component, Path, PathBuf};
 /// contradicts what the OS sandbox enforces (real `$HOME/x`). Boundary
 /// decisions must use this function instead.
 pub fn expand_tilde(path: &str) -> PathBuf {
-    expand_tilde_with_home(path, dirs::home_dir().as_deref())
+    expand_tilde_with_home(path, crate::utils::home_dir_opt().as_deref())
 }
 
 /// `expand_tilde` with the home directory injected, so the no-home fallback

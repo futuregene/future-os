@@ -506,10 +506,7 @@ async fn async_main(
     model_registry: Arc<parking_lot::RwLock<ModelRegistry>>,
     cli: Cli,
 ) -> Result<()> {
-    let cwd = dirs::home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-        .to_string_lossy()
-        .to_string();
+    let cwd = crate::utils::home_dir().to_string_lossy().to_string();
 
     let all_models = model_registry.read().all_models();
 

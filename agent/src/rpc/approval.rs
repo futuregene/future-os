@@ -892,7 +892,7 @@ fn extract_blocked_paths_raw(stderr: &str) -> Vec<String> {
 
 /// Shorten `$HOME` to `~` for display.
 fn shorten_home(path: &str) -> String {
-    match dirs::home_dir() {
+    match crate::utils::home_dir_opt() {
         Some(home) if path.starts_with(home.to_string_lossy().as_ref()) => {
             path.replacen(home.to_string_lossy().as_ref(), "~", 1)
         }

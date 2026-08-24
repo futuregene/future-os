@@ -106,7 +106,7 @@ pub fn prepare(
         command,
         permissions,
         |path| sandbox.evaluate(path, Op::Write),
-        dirs::home_dir().as_deref(),
+        crate::utils::home_dir_opt().as_deref(),
     )?;
     reject_explicit_ask_carveouts(&prepared, &super::windows_plan::build_plan(sandbox))?;
     Ok(prepared)

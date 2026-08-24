@@ -90,6 +90,22 @@ function Get-WindowsCapabilityRecordCount {
     }
 }
 
+function Get-AgentHomeDirectory {
+    # Keep this in lockstep with agent::utils::home_dir_opt: portable and test
+    # redirects take precedence over the token profile, but unsafe relative or
+    # empty values must never become the root of persisted security state.
+    foreach ($candidate in @($env:HOME, $env:USERPROFILE)) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and [IO.Path]::IsPathRooted($candidate)) {
+            return [IO.Path]::GetFullPath($candidate)
+        }
+    }
+    $profile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+    if ([string]::IsNullOrWhiteSpace($profile)) {
+        throw "Windows user profile directory is unavailable"
+    }
+    return [IO.Path]::GetFullPath($profile)
+}
+
 try {
     Write-LogLine "FutureOS Windows unelevated sandbox integration report"
     Write-LogLine "Started: $((Get-Date).ToString('o'))"
@@ -99,7 +115,9 @@ try {
     Write-LogLine "Architecture: $env:PROCESSOR_ARCHITECTURE"
     Write-LogLine "User: $($identity.Name)"
     Write-LogLine "Elevated: $isElevated"
-    $capabilityStatePath = Join-Path $env:USERPROFILE ".future/windows-capabilities.json"
+    $agentHome = Get-AgentHomeDirectory
+    $capabilityStatePath = Join-Path $agentHome ".future/windows-capabilities.json"
+    Write-LogLine "Agent home: $agentHome"
     $initialCapabilityRecords = Get-WindowsCapabilityRecordCount $capabilityStatePath
     Write-LogLine "Initial persisted Windows capability records: $initialCapabilityRecords"
 

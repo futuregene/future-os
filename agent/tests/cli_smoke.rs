@@ -174,6 +174,7 @@ fn agent_log_file_and_heap_flag_paths() {
         ])
         .env("HOME", home.path())
         .env("USERPROFILE", home.path())
+        .env("RUST_LOG", "info")
         .output()
         .expect("spawn future-agent");
     assert!(

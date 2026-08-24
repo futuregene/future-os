@@ -363,7 +363,7 @@ fn revoke_record(record: &CapabilityRecord) -> io::Result<()> {
 }
 
 fn capability_state_path() -> io::Result<PathBuf> {
-    let home = dirs::home_dir()
+    let home = crate::utils::home_dir_opt()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "user home is unavailable"))?;
     Ok(home.join(".future/windows-capabilities.json"))
 }

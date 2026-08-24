@@ -1,6 +1,6 @@
 # FutureOS Windows Unelevated Sandbox 真机验证手册
 
-状态：**待 Windows 真机执行**
+状态：**底层批量验收已 PASS；安装包生命周期与发布矩阵待执行**
 
 适用分支：`codex/windows-unelevated-sandbox`
 
@@ -156,7 +156,13 @@ Get-CimInstance Win32_Process |
 4. 检查 capability 状态：
 
 ```powershell
-$statePath = Join-Path $env:USERPROFILE '.future\windows-capabilities.json'
+$agentHome = @($env:HOME, $env:USERPROFILE) |
+    Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and [IO.Path]::IsPathRooted($_) } |
+    Select-Object -First 1
+if ([string]::IsNullOrWhiteSpace($agentHome)) {
+    $agentHome = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+}
+$statePath = Join-Path $agentHome '.future\windows-capabilities.json'
 if (Test-Path -LiteralPath $statePath) {
     $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
     @($state.records).Count
@@ -325,14 +331,37 @@ PowerShell tested: 5.1
 Rust toolchain: 1.97.0（x86_64-pc-windows-msvc）
 ```
 
-### 9.3 过程中修复的问题（5 处，均已落到工作区）
+### 9.3 过程中修复的问题（6 处，均已落到分支）
 
 1. **`agent/Cargo.toml`** — `probe_host()`（生产代码，供 `--probe-windows-sandbox` 调用）使用 `tempfile::tempdir()`，但 `tempfile` 只声明在 `[dev-dependencies]`，Windows 编译 lib 报 `E0433`。已补到 `[target.'cfg(windows)'.dependencies]`。
-2. **`agent/src/utils/mod.rs`** — 单例测试失败（"first agent did not acquire its instance lock"）。根因：锁路径用外部 `dirs` crate 的 `home_dir()`，在 Windows 上读系统 token profile、忽略 `HOME`/`USERPROFILE` 环境变量，导致测试 home 隔离失效。新增 `home_dir()`（环境变量优先、系统 API 回退），与 `auth` 模块既有行为一致。
+2. **Agent 用户目录解析** — 单例测试失败（"first agent did not acquire its instance lock"）。根因：Windows 上 `dirs::home_dir()` 读取 token profile、忽略测试或 portable 环境设置的 `HOME`/`USERPROFILE`。第一次修复只覆盖了单例锁，仍可能让 capability 状态、认证、模型设置、规则和默认工作区落到真实用户目录。现已收敛为唯一解析入口：绝对且非空的 `HOME` → `USERPROFILE` → 系统 profile；相对/空值不接受。主测试脚本按同一规则记录 `Agent home` 并检查该目录下的 capability 状态。
 3. **`desktop/src-tauri/build.rs`** — Desktop 测试二进制启动即崩 `0xc0000139`（STATUS_ENTRYPOINT_NOT_FOUND）。根因链：`tauri-plugin-dialog`→`rfd` 静态链接 `TaskDialogIndirect`（仅存在于 comctl32 v6），而 Tauri 仅通过 `rustc-link-arg-bins` 将含 v6 manifest 的 `resource.lib` 给 bin，`cargo test` 的 lib-test 二进制无 manifest → 回退到 comctl32 v5 → 入口点缺失。修复：禁用 Tauri 的 bin-only manifest（`new_without_app_manifest()`），改由 build.rs 统一为所有目标嵌入 v6 manifest（已用 mt.exe 验证 bin 与 lib-test 均正确，正式 bin 无回归）。
 4. **`desktop/src-tauri/src/lib.rs`** — Rust 1.97 clippy 新 lint（`unnecessary_map_or`→`is_none_or`、`needless_borrow`）被 `-D warnings` 拦截。
 5. **`desktop/src-tauri/src/remote/transfer.rs`** — `ensure_private_dir` 仅在 `#[cfg(unix)]` 测试中使用，Windows 上触发 `unused import`，改为 `#[cfg(unix)] use`。
+6. **`agent/tests/cli_smoke.rs`** — 日志 smoke 会继承开发机的 `RUST_LOG`；当外层设置为 `warn` 时，测试要求出现的 info 日志被过滤，造成与产品逻辑无关的假失败。该用例现固定使用 `RUST_LOG=info`，不再依赖调用者环境。
 
 ### 9.4 尚未执行
 
 §5 的安装包生命周期验证（RM-01 ~ RM-07）需要包含本分支代码的 Windows portable/installer 构建，属于主脚本通过后的下一阶段，本次未执行。
+
+### 9.5 本次收口后的复验要求
+
+本次又统一了用户目录解析，因此 9.1 的 PASS 仍是核心后端有效证据，但不能替代对最新提交的回归。更新分支后先重跑 §3；报告中新增的 `Agent home` 必须是预期目录，末尾仍须为 `Remaining persisted Windows capability records: 0` 和 `RESULT: PASS`。不需要为该复验新增 CI，仍只使用本手册的 Windows 真机脚本。
+
+## 10. 后续任务与执行顺序
+
+下面是发布前唯一剩余清单。每一步都保留对应日志/截图或命令输出；前一优先级失败时先修复，不提前打开 Windows 产品入口。
+
+| 优先级 | 任务 | 测试方法 | 通过标准 |
+|---|---|---|---|
+| P0 | 最新提交底层回归 | 普通 PowerShell 运行 §3 的完整脚本并带 `-IncludeClippy` | 所有命令 exit 0；probe `available:true`；Agent home 正确；残留记录 0；`RESULT: PASS` |
+| P1 | portable/installer 单例与正常退出 | 按 RM-01、RM-02 检查进程与 capability record | 同用户仅一个 Agent；正常退出先清理再结束；记录数 0 |
+| P1 | 三种桌面重启路径 | 按 RM-03 分别执行清数据、切环境、更新重启 | 旧 Agent 退出、新 Agent 单例、端口释放、记录数 0；不可触发的项目明确记 `NOT RUN` |
+| P1 | 外部 Agent 归属 | 按 RM-04 手工启动 Agent，再启动/退出桌面 | Desktop 不接管或终止外部 Agent；外部 Agent 自行退出后清理为 0 |
+| P1 | 崩溃恢复 | 按 RM-05 强杀桌面和 Agent，再重新启动 | 锁由 OS 释放；启动回收旧记录；不能回收时 fail closed，不误删活动授权 |
+| P1 | reset 与活动 Job | 按 RM-06 分别在无任务、活动 sandbox Job 下运行统一 CLI | 空闲时成功且记录归零；活动时拒绝 reset 且不终止任务；结束后可重试成功 |
+| P1 | NSIS 卸载 | 按 RM-07 使用真实安装包卸载 | 只撤销 FutureOS ACE/metadata；不删用户文件、不覆盖其他 DACL；失败时保留可重试工具 |
+| P2 | 支持矩阵 | 在 Windows 11 Pro、PowerShell 7、中文用户名/路径上重跑 §3，并至少覆盖 portable | 各主机独立 PASS 日志；差异均 fail closed 或有已记录的产品边界 |
+| P3 | W7 产品接入 | 完成上述证据后实现动态 probe gate、灰度开关、`manual` 回退和非敏感遥测 | 安全 review 无高优先级问题；不上传原始路径；探测/初始化异常自动回到 `manual` |
+
+测试分层保持不变：P0 是无 UI 的底层逻辑/原生集成测试；P1 是进程、安装包和 ACL 生命周期手工验收，不要求 UI 自动化；P2 是兼容矩阵；P3 才允许接通产品入口。详细操作以 §3、§5、§6 为准，表格不替代这些步骤。

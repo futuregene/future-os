@@ -219,18 +219,18 @@ pub fn effective_max_tokens(model: &Model) -> i32 {
 
 /// UserModelsPath returns ~/.future/agent/models.json.
 pub fn user_models_path() -> String {
-    let home = dirs::home_dir()
-        .map(|h| h.join(".future/agent/models.json"))
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/.future/agent/models.json"));
-    home.to_string_lossy().to_string()
+    crate::utils::default_config_dir()
+        .join("models.json")
+        .to_string_lossy()
+        .to_string()
 }
 
 /// SettingsPath returns ~/.future/agent/settings.json.
 pub fn settings_path() -> String {
-    let home = dirs::home_dir()
-        .map(|h| h.join(".future/agent/settings.json"))
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/.future/agent/settings.json"));
-    home.to_string_lossy().to_string()
+    crate::utils::default_config_dir()
+        .join("settings.json")
+        .to_string_lossy()
+        .to_string()
 }
 
 /// Get the first available model, or None.
