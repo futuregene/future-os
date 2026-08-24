@@ -7,6 +7,7 @@ use std::{
 
 use super::{SseBroadcaster, SseEvent};
 use crate::sandbox::rules::{Decision, Op};
+use crate::sandbox::windows_request::{AdditionalPermissions, PreparedWritePermissions};
 use crate::sandbox::{paths, EscalationDecision, EscalationRequest, ResolvedSandbox};
 
 #[derive(Clone, Default)]
@@ -40,7 +41,7 @@ struct PendingApproval {
 /// Outcome of a blocking user decision (shared by tool approvals and
 /// sandbox escalations).
 enum AskOutcome {
-    Approved,
+    Approved(String),
     Rejected(String),
     Cancelled(String),
 }
@@ -66,6 +67,34 @@ impl ApprovalGate {
         // whitelist (Option B): known-safe commands auto-run, everything else
         // asks. shell approvals are allow-once only (no persisted command rule).
         if tool_name == "shell" {
+            if let Some(raw_permissions) = arguments
+                .get("additional_permissions")
+                .or_else(|| arguments.get("additionalPermissions"))
+            {
+                let permissions = match serde_json::from_value::<AdditionalPermissions>(
+                    raw_permissions.clone(),
+                ) {
+                    Ok(permissions) => permissions,
+                    Err(error) => {
+                        return Some(crate::types::ToolCallResult {
+                            result: format!(
+                                "Tool call `shell` has invalid additional_permissions: {error}"
+                            ),
+                            is_error: true,
+                        });
+                    }
+                };
+                if !permissions.write.is_empty() {
+                    return self.request_windows_capability(
+                        broadcaster,
+                        session_id,
+                        tool_id,
+                        arguments,
+                        sandbox,
+                        &permissions,
+                    );
+                }
+            }
             if sandbox.wraps_shell() {
                 return None;
             }
@@ -86,7 +115,7 @@ impl ApprovalGate {
                 normalize_requested_action(arguments),
             );
             return match outcome {
-                AskOutcome::Approved => None,
+                AskOutcome::Approved(_) => None,
                 AskOutcome::Cancelled(_) => Some(crate::types::ToolCallResult {
                     result: "Tool call `shell` was cancelled because the approval request ended."
                         .to_string(),
@@ -141,7 +170,7 @@ impl ApprovalGate {
                     normalize_requested_action(arguments),
                 );
                 match outcome {
-                    AskOutcome::Approved => {
+                    AskOutcome::Approved(_) => {
                         if op == Op::Write {
                             crate::tools::approve_outside_path(&path.to_string_lossy());
                         }
@@ -167,6 +196,84 @@ impl ApprovalGate {
                     }),
                 }
             }
+        }
+    }
+
+    fn request_windows_capability(
+        &self,
+        broadcaster: &SseBroadcaster,
+        session_id: &str,
+        tool_id: &str,
+        arguments: &serde_json::Value,
+        sandbox: &ResolvedSandbox,
+        permissions: &AdditionalPermissions,
+    ) -> Option<crate::types::ToolCallResult> {
+        // The field is intentionally rejected everywhere except an active
+        // Windows write-protection backend. In particular it must not turn
+        // into an ordinary Manual-tier command approval and then run open.
+        if !cfg!(windows) || !sandbox.wraps_shell() {
+            return Some(crate::types::ToolCallResult {
+                result: "Tool call `shell` requested Windows write capabilities, but the Windows write-protection backend is not active.".to_string(),
+                is_error: true,
+            });
+        }
+
+        let command = arguments
+            .get("command")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let prepared = match crate::sandbox::windows_request::prepare(sandbox, command, permissions)
+        {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                return Some(crate::types::ToolCallResult {
+                    result: format!(
+                        "Tool call `shell` has an invalid write capability request: {error}"
+                    ),
+                    is_error: true,
+                });
+            }
+        };
+        if !prepared.needs_approval() {
+            return None;
+        }
+
+        let shape = windows_capability_shape(command, &prepared, sandbox);
+        match self.ask_user(
+            broadcaster,
+            session_id,
+            tool_id,
+            "shell",
+            &shape,
+            normalize_requested_action(arguments),
+        ) {
+            AskOutcome::Approved(request_id) => {
+                let Some(receipt) = prepared.approved_receipt(request_id) else {
+                    return Some(crate::types::ToolCallResult {
+                        result: "Tool call `shell` approval did not match a capability request."
+                            .to_string(),
+                        is_error: true,
+                    });
+                };
+                crate::tools::approve_windows_capability(receipt);
+                None
+            }
+            AskOutcome::Cancelled(_) => Some(crate::types::ToolCallResult {
+                result: "Tool call `shell` was cancelled because the approval request ended."
+                    .to_string(),
+                is_error: true,
+            }),
+            AskOutcome::Rejected(note) => Some(crate::types::ToolCallResult {
+                result: format!(
+                    "Tool call `shell` was rejected by the user{}.",
+                    if note.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {note}")
+                    }
+                ),
+                is_error: true,
+            }),
         }
     }
 
@@ -228,7 +335,7 @@ impl ApprovalGate {
             &shape,
             requested_action,
         ) {
-            AskOutcome::Approved => EscalationDecision::Approved,
+            AskOutcome::Approved(_) => EscalationDecision::Approved,
             AskOutcome::Rejected(note) => EscalationDecision::Denied(note),
             AskOutcome::Cancelled(note) => EscalationDecision::Denied(if note.is_empty() {
                 "approval request ended".to_string()
@@ -279,9 +386,11 @@ impl ApprovalGate {
 
         let decision = tokio::task::block_in_place(|| rx.recv());
         let (status, note, outcome) = match decision {
-            Ok(decision) if decision.approved => {
-                ("approved", decision.note.clone(), AskOutcome::Approved)
-            }
+            Ok(decision) if decision.approved => (
+                "approved",
+                decision.note.clone(),
+                AskOutcome::Approved(request_id.clone()),
+            ),
             Ok(decision) if decision.status == ApprovalDecisionStatus::Cancelled => {
                 let note = decision.note.clone();
                 ("cancelled", note.clone(), AskOutcome::Cancelled(note))
@@ -419,6 +528,80 @@ pub(super) struct ApprovalShape {
     /// `{ "match_kind": ..., "match_value": ..., "decision": "approve" }`.
     /// `None` for kinds that shouldn't be persisted as a rule (e.g. escalation).
     pub save_suggestion: Option<serde_json::Value>,
+}
+
+fn windows_capability_shape(
+    command: &str,
+    prepared: &PreparedWritePermissions,
+    sandbox: &ResolvedSandbox,
+) -> ApprovalShape {
+    let approval = prepared
+        .approval
+        .as_ref()
+        .expect("shape is only built for targets that require approval");
+    let paths = approval
+        .targets
+        .iter()
+        .map(|target| target.path.clone())
+        .collect::<Vec<_>>();
+    let title = if let [target] = approval.targets.as_slice() {
+        match target.scope {
+            crate::sandbox::windows_request::WriteScope::File => {
+                format!("Allow FutureOS to modify {}?", target.path)
+            }
+            crate::sandbox::windows_request::WriteScope::Subtree => {
+                format!("Allow FutureOS to manage files in {}?", target.path)
+            }
+        }
+    } else {
+        format!(
+            "Allow FutureOS to manage files in these {} locations?",
+            approval.targets.len()
+        )
+    };
+    let save_suggestion = if approval
+        .targets
+        .iter()
+        .any(|target| sandbox.is_secret_path(Path::new(&target.path)))
+    {
+        None
+    } else {
+        Some(serde_json::json!({
+            "rules": approval.targets.iter().map(|target| serde_json::json!({
+                "path": target.path,
+                "access": "write"
+            })).collect::<Vec<_>>()
+        }))
+    };
+
+    ApprovalShape {
+        kind: "windows_write_capability",
+        risk_level: "medium",
+        title,
+        summary: if approval.targets.len() == 1 {
+            "FutureOS needs write access to this location for the current command.".to_string()
+        } else {
+            "FutureOS needs write access to all of these locations for the current command."
+                .to_string()
+        },
+        action: serde_json::json!({
+            "tool": "shell",
+            "category": "windows_write_capability",
+            "behavior": approval.behavior,
+            "targets": approval.targets,
+            "paths": paths,
+            // Existing clients already render this in a collapsed command
+            // disclosure. It is never used to construct the trusted title.
+            "command": command,
+            "scope": {
+                "cwd": sandbox.workspace.to_string_lossy(),
+                "inside_workspace": false,
+                "estimated_blast_radius": "medium"
+            }
+        }),
+        sandbox_boundary: sandbox.boundary_json(Some("additional_write_capability"), false),
+        save_suggestion,
+    }
 }
 
 /// Shape the approval card for a file access that resolved to `Ask`. `path` is
@@ -709,7 +892,7 @@ fn extract_blocked_paths_raw(stderr: &str) -> Vec<String> {
 
 /// Shorten `$HOME` to `~` for display.
 fn shorten_home(path: &str) -> String {
-    match dirs::home_dir() {
+    match crate::utils::home_dir_opt() {
         Some(home) if path.starts_with(home.to_string_lossy().as_ref()) => {
             path.replacen(home.to_string_lossy().as_ref(), "~", 1)
         }
@@ -2186,5 +2369,80 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
     fn argument_write_preview_unrepairable_string_returns_none() {
         // A string argument that is neither valid JSON nor repairable.
         assert!(argument_write_preview(&serde_json::json!("{not json at all")).is_none());
+    }
+
+    #[test]
+    fn windows_capability_shape_uses_behavior_and_target_not_model_reason() {
+        use crate::sandbox::windows_request::{
+            ApprovalTarget, CapabilityApprovalSemantics, FrozenWriteTarget, WriteScope,
+        };
+
+        let ws = temp_ws("windows-capability-shape");
+        let sandbox = enabled(&ws);
+        let target = Path::new(&ws).join("release");
+        std::fs::create_dir_all(&target).unwrap();
+        let target = target.canonicalize().unwrap();
+        let prepared = PreparedWritePermissions {
+            command_hash: "hash-is-internal".to_string(),
+            targets: vec![FrozenWriteTarget {
+                normalized_path: target.clone(),
+                scope: WriteScope::Subtree,
+                untrusted_reason: "MODEL CONTROLLED TITLE".to_string(),
+                decision: Decision::Ask,
+            }],
+            approval: Some(CapabilityApprovalSemantics {
+                behavior: "manage_files",
+                targets: vec![ApprovalTarget {
+                    path: target.to_string_lossy().into_owned(),
+                    scope: WriteScope::Subtree,
+                }],
+            }),
+        };
+
+        let shape = windows_capability_shape("build-release", &prepared, &sandbox);
+        assert_eq!(shape.kind, "windows_write_capability");
+        assert!(shape.title.contains(&target.to_string_lossy().to_string()));
+        assert!(!shape.title.contains("MODEL CONTROLLED"));
+        assert_eq!(shape.action["behavior"], "manage_files");
+        assert_eq!(shape.action["targets"].as_array().unwrap().len(), 1);
+        assert_eq!(shape.action["command"], "build-release");
+        let action = shape.action.to_string();
+        assert!(!action.contains("hash-is-internal"));
+        assert!(!action.contains("MODEL CONTROLLED"));
+        let suggestion = shape.save_suggestion.unwrap();
+        assert_eq!(suggestion["rules"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            suggestion["rules"][0]["path"],
+            target.to_string_lossy().as_ref()
+        );
+    }
+
+    #[test]
+    fn additional_permissions_fail_closed_when_windows_backend_is_inactive() {
+        let ws = temp_ws("windows-capability-inactive");
+        let sandbox = enabled(&ws);
+        let gate = ApprovalGate::default();
+        let broadcaster = SseBroadcaster::new();
+        let result = gate.request(
+            &broadcaster,
+            "session",
+            &ws,
+            "shell",
+            "tool",
+            &serde_json::json!({
+                "command": "build-release",
+                "additional_permissions": {
+                    "write": [{
+                        "path": ws,
+                        "scope": "subtree",
+                        "reason": "build output"
+                    }]
+                }
+            }),
+            &sandbox,
+        );
+        let result = result.expect("inactive backend must reject before execution");
+        assert!(result.is_error);
+        assert!(result.result.contains("backend is not active"));
     }
 }

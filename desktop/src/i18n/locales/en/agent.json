@@ -120,6 +120,7 @@
     "approvalTierDesc": {
       "manual": "Asks before each action",
       "sandbox": "Asks when needed",
+      "sandboxWindows": "Restricts out-of-scope writes and asks when needed",
       "off": "<em>ANY</em> command, no approval"
     },
     "attachImageUnsupportedHint": "The current model doesn't support images and may not read this image correctly",
@@ -179,6 +180,14 @@
     "outsideWriteSummary": "Agent wants to modify a file outside the workspace.",
     "shellTitle": "Approve shell command",
     "shellSummary": "Agent wants to run a shell command.",
+    "capabilityFileTitle": "Allow FutureOS to modify {{path}}?",
+    "capabilitySubtreeTitle": "Allow FutureOS to manage files in {{path}}?",
+    "capabilityMultiTitle": "Allow FutureOS to manage files in these {{count}} locations?",
+    "locations": "Locations",
+    "thisFile": "This file",
+    "folderContents": "This folder and its contents",
+    "viewCommand": "View command",
+    "invalidRequest": "This approval request is incomplete and cannot be safely approved.",
     "escalationTitle": "Run this command outside the sandbox",
     "blockedPaths": "Files blocked by the sandbox",
     "unsandboxedNote": "If allowed, this command runs once without sandbox restrictions.",

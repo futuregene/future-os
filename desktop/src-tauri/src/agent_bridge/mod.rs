@@ -337,6 +337,40 @@ pub async fn get_available_models() -> Result<serde_json::Value, crate::AppError
     }
 }
 
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowsSandboxProbeResult {
+    pub available: bool,
+    pub code: String,
+}
+
+pub async fn probe_windows_sandbox() -> Result<WindowsSandboxProbeResult, crate::AppError> {
+    let mut client = connect_agent().await?;
+    let response = client
+        .execute_command(base_command("probe_windows_sandbox", String::new()))
+        .await
+        .map_err(|status| format!("probe_windows_sandbox failed: {status}"))?
+        .into_inner()
+        .ok_or_rpc_error("Future Agent could not check Windows write protection.")?;
+    serde_json::from_value(future_rpc::decode::response_data(&response))
+        .map_err(|error| format!("Invalid Windows sandbox probe response: {error}").into())
+}
+
+pub async fn reset_windows_sandbox() -> Result<usize, crate::AppError> {
+    let mut client = connect_agent().await?;
+    let response = client
+        .execute_command(base_command("reset_windows_sandbox", String::new()))
+        .await
+        .map_err(|status| format!("reset_windows_sandbox failed: {status}"))?
+        .into_inner()
+        .ok_or_rpc_error("Future Agent could not reset Windows write protection.")?;
+    let data = future_rpc::decode::response_data(&response);
+    data.get("removedCapabilities")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or_else(|| "Invalid Windows sandbox reset response.".into())
+}
+
 /// Set the model on a live agent session (remote bridge).
 pub async fn set_session_model(
     session_id: String,

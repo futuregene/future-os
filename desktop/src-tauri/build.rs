@@ -9,11 +9,60 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-env-changed=FUTURE_VERSION");
 
     ensure_placeholder_sidecars_for_non_release_builds()?;
-    tauri_build::build();
+    // Tauri embeds its default common-controls v6 manifest only into the bin
+    // (via `resource.lib` + `rustc-link-arg-bins`), which leaves `cargo test`
+    // lib-test binaries without one. Disable Tauri's bin-only manifest and
+    // embed the same dependency ourselves for every target instead (see
+    // `embed_common_controls_manifest`).
+    tauri_build::try_build(
+        tauri_build::Attributes::new()
+            .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest()),
+    )?;
+    embed_common_controls_manifest()?;
 
     // Agent gRPC bindings come from the future-rpc crate (single codegen
     // owner; typed-RPC milestone) — nothing to generate here.
 
+    Ok(())
+}
+
+/// Embed a `Microsoft.Windows.Common-Controls` v6 manifest into every target.
+///
+/// `tauri-plugin-dialog` (via `rfd`) links `TaskDialogIndirect`, which only
+/// exists in comctl32 v6. Tauri's default manifest is attached only to the bin
+/// target, so a `cargo test` lib-test binary loads comctl32 v5 and aborts with
+/// STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139) before any test runs. We therefore
+/// disable Tauri's bin-only manifest above and provide the same dependency here
+/// for all targets (bin, lib, lib-test, integration tests) with no duplication.
+fn embed_common_controls_manifest() -> Result<(), Box<dyn std::error::Error>> {
+    let target = std::env::var("TARGET")?;
+    if !target.contains("windows") {
+        return Ok(());
+    }
+
+    let out_dir = std::env::var("OUT_DIR")?;
+    let manifest = std::path::Path::new(&out_dir).join("common-controls-v6.manifest");
+    std::fs::write(
+        &manifest,
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+        type="win32"
+        name="Microsoft.Windows.Common-Controls"
+        version="6.0.0.0"
+        processorArchitecture="*"
+        publicKeyToken="6595b64144ccf1df"
+        language="*"
+      />
+    </dependentAssembly>
+  </dependency>
+</assembly>
+"#,
+    )?;
+    println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+    println!("cargo:rustc-link-arg=/MANIFESTINPUT:{}", manifest.display());
     Ok(())
 }
 

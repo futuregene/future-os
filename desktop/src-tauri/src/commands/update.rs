@@ -466,6 +466,6 @@ fn restart_after_app_update_with<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     relaunch: impl FnOnce(tauri::AppHandle<R>) -> Result<(), AppError>,
 ) -> Result<(), AppError> {
-    agent_supervisor::shutdown_agent();
+    agent_supervisor::shutdown_agent_gracefully();
     relaunch(app)
 }
