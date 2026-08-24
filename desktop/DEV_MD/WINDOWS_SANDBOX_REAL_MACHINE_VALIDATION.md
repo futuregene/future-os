@@ -315,7 +315,7 @@ Notes:
 
 ## 8. 发布门槛
 
-以下条件全部满足前，Windows 默认启动的 `platform_sandbox_available()` 必须继续返回 false，桌面不得向普通用户开放 sandbox 档。只允许按 §11 显式设置进程级灰度闸门的测试会话例外：
+当前本地测试分支已移除独立开关，Windows 直接依据完整 host probe 开放 sandbox 档。以下条件仍是正式发布默认开放前应补齐的证据：
 
 - 目标 Home/Pro 主机的批量脚本均 `PASS`；
 - RM-01 至 RM-07 的适用项目通过；
@@ -325,7 +325,7 @@ Notes:
 - 产品说明明确“写保护，不限制 shell 读取和网络”；
 - 保留退回 `manual` 的恢复路径。
 
-通过后再进入 W7：接通 Windows 平台可用性判断、隐藏灰度开关和小范围发布。不得为了联调提前把 Windows 产品入口默认打开。
+当前分支用于本地构建验证；probe 或初始化失败仍必须 fail closed，不得因入口已开放而无提示直跑未隔离命令。
 
 ---
 
@@ -399,7 +399,7 @@ PowerShell 5.1 首次运行 `Snapshot` 暴露了空数组经 `if` 输出后折�
 | RM-06 统一 CLI reset | PASS | reset 和最终 `ExpectClean` 均通过 |
 | RM-07 NSIS 卸载 | PASS | 真实 NSIS 卸载后 `ExpectClean` 通过，清理记录且不误删夹具/用户文件 |
 
-Windows 11 Pro、PowerShell 7、中文用户名等 P2 多主机矩阵因当前无可用主机，明确记为 `NOT RUN`。可继续开发默认关闭的 W7 灰度接入，但 RM-03 和 P2 不因跳过而视为通过，仍是正式默认开放前的发布门槛。
+Windows 11 Pro、PowerShell 7、中文用户名等 P2 多主机矩阵因当前无可用主机，明确记为 `NOT RUN`。当前本地测试分支已直接开放 W7，但 RM-03 和 P2 不因跳过而视为通过，仍应在正式发布前补齐。
 
 ## 10. 后续任务与执行顺序
 
@@ -415,36 +415,27 @@ Windows 11 Pro、PowerShell 7、中文用户名等 P2 多主机矩阵因当前�
 | ✅ P1 | reset 与活动 Job | 按 RM-06 分别在无任务、活动 sandbox Job 下运行统一 CLI | 本机空闲 reset PASS；活动 Job 拒绝分支已由 P0 原生测试覆盖 |
 | ✅ P1 | NSIS 卸载 | 按 RM-07 使用真实安装包卸载 | 本机 PASS：卸载清理后 `ExpectClean`；安装目录移除，夹具与用户文件保留 |
 | NOT RUN P2 | 支持矩阵 | 在 Windows 11 Pro、PowerShell 7、中文用户名/路径上重跑 §3，并至少覆盖 portable | 当前无额外主机，延后但不取消默认开放前的发布门槛 |
-| 开发完成/待灰度 P3 | W7 产品接入 | 默认关闭的动态 probe gate、Desktop/手机选项和 `manual` 回退已实现；按 §11 真机验证 | 安全 review 无高优先级问题；不上传原始路径；探测/初始化异常自动回到 `manual` |
+| 开发完成/待真机 P3 | W7 产品接入 | Windows 直接动态 probe、Desktop/手机选项和 `manual` 回退已实现；按 §11 真机验证 | probe 通过才显示；不上传原始路径；探测/初始化异常自动回到 `manual` |
 
 测试分层保持不变：P0 是无 UI 的底层逻辑/原生集成测试；P1 是进程、安装包和 ACL 生命周期手工验收，不要求 UI 自动化；P2 是兼容矩阵；P3 才允许接通产品入口。详细操作以 §3、§5、§6 为准，表格不替代这些步骤。
 
-## 11. W7 默认关闭的灰度验证
+## 11. W7 直接开放验证
 
-Windows 产品入口由 Agent 进程环境变量 `FUTURE_WINDOWS_SANDBOX_ROLLOUT` 统一控制，只接受 `1`/`true`/`yes`（不区分大小写）。默认未设置时，Windows 仍不显示“沙箱保护”，也不运行受限命令。
-
-仅灰度测试时，在同一个普通 PowerShell 会话中启动 FutureOS：
-
-```powershell
-$env:FUTURE_WINDOWS_SANDBOX_ROLLOUT = "1"
-.\FutureOS.exe
-```
-
-bundled Agent 继承该变量；外部 Agent 必须在它自己的进程环境中显式设置，其结果仍以 Agent 为准。界面只在“灰度闸门开启 + 完整 host probe 通过”时显示该档。probe 失败、Agent 不可用或保存过的 sandbox 档在当前主机不可用时，都必须回退并持久化为 `manual`；日志只记录稳定 code，不记录原始路径或 Win32 诊断。
+当前本地测试分支没有独立功能开关。Windows 启动后，Agent 运行一次完整 host probe；界面只在 probe 通过时显示 sandbox 档。probe 失败、Agent 不可用或保存过的 sandbox 档在当前主机不可用时，都必须回退并持久化为 `manual`；日志只记录稳定 code，不记录原始路径或 Win32 诊断。
 
 这些通过也不自动免除 RM-03 和 P2 的正式发布门槛。
 
-### 11.1 灰度测试要点
+### 11.1 产品测试要点
 
 | 编号 | 操作 | 通过标准 |
 |---|---|---|
-| W7-01 默认关闭 | 不设置灰度变量启动，运行 `future.exe agent --probe-windows-sandbox` 并查看 Desktop/手机审批档 | probe 可报 `available:true`，但必须同时报 `rolloutEnabled:false`；两端均不显示 sandbox 档 |
-| W7-02 闸门与选项 | 按本节设置变量，从同一 PowerShell 启动新构建的 FutureOS | probe 为 `available:true` + `rolloutEnabled:true`；Desktop 和手机显示 sandbox 档；只有一个 bundled Agent |
+| W7-01 probe 与选项 | 普通用户启动新构建，运行 `future.exe agent --probe-windows-sandbox` 并查看 Desktop 审批档 | probe 为 `{"available":true,"code":"available"}`；Desktop 显示 sandbox 档；只有一个 bundled Agent |
+| W7-02 Desktop/手机对齐 | 连接已配对手机，分别打开审批模式 | 两端都根据同一 Agent probe 显示 sandbox 档，文案都明确“只限制写入，读取和网络开放” |
 | W7-03 基本写边界 | 选择 sandbox，让 Agent 在 workspace 写入 `w7-allowed.txt`，再写入预先创建的 workspace 外测试文件 | workspace 写入成功；越界写入不得静默成功，必须显示审批或 fail closed |
 | W7-04 普通用户审批 | 查看越界写入对话框，先拒绝，再对同一命令选“仅允许这一次” | 对话框只强调“写入/管理文件 + 具体完整路径”；不显示 SID、ACL、token 等技术细节；拒绝后目标未变，一次允许后仅目标写入成功 |
 | W7-05 不扩张到 sibling | 一次允许某个文件后，让 Agent 写同目录的另一个预存文件 | sibling 必须再次审批或被拒绝，不能因前一次批准静默获得整个父目录写权限 |
-| W7-06 外部 Agent 闸门 | 在未设灰度变量的窗口手工启动外部 Agent，再从已设变量的窗口启动 Desktop | 以外部 Agent 为准；Desktop 不显示 sandbox 档、不启动第二个 Agent，已保存的 sandbox 档回退为 `manual` |
-| W7-07 取消灰度 | 正常退出，执行 `Remove-Item Env:FUTURE_WINDOWS_SANDBOX_ROLLOUT`，再启动 | sandbox 选项隐藏，已保存的 sandbox 档自动改为 `manual`，后续命令不会被误标记为正在受沙箱保护 |
+| W7-06 外部 Agent | 手工启动外部 Agent，再启动 Desktop | 以外部 Agent 的 probe 为准；Desktop 不启动第二个 Agent，选项可用性与外部 Agent 一致 |
+| W7-07 重启与回退 | 保存 sandbox 档后正常重启；另外检查已有的 probe 失败/不可用单测 | probe 仍通过时保留 sandbox；不可用时选项隐藏并将已保存值改为 `manual` |
 | W7-08 退出回收 | 执行过 sandbox 命令后正常退出 FutureOS，运行生命周期脚本 `ExpectStopped` | Desktop/Agent 进程为 0，capability record 为 0；用户文件保留，没有非 FutureOS DACL 被覆盖 |
 
 为 W7-03～W7-05 准备可重复判断的 workspace 外目标（在启用 sandbox 前执行）：

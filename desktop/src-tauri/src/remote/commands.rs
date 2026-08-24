@@ -29,7 +29,7 @@ async fn product_sandbox_available() -> bool {
     {
         crate::agent_bridge::probe_windows_sandbox()
             .await
-            .is_ok_and(|result| result.rollout_enabled && result.available)
+            .is_ok_and(|result| result.available)
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
@@ -790,9 +790,9 @@ async fn handle_command(
                         true,
                         json!({
                             "approvalTier": settings.approval_tier,
-                            // Windows is exposed only when both the default-off
-                            // rollout gate and the real host probe pass. The
-                            // phone never receives paths or native diagnostics.
+                            // Windows is exposed only when the real host probe
+                            // passes. The phone never receives paths or native
+                            // diagnostics.
                             "sandboxAvailable": sandbox_available,
                         }),
                         None,

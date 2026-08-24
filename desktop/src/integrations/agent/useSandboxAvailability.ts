@@ -5,7 +5,6 @@ import { invokeCommand } from "../tauri/invoke";
 interface WindowsSandboxProbeResult {
   available: boolean;
   code: string;
-  rolloutEnabled: boolean;
 }
 
 export interface SandboxAvailability {
@@ -16,7 +15,7 @@ export interface SandboxAvailability {
 let windowsProbe: Promise<boolean> | null = null;
 
 export function windowsSandboxAvailable(result: WindowsSandboxProbeResult): boolean {
-  return result.rolloutEnabled && result.available;
+  return result.available;
 }
 
 async function probeWindowsRollout(): Promise<boolean> {
@@ -39,9 +38,9 @@ function initialAvailability(): SandboxAvailability {
 }
 
 /**
- * Product-facing sandbox availability. Windows requires both the hidden W7
- * rollout gate and a successful native host probe; the promise is shared so
- * Settings and Composer do not independently exercise the native probe.
+ * Product-facing sandbox availability. Windows requires a successful native
+ * host probe; the promise is shared so Settings and Composer do not
+ * independently exercise the native probe.
  */
 export function useSandboxAvailability(): SandboxAvailability {
   const [availability, setAvailability] = useState(initialAvailability);

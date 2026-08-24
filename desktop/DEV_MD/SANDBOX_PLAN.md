@@ -184,7 +184,7 @@ v2 决策（V1–V9）见 APPROVAL_PLAN §9。v1 期间沿用有效的：escalat
 
 ## 11. Windows 原生写保护（unelevated：RestrictedToken + ACL）
 
-状态：**W1–W6 底层与本机可执行生命周期已在 Windows 11 Home 真机 PASS；W7 默认关闭的灰度接入已实现。** AppContainer SID、private desktop、PowerShell/CLM、Unicode/大输出、用户级单例、活动 capability lease、跨进程占用锁、旧代际 ACE/metadata GC、完整 host probe、reset、Desktop graceful shutdown 及 RPC/CLI 调用均已有自动化证据；RM-01、RM-02、RM-04～RM-07 已在本机 PASS。RM-03 及额外主机矩阵仍待完成。在这些发布闭环完成前，Windows 默认启动必须保持不可用，只有显式设置 `FUTURE_WINDOWS_SANDBOX_ROLLOUT` 的测试会话可显示该档。
+状态：**W1–W6 底层与本机可执行生命周期已在 Windows 11 Home 真机 PASS；W7 已在当前本地测试分支直接开启。** AppContainer SID、private desktop、PowerShell/CLM、Unicode/大输出、用户级单例、活动 capability lease、跨进程占用锁、旧代际 ACE/metadata GC、完整 host probe、reset、Desktop graceful shutdown 及 RPC/CLI 调用均已有自动化证据；RM-01、RM-02、RM-04～RM-07 已在本机 PASS。RM-03 及额外主机矩阵仍待完成。Windows 启动时直接运行完整 host probe；通过才显示该档，任何失败都隐藏入口并回退 `manual`。
 
 Windows 与 macOS 共用 `SandboxTier::Sandbox` 协议值，但 UI 和保证不同：
 
@@ -325,7 +325,7 @@ RestrictedToken/NTFS 不向父进程可靠报告“刚才拒绝了哪个对象�
 
 ### 11.7 实施阶段
 
-实现按可独立验证、默认关闭的纵向阶段推进。每个阶段都必须在上一阶段的退出条件满足后再扩大产品可见范围；不得为了联调提前让 Windows `platform_sandbox_available()` 返回 true。
+实现按可独立验证的纵向阶段推进。当前本地测试分支已按用户决定移除独立 feature flag；Windows `platform_sandbox_available()` 只依据完整 host probe，不得在 probe 失败时直跑未隔离命令。
 
 | 阶段 | 实现内容 | 验证与退出条件 |
 |---|---|---|
@@ -336,9 +336,9 @@ RestrictedToken/NTFS 不向父进程可靠报告“刚才拒绝了哪个对象�
 | **W4 — shell 能力请求与审批核心** | shell schema 加 `additional_permissions.write[]`；路径冻结、规则评估、请求去重、最多 8 项、可信“行为 + 目标”生成；RPC 持久化内部 enforcement payload；批准回执绑定 request/command hash/path/scope；一次批准选择 request-scoped SID，持久批准写 workspace 规则并切换到新策略代际 | 单测/集成测试覆盖 allow 无弹窗、默认 fallback ask 前置弹窗、显式 ask carveout 因 deny-wins 在弹窗前拒绝、deny 不可覆盖、未声明越界只失败、过宽/过多/非法路径拒绝、file 不静默扩大、创建/rename 使用父目录、过期/篡改 hash 拒绝、reparse/TOCTOU 变化失效、多目标全有或全无、session 即时生效 |
 | **W5 — 共享审批语义与 UI** | 桌面在现有 `ApprovalPrompt` 增加 capability action，不新建 Windows 对话框；移动端 `PendingApprovalCard` 消费同一可信语义 payload。单目标只显示“行为 + 目标”标题，命令折叠；多目标完整列出；桌面按场景显示“不允许 / 仅允许这一次 / 此项目以后都允许”，移动端第一版只提供拒绝/允许一次；移除普通卡片的 raw glob 编辑和技术字段 | desktop/mobile 组件、投影和远程 payload 测试覆盖 Windows/macOS/手动档；普通 UI 不出现 ACL、SID、backend、hash、规则层或原始 JSON；模型 reason 不能覆盖可信标题；malformed payload 不显示批准按钮；敏感/过宽/macOS escalation 不出现持久允许；手机批准与桌面“一次允许”绑定同一 request/hash/path/scope；中英文文案结构一致，具体措辞可后续微调 |
 | **W6 — 端到端安全与兼容性** | 将 W1–W5 串入真实 agent/desktop；增加 ACL audit/repair、活动代际跟踪、旧 SID GC、重置/卸载清理、日志脱敏和 feature probe；用仓库脚本进行 Windows 真实机手工批量 smoke，不加入 CI | 必过矩阵：workspace/temp 写成功；workspace 外写失败；一次批准仅开放完整列出的现有 file/subtree，未批准 sibling 仍失败；项目批准仅当前项目和新代际生效；父目录不被扩大；当前用户无权目标仍失败；现有关键对象 deny 硬化有效；不存在对象/glob 缺口与模式说明一致；崩溃/强杀/重启后无权限扩张；常见工具链可用；所有初始化失败均 fail closed |
-| **W7 — 灰度与发布** | 默认关闭 feature flag；仅对通过 capability probe 的本地 NTFS 工作区显示“写保护”；模式选择/首次启用/设置页说明“只限制写入，读取和网络开放”；保留一键退回 `manual` | Windows 目标版本手工 smoke 全绿；安全 review 无高优先级问题；升级、降级、重置 SID/ACL 可恢复；遥测不上传原始敏感路径；完成小范围灰度后才默认开放。发布后发现初始化/ACL 异常时自动回到 `manual`，不得无提示直跑 |
+| **W7 — 产品与发布** | Windows 启动后直接运行 capability probe；仅通过时显示“写保护”；模式选择/首次启用/设置页说明“只限制写入，读取和网络开放”；保留一键退回 `manual` | Windows 目标版本手工 smoke 全绿；安全 review 无高优先级问题；升级、降级、重置 SID/ACL 可恢复；遥测不上传原始敏感路径；初始化/ACL 异常时自动回到 `manual`，不得无提示直跑 |
 
-**当前实现状态（2026-08-24）**：Windows 11 Home 非管理员主机上的 `test-windows-sandbox.ps1 -IncludeClippy` 已通过 50 项原生/端到端测试、11 项 capability 审批测试、Agent 用户级单例、2 项 Desktop graceful shutdown、Agent/Desktop Clippy、release CLI probe，并确认退出后 capability record 为 0；测试明确不加入 CI。统一用户目录后的提交 `471a8cd7` 已再次通过 Windows 原生行为矩阵，P0 正式完成。P1 的 RM-01、RM-02、RM-04～RM-07 已在本机 PASS；RM-03 因当前包无法触发而 `NOT RUN`，P2 额外主机矩阵因无可用主机延后。W7 开发已接入默认关闭的 `FUTURE_WINDOWS_SANDBOX_ROLLOUT` 进程闸门；只有闸门开启且完整 host probe 通过时，Desktop/手机才显示 sandbox 档并让 Agent 运行受限命令。probe/Agent 失败会 fail closed 并将已保存的 sandbox 档回退为 `manual`；日志仅使用稳定 code，不向产品状态输出原始路径。回收顺序仍为先持久化并应用新集合，再按 Codex 的 `REVOKE_ACCESS` 模式回收无活动引用的旧 SID；失败时保留 metadata 供以后重试。reset/probe 已提供 sessionless agent RPC 与 `future agent` 维护命令；Windows 设置页提供普通用户文案的手动 reset，NSIS 卸载清理已真机 PASS。正式默认入口继续保持关闭，RM-03、P2 和安全 review 仍是发布门槛。普通 NTFS DACL 仍无法精确拒绝允许目录内尚不存在的未来文件名，`FILE_DELETE_CHILD` 与 Everyone/logon 宽 ACL 也保留 §11.6 的已知边界，不能宣称与 macOS SBPL 等价。
+**当前实现状态（2026-08-24）**：Windows 11 Home 非管理员主机上的 `test-windows-sandbox.ps1 -IncludeClippy` 已通过 50 项原生/端到端测试、11 项 capability 审批测试、Agent 用户级单例、2 项 Desktop graceful shutdown、Agent/Desktop Clippy、release CLI probe，并确认退出后 capability record 为 0；测试明确不加入 CI。P1 的 RM-01、RM-02、RM-04～RM-07 已在本机 PASS；RM-03 因当前包无法触发而 `NOT RUN`，P2 额外主机矩阵因无可用主机延后。当前本地测试分支已移除 W7 独立开关；Windows 直接运行完整 host probe，通过时 Desktop/手机显示 sandbox 档并让 Agent 运行受限命令。probe/Agent 失败会 fail closed 并将已保存的 sandbox 档回退为 `manual`；日志仅使用稳定 code，不向产品状态输出原始路径。回收顺序仍为先持久化并应用新集合，再按 Codex 的 `REVOKE_ACCESS` 模式回收无活动引用的旧 SID；失败时保留 metadata 供以后重试。reset/probe 已提供 sessionless agent RPC 与 `future agent` 维护命令；Windows 设置页提供普通用户文案的手动 reset，NSIS 卸载清理已真机 PASS。RM-03、P2 和安全 review 仍是正式发布前需补的证据，但不再阻止本分支本地测试。普通 NTFS DACL 仍无法精确拒绝允许目录内尚不存在的未来文件名，`FILE_DELETE_CHILD` 与 Everyone/logon 宽 ACL 也保留 §11.6 的已知边界，不能宣称与 macOS SBPL 等价。
 
 Windows 真机从仓库根目录用普通（非管理员）PowerShell 执行：
 
@@ -369,7 +369,7 @@ probe 成功执行时始终输出 JSON；`available=false` 是受支持的 fail-
 4. **PR W4**：shell 参数、approval/RPC 契约、规则注入和后端绑定测试；桌面尚不展示入口。
 5. **PR W5**：共享 `ApprovalPrompt` 和本地化/投影测试；同时收敛 macOS/手动档的普通用户呈现。
 6. **PR W6**：端到端接线、Windows 手工批量 smoke、audit/repair/清理和隐藏设置开关。
-7. **PR W7**：灰度开关与正式平台可用性判断。
+7. **PR W7**：正式平台可用性判断、产品入口与 fail-closed 回退。
 
 W2 与 W4 可在 W1 契约冻结后并行开发，但 W4 的批准结果不得在 W2/W3 验证完成前启动真实命令；W5 依赖 W4 的可信语义 payload；W6 必须同时通过 W2、W3、W4、W5 的退出条件。
 
