@@ -22,15 +22,15 @@ const MAX_TRANSIENT_RETRIES: usize = 2;
 // smaller configured values intact, but cap the manual tail at a useful size.
 const MANUAL_RECENT_TAIL_MAX_TOKENS: u64 = 15_000;
 
-const SUMMARY_SYSTEM_PROMPT: &str = r#"You are a context summarization agent. Produce only a structured handoff summary for another coding agent that will resume the work. Do not continue the conversation or answer questions from it. Use the same primary language as the conversation. Preserve exact paths, symbols, commands, error strings, URLs, and identifiers when known."#;
+const SUMMARY_SYSTEM_PROMPT: &str = r#"You are a context summarization agent. Produce a structured handoff summary so another coding agent can continue the work. Do not continue the conversation or answer its questions. Output only the requested structure, using the conversation's primary language."#;
 
 const SUMMARY_TEMPLATE: &str = r#"Output exactly this Markdown structure and keep every section:
 
 ## Objective
-- [one or two brief sentences describing the user's currently unresolved objective; if every request was answered, use (none — waiting for the user's next instruction)]
+- [the user's unresolved objective, or (none)]
 
 ## Important Details
-- [constraints, preferences, decisions and why, important facts, or (none)]
+- [constraints, decisions and why, important facts, or (none)]
 
 ## Work State
 ### Completed
@@ -43,19 +43,16 @@ const SUMMARY_TEMPLATE: &str = r#"Output exactly this Markdown structure and kee
 - [blockers, failed commands, and unknowns, or (none)]
 
 ## Next Move
-1. [immediate concrete action for an unresolved objective; otherwise wait for the user's next instruction]
+1. [immediate concrete action, or wait for the user's next instruction]
 
 ## Relevant Files
 - [exact path and why it matters, or (none)]
 
 Rules:
+- Keep every section, even when empty.
 - Use terse bullets, not prose paragraphs.
-- Carry forward every still-relevant user directive and constraint.
 - Preserve exact paths, symbols, commands, error strings, URLs, and identifiers when known.
-- Put requests and questions that were already answered under Completed, not Objective or Active.
-- Do not treat the most recent user message as unresolved merely because it is recent.
-- Move resolved blockers out of Blocked, and update Objective and Next Move to match the current work state.
-- Omit platform-internal explanations unless they constrain what the next agent can do.
+- Reflect the current state: completed requests belong in Completed; only unresolved work belongs in Objective, Active, and Next Move; remove resolved blockers.
 - Do not mention compaction or the summary process."#;
 
 #[derive(Clone, Copy)]
@@ -509,7 +506,7 @@ fn summary_prompt(
 ) -> String {
     let prior = previous_summary.map(|summary| {
         format!(
-            "The <prior-summary> contains everything before this conversation chunk. The new summary completely replaces it, so anything omitted is lost. Carry forward every still-relevant objective, constraint, user directive, decision, workstream, blocker, and next step. The newer conversation wins conflicts. Move completed work from Active to Completed, remove resolved blockers, and update Objective and Next Move to reflect the current work state.\n\n<prior-summary>\n{summary}\n</prior-summary>\n\n"
+            "The <prior-summary> covers everything before this conversation and will be discarded after this update. Carry forward its still-relevant objectives, constraints, user directives, decisions, and workstreams. The newer conversation wins conflicts. Update completed work, resolved blockers, Objective, and Next Move to reflect the current state.\n\n<prior-summary>\n{summary}\n</prior-summary>\n\n"
         )
     }).unwrap_or_default();
     let instructions = instructions
@@ -1068,10 +1065,9 @@ mod tests {
             None,
         );
 
-        assert!(prompt.contains("currently unresolved objective"));
-        assert!(prompt.contains("already answered under Completed"));
-        assert!(prompt.contains("merely because it is recent"));
-        assert!(prompt.contains("resolved blockers"));
+        assert!(prompt.contains("unresolved objective"));
+        assert!(prompt.contains("completed requests belong in Completed"));
+        assert!(prompt.contains("remove resolved blockers"));
     }
 
     #[test]
