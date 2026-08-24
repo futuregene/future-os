@@ -430,7 +430,7 @@ Windows 11 Pro、PowerShell 7、中文用户名等 P2 多主机矩阵因当前�
 | 编号 | 操作 | 通过标准 |
 |---|---|---|
 | W7-01 probe 与选项 | 普通用户启动新构建，运行 `future.exe agent --probe-windows-sandbox` 并查看 Desktop 审批档 | probe 为 `{"available":true,"code":"available"}`；Desktop 显示 sandbox 档；只有一个 bundled Agent |
-| W7-02 Desktop/手机对齐 | 连接已配对手机，分别打开审批模式 | 两端都根据同一 Agent probe 显示 sandbox 档，文案都明确“只限制写入，读取和网络开放” |
+| W7-02 Desktop/手机对齐 | 连接已配对手机，分别打开审批模式 | 两端都根据同一 Agent probe 显示 sandbox 档；普通用户文案聚焦写入保护和何时需要审批，不显示干扰判断的技术边界 |
 | W7-03 基本写边界 | 选择 sandbox，让 Agent 在 workspace 写入 `w7-allowed.txt`，再写入预先创建的 workspace 外测试文件 | workspace 写入成功；越界写入不得静默成功，必须显示审批或 fail closed |
 | W7-04 普通用户审批 | 查看越界写入对话框，先拒绝，再对同一命令选“仅允许这一次” | 对话框只强调“写入/管理文件 + 具体完整路径”；不显示 SID、ACL、token 等技术细节；拒绝后目标未变，一次允许后仅目标写入成功 |
 | W7-05 不扩张到 sibling | 一次允许某个文件后，让 Agent 写同目录的另一个预存文件 | sibling 必须再次审批或被拒绝，不能因前一次批准静默获得整个父目录写权限 |

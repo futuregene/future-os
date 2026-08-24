@@ -289,7 +289,7 @@ RestrictedToken/NTFS 不向父进程可靠报告“刚才拒绝了哪个对象�
 
 批准只增加 restricting/capability SID 的写许可，不提升当前用户自身权限。若当前用户对目标无写权限，即使批准也必须失败；unelevated 后端不得改 owner、覆盖无关 DACL 或触发 UAC。
 
-工具层 read/write/edit 继续使用现有真前置审批；Windows shell capability 卡片与其复用同一用户语义和共享组件，详见 APPROVAL_PLAN §6。Windows“只保护写入，读取和网络开放”的模式差异放在模式选择、首次启用说明和设置页，不在每次具体路径审批中重复。
+工具层 read/write/edit 继续使用现有真前置审批；Windows shell capability 卡片与其复用同一用户语义和共享组件，详见 APPROVAL_PLAN §6。Windows 第一版“只保护写入，读取和网络开放”的技术边界保留在开发文档和测试材料中；普通用户界面只呈现与当前判断直接相关的行为和目标，不追加干扰审批判断的实现细节。
 
 ### 11.5 代码接缝
 
@@ -336,7 +336,7 @@ RestrictedToken/NTFS 不向父进程可靠报告“刚才拒绝了哪个对象�
 | **W4 — shell 能力请求与审批核心** | shell schema 加 `additional_permissions.write[]`；路径冻结、规则评估、请求去重、最多 8 项、可信“行为 + 目标”生成；RPC 持久化内部 enforcement payload；批准回执绑定 request/command hash/path/scope；一次批准选择 request-scoped SID，持久批准写 workspace 规则并切换到新策略代际 | 单测/集成测试覆盖 allow 无弹窗、默认 fallback ask 前置弹窗、显式 ask carveout 因 deny-wins 在弹窗前拒绝、deny 不可覆盖、未声明越界只失败、过宽/过多/非法路径拒绝、file 不静默扩大、创建/rename 使用父目录、过期/篡改 hash 拒绝、reparse/TOCTOU 变化失效、多目标全有或全无、session 即时生效 |
 | **W5 — 共享审批语义与 UI** | 桌面在现有 `ApprovalPrompt` 增加 capability action，不新建 Windows 对话框；移动端 `PendingApprovalCard` 消费同一可信语义 payload。单目标只显示“行为 + 目标”标题，命令折叠；多目标完整列出；桌面按场景显示“不允许 / 仅允许这一次 / 此项目以后都允许”，移动端第一版只提供拒绝/允许一次；移除普通卡片的 raw glob 编辑和技术字段 | desktop/mobile 组件、投影和远程 payload 测试覆盖 Windows/macOS/手动档；普通 UI 不出现 ACL、SID、backend、hash、规则层或原始 JSON；模型 reason 不能覆盖可信标题；malformed payload 不显示批准按钮；敏感/过宽/macOS escalation 不出现持久允许；手机批准与桌面“一次允许”绑定同一 request/hash/path/scope；中英文文案结构一致，具体措辞可后续微调 |
 | **W6 — 端到端安全与兼容性** | 将 W1–W5 串入真实 agent/desktop；增加 ACL audit/repair、活动代际跟踪、旧 SID GC、重置/卸载清理、日志脱敏和 feature probe；用仓库脚本进行 Windows 真实机手工批量 smoke，不加入 CI | 必过矩阵：workspace/temp 写成功；workspace 外写失败；一次批准仅开放完整列出的现有 file/subtree，未批准 sibling 仍失败；项目批准仅当前项目和新代际生效；父目录不被扩大；当前用户无权目标仍失败；现有关键对象 deny 硬化有效；不存在对象/glob 缺口与模式说明一致；崩溃/强杀/重启后无权限扩张；常见工具链可用；所有初始化失败均 fail closed |
-| **W7 — 产品与发布** | Windows 启动后直接运行 capability probe；仅通过时显示“写保护”；模式选择/首次启用/设置页说明“只限制写入，读取和网络开放”；保留一键退回 `manual` | Windows 目标版本手工 smoke 全绿；安全 review 无高优先级问题；升级、降级、重置 SID/ACL 可恢复；遥测不上传原始敏感路径；初始化/ACL 异常时自动回到 `manual`，不得无提示直跑 |
+| **W7 — 产品与发布** | Windows 启动后直接运行 capability probe；仅通过时显示“写保护”；普通用户文案聚焦写入保护与何时审批，能力差异保留在开发文档；保留一键退回 `manual` | Windows 目标版本手工 smoke 全绿；安全 review 无高优先级问题；升级、降级、重置 SID/ACL 可恢复；遥测不上传原始敏感路径；初始化/ACL 异常时自动回到 `manual`，不得无提示直跑 |
 
 **当前实现状态（2026-08-24）**：Windows 11 Home 非管理员主机上的 `test-windows-sandbox.ps1 -IncludeClippy` 已通过 50 项原生/端到端测试、11 项 capability 审批测试、Agent 用户级单例、2 项 Desktop graceful shutdown、Agent/Desktop Clippy、release CLI probe，并确认退出后 capability record 为 0；测试明确不加入 CI。P1 的 RM-01、RM-02、RM-04～RM-07 已在本机 PASS；RM-03 因当前包无法触发而 `NOT RUN`，P2 额外主机矩阵因无可用主机延后。当前本地测试分支已移除 W7 独立开关；Windows 直接运行完整 host probe，通过时 Desktop/手机显示 sandbox 档并让 Agent 运行受限命令。probe/Agent 失败会 fail closed 并将已保存的 sandbox 档回退为 `manual`；日志仅使用稳定 code，不向产品状态输出原始路径。回收顺序仍为先持久化并应用新集合，再按 Codex 的 `REVOKE_ACCESS` 模式回收无活动引用的旧 SID；失败时保留 metadata 供以后重试。reset/probe 已提供 sessionless agent RPC 与 `future agent` 维护命令；Windows 设置页提供普通用户文案的手动 reset，NSIS 卸载清理已真机 PASS。RM-03、P2 和安全 review 仍是正式发布前需补的证据，但不再阻止本分支本地测试。普通 NTFS DACL 仍无法精确拒绝允许目录内尚不存在的未来文件名，`FILE_DELETE_CHILD` 与 Everyone/logon 宽 ACL 也保留 §11.6 的已知边界，不能宣称与 macOS SBPL 等价。
 

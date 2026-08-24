@@ -14,19 +14,51 @@ export interface SandboxAvailability {
 
 let windowsProbe: Promise<boolean> | null = null;
 
+const WINDOWS_PROBE_RETRY_DELAYS_MS = [0, 100, 250, 500, 1_000, 2_000] as const;
+
 export function windowsSandboxAvailable(result: WindowsSandboxProbeResult): boolean {
   return result.available;
 }
 
-async function probeWindowsRollout(): Promise<boolean> {
-  try {
-    const result = await invokeCommand<WindowsSandboxProbeResult>("probe_windows_sandbox");
-    return windowsSandboxAvailable(result);
+type WindowsSandboxProbe = () => Promise<WindowsSandboxProbeResult>;
+type Delay = (milliseconds: number) => Promise<void>;
+
+const delay: Delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+
+export async function probeWindowsSandboxWithRetry(
+  probe: WindowsSandboxProbe,
+  retryDelays: readonly number[] = WINDOWS_PROBE_RETRY_DELAYS_MS,
+  wait: Delay = delay,
+): Promise<boolean> {
+  let lastError: unknown;
+
+  for (const retryDelay of retryDelays) {
+    if (retryDelay > 0)
+      await wait(retryDelay);
+
+    try {
+      return windowsSandboxAvailable(await probe());
+    }
+    catch (error) {
+      // The bundled Agent starts off the Desktop launch path. A refused RPC
+      // connection means "not ready yet", not "sandbox unsupported".
+      lastError = error;
+    }
   }
-  catch {
-    // Agent startup/probe failures fail closed. A later app start probes again.
-    return false;
-  }
+
+  throw lastError ?? new Error("Windows sandbox probe did not run");
+}
+
+function sharedWindowsProbe(): Promise<boolean> {
+  windowsProbe ??= probeWindowsSandboxWithRetry(
+    () => invokeCommand<WindowsSandboxProbeResult>("probe_windows_sandbox"),
+  ).catch((error) => {
+    // Do not permanently cache a transient Agent connection failure. A later
+    // mount (for example, opening Settings after startup) gets a fresh attempt.
+    windowsProbe = null;
+    throw error;
+  });
+  return windowsProbe;
 }
 
 function initialAvailability(): SandboxAvailability {
@@ -48,12 +80,18 @@ export function useSandboxAvailability(): SandboxAvailability {
   useEffect(() => {
     if (!isWindows)
       return;
-    windowsProbe ??= probeWindowsRollout();
     let current = true;
-    void windowsProbe.then((available) => {
-      if (current)
-        setAvailability({ available, resolved: true });
-    });
+    void sharedWindowsProbe()
+      .then((available) => {
+        if (current)
+          setAvailability({ available, resolved: true });
+      })
+      .catch(() => {
+        // Exhausted connection retries fail closed for this mount. Because the
+        // shared promise was cleared, a later mount can recover automatically.
+        if (current)
+          setAvailability({ available: false, resolved: true });
+      });
     return () => {
       current = false;
     };
