@@ -58,6 +58,7 @@ fn turn_envelope_includes_prior_evidence_and_gate_decisions() {
         recorded_at: 0,
         spend_source: Some("run".into()),
         validation: None,
+        failure_kind: None,
     };
     let msg = compose_turn_message(&goal, goal.todo("T2").unwrap(), Some(&prev));
     assert!(msg.contains("Resolved gate decision(s): G1: approved"));

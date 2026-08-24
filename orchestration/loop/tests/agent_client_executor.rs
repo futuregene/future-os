@@ -38,6 +38,7 @@ fn sample_record(state: &str) -> RunRecord {
         recorded_at: 1_700_000_000,
         spend_source: None,
         validation: None,
+        failure_kind: None,
     }
 }
 

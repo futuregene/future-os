@@ -151,6 +151,7 @@ mod tests {
             recorded_at: 0,
             spend_source: source.map(|s| s.to_string()),
             validation: None,
+            failure_kind: None,
         }
     }
 

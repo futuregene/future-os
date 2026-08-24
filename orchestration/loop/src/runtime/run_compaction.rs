@@ -183,6 +183,7 @@ mod tests {
             recorded_at: 1_700_000_000,
             spend_source: Some("run".to_string()),
             validation: None,
+            failure_kind: None,
         };
         let compact = compact_run_record(&record);
         assert_eq!(compact["terminal_state"], "completed");

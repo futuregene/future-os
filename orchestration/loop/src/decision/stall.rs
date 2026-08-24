@@ -37,6 +37,44 @@ pub(crate) fn repair_exhausted(goal: &Goal) -> bool {
         .any(|t| t.failed_attempts > MAX_REPAIR_ATTEMPTS)
 }
 
+/// A diagnostic reason for a validator-carrying todo that exhausted its repair
+/// budget: the verify gate failed repeatedly, so the loop must surface the two
+/// dominant causes instead of silently retrying — (a) a tautological/always-
+/// false validator (e.g. `test -n ""` from an empty `$(...)` expansion), and
+/// (b) a gate that asserts a file the agent cannot produce locally because the
+/// data is injected at grading time. The operator needs to fix the gate or
+/// supersede the todo, not relaunch the same turn.
+pub(crate) fn repair_exhausted_reason(goal: &Goal) -> Option<String> {
+    let exhausted: Vec<&Todo> = goal
+        .open_of(TaskClass::Advancement)
+        .filter(|t| t.failed_attempts > MAX_REPAIR_ATTEMPTS)
+        .collect();
+    if exhausted.is_empty() {
+        return None;
+    }
+    let mut parts: Vec<String> = exhausted
+        .iter()
+        .map(|t| {
+            let gate = t
+                .validator
+                .as_deref()
+                .map(|v| format!(" (--verify `{v}` failed {})", t.failed_attempts))
+                .unwrap_or_else(|| {
+                    format!(" (no --verify; {} failed attempts)", t.failed_attempts)
+                });
+            format!("{}{}", t.id, gate)
+        })
+        .collect();
+    parts.push(
+        "check (a) is the --verify gate tautological/always-false (e.g. `test -n \"\"` from an empty $() expansion), or (b) does it assert a file only present at grading time (data injected into /app/data)? Fix the gate or supersede the todo — don't relaunch the same turn"
+            .to_string(),
+    );
+    Some(format!(
+        "advancement todo(s) exhausted repair budget: {}",
+        parts.join("; ")
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,5 +120,28 @@ mod tests {
         assert!(!repair_exhausted(&g));
         g.todo_mut("T1").unwrap().failed_attempts = MAX_REPAIR_ATTEMPTS + 1;
         assert!(repair_exhausted(&g));
+    }
+
+    #[test]
+    fn repair_exhausted_reason_names_todo_and_gate_and_causes() {
+        let mut g = Goal::new("g", "objective", "/tmp");
+        let mut t = Todo::advancement("T1", "work");
+        t.validator = Some("test -n \"\"".to_string());
+        t.failed_attempts = MAX_REPAIR_ATTEMPTS + 1;
+        g.add(t);
+        let reason = repair_exhausted_reason(&g).expect("reason present");
+        assert!(reason.contains("T1"), "{reason}");
+        assert!(reason.contains("--verify"), "{reason}");
+        assert!(
+            reason.contains("tautological") || reason.contains("grading time"),
+            "{reason}"
+        );
+    }
+
+    #[test]
+    fn repair_exhausted_reason_none_when_no_budget_breached() {
+        let mut g = Goal::new("g", "objective", "/tmp");
+        g.add(Todo::advancement("T1", "work"));
+        assert_eq!(repair_exhausted_reason(&g), None);
     }
 }

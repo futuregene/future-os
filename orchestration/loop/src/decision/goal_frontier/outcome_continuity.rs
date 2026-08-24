@@ -110,6 +110,7 @@ mod tests {
             evidence: evidence.to_string(),
             recorded_at: at,
             spend_source: None,
+            failure_kind: None,
         }
     }
 
