@@ -397,9 +397,9 @@ PowerShell 5.1 首次运行 `Snapshot` 暴露了空数组经 `if` 输出后折�
 | RM-04 外部 Agent 归属 | PASS | Desktop 退出后外部 Agent 与 1 条记录保留；外部 Agent Ctrl+C 后清为 0 |
 | RM-05 异常退出/启动恢复 | PASS | 本次强制结束后已自动达到 `0/0/0`；在停止状态人工放入 1 条残留后，重启恢复为 `1/1/0` |
 | RM-06 统一 CLI reset | PASS | reset 和最终 `ExpectClean` 均通过 |
-| RM-07 NSIS 卸载 | NOT RUN | 当前无法执行真实安装/卸载验证 |
+| RM-07 NSIS 卸载 | PASS | 真实 NSIS 卸载后 `ExpectClean` 通过，清理记录且不误删夹具/用户文件 |
 
-Windows 11 Pro、PowerShell 7、中文用户名等 P2 多主机矩阵因当前无可用主机，明确记为 `NOT RUN`。可继续开发默认关闭的 W7 灰度接入，但 RM-03、RM-07 和 P2 不因跳过而视为通过，仍是正式默认开放前的发布门槛。
+Windows 11 Pro、PowerShell 7、中文用户名等 P2 多主机矩阵因当前无可用主机，明确记为 `NOT RUN`。可继续开发默认关闭的 W7 灰度接入，但 RM-03 和 P2 不因跳过而视为通过，仍是正式默认开放前的发布门槛。
 
 ## 10. 后续任务与执行顺序
 
@@ -413,7 +413,7 @@ Windows 11 Pro、PowerShell 7、中文用户名等 P2 多主机矩阵因当前�
 | ✅ P1 | 外部 Agent 归属 | 按 RM-04 手工启动 Agent，再启动/退出桌面 | 本机 PASS：Desktop 不接管外部 Agent；外部 Agent 自行退出后清理为 0 |
 | ✅ P1 | 崩溃恢复 | 按 RM-05 强杀桌面和 Agent，再重新启动 | 本机 PASS：异常退出自动清理；人工残留后启动恢复为 `1/1/0` |
 | ✅ P1 | reset 与活动 Job | 按 RM-06 分别在无任务、活动 sandbox Job 下运行统一 CLI | 本机空闲 reset PASS；活动 Job 拒绝分支已由 P0 原生测试覆盖 |
-| P1 | NSIS 卸载 | 按 RM-07 使用真实安装包卸载 | 只撤销 FutureOS ACE/metadata；不删用户文件、不覆盖其他 DACL；失败时保留可重试工具 |
+| ✅ P1 | NSIS 卸载 | 按 RM-07 使用真实安装包卸载 | 本机 PASS：卸载清理后 `ExpectClean`；安装目录移除，夹具与用户文件保留 |
 | NOT RUN P2 | 支持矩阵 | 在 Windows 11 Pro、PowerShell 7、中文用户名/路径上重跑 §3，并至少覆盖 portable | 当前无额外主机，延后但不取消默认开放前的发布门槛 |
 | 开发完成/待灰度 P3 | W7 产品接入 | 默认关闭的动态 probe gate、Desktop/手机选项和 `manual` 回退已实现；按 §11 真机验证 | 安全 review 无高优先级问题；不上传原始路径；探测/初始化异常自动回到 `manual` |
 
@@ -432,4 +432,28 @@ $env:FUTURE_WINDOWS_SANDBOX_ROLLOUT = "1"
 
 bundled Agent 继承该变量；外部 Agent 必须在它自己的进程环境中显式设置，其结果仍以 Agent 为准。界面只在“灰度闸门开启 + 完整 host probe 通过”时显示该档。probe 失败、Agent 不可用或保存过的 sandbox 档在当前主机不可用时，都必须回退并持久化为 `manual`；日志只记录稳定 code，不记录原始路径或 Win32 诊断。
 
-灰度验证至少包括：不设变量时选项隐藏；设置后 probe 通过时选项显示；一条 workspace 写入成功且一条越界写入触发普通用户审批；取消变量并重启后自动回到手动审批。这些通过也不自动免除 RM-03、RM-07 和 P2 的正式发布门槛。
+这些通过也不自动免除 RM-03 和 P2 的正式发布门槛。
+
+### 11.1 灰度测试要点
+
+| 编号 | 操作 | 通过标准 |
+|---|---|---|
+| W7-01 默认关闭 | 不设置灰度变量启动，运行 `future.exe agent --probe-windows-sandbox` 并查看 Desktop/手机审批档 | probe 可报 `available:true`，但必须同时报 `rolloutEnabled:false`；两端均不显示 sandbox 档 |
+| W7-02 闸门与选项 | 按本节设置变量，从同一 PowerShell 启动新构建的 FutureOS | probe 为 `available:true` + `rolloutEnabled:true`；Desktop 和手机显示 sandbox 档；只有一个 bundled Agent |
+| W7-03 基本写边界 | 选择 sandbox，让 Agent 在 workspace 写入 `w7-allowed.txt`，再写入预先创建的 workspace 外测试文件 | workspace 写入成功；越界写入不得静默成功，必须显示审批或 fail closed |
+| W7-04 普通用户审批 | 查看越界写入对话框，先拒绝，再对同一命令选“仅允许这一次” | 对话框只强调“写入/管理文件 + 具体完整路径”；不显示 SID、ACL、token 等技术细节；拒绝后目标未变，一次允许后仅目标写入成功 |
+| W7-05 不扩张到 sibling | 一次允许某个文件后，让 Agent 写同目录的另一个预存文件 | sibling 必须再次审批或被拒绝，不能因前一次批准静默获得整个父目录写权限 |
+| W7-06 外部 Agent 闸门 | 在未设灰度变量的窗口手工启动外部 Agent，再从已设变量的窗口启动 Desktop | 以外部 Agent 为准；Desktop 不显示 sandbox 档、不启动第二个 Agent，已保存的 sandbox 档回退为 `manual` |
+| W7-07 取消灰度 | 正常退出，执行 `Remove-Item Env:FUTURE_WINDOWS_SANDBOX_ROLLOUT`，再启动 | sandbox 选项隐藏，已保存的 sandbox 档自动改为 `manual`，后续命令不会被误标记为正在受沙箱保护 |
+| W7-08 退出回收 | 执行过 sandbox 命令后正常退出 FutureOS，运行生命周期脚本 `ExpectStopped` | Desktop/Agent 进程为 0，capability record 为 0；用户文件保留，没有非 FutureOS DACL 被覆盖 |
+
+为 W7-03～W7-05 准备可重复判断的 workspace 外目标（在启用 sandbox 前执行）：
+
+```powershell
+$outside = Join-Path $env:USERPROFILE "Desktop\FutureOS-W7-Outside"
+New-Item -ItemType Directory -Force -Path $outside | Out-Null
+Set-Content -LiteralPath (Join-Path $outside "approved.txt") -Value "before"
+Set-Content -LiteralPath (Join-Path $outside "sibling.txt") -Value "before"
+```
+
+审批前先点“不允许”，确认文件仍为 `before`；再仅批准 `approved.txt` 这一个完整目标。测试结束后这两个文件是用户测试数据，卸载/reset 不得删除它们。
