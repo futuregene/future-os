@@ -800,7 +800,9 @@ impl Loop {
             // not a finished answer. End the turn as `incomplete` (keeping the
             // partial text so it isn't lost) rather than presenting a cut-off
             // reply as `complete`. Tool calls, if
-            // any, are left unexecuted — their arguments may be partial.
+            // any, are left unexecuted — their arguments may be partial — but
+            // every tool_call_id must still get a placeholder result or the
+            // next LLM request is rejected with HTTP 400.
             if stream_truncated {
                 self.stream_incomplete
                     .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -811,6 +813,12 @@ impl Loop {
                         assistant_text.len()
                     );
                 }
+                append_skipped_tool_placeholders(
+                    &mut messages,
+                    &agent_tool_calls,
+                    "the stream was truncated",
+                    ctx.save_callback.as_ref(),
+                );
                 return Ok((assistant_text, messages));
             }
 
@@ -822,6 +830,15 @@ impl Loop {
                 stop_fn(llm_msgs, &assistant_text)
             });
             if stop_hit {
+                // The stop condition fired while the model had emitted tool
+                // calls; they are never executed, so append placeholder
+                // results to keep the conversation API-valid for the next run.
+                append_skipped_tool_placeholders(
+                    &mut messages,
+                    &agent_tool_calls,
+                    "the stop condition fired",
+                    ctx.save_callback.as_ref(),
+                );
                 return Ok((assistant_text, messages));
             }
 
@@ -1127,6 +1144,35 @@ fn has_unclosed_string(value: &str) -> bool {
         }
     }
     in_string
+}
+
+/// Append placeholder tool-result messages for tool calls that were never
+/// executed (truncated stream or stop condition). Without a matching tool
+/// message per tool_call_id, the LLM API rejects the conversation on the
+/// next request with HTTP 400: "An assistant message with 'tool_calls'
+/// must be followed by tool messages responding to each 'tool_call_id'".
+fn append_skipped_tool_placeholders(
+    messages: &mut Vec<AgentMessage>,
+    tool_calls: &[AgentToolCall],
+    reason: &str,
+    save: Option<&crate::agent::PersistCallback>,
+) {
+    for tc in tool_calls {
+        let note = format!(
+            "[Tool execution skipped — {} was not executed because {reason}]",
+            tc.name
+        );
+        let mut placeholder = AgentMessage {
+            role: "tool".to_string(),
+            content: vec![ContentBlock::tool_result(tc.id.clone(), &note, false)],
+            name: tc.name.clone(),
+            ..Default::default()
+        };
+        if let Some(save) = save {
+            save(&mut placeholder);
+        }
+        messages.push(placeholder);
+    }
 }
 
 /// Returns true when the LLM error was caused by request body exceeding
@@ -1744,6 +1790,76 @@ mod tests {
         assert!(loop_
             .stream_incomplete
             .load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn truncated_stream_with_tool_calls_appends_placeholder_results() {
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![
+            ev_toolcall_start(0, "call_1", "echo", "{}"),
+            ev_toolcall_end(),
+            ModelStreamEvent::Finish {
+                reason: FinishReason::Incomplete,
+                usage: None,
+            },
+        ])]);
+        let saved = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let ctx = StreamContext {
+            save_callback: Some({
+                let saved = saved.clone();
+                Arc::new(move |m: &mut AgentMessage| saved.lock().push(m.role.clone()))
+            }),
+            ..Default::default()
+        };
+        let loop_ = Loop::new(provider, "mock");
+        let (_, messages) = loop_
+            .run_streaming_with_messages(user_messages("hi"), &ctx, noop_on_text, |_| {}, None)
+            .await
+            .unwrap();
+        // user, assistant(tool_calls), placeholder tool result — the next
+        // run must be able to send this history without an HTTP 400.
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[1].tool_calls().len(), 1);
+        assert_eq!(messages[2].role, "tool");
+        assert_eq!(messages[2].tool_call_id(), "call_1");
+        assert!(messages[2].text().contains("stream was truncated"));
+        // The placeholder is persisted so a reload cannot resurrect the
+        // dangling assistant tool_calls.
+        assert!(saved.lock().contains(&"tool".to_string()));
+        assert!(loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stop_condition_with_tool_calls_appends_placeholder_results() {
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![
+            ev_toolcall_start(0, "call_1", "echo", "{}"),
+            ev_toolcall_end(),
+            ModelStreamEvent::Finish {
+                reason: FinishReason::ToolCalls,
+                usage: None,
+            },
+        ])]);
+        let config = crate::types::AgentConfig {
+            stop_condition: Some(Arc::new(|_, _| true)),
+            ..Default::default()
+        };
+        let loop_ = Loop::new(provider, "mock").with_config(config);
+        let (_, messages) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[1].tool_calls().len(), 1);
+        assert_eq!(messages[2].role, "tool");
+        assert_eq!(messages[2].tool_call_id(), "call_1");
+        assert!(messages[2].text().contains("stop condition"));
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
