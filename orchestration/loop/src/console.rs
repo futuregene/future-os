@@ -21,7 +21,7 @@ use std::time::SystemTime;
 
 use crate::agent_client::TurnProgressTracker;
 use crate::cli::registry::{CommandRegistry, Journey};
-use crate::decision::{complete_todo, decide_for, MAX_REPAIR_ATTEMPTS};
+use crate::decision::{complete_todo, decide_for};
 use crate::executor::{execute_turn, writeback};
 use crate::state::{now_epoch, Goal, TaskClass, Todo, TodoStatus};
 use crate::store::{Event, Store};
@@ -3456,6 +3456,15 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     let mut anonymous = false;
     let mut lease_secs = DEFAULT_RUN_LEASE_SECS;
     let mut force_workspace = false;
+    // Session retention: the CALLER decides resume-vs-fresh, never the kernel.
+    // `--resume-session <id>` pins the exact session to resume;
+    // `--session-policy <auto|fresh|resume>` sets the default policy:
+    //   auto   → resume the retained session only when the kernel marked it
+    //            resumable (InfraRecoverable), else fresh (default);
+    //   fresh  → always start a new session (the pre-retention behavior);
+    //   resume → resume the retained session whenever one exists.
+    let mut session_policy = "auto".to_string();
+    let mut resume_session: Option<String> = None;
     reject_unknown_flags(
         args,
         &[
@@ -3467,6 +3476,8 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
             "--max-turn-secs",
             "--max-turns",
             "--model",
+            "--resume-session",
+            "--session-policy",
             "--thinking-level",
         ],
     )?;
@@ -3489,8 +3500,15 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
             anonymous = true;
         } else if k == "--force-workspace" {
             force_workspace = true;
+        } else if k == "--session-policy" {
+            session_policy = v;
+        } else if k == "--resume-session" {
+            resume_session = Some(v);
         }
     });
+    if !matches!(session_policy.as_str(), "auto" | "fresh" | "resume") {
+        bail!("--session-policy must be auto | fresh | resume");
+    }
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
 
     // Identity gate BEFORE any gRPC/session work — fail fast with a hint
@@ -3502,7 +3520,41 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     let goal0 = store
         .replay(&goal_id)?
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
-    let session_id = client.new_session(&goal0.cwd).await?;
+
+    // ── Session retention: the CALLER decides resume-vs-fresh, never the
+    //    kernel. The kernel only recorded WHY the last session was interrupted
+    //    (`session_retention` on the goal) and kept its id on disk. Resolution
+    //    order:
+    //      1. `--resume-session <id>` (explicit pin) → use it if alive;
+    //      2. `--session-policy resume` → use the retained id if alive;
+    //      3. `--session-policy auto` (default) → use the retained id only
+    //         when the kernel marked it resumable (InfraRecoverable);
+    //      4. `--session-policy fresh` → always new;
+    //      5. a retained id that is no longer alive falls back to new.
+    let retained = goal0.session_retention.clone();
+    let want_session: Option<String> = if let Some(id) = resume_session.clone() {
+        Some(id)
+    } else {
+        match session_policy.as_str() {
+            "resume" => retained.as_ref().map(|r| r.session_id.clone()),
+            "fresh" => None,
+            _ /* auto */ => retained
+                .as_ref()
+                .filter(|r| r.resumable)
+                .map(|r| r.session_id.clone()),
+        }
+    };
+    let session_id = match want_session {
+        Some(id) if client.session_alive(&id).await => {
+            println!("   ⤺ resuming session {id} (policy {session_policy})");
+            id
+        }
+        Some(id) => {
+            println!("   ⚠ retained session {id} is no longer alive — starting fresh");
+            client.new_session(&goal0.cwd).await?
+        }
+        None => client.new_session(&goal0.cwd).await?,
+    };
     if let Some(m) = model {
         client.set_model(&session_id, &m).await?;
     }
@@ -3510,11 +3562,12 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         client.set_thinking_level(&session_id, &l).await?;
     }
 
-    // Run the turn loop, then always delete this run's scratch session — on
-    // every exit path — instead of letting ~/.future/agent/sessions/ pile up
-    // one file per run. The agent session is a per-run workspace: context is
-    // replayed via the turn envelope from the goal events.jsonl, so nothing
-    // durable lives in it.
+    // Run the turn loop. Session lifecycle: the kernel no longer blindly
+    // deletes the session — it records the retention state (id + failure
+    // classification + resumable advisory) on the goal and lets the NEXT
+    // caller decide. Deletion happens only when the session is NOT resumable
+    // (HardError / science failure / zombie — its reasoning state is broken).
+    let mut last_failure_kind: Option<crate::state::FailureKind> = None;
     let result = run_turns(
         &mut client,
         store,
@@ -3525,10 +3578,54 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         agent_id.as_deref(),
         max_turn_secs,
         force_workspace,
+        &mut last_failure_kind,
     )
     .await;
-    if let Err(e) = client.delete_session(&session_id).await {
-        println!("   ⚠ session cleanup failed (best-effort): {e}");
+
+    // Record the retention state (the kernel's advisory, not a directive).
+    let resumable = matches!(
+        last_failure_kind,
+        Some(crate::state::FailureKind::InfraRecoverable)
+    );
+    let reason = match last_failure_kind {
+        None => "turns completed or no turn ran".to_string(),
+        Some(crate::state::FailureKind::InfraRecoverable) => {
+            "interrupted by a recoverable infra event (e.g. HTTP 429 / transient disconnect) — LLM state intact".to_string()
+        }
+        Some(crate::state::FailureKind::ScienceVerifyFailed) => {
+            "verify gate rejected the output — reasoning produced a bad artifact".to_string()
+        }
+        Some(crate::state::FailureKind::HardError) => {
+            "turn ended in a non-recoverable error — reasoning state is broken".to_string()
+        }
+        Some(crate::state::FailureKind::None) => "succeeded".to_string(),
+    };
+    let retention = crate::state::SessionRetention {
+        session_id: session_id.clone(),
+        failure_kind: last_failure_kind.unwrap_or(crate::state::FailureKind::None),
+        resumable,
+        reason,
+        ended_at: now_epoch(),
+    };
+    if let Ok(Some(mut g)) = store.replay(&goal_id) {
+        g.session_retention = Some(retention);
+        let goal_dir = store.goal_dir(&goal_id);
+        if let Err(e) = crate::compat::write_active_state(&goal_dir, &g) {
+            println!("   ⚠ failed to persist session retention (best-effort): {e}");
+        }
+    }
+
+    // Delete the session ONLY when it is not resumable — a resumable session
+    // (infra interruption) is kept on the agent for the next caller to resume,
+    // so its accumulated exploration is not thrown away.
+    if !resumable {
+        if let Err(e) = client.delete_session(&session_id).await {
+            println!("   ⚠ session cleanup failed (best-effort): {e}");
+        }
+    } else {
+        println!(
+            "   ⤺ session {session_id} retained (resumable) — next `run` with default policy will resume it"
+        );
     }
     result
 }
@@ -3698,6 +3795,10 @@ fn claim_selected_with_lease(
 /// One `run` = one bounded turn loop against a fresh agent session. `cmd_run`
 /// owns the session lifecycle (create before, delete after); this function
 /// only executes turns and writes back their ledger effects.
+///
+/// `last_failure_kind`: out-parameter set to the failure classification of the
+/// LAST executed turn (`None` when no turn ran this invocation) — the caller
+/// uses it to decide session retention (resume vs delete), never the kernel.
 #[allow(clippy::too_many_arguments)]
 async fn run_turns(
     client: &mut crate::agent_client::AgentClient,
@@ -3709,6 +3810,7 @@ async fn run_turns(
     agent_id: Option<&str>,
     max_turn_secs: u64,
     force_workspace: bool,
+    last_failure_kind: &mut Option<crate::state::FailureKind>,
 ) -> Result<()> {
     let mut turn = 0u32;
     // P1-2③: read-model self-healing — a drifted run index means run-history
@@ -3885,6 +3987,22 @@ async fn run_turns(
                     .unwrap_or_else(|| "-".to_string())
             );
         }
+        // Rate-limit backoff: an HTTP-429 turn is a throttle event, not a
+        // science result — retrying it immediately re-hits the same overload.
+        // Sleep before the writeback/exit so the orchestrator's relaunch
+        // lands on a cooled-down engine instead of burning another turn.
+        if record.terminal_state == "error"
+            && crate::executor::is_rate_limit_error(record.error.as_deref())
+        {
+            println!(
+                "   ⏳ rate-limited (HTTP 429) — backing off {}s before writeback so a relaunch doesn't re-hit the throttle",
+                crate::executor::RATE_LIMIT_BACKOFF_SECS
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(
+                crate::executor::RATE_LIMIT_BACKOFF_SECS,
+            ))
+            .await;
+        }
         // Writeback: complete with closure intent — remaining open todos
         // become successors; the LAST todo declares no-follow-up (LoopX
         // completion contract, verified against the real control plane).
@@ -3918,6 +4036,10 @@ async fn run_turns(
                 .as_str()
                 .to_string(),
         );
+        // A: stamp the failure classification — the repair budget keys on it,
+        // and the caller (cmd_run) uses it to decide session retention.
+        record.failure_kind = Some(crate::executor::classify_failure(&record));
+        *last_failure_kind = record.failure_kind;
         writeback(&mut g, &record, monitor_changed, completion);
         store.append_run(goal_id, &record)?;
         // Project-local per-run mirror (runs/ under the goal state dir).
@@ -3979,20 +4101,18 @@ async fn run_turns(
             // verification — record the outcome signal at this turn.
             record_delivery_if_advancement(store, &g, goal_id, &todo_id, record.turn)?;
         } else {
-            // A missing todo (deleted mid-turn) carries no budget signal.
+            // ARCHITECTURE-SIMPLIFICATION: the repair budget no longer stops
+            // the run loop — a failed todo stays runnable (the failure count
+            // is surfaced as an advisory in the delivery reason, and the agent
+            // decides whether to supersede / re-split). Only the validation
+            // budget (a `--verify` gate that keeps failing) still bounds the
+            // loop, because that is a correctness floor, not a policy rule.
             let stop = g
                 .todo(&todo_id)
                 .map(|t| {
-                    if t.failed_attempts > MAX_REPAIR_ATTEMPTS {
-                        println!("   ✘ repair budget exhausted — stopping");
-                        return true;
-                    }
-                    // Validation-gated repair: a todo with an attached
-                    // validator stays open until exit 0, bounded by its own
-                    // max_validation_attempts.
                     if t.validator.is_some() && t.failed_attempts >= t.max_validation_attempts {
                         println!(
-                            "   ✘ validation budget exhausted ({}/{}) — replan required; stopping",
+                            "   ✘ validation budget exhausted ({}/{}) — stopping (verify gate keeps failing; fix the gate or supersede)",
                             t.failed_attempts, t.max_validation_attempts
                         );
                         return true;

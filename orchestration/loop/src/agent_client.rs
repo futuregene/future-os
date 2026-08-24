@@ -302,6 +302,14 @@ impl AgentClient {
         })
     }
 
+    /// Whether a session still exists and accepts commands (`get_state` is a
+    /// cheap liveness probe). Used by the caller to decide resume-vs-fresh: a
+    /// retained session that no longer exists (agent restarted, session
+    /// expired) must fall back to a fresh session rather than fail the run.
+    pub async fn session_alive(&mut self, session_id: &str) -> bool {
+        self.session_totals(session_id).await.is_ok()
+    }
+
     /// Subscribe to one canonical run from its beginning (atomic attach closes
     /// the prompt-ack -> subscribe loss window) and collect events until
     /// `agent_end` (or the stream closes / errors).

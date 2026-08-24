@@ -227,15 +227,21 @@ fn run_failing_turns_exhaust_repair_budget() {
         .unwrap();
     store.set_next_action(&goal, "keeps failing").unwrap();
     drop(store);
-    // Repair budget exhausted after this turn's failure → graceful stop.
-    // (failed_attempts is not event-sourced — the replayed ledger keeps the
-    // seeded value — so assert the LOOP BEHAVIOR: exactly one prompt, i.e.
-    // the budget break fired instead of the max-turns bail.)
-    cli_ok(&["run", "--goal", &goal, "--anonymous", "--max-turns", "6"]);
+    // ARCHITECTURE-SIMPLIFICATION: the repair budget no longer stops the run
+    // loop — a failed todo stays runnable and the failure count is surfaced
+    // as an advisory (the agent decides to supersede / re-split). The run
+    // loop keeps delivering until the max-turns bound fires (a budget bail,
+    // not a repair-budget stop). Assert the loop behavior: it runs all the
+    // way to max-turns with the signal in every delivery reason.
+    let err = cli_err(&["run", "--goal", &goal, "--anonymous", "--max-turns", "3"]);
+    assert!(
+        err.contains("max-turns"),
+        "a failed todo stays runnable — the run loop runs to max-turns (budget bail), got: {err}"
+    );
     assert_eq!(
         shared.lock().unwrap().prompts,
-        1,
-        "repair budget break after one turn"
+        3,
+        "a failed todo stays runnable — 3 prompts before the max-turns bail"
     );
 }
 

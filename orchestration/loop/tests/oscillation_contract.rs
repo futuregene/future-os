@@ -63,7 +63,9 @@ fn goal_with_history(history: Vec<RunRecord>) -> Goal {
 
 // ── Detection fires on the A→V→A→V pattern ────────────────────────────────
 #[test]
-fn oscillation_forces_replan_instead_of_delivery() {
+fn oscillation_surfaces_as_a_signal_not_a_replan() {
+    // ARCHITECTURE-SIMPLIFICATION: oscillation is a signal the agent reads,
+    // surfaced in the delivery reason — NOT a kernel-forced replan.
     let goal = goal_with_history(vec![
         accepted(1, 1),
         rejected(2, 2),
@@ -73,17 +75,16 @@ fn oscillation_forces_replan_instead_of_delivery() {
     let p = decide(&goal, SystemTime::now());
     assert_eq!(
         p.interaction_contract.mode,
-        TurnMode::Replan,
-        "A→V→A→V must convert the next delivery into a replan"
+        TurnMode::BoundedDelivery,
+        "A→V→A→V surfaces as an advisory, delivery continues"
     );
-    assert!(p.reason.contains("oscillation detected"));
-    assert!(p.reason.contains("A→V→A→V"));
-    assert!(!p.normal_delivery_allowed);
-    assert!(p.self_repair_allowed, "the repair lane stays open");
+    assert!(p.reason.contains("oscillation"), "{}", p.reason);
+    assert!(p.reason.contains("A→V→A→V"), "{}", p.reason);
+    assert!(p.normal_delivery_allowed);
 }
 
 #[test]
-fn v_first_alternation_also_fires() {
+fn v_first_alternation_also_surfaces() {
     let goal = goal_with_history(vec![
         rejected(1, 1),
         accepted(2, 2),
@@ -91,23 +92,23 @@ fn v_first_alternation_also_fires() {
         accepted(4, 4),
     ]);
     let p = decide(&goal, SystemTime::now());
-    assert_eq!(p.interaction_contract.mode, TurnMode::Replan);
-    assert!(p.reason.contains("V→A→V→A"));
+    assert_eq!(p.interaction_contract.mode, TurnMode::BoundedDelivery);
+    assert!(p.reason.contains("V→A→V→A"), "{}", p.reason);
 }
 
 // ── Below the pattern length the guard stays silent ───────────────────────
 #[test]
 fn shorter_alternation_still_delivers() {
-    // One pair plus a lead-in (len 3 < OSCILLATION_PATTERN_LEN): no fire.
+    // One pair plus a lead-in (len 3 < OSCILLATION_PATTERN_LEN): no signal.
     let goal = goal_with_history(vec![accepted(1, 1), rejected(2, 2), accepted(3, 3)]);
     let p = decide(&goal, SystemTime::now());
     assert_eq!(p.interaction_contract.mode, TurnMode::BoundedDelivery);
+    assert!(!p.reason.contains("oscillation"), "{}", p.reason);
 }
 
 #[test]
 fn consecutive_rejects_break_the_pattern() {
-    // A,V,A,V,V — the same-symbol pair at the tail ends the alternation
-    // (consecutive rejects are the repair budget's domain, not this guard's).
+    // A,V,A,V,V — the same-symbol pair at the tail ends the alternation.
     let goal = goal_with_history(vec![
         accepted(1, 1),
         rejected(2, 2),
@@ -117,6 +118,7 @@ fn consecutive_rejects_break_the_pattern() {
     ]);
     let p = decide(&goal, SystemTime::now());
     assert_eq!(p.interaction_contract.mode, TurnMode::BoundedDelivery);
+    assert!(!p.reason.contains("oscillation"), "{}", p.reason);
 }
 
 #[test]
@@ -132,6 +134,7 @@ fn stabilized_tail_clears_an_earlier_pattern() {
     ]);
     let p = decide(&goal, SystemTime::now());
     assert_eq!(p.interaction_contract.mode, TurnMode::BoundedDelivery);
+    assert!(!p.reason.contains("oscillation"), "{}", p.reason);
 }
 
 // ── Non-delivery records are transparent to the detector ──────────────────
@@ -151,43 +154,41 @@ fn monitor_polls_and_failed_turns_neither_fabricate_nor_break() {
         rejected(6, 6),
     ]);
     let p = decide(&goal, SystemTime::now());
-    assert_eq!(
-        p.interaction_contract.mode,
-        TurnMode::Replan,
-        "heartbeat polls and crashed turns must be transparent: A,_,V,_,A,V still alternates"
+    assert_eq!(p.interaction_contract.mode, TurnMode::BoundedDelivery);
+    assert!(
+        p.reason.contains("oscillation"),
+        "heartbeat polls and crashed turns must be transparent: A,_,V,_,A,V still alternates — {}",
+        p.reason
     );
 }
 
 // ── The replan ACK consumes the pattern (liveness) ─────────────────────────
 #[test]
-fn replan_ack_consumes_the_pattern_and_delivery_resumes() {
+fn replan_ack_consumes_the_pattern_and_signal_clears() {
     let mut goal = goal_with_history(vec![
         accepted(1, 1),
         rejected(2, 2),
         accepted(3, 3),
         rejected(4, 4),
     ]);
-    assert_eq!(
-        decide(&goal, SystemTime::now()).interaction_contract.mode,
-        TurnMode::Replan
-    );
+    assert!(decide(&goal, SystemTime::now())
+        .reason
+        .contains("oscillation"));
     // The agent records a frontier-changing delta (ACK at ts=10); every
-    // alternating record predates the ACK, so the pattern is consumed.
+    // alternating record predates the ACK, so the pattern is consumed and the
+    // oscillation signal clears from the delivery reason.
     goal.replan_ack = Some(ReplanAck {
         recorded: true,
         delta_kinds: vec!["vision_patch".to_string()],
         at: 10,
     });
     let p = decide(&goal, SystemTime::now());
-    assert_eq!(
-        p.interaction_contract.mode,
-        TurnMode::BoundedDelivery,
-        "post-ACK the goal must be allowed to deliver again"
-    );
+    assert_eq!(p.interaction_contract.mode, TurnMode::BoundedDelivery);
+    assert!(!p.reason.contains("oscillation"), "{}", p.reason);
 }
 
 #[test]
-fn fresh_post_ack_alternation_refires_the_guard() {
+fn fresh_post_ack_alternation_surfaces_again() {
     let mut goal = goal_with_history(vec![
         accepted(1, 1),
         rejected(2, 2),
@@ -202,16 +203,15 @@ fn fresh_post_ack_alternation_refires_the_guard() {
     // One fresh pair post-ACK: not enough.
     goal.history.push(accepted(5, 11));
     goal.history.push(rejected(6, 12));
-    assert_eq!(
-        decide(&goal, SystemTime::now()).interaction_contract.mode,
-        TurnMode::BoundedDelivery
-    );
-    // Two full fresh pairs: the loop survived the replan — fire again.
+    assert!(!decide(&goal, SystemTime::now())
+        .reason
+        .contains("oscillation"));
+    // Two full fresh pairs: the loop survived the replan — signal again.
     goal.history.push(accepted(7, 13));
     goal.history.push(rejected(8, 14));
     let p = decide(&goal, SystemTime::now());
-    assert_eq!(p.interaction_contract.mode, TurnMode::Replan);
-    assert!(p.reason.contains("oscillation detected"));
+    assert_eq!(p.interaction_contract.mode, TurnMode::BoundedDelivery);
+    assert!(p.reason.contains("oscillation"), "{}", p.reason);
 }
 
 // ── The guard only blocks delivery, never other modes ─────────────────────

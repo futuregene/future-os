@@ -28,9 +28,9 @@ fn run_record(turn: u32, todo_id: &str, state: &str, tools: usize, evidence: &st
     }
 }
 
-// ── Contract: outcome floor rejects surface-only progress loops ────────────
+// ── Contract: outcome floor surfaces as a signal, not a forced replan ─────
 #[test]
-fn outcome_floor_stops_surface_only_loops() {
+fn outcome_floor_surfaces_as_a_signal() {
     let mut goal = Goal::new("g", "objective", "/tmp");
     goal.execution_profile = ExecutionProfile {
         outcome_floor_streak_threshold: 3,
@@ -46,16 +46,18 @@ fn outcome_floor_stops_surface_only_loops() {
     goal.todo_mut("t1").unwrap().status = future_loop::state::TodoStatus::Open;
     assert_eq!(goal.outcome_streak, 2);
 
-    // Third surface-only turn crosses the floor → replan, not delivery.
+    // Third surface-only turn crosses the floor → a SIGNAL in the delivery
+    // reason, not a forced replan (ARCHITECTURE-SIMPLIFICATION: the agent
+    // reads the signal and decides, the kernel keeps delivering).
     writeback(&mut goal, &surface, None, Some((false, vec!["t2".into()])));
     goal.todo_mut("t1").unwrap().status = future_loop::state::TodoStatus::Open;
     let p = decide(&goal, SystemTime::now());
     assert_eq!(
         p.interaction_contract.mode,
-        TurnMode::Replan,
-        "outcome floor must reject the surface-only progress loop"
+        TurnMode::BoundedDelivery,
+        "outcome floor surfaces as an advisory; delivery continues"
     );
-    assert!(p.reason.contains("outcome floor"));
+    assert!(p.reason.contains("outcome floor"), "{}", p.reason);
 }
 
 #[test]

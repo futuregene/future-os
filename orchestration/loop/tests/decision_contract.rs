@@ -238,7 +238,7 @@ fn monitor_no_change_never_spends() {
 }
 
 #[test]
-fn stalled_monitor_triggers_replan() {
+fn stalled_monitor_is_a_signal_not_a_directive() {
     let mut goal = Goal::new("g", "objective", "/tmp");
     goal.add(Todo::monitor("M1", "Watch A", Duration::from_millis(10)));
     std::thread::sleep(Duration::from_millis(50));
@@ -246,14 +246,16 @@ fn stalled_monitor_triggers_replan() {
     for _ in 0..MONITOR_NO_CHANGE_REPLAN_THRESHOLD {
         future_loop::executor::writeback(&mut goal, &record, Some(false), None);
     }
+    // ARCHITECTURE-SIMPLIFICATION: a stalled monitor is a signal, not a
+    // directive — quiet wait with an advisory, the agent decides.
     let p = decide(&goal, now());
-    assert_eq!(p.interaction_contract.mode, TurnMode::Replan);
-    assert!(p.reason.contains("stalled"));
+    assert_eq!(p.interaction_contract.mode, TurnMode::WaitMonitor);
+    assert!(p.reason.contains("stalled"), "{}", p.reason);
 }
 
-// ── Contract: repair budget ────────────────────────────────────────────────
+// ── Contract: a failed todo stays runnable (signal, not a forced replan) ───
 #[test]
-fn failed_todo_retries_then_stops() {
+fn failed_todo_stays_runnable_with_a_failure_signal() {
     let mut goal = Goal::new("g", "objective", "/tmp");
     goal.add(Todo::advancement("T1", "Flaky work"));
     let d1 = decide(&goal, now());
@@ -265,10 +267,14 @@ fn failed_todo_retries_then_stops() {
     assert_eq!(d2.interaction_contract.mode, TurnMode::BoundedDelivery);
     assert!(d2.reason.contains("repair attempt"));
 
+    // Even after the failed count exceeds the old MAX_REPAIR_ATTEMPTS, the
+    // todo stays runnable — the failure count is surfaced as an advisory and
+    // the agent (not the kernel) decides whether to supersede / re-split.
     future_loop::executor::writeback(&mut goal, &fail, None, None);
     assert!(goal.todo("T1").unwrap().failed_attempts > MAX_REPAIR_ATTEMPTS);
     let d3 = decide(&goal, now());
-    assert_eq!(d3.interaction_contract.mode, TurnMode::Replan);
+    assert_eq!(d3.interaction_contract.mode, TurnMode::BoundedDelivery);
+    assert!(d3.reason.contains("failed attempt"), "{}", d3.reason);
 }
 
 // ── Contract: gate resolution unlocks the dependent todo ───────────────────
