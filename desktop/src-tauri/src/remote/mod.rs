@@ -170,6 +170,10 @@ static HEARTBEAT_PUBLISH_EPISODE: FailureEpisode =
 
 /// Port for the embedded web client HTTP server.
 const WEB_PORT: u16 = 8022;
+/// The remote browser client is a single self-contained HTML file. Embed it so
+/// release bundles do not depend on the build machine's source checkout.
+const EMBEDDED_WEB_INDEX: &[u8] =
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../web/index.html"));
 /// A shutdown notification is advisory: never delay closing the desktop for a
 /// slow or unreachable broker, but give a healthy connection a short window to
 /// flush the packet before its tasks are torn down.
@@ -2419,8 +2423,16 @@ async fn handle_web_request(stream: &mut tokio::net::TcpStream, web_dir: &std::p
         return;
     }
     let file_path = web_dir.join(path);
-    match tokio::fs::read(&file_path).await {
-        Ok(content) => {
+    // In development, serve the on-disk file so browser refreshes pick up web
+    // client edits. Release bundles do not contain the source checkout, so
+    // fall back to the copy embedded at compile time for the entry page.
+    let content = match tokio::fs::read(&file_path).await {
+        Ok(content) => Some(content),
+        Err(_) if path == "index.html" => Some(EMBEDDED_WEB_INDEX.to_vec()),
+        Err(_) => None,
+    };
+    match content {
+        Some(content) => {
             let content_type = if path.ends_with(".html") {
                 "text/html; charset=utf-8"
             } else if path.ends_with(".js") {
@@ -2437,7 +2449,7 @@ async fn handle_web_request(stream: &mut tokio::net::TcpStream, web_dir: &std::p
             let _ = stream.write_all(header.as_bytes()).await;
             let _ = stream.write_all(&content).await;
         }
-        Err(_) => {
+        None => {
             let body = "Not Found";
             let resp = format!(
                 "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -3923,6 +3935,13 @@ mod runtime_tests {
 
         let response = request(&dir, "GET /missing.txt HTTP/1.1\r\n\r\n").await;
         assert!(response.contains("404"), "{response}");
+
+        // Release bundles do not have the source checkout. The root page is
+        // embedded so it remains available when its on-disk directory is gone.
+        let missing_dir = std::env::temp_dir().join(unique("futureos-web-missing"));
+        let response = request(&missing_dir, "GET / HTTP/1.1\r\n\r\n").await;
+        assert!(response.contains("200 OK"), "{response}");
+        assert!(response.contains("Remote Control"), "{response}");
 
         let response = request(&dir, "GET /../secret HTTP/1.1\r\n\r\n").await;
         assert!(response.contains("403"), "{response}");
