@@ -896,6 +896,88 @@ async fn supersede_interrupts_active_run_and_queues_successor() {
     assert_eq!(queued[0].run_id, ack.run_id);
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn queued_follow_ups_merge_into_one_message() {
+    // Multiple follow-ups queued behind an active run are answered together in
+    // ONE run — their questions joined by a blank line — not executed one-by-one.
+    let provider = ScriptedProvider::new(vec![
+        Script::Stall(vec![text_event("stalled")]),
+        text_turn("merged answer"),
+    ]);
+    let fixture = run_fixture(provider, "merge-follow-ups");
+    let mut session = fixture.session;
+
+    let first = session.prompt("first", &[], &[], None, None).unwrap();
+    for _ in 0..200 {
+        if session.runtime.snapshot().is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    let a = session
+        .enqueue_prompt(
+            "second question",
+            &[],
+            &[],
+            None,
+            "req-2",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    let b = session
+        .enqueue_prompt(
+            "third question",
+            &[],
+            &[],
+            None,
+            "req-3",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    assert_eq!(a.accepted_state, crate::runtime::RunAcceptedState::Queued);
+    assert_eq!(b.accepted_state, crate::runtime::RunAcceptedState::Queued);
+    assert_eq!(session.scheduler.queued().len(), 2);
+
+    // Interrupt the stalled run so its queued work can drain.
+    session.abort_run(Some(&first.run_id)).unwrap();
+    for _ in 0..500 {
+        if session.runtime.snapshot().is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(session.runtime.snapshot().is_none());
+
+    // Drain the queue manually (the fixture has no scheduler worker): the two
+    // follow-ups coalesce into a single run.
+    let started = session.start_next_scheduled().unwrap();
+    assert_eq!(
+        started.accepted_state,
+        crate::runtime::RunAcceptedState::Running
+    );
+
+    // The merged run carries ONE user message joining both questions with a
+    // blank line — never two separate user messages.
+    let user_texts: Vec<String> = session
+        .messages
+        .read()
+        .iter()
+        .filter(|m| m.role == "user")
+        .map(|m| m.text())
+        .collect();
+    assert!(
+        user_texts
+            .iter()
+            .any(|t| t == "second question\n\nthird question"),
+        "merged user message not found in {user_texts:?}"
+    );
+    assert!(
+        !user_texts.iter().any(|t| t == "second question"),
+        "the first follow-up must not be a standalone user message: {user_texts:?}"
+    );
+}
+
 // ─── batch 3: rare error arms ──────────────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]

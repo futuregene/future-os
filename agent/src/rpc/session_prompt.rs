@@ -294,13 +294,37 @@ impl ServerSession {
         {
             return Err(crate::runtime::RunQueueError::PersistenceUnavailable(error).into());
         }
-        let request = self
-            .scheduler
-            .queued()
-            .into_iter()
-            .next()
+        let requests = self.scheduler.queued();
+        let request = requests
+            .first()
+            .cloned()
             .ok_or_else(|| anyhow::anyhow!("there is no queued run to start"))?;
-        let payload: ScheduledPromptPayload = serde_json::from_value(request.payload.clone())?;
+        let mut payload: ScheduledPromptPayload = serde_json::from_value(request.payload.clone())?;
+        // Follow-up coalescing: every queued run behind the front one folds
+        // into a single message (questions joined by a blank line) so the
+        // model answers them together in one run instead of one-by-one.
+        for trailing in requests.iter().skip(1) {
+            let trailing_payload: ScheduledPromptPayload =
+                serde_json::from_value(trailing.payload.clone())?;
+            if !payload.message.is_empty() && !trailing_payload.message.is_empty() {
+                payload.message.push_str("\n\n");
+            }
+            payload.message.push_str(&trailing_payload.message);
+            if !payload.model_context.is_empty() && !trailing_payload.model_context.is_empty() {
+                payload.model_context.push_str("\n\n");
+            }
+            payload
+                .model_context
+                .push_str(&trailing_payload.model_context);
+            payload.images.extend(trailing_payload.images);
+            payload.attachments.extend(trailing_payload.attachments);
+            // Settings stay frozen on the FRONT run (the primary identity);
+            // the folded follow-ups inherit it.
+        }
+        // Drop the folded runs from the queue and their execution snapshots.
+        for folded in self.scheduler.drain_queued_after_first() {
+            self.scheduled_snapshots.remove(&folded.run_id);
+        }
         let snapshot = self
             .scheduled_snapshots
             .remove(&request.run_id)
