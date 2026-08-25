@@ -119,7 +119,8 @@ message RpcCommand {
   optional int64 offset = 96;
   optional int64 limit = 97;
 
-  // Session name (set by /name command).  Used with set_session_name.
+  // Session name (set by /name command).  Used with set_session_name, and
+  // accepted by new_session as the initial human-readable session title.
   string name = 93;
 
   // ── new_session cwd ────────────────────────────────────────────────────

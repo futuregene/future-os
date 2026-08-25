@@ -68,7 +68,10 @@ fn session_and_command_happy_paths() {
         let (addr, shared) = spawn_mock(MockState::default()).await;
         let mut client = AgentClient::connect(&addr).await.unwrap();
 
-        let session = client.new_session("/tmp").await.unwrap();
+        let session = client
+            .new_session("/tmp", "把 readme 更新成中文")
+            .await
+            .unwrap();
         assert_eq!(session, "mock-session-1");
 
         client
@@ -101,6 +104,11 @@ fn session_and_command_happy_paths() {
         client.delete_session(&session).await.unwrap();
 
         let recorded = shared.lock().unwrap().recorded.clone();
+        assert_eq!(
+            shared.lock().unwrap().new_session_names,
+            vec!["把 readme 更新成中文".to_string()],
+            "new_session must carry the human-readable title on the wire"
+        );
         for expected in [
             "new_session",
             "append_system_prompt",
@@ -126,7 +134,7 @@ fn command_error_paths() {
         // success=false with an error message.
         let (addr, _) = spawn_mock(MockState::fail("new_session")).await;
         let mut client = AgentClient::connect(&addr).await.unwrap();
-        let err = client.new_session("/tmp").await.unwrap_err();
+        let err = client.new_session("/tmp", "t").await.unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("mock_error"), "{msg}");
         assert!(msg.contains("mock failure for new_session"), "{msg}");
@@ -160,7 +168,7 @@ fn command_error_paths() {
         };
         let (addr, _) = spawn_mock(st).await;
         let mut client = AgentClient::connect(&addr).await.unwrap();
-        let err = client.new_session("/tmp").await.unwrap_err();
+        let err = client.new_session("/tmp", "t").await.unwrap_err();
         assert!(format!("{err:#}").contains("missing sessionId"));
 
         // prompt payload without run_id.

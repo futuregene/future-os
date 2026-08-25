@@ -57,7 +57,8 @@ pub struct RpcCommand {
     pub offset: ::core::option::Option<i64>,
     #[prost(int64, optional, tag = "97")]
     pub limit: ::core::option::Option<i64>,
-    /// Session name (set by /name command).  Used with set_session_name.
+    /// Session name (set by /name command).  Used with set_session_name, and
+    /// accepted by new_session as the initial human-readable session title.
     #[prost(string, tag = "93")]
     pub name: ::prost::alloc::string::String,
     /// Working directory for the new session.  The agent resolves "~" and

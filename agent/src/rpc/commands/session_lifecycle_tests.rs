@@ -412,6 +412,24 @@ fn new_session_honors_explicit_id_cwd_model_level_and_provenance() {
 }
 
 #[test]
+fn new_session_accepts_initial_human_readable_title() {
+    let state = make_app_state();
+    let mut cmd = make_cmd_for("new_session", "ns-titled");
+    cmd.name = "把 readme 更新成中文".to_string();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true);
+    let session = state.get_session("ns-titled").unwrap();
+    assert_eq!(session.read().session_name(), "把 readme 更新成中文");
+
+    // No name → default empty (clients derive a display name later).
+    let cmd2 = make_cmd_for("new_session", "ns-untitled");
+    let resp2 = parse_response(&handle_command_internal(&state, cmd2));
+    assert_eq!(resp2["success"], true);
+    let sess2 = state.get_session("ns-untitled").unwrap();
+    assert_eq!(sess2.read().session_name(), "");
+}
+
+#[test]
 fn new_session_legacy_provenance_via_custom_instructions() {
     let state = make_app_state();
     let mut cmd = make_cmd_for("new_session", "ns-legacy");

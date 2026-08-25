@@ -3550,6 +3550,9 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
                 .map(|r| r.session_id.clone()),
         }
     };
+    // Human-readable session title for agent session lists: the goal
+    // objective, bounded so long objectives don't produce unwieldy names.
+    let session_title = crate::decision::truncate(&goal0.objective, 60);
     let session_id = match want_session {
         Some(id) if client.session_alive(&id).await => {
             println!("   ⤺ resuming session {id} (policy {session_policy})");
@@ -3557,9 +3560,9 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         }
         Some(id) => {
             println!("   ⚠ retained session {id} is no longer alive — starting fresh");
-            client.new_session(&goal0.cwd).await?
+            client.new_session(&goal0.cwd, &session_title).await?
         }
-        None => client.new_session(&goal0.cwd).await?,
+        None => client.new_session(&goal0.cwd, &session_title).await?,
     };
     if let Some(m) = model {
         client.set_model(&session_id, &m).await?;
@@ -6072,7 +6075,7 @@ async fn cmd_doctor(store: &Store, args: &[String]) -> Result<()> {
     if let Some(addr) = &agent_addr {
         let probe = async {
             let mut client = crate::agent_client::AgentClient::connect(addr).await?;
-            let session = client.new_session("/tmp").await?;
+            let session = client.new_session("/tmp", "loop doctor probe").await?;
             let totals = client.session_totals(&session).await?;
             anyhow::Ok(format!(
                 "session {session} live (tokens_in={} tokens_out={})",
