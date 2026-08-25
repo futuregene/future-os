@@ -7,8 +7,27 @@ use tokio_stream::StreamExt;
 
 use super::{Loop, RunEvent, C_GREEN, C_MAGENTA, C_RESET, DEFAULT_MAX_TURNS};
 
-const STREAM_EVENT_IDLE_TIMEOUT: Duration = Duration::from_secs(45);
-const COMPLETE_TOOL_CALL_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
+/// Per-event idle windows (stream, complete-tool-call) by thinking budget.
+/// High-reasoning models legitimately pause tens of seconds between token
+/// bursts (e.g. while generating tool-call argument JSON after thinking), so
+/// the truncation guard must only fire on genuinely dead streams. A too-tight
+/// window truncates a healthy xhigh run mid-tool-call (measured: DeepSeek
+/// xhigh went 45s+ silent right after emitting a tool-call header, killing
+/// the run at the old 45s limit). Truncation stays safe either way — skipped
+/// tool calls now get persisted placeholder results — but false truncations
+/// still burn turns and force retries.
+fn idle_timeouts_for(thinking_budget: i32) -> (Duration, Duration) {
+    if thinking_budget >= 16_000 {
+        // high / xhigh
+        (Duration::from_secs(180), Duration::from_secs(60))
+    } else if thinking_budget >= 8_000 {
+        // medium
+        (Duration::from_secs(120), Duration::from_secs(45))
+    } else {
+        // minimal / low / unset
+        (Duration::from_secs(90), Duration::from_secs(30))
+    }
+}
 
 impl Loop {
     pub async fn run_streaming_with_messages(
@@ -396,13 +415,15 @@ impl Loop {
             let mut saw_terminal_event = false;
 
             loop {
+                let (stream_idle, complete_tool_call_idle) =
+                    idle_timeouts_for(self.config.thinking_budget);
                 let event_idle_timeout = if current_tool_calls
                     .iter()
                     .any(|tc| tc.as_ref().map(tool_call_args_complete).unwrap_or(false))
                 {
-                    COMPLETE_TOOL_CALL_IDLE_TIMEOUT
+                    complete_tool_call_idle
                 } else {
-                    STREAM_EVENT_IDLE_TIMEOUT
+                    stream_idle
                 };
 
                 let mut event_timed_out = false;
@@ -2739,6 +2760,75 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(text, "stuck");
+        assert!(loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn idle_timeouts_scale_with_thinking_budget() {
+        use super::idle_timeouts_for;
+        assert_eq!(
+            idle_timeouts_for(0),
+            (Duration::from_secs(90), Duration::from_secs(30))
+        );
+        assert_eq!(
+            idle_timeouts_for(4_000),
+            (Duration::from_secs(90), Duration::from_secs(30))
+        );
+        assert_eq!(
+            idle_timeouts_for(8_000),
+            (Duration::from_secs(120), Duration::from_secs(45))
+        );
+        assert_eq!(
+            idle_timeouts_for(16_000),
+            (Duration::from_secs(180), Duration::from_secs(60))
+        );
+        assert_eq!(
+            idle_timeouts_for(24_000),
+            (Duration::from_secs(180), Duration::from_secs(60))
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn xhigh_budget_tolerates_silence_beyond_the_old_45s_limit() {
+        // Regression for the 2026-08-24 incident: DeepSeek xhigh emitted a
+        // tool-call header, then went silent while generating argument JSON;
+        // the old flat 45s window truncated the run mid-tool-call. With an
+        // xhigh budget the stream window is 180s, so a 60s silence must NOT
+        // truncate; only the full window expiry ends the turn.
+        let provider = ScriptedProvider::new(vec![Script::PartialThenStall(vec![ev_text("tick")])]);
+        let config = crate::types::AgentConfig {
+            thinking_budget: 24_000,
+            ..Default::default()
+        };
+        let loop_ = std::sync::Arc::new(Loop::new(provider, "mock").with_config(config));
+        let handle = {
+            let loop_ = loop_.clone();
+            tokio::spawn(async move {
+                loop_
+                    .run_streaming_with_messages(
+                        user_messages("hi"),
+                        &StreamContext::default(),
+                        noop_on_text,
+                        |_| {},
+                        None,
+                    )
+                    .await
+            })
+        };
+        // 60s of silence: comfortably past the old 45s limit, still inside
+        // the xhigh 180s window — the run must still be waiting, not
+        // truncated.
+        tokio::time::advance(Duration::from_secs(60)).await;
+        assert!(
+            !handle.is_finished(),
+            "60s silence must not truncate an xhigh run (old 45s limit did)"
+        );
+        // Cross the full 180s window — now the stall guard fires.
+        tokio::time::advance(Duration::from_secs(130)).await;
+        let (text, _) = handle.await.unwrap().unwrap();
+        assert_eq!(text, "tick");
         assert!(loop_
             .stream_incomplete
             .load(std::sync::atomic::Ordering::SeqCst));
