@@ -23,9 +23,7 @@ where
 // RPC Command
 // ============================================================================
 
-/// `busyPolicy` values: "reject_if_busy" (default) | "enqueue_if_busy" |
-/// "supersede_session".
-pub const BUSY_REJECT: &str = "reject_if_busy";
+/// `busyPolicy` values: "enqueue_if_busy" (default) | "supersede_session".
 pub const BUSY_ENQUEUE: &str = "enqueue_if_busy";
 
 /// `ThinkingLevel` — "off" | "minimal" | "low" | "medium" | "high" | "xhigh".

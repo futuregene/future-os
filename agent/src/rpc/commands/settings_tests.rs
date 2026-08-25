@@ -222,15 +222,9 @@ fn set_tools_broadcasts_new_tool_list() {
 }
 
 #[test]
-fn steer_and_set_ephemeral_and_last_assistant_text() {
+fn set_ephemeral_and_last_assistant_text() {
     let state = make_app_state();
 
-    let mut cmd = make_cmd("steer");
-    cmd.system_prompt = "be terse".to_string();
-    let resp = parse_response(&handle_command_internal(&state, cmd));
-    assert_eq!(resp["success"], true);
-
-    // No assistant reply yet → null text.
     let resp = parse_response(&handle_command_internal(
         &state,
         make_cmd("get_last_assistant_text"),

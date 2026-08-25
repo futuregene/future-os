@@ -68,7 +68,7 @@ Agent loads the future-loop skill (v3.x driving manual)
    ├─ 2. Confirm the plan with you (steps/model/thinking level) — unless your message already carries the full objective + constraints
    ├─ 3. `goal init` + decompose todos (dependencies via --blocks, hard checks via --verify/--acceptance)
    ├─ 4. Drive turns: `run --max-turns 1 --agent-id <unique>`, relaunching the moment a turn exits
-   ├─ 5. Steer a drifting worker mid-turn via `todo update --text`
+   ├─ 5. Correct a drifting worker via `todo update --text` (picked up at the next turn)
    ├─ 6. Irreversible/expensive/user-only decisions → open a user gate and wait (gates freeze everything)
    └─ 7. Close out: acceptance todo copies artifacts to the project root → validated closure (terminal)
 ```
@@ -137,7 +137,7 @@ root, and only GET endpoints exist (any other method is a 405). Mutations
 - `--acceptance` turns "accepted by an external observable" into a hard check
 - Lease liveness self-heals: dead-process leases are reclaimed automatically — relaunching workers needs no manual release
 - Workspace guard: multi-agent write conflicts degrade to serial automatically
-- Idle turns (15 minutes without writes) are ledgered; steer mid-turn via `todo update --text`
+- Idle turns (15 minutes without writes) are ledgered; correct the worker via `todo update --text` (applies at the next turn)
 
 ## Loop state is CLI-first
 
@@ -147,7 +147,7 @@ client. The TUI, desktop GUI, mobile apps, and IM bots have no built-in loop
 views; they drive the same control plane through the **`/future-loop`
 skill**, which orchestrates `future loop` commands on the agent's behalf.
 Because the state lives in the project and the skill runs through the agent
-service, a goal started in one client (e.g. the TUI) can be steered from any
+service, a goal started in one client (e.g. the TUI) can be driven from any
 other (e.g. a Feishu chat).
 
 ## CLI surface (10 groups, 43 commands)

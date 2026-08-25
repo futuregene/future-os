@@ -59,19 +59,6 @@ pub(crate) fn handle_prompt(
         Err(error) => {
             if let Some(queue_error) = error.downcast_ref::<crate::runtime::RunQueueError>() {
                 let (code, details) = match queue_error {
-                    crate::runtime::RunQueueError::Busy => (
-                        "busy",
-                        sess.runtime
-                            .snapshot()
-                            .map(|active| {
-                                serde_json::json!({
-                                    "active_run_id": active.run_id,
-                                    "active_epoch": active.epoch,
-                                    "active_state": active.phase.as_str(),
-                                })
-                            })
-                            .unwrap_or(serde_json::json!({})),
-                    ),
                     crate::runtime::RunQueueError::DuplicateRequestConflict(_) => (
                         "duplicate_request_conflict",
                         serde_json::json!({"client_request_id": client_request_id}),

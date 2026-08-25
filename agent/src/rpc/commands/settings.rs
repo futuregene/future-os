@@ -246,15 +246,6 @@ pub(crate) fn handle_append_system_prompt(
     RpcResponse::ok(id, "append_system_prompt", serde_json::json!({}))
 }
 
-pub(crate) fn handle_steer(
-    session: &Arc<parking_lot::RwLock<ServerSession>>,
-    cmd: &RpcCommand,
-    id: &str,
-) -> String {
-    session.write().steer(&cmd.system_prompt);
-    RpcResponse::ok(id, "steer", serde_json::json!({}))
-}
-
 pub(crate) fn handle_set_ephemeral(
     session: &Arc<parking_lot::RwLock<ServerSession>>,
     cmd: &RpcCommand,

@@ -52,7 +52,7 @@ Agent 加载 future-loop 技能（v3.x 驾驶手册）
    ├─ 2. 与你确认计划（步骤/模型/thinking level）——除非你的指令已含完整目标与约束
    ├─ 3. `goal init` + 拆 todos（依赖 --blocks、硬校验 --verify/--acceptance 一起挂）
    ├─ 4. 逐回合驱动：`run --max-turns 1 --agent-id <唯一名>`，回合结束立即重启
-   ├─ 5. 用 `todo update --text` 中途 steering 纠正跑偏的 worker
+   ├─ 5. 用 `todo update --text` 纠正跑偏的 worker（下一回合生效）
    ├─ 6. 遇到不可逆/昂贵/用户专属决策 → 挂 user gate 等你拍板（gate 冻结一切）
    └─ 7. 收尾：验收 todo 拷贝交付物到项目根 → validated closure（terminal）
 ```
@@ -91,7 +91,7 @@ future loop delivery record --goal G ...  # verified / failed / rework
 - `--acceptance` 把"验收以外部可观测信号为准"变成硬校验
 - 租约活性自愈：死进程的租约自动回收，重启 worker 不再需要手动 release
 - 工作区守卫：多 agent 写冲突自动降级串行
-- 空转回合（15 分钟无写入）会记账；用 `todo update --text` 中途 steering 干预
+- 空转回合（15 分钟无写入）会记账；用 `todo update --text` 纠正（下一回合生效）
 
 ## loop 状态以 CLI 为准
 

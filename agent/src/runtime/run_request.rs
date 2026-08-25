@@ -6,25 +6,23 @@ pub use future_rpc::payloads_ext::{RunAcceptedState, RunAck};
 
 /// Atomic behavior requested when a session already owns an active run.
 ///
-/// Only `RejectIfBusy` is executable until the in-memory session scheduler is wired;
-/// the other variants are parsed now so the wire contract can stabilize first.
+/// The default (`EnqueueIfBusy`) appends the new prompt behind any in-progress
+/// run — follow-up semantics. `SupersedeSession` interrupts the active run and
+/// runs the new prompt next.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BusyPolicy {
     #[default]
-    RejectIfBusy,
     EnqueueIfBusy,
     SupersedeSession,
 }
 
 impl BusyPolicy {
-    pub const VALID_VALUES: [&'static str; 3] =
-        ["reject_if_busy", "enqueue_if_busy", "supersede_session"];
+    pub const VALID_VALUES: [&'static str; 2] = ["enqueue_if_busy", "supersede_session"];
 
     pub fn parse(value: &str) -> Result<Self, String> {
         match value.trim() {
-            "" | "reject_if_busy" => Ok(Self::RejectIfBusy),
-            "enqueue_if_busy" => Ok(Self::EnqueueIfBusy),
+            "" | "enqueue_if_busy" => Ok(Self::EnqueueIfBusy),
             "supersede_session" => Ok(Self::SupersedeSession),
             other => Err(format!(
                 "unknown busy policy `{other}`; expected one of: {}",
@@ -35,7 +33,6 @@ impl BusyPolicy {
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::RejectIfBusy => "reject_if_busy",
             Self::EnqueueIfBusy => "enqueue_if_busy",
             Self::SupersedeSession => "supersede_session",
         }
@@ -47,20 +44,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_busy_policy_is_backward_compatible_reject() {
-        assert_eq!(BusyPolicy::parse("").unwrap(), BusyPolicy::RejectIfBusy);
-        assert_eq!(
-            BusyPolicy::parse("reject_if_busy").unwrap(),
-            BusyPolicy::RejectIfBusy
-        );
-    }
-
-    #[test]
-    fn parses_all_frozen_busy_policy_values() {
+    fn empty_busy_policy_defaults_to_enqueue() {
+        assert_eq!(BusyPolicy::parse("").unwrap(), BusyPolicy::EnqueueIfBusy);
         assert_eq!(
             BusyPolicy::parse("enqueue_if_busy").unwrap(),
             BusyPolicy::EnqueueIfBusy
         );
+    }
+
+    #[test]
+    fn parses_supersede_session() {
         assert_eq!(
             BusyPolicy::parse("supersede_session").unwrap(),
             BusyPolicy::SupersedeSession
@@ -74,5 +67,7 @@ mod tests {
         for value in BusyPolicy::VALID_VALUES {
             assert!(error.contains(value));
         }
+        // The removed reject_if_busy value is no longer accepted.
+        assert!(BusyPolicy::parse("reject_if_busy").is_err());
     }
 }

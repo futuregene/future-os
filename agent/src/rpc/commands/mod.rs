@@ -143,7 +143,6 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "disable_tools" => settings::handle_disable_tools(&session, id),
         "disable_builtin_tools" => settings::handle_disable_builtin_tools(&session, id),
         "append_system_prompt" => settings::handle_append_system_prompt(&session, &cmd, id),
-        "steer" => settings::handle_steer(&session, &cmd, id),
         "set_ephemeral" => settings::handle_set_ephemeral(&session, &cmd, id),
         "shell" => settings::handle_shell(&session, &cmd, id),
         "get_session_stats" => observability::handle_get_session_stats(&session, id),

@@ -31,6 +31,7 @@ struct RunArgs {
     mode: String,
     cwd: Option<String>,
     verbose: bool,
+    busy_policy: String,
     file_args: Vec<String>,
     messages: Vec<String>,
 }
@@ -51,6 +52,9 @@ Session options:
   --session <id>           Connect to an existing session by ID
   --continue, -c           Continue the most recent session (by updated_at)
   --fork <entry-id>        Fork a new session from a specific entry in the current session
+  --steer                  Interrupt the session's in-progress run and ask
+                           immediately (supersede_session). Default: append the
+                           prompt behind any in-progress run (enqueue_if_busy).
   --no-session             Ephemeral mode: do not persist the session to disk
 
 Model & behavior:
@@ -89,6 +93,8 @@ Examples:
   future run --model sonnet:high "Review the changes"
   future run --fork abc123 "Continue from this fork point"
   future run --continue "Pick up where we left off"
+  future run --steer --continue "Stop that, answer this instead"
+  future run --session abc123 "Queue this behind the current run"
   future run --tools read,shell "Read the README and list files"
   future run --permission workspace "Summarize AGENTS.md"
   future run --mode json "What is 2+2?"
@@ -119,6 +125,7 @@ fn parse_run_args(args: &[String], out: &Output) -> Option<RunArgs> {
         mode: "text".to_string(),
         cwd: None,
         verbose: false,
+        busy_policy: String::new(),
         file_args: Vec::new(),
         messages: Vec::new(),
     };
@@ -217,6 +224,9 @@ fn parse_run_args(args: &[String], out: &Output) -> Option<RunArgs> {
                 }
             }
             "--no-session" => result.no_session = true,
+            "--steer" => {
+                result.busy_policy = "supersede_session".to_string();
+            }
             "--mode" => {
                 if i + 1 < args.len() {
                     i += 1;
@@ -346,6 +356,7 @@ pub async fn run_command(args: &[String], out: &Output) -> Result<(), String> {
                 .unwrap_or_default()
         }),
         verbose: parsed.verbose,
+        busy_policy: parsed.busy_policy,
         message: prompt,
     };
 
@@ -432,6 +443,14 @@ mod tests {
     #[test]
     fn parse_invalid_mode() {
         assert!(parse(&["--mode", "xml", "hi"]).is_none());
+    }
+
+    #[test]
+    fn parse_steer_flag() {
+        let parsed = parse(&["--steer", "hi"]).unwrap();
+        assert_eq!(parsed.busy_policy, "supersede_session");
+        // No flag → empty (the default follow-up policy at the RPC layer).
+        assert_eq!(parse(&["hi"]).unwrap().busy_policy, "");
     }
 
     #[test]

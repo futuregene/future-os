@@ -306,8 +306,8 @@ pub enum Event {
     },
     /// O3: idle-turn detection — a turn ended with no write-class tool
     /// (write/edit/shell) started inside the no-progress window. Detection +
-    /// bookkeeping only (no auto-injection): orchestrators nudge via the todo
-    /// update steering channel. `agent_id` is `None` for anonymous runs.
+    /// bookkeeping only (no auto-injection): orchestrators nudge via a `todo
+    /// update` picked up at the next turn. `agent_id` is `None` for anonymous runs.
     TurnNoProgress {
         goal_id: String,
         todo_id: String,

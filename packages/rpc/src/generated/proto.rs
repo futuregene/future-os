@@ -102,8 +102,9 @@ pub struct RpcCommand {
     #[prost(string, tag = "143")]
     pub client_request_id: ::prost::alloc::string::String,
     /// Atomic behavior when the session already has an active run:
-    /// "reject_if_busy" (default), "enqueue_if_busy", or "supersede_session".
-    /// Empty is interpreted as "reject_if_busy" for backward compatibility.
+    /// "enqueue_if_busy" (default) appends behind the active run (follow-up),
+    /// or "supersede_session" interrupts the active run and runs this next.
+    /// Empty is interpreted as "enqueue_if_busy".
     #[prost(string, tag = "144")]
     pub busy_policy: ::prost::alloc::string::String,
     /// ── set_sandbox_policy ─────────────────────────────────────────────────

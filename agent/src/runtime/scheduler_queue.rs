@@ -67,8 +67,6 @@ pub enum RunQueueError {
     DuplicateRequestConflict(String),
     #[error("run_id `{0}` already exists in this Agent instance")]
     DuplicateRunId(String),
-    #[error("session already has pending work")]
-    Busy,
     #[error("supersede_session requires the atomic session scheduler operation")]
     SupersedeRequiresSessionOperation,
     #[error("session queue is full (limit {limit})")]
@@ -301,13 +299,11 @@ impl InMemoryRunQueue {
             return Ok(existing_ack(&state, identity));
         }
 
-        let busy = state.active.is_some() || !state.queued.is_empty();
-        match (busy, busy_policy) {
-            (true, BusyPolicy::RejectIfBusy) => return Err(RunQueueError::Busy),
-            (_, BusyPolicy::SupersedeSession) => {
-                return Err(RunQueueError::SupersedeRequiresSessionOperation)
-            }
-            _ => {}
+        // reject_if_busy is gone: a busy session simply enqueues (the default
+        // follow-up policy). Supersede is never honored through plain accept;
+        // it must go through the atomic `supersede` operation.
+        if busy_policy == BusyPolicy::SupersedeSession {
+            return Err(RunQueueError::SupersedeRequiresSessionOperation);
         }
         if payload_bytes > self.max_request_bytes {
             return Err(RunQueueError::RequestTooLarge {
@@ -578,6 +574,34 @@ impl InMemoryRunQueue {
         self.state.lock().queued.iter().cloned().collect()
     }
 
+    /// Drain every queued run EXCEPT the front one, recording them terminal
+    /// with reason "merged". The front run is about to start with the merged
+    /// message, so the folded runs must not start separately and their
+    /// identities must be released (so a retry returns `existing`). Returns the
+    /// folded requests (for the caller to drop their execution snapshots).
+    pub fn drain_queued_after_first(&self) -> Vec<ScheduledRunRequest> {
+        let mut state = self.state.lock();
+        let folded: Vec<ScheduledRunRequest> = state.queued.iter().skip(1).cloned().collect();
+        if folded.is_empty() {
+            return Vec::new();
+        }
+        let front = state.queued.pop_front().expect("front queued run");
+        state.queued.clear();
+        state.queued.push_front(front);
+        for request in &folded {
+            state.queued_bytes = state.queued_bytes.saturating_sub(request.payload_bytes);
+            self.global_budget.release(request.payload_bytes);
+            remember_terminal(
+                &mut state,
+                request,
+                "terminal",
+                "merged",
+                self.recent_ack_limit,
+            );
+        }
+        folded
+    }
+
     /// Test-only seam: push a copy of the ACTIVE request back onto the
     /// queue, forging the active+queued-same-run-id state that `accept`
     /// makes impossible through the public API (`DuplicateRunId`). The
@@ -739,7 +763,9 @@ mod tests {
     }
 
     #[test]
-    fn reject_if_busy_never_mutates_queue() {
+    fn busy_accept_enqueues_when_a_run_is_pending() {
+        // With reject_if_busy removed, the default (enqueue) policy appends a
+        // new request behind the already-accepted one instead of rejecting it.
         let queue = queue();
         queue
             .accept(
@@ -749,16 +775,48 @@ mod tests {
                 Value::Null,
             )
             .unwrap();
-        let error = queue
+        let second = queue
             .accept(
                 "request-2",
                 Some("run-2"),
-                BusyPolicy::RejectIfBusy,
+                BusyPolicy::EnqueueIfBusy,
                 Value::Null,
             )
-            .unwrap_err();
-        assert_eq!(error, RunQueueError::Busy);
+            .unwrap();
+        assert_eq!(second.accepted_state, RunAcceptedState::Queued);
+        assert_eq!(queue.queued().len(), 2);
+    }
+
+    #[test]
+    fn drain_queued_after_first_folds_trailing_runs_as_merged() {
+        let queue = queue();
+        for (req, run) in [
+            ("request-1", "run-1"),
+            ("request-2", "run-2"),
+            ("request-3", "run-3"),
+        ] {
+            queue
+                .accept(req, Some(run), BusyPolicy::EnqueueIfBusy, Value::Null)
+                .unwrap();
+        }
+        assert_eq!(queue.queued().len(), 3);
+
+        let folded = queue.drain_queued_after_first();
+        // The front run stays; the two trailing runs are folded.
+        assert_eq!(
+            folded.iter().map(|r| r.run_id.as_str()).collect::<Vec<_>>(),
+            vec!["run-2", "run-3"]
+        );
         assert_eq!(queue.queued().len(), 1);
+        assert_eq!(queue.queued()[0].run_id, "run-1");
+        // The folded runs are recorded terminal with reason "merged".
+        let acks = queue.recent_terminal_acks();
+        assert_eq!(acks.len(), 2);
+        assert!(acks
+            .iter()
+            .all(|a| a.state == "terminal" && a.reason == "merged"));
+        // A single-queued queue drains nothing.
+        assert!(queue.drain_queued_after_first().is_empty());
     }
 
     #[test]
