@@ -441,7 +441,13 @@ pub fn overview(store: &Store) -> Result<Overview> {
         .collect();
     let mut cards: Vec<GoalCard> = goals
         .iter()
-        .map(|g| goal_card(g, created_by.get(&g.goal_id).copied().unwrap_or(g.created_at), now))
+        .map(|g| {
+            goal_card(
+                g,
+                created_by.get(&g.goal_id).copied().unwrap_or(g.created_at),
+                now,
+            )
+        })
         .collect();
     // Triage order: goals needing a human first, then actionable, then the rest.
     cards.sort_by(|a, b| {
@@ -661,6 +667,12 @@ pub fn goals_push(store: &Store) -> Result<Vec<GoalCard>> {
         .collect();
     Ok(replay_all(store)
         .iter()
-        .map(|g| goal_card(g, created_by.get(&g.goal_id).copied().unwrap_or(g.created_at), now))
+        .map(|g| {
+            goal_card(
+                g,
+                created_by.get(&g.goal_id).copied().unwrap_or(g.created_at),
+                now,
+            )
+        })
         .collect())
 }
