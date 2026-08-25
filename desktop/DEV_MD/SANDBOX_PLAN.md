@@ -186,6 +186,8 @@ v2 决策（V1–V9）见 APPROVAL_PLAN §9。v1 期间沿用有效的：escalat
 
 状态：**W1–W6 底层与本机可执行生命周期已在 Windows 11 Home 真机 PASS；W7 已在当前本地测试分支直接开启。** AppContainer SID、private desktop、PowerShell/CLM、Unicode/大输出、用户级单例、活动 capability lease、跨进程占用锁、旧代际 ACE/metadata GC、完整 host probe、reset、Desktop graceful shutdown 及 RPC/CLI 调用均已有自动化证据；RM-01、RM-02、RM-04～RM-07 已在本机 PASS。RM-03 及额外主机矩阵仍待完成。Windows 启动时直接运行完整 host probe；通过才显示该档，任何失败都隐藏入口并回退 `manual`。
 
+> **本期范围冻结（2026-08-25）**：本期交付目标明确为 **Unelevated**，即命令仍以当前真实 Windows 用户为主体，在其 token 上叠加 `WRITE_RESTRICTED`、capability SID 与 NTFS ACL。它与 Codex 的 legacy/unelevated 路线具有相同的基础机制和能力上限。本期不创建本地沙盒用户、不要求 UAC、不引入 elevated command runner，也不以 Elevated 的独立安全主体保证作为本期 review 或完成门槛。下文 §11.6 的限制是知情接受的产品边界，不应在后续 review 中被误判为“遗漏了 Elevated 实现”；后续候选路线见 §11.10。
+
 Windows 与 macOS 共用 `SandboxTier::Sandbox` 协议值，但 UI 和保证不同：
 
 | | macOS 沙箱保护 | Windows 写保护 |
@@ -207,10 +209,12 @@ Windows 与 macOS 共用 `SandboxTier::Sandbox` 协议值，但 UI 和保证不�
 |---|---|---|---|---|---|
 | elevated（独立用户）| ❌ 要管理员/企业易崩 | ❌ 需补读 | ✅ 天然 | 低（还自带多余的网络隔离）| 暂缓 |
 | **unelevated（`WRITE_RESTRICTED` + ACL）** | ✅ | ✅ 沿用当前用户正常读能力 | ❌ 不可靠参与 read AccessCheck | **高（接受只做写保护）** | **选它** |
-| Low-IL（完整性级别）| ✅ | ✅ 天然 | ❌ 拦不住 | 中 | 备选 |
+| Low-IL（完整性级别）| ✅ | ✅ 天然 | ❌ 拦不住 | 中 | 不采用：会把真实 workspace 持久标为低完整性，扩大其他 Low-IL 进程的写入面 |
 | WSL2 复用 bwrap | ✅ | — | ✅ | — | 兜底腿，排在 Linux bwrap 之后 |
 
-关键差异 vs Codex：FutureOS 网络全开，不做防火墙、offline-user、本地账号 provisioning。与 macOS 的关键差异则是 `WRITE_RESTRICTED` 只适合构建兼容性良好的写边界，不能可靠复刻 Seatbelt deny-read。第一版接受这一差异并在 UI 明示，不用提示词或 stderr 猜测冒充 OS 读保护。
+与 Codex Unelevated 的关系：两者都保留真实用户作为 token 主体，都使用 `WRITE_RESTRICTED + capability SID + NTFS ACL`，都给可写根的后代授予 `DELETE` 而不向父目录 capability 授予 `FILE_DELETE_CHILD`，也都不获得 Elevated 独立用户的身份边界。FutureOS 的主要扩展是 request-scoped `file/subtree` 路径审批和自身的 capability 生命周期；这不会提升 Windows 原语本身的能力上限。Codex 的 Unelevated 原型、方案取舍及当前 Elevated 架构可参考 [OpenAI《为 Windows 上的 Codex 构建安全高效的沙箱环境》（简体中文）](https://openai.com/zh-Hans-CN/index/building-codex-windows-sandbox/)。
+
+关键产品差异：FutureOS 网络全开，不做防火墙、offline-user、本地账号 provisioning。与 macOS 的关键差异则是 `WRITE_RESTRICTED` 只适合构建兼容性良好的写边界，不能可靠复刻 Seatbelt deny-read。第一版接受这一差异并在 UI 明示，不用提示词或 stderr 猜测冒充 OS 读保护。
 
 ### 11.2 强制模型
 
@@ -317,11 +321,11 @@ RestrictedToken/NTFS 不向父进程可靠报告“刚才拒绝了哪个对象�
 - **`FILE_DELETE_CHILD` 不受 `WRITE_RESTRICTED` 限制**：`WRITE_RESTRICTED` 只对写数据/追加/新建子项/`DELETE` 做第二道 restricting-SID 检查，删除文件实际走的父目录 `FILE_DELETE_CHILD` 不在其列。因此 `scope=file` 只授 `FILE_GENERIC_WRITE`（不授 `DELETE`），只能阻止改文件内容，**不能阻止删除该文件**——只要当前用户对父目录有普通删除权，受限 token 就仍能 `Remove-Item`。真机 AccessCheck 已验证 `FILE_DELETE_CHILD` 在 external 目录上返回 true、`DELETE`/`FILE_WRITE_DATA` 返回 false。这是 write-protect 模型的知情限制，不是可修复的 ACL 缺陷；文档与测试均不得声称 file scope 阻止删除。
 - **有状态**：写授权修改真实 NTFS ACL。基础策略代际 SID 和幂等 ACE 避免普通命令反复增删；workspace/temp 外的具体目标批准使用 request-scoped SID。并发创建代际/SID/确保 ACE 必须按规范化根串行或事务化；GC 必须知道活动 token/Job 引用，不能提前删除旧代际 deny。卸载/重置提供独立清理流程，安全性不依赖普通命令结束时同步回滚成功。
 - **单例与退出回收**：长驻 Agent 持有 `~/.future/agent/agent-instance.lock` 的用户级文件锁，不能通过改 gRPC 端口启动第二份共享同一状态的 Agent；probe/reset 等无服务维护命令不占该锁。桌面正常退出、强制退出确认后的任务收敛、清数据重启、环境切换和更新重启，都会在 bundled Agent 仍存活时先请求 reset，再终止子进程；独立 Agent 的 Ctrl+C 正常退出也会幂等 reset。桌面不清理或终止外部管理的 Agent。该步骤有超时且是 best-effort：崩溃、强杀、活动 lease 或临时失败时保留元数据，由下次启动 GC、设置重置和卸载流程继续回收。
-- **既有宽写 ACL**：若目标目录本身对 Everyone/相关 restricting SID 可写，可能削弱默认写边界；启动诊断与 smoke 必须覆盖，不能仅靠假设。
+- **既有宽写 ACL**：若目标或父目录本身对 Everyone、Logon SID、`Users`、`Authenticated Users` 或其他当前 token 可命中的宽泛主体授予写入/删除子项权限，可能削弱默认写边界。产品接受“主机 ACL 已把对象判为普通用户可广泛修改”时的这一边界，但测试、review 和发布说明必须准确保留，不能声称所有 workspace 外对象都只由 capability 决定。
 - **网络与读取开放**：任何 shell 可读取当前用户能读的文件并经网络外传；这是 Windows 写保护的明确非目标，在模式选择、首次启用说明和设置页持续说明，不塞进每次路径审批卡片。
 - **shell**：Windows 使用现有 pwsh 7 / Windows PowerShell 5.1 选择逻辑；不再假设 Git Bash/WSL。
 - **CLM 下的输出编码**：受限 token 使 Windows PowerShell 5.1 进入 Constrained Language Mode，而 CLM 禁止 `[Console]::OutputEncoding` 的 setter（也禁止 `GetBytes`/`OpenStandardOutput().Write` 等 .NET 方法），因此 5.1 的 stdout/stderr 只能用其控制台输出代码页输出，wrapper 里设置 UTF-8 均无效。stdout 被重定向到管道（无控制台）时，`[Console]::OutputEncoding` 回退到 **OEM 代码页 `GetOEMCP`**（而非 ANSI 代码页 `GetACP`），故捕获端用 `MultiByteToWideChar(CP_OEMCP)` 解码（`decode_restricted_shell_output`：5.1→OEM、pwsh 7→UTF-8，pwsh 7 硬编码 UTF-8 不受影响）。CJK 区域 ACP 与 OEMCP 相同（如简体中文均为 936/GBK），但西欧/俄文/希腊文不同（1252 vs 437/850、1251 vs 866、1253 vs 737），必须用 OEMCP 才能跨区域正确解码。native 子进程的管道输出同样经过 PowerShell 的 OEM 解码-重编码，`chcp 65001` 在 stdout 为 pipe（无控制台）时本就不生效，因此不引入额外不一致。
-- **elevated（独立用户强隔离）暂缓**：留给将来"要独立安全主体"的企业诉求。
+- **Elevated 暂缓，不属于本期缺陷**：本期明确只实现 Unelevated。后续若需要独立安全主体，优先评估 §11.10 的单专用用户方案；在该阶段到来前，不用 Elevated 的保证倒推本期实现必须创建用户、提权或增加 broker。
 
 ### 11.7 实施阶段
 
@@ -374,6 +378,20 @@ W1～W7 已在当前开发分支形成一个完整纵向闭环：规则计划、
 - Windows 真实环境兼容性、ACL 恢复/重置、升级降级和失败回退均有自动化或可重复的 smoke 证据。
 
 **明确不做（第一版）**：shell deny-read、glob ACE、elevated 独立用户、防火墙/网络隔离、WSL 捆绑、笼统 error 5 整命令脱沙盒放行。
+
+### 11.10 后续路线：单专用用户（候选，未承诺）
+
+若后续产品目标从“当前用户下的写保护”升级为“独立安全主体”，优先考虑 Codex Elevated 的精简变体，而不是继续给真实用户的 Restricted Token 叠加更多 ACE：
+
+1. 由一次性 elevated setup helper 创建一个普通本地用户（暂称 `FutureSandbox`）和 FutureOS 专用本地组；凭证随机生成、用 DPAPI 保存，并确保沙盒用户本身不可读取。
+2. Future Agent 仍以真实用户运行，通过 `CreateProcessWithLogonW` 以 `FutureSandbox` 启动精简 command runner；runner 在专用用户一侧创建最终 `WRITE_RESTRICTED` token，并启动完整子进程树。
+3. workspace/session temp 同时授予专用沙盒组的普通访问 ACE 与路径 capability SID 的 restricting-pass ACE；继续沿用“后代继承 `DELETE`、父目录不授 capability `FILE_DELETE_CHILD`”的设计。
+4. 为保持开发工具兼容性，需要向专用组补充必要的 read/execute ACL，并明确敏感目录排除、ACL 刷新、账户隐藏、升级、reset 和卸载清理策略。
+5. FutureOS 当前网络策略为开放，因此候选第一版只需要一个专用用户，不照搬 Codex 的 Online/Offline 双用户与防火墙；若以后增加网络隔离，再单独评估第二用户和 WFP。
+
+该路线能让真实用户在父目录上的 owner/current-user `FILE_DELETE_CHILD` 不再匹配沙盒命令，但仍不承诺保护本身已向 Everyone、`Users`、`Authenticated Users` 等宽泛主体开放删除权限的对象。它需要 UAC、本地账户 provisioning、跨用户 runner/IPC、read ACL 与完整卸载恢复，必须作为独立里程碑设计和安全 review，不能混入本期 Unelevated PR。
+
+已评估但不采用为下一步的替代路线：解析 PowerShell/shell 命令只能覆盖部分删除入口，不能形成任意子程序的 OS 边界；Low-IL 会改变真实 workspace 的完整性标签和信任模型；minifilter 虽能精确拦截删除/rename，但需要管理员安装、驱动签名和长期内核兼容维护。除非单专用用户方案不可接受，不优先投入这些方向。
 
 ---
 

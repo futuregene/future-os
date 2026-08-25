@@ -35,6 +35,7 @@ import { basename } from "../remote/localPath";
 import { canRecoverMessage } from "../remote/recovery";
 import { colors, radius, spacing } from "../theme/tokens";
 import { Button } from "./Button";
+import { approvalDecisionDisabled } from "./approvalState";
 
 interface TimelineCardProps {
   item: TimelineItem;
@@ -148,6 +149,7 @@ export function PendingApprovalCard({
     action?.category === "windows_write_capability" ? action.targets : undefined;
   const capabilityTarget = capabilityTargets?.length === 1 ? capabilityTargets[0] : undefined;
   const malformedCapability = payload.kind === "windows_write_capability" && !capabilityTargets;
+  const decisionDisabled = approvalDecisionDisabled(submitting, malformedCapability);
   const kindI18n = APPROVAL_KIND_I18N[payload.kind ?? ""];
   const titleText = capabilityTargets
     ? capabilityTarget
@@ -265,7 +267,7 @@ export function PendingApprovalCard({
         <View style={styles.approvalActionLeft}>
           <Button
             compact
-            disabled={submitting || malformedCapability}
+            disabled={decisionDisabled.rejected}
             icon={<X color={colors.ink} size={15} />}
             label={submitting ? t("approval.denying") : t("approval.deny")}
             loading={submitting}
@@ -276,7 +278,7 @@ export function PendingApprovalCard({
         <View style={styles.approvalActionRight}>
           <Button
             compact
-            disabled={submitting}
+            disabled={decisionDisabled.approved}
             icon={<Check color={colors.surface} size={15} />}
             label={submitting ? t("approval.allowing") : t("approval.allowOnce")}
             loading={submitting}

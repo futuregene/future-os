@@ -10,6 +10,8 @@
 
 本文只记录必须在 Windows 真机完成的工作。平台无关的生命周期、审批语义、失败路径、格式和 Clippy 测试应在提交前由开发端完成，不在这里重复。
 
+> **本期验收范围冻结（2026-08-25）**：本手册只验收 Unelevated。命令主体仍是当前真实 Windows 用户；不创建本地沙盒用户、不触发 UAC、不运行跨用户 elevated command runner。Reviewer 应按 `SANDBOX_PLAN.md` §11.6 的知情边界判断本期结果，不得把 Elevated 的独立用户、防火墙或完整 deny-read 能力当作本期缺失项。单专用用户仅是 §11.10 的后续候选路线。
+
 ## 1. 验证目标
 
 本轮必须确认以下结论：
@@ -22,6 +24,7 @@
 6. Unicode 路径、PowerShell 5.1/pwsh 7、重定向、管道和大输出不乱码、不死锁。
 7. probe/reset 经发布使用的统一 `future agent` CLI 路由工作，并且所有不支持/失败情况 fail closed。
 8. Desktop 后端的退出顺序始终是“清理权限，再终止 bundled Agent”；超时或 reset 失败仍能继续退出。
+9. 验收报告明确区分内容写入边界与删除边界：不得把 `scope=file`、既有宽 ACL 或父目录 `FILE_DELETE_CHILD` 场景报告成已具备 Elevated 等级的防删除保证。
 
 这些验证通过也**不表示 Windows 与 macOS Seatbelt 等价**。Windows 第一版仍只承诺写保护；shell 读取和网络开放，glob、未来文件名、`FILE_DELETE_CHILD`、Everyone/Logon 宽 ACL 等边界以 `SANDBOX_PLAN.md` §11.6 为准。
 
@@ -450,6 +453,8 @@ Windows 11 Pro、PowerShell 7、中文用户名等 P2 多主机矩阵因当前�
 | W7-06 外部 Agent | 手工启动外部 Agent，再启动 Desktop | 以外部 Agent 的 probe 为准；Desktop 不启动第二个 Agent，选项可用性与外部 Agent 一致 |
 | W7-07 重启与回退 | 保存 sandbox 档后正常重启；另外检查已有的 probe 失败/不可用单测 | probe 仍通过时保留 sandbox；不可用时选项隐藏并将已保存值改为 `manual` |
 | W7-08 退出回收 | 执行过 sandbox 命令后正常退出 FutureOS，运行生命周期脚本 `ExpectStopped` | Desktop/Agent 进程为 0，capability record 为 0；用户文件保留，没有非 FutureOS DACL 被覆盖 |
+
+W7-03～W7-05 的“写入”验收指文件内容创建/修改，不包含“允许修改单个文件但绝对禁止删除”的保证。Unelevated 下，当前真实用户对父目录已有的 `FILE_DELETE_CHILD` 可能允许删除目标或 sibling；Everyone/Logon/`Users`/`Authenticated Users` 等既有宽 ACL 也可能削弱边界。出现这类结果时应按 `SANDBOX_PLAN.md` §11.6 记录为已知能力限制，而不是修改测试去宣称已阻止删除，也不是据此要求本期临时加入 Elevated。
 
 为 W7-03～W7-05 准备可重复判断的 workspace 外目标（在启用 sandbox 前执行）：
 

@@ -173,6 +173,31 @@ fn release_probe_validates_complete_write_boundary() {
 }
 
 #[tokio::test]
+async fn release_probe_is_independent_of_an_active_sandbox_job() {
+    let fixture = Fixture::new();
+    let plan = fixture.plan();
+    let child = runner::spawn_with_plan_for_test(
+        &plan,
+        "Start-Sleep -Seconds 30",
+        &fixture.workspace,
+        &[],
+        None,
+        &fixture.state_path,
+    )
+    .expect("spawn active sandbox job");
+
+    let result = runner::probe_host().expect("concurrent host probe completes");
+    assert!(
+        result.available,
+        "concurrent host probe unavailable: {}",
+        result.code
+    );
+
+    child.terminate();
+    assert_ne!(child.wait().await.unwrap(), 0);
+}
+
+#[tokio::test]
 async fn stale_capability_gc_waits_for_active_process_tree() {
     let fixture = Fixture::new();
     let old_plan = fixture.plan();

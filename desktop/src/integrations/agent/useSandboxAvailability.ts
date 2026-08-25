@@ -9,6 +9,7 @@ interface WindowsSandboxProbeResult {
 
 export interface SandboxAvailability {
   available: boolean;
+  definitive: boolean;
   resolved: boolean;
 }
 
@@ -16,14 +17,29 @@ let windowsProbe: Promise<boolean> | null = null;
 
 const WINDOWS_PROBE_RETRY_DELAYS_MS = [0, 100, 250, 500, 1_000, 2_000] as const;
 
-export function windowsSandboxAvailable(result: WindowsSandboxProbeResult): boolean {
+export function windowsSandboxAvailable(
+  result: WindowsSandboxProbeResult,
+): boolean {
   return result.available;
+}
+
+export function shouldPersistSandboxFallback(
+  availability: SandboxAvailability,
+  approvalTier: string,
+): boolean {
+  return (
+    availability.resolved
+    && availability.definitive
+    && !availability.available
+    && approvalTier === "sandbox"
+  );
 }
 
 type WindowsSandboxProbe = () => Promise<WindowsSandboxProbeResult>;
 type Delay = (milliseconds: number) => Promise<void>;
 
-const delay: Delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+const delay: Delay = milliseconds =>
+  new Promise(resolve => setTimeout(resolve, milliseconds));
 
 export async function probeWindowsSandboxWithRetry(
   probe: WindowsSandboxProbe,
@@ -50,8 +66,8 @@ export async function probeWindowsSandboxWithRetry(
 }
 
 function sharedWindowsProbe(): Promise<boolean> {
-  windowsProbe ??= probeWindowsSandboxWithRetry(
-    () => invokeCommand<WindowsSandboxProbeResult>("probe_windows_sandbox"),
+  windowsProbe ??= probeWindowsSandboxWithRetry(() =>
+    invokeCommand<WindowsSandboxProbeResult>("probe_windows_sandbox"),
   ).catch((error) => {
     // Do not permanently cache a transient Agent connection failure. A later
     // mount (for example, opening Settings after startup) gets a fresh attempt.
@@ -63,10 +79,10 @@ function sharedWindowsProbe(): Promise<boolean> {
 
 function initialAvailability(): SandboxAvailability {
   if (isMacOS)
-    return { available: true, resolved: true };
+    return { available: true, definitive: true, resolved: true };
   if (!isWindows)
-    return { available: false, resolved: true };
-  return { available: false, resolved: false };
+    return { available: false, definitive: true, resolved: true };
+  return { available: false, definitive: false, resolved: false };
 }
 
 /**
@@ -84,13 +100,19 @@ export function useSandboxAvailability(): SandboxAvailability {
     void sharedWindowsProbe()
       .then((available) => {
         if (current)
-          setAvailability({ available, resolved: true });
+          setAvailability({ available, definitive: true, resolved: true });
       })
       .catch(() => {
-        // Exhausted connection retries fail closed for this mount. Because the
-        // shared promise was cleared, a later mount can recover automatically.
-        if (current)
-          setAvailability({ available: false, resolved: true });
+        // Exhausted connection/probe retries fail closed for this mount, but
+        // are not an authoritative unsupported verdict. Keep the saved tier so
+        // a later mount can recover automatically.
+        if (current) {
+          setAvailability({
+            available: false,
+            definitive: false,
+            resolved: true,
+          });
+        }
       });
     return () => {
       current = false;

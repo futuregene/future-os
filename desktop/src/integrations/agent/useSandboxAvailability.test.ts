@@ -1,10 +1,41 @@
 import { describe, expect, it } from "vitest";
-import { probeWindowsSandboxWithRetry, windowsSandboxAvailable } from "./useSandboxAvailability";
+import {
+  probeWindowsSandboxWithRetry,
+  shouldPersistSandboxFallback,
+  windowsSandboxAvailable,
+} from "./useSandboxAvailability";
 
 describe("windowsSandboxAvailable", () => {
   it("reflects the native host probe without a separate product switch", () => {
-    expect(windowsSandboxAvailable({ available: true, code: "available" })).toBe(true);
-    expect(windowsSandboxAvailable({ available: false, code: "write_boundary_failed" })).toBe(false);
+    expect(
+      windowsSandboxAvailable({ available: true, code: "available" }),
+    ).toBe(true);
+    expect(
+      windowsSandboxAvailable({
+        available: false,
+        code: "write_boundary_failed",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("shouldPersistSandboxFallback", () => {
+  it("falls back only for an authoritative unavailable result", () => {
+    expect(
+      shouldPersistSandboxFallback(
+        { available: false, definitive: true, resolved: true },
+        "sandbox",
+      ),
+    ).toBe(true);
+  });
+
+  it("preserves the saved tier after a transient probe error", () => {
+    expect(
+      shouldPersistSandboxFallback(
+        { available: false, definitive: false, resolved: true },
+        "sandbox",
+      ),
+    ).toBe(false);
   });
 });
 
@@ -48,14 +79,16 @@ describe("probeWindowsSandboxWithRetry", () => {
   it("rejects after exhausting transient failures", async () => {
     let attempts = 0;
 
-    await expect(probeWindowsSandboxWithRetry(
-      async () => {
-        attempts += 1;
-        throw new Error("connection refused");
-      },
-      [0, 100, 250],
-      async () => {},
-    )).rejects.toThrow("connection refused");
+    await expect(
+      probeWindowsSandboxWithRetry(
+        async () => {
+          attempts += 1;
+          throw new Error("connection refused");
+        },
+        [0, 100, 250],
+        async () => {},
+      ),
+    ).rejects.toThrow("connection refused");
 
     expect(attempts).toBe(3);
   });

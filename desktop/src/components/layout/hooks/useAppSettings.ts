@@ -1,7 +1,10 @@
 import type { AppSettings } from "../../../integrations/storage/appSettings";
 import { useEffect, useRef, useState } from "react";
 import i18n from "../../../i18n";
-import { useSandboxAvailability } from "../../../integrations/agent/useSandboxAvailability";
+import {
+  shouldPersistSandboxFallback,
+  useSandboxAvailability,
+} from "../../../integrations/agent/useSandboxAvailability";
 import { DEFAULT_APP_SETTINGS, getAppSettings, updateAppSettings } from "../../../integrations/storage/appSettings";
 import { errorMessage } from "../../../lib/errors";
 import { emitFutureEvent } from "../../../lib/futureEvents";
@@ -78,18 +81,26 @@ export function useAppSettings(): UseAppSettingsResult {
     await write;
   }
 
+  const sandboxFallbackRequired = shouldPersistSandboxFallback(
+    sandboxAvailability,
+    appSettings.approvalTier,
+  );
+
   useEffect(() => {
-    if (!sandboxAvailability.resolved || sandboxAvailability.available) {
+    if (!sandboxFallbackRequired) {
       sandboxFallbackRef.current = false;
       return;
     }
-    if (appSettings.approvalTier !== "sandbox" || sandboxFallbackRef.current)
+    if (sandboxFallbackRef.current)
       return;
     sandboxFallbackRef.current = true;
     void changeSettings({ approvalTier: "manual" }).finally(() => {
       sandboxFallbackRef.current = false;
     });
-  }, [appSettings.approvalTier, sandboxAvailability.available, sandboxAvailability.resolved]);
+  }, [
+    appSettings.approvalTier,
+    sandboxFallbackRequired,
+  ]);
 
   return { appSettings, changeSettings };
 }
