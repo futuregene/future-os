@@ -456,18 +456,22 @@ function ToolRow({ tool }: { tool: TimelineToolRow }) {
       ) : null}
       {expanded && children ? (
         <View style={styles.inlineToolChildren}>
-          {children.map((child, index) => (
-            <Text
-              key={`${child.name}:${child.detail ?? ""}:${index}`}
-              ellipsizeMode="tail"
-              numberOfLines={1}
-              style={styles.inlineToolChild}
-            >
-              {child.detail
-                ? toolDetail(toolKind(child.name), child.detail)
-                : toolLabel(t, toolKind(child.name), child.complete)}
-            </Text>
-          ))}
+          {children.map((child, index) => {
+            const childKind = toolKind(child.name);
+            const shellCommand = childKind === "shell" && Boolean(child.detail);
+            return (
+              <Text
+                key={`${child.name}:${child.detail ?? ""}:${index}`}
+                {...(!shellCommand ? { ellipsizeMode: "tail" as const, numberOfLines: 1 } : {})}
+                selectable={shellCommand}
+                style={styles.inlineToolChild}
+              >
+                {child.detail
+                  ? toolDetail(childKind, child.detail)
+                  : toolLabel(t, childKind, child.complete)}
+              </Text>
+            );
+          })}
         </View>
       ) : null}
     </View>

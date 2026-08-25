@@ -520,6 +520,20 @@ pub fn overview(store: &Store) -> Result<Overview> {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ActiveRunView {
+    pub run_id: String,
+    pub session_id: String,
+    pub agent_id: Option<String>,
+    pub todo_id: Option<String>,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub cost: f64,
+    pub started_at: Option<u64>,
+    pub last_activity_at: Option<u64>,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct GoalDetail {
     pub goal_id: String,
     pub objective: String,
@@ -545,6 +559,7 @@ pub struct GoalDetail {
     pub authority: crate::state::Authority,
     pub execution_profile: crate::state::ExecutionProfile,
     pub event_count: usize,
+    pub active_runs: Vec<ActiveRunView>,
 }
 
 pub fn goal_detail(store: &Store, goal_id: &str) -> Result<Option<GoalDetail>> {
@@ -597,7 +612,128 @@ pub fn goal_detail(store: &Store, goal_id: &str) -> Result<Option<GoalDetail>> {
         authority: goal.authority.clone(),
         execution_profile: goal.execution_profile.clone(),
         event_count,
+        active_runs: scan_active_runs(&store.root_path(), goal_id),
     }))
+}
+
+/// Live in-flight run projections: scan `<root>/runs/*.live.jsonl` (written
+/// by the orchestrator's `execute_turn` header + teed `usage` events) and
+/// expose real-time in/out tokens + cost for runs whose stream is still
+/// active. The header line carries the goal/agent/todo association; `usage`
+/// lines carry per-request token/cost that we sum (each request emits exactly
+/// one `usage` event, so summing never double-counts). Read-only: never
+/// touches the ledger.
+const ACTIVE_RUN_WINDOW_SECS: u64 = 90;
+
+fn scan_active_runs(root: &str, goal_id: &str) -> Vec<ActiveRunView> {
+    let now = now_epoch();
+    let runs_dir = std::path::Path::new(root).join("runs");
+    let entries = match std::fs::read_dir(&runs_dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+    let mut out: Vec<ActiveRunView> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+        if !name.ends_with(".live") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let mut agent_id = None;
+        let mut todo_id = None;
+        let mut session_id = None;
+        let mut run_id = None;
+        let mut header_goal_id: Option<String> = None;
+        let mut started_at: Option<u64> = None;
+        let mut last_activity_at: Option<u64> = None;
+        let mut tokens_in = 0u64;
+        let mut tokens_out = 0u64;
+        let mut cost = 0.0f64;
+        let mut finished = false;
+        for line in text.lines() {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let Some(ty) = v.get("type").and_then(|x| x.as_str()) else {
+                continue;
+            };
+            if let Some(ts) = v.get("wall_ts").and_then(|x| x.as_u64()) {
+                last_activity_at = Some(last_activity_at.map_or(ts, |c| c.max(ts)));
+                if started_at.is_none() {
+                    started_at = Some(ts);
+                }
+            }
+            match ty {
+                "run_header" => {
+                    agent_id = v.get("agent_id").and_then(|x| x.as_str()).map(String::from);
+                    todo_id = v.get("todo_id").and_then(|x| x.as_str()).map(String::from);
+                    session_id = v
+                        .get("session_id")
+                        .and_then(|x| x.as_str())
+                        .map(String::from);
+                    run_id = v.get("run_id").and_then(|x| x.as_str()).map(String::from);
+                    header_goal_id = v.get("goal_id").and_then(|x| x.as_str()).map(String::from);
+                }
+                "usage" => {
+                    if let Some(u) = v.get("usage").and_then(|x| x.as_object()) {
+                        tokens_in += u
+                            .get("prompt_tokens")
+                            .and_then(|x| x.as_i64())
+                            .unwrap_or(0)
+                            .max(0) as u64;
+                        tokens_out += u
+                            .get("completion_tokens")
+                            .and_then(|x| x.as_i64())
+                            .unwrap_or(0)
+                            .max(0) as u64;
+                        let cc = u
+                            .get("credit_cost")
+                            .and_then(|x| x.as_f64())
+                            .or_else(|| {
+                                u.get("credit_cost")
+                                    .and_then(|x| x.as_str())
+                                    .and_then(|s| s.parse::<f64>().ok())
+                            })
+                            .unwrap_or(0.0);
+                        cost += cc.max(0.0);
+                    }
+                }
+                "agent_end" => {
+                    finished = true;
+                }
+                _ => {}
+            }
+        }
+        if header_goal_id.as_deref() != Some(goal_id) {
+            continue;
+        }
+        let active = !finished
+            && last_activity_at.is_some_and(|ts| now.saturating_sub(ts) < ACTIVE_RUN_WINDOW_SECS);
+        out.push(ActiveRunView {
+            run_id: run_id
+                .unwrap_or_else(|| name.strip_suffix(".live").unwrap_or(name).to_string()),
+            session_id: session_id.unwrap_or_default(),
+            agent_id,
+            todo_id,
+            tokens_in,
+            tokens_out,
+            cost: nnz(cost),
+            started_at,
+            last_activity_at,
+            active,
+        });
+    }
+    out.sort_by_key(|r| std::cmp::Reverse(r.last_activity_at));
+    out
 }
 
 pub fn runs_page(store: &Store, goal_id: &str, limit: usize) -> Result<Option<Vec<RunRecord>>> {
@@ -675,4 +811,74 @@ pub fn goals_push(store: &Store) -> Result<Vec<GoalCard>> {
             )
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_live(root: &std::path::Path, name: &str, lines: Vec<String>) {
+        let dir = root.join("runs");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut f = std::fs::File::create(dir.join(name)).unwrap();
+        for l in lines {
+            writeln!(f, "{l}").unwrap();
+        }
+    }
+
+    #[test]
+    fn scan_active_runs_sums_usage_and_filters_by_goal() {
+        let now = now_epoch();
+        let root = tempfile::tempdir().unwrap();
+        let p = root.path();
+        // Active run (g1): header + two usage events, no agent_end.
+        write_live(
+            p,
+            "run_a.live.jsonl",
+            vec![
+                serde_json::json!({"type":"run_header","wall_ts":now,"run_id":"run_a","session_id":"s1","agent_id":"mac-w1","todo_id":"todo_t1","goal_id":"g1"}).to_string(),
+                serde_json::json!({"type":"usage","wall_ts":now+1,"usage":{"prompt_tokens":10,"completion_tokens":5,"credit_cost":0.001}}).to_string(),
+                serde_json::json!({"type":"usage","wall_ts":now+2,"usage":{"prompt_tokens":20,"completion_tokens":8,"credit_cost":0.002}}).to_string(),
+            ],
+        );
+        // Finished run (g1): header + one usage + agent_end.
+        write_live(
+            p,
+            "run_b.live.jsonl",
+            vec![
+                serde_json::json!({"type":"run_header","wall_ts":now-200,"run_id":"run_b","session_id":"s2","agent_id":"mac-w2","todo_id":"todo_t2","goal_id":"g1"}).to_string(),
+                serde_json::json!({"type":"usage","wall_ts":now-199,"usage":{"prompt_tokens":5,"completion_tokens":3,"credit_cost":0.0005}}).to_string(),
+                serde_json::json!({"type":"agent_end","wall_ts":now-198}).to_string(),
+            ],
+        );
+        // Foreign goal (g2): header only — must be filtered out.
+        write_live(
+            p,
+            "run_c.live.jsonl",
+            vec![serde_json::json!({"type":"run_header","wall_ts":now,"run_id":"run_c","session_id":"s3","agent_id":"mac-w3","todo_id":"todo_t3","goal_id":"g2"}).to_string()],
+        );
+        // Legacy run (no header): must be filtered out.
+        write_live(
+            p,
+            "run_d.live.jsonl",
+            vec![serde_json::json!({"type":"usage","wall_ts":now,"usage":{"prompt_tokens":99,"completion_tokens":99}}).to_string()],
+        );
+
+        let runs = scan_active_runs(p.to_str().unwrap(), "g1");
+        assert_eq!(runs.len(), 2, "only g1 runs with headers are returned");
+
+        let a = runs.iter().find(|r| r.run_id == "run_a").unwrap();
+        assert!(a.active, "no agent_end and recent wall_ts ⇒ active");
+        assert_eq!(a.agent_id.as_deref(), Some("mac-w1"));
+        assert_eq!(a.todo_id.as_deref(), Some("todo_t1"));
+        assert_eq!(a.tokens_in, 30);
+        assert_eq!(a.tokens_out, 13);
+        assert!((a.cost - 0.003).abs() < 1e-9);
+
+        let b = runs.iter().find(|r| r.run_id == "run_b").unwrap();
+        assert!(!b.active, "agent_end marks the run finished");
+        assert_eq!(b.tokens_in, 5);
+        assert!((b.cost - 0.0005).abs() < 1e-9);
+    }
 }

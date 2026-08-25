@@ -446,6 +446,14 @@ async fn consume_run_stream(
                     line["tool"] = serde_json::Value::String(n.to_string());
                 }
             }
+            // Tee usage so the read-only dashboard can expose real-time
+            // in/out tokens + cost for an in-flight run (each request emits
+            // exactly one `usage` event, so summing them never double-counts).
+            if ev.r#type == "usage" {
+                if let Some(u) = data.get("usage") {
+                    line["usage"] = u.clone();
+                }
+            }
             let _ = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
