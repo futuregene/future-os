@@ -359,8 +359,8 @@ impl CapabilityState {
                 || !record.writable_root.is_absolute()
                 || !names.insert(&record.name)
                 || matches!(record.kind, CapabilityKind::Request) != record.request_id.is_some()
-                || (matches!(record.kind, CapabilityKind::Request)
-                    != !record.approved_targets.is_empty())
+                || matches!(record.kind, CapabilityKind::Request)
+                    == record.approved_targets.is_empty()
                 || record
                     .write_carveouts
                     .iter()
