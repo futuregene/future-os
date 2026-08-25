@@ -840,6 +840,62 @@ async fn prompt_abort_produces_cancelled_terminal() {
     assert!(session.runtime.snapshot().is_none());
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn supersede_interrupts_active_run_and_queues_successor() {
+    // Steering (`supersede_session`) must be a real interrupt — the stalled
+    // first run is aborted, not left to run on — and the successor is queued
+    // with a fresh run identity.
+    let provider = ScriptedProvider::new(vec![
+        Script::Stall(vec![text_event("old run partial")]),
+        text_turn("new answer"),
+    ]);
+    let fixture = run_fixture(provider, "supersede-interrupt");
+    let mut session = fixture.session;
+
+    let first = session.prompt("first", &[], &[], None, None).unwrap();
+    for _ in 0..200 {
+        if session.runtime.snapshot().is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert!(
+        session.runtime.snapshot().is_some(),
+        "first run should be actively streaming"
+    );
+
+    let ack = session
+        .enqueue_prompt(
+            "second",
+            &[],
+            &[],
+            None,
+            "req-supersede",
+            crate::runtime::BusyPolicy::SupersedeSession,
+        )
+        .unwrap();
+    assert_eq!(
+        ack.accepted_state,
+        crate::runtime::RunAcceptedState::Queued,
+        "superseding an active run queues the successor"
+    );
+    assert_ne!(ack.run_id, first.run_id);
+
+    // The stalled first run never finishes on its own — reaching idle proves
+    // the supersede actually interrupted it.
+    wait_for_run_end(&session).await;
+    assert!(
+        session.runtime.snapshot().is_none(),
+        "session is idle after the active run was interrupted"
+    );
+
+    // The successor is queued behind the (now-finished) interrupted run.
+    let queued = session.scheduler.queued();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].payload["message"], "second");
+    assert_eq!(queued[0].run_id, ack.run_id);
+}
+
 // ─── batch 3: rare error arms ──────────────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]

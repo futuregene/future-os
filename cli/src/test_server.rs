@@ -153,6 +153,17 @@ pub fn stream_event(r#type: &str, data: &str) -> StreamEvent {
     }
 }
 
+/// Build a StreamEvent scoped to a specific run (for steering/follow-up
+/// filtering tests where the CLI must skip other runs' events).
+pub fn stream_event_with_run(r#type: &str, data: &str, run_id: &str) -> StreamEvent {
+    StreamEvent {
+        r#type: r#type.into(),
+        data: data.into(),
+        run_id: run_id.into(),
+        ..Default::default()
+    }
+}
+
 // ── HTTP mock ───────────────────────────────────────────────────────────────
 
 /// One canned HTTP response.

@@ -304,15 +304,22 @@ impl RunClient {
         Ok(())
     }
 
-    /// `prompt(message, sessionId?)` — `prompt` with a 30 s timeout.
-    pub async fn prompt(&self, message: &str, session_id: &str) -> Result<(), String> {
+    /// `prompt(message, sessionId?, busyPolicy?)` — `prompt` with a 30 s timeout.
+    /// Returns the parsed prompt acknowledgement (run_id / accepted_state / …)
+    /// so callers can route the event stream to the accepted run.
+    pub async fn prompt(
+        &self,
+        message: &str,
+        session_id: &str,
+        busy_policy: &str,
+    ) -> Result<Value, String> {
         let cmd = RpcCommand {
             message: message.to_string(),
+            busy_policy: busy_policy.to_string(),
             ..Default::default()
         };
         self.execute_command("prompt", cmd, Some(session_id), 30)
-            .await?;
-        Ok(())
+            .await
     }
 
     /// `streamEvents(sessionId, onText?, verbose)` — subscribe to the event
@@ -326,6 +333,25 @@ impl RunClient {
     pub async fn stream_events(
         &self,
         session_id: &str,
+        on_text: Option<Box<dyn Fn(&str) + Send>>,
+        verbose: bool,
+        out: &Output,
+    ) -> Result<(Vec<Value>, String), String> {
+        self.stream_events_filtered(session_id, None, on_text, verbose, out)
+            .await
+    }
+
+    /// `stream_events` scoped to a single run. When `target_run_id` is set,
+    /// events from any other run — including a superseded run's abort tail or
+    /// a queued predecessor's final tokens — are skipped, so the accumulated
+    /// text and the `agent_end` that terminates the stream belong exactly to
+    /// the accepted run. This is what lets `--steer` / `--follow-up` wait for
+    /// the new question's answer instead of the in-flight run's.
+    #[allow(clippy::type_complexity)]
+    pub async fn stream_events_filtered(
+        &self,
+        session_id: &str,
+        target_run_id: Option<&str>,
         on_text: Option<Box<dyn Fn(&str) + Send>>,
         verbose: bool,
         out: &Output,
@@ -363,6 +389,14 @@ impl RunClient {
                 Ok(None) => break,
                 Err(_) => break,
             };
+            // Route to a single run when the caller targets one: skip events
+            // from any other run. An empty run_id is treated as a match so a
+            // session-scoped or legacy frame can never wedge the filter.
+            if let Some(target) = target_run_id {
+                if !message.run_id.is_empty() && message.run_id != target {
+                    continue;
+                }
+            }
             // `raw_data`: parsed `data` payload (empty object when absent).
             let raw_data: Map<String, Value> = if message.data.is_empty() {
                 Map::new()
@@ -421,6 +455,13 @@ impl RunClient {
             }
             events.push(event_json);
             if message.r#type == "agent_end" {
+                // Only the targeted run's terminal ends a filtered stream; an
+                // empty run_id is treated as a match (see the filter above).
+                if let Some(target) = target_run_id {
+                    if !message.run_id.is_empty() && message.run_id != target {
+                        continue;
+                    }
+                }
                 break;
             }
         }
@@ -605,13 +646,19 @@ impl RunClient {
             self.set_cwd(&config.cwd, &session_id).await?;
         }
 
-        // 4. Start streaming events BEFORE sending prompt
+        // 4. Stream + prompt. The default (`reject_if_busy`) keeps the
+        // subscribe-before-prompt order so no early event is missed; steering
+        // and follow-up prompt first so we learn the accepted run's id, then
+        // subscribe scoped to that run (skipping a superseded/queued
+        // predecessor's tail).
         if verbose {
             out.write_err("Running...\n");
         }
-        let stream_session = session_id.clone();
-        let stream_addr = self.addr.clone();
-        let out_stream = out.clone();
+        let busy_policy: &str = if config.busy_policy.is_empty() {
+            BUSY_REJECT
+        } else {
+            config.busy_policy.as_str()
+        };
         #[allow(clippy::type_complexity)]
         let on_text: Option<Box<dyn Fn(&str) + Send>> = if config.mode == "text" {
             let out_text = out.clone();
@@ -619,20 +666,43 @@ impl RunClient {
         } else {
             None
         };
-        let (tx, rx) = tokio::sync::oneshot::channel::<Result<(Vec<Value>, String), String>>();
-        let handle = tokio::spawn(async move {
-            let client = RunClient::new(&stream_addr);
-            let result = client
-                .stream_events(&stream_session, on_text, verbose, &out_stream)
-                .await;
-            let _ = tx.send(result);
-        });
 
-        // 5. Send prompt (must target the same session as streamEvents)
-        self.prompt(&config.message, &session_id).await?;
+        let (events, text) = if busy_policy == BUSY_REJECT {
+            // Default: subscribe before prompting so no early event is missed,
+            // then prompt and wait for the (single) run to settle.
+            let stream_session = session_id.clone();
+            let stream_addr = self.addr.clone();
+            let out_stream = out.clone();
+            let (tx, rx) = tokio::sync::oneshot::channel::<Result<(Vec<Value>, String), String>>();
+            let handle = tokio::spawn(async move {
+                let client = RunClient::new(&stream_addr);
+                let result = client
+                    .stream_events(&stream_session, on_text, verbose, &out_stream)
+                    .await;
+                let _ = tx.send(result);
+            });
 
-        // 6. Wait for events to complete
-        let (events, text) = await_stream(rx, handle).await?;
+            // 5. Send prompt (must target the same session as streamEvents)
+            self.prompt(&config.message, &session_id, busy_policy)
+                .await?;
+
+            // 6. Wait for events to complete
+            await_stream(rx, handle).await?
+        } else {
+            // steering / follow-up: prompt first to learn the accepted run id,
+            // then stream that run only. The agent queues (or, for steering,
+            // aborts the active run and queues) the new prompt, so its events
+            // always arrive after the acknowledgement.
+            let ack = self
+                .prompt(&config.message, &session_id, busy_policy)
+                .await?;
+            let target = ack
+                .get("run_id")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            self.stream_events_filtered(&session_id, target.as_deref(), on_text, verbose, out)
+                .await?
+        };
 
         // 7. Get final state for model info (query the run's own session)
         let mut model: Option<String> = None;
@@ -764,6 +834,12 @@ fn parse_stream_event(event: &StreamEvent, raw_data: &Map<String, Value>) -> Val
     Value::Object(obj)
 }
 
+/// `busy_policy` values carried on the `prompt` command (mirror the agent's
+/// `BusyPolicy`). Empty is treated as the default `reject_if_busy`.
+pub const BUSY_REJECT: &str = "reject_if_busy";
+pub const BUSY_ENQUEUE: &str = "enqueue_if_busy";
+pub const BUSY_SUPERSEDE: &str = "supersede_session";
+
 /// `RunConfig` from grpc-client.ts.
 #[derive(Debug, Clone, Default)]
 pub struct RunConfig {
@@ -783,6 +859,10 @@ pub struct RunConfig {
     pub cwd: String,
     pub verbose: bool,
     pub message: String,
+    /// How a prompt interacts with an in-progress run: `reject_if_busy`
+    /// (default / empty), `enqueue_if_busy` (follow-up), or
+    /// `supersede_session` (steering — interrupts the active run).
+    pub busy_policy: String,
 }
 
 /// `RunResult` from grpc-client.ts.
@@ -814,7 +894,7 @@ pub fn grpc_addr_env() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_server::{spawn_mock, stream_event, MockAgent};
+    use crate::test_server::{spawn_mock, stream_event, stream_event_with_run, MockAgent};
 
     // ── addr / helpers ──────────────────────────────────────────────
 
@@ -1090,7 +1170,7 @@ mod tests {
         client.set_ephemeral(true, "s1").await.unwrap();
         client.set_permission_level("full", "s1").await.unwrap();
         client.set_cwd("/work", "s1").await.unwrap();
-        client.prompt("hi", "s1").await.unwrap();
+        client.prompt("hi", "s1", "enqueue_if_busy").await.unwrap();
 
         let seen = agent.seen.lock().expect("seen").clone();
         let by_type = |t: &str| seen.iter().find(|c| c.r#type == t).expect(t).clone();
@@ -1105,6 +1185,7 @@ mod tests {
         assert_eq!(by_type("set_permission_level").level, "full");
         assert_eq!(by_type("set_cwd").cwd, "/work");
         assert_eq!(by_type("prompt").message, "hi");
+        assert_eq!(by_type("prompt").busy_policy, "enqueue_if_busy");
         assert_eq!(by_type("fork").entry_id, "e1");
         assert_eq!(by_type("new_session").created_by, "cli");
         assert_eq!(by_type("get_session_entries").session_id, "s1");
@@ -1380,6 +1461,58 @@ mod tests {
         assert_eq!(event["snapshotEvents"][0]["idx"], 1);
     }
 
+    #[tokio::test]
+    async fn stream_events_filtered_skips_other_runs_and_breaks_on_target_end() {
+        let agent = MockAgent {
+            events: vec![
+                // A superseded run's tail — must be skipped.
+                stream_event_with_run("text_chunk", "{\"text\":\"stale\"}", "run-old"),
+                stream_event_with_run("agent_end", "{}", "run-old"),
+                // The targeted run.
+                stream_event_with_run("text_chunk", "{\"text\":\"fresh\"}", "run-new"),
+                // An interleaved foreign event between our chunks.
+                stream_event_with_run("text_chunk", "{\"text\":\"noise\"}", "run-other"),
+                stream_event_with_run("agent_end", "{}", "run-new"),
+                // Never reached: the targeted agent_end breaks the loop.
+                stream_event_with_run("text_chunk", "{\"text\":\"late\"}", "run-new"),
+            ],
+            ..Default::default()
+        };
+        let addr = spawn_mock(agent).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let (events, text) = client
+            .stream_events_filtered("s1", Some("run-new"), None, false, &out)
+            .await
+            .unwrap();
+        assert_eq!(text, "fresh");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["runId"], "run-new");
+        assert_eq!(events[1]["type"], "agent_end");
+    }
+
+    #[tokio::test]
+    async fn stream_events_filtered_empty_run_id_is_a_match() {
+        // A legacy/session-scoped frame with an empty run_id must not wedge
+        // the filter; it is treated as belonging to the targeted run.
+        let agent = MockAgent {
+            events: vec![
+                stream_event("text_chunk", "{\"text\":\"x\"}"),
+                stream_event("agent_end", "{}"),
+            ],
+            ..Default::default()
+        };
+        let addr = spawn_mock(agent).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let (events, text) = client
+            .stream_events_filtered("s1", Some("run-x"), None, false, &out)
+            .await
+            .unwrap();
+        assert_eq!(text, "x");
+        assert_eq!(events.len(), 2);
+    }
+
     // ── run() orchestration ─────────────────────────────────────────
 
     fn run_config(message: &str) -> RunConfig {
@@ -1428,6 +1561,97 @@ mod tests {
         assert_eq!(agent.seen_of("set_cwd").len(), 1);
         assert_eq!(agent.seen_of("prompt")[0].message, "hello");
         assert_eq!(agent.seen_of("prompt")[0].session_id, "s-new");
+    }
+
+    #[tokio::test]
+    async fn run_steer_prompts_first_and_filters_stream_to_accepted_run() {
+        let mut agent = MockAgent::default();
+        agent
+            .responses
+            .insert("new_session".into(), "{\"sessionId\":\"s-steer\"}".into());
+        agent.responses.insert(
+            "prompt".into(),
+            "{\"run_id\":\"run-new\",\"run_epoch\":2,\"accepted_state\":\"queued\"}".into(),
+        );
+        // The superseded run's tail must be skipped; only the accepted run's
+        // text and terminal count.
+        agent.events = vec![
+            stream_event_with_run("text_chunk", "{\"text\":\"stale\"}", "run-old"),
+            stream_event_with_run("agent_end", "{}", "run-old"),
+            stream_event_with_run("text_chunk", "{\"text\":\"fresh\"}", "run-new"),
+            stream_event_with_run("agent_end", "{}", "run-new"),
+        ];
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let mut config = run_config("steer me");
+        config.busy_policy = BUSY_SUPERSEDE.to_string();
+        let result = client.run(&config, &out).await.expect("run");
+        assert_eq!(result.session_id, "s-steer");
+        assert_eq!(result.text, "fresh");
+        assert_eq!(result.events.len(), 2);
+        let prompts = agent.seen_of("prompt");
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0].busy_policy, "supersede_session");
+        assert_eq!(prompts[0].message, "steer me");
+    }
+
+    #[tokio::test]
+    async fn run_follow_up_uses_enqueue_policy() {
+        let mut agent = MockAgent::default();
+        agent
+            .responses
+            .insert("new_session".into(), "{\"sessionId\":\"s-follow\"}".into());
+        agent.responses.insert(
+            "prompt".into(),
+            "{\"run_id\":\"run-q\",\"run_epoch\":1,\"accepted_state\":\"queued\",\"queue_position\":1}"
+                .into(),
+        );
+        agent.events = vec![
+            stream_event_with_run("text_chunk", "{\"text\":\"old\"}", "run-active"),
+            stream_event_with_run("agent_end", "{}", "run-active"),
+            stream_event_with_run("text_chunk", "{\"text\":\"queued answer\"}", "run-q"),
+            stream_event_with_run("agent_end", "{}", "run-q"),
+        ];
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let mut config = run_config("continue please");
+        config.busy_policy = BUSY_ENQUEUE.to_string();
+        let result = client.run(&config, &out).await.expect("run");
+        assert_eq!(result.text, "queued answer");
+        let prompts = agent.seen_of("prompt");
+        assert_eq!(prompts[0].busy_policy, "enqueue_if_busy");
+    }
+
+    #[tokio::test]
+    async fn run_steer_existing_session_filters_superseded_tail() {
+        // The realistic steering scenario: an in-progress session is
+        // interrupted and the new question's answer is what comes back.
+        let mut agent = MockAgent::default();
+        agent
+            .responses
+            .insert("switch_session".into(), "{\"cancelled\":false}".into());
+        agent.responses.insert(
+            "prompt".into(),
+            "{\"run_id\":\"run-2\",\"run_epoch\":2,\"accepted_state\":\"queued\"}".into(),
+        );
+        agent.events = vec![
+            stream_event_with_run("text_chunk", "{\"text\":\"old answer\"}", "run-1"),
+            stream_event_with_run("agent_end", "{}", "run-1"),
+            stream_event_with_run("text_chunk", "{\"text\":\"new answer\"}", "run-2"),
+            stream_event_with_run("agent_end", "{}", "run-2"),
+        ];
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+        let (out, _) = Output::memory();
+        let mut config = run_config("redirect now");
+        config.session = Some("s-busy".to_string());
+        config.busy_policy = BUSY_SUPERSEDE.to_string();
+        let result = client.run(&config, &out).await.expect("run");
+        assert_eq!(result.text, "new answer");
+        assert_eq!(result.events.len(), 2);
+        assert_eq!(agent.seen_of("switch_session")[0].session_id, "s-busy");
     }
 
     #[tokio::test]

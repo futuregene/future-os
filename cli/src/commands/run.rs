@@ -31,6 +31,7 @@ struct RunArgs {
     mode: String,
     cwd: Option<String>,
     verbose: bool,
+    busy_policy: String,
     file_args: Vec<String>,
     messages: Vec<String>,
 }
@@ -51,6 +52,10 @@ Session options:
   --session <id>           Connect to an existing session by ID
   --continue, -c           Continue the most recent session (by updated_at)
   --fork <entry-id>        Fork a new session from a specific entry in the current session
+  --follow-up              Append to the session queue (enqueue_if_busy): the prompt
+                           runs after any in-progress run finishes
+  --steer                  Interrupt the session's in-progress run and ask
+                           immediately (supersede_session)
   --no-session             Ephemeral mode: do not persist the session to disk
 
 Model & behavior:
@@ -89,6 +94,8 @@ Examples:
   future run --model sonnet:high "Review the changes"
   future run --fork abc123 "Continue from this fork point"
   future run --continue "Pick up where we left off"
+  future run --steer --continue "Stop that, answer this instead"
+  future run --follow-up --session abc123 "Queue this behind the current run"
   future run --tools read,shell "Read the README and list files"
   future run --permission workspace "Summarize AGENTS.md"
   future run --mode json "What is 2+2?"
@@ -119,6 +126,7 @@ fn parse_run_args(args: &[String], out: &Output) -> Option<RunArgs> {
         mode: "text".to_string(),
         cwd: None,
         verbose: false,
+        busy_policy: String::new(),
         file_args: Vec::new(),
         messages: Vec::new(),
     };
@@ -217,6 +225,20 @@ fn parse_run_args(args: &[String], out: &Output) -> Option<RunArgs> {
                 }
             }
             "--no-session" => result.no_session = true,
+            "--follow-up" => {
+                if !result.busy_policy.is_empty() && result.busy_policy != "enqueue_if_busy" {
+                    out.log_err("--follow-up and --steer are mutually exclusive");
+                    return None;
+                }
+                result.busy_policy = "enqueue_if_busy".to_string();
+            }
+            "--steer" => {
+                if !result.busy_policy.is_empty() && result.busy_policy != "supersede_session" {
+                    out.log_err("--steer and --follow-up are mutually exclusive");
+                    return None;
+                }
+                result.busy_policy = "supersede_session".to_string();
+            }
             "--mode" => {
                 if i + 1 < args.len() {
                     i += 1;
@@ -346,6 +368,7 @@ pub async fn run_command(args: &[String], out: &Output) -> Result<(), String> {
                 .unwrap_or_default()
         }),
         verbose: parsed.verbose,
+        busy_policy: parsed.busy_policy,
         message: prompt,
     };
 
@@ -432,6 +455,25 @@ mod tests {
     #[test]
     fn parse_invalid_mode() {
         assert!(parse(&["--mode", "xml", "hi"]).is_none());
+    }
+
+    #[test]
+    fn parse_follow_up_and_steer_flags() {
+        let parsed = parse(&["--follow-up", "hi"]).unwrap();
+        assert_eq!(parsed.busy_policy, "enqueue_if_busy");
+        let parsed = parse(&["--steer", "hi"]).unwrap();
+        assert_eq!(parsed.busy_policy, "supersede_session");
+        // Neither flag → empty (default reject_if_busy at the RPC layer).
+        assert_eq!(parse(&["hi"]).unwrap().busy_policy, "");
+    }
+
+    #[test]
+    fn parse_steer_and_follow_up_are_mutually_exclusive() {
+        assert!(parse(&["--steer", "--follow-up", "hi"]).is_none());
+        assert!(parse(&["--follow-up", "--steer", "hi"]).is_none());
+        // Repeating the SAME flag is tolerated (idempotent).
+        let parsed = parse(&["--steer", "--steer", "hi"]).unwrap();
+        assert_eq!(parsed.busy_policy, "supersede_session");
     }
 
     #[test]
