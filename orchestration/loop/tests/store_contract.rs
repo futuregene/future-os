@@ -284,3 +284,53 @@ fn replay_assigns_indexes() {
     assert_eq!(rebuilt.todo("a").unwrap().index, 1);
     assert_eq!(rebuilt.todo("b").unwrap().index, 2);
 }
+
+/// ── Bidirectional messaging: supervisor register + worker steer ────────────
+#[test]
+fn replay_folds_supervisor_registration_and_worker_steer() {
+    let root = tmp_root("bidir");
+    let mut store = Store::open(&root).unwrap();
+    let goal = Goal::new("g1", "objective", "/tmp");
+    store.register(&goal).unwrap();
+    let ts = goal.created_at;
+    store
+        .append(Event::GoalStarted {
+            goal_id: "g1".into(),
+            ts,
+        })
+        .unwrap();
+
+    // Supervisor registers its session id (the up-channel target).
+    store
+        .append(Event::SupervisorRegistered {
+            goal_id: "g1".into(),
+            session_id: "sup-sess-1".into(),
+            ts,
+        })
+        .unwrap();
+    let rebuilt = store.replay("g1").unwrap().unwrap();
+    assert_eq!(rebuilt.supervisor_session_id.as_deref(), Some("sup-sess-1"));
+
+    // A steering instruction (broadcast) folds into pending_steer, latest wins.
+    store
+        .append(Event::WorkerSteered {
+            goal_id: "g1".into(),
+            agent_id: None,
+            instruction: "stop and re-check".into(),
+            ts: ts + 1,
+        })
+        .unwrap();
+    store
+        .append(Event::WorkerSteered {
+            goal_id: "g1".into(),
+            agent_id: Some("worker-a".into()),
+            instruction: "targeted steer".into(),
+            ts: ts + 2,
+        })
+        .unwrap();
+    let rebuilt = store.replay("g1").unwrap().unwrap();
+    let steer = rebuilt.pending_steer.as_ref().expect("steer folded");
+    assert_eq!(steer.agent_id.as_deref(), Some("worker-a"));
+    assert_eq!(steer.instruction, "targeted steer");
+    assert_eq!(steer.ts, ts + 2);
+}

@@ -314,8 +314,8 @@ fn build_cli_registry() -> CommandRegistry {
     r.command(
         agent,
         "supervisor",
-        "supervisor proposal/receipt events (G-16)",
-        "supervisor propose|receipt|events --goal G ...",
+        "supervisor register|steer|proposal/receipt events (G-16)",
+        "supervisor register|steer|propose|receipt|events --goal G ...",
     );
 
     let ops = r.group("ops", "operations / diagnostics");
@@ -3625,6 +3625,15 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     // caller decide. Deletion happens only when the session is NOT resumable
     // (HardError / science failure / zombie — its reasoning state is broken).
     let mut last_failure_kind: Option<crate::state::FailureKind> = None;
+    // Down-channel steering: watch the ledger for supervisor steering
+    // instructions targeting THIS worker and abort the session mid-turn so the
+    // next turn drains the instruction into its envelope. Aborted after the
+    // run loop.
+    let steer_handle = tokio::spawn(steer_worker_watch(
+        store.goal_dir(&goal_id).join("events.jsonl"),
+        agent_id.clone(),
+        session_id.clone(),
+    ));
     let result = run_turns(
         &mut client,
         store,
@@ -3639,6 +3648,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         &mut last_failure_kind,
     )
     .await;
+    steer_handle.abort();
 
     // Record the retention state (the kernel's advisory, not a directive).
     let resumable = matches!(
@@ -3752,6 +3762,29 @@ fn claim_selected_with_lease(
 /// `last_failure_kind`: out-parameter set to the failure classification of the
 /// LAST executed turn (`None` when no turn ran this invocation) — the caller
 /// uses it to decide session retention (resume vs delete), never the kernel.
+///
+/// Enqueue an intervention report to the registered supervisor session (the
+/// up channel). `dedup_key` doubles as the idempotency key: re-sending the
+/// same key is a no-op on the agent (`knows_request`), so "state transition
+/// only" notification is enforced by keying on the transition (todo id +
+/// failure count, gate ids, …). No supervisor registered → the report is
+/// dropped (the durable user-gate ledger remains the authoritative
+/// intervention channel).
+#[doc(hidden)] // test-visible seam
+pub async fn notify_supervisor(
+    client: &mut crate::agent_client::AgentClient,
+    supervisor_session_id: Option<&str>,
+    message: &str,
+    dedup_key: &str,
+) {
+    let Some(sid) = supervisor_session_id else {
+        return;
+    };
+    if let Err(e) = client.prompt(sid, message, dedup_key).await {
+        println!("   ⚠ supervisor notify failed (best-effort): {e}");
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_turns(
     client: &mut crate::agent_client::AgentClient,
@@ -3770,6 +3803,10 @@ async fn run_turns(
     // Continue note for the NEXT turn: set when the previous turn ended
     // incomplete; consumed exactly once by the next execute_turn call.
     let mut next_continue_note: Option<String> = None;
+    // Down-channel steering cursor: the ts of the last `pending_steer` we
+    // injected into a turn envelope (0 = none yet). A steer is injected only
+    // once — when its ts advances past this cursor.
+    let mut last_steer_ts: u64 = 0;
     // P1-2③: read-model self-healing — a drifted run index means run-history
     // consumers (status, stale-latest-run, run history projection) read stale
     // state; rebuild it from the run files before the first decision and
@@ -3815,6 +3852,19 @@ async fn run_turns(
                 .clone()
                 .unwrap_or_default();
             println!("⟳ USER GATE: {q}");
+            // Up-channel ①: a user gate needs the supervisor's decision.
+            let gate_ids = &packet.interaction_contract.user_channel.todo_ids;
+            let key = format!("ask_user:{}", gate_ids.join(","));
+            notify_supervisor(
+                client,
+                goal.supervisor_session_id.as_deref(),
+                &format!(
+                    "[future-loop] goal {goal_id} needs your decision on user gate(s): {}. Question: {q}",
+                    gate_ids.join(", ")
+                ),
+                &key,
+            )
+            .await;
             break;
         }
         if mode == crate::contract::TurnMode::WaitMonitor {
@@ -3875,7 +3925,22 @@ async fn run_turns(
         // O3: progress signals for this turn (tool starts observed on the
         // stream; read at turn end, including the budget-truncation path).
         let progress = std::sync::Arc::new(TurnProgressTracker::new(now_epoch()));
+        // Down-channel steering: drain a NEW pending_steer into this turn's
+        // note (a steer whose ts is newer than the last one we injected). The
+        // same instruction is never re-injected across turns.
+        let steer_note = goal
+            .pending_steer
+            .as_ref()
+            .filter(|s| s.ts > last_steer_ts)
+            .map(|s| {
+                last_steer_ts = s.ts;
+                format!(
+                    "SUPERVISOR STEERING (new instructions — follow them now, superseding the prior plan):\n{}",
+                    s.instruction
+                )
+            });
         let continue_note = next_continue_note.take();
+        let turn_note = steer_note.or(continue_note);
         let turn_future = execute_turn(
             client,
             session_id,
@@ -3890,7 +3955,7 @@ async fn run_turns(
             Some(&packet),
             Some(runs_dir),
             Some(&progress),
-            continue_note.as_deref(),
+            turn_note.as_deref(),
         );
         let record = if max_turn_secs > 0 {
             // Wall-clock budget per turn: a long turn that never sees new
@@ -4046,6 +4111,24 @@ async fn run_turns(
                 evidence: Some(record.evidence.clone()),
                 ts: now_epoch(),
             })?;
+            // Up-channel ②: a todo completed — tell the supervisor (state
+            // transition keyed on the todo id, so re-notification across runs
+            // is deduped).
+            notify_supervisor(
+                client,
+                g.supervisor_session_id.as_deref(),
+                &format!(
+                    "[future-loop] goal {goal_id}: todo {todo_id} completed{} — evidence: {}",
+                    if is_last {
+                        " (last todo — closure pending)"
+                    } else {
+                        ""
+                    },
+                    crate::decision::truncate(&record.evidence, 300)
+                ),
+                &format!("completed:{todo_id}"),
+            )
+            .await;
             // P0-2①: a completed advancement todo is a delivery pending
             // verification — record the outcome signal at this turn.
             record_delivery_if_advancement(store, &g, goal_id, &todo_id, record.turn)?;
@@ -4056,6 +4139,31 @@ async fn run_turns(
             // decides whether to supersede / re-split). Only the validation
             // budget (a `--verify` gate that keeps failing) still bounds the
             // loop, because that is a correctness floor, not a policy rule.
+            //
+            // Up-channel ③: a science/hard failure needs the supervisor's
+            // intervention. Infra-recoverable (429 / truncation) is NOT
+            // reported — those are throttle events the loop backs off from,
+            // not plan problems.
+            if matches!(
+                record.failure_kind,
+                Some(crate::state::FailureKind::ScienceVerifyFailed)
+                    | Some(crate::state::FailureKind::HardError)
+            ) {
+                let attempts = g.todo(&todo_id).map(|t| t.failed_attempts).unwrap_or(0);
+                notify_supervisor(
+                    client,
+                    g.supervisor_session_id.as_deref(),
+                    &format!(
+                        "[future-loop] goal {goal_id}: todo {todo_id} failed (attempt {attempts}) — error: {}",
+                        record
+                            .error
+                            .as_deref()
+                            .unwrap_or(record.terminal_state.as_str())
+                    ),
+                    &format!("failed:{todo_id}:{attempts}"),
+                )
+                .await;
+            }
             let stop = g
                 .todo(&todo_id)
                 .map(|t| {
@@ -4115,6 +4223,132 @@ async fn run_turns(
         println!("   ✔ writeback ok — next action synced");
     }
     Ok(())
+}
+
+// ── Down-channel steering watcher ──────────────────────────────────────────
+
+/// One down-channel poll step: read newly appended ledger lines since `offset`
+/// and, when a `WorkerSteered` event targeting THIS worker (matching
+/// `agent_id`, or a broadcast with none) appears, abort the running session so
+/// the next turn drains the steering instruction into its envelope. Returns
+/// the new offset. Extracted from the watch loop for testability.
+#[doc(hidden)] // test-visible seam for steer_worker_watch
+pub async fn steer_worker_poll_once(
+    events_path: &std::path::Path,
+    offset: u64,
+    agent_id: Option<&str>,
+    client: &mut Option<crate::agent_client::AgentClient>,
+    session_id: &str,
+) -> u64 {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(meta) = std::fs::metadata(events_path) else {
+        return offset;
+    };
+    if meta.len() <= offset {
+        return offset;
+    }
+    let mut buf = String::new();
+    let read = (|| -> std::io::Result<()> {
+        let mut f = std::fs::File::open(events_path)?;
+        f.seek(SeekFrom::Start(offset))?;
+        f.read_to_string(&mut buf)?;
+        Ok(())
+    })();
+    if read.is_err() {
+        return offset;
+    }
+    let new_offset = meta.len();
+    for line in buf.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v.get("kind").and_then(|k| k.as_str()) != Some("worker_steered") {
+            continue;
+        }
+        // Broadcast (agent_id absent) targets every worker; a specific
+        // agent_id targets only the matching worker.
+        let targets_this_worker = match (agent_id, v.get("agent_id").and_then(|a| a.as_str())) {
+            (Some(me), Some(target)) => me == target,
+            (_, None) => true,
+            (None, Some(_)) => false,
+        };
+        if !targets_this_worker {
+            continue;
+        }
+        if client.is_none() {
+            *client = crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr())
+                .await
+                .ok();
+        }
+        if let Some(c) = client.as_mut() {
+            if c.abort(session_id).await.is_err() {
+                *client = None; // reconnect on the next event
+            }
+        }
+    }
+    new_offset
+}
+
+/// Down-channel steering watcher: tail the goal ledger; when the supervisor
+/// issues a `WorkerSteered` instruction targeting this worker, abort the
+/// running session so the bounded-turn loop ends the current run and drains
+/// the instruction into the next turn's envelope. Runs as a background task
+/// for the duration of one run; never completes on its own (all error paths
+/// retry).
+async fn steer_worker_watch(
+    events_path: std::path::PathBuf,
+    agent_id: Option<String>,
+    session_id: String,
+) {
+    let mut offset = std::fs::metadata(&events_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let mut client: Option<crate::agent_client::AgentClient> = None;
+    #[cfg(test)]
+    let mut polls = 0usize;
+    loop {
+        tokio::time::sleep(steer_watch_interval()).await;
+        offset = steer_worker_poll_once(
+            &events_path,
+            offset,
+            agent_id.as_deref(),
+            &mut client,
+            &session_id,
+        )
+        .await;
+        #[cfg(test)]
+        {
+            polls += 1;
+            if steer_watch_test_should_stop(polls) {
+                break;
+            }
+        }
+    }
+}
+
+/// Down-channel watch poll cadence (short under cfg(test) so the seam test
+/// runs instantly without tokio's test-util time control).
+fn steer_watch_interval() -> std::time::Duration {
+    #[cfg(test)]
+    {
+        std::time::Duration::from_millis(1)
+    }
+    #[cfg(not(test))]
+    {
+        std::time::Duration::from_secs(2)
+    }
+}
+
+/// Test seam: bounds the (otherwise infinite) steer watch loop so tests can
+/// drive one poll and observe a clean exit.
+#[cfg(test)]
+static STEER_WATCH_MAX_POLLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+fn steer_watch_test_should_stop(polls: usize) -> bool {
+    let max = STEER_WATCH_MAX_POLLS.load(std::sync::atomic::Ordering::Relaxed);
+    max > 0 && polls >= max
 }
 
 /// O3: evaluate the no-progress window at turn end (normal or budget-truncated)
@@ -5104,8 +5338,10 @@ fn cmd_lane(store: &Store, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// `loopx supervisor <propose|receipt|events> --goal G ...` — supervisor
-/// proposal/receipt events (projection-only).
+/// `loopx supervisor <propose|receipt|events|register|steer> --goal G ...` —
+/// supervisor proposal/receipt events (projection-only) plus the bidirectional
+/// messaging primitives: `register` binds the supervisor's session id (the
+/// up-channel target), `steer` issues a mid-turn interrupt (the down-channel).
 fn cmd_supervisor(store: &mut Store, args: &[String]) -> Result<()> {
     let sub = args.first().map(|s| s.as_str()).unwrap_or("");
     match sub {
@@ -5280,7 +5516,60 @@ fn cmd_supervisor(store: &mut Store, args: &[String]) -> Result<()> {
                 crate::agents::supervisor::build_supervisor_event_projection(store, &goal_id)?;
             println!("{}", serde_json::to_string_pretty(&projection)?);
         }
-        _ => bail!("supervisor subcommand must be propose|receipt|events"),
+        // `supervisor register --goal G --session-id <id>` — bind the
+        // supervising agent's session id to this goal (the up-channel target
+        // workers enqueue their intervention reports to).
+        "register" => {
+            let mut goal_id = None;
+            let mut session_id = None;
+            reject_unknown_flags(&args[1..], &["--goal", "--session-id"])?;
+            parse_pairs(&args[1..], |k, v| {
+                if k == "--goal" {
+                    goal_id = Some(v);
+                } else if k == "--session-id" {
+                    session_id = Some(v);
+                }
+            });
+            let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+            let session_id = session_id.ok_or_else(|| anyhow::anyhow!("--session-id required"))?;
+            store.append(Event::SupervisorRegistered {
+                goal_id: goal_id.clone(),
+                session_id: session_id.to_string(),
+                ts: now_epoch(),
+            })?;
+            println!("supervisor registered (session {session_id})");
+        }
+        // `supervisor steer --goal G [--agent-id A] --instruction <text>` —
+        // issue a mid-turn steering instruction: the running worker is
+        // interrupted and redirected to the new instruction.
+        "steer" => {
+            let mut goal_id = None;
+            let mut agent_id = None;
+            let mut instruction = None;
+            reject_unknown_flags(&args[1..], &["--agent-id", "--goal", "--instruction"])?;
+            parse_pairs(&args[1..], |k, v| {
+                if k == "--goal" {
+                    goal_id = Some(v);
+                } else if k == "--agent-id" {
+                    agent_id = Some(v);
+                } else if k == "--instruction" {
+                    instruction = Some(v);
+                }
+            });
+            let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+            let instruction =
+                instruction.ok_or_else(|| anyhow::anyhow!("--instruction required"))?;
+            let target = agent_id.clone();
+            store.append(Event::WorkerSteered {
+                goal_id: goal_id.clone(),
+                agent_id: target.clone(),
+                instruction: instruction.to_string(),
+                ts: now_epoch(),
+            })?;
+            let target = target.as_deref().unwrap_or("all workers");
+            println!("steer issued → {target}: {instruction}");
+        }
+        _ => bail!("supervisor subcommand must be propose|receipt|events|register|steer"),
     }
     Ok(())
 }
@@ -6462,6 +6751,20 @@ fn describe_event(event: &crate::store::Event) -> String {
                 rule_ids.join(",")
             );
         }
+        Event::SupervisorRegistered { session_id, .. } => {
+            return format!("supervisor_registered session={session_id}");
+        }
+        Event::WorkerSteered {
+            agent_id,
+            instruction,
+            ..
+        } => {
+            return format!(
+                "worker_steered agent={} instruction=\"{}\"",
+                agent_id.as_deref().unwrap_or("broadcast"),
+                instruction
+            );
+        }
     };
     kind.to_string()
 }
@@ -7098,6 +7401,16 @@ mod coverage_tests {
             t.class = class;
             assert_eq!(status_label(&t), label);
         }
+    }
+
+    #[tokio::test]
+    async fn steer_worker_watch_loop_exits_via_test_seam() {
+        // Two polls: the first does not stop (false edge), the second does.
+        STEER_WATCH_MAX_POLLS.store(2, std::sync::atomic::Ordering::Relaxed);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        steer_worker_watch(path, None, "sess".to_string()).await;
+        STEER_WATCH_MAX_POLLS.store(0, std::sync::atomic::Ordering::Relaxed);
     }
 
     #[tokio::test]
@@ -8104,6 +8417,39 @@ mod read_model_repair_cli_tests {
         assert!(text.contains("drift=2"), "got: {text}");
         // The repair audit is goal-scoped, not todo-scoped.
         assert!(!event_touches_todo(&event, "t1"));
+    }
+
+    #[test]
+    fn describe_event_renders_supervisor_register_and_steer() {
+        let registered = Event::SupervisorRegistered {
+            goal_id: "g1".to_string(),
+            session_id: "sup-sess".to_string(),
+            ts: 1,
+        };
+        let text = describe_event(&registered);
+        assert!(text.contains("supervisor_registered"), "got: {text}");
+        assert!(text.contains("sup-sess"), "got: {text}");
+        assert!(!event_touches_todo(&registered, "t1"));
+
+        let broadcast = Event::WorkerSteered {
+            goal_id: "g1".to_string(),
+            agent_id: None,
+            instruction: "re-check".to_string(),
+            ts: 1,
+        };
+        let text = describe_event(&broadcast);
+        assert!(text.contains("worker_steered"), "got: {text}");
+        assert!(text.contains("broadcast"), "got: {text}");
+        assert!(!event_touches_todo(&broadcast, "t1"));
+
+        let targeted = Event::WorkerSteered {
+            goal_id: "g1".to_string(),
+            agent_id: Some("worker-a".to_string()),
+            instruction: "re-check".to_string(),
+            ts: 1,
+        };
+        let text = describe_event(&targeted);
+        assert!(text.contains("worker-a"), "got: {text}");
     }
 }
 #[cfg(test)]

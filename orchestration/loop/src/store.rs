@@ -532,6 +532,25 @@ pub enum Event {
         rule_ids: Vec<String>,
         ts: u64,
     },
+    /// A supervisor (orchestrator agent) registered its session id for this
+    /// goal — the target workers enqueue their intervention reports to. Latest
+    /// wins; folded into `Goal::supervisor_session_id` on replay.
+    SupervisorRegistered {
+        goal_id: String,
+        session_id: String,
+        ts: u64,
+    },
+    /// A supervisor issued a mid-turn steering instruction: interrupt the
+    /// running worker and follow the new instruction. `agent_id` `None`
+    /// broadcasts to every worker of this goal. Folded into
+    /// `Goal::pending_steer` (latest wins) on replay.
+    WorkerSteered {
+        goal_id: String,
+        #[serde(default)]
+        agent_id: Option<String>,
+        instruction: String,
+        ts: u64,
+    },
 }
 
 impl Event {
@@ -574,7 +593,9 @@ impl Event {
             | Event::MultiAgentContractSet { goal_id, .. }
             | Event::AgentRecipeAdded { goal_id, .. }
             | Event::SuccessionOccurred { goal_id, .. }
-            | Event::ReplanRuleSetUpdated { goal_id, .. } => goal_id,
+            | Event::ReplanRuleSetUpdated { goal_id, .. }
+            | Event::SupervisorRegistered { goal_id, .. }
+            | Event::WorkerSteered { goal_id, .. } => goal_id,
         }
     }
 }
@@ -1872,6 +1893,21 @@ fn apply(goal: &mut Goal, event: Event) {
                 &format!("{primary}→{backup} ({reason})"),
                 ts,
             );
+        }
+        Event::SupervisorRegistered { session_id, .. } => {
+            goal.supervisor_session_id = Some(session_id);
+        }
+        Event::WorkerSteered {
+            agent_id,
+            instruction,
+            ts,
+            ..
+        } => {
+            goal.pending_steer = Some(crate::state::SteerInstruction {
+                agent_id,
+                instruction,
+                ts,
+            });
         }
     }
 }

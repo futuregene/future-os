@@ -321,6 +321,36 @@ fn p3_multi_agent_and_work_item_commands() {
         "projection: {out}"
     );
 
+    // Supervisor register (up-channel target) + steer (down-channel interrupt).
+    let (_, err, code) = run(
+        &root,
+        &[
+            "supervisor",
+            "register",
+            "--goal",
+            "g1",
+            "--session-id",
+            "sup-sess-1",
+        ],
+    );
+    assert_eq!(code, 0, "register: {err}");
+    // The registration folds into the goal's supervisor_session_id on replay.
+    let (out, _, code) = run(&root, &["status", "--goal", "g1"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("g1"), "status renders: {out}");
+    let (_, err, code) = run(
+        &root,
+        &[
+            "supervisor",
+            "steer",
+            "--goal",
+            "g1",
+            "--instruction",
+            "do it differently",
+        ],
+    );
+    assert_eq!(code, 0, "steer: {err}");
+
     // Task-graph + attention.
     let (out, _, code) = run(&root, &["task-graph", "--goal", "g1"]);
     assert_eq!(code, 0);

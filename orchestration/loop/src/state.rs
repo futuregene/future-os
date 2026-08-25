@@ -826,6 +826,33 @@ pub struct Goal {
     /// decides whether to resume it or start fresh. Written at run exit.
     #[serde(default)]
     pub session_retention: Option<SessionRetention>,
+    /// The supervising (orchestrator) agent session id, registered via
+    /// `supervisor register`. Workers enqueue reports to this session when
+    /// they need the supervisor's intervention (completion / failure / a user
+    /// gate). `None` when no supervisor has registered (reports fall back to
+    /// the durable user-gate ledger only).
+    #[serde(default)]
+    pub supervisor_session_id: Option<String>,
+    /// The most recent steering instruction addressed to this goal's worker
+    /// (folded from `WorkerSteered`; latest wins). A worker drains this into
+    /// its next turn envelope after its current run is aborted. `None` when
+    /// no steering has been requested.
+    #[serde(default)]
+    pub pending_steer: Option<SteerInstruction>,
+}
+
+/// A steering instruction injected by the supervisor to interrupt and
+/// redirect a running worker (LoopX: mid-turn steering, the interrupt form —
+/// not the note-append form).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SteerInstruction {
+    /// Target agent id; `None` = broadcast to every worker of this goal.
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    /// The instruction text the worker should follow.
+    pub instruction: String,
+    /// Epoch secs the steer was recorded.
+    pub ts: u64,
 }
 
 /// Session-retention record: what the loop kernel knows about the last run's
@@ -945,6 +972,8 @@ impl Goal {
             semantic_history: vec![],
             replan_rule_set: None,
             session_retention: None,
+            supervisor_session_id: None,
+            pending_steer: None,
         }
     }
 

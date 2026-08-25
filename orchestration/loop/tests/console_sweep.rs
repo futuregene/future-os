@@ -468,3 +468,185 @@ fn runs_index_duplicate_report() {
     }
     cli_ok(&["runs", "index", "--goal", &gid]);
 }
+
+// ── down-channel steering watcher seam ─────────────────────────────────────
+
+#[test]
+fn steer_worker_poll_once_aborts_on_targeted_and_broadcast_steer() {
+    let cr = cli_root();
+    let gid = init_goal(&cr, "steer worker");
+    let events_path = open_store(&cr).goal_dir(&gid).join("events.jsonl");
+    let rt = rt();
+    let (addr, shared) = rt.block_on(spawn_mock(MockState::default()));
+    std::env::set_var("FUTURE_LOOP_AGENT_ADDR", &addr);
+
+    rt.block_on(async {
+        // Missing file → offset unchanged, no client, no abort.
+        let mut client = None;
+        let off = future_loop::console::steer_worker_poll_once(
+            std::path::Path::new("/nonexistent/events.jsonl"),
+            0,
+            Some("worker-a"),
+            &mut client,
+            "sess",
+        )
+        .await;
+        assert_eq!(off, 0);
+        assert!(client.is_none());
+
+        // Broadcast steer (no agent_id) targets every worker.
+        std::fs::write(
+            &events_path,
+            "{\"kind\":\"worker_steered\",\"instruction\":\"do X\",\"ts\":1}\n",
+        )
+        .unwrap();
+        let mut client = None;
+        let off = future_loop::console::steer_worker_poll_once(
+            &events_path,
+            0,
+            Some("worker-a"),
+            &mut client,
+            "sess",
+        )
+        .await;
+        assert!(off > 0);
+        assert!(shared.lock().unwrap().recorded.contains(&"abort".to_string()));
+
+        // A steer targeting a DIFFERENT worker does NOT abort this one.
+        let n = shared.lock().unwrap().recorded.len();
+        std::fs::write(
+            &events_path,
+            "{\"kind\":\"worker_steered\",\"agent_id\":\"worker-other\",\"instruction\":\"x\",\"ts\":2}\n",
+        )
+        .unwrap();
+        let mut client = None;
+        let _ = future_loop::console::steer_worker_poll_once(
+            &events_path,
+            0,
+            Some("worker-a"),
+            &mut client,
+            "sess",
+        )
+        .await;
+        assert_eq!(shared.lock().unwrap().recorded.len(), n, "foreign steer must not abort");
+
+        // A targeted steer for THIS worker aborts.
+        std::fs::write(
+            &events_path,
+            "{\"kind\":\"worker_steered\",\"agent_id\":\"worker-a\",\"instruction\":\"y\",\"ts\":3}\n",
+        )
+        .unwrap();
+        let mut client = None;
+        let _ = future_loop::console::steer_worker_poll_once(
+            &events_path,
+            0,
+            Some("worker-a"),
+            &mut client,
+            "sess",
+        )
+        .await;
+        assert!(shared.lock().unwrap().recorded.len() > n, "targeted steer must abort");
+
+        // A non-steer event is ignored (no abort).
+        let m = shared.lock().unwrap().recorded.len();
+        std::fs::write(&events_path, "{\"kind\":\"todo_updated\",\"todo_id\":\"t\",\"ts\":4}\n").unwrap();
+        let mut client = None;
+        let _ = future_loop::console::steer_worker_poll_once(
+            &events_path,
+            0,
+            Some("worker-a"),
+            &mut client,
+            "sess",
+        )
+        .await;
+        assert_eq!(shared.lock().unwrap().recorded.len(), m, "non-steer must not abort");
+    });
+    std::env::remove_var("FUTURE_LOOP_AGENT_ADDR");
+}
+
+// ── up-channel notify seam ────────────────────────────────────────────────
+
+#[test]
+fn notify_supervisor_enqueues_to_registered_session_only() {
+    // Hold the CLI lock so FUTURE_LOOP_AGENT_ADDR set/remove cannot race a
+    // concurrent in-process run() driving the same global env.
+    let _cr = cli_root();
+    let rt = rt();
+    let (addr, shared) = rt.block_on(spawn_mock(MockState::default()));
+    std::env::set_var("FUTURE_LOOP_AGENT_ADDR", &addr);
+    rt.block_on(async {
+        let mut client = future_loop::agent_client::AgentClient::connect(
+            &future_loop::agent_client::agent_addr(),
+        )
+        .await
+        .unwrap();
+
+        // No supervisor registered → dropped, no prompt on the wire.
+        future_loop::console::notify_supervisor(&mut client, None, "hello", "k1").await;
+        assert!(shared.lock().unwrap().prompt_calls.is_empty());
+
+        // Registered → enqueued to that session with enqueue_if_busy.
+        future_loop::console::notify_supervisor(&mut client, Some("sup-sess"), "hello", "k2").await;
+        let calls = shared.lock().unwrap().prompt_calls.clone();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "sup-sess");
+        assert_eq!(calls[0].1, "enqueue_if_busy");
+    });
+    std::env::remove_var("FUTURE_LOOP_AGENT_ADDR");
+}
+
+#[test]
+fn steer_worker_poll_once_resets_client_on_abort_failure() {
+    let cr = cli_root();
+    let gid = init_goal(&cr, "steer abort fail");
+    let events_path = open_store(&cr).goal_dir(&gid).join("events.jsonl");
+    let rt = rt();
+    // Abort answers success=false → the watcher resets its client and retries
+    // on the next event.
+    let st = MockState {
+        fail_commands: ["abort".to_string()].into_iter().collect(),
+        ..Default::default()
+    };
+    let (addr, _shared) = rt.block_on(spawn_mock(st));
+    std::env::set_var("FUTURE_LOOP_AGENT_ADDR", &addr);
+    rt.block_on(async {
+        std::fs::write(
+            &events_path,
+            "{\"kind\":\"worker_steered\",\"instruction\":\"x\",\"ts\":1}\n",
+        )
+        .unwrap();
+        let mut client = None;
+        let _ = future_loop::console::steer_worker_poll_once(
+            &events_path,
+            0,
+            Some("worker-a"),
+            &mut client,
+            "sess",
+        )
+        .await;
+        assert!(client.is_none(), "failed abort resets the client");
+    });
+    std::env::remove_var("FUTURE_LOOP_AGENT_ADDR");
+}
+
+#[test]
+fn notify_supervisor_survives_prompt_failure() {
+    let _cr = cli_root();
+    let rt = rt();
+    let st = MockState {
+        fail_commands: ["prompt".to_string()].into_iter().collect(),
+        ..Default::default()
+    };
+    let (addr, _shared) = rt.block_on(spawn_mock(st));
+    std::env::set_var("FUTURE_LOOP_AGENT_ADDR", &addr);
+    rt.block_on(async {
+        let mut client = future_loop::agent_client::AgentClient::connect(
+            &future_loop::agent_client::agent_addr(),
+        )
+        .await
+        .unwrap();
+        // A failing enqueue is best-effort: the report is dropped, no panic.
+        future_loop::console::notify_supervisor(&mut client, Some("sup-sess"), "hi", "k").await;
+    });
+    std::env::remove_var("FUTURE_LOOP_AGENT_ADDR");
+}

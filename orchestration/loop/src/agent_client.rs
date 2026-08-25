@@ -257,13 +257,42 @@ impl AgentClient {
             .ok_or_else(|| anyhow!("prompt response missing run_id: {resp}"))
     }
 
-    /// Abort the currently active run — the orchestrator's timeout / no-progress
-    /// termination handle. Not exercised by this demo (kept as the one missing
-    /// control surface a real loop needs).
-    #[allow(dead_code)]
+    /// Abort the currently active run — the supervisor's mid-turn steering
+    /// interrupt: stops the in-flight LLM stream so the next turn can pick up
+    /// the steering instruction from the ledger.
     pub async fn abort(&mut self, session_id: &str) -> Result<()> {
         self.call("abort", session_id, Default::default()).await?;
         Ok(())
+    }
+
+    /// Send a prompt with `supersede_session`: atomically abort the active run
+    /// and queue this prompt as its successor. This is the agent-layer
+    /// equivalent of the loop's abort-then-next-turn steering; it is exposed
+    /// for hosts that drive a raw agent session directly rather than through
+    /// the loop's bounded-turn loop.
+    pub async fn prompt_superseding(
+        &mut self,
+        session_id: &str,
+        message: &str,
+        client_request_id: &str,
+    ) -> Result<String> {
+        let resp = self
+            .call(
+                "prompt",
+                session_id,
+                RpcCommand {
+                    message: message.to_string(),
+                    client_request_id: client_request_id.to_string(),
+                    busy_policy: "supersede_session".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        resp["run_id"]
+            .as_str()
+            .or_else(|| resp["runId"].as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow!("prompt response missing run_id: {resp}"))
     }
 
     /// Delete the agent session backing this run — closes its persistence
