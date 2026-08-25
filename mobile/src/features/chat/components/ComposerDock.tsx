@@ -96,19 +96,14 @@ export function ComposerDock({
         </Pressable>
       )}
       {showOffline && <Text style={styles.offlineComposer}>{t("connection.offlineHint")}</Text>}
-      {!remote.draft &&
-        remote.desktopOnline &&
-        remote.models.length === 0 &&
-        !remote.modelId && (
-          <Text style={styles.offlineComposer}>{t("connection.noModelsHint")}</Text>
-        )}
+      {!remote.draft && remote.desktopOnline && remote.models.length === 0 && !remote.modelId && (
+        <Text style={styles.offlineComposer}>{t("connection.noModelsHint")}</Text>
+      )}
       {pendingApprovals.map(item => (
         <View key={item.id} style={styles.dockedApproval}>
           <PendingApprovalCard
             error={approvalSubmitting === item.payload.approval_request_id ? null : approvalError}
-            onDecision={decision =>
-              void decideApproval(item.payload.approval_request_id, decision)
-            }
+            onDecision={decision => void decideApproval(item.payload.approval_request_id, decision)}
             payload={item.payload}
             submitting={approvalSubmitting === item.payload.approval_request_id}
           />
@@ -124,10 +119,7 @@ export function ComposerDock({
               showsHorizontalScrollIndicator={false}
             >
               {attachments.map((attachment, index) => (
-                <View
-                  key={`${attachment.localUri}:${index}`}
-                  style={styles.pendingAttachment}
-                >
+                <View key={`${attachment.localUri}:${index}`} style={styles.pendingAttachment}>
                   {attachment.kind === "image" && !supportsImages ? (
                     <CircleAlert color={colors.warning} size={13} />
                   ) : attachment.kind === "image" ? (
@@ -177,9 +169,7 @@ export function ComposerDock({
             <Pressable
               accessibilityLabel={t("attachment.add")}
               accessibilityRole="button"
-              disabled={
-                remote.timeline.streaming || remote.busy || !remote.fileTransferSupported
-              }
+              disabled={remote.timeline.streaming || remote.busy || !remote.fileTransferSupported}
               onPress={openAttachmentMenu}
               style={({ pressed }) => [
                 styles.attachmentButton,

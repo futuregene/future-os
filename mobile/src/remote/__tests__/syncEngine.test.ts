@@ -224,6 +224,24 @@ describe("SyncEngine", () => {
     expect(h.textOf("s1")).toBe("abc");
   });
 
+  test("coalesces established live deltas into one frame commit", async () => {
+    const run = nextRunId();
+    const h = new Harness(run);
+    h.engine.event("s1", agentStart(run, 0));
+    await h.settle();
+
+    const commits = jest.fn();
+    h.engine.subscribe(commits);
+    h.engine.event("s1", textChunk(run, 1, "a"));
+    // Model separate NATS deliveries while keeping both inside one frame.
+    await Promise.resolve();
+    h.engine.event("s1", textChunk(run, 2, "b"));
+    await h.settle();
+
+    expect(commits).toHaveBeenCalledTimes(1);
+    expect(h.textOf("s1")).toBe("ab");
+  });
+
   test("a failed gap replay preserves queued events and retries automatically", async () => {
     const run = nextRunId();
     const h = new Harness(run);

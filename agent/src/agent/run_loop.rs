@@ -112,11 +112,23 @@ impl Loop {
             } else {
                 crate::compaction::CompactionPhase::MidTurn
             };
+            // Model selection is a control-plane change only: it must never
+            // compact history when the user clicks the selector. A real session
+            // enables this preflight guard on its run snapshot, so the first LLM
+            // request checks the selected model's actual context window here.
+            // `ModelContextDownshift` is threshold-gated but bypasses the user's
+            // automatic mid-run compaction preference; no checkpoint is written
+            // unless the request truly needs one to fit.
+            let automatic_trigger = if turn == 0 && self.preflight_context_check {
+                crate::compaction::CompactionTrigger::ModelContextDownshift
+            } else {
+                crate::compaction::CompactionTrigger::Automatic
+            };
             let automatic_operation_id = format!("cmp_{}", crate::utils::generate_entry_id());
             let emit_automatic_started = || {
                 on_event(RunEvent::CompactionStarted {
                     operation_id: automatic_operation_id.clone(),
-                    trigger: crate::compaction::CompactionTrigger::Automatic,
+                    trigger: automatic_trigger,
                     phase: automatic_phase,
                 });
             };
@@ -130,7 +142,7 @@ impl Loop {
                     manager
                         .prepare_semantic_with_lifecycle(
                             projected,
-                            crate::compaction::CompactionTrigger::Automatic,
+                            automatic_trigger,
                             automatic_phase,
                             None,
                             self.provider.as_ref(),
@@ -150,7 +162,7 @@ impl Loop {
                         if let Err(error) = commit(&checkpoint) {
                             on_event(RunEvent::CompactionFailed {
                                 operation_id: automatic_operation_id.clone(),
-                                trigger: crate::compaction::CompactionTrigger::Automatic,
+                                trigger: automatic_trigger,
                                 phase: automatic_phase,
                                 error: error.to_string(),
                             });
@@ -168,7 +180,7 @@ impl Loop {
                 Err(error) => {
                     on_event(RunEvent::CompactionFailed {
                         operation_id: automatic_operation_id.clone(),
-                        trigger: crate::compaction::CompactionTrigger::Automatic,
+                        trigger: automatic_trigger,
                         phase: automatic_phase,
                         error: error.to_string(),
                     });
@@ -2004,6 +2016,64 @@ mod tests {
         assert_eq!(prompts.len(), 1);
         assert!(prompts[0].contains("base"));
         assert!(prompts[0].contains("be brief"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn llm_preflight_compacts_only_when_the_selected_model_requires_it() {
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
+        let mut loop_ = Loop::new(provider, "small");
+        loop_.context_manager = Some(crate::compaction::ContextManager {
+            // The model-fit guard is mandatory and independent from optional
+            // automatic compaction between tool turns.
+            enabled: false,
+            reserve_tokens: 1,
+            keep_recent_tokens: 1,
+            context_window: 1,
+            model: "small".into(),
+        });
+        loop_.preflight_context_check = true;
+        let mut messages = user_messages("old");
+        messages.push(AgentMessage {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::text("older reply")],
+            ..Default::default()
+        });
+        messages.push(AgentMessage::new_user("user", serde_json::json!("latest")));
+        let triggers = Arc::new(parking_lot::Mutex::new(Vec::new()));
+
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                messages,
+                &StreamContext {
+                    on_checkpoint: Some(Arc::new(|_| Ok(()))),
+                    ..Default::default()
+                },
+                noop_on_text,
+                {
+                    let triggers = triggers.clone();
+                    move |event| match event {
+                        RunEvent::CompactionStarted { trigger, .. } => {
+                            triggers.lock().push(trigger)
+                        }
+                        RunEvent::CompactionCommitted { checkpoint, .. } => {
+                            triggers.lock().push(checkpoint.trigger)
+                        }
+                        _ => {}
+                    }
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(text, "ok");
+        assert_eq!(
+            triggers.lock().as_slice(),
+            [
+                crate::compaction::CompactionTrigger::ModelContextDownshift,
+                crate::compaction::CompactionTrigger::ModelContextDownshift,
+            ]
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

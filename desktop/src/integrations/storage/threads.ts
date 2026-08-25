@@ -34,6 +34,11 @@ export async function getRecentThread() {
   return invokeCommand<StoredThread | null>("get_recent_thread");
 }
 
+/** Record a visit for startup restoration. It intentionally does not reorder the sidebar. */
+export async function markThreadOpened(threadId: string) {
+  return invokeCommand<void>("mark_thread_opened", { threadId });
+}
+
 export async function listThreads() {
   return invokeCommand<StoredThread[]>("list_threads");
 }

@@ -7,6 +7,7 @@ import {
   Blocks,
   ChevronDown,
   ChevronRight,
+  Download,
   Folder,
   MessageSquare,
   PanelLeft,
@@ -787,7 +788,7 @@ export function ActivityRail({
 
 /**
  * Signed-in account chip (avatar initial + email prefix) that opens a flat
- * popover with Settings / Balance (+Recharge). An Upgrade button sits to the
+ * popover with Settings / Balance (+Recharge). A blue update-download icon sits to the
  * right of the avatar when a new app version is available (opening the Settings
  * update tab). Replaces the plain Settings button at the bottom of the rail.
  *
@@ -839,16 +840,18 @@ function AccountMenuButton({
         {hasUpdate
           ? (
               <button
-                className="ml-auto shrink-0 rounded bg-accent px-1.5 py-0.5 text-[11px] font-medium leading-none text-white transition-colors hover:bg-accent-hover"
+                aria-label={t("userMenu.upgrade")}
+                className="ml-auto inline-flex size-7 shrink-0 items-center justify-center rounded text-accent transition-colors hover:bg-accent-soft"
                 onClick={(event) => {
                   event.stopPropagation();
                   onOpenUpdate?.();
                   close();
                 }}
                 onKeyDown={event => event.stopPropagation()}
+                title={t("userMenu.upgrade")}
                 type="button"
               >
-                {t("userMenu.upgrade")}
+                <Download className="size-4" />
               </button>
             )
           : null}
@@ -895,7 +898,7 @@ function MenuRow({ action, icon: Icon, label, onClick }: { action?: ReactNode; i
   );
 }
 
-/** Solid accent pill used as the right-hand action label (Recharge / Upgrade). */
+/** Solid accent pill used as the right-hand action label (Recharge). */
 function ActionBadge({ children }: { children: ReactNode }) {
   return (
     <span className="shrink-0 rounded bg-accent px-1.5 py-0.5 text-[11px] font-medium leading-none text-white">
@@ -915,7 +918,7 @@ function sortThreads(items: StoredThread[]) {
 }
 
 function threadSortTime(thread: StoredThread) {
-  return thread.lastMessageAt ?? thread.lastOpenedAt ?? thread.updatedAt ?? thread.createdAt;
+  return thread.lastMessageAt ?? thread.updatedAt ?? thread.createdAt;
 }
 
 /** Tri-state checkbox for select-all / deselect-all in the selection action bar. */

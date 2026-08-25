@@ -66,6 +66,7 @@ import {
   getThreadCleanupSummary,
   listThreads,
   listWorkspaces,
+  markThreadOpened,
   pinThread,
   renameThread,
   renameWorkspace,
@@ -249,6 +250,8 @@ describe("storage invoke wrappers", () => {
     expect(invokeMock).toHaveBeenLastCalledWith("delete_workspace", { workspaceId: "w" });
     await getRecentThread();
     expect(invokeMock).toHaveBeenLastCalledWith("get_recent_thread", undefined);
+    await markThreadOpened("t");
+    expect(invokeMock).toHaveBeenLastCalledWith("mark_thread_opened", { threadId: "t" });
     await listThreads();
     expect(invokeMock).toHaveBeenLastCalledWith("list_threads", undefined);
     await createDefaultChatThread("New Chat");

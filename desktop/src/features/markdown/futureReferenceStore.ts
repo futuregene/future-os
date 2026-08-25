@@ -1,3 +1,4 @@
+import type { ThreadRuntimeUpdateBatch } from "../../integrations/agent/runtimeEvents";
 import type { ResolvedMarkdownReference } from "../../integrations/storage/markdownReferences";
 import type { FutureReference } from "./futureMarkdownTypes";
 import { listen } from "@tauri-apps/api/event";
@@ -260,11 +261,12 @@ function installTerminalRunListener() {
   if (terminalListenerInstalled)
     return;
   terminalListenerInstalled = true;
-  void listen<{ runId?: string; status?: string }>("thread-runtime-updated", (event) => {
-    const { runId, status } = event.payload ?? {};
-    if (!runId || !status || !["completed", "failed", "cancelled"].includes(status))
-      return;
-    void reresolveRunRecords(runId);
+  void listen<ThreadRuntimeUpdateBatch>("thread-runtime-updated", (event) => {
+    for (const { runId, status } of event.payload.updates) {
+      if (!["completed", "failed", "cancelled"].includes(status))
+        continue;
+      void reresolveRunRecords(runId);
+    }
   });
 }
 

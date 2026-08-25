@@ -10,8 +10,8 @@
     "off": "完全放开",
     "description": {
       "manual": "读写文件前询问；只读命令直接放行，其余命令需批准。",
-      "sandbox": "命令在 macOS 沙箱中运行（越界时申请提权），文件操作仍需批准。",
-      "sandboxWindows": "命令启用 Windows 写保护；访问范围外的写入需要批准。",
+      "sandbox": "命令在 macOS 沙箱中运行，越界时申请提权。",
+      "sandboxWindows": "命令启用 Windows 写保护；越界写入需要批准。",
       "off": "全部放开，不再询问，也不启用沙箱。"
     }
   },

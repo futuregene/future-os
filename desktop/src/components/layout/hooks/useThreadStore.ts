@@ -1,4 +1,5 @@
 import type { Dispatch, SetStateAction } from "react";
+import type { ThreadRuntimeUpdate, ThreadRuntimeUpdateBatch } from "../../../integrations/agent/runtimeEvents";
 import type { StoredRun, StoredThread, StoredWorkspace } from "../../../integrations/storage/threadStore";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -25,14 +26,6 @@ export interface ThreadRunInfo {
 
 type ThreadRunStatuses = Record<string, ThreadRunInfo | undefined>;
 type ThreadStreamingStatuses = Record<string, boolean>;
-
-interface ThreadRuntimeUpdate {
-  threadId: string;
-  runId: string;
-  revision: number;
-  status: string;
-  resetProjection: boolean;
-}
 
 interface ThreadStreamingUpdate {
   revision: number;
@@ -294,12 +287,15 @@ export function useThreadStore(): ThreadStore {
     deps: [activeThreads, refreshThreadRunStatuses],
   });
   useEffect(() => {
-    const unlisten = listen<ThreadRuntimeUpdate>("thread-runtime-updated", (event) => {
+    const unlisten = listen<ThreadRuntimeUpdateBatch>("thread-runtime-updated", (event) => {
       // A push is newer than any reconciliation query already in flight.
       // Invalidate that query before reducing the event so its stale snapshot
       // cannot revert this status when it eventually resolves.
       runStatusGenRef.current += 1;
-      setThreadRunStatuses(previous => reduceThreadRunStatus(previous, event.payload));
+      setThreadRunStatuses(previous => event.payload.updates.reduce(
+        (statuses, update) => reduceThreadRunStatus(statuses, update),
+        previous,
+      ));
     });
     return () => {
       void unlisten.then(stop => stop());
@@ -344,10 +340,14 @@ export function useThreadStore(): ThreadStore {
   // timer needed. Synchronous reads are stale-while-revalidate, so a late
   // revalidation can never flash the composer back to the draft model.
   useEffect(() => {
-    if (!activeThreadId)
+    // A fresh thread has no Agent session until its first prompt. Its cached
+    // model/thinking values are the user's explicit draft selections; fetching
+    // the honest "no session" payload here would replace them with nulls and
+    // make the composer fall back to the model default before sending.
+    if (!activeThread?.agentSessionId)
       return;
-    prefetchAgentState(activeThreadId);
-  }, [activeThreadId]);
+    prefetchAgentState(activeThread.id);
+  }, [activeThread?.id, activeThread?.agentSessionId]);
 
   return {
     activeThread,

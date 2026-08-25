@@ -109,12 +109,15 @@ interface SessionLane {
 
 const MAX_REPLAY_QUEUE = 6;
 const RECONCILE_RETRY_MAX_MS = 30_000;
+const LIVE_EVENT_FRAME_MS = 16;
 
 export class SyncEngine {
   private lanes = new Map<string, SessionLane>();
   private subscribers = new Set<(commit: Commit) => void>();
   private generation = 0;
   private deps: SyncDeps;
+  private liveFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  private liveFlushLanes = new Set<SessionLane>();
 
   constructor(deps: SyncDeps) {
     this.deps = deps;
@@ -131,11 +134,16 @@ export class SyncEngine {
     // First contact for a real session: establish the timeline from durable
     // history + a full replay so a mid-run join gets its prefix (H3), not just
     // the live tail.
-    if (!lane.established && lane.sessionId !== "") {
+    const establishing = !lane.established && lane.sessionId !== "";
+    if (establishing) {
       this.enqueueReplay(lane, { reason: "open" });
     }
     lane.ops.push({ kind: "event", event });
-    this.loop(lane);
+    // First contact already queued an immediate reconcile step, which will
+    // drain this op. Established lanes collect live deltas for one display
+    // frame so React Native receives one timeline commit instead of one per
+    // token, while retaining every event and its cursor in order.
+    if (!establishing) this.scheduleLiveFlush(lane);
   }
 
   /** Enqueue a reconcile. Repeats of the same reason+run are folded. */
@@ -177,6 +185,9 @@ export class SyncEngine {
   /** Drop all lanes (unpair / credentials cleared). */
   clear(): void {
     this.generation += 1;
+    if (this.liveFlushTimer) clearTimeout(this.liveFlushTimer);
+    this.liveFlushTimer = null;
+    this.liveFlushLanes.clear();
     for (const lane of this.lanes.values()) {
       if (lane.retryTimer) clearTimeout(lane.retryTimer);
     }
@@ -202,6 +213,19 @@ export class SyncEngine {
       this.lanes.set(sessionId, lane);
     }
     return lane;
+  }
+
+  private scheduleLiveFlush(lane: SessionLane): void {
+    this.liveFlushLanes.add(lane);
+    if (this.liveFlushTimer) return;
+    this.liveFlushTimer = setTimeout(() => {
+      this.liveFlushTimer = null;
+      const lanes = [...this.liveFlushLanes];
+      this.liveFlushLanes.clear();
+      for (const pending of lanes) {
+        if (this.isCurrent(pending)) this.loop(pending);
+      }
+    }, LIVE_EVENT_FRAME_MS);
   }
 
   private enqueueReplay(lane: SessionLane, request: ReconcileRequest): void {

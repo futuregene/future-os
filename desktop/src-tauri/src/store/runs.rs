@@ -113,21 +113,28 @@ pub fn create_run(input: CreateRunInput) -> Result<RunRecord, crate::AppError> {
         .filter(|id| !id.trim().is_empty())
         .unwrap_or_else(|| create_id("run"));
     let now = now_millis();
-    let conn = connect()?;
-    conn.execute(
+    let mut conn = connect()?;
+    let tx = conn.transaction()?;
+    tx.execute(
         "INSERT INTO runs (
              id, thread_id, trigger_message_id, status, model_provider, model_id,
              started_at, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, 'running', ?4, ?5, ?6, ?6, ?6)",
+        ) VALUES (?1, ?2, ?3, 'running', ?4, ?5, ?6, ?6, ?6)",
         params![
             id,
-            input.thread_id,
+            &input.thread_id,
             input.trigger_message_id,
             input.model_provider,
             input.model_id,
             now
         ],
     )?;
+    // A run is created immediately before a prompt is delivered to the Agent,
+    // including prompts originating from a paired device. Stamp the activity
+    // in the same transaction so the sidebar reliably moves the conversation
+    // to its most-recent-message position after a refresh.
+    super::threads::mark_thread_message_activity_in(&tx, &input.thread_id, now)?;
+    tx.commit()?;
     let run = loaded(get_run(&id)?, "Created run")?;
     mark_catalog_dirty();
     Ok(run)
@@ -1118,6 +1125,7 @@ mod tests {
     use rusqlite::{params, Connection};
 
     use super::*;
+    use crate::store::db::test_support::guarded_conn;
     use crate::store::schema::SCHEMA;
 
     fn test_conn() -> Connection {
@@ -1137,6 +1145,38 @@ mod tests {
             params![id, status],
         )
         .expect("insert run");
+    }
+
+    #[test]
+    fn create_run_records_thread_message_activity() {
+        let (_home, conn) = guarded_conn("run_thread_activity");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                 VALUES ('workspace', 'Workspace', 'user', '/tmp/workspace', 1, 1);
+             INSERT INTO threads (id, workspace_id, mode, title, status, created_at, updated_at)
+                 VALUES ('thread', 'workspace', 'chat', 'Thread', 'active', 1, 1);",
+        )
+        .expect("seed thread");
+        drop(conn);
+
+        create_run(CreateRunInput {
+            id: Some("run_activity".to_string()),
+            thread_id: "thread".to_string(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("create run");
+
+        let conn = connect().expect("connect");
+        let activity: Option<i64> = conn
+            .query_row(
+                "SELECT last_message_at FROM threads WHERE id = 'thread'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read thread activity");
+        assert!(activity.is_some());
     }
 
     #[test]
@@ -1671,8 +1711,6 @@ mod tests {
     }
 
     // ── connect()-backed read wrappers ─────────────────────────────────────
-
-    use crate::store::db::test_support::guarded_conn;
 
     #[test]
     fn run_read_wrappers_query_per_thread() {

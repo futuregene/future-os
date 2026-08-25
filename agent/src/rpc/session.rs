@@ -406,17 +406,11 @@ impl ServerSession {
             .map(|m| format!("{}/{}", m.provider, m.id))
             .unwrap_or_else(|| model.to_string());
 
-        let current_context_window = self
-            .model_registry
-            .read()
-            .resolve(&self.model)
-            .map(|m| m.context_window)
-            .unwrap_or(1_000_000);
-
         // Construct the selected provider before changing any session state.
-        // Besides making the switch atomic from the loop's perspective, this
-        // provider is the only allowed fallback when the old model cannot
-        // summarize a context that must fit the newly selected smaller window.
+        // This keeps the switch atomic from the next run's perspective. Context
+        // fit is deliberately NOT checked here: a selector click must not write
+        // a checkpoint. The run loop checks immediately before its first LLM
+        // request, using this newly selected provider and model window.
         let new_provider = if let Some(model_config) = resolved.as_ref() {
             let max_tokens = Some(crate::models::effective_max_tokens(model_config));
             let auth = crate::AuthStore::load();
@@ -446,22 +440,6 @@ impl ServerSession {
             None
         };
 
-        if canonical_model != self.model {
-            if let Some(model_config) = resolved.as_ref() {
-                if model_config.context_window < current_context_window {
-                    self.compact_with_policy(
-                        "",
-                        crate::compaction::CompactionTrigger::ModelContextDownshift,
-                        crate::compaction::CompactionPhase::PreTurn,
-                        model_config.context_window,
-                        new_provider
-                            .clone()
-                            .map(|provider| (provider, model_config.id.clone())),
-                    )?;
-                }
-            }
-        }
-
         // Update the agent loop in one shot — both model name and provider endpoint.
         // Fail explicitly when the loop is busy so the caller knows to retry
         // rather than silently continuing with the old model. Active runs use
@@ -484,8 +462,9 @@ impl ServerSession {
                 self.strip_image_content_from_messages();
             }
 
-            // The fresh provider was built and validated before downshift
-            // compaction, so the loop switch cannot expose a half-built client.
+            // The fresh provider was built and validated before publishing the
+            // selection, so the next-run control plane cannot expose a
+            // half-built client.
             if let Some(provider) = new_provider {
                 loop_.provider = provider;
             }
@@ -2911,8 +2890,8 @@ mod tests {
         assert_eq!(started_data["operation_id"], committed_data["operation_id"]);
     }
 
-    #[test]
-    fn model_context_downshift_compacts_before_switching_models() {
+    #[tokio::test]
+    async fn model_context_downshift_defers_compaction_until_llm_preflight() {
         let mut session = make_test_session("model-downshift");
         let model = |id: &str, context_window: i32| crate::models::Model {
             id: id.to_string(),
@@ -2976,6 +2955,30 @@ mod tests {
         session.set_model("test/small").unwrap();
 
         let loaded = session.session_manager.load(&session.session_id).unwrap();
+        assert!(
+            crate::session::latest_context_checkpoint(&loaded.entries).is_none(),
+            "selecting a model must not compact history before an LLM request"
+        );
+        assert_eq!(session.model, "test/small");
+        assert_eq!(session.agent_loop.try_read().unwrap().model, "small");
+
+        // The first actual request under the selected model performs the
+        // threshold check and commits the checkpoint before calling the model.
+        std::fs::create_dir_all(&session.cwd).unwrap();
+        session.agent_loop.try_write().unwrap().provider = Arc::new(SummaryProvider);
+        let lease = session
+            .prompt("next interaction", &[], &[], Some("run-after-switch"), None)
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while session.runtime.snapshot().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(lease.run_id, "run-after-switch");
+
+        let loaded = session.session_manager.load(&session.session_id).unwrap();
         let checkpoint = crate::session::latest_context_checkpoint(&loaded.entries).unwrap();
         assert_eq!(
             checkpoint.trigger,
@@ -2986,8 +2989,6 @@ mod tests {
             Some(crate::compaction::CompactionPhase::PreTurn)
         );
         assert_eq!(checkpoint.context_window, 32_000);
-        assert_eq!(session.model, "test/small");
-        assert_eq!(session.agent_loop.try_read().unwrap().model, "small");
     }
 
     #[test]

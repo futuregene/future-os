@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@future-os/thread-projection";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
+import type { ThreadRuntimeUpdateBatch } from "../../integrations/agent/runtimeEvents";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef } from "react";
 import { resetRunProjection, upsertStreamingPreview } from "./threadRunProjection";
@@ -69,30 +70,39 @@ export function useRunReattach({
     const startedAt = activeRunStartedAt;
     let cancelled = false;
     const isLive = () => !cancelled;
+    let tickRunning = false;
+    let tickQueued = false;
     const tick = () => {
       if (!isLive())
         return;
-      void upsertStreamingPreview(runId, startedAt, setMessages, isLive).then(() => {
-        // Bump the generation counter after every streaming upsert so an
-        // in-flight quiet reload sees that state changed under it and
-        // discards its write instead of clobbering the live bubble.
-        if (isLive())
-          messagesGenRef.current += 1;
+      tickQueued = true;
+      if (tickRunning)
+        return;
+      tickRunning = true;
+      void (async () => {
+        while (tickQueued && isLive()) {
+          tickQueued = false;
+          await upsertStreamingPreview(runId, startedAt, setMessages, isLive);
+          // Bump the generation counter after every streaming upsert so an
+          // in-flight quiet reload sees that state changed under it and
+          // discards its write instead of clobbering the live bubble.
+          if (isLive())
+            messagesGenRef.current += 1;
+        }
+      })().finally(() => {
+        tickRunning = false;
+        if (tickQueued && isLive())
+          tick();
       });
     };
     tick();
-    const unlisten = listen<{
-      threadId: string;
-      runId: string;
-      revision: number;
-      status: string;
-      resetProjection: boolean;
-    }>("thread-runtime-updated", (event) => {
-      if (!isLive() || event.payload.threadId !== threadId || event.payload.runId !== runId)
+    const unlisten = listen<ThreadRuntimeUpdateBatch>("thread-runtime-updated", (event) => {
+      const update = event.payload.updates.find(candidate => candidate.threadId === threadId && candidate.runId === runId);
+      if (!isLive() || !update)
         return;
-      if (event.payload.resetProjection)
+      if (update.resetProjection)
         resetRunProjection(runId);
-      if (["completed", "failed", "cancelled"].includes(event.payload.status)) {
+      if (["completed", "failed", "cancelled"].includes(update.status)) {
         void refreshRecentRun(threadId, workspaceId);
         void reloadMessagesQuiet(threadId, true);
         return;
@@ -118,6 +128,7 @@ export function useRunReattach({
 
     return () => {
       cancelled = true;
+      tickQueued = false;
       clearInterval(selfHeal);
       void unlisten.then(stop => stop());
     };

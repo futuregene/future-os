@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@future-os/thread-projection";
 import type { Dispatch, SetStateAction } from "react";
+import type { ThreadRuntimeUpdateBatch } from "../../integrations/agent/runtimeEvents";
 import type { StoredRun, StoredThread } from "../../integrations/storage/threadStore";
 import type { ComposerSendPayload } from "./Composer";
 import { listen } from "@tauri-apps/api/event";
@@ -60,9 +61,12 @@ export async function runSendPipeline(
   const importedAttachments = preparedAttachments.attachments;
 
   let stopStreamUpdates: (() => void) | null = null;
+  let streamUpdateRunning = false;
+  let streamUpdateQueued = false;
   const clearStreamUpdates = () => {
     stopStreamUpdates?.();
     stopStreamUpdates = null;
+    streamUpdateQueued = false;
   };
   const optimisticUserId = clientId("pending_user");
   const pendingId = clientId("pending");
@@ -96,7 +100,6 @@ export async function runSendPipeline(
   if (isCurrentSend()) {
     setMessages(current => [...current, optimisticUserMessage, assistantMessage]);
   }
-  onThreadActivity();
 
   let run: StoredRun | null = null;
 
@@ -114,6 +117,9 @@ export async function runSendPipeline(
       triggerMessageId: null,
       modelId,
     });
+    // `create_run` atomically stamps the thread's last-message time. Refresh
+    // only afterwards so the sidebar receives the new sort key immediately.
+    onThreadActivity();
 
     if (isCurrentSend()) {
       setRecentRun(run);
@@ -122,17 +128,33 @@ export async function runSendPipeline(
 
     clearStreamUpdates();
     if (isCurrentSend()) {
-      stopStreamUpdates = await listen<{
-        threadId: string;
-        runId: string;
-        revision: number;
-        status: string;
-        resetProjection: boolean;
-      }>("thread-runtime-updated", (event) => {
-        if (run && event.payload.runId === run.id && isCurrentSend()) {
-          if (event.payload.resetProjection)
-            resetRunProjection(run.id);
-          void updatePendingMessageFromRunEvents(run.id, pendingId, setMessages, isCurrentSend);
+      const streamingRun = run;
+      const queueStreamUpdate = () => {
+        streamUpdateQueued = true;
+        if (streamUpdateRunning)
+          return;
+        streamUpdateRunning = true;
+        void (async () => {
+          while (streamUpdateQueued && isCurrentSend()) {
+            streamUpdateQueued = false;
+            await updatePendingMessageFromRunEvents(streamingRun.id, pendingId, setMessages, isCurrentSend);
+          }
+        })().finally(() => {
+          streamUpdateRunning = false;
+          // An event can land after the loop condition but before `finally`.
+          if (streamUpdateQueued && isCurrentSend())
+            queueStreamUpdate();
+        });
+      };
+      stopStreamUpdates = await listen<ThreadRuntimeUpdateBatch>("thread-runtime-updated", (event) => {
+        const update = event.payload.updates.find(candidate => candidate.runId === streamingRun.id);
+        if (update && isCurrentSend()) {
+          if (update.resetProjection)
+            resetRunProjection(streamingRun.id);
+          // Keep at most one Agent-journal read in flight. Bursts collapse into
+          // one trailing read, so 60 FPS notifications cannot build an IPC
+          // backlog while the visible stream still receives the newest tail.
+          queueStreamUpdate();
         }
       });
     }
