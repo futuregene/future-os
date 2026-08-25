@@ -1179,6 +1179,10 @@ impl<T: TerminalIo> App<T> {
                         if let Some(s) = state {
                             self.apply_refresh_state(s);
                         }
+                        // The new session has no history — drop the previous
+                        // transcript, or the old conversation stays on screen
+                        // and /new looks like it did nothing.
+                        self.chat.clear_messages();
                         self.restore_session_input();
                         self.add_system_message("New session started.".into());
                     }
@@ -7909,6 +7913,30 @@ mod tests {
         let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
         app.handle_submit("/new");
         pump(&mut app, &mut rx).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn slash_new_clears_the_previous_transcript() {
+        let (addr, _seen) = spawn_app_mock().await;
+        let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
+        app.chat.add_message(ChatMessage::new(
+            "old".into(),
+            ChatRole::User,
+            "previous session question",
+        ));
+        app.handle_submit("/new");
+        pump_until_msg(&mut app, &mut rx, "New session started").await;
+        // Only the confirmation remains — the old conversation is gone.
+        let texts: Vec<String> = app
+            .chat
+            .plain_messages()
+            .iter()
+            .map(|(_, content)| content.clone())
+            .collect();
+        assert!(
+            !texts.iter().any(|t| t.contains("previous session")),
+            "old transcript survived /new: {texts:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

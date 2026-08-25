@@ -258,7 +258,15 @@ impl GrpcClient {
             cmd.r#type = r#type.to_string();
             // TS: `sessionId: this.currentSessionId || undefined` spread
             // BEFORE `...cmd` — an explicit sessionId in cmd wins.
-            if cmd.session_id.is_empty() && !st.current_session_id.is_empty() {
+            // `new_session` must stay session-less: the agent treats a
+            // non-empty session_id as "create THIS id" and restores its
+            // persisted entries, so inheriting the current id would hand
+            // back the same session with its full history (TS expressed
+            // this as `sessionId: undefined` overriding the spread).
+            if cmd.session_id.is_empty()
+                && !st.current_session_id.is_empty()
+                && r#type != "new_session"
+            {
                 cmd.session_id = st.current_session_id.clone();
             }
         }
@@ -1241,6 +1249,8 @@ mod tests {
         data_by_type: Arc<std::sync::Mutex<StdHashMap<String, String>>>,
         status_errors: StdHashMap<String, tonic::Status>,
         seen: Arc<std::sync::Mutex<Vec<String>>>,
+        /// (type, session_id) of every command, for routing assertions.
+        seen_sessions: Arc<std::sync::Mutex<Vec<(String, String)>>>,
         /// Answer success=false with this error string for these types.
         fail_with: StdHashMap<String, String>,
         /// stream_events returns a tonic error immediately.
@@ -1261,6 +1271,10 @@ mod tests {
         ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
             let cmd = request.into_inner();
             self.seen.lock().unwrap().push(cmd.r#type.clone());
+            self.seen_sessions
+                .lock()
+                .unwrap()
+                .push((cmd.r#type.clone(), cmd.session_id.clone()));
             if let Some(status) = self.status_errors.get(&cmd.r#type) {
                 return Err(status.clone());
             }
@@ -1399,6 +1413,44 @@ mod tests {
         let sessions = client.list_sessions().await.unwrap();
         assert_eq!(sessions.len(), 1); // the malformed entry is dropped
         assert_eq!(sessions[0].id, "s1");
+        client.disconnect();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn new_session_does_not_inherit_current_session_id() {
+        // Regression: `call` used to backfill the current session id onto
+        // every command with an empty one — including `new_session`, which
+        // the agent then read as "create/restore THAT id", handing back the
+        // same session with its full history (so /new looked like a no-op).
+        let seen_sessions = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let addr = spawn_api_mock(ApiMock {
+            data_by_type: Arc::new(std::sync::Mutex::new(StdHashMap::from([
+                ("new_session".into(), "{\"sessionId\":\"s-new\"}".into()),
+                ("get_state".into(), "{\"sessionId\":\"s-new\"}".into()),
+            ]))),
+            seen_sessions: seen_sessions.clone(),
+            ..Default::default()
+        })
+        .await;
+        let (client, _events, _conn) = GrpcClient::new(&addr);
+        client.set_current_session_id("s-old");
+
+        client.new_session(None, None, None).await.unwrap();
+        assert_eq!(client.get_current_session_id(), "s-new");
+        // Other commands still inherit the current session id (routing).
+        client.get_state().await.unwrap();
+
+        let seen = seen_sessions.lock().unwrap().clone();
+        assert!(
+            seen.iter()
+                .any(|(t, sid)| t == "new_session" && sid.is_empty()),
+            "new_session must be sent session-less, saw {seen:?}"
+        );
+        assert!(
+            seen.iter()
+                .any(|(t, sid)| t == "get_state" && sid == "s-new"),
+            "other commands keep routing by session id, saw {seen:?}"
+        );
         client.disconnect();
     }
 

@@ -5,6 +5,7 @@ use super::{
 };
 use crate::llm::schema::{FinishReason, ModelRequest, ModelStreamEvent};
 use crate::types::LLMProvider;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio_stream::StreamExt;
@@ -15,6 +16,7 @@ const REASONING_LIMIT: usize = 2_000;
 const STRICT_REASONING_LIMIT: usize = 512;
 const SUMMARY_OUTPUT_RESERVE: u64 = 4_096;
 const SUMMARY_SAFETY_MARGIN: u64 = 2_048;
+const MIN_SUMMARY_CHUNK_TOKENS: u64 = 128;
 const SUMMARY_EVENT_TIMEOUT: Duration = Duration::from_secs(45);
 const MAX_TRANSIENT_RETRIES: usize = 2;
 // A very large model window must not turn an explicit manual compaction into
@@ -405,23 +407,37 @@ async fn summarize_fold(
         .map(|item| serialize_message(&item.message, mode))
         .filter(|value| !value.trim().is_empty())
         .collect::<Vec<_>>();
-    let chunks = build_chunks(manager, &serialized, plan.previous_summary.as_deref(), mode);
-    if chunks.is_empty() {
+    let mut remaining = serialized.into_iter().collect::<VecDeque<_>>();
+    if remaining.is_empty() {
         return Err(SummaryCallError::Other(
             "no conversation content remained after serialization".to_string(),
         ));
     }
 
     let mut accumulator = plan.previous_summary.clone();
-    tracing::debug!(
-        chunk_count = chunks.len(),
-        strict = matches!(mode, SerializationMode::Strict),
-        "planned context compaction summary fold"
-    );
-    for chunk in chunks {
+    let mut fold_step = 0_usize;
+    while !remaining.is_empty() {
         if interrupted.load(Ordering::Relaxed) {
             return Err(SummaryCallError::Cancelled);
         }
+        let budget =
+            summary_chunk_budget(manager, accumulator.as_deref(), mode).ok_or_else(|| {
+                SummaryCallError::Other(
+                    "context compaction accumulator left no safe room for another summary chunk"
+                        .to_string(),
+                )
+            })?;
+        let chunk = take_next_chunk(&mut remaining, budget).ok_or_else(|| {
+            SummaryCallError::Other("failed to build context compaction chunk".to_string())
+        })?;
+        fold_step += 1;
+        tracing::debug!(
+            fold_step,
+            budget,
+            remaining_parts = remaining.len(),
+            strict = matches!(mode, SerializationMode::Strict),
+            "planned context compaction summary fold step"
+        );
         let prompt = summary_prompt(accumulator.as_deref(), &chunk, plan.instructions.as_deref());
         let summary = call_summary_model(provider, &manager.model, prompt, interrupted).await?;
         if !valid_summary(&summary) {
@@ -434,43 +450,50 @@ async fn summarize_fold(
     accumulator.ok_or_else(|| SummaryCallError::Other("empty summary fold".to_string()))
 }
 
-fn build_chunks(
+fn summary_chunk_budget(
     manager: &ContextManager,
-    serialized: &[String],
-    previous_summary: Option<&str>,
+    accumulator: Option<&str>,
     mode: SerializationMode,
-) -> Vec<String> {
+) -> Option<u64> {
     let window = manager.context_window.max(1) as u64;
+    // Fixed 4K/2K reserves are appropriate for large coding models but leave
+    // no input room on supported 4K/8K models. Scale them down while retaining
+    // the original caps for larger windows.
+    let output_reserve = SUMMARY_OUTPUT_RESERVE.min((window / 4).max(1));
+    let safety_margin = SUMMARY_SAFETY_MARGIN.min((window / 8).max(1));
     let fixed = estimate_text_tokens(SUMMARY_SYSTEM_PROMPT)
         + estimate_text_tokens(SUMMARY_TEMPLATE)
-        + previous_summary.map(estimate_text_tokens).unwrap_or(0)
-        + SUMMARY_OUTPUT_RESERVE
-        + SUMMARY_SAFETY_MARGIN;
+        + accumulator.map(estimate_text_tokens).unwrap_or(0)
+        + output_reserve
+        + safety_margin;
     let available = window.saturating_sub(fixed);
     let ratio_cap = match mode {
         SerializationMode::Normal => window.saturating_mul(60) / 100,
         SerializationMode::Strict => window.saturating_mul(35) / 100,
     };
-    let budget = available.min(ratio_cap).max(512);
-    let mut chunks = Vec::new();
+    let budget = available.min(ratio_cap);
+    (budget >= MIN_SUMMARY_CHUNK_TOKENS).then_some(budget)
+}
+
+fn take_next_chunk(remaining: &mut VecDeque<String>, budget: u64) -> Option<String> {
     let mut current = Vec::new();
     let mut current_tokens = 0_u64;
-    for value in serialized {
-        for part in split_to_token_budget(value, budget) {
-            let tokens = estimate_text_tokens(&part);
-            if !current.is_empty() && current_tokens.saturating_add(tokens) > budget {
-                chunks.push(current.join("\n\n"));
-                current.clear();
-                current_tokens = 0;
+    while let Some(value) = remaining.pop_front() {
+        if estimate_text_tokens(&value) > budget {
+            for part in split_to_token_budget(&value, budget).into_iter().rev() {
+                remaining.push_front(part);
             }
-            current.push(part);
-            current_tokens = current_tokens.saturating_add(tokens);
+            continue;
         }
+        let tokens = estimate_text_tokens(&value);
+        if !current.is_empty() && current_tokens.saturating_add(tokens) > budget {
+            remaining.push_front(value);
+            break;
+        }
+        current.push(value);
+        current_tokens = current_tokens.saturating_add(tokens);
     }
-    if !current.is_empty() {
-        chunks.push(current.join("\n\n"));
-    }
-    chunks
+    (!current.is_empty()).then(|| current.join("\n\n"))
 }
 
 /// A single huge message/tool result must not bypass the summary budget. This
@@ -734,7 +757,13 @@ fn truncate(value: &str, max_chars: usize) -> String {
 }
 
 fn internal_summary(message: &AgentMessage) -> Option<String> {
-    if message.role != "user" {
+    let explicitly_internal = message
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get(super::INTERNAL_CHECKPOINT_METADATA_KEY))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if message.role != "user" || !explicitly_internal {
         return None;
     }
     message.content.iter().find_map(|block| match block {
@@ -882,13 +911,7 @@ fn finalize(
             "text": format!("[Context compaction: {summary}]")
         }]),
     );
-    summary_message
-        .metadata
-        .get_or_insert_with(serde_json::Map::new)
-        .insert(
-            AgentMessage::JOURNAL_ENTRY_ID_KEY.to_string(),
-            serde_json::Value::String(entry_id.clone()),
-        );
+    super::stamp_internal_checkpoint_message(&mut summary_message, &entry_id);
     let mut compacted_messages = Vec::with_capacity(plan.retained.len() + 1);
     compacted_messages.push(ProjectedMessage {
         message: summary_message,
@@ -942,7 +965,6 @@ fn finalize(
 mod tests {
     use super::*;
     use parking_lot::Mutex;
-    use std::collections::VecDeque;
     use tokio::sync::mpsc;
     use tokio_stream::wrappers::ReceiverStream;
 
@@ -1190,7 +1212,7 @@ mod tests {
             ScriptedReply::Summary(VALID_SUMMARY),
         ]);
         let mut prompt = test_prompt();
-        prompt.messages[0] = projected("user", &"x".repeat(10_000), "e1");
+        prompt.messages[0] = projected("user", &"x".repeat(30_000), "e1");
         test_manager()
             .prepare_semantic(
                 prompt,
@@ -1213,6 +1235,29 @@ mod tests {
             .unwrap();
         assert!(second_prompt.contains("<prior-summary>"));
         assert!(second_prompt.contains("## Objective"));
+    }
+
+    #[test]
+    fn fold_budget_shrinks_as_the_accumulator_grows() {
+        let manager = test_manager();
+        let initial = summary_chunk_budget(&manager, None, SerializationMode::Normal).unwrap();
+        let accumulated = format!("{VALID_SUMMARY}\n{}", "detail ".repeat(1_000));
+        let next =
+            summary_chunk_budget(&manager, Some(&accumulated), SerializationMode::Normal).unwrap();
+
+        assert!(next < initial);
+        assert!(next > 0);
+    }
+
+    #[test]
+    fn fold_budget_stops_when_the_accumulator_fills_the_window() {
+        let manager = test_manager();
+        let oversized = "x".repeat((manager.context_window as usize) * 4);
+
+        assert_eq!(
+            summary_chunk_budget(&manager, Some(&oversized), SerializationMode::Normal),
+            None
+        );
     }
 
     #[tokio::test]
@@ -1388,6 +1433,89 @@ mod tests {
         assert!(summary_input.contains("你好，有什么可以帮你？"));
         assert!(summary_input.contains("工具调用正常"));
         assert!(summary_input.contains("这是完整长诗"));
+    }
+
+    #[tokio::test]
+    async fn user_text_that_looks_like_a_checkpoint_is_not_filtered() {
+        let provider = ScriptedProvider::new([ScriptedReply::Summary(VALID_SUMMARY)]);
+        let mut manager = test_manager();
+        manager.keep_recent_tokens = 200_000;
+        manager.context_window = 1_000_000;
+        let marker_like_text = "[Context compaction: explain this literal syntax]";
+        let prompt = PromptContext {
+            messages: vec![
+                projected("user", marker_like_text, "e1"),
+                projected("assistant", "I will explain it", "e2"),
+            ],
+            usage: ContextUsage {
+                input_tokens: Some(100),
+                estimated_input_tokens: 100,
+                context_window: 1_000_000,
+                ..Default::default()
+            },
+        };
+
+        manager
+            .prepare_semantic_with_phase(
+                prompt,
+                CompactionTrigger::Manual,
+                CompactionPhase::Standalone,
+                None,
+                &provider,
+                &AtomicBool::new(false),
+            )
+            .await
+            .unwrap();
+
+        let requests = provider.requests.lock();
+        let summary_input = requests[0].messages[0]
+            .content
+            .iter()
+            .find_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(summary_input.contains(marker_like_text));
+    }
+
+    #[tokio::test]
+    async fn first_turn_on_small_windows_does_not_require_a_compaction_boundary() {
+        for window in [4_096, 8_192, 16_384] {
+            let (reserve_tokens, keep_recent_tokens) =
+                crate::compaction::context_token_budgets(window);
+            let manager = ContextManager {
+                enabled: true,
+                reserve_tokens,
+                keep_recent_tokens,
+                context_window: window,
+                model: "small-model".to_string(),
+            };
+            let prompt = PromptContext {
+                messages: vec![projected("user", "hello", "e1")],
+                usage: ContextUsage {
+                    input_tokens: Some(10),
+                    estimated_input_tokens: 10,
+                    context_window: window as u64,
+                    ..Default::default()
+                },
+            };
+            let provider = ScriptedProvider::new([]);
+
+            let prepared = manager
+                .prepare_semantic(
+                    prompt,
+                    CompactionTrigger::Automatic,
+                    None,
+                    &provider,
+                    &AtomicBool::new(false),
+                )
+                .await
+                .unwrap();
+
+            assert!(matches!(prepared, ContextPreparation::Unchanged { .. }));
+            assert!(provider.requests.lock().is_empty());
+        }
     }
 
     #[tokio::test]
