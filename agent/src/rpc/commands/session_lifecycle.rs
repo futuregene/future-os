@@ -446,6 +446,14 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
         new_sess.thinking_level = cmd.level.clone();
     }
 
+    // Automation-minted sessions (loop control plane, channels) may pass an
+    // initial human-readable title in `name` (same proto field as
+    // set_session_name). Empty name keeps the default — the name stays empty
+    // until the user renames or a client derives one from the first message.
+    if !cmd.name.is_empty() {
+        new_sess.set_session_name(&cmd.name);
+    }
+
     // Restore entries from a pre-existing session (forked or persisted).
     if let Some((entries, disk_model)) = existing_entries {
         // Gate image re-hydration on the model that will actually run

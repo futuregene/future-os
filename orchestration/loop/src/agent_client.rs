@@ -162,14 +162,17 @@ impl AgentClient {
     }
 
     /// Create a fresh, isolated session for this goal. One goal = one session
-    /// (LoopX: durable identity is the goal, not a chat thread).
-    pub async fn new_session(&mut self, cwd: &str) -> Result<String> {
+    /// (LoopX: durable identity is the goal, not a chat thread). `title` is a
+    /// human-readable session name (the goal objective, truncated) surfaced in
+    /// agent session lists instead of an empty/default name.
+    pub async fn new_session(&mut self, cwd: &str, title: &str) -> Result<String> {
         let resp = self
             .call(
                 "new_session",
                 "",
                 RpcCommand {
                     cwd: cwd.to_string(),
+                    name: title.to_string(),
                     ..Default::default()
                 },
             )
