@@ -333,8 +333,14 @@ function showView(v){ for(const t of document.querySelectorAll(".tab")) t.classL
 function syncDetailTab(){ const t = $("#tab-detail"); if(DETAIL_ID){ t.style.display=""; t.textContent = "Goal · "+DETAIL_ID.slice(0,14); } }
 
 function openGoal(id){ location.hash = "#/goal/"+id; }
+let lastGoalKey = null;
 async function route(){ const m = location.hash.match(/^#\/goal\/(.+)$/);
-  if(m){ DETAIL_ID = decodeURIComponent(m[1]); syncDetailTab(); showView("detail"); await loadDetail(DETAIL_ID); }
+  if(m){ const gid = decodeURIComponent(m[1]);
+    if(gid !== lastGoalKey){ lastGoalKey = gid; // different goal → fresh graph view
+      GV.built = false; GV.userSet = false; GV.full = false; GV.scale = 1; GV.x = 0; GV.y = 0;
+      document.body.classList.remove("gv-full");
+    }
+    DETAIL_ID = gid; syncDetailTab(); showView("detail"); await loadDetail(DETAIL_ID); }
   else { DETAIL_ID = null; syncDetailTab(); $("#tab-detail").style.display="none"; showView("overview"); } }
 window.addEventListener("hashchange", route);
 
@@ -647,7 +653,9 @@ function inspectTodo(id){
 }
 
 /* ── dependency graph (layered DAG, zoom/pan/fullscreen, no libs) ── */
-let GV = {scale: 1, x: 0, y: 0, drag: null, built: false};
+// Graph view state survives re-renders (SSE refresh / tab switches / data
+// updates must NOT reset the user's zoom, pan, or fullscreen).
+let GV = {scale: 1, x: 0, y: 0, drag: null, built: false, userSet: false, full: false, ac: null};
 function renderGraph(g){
   const el = $("#graph"); if(!el) return;
   const todos = g.todos.filter(t=>t.archive_state!=="archived");
@@ -712,10 +720,15 @@ function renderGraph(g){
     GV.x = (pw - gw*GV.scale)/2; GV.y = (ph - gh*GV.scale)/2;
     apply();
   }
-  fit();
-  // Re-fit when entering/exiting fullscreen (class toggle is sync but the
-  // resize lands in the same frame, so a rAF is enough — no arbitrary delay).
-  function refitSoon(){ requestAnimationFrame(() => requestAnimationFrame(fit)); }
+  // First build fits; rebuilds restore the user's view instead of resetting
+  // it (SVG is 100%×100%, so the transform is viewport-size independent).
+  if(!GV.built){
+    fit();
+    GV.built = true;
+  } else {
+    apply();
+    if(GV.full){ port.classList.add("full"); document.body.classList.add("gv-full"); }
+  }
 
   // zoom (wheel, centered on cursor)
   port.addEventListener("wheel", e => {
@@ -726,7 +739,7 @@ function renderGraph(g){
     const ns = Math.min(4, Math.max(0.15, GV.scale * factor));
     GV.x = mx - (mx - GV.x) * (ns/GV.scale);
     GV.y = my - (my - GV.y) * (ns/GV.scale);
-    GV.scale = ns; apply();
+    GV.scale = ns; GV.userSet = true; apply();
   }, {passive:false});
   // pan (drag on empty space)
   port.addEventListener("mousedown", e => {
@@ -735,30 +748,37 @@ function renderGraph(g){
     port.classList.add("dragging");
     e.preventDefault();
   });
+  // Window-level pan listeners must not accumulate across rebuilds.
+  if(GV.ac) GV.ac.abort();
+  GV.ac = new AbortController();
+  const sig = {signal: GV.ac.signal};
   window.addEventListener("mousemove", e => { if(!GV.drag) return;
     GV.x = GV.drag.ox + (e.clientX - GV.drag.sx);
-    GV.y = GV.drag.oy + (e.clientY - GV.drag.sy); apply(); });
-  window.addEventListener("mouseup", () => { GV.drag = null; port.classList.remove("dragging"); });
-  port.addEventListener("dblclick", e => { if(!e.target.closest(".gnode")) fit(); });
+    GV.y = GV.drag.oy + (e.clientY - GV.drag.sy);
+    GV.userSet = true; apply(); }, sig);
+  window.addEventListener("mouseup", () => { GV.drag = null; port.classList.remove("dragging"); }, sig);
+  port.addEventListener("dblclick", e => { if(!e.target.closest(".gnode")) { fit(); GV.userSet = true; } });
   // controls
-  $("#gzin").onclick = () => { GV.scale = Math.min(4, GV.scale*1.25); apply(); };
-  $("#gzout").onclick = () => { GV.scale = Math.max(0.15, GV.scale/1.25); apply(); };
-  $("#gzreset").onclick = fit;
+  $("#gzin").onclick = () => { GV.scale = Math.min(4, GV.scale*1.25); GV.userSet = true; apply(); };
+  $("#gzout").onclick = () => { GV.scale = Math.max(0.15, GV.scale/1.25); GV.userSet = true; apply(); };
+  $("#gzreset").onclick = () => { fit(); GV.userSet = true; };
   $("#gzfull").onclick = () => {
     const on = port.classList.toggle("full");
     document.body.classList.toggle("gv-full", on);
-    refitSoon();
+    GV.full = on;
+    // Untouched graph: refit to the new viewport (the small-viewport fit
+    // would leave it in a corner). After user interaction, keep their view.
+    if(!GV.userSet){ requestAnimationFrame(fit); }
   };
   if(!GV.escBound){ GV.escBound = true;
     document.addEventListener("keydown", e => { if(e.key === "Escape") {
       const f = document.querySelector(".gvport.full");
-      if(f){ f.classList.remove("full"); document.body.classList.remove("gv-full");
-        // re-fit the now-small canvas
-        if(typeof GV.refit === "function") GV.refit();
+      if(f){ f.classList.remove("full"); document.body.classList.remove("gv-full"); GV.full = false;
+        if(!GV.userSet && GV.fitFn) requestAnimationFrame(GV.fitFn);
       }
     }});
   }
-  GV.refit = refitSoon;
+  GV.fitFn = fit;
 }
 
 /* ── boot ────────────────────────────────────────────── */

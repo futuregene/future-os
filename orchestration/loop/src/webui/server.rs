@@ -23,10 +23,16 @@ struct Snapshot {
 fn snapshot(store: &crate::store::Store) -> Snapshot {
     // A read failure must never kill the stream — push empty payloads and
     // let the next tick retry (the CLI keeps working regardless).
-    let overview = api::overview(store)
+    let mut overview = api::overview(store)
         .ok()
         .and_then(|o| serde_json::to_value(o).ok())
         .unwrap_or_else(|| serde_json::json!({"error": "projection failed"}));
+    // `generated_at` is the wall-clock read time: it changes every tick and
+    // would make the change detector fire forever, re-rendering the page
+    // (and resetting graph zoom/pan/fullscreen) even when state is idle.
+    if let Some(obj) = overview.as_object_mut() {
+        obj.remove("generated_at");
+    }
     let goals = api::goals_push(store)
         .ok()
         .and_then(|g| serde_json::to_value(g).ok())

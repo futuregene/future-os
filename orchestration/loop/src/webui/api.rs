@@ -353,7 +353,7 @@ pub struct GoalCard {
     pub last_run_at: Option<u64>,
 }
 
-fn goal_card(goal: &Goal, now: u64) -> GoalCard {
+fn goal_card(goal: &Goal, created_at: u64, now: u64) -> GoalCard {
     let packet = decision::decide_for(goal, SystemTime::now(), None);
     let item = attention::goal_attention_item(goal);
     GoalCard {
@@ -361,7 +361,7 @@ fn goal_card(goal: &Goal, now: u64) -> GoalCard {
         objective: goal.objective.clone(),
         cwd: goal.cwd.clone(),
         status: goal.status.clone(),
-        created_at: goal.created_at,
+        created_at,
         todos_open: goal
             .todos
             .iter()
@@ -431,7 +431,18 @@ fn replay_all(store: &Store) -> Vec<Goal> {
 pub fn overview(store: &Store) -> Result<Overview> {
     let now = now_epoch();
     let goals = replay_all(store);
-    let mut cards: Vec<GoalCard> = goals.iter().map(|g| goal_card(g, now)).collect();
+    // Registry timestamps are stable across replays; the replayed goal's
+    // `created_at` is not (the ledger ignores GoalStarted, so replay stamps
+    // it with "now" — which would make every fingerprint change per tick).
+    let created_by: std::collections::HashMap<String, u64> = store
+        .registry()
+        .iter()
+        .map(|e| (e.goal_id.clone(), e.created_at))
+        .collect();
+    let mut cards: Vec<GoalCard> = goals
+        .iter()
+        .map(|g| goal_card(g, created_by.get(&g.goal_id).copied().unwrap_or(g.created_at), now))
+        .collect();
     // Triage order: goals needing a human first, then actionable, then the rest.
     cards.sort_by(|a, b| {
         fn rank(c: &GoalCard) -> u8 {
@@ -543,12 +554,20 @@ pub fn goal_detail(store: &Store, goal_id: &str) -> Result<Option<GoalDetail>> {
     runs.truncate(200);
     let graph = task_graph::build_task_graph(&goal).ok();
     let event_count = store.events(goal_id).map(|e| e.len()).unwrap_or(0);
+    // Stable creation timestamp (see overview(): the replayed goal's
+    // created_at is re-stamped with "now" on every replay).
+    let created_at = store
+        .registry()
+        .iter()
+        .find(|e| e.goal_id == goal_id)
+        .map(|e| e.created_at)
+        .unwrap_or(goal.created_at);
     Ok(Some(GoalDetail {
         goal_id: goal.goal_id.clone(),
         objective: goal.objective.clone(),
         cwd: goal.cwd.clone(),
         status: goal.status.clone(),
-        created_at: goal.created_at,
+        created_at,
         next_action: goal.next_action.clone(),
         terminal: goal.is_terminal(),
         decision: serde_json::to_value(&packet)?,
@@ -635,8 +654,13 @@ pub fn events_page(store: &Store, goal_id: &str, limit: usize) -> Result<Option<
 /// details every tick; the detail view refetches on `goals` events anyway).
 pub fn goals_push(store: &Store) -> Result<Vec<GoalCard>> {
     let now = now_epoch();
+    let created_by: std::collections::HashMap<String, u64> = store
+        .registry()
+        .iter()
+        .map(|e| (e.goal_id.clone(), e.created_at))
+        .collect();
     Ok(replay_all(store)
         .iter()
-        .map(|g| goal_card(g, now))
+        .map(|g| goal_card(g, created_by.get(&g.goal_id).copied().unwrap_or(g.created_at), now))
         .collect())
 }
