@@ -434,7 +434,7 @@ function FileTargets({
 }) {
   const { t } = useTranslation("agent");
   return (
-    <ul className="space-y-1 rounded-md bg-surface-subtle p-3 font-mono text-xs leading-5 text-ink">
+    <ul className="max-h-[33vh] space-y-1 overflow-auto rounded-md bg-surface-subtle p-3 font-mono text-xs leading-5 text-ink">
       {paths.map((path, index) => (
         <li className="flex items-start justify-between gap-3" key={`${path}-${String(index)}`}>
           <span className="break-all">{displayTargetPath(path)}</span>
@@ -442,7 +442,7 @@ function FileTargets({
             ? (
                 <span
                   aria-label={t("approval.folderScopeWarning")}
-                  className="shrink-0 text-warning"
+                  className="shrink-0 cursor-pointer text-warning"
                   title={t("approval.folderScopeWarning")}
                 >
                   <AlertTriangle className="size-4" />
