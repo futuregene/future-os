@@ -66,6 +66,11 @@ pub struct Loop {
     /// Cached model registry — avoids re-deserialising the 906-model catalog
     /// on auto-compaction checks and image-support queries inside the hot loop.
     pub model_registry: Option<Arc<parking_lot::RwLock<crate::models::Registry>>>,
+    /// Force one threshold-gated context-fit check immediately before the
+    /// run's first LLM request. Session runs enable this even when automatic
+    /// mid-run compaction is disabled, so selecting a smaller model never
+    /// mutates history at click time and cannot send an oversized next request.
+    pub preflight_context_check: bool,
     /// Mid-turn steering notes: orchestrators/injected operator messages that
     /// must reach a RUNNING turn. The run loop drains this cell at every step
     /// and appends pending notes to the system prompt of the next LLM call.
@@ -96,6 +101,7 @@ impl Loop {
             last_prompt_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             stream_incomplete: Arc::new(AtomicBool::new(false)),
             model_registry: None,
+            preflight_context_check: false,
             steering_notes: Arc::new(Mutex::new(vec![])),
         }
     }
@@ -134,6 +140,7 @@ impl Loop {
         copy.verbose = self.verbose;
         copy.parallel_tools = self.parallel_tools;
         copy.model_registry = self.model_registry.clone();
+        copy.preflight_context_check = self.preflight_context_check;
         copy.context_manager = self.context_manager.clone();
         copy.active_checkpoint = self.active_checkpoint.clone();
         // Share the steering cell with the snapshot so notes pushed while the

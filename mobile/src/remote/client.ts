@@ -117,7 +117,10 @@ export class RemoteClient {
     lastError: string;
     nextRetryAt: number | null;
   } | null = null;
-  private readonly failureLogQuota = new Map<string, { windowStartedAt: number; emitted: number }>();
+  private readonly failureLogQuota = new Map<
+    string,
+    { windowStartedAt: number; emitted: number }
+  >();
   private downloadWaiters = new Map<
     string,
     {
@@ -189,8 +192,8 @@ export class RemoteClient {
     // a 24-hour outage bounded to 16 lines per category.
     if (
       episode.reports < 15 &&
-      (episode.attempts & (episode.attempts - 1)) === 0
-      && this.permitFailureLog(category)
+      (episode.attempts & (episode.attempts - 1)) === 0 &&
+      this.permitFailureLog(category)
     ) {
       episode.reports += 1;
       console.warn("[remote] failure episode retry", {

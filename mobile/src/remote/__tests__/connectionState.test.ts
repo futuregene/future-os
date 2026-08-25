@@ -326,10 +326,7 @@ describe("RemoteClient terminal iterator recovery", () => {
 
   test.each([
     ["failed", new Error("remote_service_misconfigured")],
-    [
-      "revoked",
-      new RemoteApiError("revoked", "credentials_revoked", 401),
-    ],
+    ["revoked", new RemoteApiError("revoked", "credentials_revoked", 401)],
   ] as const)("late iterator completion cannot revive %s", async (terminal, failure) => {
     jest.useFakeTimers();
     const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -582,10 +579,7 @@ describe("RemoteClient terminal iterator recovery", () => {
       for (let generation = 0; generation < 4; generation += 1) {
         testClient.generation = generation;
         testClient.failedGeneration = null;
-        testClient.failGeneration(
-          new Error("remote_event_subscription_ended"),
-          generation,
-        );
+        testClient.failGeneration(new Error("remote_event_subscription_ended"), generation);
       }
       expect(testClient.state).toBe("failed");
       expect(jest.getTimerCount()).toBe(0);

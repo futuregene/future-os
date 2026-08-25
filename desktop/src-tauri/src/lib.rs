@@ -307,6 +307,12 @@ pub(crate) struct ThreadRuntimeUpdate {
     pub reset_projection: bool,
 }
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadRuntimeUpdateBatch {
+    updates: Vec<ThreadRuntimeUpdate>,
+}
+
 static NEXT_RUNTIME_REVISION: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
 static RUNTIME_EMIT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -364,9 +370,9 @@ fn is_terminal_run_status(status: &str) -> bool {
     matches!(status, "completed" | "failed" | "cancelled")
 }
 
-/// Coalesce token-heavy run updates into a single UI notification per run
-/// roughly every 40ms. Persistence remains event-by-event and authoritative;
-/// this channel is only a low-latency projection invalidation signal.
+/// Coalesce token-heavy run updates into one UI batch roughly once per display
+/// frame. Persistence remains authoritative and complete; this channel carries
+/// only low-latency projection invalidations.
 ///
 /// `revision` is assigned here from one process-global monotonic sequence.
 /// Callers must not mix event cursors and wall-clock values into the UI ordering
@@ -448,16 +454,18 @@ fn emit_approvals_updated_on<R: tauri::Runtime>(
     );
 }
 
-/// Emit the coalesced "thread-runtime-updated" updates on a caller-supplied
-/// handle (see [`emit_review_updated_on`]).
+/// Emit one coalesced "thread-runtime-updated" batch on a caller-supplied
+/// handle (see [`emit_review_updated_on`]). One Tauri event crosses the WebView
+/// boundary regardless of how many runs changed during the frame.
 fn emit_runtime_updates_on<R: tauri::Runtime>(
     handle: &tauri::AppHandle<R>,
     updates: Vec<ThreadRuntimeUpdate>,
 ) {
     use tauri::Emitter;
-    for update in updates {
-        let _ = handle.emit("thread-runtime-updated", update);
-    }
+    let _ = handle.emit(
+        "thread-runtime-updated",
+        ThreadRuntimeUpdateBatch { updates },
+    );
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -493,13 +501,13 @@ async fn thread_streaming_monitor_loop() {
     }
 }
 
-/// Drain the runtime-update channel: coalesce bursts within a 40ms window,
+/// Drain the runtime-update channel: coalesce bursts within a 16ms frame window,
 /// then emit the coalesced update. Extracted so the drain/coalesce/emit body
 /// is testable; the `APP_HANDLE` Some arm needs the real Wry handle.
 fn runtime_update_drain_loop(rx: std::sync::mpsc::Receiver<ThreadRuntimeUpdate>) {
     use std::time::{Duration, Instant};
     while let Ok(first) = rx.recv() {
-        let deadline = Instant::now() + Duration::from_millis(40);
+        let deadline = Instant::now() + Duration::from_millis(16);
         let mut rest = Vec::new();
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -787,6 +795,7 @@ pub fn run() {
             get_or_create_chat_workspace,
             get_thread,
             get_recent_thread,
+            mark_thread_opened,
             create_thread,
             rename_thread,
             update_thread_model,
@@ -931,7 +940,7 @@ mod runtime_update_tests {
         emit_review_updated_on, emit_review_updated_via, emit_runtime_updates_on,
         main_window_geometry, runtime_update_drain_loop, sample_thread_streaming,
         sample_thread_streaming_with, size_main_window_to_screen, thread_streaming_monitor_loop,
-        ThreadRuntimeUpdate,
+        ThreadRuntimeUpdate, ThreadRuntimeUpdateBatch,
     };
 
     fn update(run_id: &str, revision: i64, status: &str, reset: bool) -> ThreadRuntimeUpdate {
@@ -987,6 +996,18 @@ mod runtime_update_tests {
         );
 
         assert_eq!(updates, vec![update("run-1", 2, "finalizing", false)]);
+    }
+
+    #[test]
+    fn runtime_update_batch_serializes_the_frontend_contract() {
+        let value = serde_json::to_value(ThreadRuntimeUpdateBatch {
+            updates: vec![update("run-1", 7, "running", true)],
+        })
+        .expect("serialize runtime batch");
+
+        assert_eq!(value["updates"].as_array().map(Vec::len), Some(1));
+        assert_eq!(value["updates"][0]["runId"], "run-1");
+        assert_eq!(value["updates"][0]["resetProjection"], true);
     }
 
     #[test]

@@ -37,8 +37,8 @@ vi.mock("@tauri-apps/api/event", () => ({
   },
 }));
 
-function thread(id: string, workspaceId = "w1", status = "active") {
-  return { id, workspaceId, status } as unknown as StoredThread;
+function thread(id: string, workspaceId = "w1", status = "active", agentSessionId: string | null = `s-${id}`) {
+  return { id, workspaceId, status, agentSessionId } as unknown as StoredThread;
 }
 
 const workspace: StoredWorkspace = { id: "w1", kind: "user" } as unknown as StoredWorkspace;
@@ -76,6 +76,18 @@ describe("useThreadStore", () => {
     expect(h.current.activeThreads.map(t => t.id)).toEqual(["t1", "t2"]);
     // Active thread prefetches agent state.
     expect(prefetchAgentState).toHaveBeenCalledWith("t1");
+    h.unmount();
+  });
+
+  it("does not overwrite a fresh thread's draft selection with null agent state", async () => {
+    const fresh = thread("fresh", "w1", "active", null);
+    listThreads.mockResolvedValue([fresh]);
+    getRecentOrCreateDefaultThread.mockResolvedValue(fresh);
+
+    const h = await mountStore();
+
+    expect(h.current.activeThread?.id).toBe("fresh");
+    expect(prefetchAgentState).not.toHaveBeenCalled();
     h.unmount();
   });
 
@@ -142,14 +154,18 @@ describe("useThreadStore", () => {
     h.unmount();
   });
 
-  it("reduces thread-runtime-updated pushes into run statuses", async () => {
+  it("reduces a thread-runtime-updated batch into run statuses", async () => {
     const h = await mountStore();
     act(() => {
       listeners.get("thread-runtime-updated")?.({
-        payload: { threadId: "t1", runId: "r1", revision: 5, status: "running", resetProjection: false },
+        payload: { updates: [
+          { threadId: "t1", runId: "r1", revision: 5, status: "running", resetProjection: false },
+          { threadId: "t2", runId: "r2", revision: 6, status: "completed", resetProjection: false },
+        ] },
       });
     });
     expect(h.current.threadRunStatuses.t1).toMatchObject({ runId: "r1", status: "running" });
+    expect(h.current.threadRunStatuses.t2).toMatchObject({ runId: "r2", status: "completed" });
     h.unmount();
   });
 
@@ -251,7 +267,7 @@ describe("useThreadStore", () => {
     // A push arrives while the fetch is in flight.
     act(() => {
       listeners.get("thread-runtime-updated")?.({
-        payload: { threadId: "t1", runId: "r9", revision: 9, status: "running", resetProjection: false },
+        payload: { updates: [{ threadId: "t1", runId: "r9", revision: 9, status: "running", resetProjection: false }] },
       });
     });
     expect(h.current.threadRunStatuses.t1).toMatchObject({ runId: "r9" });
@@ -269,7 +285,7 @@ describe("useThreadStore", () => {
     const h = await mountStore();
     act(() => {
       listeners.get("thread-runtime-updated")?.({
-        payload: { threadId: "t1", runId: "r1", revision: 5, status: "running", resetProjection: false },
+        payload: { updates: [{ threadId: "t1", runId: "r1", revision: 5, status: "running", resetProjection: false }] },
       });
     });
     expect(h.current.threadRunStatuses.t1).toBeDefined();

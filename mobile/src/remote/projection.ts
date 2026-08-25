@@ -122,9 +122,10 @@ export function messageToItems(message: AgentMessage): TimelineItem[] {
 /** History entries (mobile wire shape) → the shared session-entry shape. */
 function toSessionEntries(entries: HistoryEntry[]): SessionEntry[] {
   return entries.map((entry, index) => {
-    const role = entry.role === "assistant" || entry.role === "tool" || entry.role === "system"
-      ? entry.role
-      : "user";
+    const role =
+      entry.role === "assistant" || entry.role === "tool" || entry.role === "system"
+        ? entry.role
+        : "user";
     const toolCalls = (entry.tool_calls ?? [])
       .filter(call => !!call && typeof call?.function?.name === "string")
       .map(call => ({

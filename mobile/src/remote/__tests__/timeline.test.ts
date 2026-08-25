@@ -128,26 +128,36 @@ describe("entry reducer", () => {
   });
 
   test("projects a durable checkpoint from reloaded history", () => {
-    const state = timelineFromEntries([{
-      id: "checkpoint-entry",
-      entry_type: "compaction",
-      role: "system",
-      content: "",
-      checkpoint: {
-        schema_version: 2,
-        checkpoint_id: "cp-history",
-        tokens_before: 190_000,
-        tokens_after: 20_000,
-        trigger: "manual",
+    const state = timelineFromEntries([
+      {
+        id: "checkpoint-entry",
+        entry_type: "compaction",
+        role: "system",
+        content: "",
+        checkpoint: {
+          schema_version: 2,
+          checkpoint_id: "cp-history",
+          tokens_before: 190_000,
+          tokens_after: 20_000,
+          trigger: "manual",
+        },
       },
-    }]);
-    const divider = state.items.find(item =>
-      item.kind === "message" && item.segments?.some(segment => segment.kind === "compaction")
+    ]);
+    const divider = state.items.find(
+      item =>
+        item.kind === "message" && item.segments?.some(segment => segment.kind === "compaction"),
     );
     expect(divider).toMatchObject({
       kind: "message",
       id: "m_cp-history",
-      segments: [{ id: "seg_cp-history_compaction", kind: "compaction", tokensBefore: 190_000, trigger: "manual" }],
+      segments: [
+        {
+          id: "seg_cp-history_compaction",
+          kind: "compaction",
+          tokensBefore: 190_000,
+          trigger: "manual",
+        },
+      ],
     });
   });
 
