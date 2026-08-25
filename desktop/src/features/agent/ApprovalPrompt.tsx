@@ -315,10 +315,15 @@ function ActionDetails({ action }: ActionDetailsProps) {
               </div>
             )
           : null}
-        <FileTargets
-          paths={action.targets.map(target => target.path)}
-          scopes={action.targets.map(target => target.scope)}
-        />
+        <div>
+          <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-ink-soft">
+            {t("approval.writablePaths")}
+          </div>
+          <FileTargets
+            paths={action.targets.map(target => target.path)}
+            scopes={action.targets.map(target => target.scope)}
+          />
+        </div>
       </div>
     );
   }
@@ -455,7 +460,7 @@ function FileTargets({
  * It is not useful to an approver, so remove it only from the rendered copy.
  */
 function displayTargetPath(path: string) {
-  const extendedPrefix = "\\\\\\\\?\\";
+  const extendedPrefix = "\\\\?\\";
   if (!path.startsWith(extendedPrefix))
     return path;
 

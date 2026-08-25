@@ -171,6 +171,7 @@
   },
   "approval": {
     "shellCommand": "Shell command",
+    "writablePaths": "Paths requested by this shell command",
     "writeFile": "Write file",
     "writeFiles": "Write {{count}} files",
     "paths": "Paths",

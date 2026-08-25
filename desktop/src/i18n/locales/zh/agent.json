@@ -167,6 +167,7 @@
   },
   "approval": {
     "shellCommand": "Shell 命令",
+    "writablePaths": "此 Shell 命令请求访问的路径",
     "writeFile": "写入文件",
     "writeFiles": "写入 {{count}} 个文件",
     "paths": "路径",
