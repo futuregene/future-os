@@ -22,7 +22,10 @@ export interface ChatScrollApi {
   onScroll: (event: NativeSyntheticEvent<NativeScrollEvent>) => void;
 }
 
-export function useChatScroll(selectedSessionId: string, transcriptItemCount: number): ChatScrollApi {
+export function useChatScroll(
+  selectedSessionId: string,
+  transcriptItemCount: number,
+): ChatScrollApi {
   const listRef = useRef<FlatList<TimelineItem>>(null);
   const [atLatest, setAtLatest] = useState(true);
   const [composerHeight, setComposerHeight] = useState(0);
@@ -125,8 +128,7 @@ export function useChatScroll(selectedSessionId: string, transcriptItemCount: nu
     if (initialScrollPendingRef.current) return;
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
     setAtLatest(
-      contentOffset.y + layoutMeasurement.height >=
-        contentSize.height - AT_LATEST_THRESHOLD,
+      contentOffset.y + layoutMeasurement.height >= contentSize.height - AT_LATEST_THRESHOLD,
     );
   };
 

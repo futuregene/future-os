@@ -16,7 +16,7 @@ vi.mock("../../integrations/storage/markdownReferences", () => ({
   resolveMarkdownReferences: (workspaceId: string, refs: unknown[]) => resolveMock(workspaceId, refs),
 }));
 
-type Listener = (event: { payload: { runId?: string; status?: string } }) => void;
+type Listener = (event: { payload: { updates: Array<{ runId: string; status: string }> } }) => void;
 let terminalListener: Listener | null = null;
 const listenMock = vi.fn((_name: string, handler: Listener) => {
   terminalListener = handler;
@@ -184,15 +184,15 @@ describe("futureReferenceStore", () => {
 
     // Non-terminal payloads are ignored.
     const callsBefore = resolveMock.mock.calls.length;
-    terminalListener!({ payload: { runId: "run-term", status: "running" } });
-    terminalListener!({ payload: { status: "completed" } });
+    terminalListener!({ payload: { updates: [{ runId: "run-term", status: "running" }] } });
+    terminalListener!({ payload: { updates: [] } });
     await flush();
     expect(resolveMock.mock.calls.length).toBe(callsBefore);
 
     // Terminal status re-resolves exactly that run's records.
     resolveMock.mockResolvedValue([resolvedRecord("run-term")]);
     await act(async () => {
-      terminalListener!({ payload: { runId: "run-term", status: "completed" } });
+      terminalListener!({ payload: { updates: [{ runId: "run-term", status: "completed" }] } });
       await Promise.resolve();
     });
     await flush();

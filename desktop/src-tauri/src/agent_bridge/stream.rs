@@ -6,7 +6,10 @@
 use tokio::time::{sleep, timeout, Duration};
 use tonic::Code;
 
-use super::{connect_agent, persist::persist_run_event};
+use super::{
+    connect_agent,
+    persist::{persist_run_event, requires_gui_projection},
+};
 use crate::agent_proto::StreamRequest;
 
 const AGENT_EVENT_STREAM_TIMEOUT_SECS: u64 = 600;
@@ -85,10 +88,10 @@ fn retryable_stream_code(code: Code) -> bool {
     )
 }
 
-/// Persist a run event on a blocking thread, so the synchronous SQLite write
-/// (and the occasional `git` fork on write/artifact events) doesn't stall the
-/// async event loop. Awaited to preserve event order; errors are logged inside
-/// `persist_run_event`.
+/// Project GUI-owned run state on a blocking thread. Raw events are already
+/// durable in the Agent journal, so token-heavy events bypass this work and
+/// only invalidate the live frontend projection. Projection-bearing events are
+/// awaited to preserve their SQLite/tool lifecycle order.
 pub(super) async fn persist_run_event_off_thread(
     thread_id: &str,
     run_id: Option<&str>,
@@ -96,20 +99,32 @@ pub(super) async fn persist_run_event_off_thread(
     data: String,
     sequence: i64,
 ) {
-    let thread_id = thread_id.to_string();
-    let run_id = run_id.map(str::to_string);
-    let emitted_run_id = run_id.clone();
+    let Some(run_id) = run_id else {
+        return;
+    };
     let status = if event_type == "agent_end" {
         "finalizing"
     } else {
         "running"
     }
     .to_string();
+
+    if !requires_gui_projection(&event_type) {
+        crate::emit_thread_runtime_updated(
+            thread_id.to_string(),
+            run_id.to_string(),
+            status,
+            false,
+        );
+        return;
+    }
+
+    let thread_id = thread_id.to_string();
+    let run_id = run_id.to_string();
+    let emitted_run_id = run_id.clone();
     let _ = tokio::task::spawn_blocking(move || {
-        persist_run_event(run_id.as_deref(), &event_type, &data, sequence);
-        if let Some(run_id) = emitted_run_id {
-            crate::emit_thread_runtime_updated(thread_id, run_id, status, false);
-        }
+        persist_run_event(Some(&run_id), &event_type, &data, sequence);
+        crate::emit_thread_runtime_updated(thread_id, emitted_run_id, status, false);
     })
     .await;
 }
@@ -245,6 +260,19 @@ pub(super) async fn collect_agent_response(
                 break "Future Agent event stream closed before the run terminal.".to_string();
             };
             reconnect_attempt = 0;
+
+            // `StreamEvents` attaches to one session broadcaster. Even an
+            // atomic run attachment therefore continues to receive settings
+            // changes, which are deliberately session-scoped (`run_id == ""`
+            // with their own monotonic `session_idx`). The long-lived observer
+            // owns forwarding those events to the UI/remote clients; this
+            // collector must leave the active run untouched and keep waiting
+            // for its next run-scoped event. In particular, changing model or
+            // thinking level applies to the session's next LLM request without
+            // interrupting the response already streaming.
+            if event.run_id.is_empty() && event.session_idx >= 0 {
+                continue;
+            }
 
             if event.run_id != canonical_run_id {
                 return Err(format!(
@@ -526,6 +554,21 @@ mod tests {
         }
     }
 
+    fn session_event(
+        event_type: &str,
+        session_idx: i64,
+        data: &str,
+    ) -> crate::agent_proto::StreamEvent {
+        crate::agent_proto::StreamEvent {
+            r#type: event_type.to_string(),
+            data: data.to_string(),
+            run_id: String::new(),
+            idx: -1,
+            session_idx,
+            ..Default::default()
+        }
+    }
+
     /// A clean one-shot run: text then a complete agent_end.
     #[tokio::test]
     async fn collect_clean_run_assembles_content() {
@@ -548,6 +591,28 @@ mod tests {
         assert_eq!(attaches.len(), 1);
         assert!(attaches[0].atomic_attach);
         assert_eq!(attaches[0].after_idx, -1);
+    }
+
+    #[tokio::test]
+    async fn collect_ignores_session_settings_changes_during_active_run() {
+        let mock = mock_agent();
+        mock.push_stream(StreamScript::Events(
+            vec![
+                stream_event("run-1", 0, "text_chunk", r#"{"text":"before"}"#),
+                session_event("model_changed", 4, r#"{"model":"provider/next"}"#),
+                session_event("thinking_level_changed", 5, r#"{"level":"high"}"#),
+                stream_event("run-1", 1, "text_chunk", r#"{"text":" after"}"#),
+                stream_event("run-1", 2, "agent_end", r#"{"reason":"complete"}"#),
+            ],
+            None,
+        ));
+
+        let response = collect_agent_response(None, "run-1", "sess-1", "thread-1")
+            .await
+            .expect("session settings must not interrupt the active run");
+
+        assert_eq!(response.content, "before after");
+        assert!(response.complete);
     }
 
     /// The lease-coupled collector path (replica.rs collect) end to end.
@@ -982,7 +1047,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn collect_persists_events_off_thread_for_local_runs() {
+    async fn collect_keeps_fast_path_text_complete_and_projects_tools() {
         let home = TestHome::new("stream-persist");
         let mock = mock_agent();
         let workspace = seed_workspace(home.path(), "ws");
@@ -991,14 +1056,15 @@ mod tests {
 
         mock.push_stream(StreamScript::Events(
             vec![
+                stream_event(&run.id, 0, "text_chunk", r#"{"text":"complete answer"}"#),
                 stream_event(
                     &run.id,
-                    0,
+                    1,
                     "tool_start",
                     r#"{"tool_id":"tc1","tool_name":"shell","tool_args":"{}"}"#,
                 ),
-                stream_event(&run.id, 1, "tool_end", r#"{"tool_id":"tc1","text":"ok"}"#),
-                stream_event(&run.id, 2, "agent_end", r#"{"reason":"complete"}"#),
+                stream_event(&run.id, 2, "tool_end", r#"{"tool_id":"tc1","text":"ok"}"#),
+                stream_event(&run.id, 3, "agent_end", r#"{"reason":"complete"}"#),
             ],
             None,
         ));
@@ -1006,6 +1072,7 @@ mod tests {
             .await
             .expect("collect");
         assert!(response.complete);
+        assert_eq!(response.content, "complete answer");
         // The off-thread persistence is awaited per event, so the tool
         // projection is warm by the time collect returns.
         let input = crate::store::get_tool_call_input(&run.id, "tc1").expect("projection");

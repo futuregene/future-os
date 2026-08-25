@@ -1138,6 +1138,11 @@ impl ServerSession {
             context_window,
             model: summarizer_model,
         });
+        // Always validate the selected model's window at the actual execution
+        // boundary. This guard is separate from optional automatic mid-run
+        // compaction and, because it lives on the per-run snapshot, cannot
+        // affect an already streaming response.
+        r#loop.preflight_context_check = true;
         let checkpoint = self
             .session_manager
             .load(&self.session_id)

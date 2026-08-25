@@ -40,12 +40,7 @@ export function RenameModal({
           />
           <View style={styles.dialogActions}>
             <View style={styles.dialogAction}>
-              <Button
-                compact
-                label={t("chat.cancel")}
-                onPress={onClose}
-                variant="secondary"
-              />
+              <Button compact label={t("chat.cancel")} onPress={onClose} variant="secondary" />
             </View>
             <View style={styles.dialogAction}>
               <Button

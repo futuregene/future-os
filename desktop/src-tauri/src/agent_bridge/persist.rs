@@ -7,6 +7,23 @@ use std::path::Path;
 
 use crate::{git_review, store};
 
+/// Whether an Agent event contributes to a GUI-owned projection. The Agent
+/// journal remains the canonical, complete event log; events outside this set
+/// need no duplicate SQLite/tool projection work in the desktop process.
+pub(super) fn requires_gui_projection(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "tool_start"
+            | "toolcall_start"
+            | "tool_end"
+            | "tool_result"
+            | "approval_request"
+            | "approval_decision"
+            | "artifact_created"
+            | "artifact.created"
+    )
+}
+
 pub(super) fn persist_run_event(
     run_id: Option<&str>,
     event_type: &str,
@@ -38,9 +55,22 @@ pub(super) fn persist_run_event(
         store::advance_tool_projection(run_id, std::slice::from_ref(&record));
     }
 
-    // Raw events are durable in the Agent event journal.  Do not create a
+    // Raw events are durable in the Agent event journal. Do not create a
     // second GUI JSONL copy: SQLite receives only independently useful
     // projections needed by sidebar approvals and tool/detail panels.
+    // Tool starts have already advanced the shared in-memory tool projection
+    // above and need no payload parse a second time.
+    if !matches!(
+        event_type,
+        "approval_request"
+            | "approval_decision"
+            | "tool_end"
+            | "tool_result"
+            | "artifact_created"
+            | "artifact.created"
+    ) {
+        return;
+    }
     persist_agent_tool_projection(run_id, event_type, payload, sequence);
 }
 
@@ -567,7 +597,7 @@ mod tests {
     // ── store-backed persistence paths ────────────────────────────────
 
     use super::super::test_support::{seed_run, seed_thread, seed_workspace, TestHome};
-    use super::{event_value, persist_run_event, value_string};
+    use super::{event_value, persist_run_event, requires_gui_projection, value_string};
     use serde_json::json;
 
     struct Fixture {
@@ -587,6 +617,38 @@ mod tests {
             workspace,
             thread,
             run,
+        }
+    }
+
+    #[test]
+    fn only_gui_projection_events_require_blocking_work() {
+        for event_type in [
+            "tool_start",
+            "toolcall_start",
+            "tool_end",
+            "tool_result",
+            "approval_request",
+            "approval_decision",
+            "artifact_created",
+            "artifact.created",
+        ] {
+            assert!(
+                requires_gui_projection(event_type),
+                "{event_type} must retain its GUI projection"
+            );
+        }
+
+        for event_type in [
+            "text_chunk",
+            "thinking_chunk",
+            "usage",
+            "agent_end",
+            "error",
+        ] {
+            assert!(
+                !requires_gui_projection(event_type),
+                "{event_type} should use the journal-only fast path"
+            );
         }
     }
 

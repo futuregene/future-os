@@ -17,6 +17,7 @@ import { refreshSkills } from "../../integrations/skills/skillsClient";
 import { openExternalUrl } from "../../integrations/storage/files";
 import {
   createWorkspace,
+  markThreadOpened,
   pinThread,
   restoreThread,
 } from "../../integrations/storage/threadStore";
@@ -142,6 +143,14 @@ export function AppShell() {
     return () => window.removeEventListener("future:cwd-changed", handler);
   }, [refreshStore]);
 
+  // Keep the startup/default thread and every user-selected thread eligible
+  // for next-launch restoration. This timestamp is intentionally excluded
+  // from the sidebar's recency sort.
+  useEffect(() => {
+    if (activeThreadId)
+      void markThreadOpened(activeThreadId);
+  }, [activeThreadId]);
+
   const { activeApproval, decideApproval } = useApprovals(activeThread?.id ?? null);
   const {
     agentConnection,
@@ -199,9 +208,14 @@ export function AppShell() {
       // possibly by less than the TTL, which would short-circuit a plain
       // prefetch — so force-revalidate the viewed thread. Other threads
       // revalidate on their next activation.
-      revalidateAgentState(activeThreadId);
+      // A new thread has no authoritative Agent state until its first prompt
+      // creates a session. Preserve its explicit draft model/thinking cache;
+      // forcing get_state now would return nulls and replace the user's pick
+      // with the selected model's default.
+      if (activeThread?.agentSessionId)
+        revalidateAgentState(activeThread.id);
     }
-  }, [activeThreadId, agentConnection.status]);
+  }, [activeThread?.id, activeThread?.agentSessionId, agentConnection.status]);
 
   // BYOK (bring your own key): the user chose to skip FutureOS sign-in and add
   // their own provider. Open Settings → Providers so they can configure it.

@@ -69,11 +69,7 @@ export function PreviewModal({
           </Pressable>
         </View>
         {preview?.info.previewKind === "image" ? (
-          <Image
-            resizeMode="contain"
-            source={{ uri: preview.uri }}
-            style={styles.previewImage}
-          />
+          <Image resizeMode="contain" source={{ uri: preview.uri }} style={styles.previewImage} />
         ) : preview?.info.previewKind === "markdown" ? (
           <ScrollView contentContainerStyle={styles.previewMarkdown}>
             {!!preview?.truncated && (

@@ -299,12 +299,7 @@ export function ChatScreen() {
           t={t}
         />
 
-        <ModelSelectorSheet
-          selector={selector}
-          setSelector={setSelector}
-          remote={remote}
-          t={t}
-        />
+        <ModelSelectorSheet selector={selector} setSelector={setSelector} remote={remote} t={t} />
 
         <RenameModal
           renameOpen={rename.renameOpen}

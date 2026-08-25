@@ -356,20 +356,28 @@ function CompactionDivider({
   const manual = trigger === "manual";
   const label =
     status === "running"
-      ? manual ? t("chat.manuallyCompacting") : t("chat.compacting")
+      ? manual
+        ? t("chat.manuallyCompacting")
+        : t("chat.compacting")
       : status === "failed"
-        ? manual ? t("chat.manualCompactionFailed") : t("chat.compactionFailed")
+        ? manual
+          ? t("chat.manualCompactionFailed")
+          : t("chat.compactionFailed")
         : manual
           ? t("chat.manuallyCompacted")
-        : tokensBefore && tokensBefore > 0
-      ? t("chat.compactedTokens", {
-          formattedCount: new Intl.NumberFormat(i18n.language).format(tokensBefore),
-        })
-      : t("chat.compacted");
+          : tokensBefore && tokensBefore > 0
+            ? t("chat.compactedTokens", {
+                formattedCount: new Intl.NumberFormat(i18n.language).format(tokensBefore),
+              })
+            : t("chat.compacted");
   const color = status === "failed" ? colors.danger : colors.inkMuted;
   const lineColor = status === "failed" ? colors.dangerLine : colors.line;
   return (
-    <View accessibilityLabel={label} accessibilityRole={status === "failed" ? "alert" : "text"} style={styles.compactionDivider}>
+    <View
+      accessibilityLabel={label}
+      accessibilityRole={status === "failed" ? "alert" : "text"}
+      style={styles.compactionDivider}
+    >
       <View style={[styles.compactionLine, { backgroundColor: lineColor }]} />
       <Text style={[styles.compactionLabel, { color }]}>{label}</Text>
       <View style={[styles.compactionLine, { backgroundColor: lineColor }]} />
@@ -497,7 +505,13 @@ function SegmentBlock({
     return <ToolRow tool={segment.tool} />;
   }
   // compaction
-  return <CompactionDivider status={segment.status} tokensBefore={segment.tokensBefore} trigger={segment.trigger} />;
+  return (
+    <CompactionDivider
+      status={segment.status}
+      tokensBefore={segment.tokensBefore}
+      trigger={segment.trigger}
+    />
+  );
 }
 
 /**

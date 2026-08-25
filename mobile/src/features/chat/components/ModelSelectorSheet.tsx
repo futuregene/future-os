@@ -88,9 +88,7 @@ export function ModelSelectorSheet({
                             pressed && styles.selectorOptionPressed,
                           ]}
                         >
-                          <Text style={styles.selectorOptionLabel}>
-                            {t(`thinking.${level}`)}
-                          </Text>
+                          <Text style={styles.selectorOptionLabel}>{t(`thinking.${level}`)}</Text>
                           {selected ? <Check color={colors.accent} size={18} /> : null}
                         </Pressable>
                       );

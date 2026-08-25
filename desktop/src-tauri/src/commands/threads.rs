@@ -28,6 +28,11 @@ pub fn get_recent_thread() -> Result<Option<store::ThreadRecord>, crate::AppErro
 }
 
 #[tauri::command]
+pub fn mark_thread_opened(thread_id: String) -> Result<(), crate::AppError> {
+    store::mark_thread_opened(&thread_id)
+}
+
+#[tauri::command]
 pub fn create_thread(
     input: store::CreateThreadInput,
 ) -> Result<store::ThreadRecord, crate::AppError> {

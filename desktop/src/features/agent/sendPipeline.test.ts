@@ -299,13 +299,15 @@ describe("runSendPipeline stream/failure edges", () => {
       expect(handler).not.toBeNull();
     });
     // Matching run: resetProjection variant + plain variant.
-    handler!({ payload: { runId: "run-1", resetProjection: true } });
-    handler!({ payload: { runId: "run-1", resetProjection: false } });
+    handler!({ payload: { updates: [{ runId: "run-1", resetProjection: true }] } });
+    handler!({ payload: { updates: [{ runId: "run-1", resetProjection: false }] } });
     // A different run's event is ignored.
-    handler!({ payload: { runId: "run-other", resetProjection: true } });
+    handler!({ payload: { updates: [{ runId: "run-other", resetProjection: true }] } });
     const { listRunEventsSince } = await import("../../integrations/storage/threadStore");
     await vi.waitFor(() => {
-      expect(listRunEventsSince).toHaveBeenCalled();
+      // One leading read plus one trailing read: burst notifications never run
+      // journal IPCs concurrently, but the newest tail is still consumed.
+      expect(listRunEventsSince).toHaveBeenCalledTimes(2);
     });
     resolveReply({
       content: "answer",

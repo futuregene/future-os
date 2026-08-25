@@ -42,7 +42,7 @@ pub fn list_threads() -> Result<Vec<ThreadRecord>, crate::AppError> {
         "SELECT {THREAD_COLUMNS}
              FROM threads
              WHERE status != 'deleted'
-             ORDER BY pinned DESC, COALESCE(last_message_at, last_opened_at, updated_at) DESC"
+             ORDER BY pinned DESC, COALESCE(last_message_at, updated_at, created_at) DESC"
     ))?;
     let rows = stmt.query_map([], thread_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -225,6 +225,31 @@ pub fn update_thread_session_id(thread_id: &str, session_id: &str) -> Result<(),
     let conn = connect()?;
     conn.execute(SQL, params![session_id, now, thread_id])?;
     mark_catalog_dirty();
+    Ok(())
+}
+
+/// Record that a thread was opened without treating the visit as message
+/// activity. `last_opened_at` chooses the startup thread, but deliberately
+/// does not affect the sidebar's conversation order.
+pub fn mark_thread_opened(thread_id: &str) -> Result<(), crate::AppError> {
+    let now = now_millis();
+    const SQL: &str = "UPDATE threads SET last_opened_at = ?1
+         WHERE id = ?2 AND status != 'deleted'";
+    let conn = connect()?;
+    conn.execute(SQL, params![now, thread_id])?;
+    Ok(())
+}
+
+/// Record conversation activity. This is kept separate from `updated_at`:
+/// metadata changes such as a rename must not reorder the rail.
+pub(super) fn mark_thread_message_activity_in(
+    conn: &Connection,
+    thread_id: &str,
+    now: i64,
+) -> Result<(), crate::AppError> {
+    const SQL: &str = "UPDATE threads SET last_message_at = ?1
+         WHERE id = ?2 AND status != 'deleted'";
+    conn.execute(SQL, params![now, thread_id])?;
     Ok(())
 }
 
@@ -703,6 +728,31 @@ mod tests {
         assert!(find_thread_by_agent_session("sess3")
             .expect("find")
             .is_none());
+    }
+
+    #[test]
+    fn sidebar_sort_ignores_open_time_but_opening_is_still_recorded() {
+        let (_home, conn) = guarded_conn("threads_activity_times");
+        seed_two_threads(&conn);
+        conn.execute("UPDATE threads SET pinned = 0 WHERE id = 't1'", [])
+            .expect("unpin t1");
+        drop(conn);
+
+        // t2 was opened more recently (300), but t1's message is newer (200).
+        let ids: Vec<String> = list_threads()
+            .expect("list")
+            .into_iter()
+            .map(|thread| thread.id)
+            .collect();
+        assert_eq!(ids, vec!["t1", "t2"]);
+
+        mark_thread_opened("t1").expect("record open");
+        let thread = get_thread("t1").expect("get").expect("thread");
+        assert!(thread.last_opened_at.is_some());
+        assert_eq!(
+            thread.updated_at, 1,
+            "opening does not become sidebar activity"
+        );
     }
 
     fn chat_input() -> CreateThreadInput {
