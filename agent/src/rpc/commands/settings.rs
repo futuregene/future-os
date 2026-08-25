@@ -335,9 +335,22 @@ pub(crate) fn handle_set_sandbox_policy(
     let Some(policy) = cmd.sandbox_policy.clone() else {
         return RpcResponse::build_fail(id, "set_sandbox_policy", "missing sandbox_policy payload");
     };
+    let sandbox_available = match crate::sandbox::platform_sandbox_availability() {
+        Ok(available) => available,
+        Err(error) if policy.tier.as_str() == "sandbox" => {
+            return RpcResponse::build_fail(
+                id,
+                "set_sandbox_policy",
+                &format!("Windows sandbox availability could not be determined: {error}"),
+            );
+        }
+        // Manual/off do not depend on the OS sandbox and must remain selectable
+        // while a transient Windows probe error is being retried.
+        Err(_) => false,
+    };
     let summary = serde_json::json!({
         "tier": policy.tier.as_str(),
-        "sandboxAvailable": crate::sandbox::platform_sandbox_available(),
+        "sandboxAvailable": sandbox_available,
     });
     let tier = policy.tier.as_str().to_string();
     session.write().set_sandbox_policy(policy);

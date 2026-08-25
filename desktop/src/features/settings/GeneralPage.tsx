@@ -60,8 +60,12 @@ export function GeneralPage({
             onChange={e => onChangeApprovalTier(e.target.value as ApprovalTier)}
           >
             <option value="manual">{t("approvalTier.manual")}</option>
-            {sandboxAvailability.available
-              ? <option value="sandbox">{t("approvalTier.sandbox")}</option>
+            {sandboxAvailability.available || (approvalTier === "sandbox" && !sandboxAvailability.definitive)
+              ? (
+                  <option disabled={!sandboxAvailability.available} value="sandbox">
+                    {t("approvalTier.sandbox")}
+                  </option>
+                )
               : null}
             <option value="off">{t("approvalTier.off")}</option>
           </Select>
