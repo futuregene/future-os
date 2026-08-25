@@ -33,6 +33,7 @@ fn validator_spawn_failure_is_inconclusive() {
             &mut client,
             "sess",
             &goal,
+            None,
             &todo,
             1,
             None,

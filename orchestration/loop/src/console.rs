@@ -3998,6 +3998,7 @@ async fn run_turns(
             client,
             session_id,
             &boundary,
+            agent_id,
             &todo,
             turn,
             goal.history.last(),
