@@ -1,0 +1,22 @@
+test(loop): exercise up/down messaging through the real run loop
+
+Close the test gap left by the bidirectional-messaging feature: the three
+up-channel turn-boundary reports and the down-channel steer envelope
+injection were only covered at the unit/seam level, not through a full `run`.
+
+- `agent_run_drive`: registered-supervisor reports fire on todo complete /
+  hard failure / AskUser (asserting `enqueue_if_busy` to the registered
+  session), no-report when unregistered; `pending_steer` is injected into the
+  next turn envelope with the SUPERVISOR STEERING header, and a steer
+  targeting another worker is scoped out.
+- `console_sweep`: steer poll read-error (non-UTF8) and bad-JSON-line arms.
+- mock agent records prompt `message` text so envelope content is assertable.
+
+Fixes a bug the scoping test caught: the down-channel envelope injection did
+not match the steer's `agent_id` against the current worker, so a steer
+targeted at worker A leaked into worker B's envelope. `run_turns` now applies
+the same target-matching rule as `steer_worker_poll_once` (broadcast hits all;
+a specific agent_id hits only that worker).
+
+loop 836 tests pass; clippy --workspace --all-targets clean; loop coverage
+91.80% → 91.86%.

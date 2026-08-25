@@ -3926,19 +3926,25 @@ async fn run_turns(
         // stream; read at turn end, including the budget-truncation path).
         let progress = std::sync::Arc::new(TurnProgressTracker::new(now_epoch()));
         // Down-channel steering: drain a NEW pending_steer into this turn's
-        // note (a steer whose ts is newer than the last one we injected). The
-        // same instruction is never re-injected across turns.
-        let steer_note = goal
-            .pending_steer
-            .as_ref()
-            .filter(|s| s.ts > last_steer_ts)
-            .map(|s| {
-                last_steer_ts = s.ts;
-                format!(
-                    "SUPERVISOR STEERING (new instructions — follow them now, superseding the prior plan):\n{}",
-                    s.instruction
-                )
-            });
+        // note (a steer whose ts is newer than the last one we injected, and
+        // whose target matches this worker). The same instruction is never
+        // re-injected across turns. A broadcast (agent_id None) targets every
+        // worker; a specific agent_id targets only the matching worker.
+        let steer_note = goal.pending_steer.as_ref().and_then(|s| {
+            let targets_this_worker = match (agent_id, s.agent_id.as_deref()) {
+                (_, None) => true,
+                (Some(me), Some(target)) => me == target,
+                (None, Some(_)) => false,
+            };
+            if !targets_this_worker || s.ts <= last_steer_ts {
+                return None;
+            }
+            last_steer_ts = s.ts;
+            Some(format!(
+                "SUPERVISOR STEERING (new instructions — follow them now, superseding the prior plan):\n{}",
+                s.instruction
+            ))
+        });
         let continue_note = next_continue_note.take();
         let turn_note = steer_note.or(continue_note);
         let turn_future = execute_turn(

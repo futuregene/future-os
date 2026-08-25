@@ -533,6 +533,197 @@ fn run_max_turn_secs_graceful_timeout() {
     ]);
 }
 
+// ── bidirectional messaging: up-channel turn-boundary reports ────────────────
+
+/// A registered supervisor receives an `enqueue_if_busy` report when a todo
+/// completes (up-channel ②, exercised through the real `run` loop).
+#[test]
+fn run_notifies_supervisor_on_completion() {
+    let cr = cli_root();
+    let (_rt, shared) = mock_env(MockState {
+        events: completed_events("mock-run-1"),
+        ..Default::default()
+    });
+    let goal = init_goal(&cr, "notify on complete");
+    cli_ok(&[
+        "supervisor",
+        "register",
+        "--goal",
+        &goal,
+        "--session-id",
+        "sup-sess",
+    ]);
+    cli_ok(&["run", "--goal", &goal, "--anonymous", "--max-turns", "3"]);
+    let calls = shared.lock().unwrap().prompt_calls.clone();
+    // Exactly one report to the supervisor (the worker's own turn prompt goes
+    // to the worker session, not sup-sess).
+    let reports: Vec<_> = calls.iter().filter(|(sid, _)| sid == "sup-sess").collect();
+    assert_eq!(reports.len(), 1, "one completion report: {calls:?}");
+    assert_eq!(reports[0].1, "enqueue_if_busy");
+}
+
+/// A registered supervisor receives a report when a todo fails on a hard
+/// error (up-channel ③; infra-recoverable 429/truncation is NOT reported).
+#[test]
+fn run_notifies_supervisor_on_hard_failure() {
+    let cr = cli_root();
+    let events = vec![ev(
+        "mock-run-1",
+        0,
+        "agent_end",
+        "{\"state\":\"error\",\"error\":\"boom\"}",
+    )];
+    let (_rt, shared) = mock_env(MockState {
+        events,
+        ..Default::default()
+    });
+    let goal = init_goal(&cr, "notify on failure");
+    cli_ok(&[
+        "supervisor",
+        "register",
+        "--goal",
+        &goal,
+        "--session-id",
+        "sup-sess",
+    ]);
+    // One failed turn, then max-turns bail (a failed todo stays runnable).
+    let _ = cli_err(&["run", "--goal", &goal, "--anonymous", "--max-turns", "1"]);
+    let calls = shared.lock().unwrap().prompt_calls.clone();
+    let reports: Vec<_> = calls.iter().filter(|(sid, _)| sid == "sup-sess").collect();
+    assert_eq!(reports.len(), 1, "one failure report: {calls:?}");
+    assert_eq!(reports[0].1, "enqueue_if_busy");
+}
+
+/// A registered supervisor receives a report when a user gate opens
+/// (up-channel ①, AskUser turn mode).
+#[test]
+fn run_notifies_supervisor_on_ask_user() {
+    let cr = cli_root();
+    let (_rt, shared) = mock_env(MockState {
+        events: completed_events("mock-run-1"),
+        ..Default::default()
+    });
+    let goal = init_goal(&cr, "notify on gate");
+    cli_ok(&[
+        "supervisor",
+        "register",
+        "--goal",
+        &goal,
+        "--session-id",
+        "sup-sess",
+    ]);
+    cli_ok(&[
+        "todo",
+        "add",
+        "--goal",
+        &goal,
+        "--text",
+        "plan gate",
+        "--class",
+        "user_gate",
+        "--gate-question",
+        "approve?",
+    ]);
+    cli_ok(&["run", "--goal", &goal, "--anonymous"]);
+    let calls = shared.lock().unwrap().prompt_calls.clone();
+    let reports: Vec<_> = calls.iter().filter(|(sid, _)| sid == "sup-sess").collect();
+    assert_eq!(reports.len(), 1, "one gate report: {calls:?}");
+    assert_eq!(reports[0].1, "enqueue_if_busy");
+}
+
+/// Without a registered supervisor, a completed turn produces NO report
+/// (the durable user gate remains the authoritative channel).
+#[test]
+fn run_without_supervisor_sends_no_report() {
+    let cr = cli_root();
+    let (_rt, shared) = mock_env(MockState {
+        events: completed_events("mock-run-1"),
+        ..Default::default()
+    });
+    let goal = init_goal(&cr, "no supervisor");
+    cli_ok(&["run", "--goal", &goal, "--anonymous", "--max-turns", "3"]);
+    let calls = shared.lock().unwrap().prompt_calls.clone();
+    // Only the worker's own turn prompt; nothing to sup-sess (no registration).
+    assert_eq!(calls.len(), 1, "one worker prompt, zero reports: {calls:?}");
+    assert_ne!(calls[0].0, "sup-sess");
+}
+
+// ── bidirectional messaging: down-channel steering into the turn envelope ───
+
+/// A `WorkerSteered` instruction folded into `pending_steer` is injected into
+/// the next turn's envelope (down-channel, non-interrupt path — the instruction
+/// is delivered without re-injecting across turns).
+#[test]
+fn run_injects_pending_steer_into_turn_envelope() {
+    let cr = cli_root();
+    let (_rt, shared) = mock_env(MockState {
+        events: completed_events("mock-run-1"),
+        ..Default::default()
+    });
+    let goal = init_goal(&cr, "steer envelope");
+    // Pre-seed a steering instruction targeting this worker (broadcast).
+    let mut store = open_store(&cr);
+    store
+        .append(future_loop::store::Event::WorkerSteered {
+            goal_id: goal.clone(),
+            agent_id: None,
+            instruction: "switch to plan B".to_string(),
+            ts: now_epoch(),
+        })
+        .unwrap();
+    drop(store);
+    cli_ok(&["run", "--goal", &goal, "--anonymous", "--max-turns", "3"]);
+    let messages = shared.lock().unwrap().prompt_messages.clone();
+    assert_eq!(messages.len(), 1, "one turn: {messages:?}");
+    assert!(
+        messages[0].contains("switch to plan B"),
+        "steer instruction injected into the turn envelope: {}",
+        messages[0]
+    );
+    assert!(
+        messages[0].contains("SUPERVISOR STEERING"),
+        "steer header present: {}",
+        messages[0]
+    );
+}
+
+/// A steer targeted at a DIFFERENT worker is NOT injected into this worker's
+/// envelope (agent_id scoping).
+#[test]
+fn run_ignores_steer_targeting_another_worker() {
+    let cr = cli_root();
+    let (_rt, shared) = mock_env(MockState {
+        events: completed_events("mock-run-1"),
+        ..Default::default()
+    });
+    let goal = init_goal(&cr, "steer scoping");
+    let mut store = open_store(&cr);
+    store
+        .append(future_loop::store::Event::WorkerSteered {
+            goal_id: goal.clone(),
+            agent_id: Some("other-worker".to_string()),
+            instruction: "not for me".to_string(),
+            ts: now_epoch(),
+        })
+        .unwrap();
+    drop(store);
+    cli_ok(&[
+        "run",
+        "--goal",
+        &goal,
+        "--agent-id",
+        "this-worker",
+        "--max-turns",
+        "3",
+    ]);
+    let messages = shared.lock().unwrap().prompt_messages.clone();
+    assert!(
+        !messages[0].contains("not for me"),
+        "foreign steer must not leak into this worker: {}",
+        messages[0]
+    );
+}
+
 // ── models ─────────────────────────────────────────────────────────────────
 
 #[test]

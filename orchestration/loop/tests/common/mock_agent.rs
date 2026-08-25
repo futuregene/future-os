@@ -68,6 +68,8 @@ pub struct MockState {
     pub new_session_names: Vec<String>,
     /// (session_id, busy_policy) of every prompt command, in order.
     pub prompt_calls: Vec<(String, String)>,
+    /// The `message` text of every prompt command, in order.
+    pub prompt_messages: Vec<String>,
 }
 
 impl MockState {
@@ -169,6 +171,7 @@ impl FutureAgent for MockAgent {
                 st.prompts += 1;
                 st.prompt_calls
                     .push((cmd.session_id.clone(), cmd.busy_policy.clone()));
+                st.prompt_messages.push(cmd.message.clone());
                 format!("{{\"run_id\":\"mock-run-{}\"}}", st.prompts)
             }
             "list_models" => st.models_payload.clone().unwrap_or_else(|| {

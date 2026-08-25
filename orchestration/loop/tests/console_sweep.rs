@@ -630,6 +630,55 @@ fn steer_worker_poll_once_resets_client_on_abort_failure() {
 }
 
 #[test]
+fn steer_worker_poll_once_read_errors_and_bad_lines() {
+    let cr = cli_root();
+    let gid = init_goal(&cr, "steer read errors");
+    let events_path = open_store(&cr).goal_dir(&gid).join("events.jsonl");
+    let rt = rt();
+    let (addr, shared) = rt.block_on(spawn_mock(MockState::default()));
+    std::env::set_var("FUTURE_LOOP_AGENT_ADDR", &addr);
+    rt.block_on(async {
+        // Non-UTF8 content → read_to_string fails → offset unchanged.
+        std::fs::write(&events_path, [0xffu8, 0xfe, 0xfd]).unwrap();
+        let mut client = None;
+        let off = future_loop::console::steer_worker_poll_once(
+            &events_path,
+            0,
+            Some("worker-a"),
+            &mut client,
+            "sess",
+        )
+        .await;
+        assert_eq!(off, 0);
+
+        // Bad JSON line is skipped (no abort); a valid steer after it fires.
+        std::fs::write(
+            &events_path,
+            "{broken\n{\"kind\":\"worker_steered\",\"instruction\":\"x\",\"ts\":1}\n",
+        )
+        .unwrap();
+        let mut client = None;
+        let _ = future_loop::console::steer_worker_poll_once(
+            &events_path,
+            0,
+            Some("worker-a"),
+            &mut client,
+            "sess",
+        )
+        .await;
+        assert!(
+            shared
+                .lock()
+                .unwrap()
+                .recorded
+                .contains(&"abort".to_string()),
+            "the valid steer line must abort"
+        );
+    });
+    std::env::remove_var("FUTURE_LOOP_AGENT_ADDR");
+}
+
+#[test]
 fn notify_supervisor_survives_prompt_failure() {
     let _cr = cli_root();
     let rt = rt();
