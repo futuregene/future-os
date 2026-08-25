@@ -158,6 +158,20 @@ td .sub { color: var(--tx-3); font-size: 11px; margin-top: 2px; }
 th.tip { text-decoration: underline dotted var(--tx-3); text-underline-offset: 3px; cursor: help; }
 
 /* ── graph ──────────────────────────────────────────── */
+.gvport { position: relative; height: 440px; overflow: hidden; border-radius: 8px; cursor: grab;
+  background: radial-gradient(circle at 1px 1px, #1a232e 1px, transparent 1px) 0 0/22px 22px, var(--bg-1); }
+.gvport.dragging { cursor: grabbing; }
+/* Fullscreen via a body class so position:fixed is never affected by an
+   ancestor's transform/filter (which would make fixed behave like absolute). */
+.gvport.full { position: fixed !important; top: 14px; left: 14px; right: 14px; bottom: 14px;
+  width: auto; height: auto; z-index: 120;
+  border: 1px solid var(--line-2); box-shadow: 0 24px 90px rgba(0,0,0,.65); border-radius: 10px; }
+body.gv-full { overflow: hidden; }
+.gcontrols { position: absolute; top: 10px; right: 10px; display: flex; gap: 6px; z-index: 5; }
+.gcontrols button { width: 28px; height: 28px; background: var(--bg-3); border: 1px solid var(--line-2);
+  color: var(--tx); border-radius: 6px; font-size: 14px; line-height: 1; }
+.gcontrols button:hover { background: var(--bg-2); border-color: var(--acc); }
+.gvport .hint { position: absolute; left: 12px; bottom: 8px; color: var(--tx-3); font-size: 10.5px; pointer-events: none; }
 .gnode { cursor: pointer; }
 .gnode rect { fill: var(--bg-2); stroke: var(--line-2); rx: 6; }
 .gnode.selected rect { stroke: var(--acc); stroke-width: 2; }
@@ -200,6 +214,7 @@ textarea:focus, input[type=text]:focus { outline: 1px solid var(--acc); }
 .spark i.hot { background: var(--acc); }
 .legend { display: flex; gap: 14px; color: var(--tx-3); font-size: 11px; margin-top: 6px; flex-wrap: wrap; }
 .legend b { font-weight: 550; }
+.subnote { color: var(--tx-3); font-size: 11.5px; margin: -6px 0 10px; }
 pre.raw { background: var(--bg-2); border-radius: 7px; padding: 10px 12px; font: 10.5px/1.5 var(--mono);
   overflow-x: auto; max-height: 320px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
 .sev-high { color: #f08a8a; } .sev-action { color: #f0c06a; } .sev-info { color: #7cb9f5; }
@@ -482,7 +497,7 @@ function renderDTab(g, d, gates, unvalidated, deliveriesByTodo, openObl){
   if(dTab === "todos"){
     const rows = g.todos.map(t => {
       const dv = deliveriesByTodo[t.id];
-      const lease = t.claimed_by ? `<div class="sub" data-tip="current lease holder + expiry${t.holder_alive===false?" · the holding process is DEAD (auto-reclaimed on next claim)":""}">lease ${esc(t.claimed_by)} · exp ${ago(t.lease_expires_at)}${t.holder_alive===false?" · <span class='sev-high'>holder dead</span>":""}</div>` : "";
+      const lease = t.claimed_by ? `<div class="sub" data-tip="A lease is the bounded execution window a worker holds on this todo. Each lease records the worker's process id (pid); if that process is no longer alive, the lease is orphaned and auto-reclaimed — this one is orphaned (holder process is dead).">lease ${esc(t.claimed_by)} · exp ${ago(t.lease_expires_at)}${t.holder_alive===false?" · <span class='sev-high'>holder dead</span>":""}</div>` : "";
       const val = t.validator ? `<div class="sub mono" data-tip="independent verify command run after each turn; exit 0 = validated${t.passed_validation?" · passed":""}">✓ ${esc(t.validator)}${t.passed_validation?" · passed":(t.status==="done"?" · <span class='sev-high'>UNVALIDATED</span>":"")}</div>` : "";
       const gateQ = t.gate_question ? `<div class="sub">❓ ${esc(t.gate_question)}</div>` : "";
       const dec = t.decision ? `<div class="sub">→ ${esc(t.decision)}</div>` : "";
@@ -562,6 +577,7 @@ function renderDTab(g, d, gates, unvalidated, deliveriesByTodo, openObl){
     const semRows = (g.semantic_history||[]).slice(-30).reverse().map(s => `<tr>
       <td class="mono" style="white-space:nowrap">${ago(s.ts)}</td><td>${badge(s.kind||"evt","b-mut","semantic event kind")}</td><td class="ttitle"><div class="t" data-tip="${esc(s.summary||s.text||"")}">${esc(s.summary||s.text||JSON.stringify(s))}</div></td></tr>`).join("");
     el.innerHTML = `
+      <p class="subnote">A <b>run</b> is one bounded turn a worker executes on a todo: the agent acts, evidence is written back, and the ledger records tokens / cost / tools / validation for that turn. This table is the spend + outcome history of every turn on the goal.</p>
       <div class="sect"><h2 data-tip="every bounded turn: validation receipt, failure classification, tokens, cost, evidence">Run ledger <span class="count">${g.runs.length}</span></h2>
         ${g.runs.length? `<div class="twrap"><table><thead><tr>
           ${TH("turn","turn ordinal")}${TH("todo","todo worked")}${TH("run","run id")}${TH("outcome","terminal state + verify receipt + failure kind")}${TH("tok in/out","input / output tokens")}${TH("cost","turn cost")}${TH("evidence","what landed")}${TH("when","recorded at")}
@@ -574,7 +590,9 @@ function renderDTab(g, d, gates, unvalidated, deliveriesByTodo, openObl){
   }
 
   if(dTab === "events"){
-    el.innerHTML = `<div class="sect"><h2 data-tip="the canonical event-sourced ledger — goal state is a replay of these events">Event ledger <span class="count">newest first · ${g.event_count} total</span></h2>
+    el.innerHTML = `
+      <p class="subnote">The <b>event ledger</b> is the source of truth: an append-only log of everything that ever happened to the goal (todo added/completed, gate resolved, run recorded, lease claimed…). The whole goal state — todos, statuses, spend — is just a <i>replay</i> of these events. Newest first.</p>
+      <div class="sect"><h2 data-tip="the canonical event-sourced ledger — goal state is a replay of these events">Event ledger <span class="count">newest first · ${g.event_count} total</span></h2>
       <div id="events"><div class="empty card">loading…</div></div></div>`;
     renderEvents();
     return;
@@ -621,14 +639,15 @@ function inspectTodo(id){
     ${row("monitor due", t.monitor_due_at? tsLocal(t.monitor_due_at)+" ("+ago(t.monitor_due_at)+")" : null)}
     ${row("no-change polls", t.consecutive_no_change || null)}
     ${row("resume when", esc(t.resume_when_text))}
-    ${row("lease", t.claimed_by? t.claimed_by+" · expires "+tsLocal(t.lease_expires_at)+" ("+ago(t.lease_expires_at)+")"+(t.holder_alive===false?" · HOLDER DEAD":"") : null)}
+    ${row("lease", t.claimed_by? t.claimed_by+" · expires "+tsLocal(t.lease_expires_at)+" ("+ago(t.lease_expires_at)+")"+(t.holder_alive===false?" · holder process dead (orphaned lease, auto-reclaimed)":"") : null)}
     ${row("evidence", esc(t.evidence))}
     <div class="fgroup"><div class="fk">timestamps</div><div class="fv mono">updated ${tsLocal(t.updated_at)}${t.completed_at?" · completed "+tsLocal(t.completed_at):""}</div></div>
     ${t.status==="open"&&t.class==="user_gate"? `<div class="fgroup"><div class="fk">resolve (CLI)</div><div class="fv mono" style="font-size:11px">future loop gate resolve --goal ${esc(DETAIL_ID)} --todo-id ${esc(t.id)} --decision \"…\"</div></div>`:""}
   `);
 }
 
-/* ── dependency graph (layered DAG, auto-height, no libs) ── */
+/* ── dependency graph (layered DAG, zoom/pan/fullscreen, no libs) ── */
+let GV = {scale: 1, x: 0, y: 0, drag: null, built: false};
 function renderGraph(g){
   const el = $("#graph"); if(!el) return;
   const todos = g.todos.filter(t=>t.archive_state!=="archived");
@@ -664,9 +683,82 @@ function renderGraph(g){
   const paths = edges.map(([a,b]) => { const p1 = pos[a], p2 = pos[b]; if(!p1||!p2) return "";
     const x1 = p1.x+W, y1 = p1.y+H/2, x2 = p2.x, y2 = p2.y+H/2; const mx = (x1+x2)/2;
     return `<path class="gedge" d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}"/>`; }).join("");
-  el.innerHTML = `<div style="overflow:auto"><svg width="${Math.max(width,300)}" height="${Math.max(height,60)}" style="display:block">
-    <defs><marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
-    <path d="M0,0 L8,4 L0,8 z" fill="#2e3d4d"/></marker></defs>${paths}${nodes}</svg></div>`;
+
+  const NS = "http://www.w3.org/2000/svg";
+  el.innerHTML = `<div class="gvport" id="gvport">
+      <div class="gcontrols">
+        <button id="gzout" data-tip="zoom out">−</button>
+        <button id="gzreset" data-tip="fit / reset view">⤾</button>
+        <button id="gzin" data-tip="zoom in">+</button>
+        <button id="gzfull" data-tip="fullscreen (esc to exit)">⛶</button>
+      </div>
+      <div class="hint">scroll to zoom · drag to pan · double-click empty to fit · click a node for detail</div>
+    </div>`;
+  const port = $("#gvport");
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("width", "100%"); svg.setAttribute("height", "100%"); svg.style.display = "block";
+  svg.innerHTML = `<defs><marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+    <path d="M0,0 L8,4 L0,8 z" fill="#2e3d4d"/></marker></defs>`;
+  const world = document.createElementNS(NS, "g");
+  world.innerHTML = paths + nodes;
+  svg.appendChild(world);
+  port.appendChild(svg);
+
+  const gw = width, gh = height;
+  function apply(){ world.setAttribute("transform", `translate(${GV.x},${GV.y}) scale(${GV.scale})`); }
+  function fit(){
+    const pw = port.clientWidth || 600, ph = port.clientHeight || 440;
+    GV.scale = Math.min(pw/gw, ph/gh, 1.6) * 0.94;
+    GV.x = (pw - gw*GV.scale)/2; GV.y = (ph - gh*GV.scale)/2;
+    apply();
+  }
+  fit();
+  // Re-fit when entering/exiting fullscreen (class toggle is sync but the
+  // resize lands in the same frame, so a rAF is enough — no arbitrary delay).
+  function refitSoon(){ requestAnimationFrame(() => requestAnimationFrame(fit)); }
+
+  // zoom (wheel, centered on cursor)
+  port.addEventListener("wheel", e => {
+    e.preventDefault();
+    const r = port.getBoundingClientRect();
+    const mx = e.clientX - r.left, my = e.clientY - r.top;
+    const factor = e.deltaY < 0 ? 1.12 : 1/1.12;
+    const ns = Math.min(4, Math.max(0.15, GV.scale * factor));
+    GV.x = mx - (mx - GV.x) * (ns/GV.scale);
+    GV.y = my - (my - GV.y) * (ns/GV.scale);
+    GV.scale = ns; apply();
+  }, {passive:false});
+  // pan (drag on empty space)
+  port.addEventListener("mousedown", e => {
+    if(e.target.closest(".gnode") || e.target.closest(".gcontrols")) return;
+    GV.drag = {sx: e.clientX, sy: e.clientY, ox: GV.x, oy: GV.y};
+    port.classList.add("dragging");
+    e.preventDefault();
+  });
+  window.addEventListener("mousemove", e => { if(!GV.drag) return;
+    GV.x = GV.drag.ox + (e.clientX - GV.drag.sx);
+    GV.y = GV.drag.oy + (e.clientY - GV.drag.sy); apply(); });
+  window.addEventListener("mouseup", () => { GV.drag = null; port.classList.remove("dragging"); });
+  port.addEventListener("dblclick", e => { if(!e.target.closest(".gnode")) fit(); });
+  // controls
+  $("#gzin").onclick = () => { GV.scale = Math.min(4, GV.scale*1.25); apply(); };
+  $("#gzout").onclick = () => { GV.scale = Math.max(0.15, GV.scale/1.25); apply(); };
+  $("#gzreset").onclick = fit;
+  $("#gzfull").onclick = () => {
+    const on = port.classList.toggle("full");
+    document.body.classList.toggle("gv-full", on);
+    refitSoon();
+  };
+  if(!GV.escBound){ GV.escBound = true;
+    document.addEventListener("keydown", e => { if(e.key === "Escape") {
+      const f = document.querySelector(".gvport.full");
+      if(f){ f.classList.remove("full"); document.body.classList.remove("gv-full");
+        // re-fit the now-small canvas
+        if(typeof GV.refit === "function") GV.refit();
+      }
+    }});
+  }
+  GV.refit = refitSoon;
 }
 
 /* ── boot ────────────────────────────────────────────── */
