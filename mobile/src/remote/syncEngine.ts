@@ -71,6 +71,20 @@ export interface SyncDeps {
   requestGetState(sessionId: string): Promise<RemoteSessionState>;
   requestHistory(sessionId: string): Promise<TimelineState>;
   fetchReplay(sessionId: string, runId: string, sinceIdx: number): Promise<ReplayResult>;
+  onFailure?(failure: SyncFailure): void;
+  onRecovered?(sessionId: string): void;
+}
+
+export type SyncStage = "get_state" | "history" | "replay";
+
+export interface SyncFailure {
+  sessionId: string;
+  runId?: string;
+  reason: ReconcileReason;
+  stage: SyncStage;
+  attempt: number;
+  retryInMs: number;
+  error: unknown;
 }
 
 export type ReconcileReason =
@@ -159,6 +173,38 @@ export class SyncEngine {
     for (const lane of this.lanes.values()) {
       if (lane.sessionId !== "") this.enqueueReplay(lane, { reason });
     }
+  }
+
+  /**
+   * Invalidate work that may still be awaiting an old transport generation and
+   * immediately rebuild every real lane from durable state. A reconnect must
+   * not enqueue behind a request that was suspended with the previous socket.
+   */
+  restartAll(reason: ReconcileReason): void {
+    const sessionIds = [...this.lanes.keys()].filter(sessionId => sessionId !== "");
+    for (const sessionId of sessionIds) this.restart(sessionId, reason);
+  }
+
+  /** Immediately restart one lane, preserving its last committed UI snapshot. */
+  restart(sessionId: string, reason: ReconcileReason): void {
+    if (!sessionId) return;
+    const previous = this.lanes.get(sessionId);
+    if (previous?.retryTimer) clearTimeout(previous.retryTimer);
+    const lane: SessionLane = {
+      sessionId,
+      generation: this.generation,
+      chain: Promise.resolve(),
+      cursor: previous ? new Map(previous.cursor) : newCursor(),
+      timeline: previous?.timeline ?? null,
+      ops: [],
+      replayQueue: [],
+      established: previous?.timeline != null,
+      retryAttempt: 0,
+      retryNotBefore: 0,
+      retryTimer: null,
+    };
+    this.lanes.set(sessionId, lane);
+    this.enqueueReplay(lane, { reason });
   }
 
   /** Apply a synchronous timeline mutation inside the lane. Never throws. */
@@ -256,9 +302,9 @@ export class SyncEngine {
     let justReconciledRun: string | null = null;
     const request = lane.replayQueue.shift();
     if (request) {
-      const reconciled = await this.runReconcile(lane, request);
+      const failure = await this.runReconcile(lane, request);
       if (!this.isCurrent(lane)) return;
-      if (!reconciled) {
+      if (failure) {
         // Preserve both the reconcile instruction and every queued live op.
         // Marking a failed request as "just reconciled" made applyOps discard
         // the gap event and its suffix under exactly the weak-network condition
@@ -270,6 +316,15 @@ export class SyncEngine {
           500 * 2 ** Math.min(lane.retryAttempt - 1, 6),
         );
         lane.retryNotBefore = Date.now() + delay;
+        this.deps.onFailure?.({
+          sessionId: lane.sessionId,
+          ...(failure.runId ? { runId: failure.runId } : {}),
+          reason: request.reason,
+          stage: failure.stage,
+          attempt: lane.retryAttempt,
+          retryInMs: delay,
+          error: failure.error,
+        });
         this.scheduleRetry(lane);
         return;
       }
@@ -278,6 +333,7 @@ export class SyncEngine {
       if (lane.retryTimer) clearTimeout(lane.retryTimer);
       lane.retryTimer = null;
       justReconciledRun = request.runId ?? null;
+      this.deps.onRecovered?.(lane.sessionId);
     }
     this.applyOps(lane, justReconciledRun);
   }
@@ -293,44 +349,47 @@ export class SyncEngine {
     }, delay);
   }
 
-  private async runReconcile(lane: SessionLane, request: ReconcileRequest): Promise<boolean> {
-    if (lane.sessionId === "") return true; // the draft lane has no desktop state.
+  private async runReconcile(
+    lane: SessionLane,
+    request: ReconcileRequest,
+  ): Promise<{ stage: SyncStage; runId?: string; error: unknown } | null> {
+    if (lane.sessionId === "") return null; // the draft lane has no desktop state.
+    let stage: SyncStage = "get_state";
+    let targetRunId = request.runId ?? "";
     try {
       const state = await this.deps.requestGetState(lane.sessionId);
       const activeRunId = state.activeRun?.runId ?? "";
       // The reconcile target is the requested run (a snapshot-flip run that
       // just settled is no longer active) else the active run.
-      const targetRunId = request.runId || activeRunId;
+      targetRunId = request.runId || activeRunId;
 
       const full = this.isFullReplay(lane, targetRunId, request);
       if (full) {
-        await this.fullReconcile(lane, targetRunId);
+        stage = "history";
+        const history = await this.deps.requestHistory(lane.sessionId);
+        let base = mergeLiveInto(history, lane.timeline);
+        if (targetRunId) {
+          stage = "replay";
+          base = stripRunItems(base, targetRunId);
+          base = await this.replayInto(lane, base, targetRunId, -1);
+        }
+        lane.timeline = base;
+        this.commit(lane);
       } else {
+        stage = "replay";
         await this.tailReconcile(lane, targetRunId);
       }
       lane.established = true;
-      return true;
-    } catch {
+      return null;
+    } catch (error) {
       // Network/desktop failure mid-reconcile — keep the last committed
       // snapshot and let the lane's bounded retry timer try the same instruction.
-      return false;
+      return {
+        stage,
+        ...(targetRunId ? { runId: targetRunId } : {}),
+        error,
+      };
     }
-  }
-
-  /**
-   * Rebuild the timeline from durable history + a whole-run replay. Used when
-   * the run's prefix is not provably complete (mid-run join), when the run was
-   * replaced (run_snapshot), or on a forced full reason (prefix / resend).
-   */
-  private async fullReconcile(lane: SessionLane, targetRunId: string): Promise<void> {
-    const history = await this.deps.requestHistory(lane.sessionId);
-    let base = mergeLiveInto(history, lane.timeline);
-    if (targetRunId) {
-      base = stripRunItems(base, targetRunId);
-      base = await this.replayInto(lane, base, targetRunId, -1);
-    }
-    lane.timeline = base;
-    this.commit(lane);
   }
 
   /**

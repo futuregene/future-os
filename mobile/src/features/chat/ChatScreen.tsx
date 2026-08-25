@@ -7,6 +7,7 @@ import {
   Keyboard,
   KeyboardAvoidingView,
   Platform,
+  Pressable,
   StyleSheet,
   Text,
   View,
@@ -94,7 +95,10 @@ export function ChatScreen() {
   // History load is in flight (selectSession holds busy until it lands) — show
   // a spinner instead of flashing the "no history" empty state.
   const loadingHistory =
-    !remote.draft && (remote.busy || remote.timelinePending) && timelineItems.length === 0;
+    !remote.timelineError &&
+    !remote.draft &&
+    (remote.busy || remote.timelinePending) &&
+    timelineItems.length === 0;
 
   const decideApproval = useCallback(
     async (id: string, decision: "approved" | "rejected") => {
@@ -201,7 +205,18 @@ export function ChatScreen() {
             data={transcriptItems}
             keyExtractor={item => item.id}
             ListEmptyComponent={
-              loadingHistory ? (
+              remote.timelineError ? (
+                <View style={styles.loadingState}>
+                  <Text style={styles.historyError}>{t("chat.historyLoadTimedOut")}</Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => void remote.retryTimeline()}
+                    style={({ pressed }) => [styles.retryButton, pressed && styles.retryPressed]}
+                  >
+                    <Text style={styles.retryLabel}>{t("common.retry")}</Text>
+                  </Pressable>
+                </View>
+              ) : loadingHistory ? (
                 <View style={styles.loadingState}>
                   <ActivityIndicator color={colors.accent} />
                   <Text style={styles.empty}>{t("chat.loadingHistory")}</Text>
@@ -323,6 +338,15 @@ const styles = StyleSheet.create({
   emptyTimeline: { flexGrow: 1, alignItems: "center", justifyContent: "center" },
   empty: { color: colors.inkMuted, fontSize: 14 },
   loadingState: { alignItems: "center", gap: spacing.sm, paddingVertical: spacing.xl },
+  historyError: { color: colors.inkMuted, fontSize: 14, textAlign: "center" },
+  retryButton: {
+    backgroundColor: colors.accent,
+    borderRadius: radius.pill,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+  },
+  retryPressed: { opacity: 0.75 },
+  retryLabel: { color: colors.surface, fontSize: 14, fontWeight: "600" },
   itemGap: { height: spacing.md },
   transferTrack: {
     position: "absolute",

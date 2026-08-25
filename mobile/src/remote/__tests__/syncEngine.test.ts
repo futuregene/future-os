@@ -165,6 +165,67 @@ describe("SyncEngine", () => {
     expect(commits.mock.calls[0][0].sessionId).toBe("new-session");
   });
 
+  test("restart bypasses a request still pending on the previous connection", async () => {
+    let releaseOldState: (() => void) | undefined;
+    const oldState = new Promise<{ activeRun?: { runId: string } }>(resolve => {
+      releaseOldState = () => resolve({});
+    });
+    let stateReads = 0;
+    const engine = new SyncEngine({
+      requestGetState: async () => {
+        stateReads += 1;
+        return stateReads === 1 ? oldState : {};
+      },
+      requestHistory: async () => ({
+        ...emptyTimeline(),
+        items: [{ id: "history", kind: "message", role: "user", text: "restored" }],
+      }),
+      fetchReplay: async () => ({ events: [] }),
+    });
+    const commits = jest.fn();
+    engine.subscribe(commits);
+
+    engine.reconcile("s1", "open");
+    await new Promise(resolve => setTimeout(resolve, 0));
+    engine.restart("s1", "reconnect");
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    expect(stateReads).toBe(2);
+    expect(commits).toHaveBeenCalledTimes(1);
+    expect(commits.mock.calls[0][0].timeline.items[0]).toMatchObject({ text: "restored" });
+
+    releaseOldState?.();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(commits).toHaveBeenCalledTimes(1);
+  });
+
+  test("reports the failed stage and scheduled retry for diagnostics", async () => {
+    const onFailure = jest.fn();
+    const engine = new SyncEngine({
+      requestGetState: async () => ({ activeRun: { runId: "run-1" } }),
+      requestHistory: async () => emptyTimeline(),
+      fetchReplay: async () => {
+        throw new Error("replay unavailable");
+      },
+      onFailure,
+    });
+
+    engine.reconcile("s1", "open");
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    expect(onFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "s1",
+        runId: "run-1",
+        reason: "open",
+        stage: "replay",
+        attempt: 1,
+        retryInMs: 500,
+      }),
+    );
+    engine.clear();
+  });
+
   test("mid-run join replays the prefix from -1 (H3)", async () => {
     const run = nextRunId();
     const h = new Harness(run);
