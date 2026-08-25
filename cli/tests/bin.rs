@@ -17,6 +17,27 @@ fn future(args: &[&str]) -> (Option<i32>, String, String) {
     )
 }
 
+/// Run `future` with an isolated HOME so the spawned agent cannot contend
+/// with other agent-spawning tests on the user-level singleton lock
+/// (`~/.future/agent/agent-instance.lock`). Two parallel tests racing on
+/// that lock produce the known CI flake where `agent run` exits with
+/// "already running for this user" before tracing init (empty stdout, exit 1
+/// without the expected message). HOME is the primary lookup (USERPROFILE is
+/// the Windows fallback), so both are isolated.
+fn future_with_home(args: &[&str], home: &std::path::Path) -> (Option<i32>, String, String) {
+    let output = Command::new(env!("CARGO_BIN_EXE_future"))
+        .args(args)
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .output()
+        .expect("spawn future binary");
+    (
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
 #[test]
 fn version_flag() {
     let (code, stdout, stderr) = future(&["--version"]);
@@ -43,8 +64,12 @@ fn embedded_agent_help() {
 #[test]
 fn embedded_agent_run_failure_is_exit_1() {
     // Port 1 fails to serve → run_agent's error arm (agent logs go to
-    // stdout via tracing).
-    let (code, stdout, _) = future(&["agent", "--grpc-addr", "127.0.0.1:1"]);
+    // stdout via tracing). Isolated HOME: this test and the logfile test
+    // below both spawn a real agent; without isolation they race on the
+    // user-level agent singleton lock and one of them flakes with an empty
+    // stdout (the lock is rejected before tracing init).
+    let home = tempfile::tempdir().expect("tempdir");
+    let (code, stdout, _) = future_with_home(&["agent", "--grpc-addr", "127.0.0.1:1"], home.path());
     assert_eq!(code, Some(1));
     assert!(stdout.contains("exited with error"), "stdout: {stdout}");
 }
@@ -54,12 +79,18 @@ fn embedded_agent_logfile_failure_returns_err() {
     // A --log-file whose parent path is a regular FILE makes logfile::init
     // fail → agent run_from_args returns Err → main's run_agent error arm
     // (a serve failure instead exits the process from inside the agent, so
-    // it can never reach that arm).
+    // it can never reach that arm). Isolated HOME keeps this test off the
+    // agent singleton lock that embedded_agent_run_failure_is_exit_1 races
+    // on (see that test).
     let dir = tempfile::tempdir().expect("tempdir");
     let blocker = dir.path().join("blocker");
     std::fs::write(&blocker, "x").expect("write blocker");
     let bad = blocker.join("agent.log");
-    let (code, _, stderr) = future(&["agent", "--log-file", bad.to_str().expect("utf8 path")]);
+    let home = tempfile::tempdir().expect("tempdir");
+    let (code, _, stderr) = future_with_home(
+        &["agent", "--log-file", bad.to_str().expect("utf8 path")],
+        home.path(),
+    );
     assert_eq!(code, Some(1));
     assert!(stderr.contains("Error:"), "stderr: {stderr}");
 }
