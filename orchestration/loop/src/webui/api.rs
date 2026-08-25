@@ -54,6 +54,14 @@ pub struct TodoView {
     pub updated_at: u64,
     pub completed_at: Option<u64>,
     pub passed_validation: bool,
+    // ── run rollup for the cost column ───────────────────────────────
+    pub runs: u32,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub cost: f64,
+    pub first_run_at: Option<u64>,
+    pub last_run_at: Option<u64>,
+    pub last_holder: Option<String>,
 }
 
 fn class_label(t: &Todo) -> &'static str {
@@ -77,6 +85,20 @@ fn status_label(t: &Todo) -> &'static str {
 }
 
 fn todo_view(goal: &Goal, t: &Todo) -> TodoView {
+    let mut runs = 0u32;
+    let mut tokens_in = 0u64;
+    let mut tokens_out = 0u64;
+    let mut cost = 0.0f64;
+    let mut first_run_at: Option<u64> = None;
+    let mut last_run_at: Option<u64> = None;
+    for r in goal.history.iter().filter(|r| r.todo_id == t.id) {
+        runs += 1;
+        tokens_in += r.tokens_in_delta;
+        tokens_out += r.tokens_out_delta;
+        cost += r.cost_delta;
+        first_run_at = Some(first_run_at.map_or(r.recorded_at, |f: u64| f.min(r.recorded_at)));
+        last_run_at = Some(last_run_at.map_or(r.recorded_at, |l: u64| l.max(r.recorded_at)));
+    }
     TodoView {
         id: t.id.clone(),
         index: t.index,
@@ -115,6 +137,13 @@ fn todo_view(goal: &Goal, t: &Todo) -> TodoView {
         updated_at: t.updated_at,
         completed_at: t.completed_at,
         passed_validation: goal.has_passed_validation(&t.id),
+        runs,
+        tokens_in,
+        tokens_out,
+        cost: nnz(cost),
+        first_run_at,
+        last_run_at,
+        last_holder: t.claimed_by.clone(),
     }
 }
 
@@ -126,13 +155,31 @@ pub struct AgentView {
     pub last_heartbeat: Option<u64>,
     pub heartbeat_age_secs: Option<u64>,
     pub active_leases: Vec<String>,
+    // ── run rollup for the cost column ───────────────────────────────
+    pub runs: u32,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub cost: f64,
+    pub first_run_at: Option<u64>,
+    pub last_run_at: Option<u64>,
+    /// Model used for NEW runs of this agent (loop-wide default — the
+    /// kernel does not persist per-run model; see `model_config`).
+    pub model: String,
 }
 
-fn agent_views(goal: &Goal, now: u64) -> Vec<AgentView> {
+fn agent_views(goal: &Goal, now: u64, default_model: &str) -> Vec<AgentView> {
     let mut ids: Vec<String> = goal.registered_agents.clone();
     for a in goal.scheduler_heartbeats.keys() {
         if !ids.iter().any(|x| x == a) {
             ids.push(a.clone());
+        }
+    }
+    // Agents inferred from lease claims (never registered explicitly).
+    for t in &goal.todos {
+        if let Some(c) = &t.claimed_by {
+            if !ids.iter().any(|x| x == c) {
+                ids.push(c.clone());
+            }
         }
     }
     ids.sort();
@@ -149,6 +196,25 @@ fn agent_views(goal: &Goal, now: u64) -> Vec<AgentView> {
                 })
                 .collect();
             leases.sort_by_key(|t| t.index);
+            let mut runs = 0u32;
+            let mut tokens_in = 0u64;
+            let mut tokens_out = 0u64;
+            let mut cost = 0.0f64;
+            let mut first_run_at: Option<u64> = None;
+            let mut last_run_at: Option<u64> = None;
+            for r in goal
+                .history
+                .iter()
+                .filter(|r| r.run_id.starts_with(&format!("{id}-")))
+            {
+                runs += 1;
+                tokens_in += r.tokens_in_delta;
+                tokens_out += r.tokens_out_delta;
+                cost += r.cost_delta;
+                first_run_at =
+                    Some(first_run_at.map_or(r.recorded_at, |f: u64| f.min(r.recorded_at)));
+                last_run_at = Some(last_run_at.map_or(r.recorded_at, |l: u64| l.max(r.recorded_at)));
+            }
             AgentView {
                 id: id.clone(),
                 capabilities: profile.map(|p| p.capabilities.clone()).unwrap_or_default(),
@@ -156,6 +222,13 @@ fn agent_views(goal: &Goal, now: u64) -> Vec<AgentView> {
                 last_heartbeat: hb,
                 heartbeat_age_secs: hb.map(|h| now.saturating_sub(h)),
                 active_leases: leases.into_iter().map(|t| t.id.clone()).collect(),
+                runs,
+                tokens_in,
+                tokens_out,
+                cost: nnz(cost),
+                first_run_at,
+                last_run_at,
+                model: default_model.to_string(),
             }
         })
         .collect()
@@ -249,6 +322,52 @@ fn spend_view(goal: &Goal, now: u64) -> SpendView {
         }
     }
     v
+}
+
+/// Loop-run model configuration. The loop kernel does not persist which
+/// model a turn used (only token/cost deltas land in the run ledger), so
+/// the dashboard shows the model that NEW runs will use. Resolution order
+/// mirrors `run`: explicit `--model` flag (not visible here) → agent
+/// settings `default_model` → first credentialed catalog entry.
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelConfig {
+    /// Effective model used when `run` is invoked without `--model`.
+    pub default_model: Option<String>,
+    /// Where the value came from: `settings.json` | null (agent fallback).
+    pub source: Option<String>,
+    /// ~/.future/agent/settings.json (shown so the user knows where to edit).
+    pub settings_path: String,
+    pub note: String,
+}
+
+pub fn model_config() -> ModelConfig {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_default();
+    let settings_path = format!("{home}/.future/agent/settings.json");
+    let mut model = None;
+    let mut source = None;
+    if let Ok(text) = std::fs::read_to_string(&settings_path) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+            let m = v
+                .get("default_model")
+                .and_then(|m| m.as_str())
+                .map(str::trim)
+                .filter(|m| !m.is_empty())
+                .map(str::to_string);
+            if m.is_some() {
+                model = m;
+                source = Some("settings.json");
+            }
+        }
+    }
+    ModelConfig {
+        default_model: model,
+        source: source.map(str::to_string),
+        settings_path,
+        note: "applies to new `run` turns; past runs record only token/cost deltas, not the model"
+            .to_string(),
+    }
 }
 
 /// JSON payloads must not carry `-0.0` (an empty run history sums to
@@ -346,6 +465,7 @@ pub struct Overview {
     pub totals: OverviewTotals,
     pub attention: attention::AttentionQueue,
     pub goals: Vec<GoalCard>,
+    pub model: ModelConfig,
 }
 
 /// Replay every registered goal (a goal whose ledger fails to replay is
@@ -429,6 +549,7 @@ pub fn overview(store: &Store) -> Result<Overview> {
         totals,
         attention: queue,
         goals: cards,
+        model: model_config(),
     })
 }
 
@@ -458,6 +579,8 @@ pub struct GoalDetail {
     pub authority: crate::state::Authority,
     pub execution_profile: crate::state::ExecutionProfile,
     pub event_count: usize,
+    /// Model applied to new runs (loop-wide; see `model_config`).
+    pub model: ModelConfig,
 }
 
 pub fn goal_detail(store: &Store, goal_id: &str) -> Result<Option<GoalDetail>> {
@@ -473,6 +596,8 @@ pub fn goal_detail(store: &Store, goal_id: &str) -> Result<Option<GoalDetail>> {
     runs.truncate(200);
     let graph = task_graph::build_task_graph(&goal).ok();
     let event_count = store.events(goal_id).map(|e| e.len()).unwrap_or(0);
+    let model = model_config();
+    let default_model = model.default_model.clone().unwrap_or_default();
     Ok(Some(GoalDetail {
         goal_id: goal.goal_id.clone(),
         objective: goal.objective.clone(),
@@ -485,7 +610,7 @@ pub fn goal_detail(store: &Store, goal_id: &str) -> Result<Option<GoalDetail>> {
         attention: attention::goal_attention_item(&goal),
         replan_obligations: replan_obligation::detect_obligations(&goal),
         todos,
-        agents: agent_views(&goal, now),
+        agents: agent_views(&goal, now, &default_model),
         acceptance: goal.acceptance.clone(),
         deliveries: goal.delivery_states.clone(),
         unvalidated_deliveries: goal
@@ -502,6 +627,7 @@ pub fn goal_detail(store: &Store, goal_id: &str) -> Result<Option<GoalDetail>> {
         authority: goal.authority.clone(),
         execution_profile: goal.execution_profile.clone(),
         event_count,
+        model,
     }))
 }
 

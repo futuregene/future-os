@@ -287,6 +287,12 @@ fn route(req: &Request, root: &str) -> Vec<u8> {
             Err(e) => error_response(500, &format!("{e:#}")),
         };
     }
+    if req.method == "GET" && path == "/api/config" {
+        return json_response(
+            200,
+            &serde_json::json!({"ok": true, "data": api::model_config()}),
+        );
+    }
     // /api/goals/{id}/... segments
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     if segments.len() >= 2 && segments[0] == "api" && segments[1] == "goals" {
