@@ -15,23 +15,14 @@ import {
   saveApprovalRules,
 } from "../../integrations/storage/runs";
 
-// Localized title/summary per approval kind (the agent sends English). An
-// unmapped kind falls back to the agent-provided strings.
-const KIND_I18N: Record<string, { title: string; summary?: string }> = {
-  file_read: { summary: "approval.readSummary", title: "approval.readTitle" },
-  file_write: {
-    summary: "approval.writeSummary",
-    title: "approval.writeTitle",
-  },
-  outside_workspace_write: {
-    summary: "approval.outsideWriteSummary",
-    title: "approval.outsideWriteTitle",
-  },
-  sandbox_escalation: { title: "approval.escalationTitle" }, // note carries the rest
-  shell_command: {
-    summary: "approval.shellSummary",
-    title: "approval.shellTitle",
-  },
+// Localized titles per approval kind (the agent sends English). An unmapped
+// kind falls back to the agent-provided title.
+const KIND_I18N: Record<string, { title: string }> = {
+  file_read: { title: "approval.readTitle" },
+  file_write: { title: "approval.writeTitle" },
+  outside_workspace_write: { title: "approval.outsideWriteTitle" },
+  sandbox_escalation: { title: "approval.escalationTitle" },
+  shell_command: { title: "approval.shellTitle" },
 };
 
 interface ApprovalPromptProps {
@@ -67,27 +58,11 @@ export function ApprovalPrompt({
     = action?.category === "windows_write_capability"
       ? action.targets
       : undefined;
-  const capabilityTarget
-    = capabilityTargets?.length === 1 ? capabilityTargets[0] : undefined;
   const titleText = capabilityTargets
-    ? capabilityTarget
-      ? t(
-          capabilityTarget.scope === "file"
-            ? "approval.capabilityFileTitle"
-            : "approval.capabilitySubtreeTitle",
-          { path: capabilityTarget.path },
-        )
-      : t("approval.capabilityMultiTitle", { count: capabilityTargets.length })
+    ? t("approval.capabilityTitle")
     : kindI18n
       ? t(kindI18n.title)
       : approval.title;
-  const summaryText = capabilityTargets
-    ? null
-    : kindI18n
-      ? kindI18n.summary
-        ? t(kindI18n.summary)
-        : null
-      : approval.summary;
   const saveSuggestion = useMemo(
     () => parseSaveSuggestion(approval.saveSuggestion),
     [approval.saveSuggestion],
@@ -214,11 +189,6 @@ export function ApprovalPrompt({
           </h2>
         </div>
       </div>
-      {summaryText
-        ? (
-            <p className="mt-2 text-sm leading-5 text-ink-soft">{summaryText}</p>
-          )
-        : null}
       {action ? <ActionDetails action={action} /> : null}
       {fallbackAction
         ? (
@@ -333,30 +303,10 @@ function ActionDetails({ action }: ActionDetailsProps) {
   if (action.category === "windows_write_capability" && action.targets) {
     return (
       <div className="mt-3 space-y-2">
-        {action.targets.length > 1
-          ? (
-              <div>
-                <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-ink-soft">
-                  {t("approval.locations")}
-                </div>
-                <ul className="space-y-1 rounded-md bg-surface-subtle p-3 text-xs text-ink">
-                  {action.targets.map((target, index) => (
-                    <li
-                      className="flex items-start justify-between gap-3"
-                      key={`${target.path}-${String(index)}`}
-                    >
-                      <span className="break-all font-mono">{target.path}</span>
-                      <span className="shrink-0 text-ink-soft">
-                        {target.scope === "file"
-                          ? t("approval.thisFile")
-                          : t("approval.folderContents")}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )
-          : null}
+        <FileTargets
+          paths={action.targets.map(target => target.path)}
+          scopes={action.targets.map(target => target.scope)}
+        />
         {action.command
           ? (
               <details className="rounded-md bg-surface-subtle px-3 py-2 text-xs">
@@ -428,20 +378,17 @@ function ActionDetails({ action }: ActionDetailsProps) {
   if (action.writes && action.writes.length > 0) {
     return (
       <div className="mt-3 space-y-2">
-        <div className="text-[11px] font-medium uppercase tracking-wide text-ink-soft">
-          {action.writes.length === 1
-            ? t("approval.writeFile")
-            : t("approval.writeFiles", { count: action.writes.length })}
-        </div>
+        <FileTargets
+          paths={action.writes.map(entry => entry.path)}
+        />
         {action.writes.map((entry, index) => (
           <div
             className="rounded-md bg-surface-subtle p-3"
             key={`${entry.path}-${String(index)}`}
           >
-            <div className="font-mono text-xs text-ink">{entry.path}</div>
             {entry.preview
               ? (
-                  <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap wrap-break-word text-xs leading-5 text-ink-soft">
+                  <pre className="max-h-32 overflow-auto whitespace-pre-wrap wrap-break-word text-xs leading-5 text-ink-soft">
                     <code className="block min-w-0">{entry.preview}</code>
                   </pre>
                 )
@@ -452,34 +399,12 @@ function ActionDetails({ action }: ActionDetailsProps) {
     );
   }
 
-  if (action.deletes && action.deletes.length > 0) {
-    return (
-      <div className="mt-3">
-        <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-ink-soft">
-          {action.deletes.length === 1
-            ? t("approval.deleteFile")
-            : t("approval.deleteFiles", { count: action.deletes.length })}
-        </div>
-        <ul className="space-y-1 rounded-md bg-surface-subtle p-3 font-mono text-xs text-ink">
-          {action.deletes.map((entry, index) => (
-            <li key={`${entry.path}-${String(index)}`}>{entry.path}</li>
-          ))}
-        </ul>
-      </div>
-    );
-  }
-
   if (action.paths && action.paths.length > 0) {
     return (
       <div className="mt-3">
-        <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-ink-soft">
-          {t("approval.paths")}
-        </div>
-        <ul className="space-y-1 rounded-md bg-surface-subtle p-3 font-mono text-xs text-ink">
-          {action.paths.map((entry, index) => (
-            <li key={`${entry}-${String(index)}`}>{entry}</li>
-          ))}
-        </ul>
+        <FileTargets
+          paths={action.paths}
+        />
       </div>
     );
   }
@@ -493,6 +418,34 @@ function ActionDetails({ action }: ActionDetailsProps) {
   }
 
   return null;
+}
+
+function FileTargets({
+  paths,
+  scopes,
+}: {
+  paths: string[];
+  scopes?: Array<"file" | "subtree">;
+}) {
+  const { t } = useTranslation("agent");
+  return (
+    <ul className="space-y-1 rounded-md bg-surface-subtle p-3 font-mono text-xs leading-5 text-ink">
+      {paths.map((path, index) => (
+        <li className="flex items-start justify-between gap-3" key={`${path}-${String(index)}`}>
+          <span className="break-all">{path}</span>
+          {scopes?.[index]
+            ? (
+                <span className="shrink-0 font-sans text-ink-soft">
+                  {scopes[index] === "file"
+                    ? t("approval.thisFile")
+                    : t("approval.folderContents")}
+                </span>
+              )
+            : null}
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 function isEditableTarget(target: EventTarget | null) {
