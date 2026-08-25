@@ -303,22 +303,22 @@ function ActionDetails({ action }: ActionDetailsProps) {
   if (action.category === "windows_write_capability" && action.targets) {
     return (
       <div className="mt-3 space-y-2">
+        {action.command
+          ? (
+              <div>
+                <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-ink-soft">
+                  {t("approval.shellCommand")}
+                </div>
+                <pre className="max-h-[33vh] overflow-auto whitespace-pre-wrap wrap-break-word rounded-md bg-surface-subtle p-3 font-mono text-xs leading-5 text-ink">
+                  <code className="block min-w-0">{action.command}</code>
+                </pre>
+              </div>
+            )
+          : null}
         <FileTargets
           paths={action.targets.map(target => target.path)}
           scopes={action.targets.map(target => target.scope)}
         />
-        {action.command
-          ? (
-              <details className="rounded-md bg-surface-subtle px-3 py-2 text-xs">
-                <summary className="cursor-pointer select-none text-ink-soft">
-                  {t("approval.viewCommand")}
-                </summary>
-                <pre className="mt-2 max-h-[33vh] overflow-auto whitespace-pre-wrap wrap-break-word font-mono leading-5 text-ink">
-                  <code className="block min-w-0">{action.command}</code>
-                </pre>
-              </details>
-            )
-          : null}
       </div>
     );
   }
@@ -432,13 +432,15 @@ function FileTargets({
     <ul className="space-y-1 rounded-md bg-surface-subtle p-3 font-mono text-xs leading-5 text-ink">
       {paths.map((path, index) => (
         <li className="flex items-start justify-between gap-3" key={`${path}-${String(index)}`}>
-          <span className="break-all">{path}</span>
-          {scopes?.[index]
+          <span className="break-all">{displayTargetPath(path)}</span>
+          {scopes?.[index] === "subtree"
             ? (
-                <span className="shrink-0 font-sans text-ink-soft">
-                  {scopes[index] === "file"
-                    ? t("approval.thisFile")
-                    : t("approval.folderContents")}
+                <span
+                  aria-label={t("approval.folderScopeWarning")}
+                  className="shrink-0 text-warning"
+                  title={t("approval.folderScopeWarning")}
+                >
+                  <AlertTriangle className="size-4" />
                 </span>
               )
             : null}
@@ -446,6 +448,21 @@ function FileTargets({
       ))}
     </ul>
   );
+}
+
+/**
+ * Windows uses the extended-length prefix internally for exact path handling.
+ * It is not useful to an approver, so remove it only from the rendered copy.
+ */
+function displayTargetPath(path: string) {
+  const extendedPrefix = "\\\\\\\\?\\";
+  if (!path.startsWith(extendedPrefix))
+    return path;
+
+  const ordinary = path.slice(extendedPrefix.length);
+  return ordinary.startsWith("UNC\\")
+    ? `\\\\${ordinary.slice("UNC\\".length)}`
+    : ordinary;
 }
 
 function isEditableTarget(target: EventTarget | null) {
