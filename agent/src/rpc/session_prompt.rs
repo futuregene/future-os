@@ -874,11 +874,11 @@ impl ServerSession {
             // run_terminal marker plus a refreshed session_info snapshot, then
             // commit at a durable boundary — O(this run), not O(full history).
             //
-            // A full rewrite is reserved for the two cases that make the
-            // in-memory history diverge from the appended JSONL: compaction
-            // replacing the message list, or a mid-run append failure. commit_run
-            // reports the latter by refusing to commit, and we then heal via a
-            // full rewrite (which also applies the compacted history).
+            // A full rewrite is reserved for a mid-run append failure. Modern
+            // compaction only changes the model-facing projection and appends a
+            // checkpoint, so the complete in-memory history remains aligned with
+            // the JSONL journal. commit_run reports an append failure by refusing
+            // to commit, and we then heal via a full rewrite.
             let terminal_state = if was_cancelled {
                 crate::session::RUN_STATE_CANCELLED
             } else if run_error.is_some() {
@@ -1126,8 +1126,8 @@ impl ServerSession {
             .resolve(model)
             .map(|m| m.context_window)
             .unwrap_or(1_000_000);
-        let reserve_tokens = ((context_window as f64 * 0.1) as i32).max(16384);
-        let keep_recent_tokens = ((context_window as f64 * 0.2) as i32).max(reserve_tokens);
+        let (reserve_tokens, keep_recent_tokens) =
+            crate::compaction::context_token_budgets(context_window);
         // The session model is canonical `provider/id` for persistence and
         // registry lookup, while provider requests require the Loop's bare ID.
         let summarizer_model = r#loop.model.clone();
@@ -1317,9 +1317,8 @@ impl ServerSession {
     }
 
     /// Rebuild the complete session snapshot from the in-memory message list for
-    /// a full rewrite. This is the O(history) path, reserved for runs where
-    /// compaction replaced the message history (diverging from the appended
-    /// JSONL) or where a mid-run append failed and the file must be healed.
+    /// a full rewrite. This is the O(history) repair path for a mid-run append
+    /// failure; normal runs and committed checkpoints remain append-only.
     ///
     /// `info_entry` is the authoritative session_info snapshot (prepended).
     /// On-disk timestamps and prior-run token stats are preserved by index so a

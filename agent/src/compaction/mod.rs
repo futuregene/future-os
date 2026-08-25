@@ -6,6 +6,35 @@ use std::collections::{HashMap, HashSet};
 
 mod semantic;
 
+pub(super) const INTERNAL_CHECKPOINT_METADATA_KEY: &str = "internal_context_checkpoint";
+
+/// Derive compaction budgets without allowing the historical 16K minimum to
+/// consume an entire small model window. The minimum remains useful for large
+/// models, but scales down to at most one quarter of the available context.
+pub fn context_token_budgets(context_window: i32) -> (i32, i32) {
+    let window = context_window.max(1);
+    let proportional_reserve = ((window as f64 * 0.1) as i32).max(1);
+    let scaled_minimum = 16_384.min((window / 4).max(1));
+    let reserve_tokens = proportional_reserve.max(scaled_minimum).min(window - 1);
+    let usable_context = window.saturating_sub(reserve_tokens).max(1);
+    let keep_recent_tokens = ((window as f64 * 0.2) as i32)
+        .max(reserve_tokens)
+        .min(usable_context);
+    (reserve_tokens, keep_recent_tokens)
+}
+
+pub(super) fn stamp_internal_checkpoint_message(message: &mut AgentMessage, entry_id: &str) {
+    let metadata = message.metadata.get_or_insert_with(serde_json::Map::new);
+    metadata.insert(
+        AgentMessage::JOURNAL_ENTRY_ID_KEY.to_string(),
+        serde_json::Value::String(entry_id.to_string()),
+    );
+    metadata.insert(
+        INTERNAL_CHECKPOINT_METADATA_KEY.to_string(),
+        serde_json::Value::Bool(true),
+    );
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CompactionSettings {
     pub enabled: bool,
@@ -296,13 +325,7 @@ pub fn project_prompt_context(
                     "text": format!("[Context compaction: {summary}]")
                 }]),
             );
-            message
-                .metadata
-                .get_or_insert_with(serde_json::Map::new)
-                .insert(
-                    AgentMessage::JOURNAL_ENTRY_ID_KEY.to_string(),
-                    serde_json::Value::String(checkpoint.entry_id.clone()),
-                );
+            stamp_internal_checkpoint_message(&mut message, &checkpoint.entry_id);
             projected.push(ProjectedMessage {
                 message,
                 source_entry_ids: vec![checkpoint.entry_id.clone()],
@@ -797,6 +820,23 @@ mod tests {
             keep_recent_tokens: 5000,
         };
         assert!(!should_compact(100_000, 128_000, &settings));
+    }
+
+    #[test]
+    fn context_budgets_leave_room_for_small_model_windows() {
+        for window in [4_096, 8_192, 16_384, 64_000, 1_000_000] {
+            let (reserve, keep_recent) = context_token_budgets(window);
+            assert!(reserve > 0, "window {window} must retain a reserve");
+            assert!(
+                reserve < window,
+                "window {window} must retain usable prompt space"
+            );
+            assert!(keep_recent > 0);
+            assert!(
+                keep_recent <= window - reserve,
+                "recent tail must fit beside the reserve for window {window}"
+            );
+        }
     }
 
     // ─── estimate_context_tokens ───────────────────────────────────────────
