@@ -163,6 +163,18 @@ fn legacy_string_checkpoint(entry: &SessionEntry) -> Option<ContextCheckpoint> {
     if entry.entry_type != "user" || entry.role != "user" {
         return None;
     }
+    // Modern user entries carry their owning run id. Never reinterpret their
+    // literal text as the released legacy compaction protocol; genuine legacy
+    // marker entries predate run provenance and therefore have no such stamp.
+    if entry
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("run_id"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|run_id| !run_id.is_empty())
+    {
+        return None;
+    }
     let text = match entry.content.as_ref()? {
         serde_json::Value::String(text) => text.as_str(),
         serde_json::Value::Array(blocks) => blocks
@@ -293,6 +305,18 @@ mod tests {
         let parsed = entry_to_checkpoint(&entry).unwrap();
         assert!(parsed.legacy_without_cutoff);
         assert_eq!(parsed.tokens_before, 99);
+    }
+
+    #[test]
+    fn modern_user_text_that_looks_like_a_legacy_marker_stays_user_content() {
+        let mut entry = SessionEntry::new_user(
+            "user",
+            serde_json::json!("[Context compaction: explain this literal syntax]"),
+        );
+        entry.meta = Some(serde_json::json!({"run_id": "run-modern"}));
+
+        assert!(entry_to_checkpoint(&entry).is_none());
+        assert!(latest_context_checkpoint(&[entry]).is_none());
     }
 
     #[test]
