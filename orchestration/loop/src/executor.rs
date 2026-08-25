@@ -21,6 +21,13 @@ use crate::state::{
 /// error turns in a single night, every one of them a 429.)
 pub const RATE_LIMIT_BACKOFF_SECS: u64 = 45;
 
+/// Default bound for consecutive `incomplete` turns (model stream truncated
+/// mid-reply) on the same todo before `future loop run` stops. The retry
+/// itself is free — an incomplete turn is an infra event that never consumes
+/// the repair budget — but an endless truncation loop would spin without
+/// progress, so it is bounded.
+pub const DEFAULT_MAX_INCOMPLETE_RETRIES: u32 = 3;
+
 /// Whether a turn's error is a recoverable rate-limit (HTTP 429 / overloaded).
 /// These are NOT science failures — they are throttle events — so the loop
 /// must back off, not count them toward a repair budget or replan.
@@ -161,10 +168,40 @@ fn run_validator(goal: &Goal, todo: &Todo) -> Option<TaskValidation> {
     }
 }
 
+/// Consecutive trailing `incomplete` records for `todo_id` (the just-written
+/// record included). Replayed from the ledger, so an orchestrator restart
+/// does not reset the bound.
+pub fn incomplete_streak(history: &[RunRecord], todo_id: &str) -> u32 {
+    history
+        .iter()
+        .rev()
+        .take_while(|r| r.todo_id == todo_id && r.terminal_state == "incomplete")
+        .count() as u32
+}
+
+/// The continue note injected into the next turn's envelope when the previous
+/// turn ended `incomplete`, or `None` when the retry bound is exhausted and
+/// the run must stop. A truncated stream is an infra event, not a science
+/// failure — the agent gets an explicit "continue where you left off" instead
+/// of a bare re-offer of the same todo (which invites restarting from scratch).
+pub fn incomplete_continue_note(streak: u32, max_retries: u32, todo_id: &str) -> Option<String> {
+    if max_retries == 0 || streak >= max_retries {
+        return None;
+    }
+    Some(format!(
+        "CONTINUE: your previous turn for todo {todo_id} ended INCOMPLETE \
+         (the model stream was truncated mid-reply). Pick up exactly where \
+         you left off — do not restart work that already completed. \
+         (incomplete attempt {streak}/{max_retries})"
+    ))
+}
+
 /// Execute one bounded turn for `todo` and return the ledger entry (spend).
 /// `decision_summary` (G-9): the `ShouldRunPacket` from the decision kernel,
 /// embedded in the turn envelope so the agent sees the decision context
 /// (mode / reason / arbitration) alongside the instruction.
+/// `continue_note`: injected at the top of the turn message when the previous
+/// turn ended incomplete (bounded retry).
 #[allow(clippy::too_many_arguments)]
 pub async fn execute_turn(
     client: &mut AgentClient,
@@ -177,6 +214,7 @@ pub async fn execute_turn(
     decision_summary: Option<&crate::contract::ShouldRunPacket>,
     runs_dir: Option<std::path::PathBuf>,
     progress: Option<&TurnProgressTracker>,
+    continue_note: Option<&str>,
 ) -> Result<RunRecord> {
     if !boundary_injected {
         client
@@ -190,7 +228,10 @@ pub async fn execute_turn(
     // Surface the backing agent session id so in-turn tooling (e.g. trace
     // converters) can locate the real session deterministically instead of
     // guessing by file mtime.
-    let message = format!("session: {session_id}\n{message}");
+    let message = match continue_note {
+        Some(note) => format!("{note}\n\nsession: {session_id}\n{message}"),
+        None => format!("session: {session_id}\n{message}"),
+    };
     // Idempotency key owned by the orchestrator — retry must not double-execute.
     let client_request_id = format!("turn-{}-{}", turn, todo.id);
 
@@ -300,7 +341,6 @@ pub fn writeback(
 #[cfg(test)]
 mod validator_tests {
     use super::validator_tautology;
-
     #[test]
     fn empty_n_literal_is_always_false() {
         assert!(validator_tautology("test -d out && test -n \"\"").is_some());
@@ -335,5 +375,65 @@ mod validator_tests {
         assert!(!is_rate_limit_error(Some("validator exited 1")));
         assert!(!is_rate_limit_error(Some("timeout")));
         assert!(!is_rate_limit_error(None));
+    }
+
+    #[test]
+    fn incomplete_streak_counts_only_trailing_same_todo_records() {
+        use super::{incomplete_streak, RunRecord};
+        fn rec(turn: u32, todo: &str, state: &str) -> RunRecord {
+            RunRecord {
+                turn,
+                todo_id: todo.to_string(),
+                run_id: format!("run-{turn}"),
+                terminal_state: state.to_string(),
+                error: None,
+                tokens_in_delta: 0,
+                tokens_out_delta: 0,
+                cost_delta: 0.0,
+                tools: vec![],
+                evidence: String::new(),
+                recorded_at: 0,
+                spend_source: Some("run".into()),
+                failure_kind: None,
+                validation: None,
+            }
+        }
+        // completed, incomplete, incomplete → streak 2
+        let history = vec![
+            rec(1, "T1", "completed"),
+            rec(2, "T1", "incomplete"),
+            rec(3, "T1", "incomplete"),
+        ];
+        assert_eq!(incomplete_streak(&history, "T1"), 2);
+        // a trailing record for ANOTHER todo breaks the streak
+        let history = vec![
+            rec(1, "T1", "incomplete"),
+            rec(2, "T1", "incomplete"),
+            rec(3, "T2", "completed"),
+        ];
+        assert_eq!(incomplete_streak(&history, "T1"), 0);
+        // a completed record for the same todo breaks the streak
+        let history = vec![
+            rec(1, "T1", "incomplete"),
+            rec(2, "T1", "completed"),
+            rec(3, "T1", "incomplete"),
+        ];
+        assert_eq!(incomplete_streak(&history, "T1"), 1);
+        assert_eq!(incomplete_streak(&[], "T1"), 0);
+    }
+
+    #[test]
+    fn incomplete_continue_note_respects_the_bound() {
+        use super::incomplete_continue_note;
+        let note = incomplete_continue_note(1, 3, "T1").expect("retry allowed");
+        assert!(note.contains("CONTINUE"), "note: {note}");
+        assert!(note.contains("todo T1"), "note: {note}");
+        assert!(note.contains("1/3"), "note: {note}");
+        assert!(incomplete_continue_note(2, 3, "T1").is_some());
+        // streak reaches the bound → stop
+        assert!(incomplete_continue_note(3, 3, "T1").is_none());
+        assert!(incomplete_continue_note(4, 3, "T1").is_none());
+        // a zero bound disables retries entirely
+        assert!(incomplete_continue_note(1, 0, "T1").is_none());
     }
 }

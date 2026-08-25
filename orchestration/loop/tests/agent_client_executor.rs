@@ -485,6 +485,7 @@ fn execute_turn_completed_no_validator() {
             None,
             Some(runs_dir.clone()),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -525,6 +526,7 @@ fn execute_turn_with_decision_summary_and_prev() {
             Some(&packet),
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -560,6 +562,7 @@ fn execute_turn_error_turn_skips_validator() {
             None,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -591,6 +594,7 @@ fn execute_turn_validator_pass_and_fail() {
             None,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -614,6 +618,7 @@ fn execute_turn_validator_pass_and_fail() {
             1,
             None,
             true,
+            None,
             None,
             None,
             None,
