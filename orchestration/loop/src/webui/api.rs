@@ -210,7 +210,8 @@ fn agent_views(goal: &Goal, now: u64) -> Vec<AgentView> {
                 cost += r.cost_delta;
                 first_run_at =
                     Some(first_run_at.map_or(r.recorded_at, |f: u64| f.min(r.recorded_at)));
-                last_run_at = Some(last_run_at.map_or(r.recorded_at, |l: u64| l.max(r.recorded_at)));
+                last_run_at =
+                    Some(last_run_at.map_or(r.recorded_at, |l: u64| l.max(r.recorded_at)));
             }
             AgentView {
                 id: id.clone(),
