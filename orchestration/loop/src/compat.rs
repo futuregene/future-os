@@ -174,7 +174,7 @@ pub fn release_active_state_lock(lock_path: &Path) {
 /// conservatively report alive so a lock is never stolen from a possibly
 /// live holder (empty-lock aging still applies).
 #[cfg(unix)]
-pub(crate) fn pid_alive(pid: u32) -> bool {
+pub fn pid_alive(pid: u32) -> bool {
     // SAFETY: signal 0 performs existence checking only; no signal is sent.
     let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
     if rc == 0 {
@@ -185,7 +185,7 @@ pub(crate) fn pid_alive(pid: u32) -> bool {
 }
 
 #[cfg(not(unix))]
-pub(crate) fn pid_alive(_pid: u32) -> bool {
+pub fn pid_alive(_pid: u32) -> bool {
     true
 }
 
