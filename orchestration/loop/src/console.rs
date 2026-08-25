@@ -3452,6 +3452,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     let mut thinking = None;
     let mut max_turns = 6u32;
     let mut max_turn_secs = 0u64;
+    let mut max_incomplete_retries = crate::executor::DEFAULT_MAX_INCOMPLETE_RETRIES;
     let mut agent_id = None;
     let mut anonymous = false;
     let mut lease_secs = DEFAULT_RUN_LEASE_SECS;
@@ -3473,6 +3474,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
             "--force-workspace",
             "--goal",
             "--lease-secs",
+            "--max-incomplete-retries",
             "--max-turn-secs",
             "--max-turns",
             "--model",
@@ -3492,6 +3494,10 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
             max_turns = v.parse().unwrap_or(6);
         } else if k == "--max-turn-secs" {
             max_turn_secs = v.parse().unwrap_or(0);
+        } else if k == "--max-incomplete-retries" {
+            max_incomplete_retries = v
+                .parse()
+                .unwrap_or(crate::executor::DEFAULT_MAX_INCOMPLETE_RETRIES);
         } else if k == "--agent-id" {
             agent_id = Some(v);
         } else if k == "--lease-secs" {
@@ -3544,6 +3550,9 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
                 .map(|r| r.session_id.clone()),
         }
     };
+    // Human-readable session title for agent session lists: the goal
+    // objective, bounded so long objectives don't produce unwieldy names.
+    let session_title = crate::decision::truncate(&goal0.objective, 60);
     let session_id = match want_session {
         Some(id) if client.session_alive(&id).await => {
             println!("   ⤺ resuming session {id} (policy {session_policy})");
@@ -3551,9 +3560,9 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         }
         Some(id) => {
             println!("   ⚠ retained session {id} is no longer alive — starting fresh");
-            client.new_session(&goal0.cwd).await?
+            client.new_session(&goal0.cwd, &session_title).await?
         }
-        None => client.new_session(&goal0.cwd).await?,
+        None => client.new_session(&goal0.cwd, &session_title).await?,
     };
     if let Some(m) = model {
         client.set_model(&session_id, &m).await?;
@@ -3577,6 +3586,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         lease_secs,
         agent_id.as_deref(),
         max_turn_secs,
+        max_incomplete_retries,
         force_workspace,
         &mut last_failure_kind,
     )
@@ -3796,6 +3806,10 @@ fn claim_selected_with_lease(
 /// owns the session lifecycle (create before, delete after); this function
 /// only executes turns and writes back their ledger effects.
 ///
+/// `max_incomplete_retries`: consecutive `incomplete` turns (model stream
+/// truncated mid-reply) tolerated on the same todo before the run stops; each
+/// retried turn gets an explicit continue note injected into its envelope.
+///
 /// `last_failure_kind`: out-parameter set to the failure classification of the
 /// LAST executed turn (`None` when no turn ran this invocation) — the caller
 /// uses it to decide session retention (resume vs delete), never the kernel.
@@ -3809,10 +3823,14 @@ async fn run_turns(
     lease_secs: u64,
     agent_id: Option<&str>,
     max_turn_secs: u64,
+    max_incomplete_retries: u32,
     force_workspace: bool,
     last_failure_kind: &mut Option<crate::state::FailureKind>,
 ) -> Result<()> {
     let mut turn = 0u32;
+    // Continue note for the NEXT turn: set when the previous turn ended
+    // incomplete; consumed exactly once by the next execute_turn call.
+    let mut next_continue_note: Option<String> = None;
     // P1-2③: read-model self-healing — a drifted run index means run-history
     // consumers (status, stale-latest-run, run history projection) read stale
     // state; rebuild it from the run files before the first decision and
@@ -3927,6 +3945,7 @@ async fn run_turns(
         // O3: progress signals for this turn (tool starts observed on the
         // stream; read at turn end, including the budget-truncation path).
         let progress = std::sync::Arc::new(TurnProgressTracker::new(now_epoch()));
+        let continue_note = next_continue_note.take();
         let turn_future = execute_turn(
             client,
             session_id,
@@ -3940,6 +3959,7 @@ async fn run_turns(
             Some(&packet),
             Some(runs_dir),
             Some(&progress),
+            continue_note.as_deref(),
         );
         let record = if max_turn_secs > 0 {
             // Wall-clock budget per turn: a long turn that never sees new
@@ -4122,6 +4142,34 @@ async fn run_turns(
                 .unwrap_or(false);
             if stop {
                 break;
+            }
+        }
+        // Incomplete retry: a truncated model stream is an infra event, not a
+        // science failure — the todo stays runnable (no repair budget spent)
+        // and the next turn gets an explicit continue note so the agent picks
+        // up where it left off instead of restarting. Bounded: N consecutive
+        // incomplete turns on the same todo stop the run (the stream keeps
+        // dying mid-turn — relaunch with a fresh session or a lower thinking
+        // level).
+        if record.terminal_state == "incomplete" {
+            let streak = crate::executor::incomplete_streak(&g.history, &todo_id);
+            match crate::executor::incomplete_continue_note(
+                streak,
+                max_incomplete_retries,
+                &todo_id,
+            ) {
+                Some(note) => {
+                    println!(
+                        "   ↻ turn incomplete (stream truncated, attempt {streak}/{max_incomplete_retries}) — next turn continues where it left off"
+                    );
+                    next_continue_note = Some(note);
+                }
+                None => {
+                    println!(
+                        "   ✘ incomplete retry budget exhausted ({streak}/{max_incomplete_retries}) — the model stream keeps truncating mid-turn; stopping (relaunch later or reduce --thinking-level)"
+                    );
+                    break;
+                }
             }
         }
         // P0-2②: outcome_followthrough — auto-derive a follow-up todo for any
@@ -6027,7 +6075,7 @@ async fn cmd_doctor(store: &Store, args: &[String]) -> Result<()> {
     if let Some(addr) = &agent_addr {
         let probe = async {
             let mut client = crate::agent_client::AgentClient::connect(addr).await?;
-            let session = client.new_session("/tmp").await?;
+            let session = client.new_session("/tmp", "loop doctor probe").await?;
             let totals = client.session_totals(&session).await?;
             anyhow::Ok(format!(
                 "session {session} live (tokens_in={} tokens_out={})",

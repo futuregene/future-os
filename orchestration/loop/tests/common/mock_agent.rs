@@ -64,6 +64,8 @@ pub struct MockState {
     pub models_payload: Option<String>,
     /// Command types seen, in order (for assertions).
     pub recorded: Vec<String>,
+    /// `name` field of every new_session command seen (wire-level title).
+    pub new_session_names: Vec<String>,
 }
 
 impl MockState {
@@ -132,6 +134,7 @@ impl FutureAgent for MockAgent {
         let data = match cmd.r#type.as_str() {
             "new_session" => {
                 st.sessions_created += 1;
+                st.new_session_names.push(cmd.name.clone());
                 let id = format!("mock-session-{}", st.sessions_created);
                 st.live_sessions.insert(id.clone());
                 format!("{{\"sessionId\":\"{}\"}}", id)

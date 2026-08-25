@@ -39,9 +39,19 @@ Run the full pre-PR pass in the worktree on the CI toolchain (the repo pins `rus
 4. `make test` — all unit suites (Rust crates + desktop + mobile).
 5. Commit any fmt/clippy fixes, push, then create the PR.
 
+**Always sync with `origin/main` right before pushing** — not just at the start of the pass. Re-run `git fetch origin main`; if main moved while you were running checks, merge it again and re-run the checks it affects. Branch protection requires the head branch to be up to date with main, and on a fast-moving main a stale branch bounces between BEHIND and re-queued CI (use `gh pr merge --squash --auto` so the merge fires as soon as checks go green).
+
 Do not skip steps or use narrower flags than CI — a green local check on a smaller scope does not guarantee CI passes (e.g. clippy without `--all-targets` misses test code). `make help` lists every target.
 
 During normal development you don't need to run this full suite every time — iterate on targeted checks (`cargo check`, a single test, `tsc`) to save time. The full pass is only mandatory right before a PR; without it the PR cannot merge.
+
+### After a PR merges
+
+Leave no leftovers — the next session must not inherit a stale worktree, branch, or scratch file:
+
+1. **Update the local main branch**: `git fetch origin main`, then fast-forward it (`git merge --ff-only origin/main` from the main worktree). If the fast-forward is refused, the user has local commits there — stop and tell them; never rebase, reset, or force their branch.
+2. **Delete the merged branch everywhere**: remove its worktree (`git worktree remove .claude/worktrees/<name>` — confirm `git -C <path> status --short` is clean first; investigate before reaching for `--force`), then `git branch -d claude/<name>` and drop the remote branch (`gh pr merge --delete-branch` already does this; otherwise `git push origin --delete claude/<name>`). Finish with `git worktree prune` and `git fetch --prune`.
+3. **Clean up temporary files**: scratch scripts, logs, captured CI output, temp HOME dirs, and any other debris created while working. `git status --short` in every remaining worktree must show no untracked scratch files.
 
 ### GUI Tauri sidecar binaries in a worktree
 
