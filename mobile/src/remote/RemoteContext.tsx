@@ -96,6 +96,7 @@ interface RemoteContextValue {
   draft: boolean;
   timeline: TimelineState;
   timelinePending: boolean;
+  timelineError: "timeout" | null;
   modelId: string;
   thinkingLevel: ThinkingLevel;
   approvalTier: string;
@@ -109,6 +110,7 @@ interface RemoteContextValue {
   refreshSessions(): Promise<void>;
   refreshWorkspaces(): Promise<void>;
   selectSession(sessionId: string): Promise<void>;
+  retryTimeline(): Promise<void>;
   newConversation(mode?: "chat" | "workspace", workspaceId?: string): Promise<void>;
   closeConversation(): void;
   sendMessage(
@@ -142,6 +144,21 @@ interface RemoteContextValue {
   decideApproval(id: string, decision: "approved" | "rejected"): Promise<void>;
   clearError(): void;
   continueRun(sessionId: string, runId: string): Promise<void>;
+}
+
+const TIMELINE_LOAD_TIMEOUT_MS = 15_000;
+
+function diagnosticError(error: unknown): { name?: string; message: string; code?: unknown } {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      ...(error.cause && typeof error.cause === "object" && "code" in error.cause
+        ? { code: (error.cause as { code?: unknown }).code }
+        : {}),
+    };
+  }
+  return { message: String(error) };
 }
 
 const RemoteContext = createContext<RemoteContextValue | null>(null);
@@ -231,6 +248,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const sendingRef = useRef(false);
   const pendingRecoveryRef = useRef<Promise<void> | null>(null);
   const [openingSession, setOpeningSession] = useState(false);
+  const [timelineErrors, setTimelineErrors] = useState<Record<string, "timeout">>({});
   const [capabilities, setCapabilities] = useState<Set<string>>(() => new Set());
   const fileTransferSupported = capabilities.has("file_transfer_v1");
   const promptReceiptSupported = capabilities.has("prompt_receipt_v1");
@@ -295,6 +313,12 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // unmounts. Pairing generations own network streams, not this UI listener.
   const engineRefCleanupRef = useRef<(() => void) | null>(null);
   const networkAvailableRef = useRef<boolean | null>(null);
+  // The network listener may be paused or delayed while the app is backgrounded.
+  // Foreground recovery uses this ref to obtain a fresh answer before deciding
+  // that a previously-offline device should remain disconnected.
+  const refreshNetworkStateRef = useRef<() => Promise<boolean>>(
+    async () => networkAvailableRef.current !== false,
+  );
 
   useEffect(() => {
     credentialsRef.current = credentials;
@@ -473,6 +497,25 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         const merged = await fetchEventsSince(client, sessionId, runId, sinceIdx);
         return { ...merged, events: merged.events ?? [] };
       },
+      onFailure: failure => {
+        console.error("[remote] session timeline sync failed", {
+          sessionId: failure.sessionId,
+          runId: failure.runId ?? null,
+          reason: failure.reason,
+          stage: failure.stage,
+          attempt: failure.attempt,
+          retryInMs: failure.retryInMs,
+          error: diagnosticError(failure.error),
+        });
+      },
+      onRecovered: sessionId => {
+        setTimelineErrors(previous => {
+          if (!previous[sessionId]) return previous;
+          const next = { ...previous };
+          delete next[sessionId];
+          return next;
+        });
+      },
     });
     const unsubscribe = engine.subscribe(commit => {
       // Atomic cursor + timeline commit from the lane.
@@ -547,6 +590,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
             setSelectedSessionId("");
             setDraft(false);
             setTimelines({});
+            setTimelineErrors({});
             cursorsRef.current = {};
             streamingRef.current = {};
             setPhase("unpaired");
@@ -628,7 +672,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
           // the control-plane lists: a first connect that recovered from a
           // failure never populated them (models included — the catalogue can
           // have been empty while the desktop was warming up).
-          reconcileSession(undefined, "reconnect");
+          // Invalidate work still awaiting the previous socket generation.
+          // Enqueuing behind that work can leave a newly-ready connection with
+          // an indefinitely pending conversation load.
+          syncEngineRef.current?.restartAll("reconnect");
           void refreshModels();
           void refreshSessions();
           void refreshWorkspaces();
@@ -711,6 +758,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
 
   const recoverLifecycle = useCallback(
     async (reason: "foreground" | "network-restored" | "network-changed") => {
+      if (reason === "foreground") {
+        const available = await refreshNetworkStateRef.current();
+        if (!available) return;
+      }
       const client = clientRef.current;
       if (!client || !credentialsRef.current || networkAvailableRef.current === false) return;
       try {
@@ -745,8 +796,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     let eventSeen = false;
     let previousType: Network.NetworkStateType | undefined;
 
-    const observe = (state: Network.NetworkState) => {
-      if (!active) return;
+    const observe = (state: Network.NetworkState, triggerRecovery = true): boolean => {
+      if (!active) return false;
       const available =
         state.type !== Network.NetworkStateType.NONE &&
         state.isConnected !== false &&
@@ -765,11 +816,24 @@ export function RemoteProvider({ children }: PropsWithChildren) {
 
       const client = clientRef.current;
       client?.setNetworkAvailable(available);
-      if (!available) return;
-      if (wasAvailable === false) {
+      if (!available) return false;
+      if (triggerRecovery && wasAvailable === false) {
         void recoverLifecycle("network-restored");
-      } else if (pathChanged) {
+      } else if (triggerRecovery && pathChanged) {
         void recoverLifecycle("network-changed");
+      }
+      return true;
+    };
+
+    refreshNetworkStateRef.current = async () => {
+      try {
+        // Do not trigger a nested "network-restored" recovery here: the
+        // foreground caller immediately performs the single authoritative
+        // recovery after this fresh sample is applied.
+        return observe(await Network.getNetworkStateAsync(), false);
+      } catch (nextError) {
+        console.warn("[remote] foreground network refresh failed", { error: nextError });
+        return networkAvailableRef.current !== false;
       }
     };
 
@@ -785,6 +849,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     return () => {
       active = false;
       subscription.remove();
+      refreshNetworkStateRef.current = async () => networkAvailableRef.current !== false;
     };
   }, [recoverLifecycle]);
 
@@ -876,6 +941,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     setSelectedSessionId("");
     setDraft(false);
     setTimelines({});
+    setTimelineErrors({});
     cursorsRef.current = {};
     streamingRef.current = {};
     setPhase("unpaired");
@@ -1345,6 +1411,47 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     () => selectedSessionId !== "" && !draft && timelines[selectedSessionId] === undefined,
     [selectedSessionId, draft, timelines],
   );
+  const timelineError = selectedSessionId ? (timelineErrors[selectedSessionId] ?? null) : null;
+
+  useEffect(() => {
+    if (!timelinePending || !selectedSessionId || timelineError) return;
+    const sessionId = selectedSessionId;
+    const timer = setTimeout(() => {
+      if (selectedRef.current !== sessionId || timelinesRef.current[sessionId] !== undefined)
+        return;
+      console.error("[remote] session timeline load timed out", {
+        sessionId,
+        timeoutMs: TIMELINE_LOAD_TIMEOUT_MS,
+        phase,
+      });
+      setTimelineErrors(previous => ({ ...previous, [sessionId]: "timeout" }));
+    }, TIMELINE_LOAD_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [phase, selectedSessionId, timelineError, timelinePending]);
+
+  const retryTimeline = useCallback(async () => {
+    const sessionId = selectedRef.current;
+    if (!sessionId) return;
+    setTimelineErrors(previous => {
+      if (!previous[sessionId]) return previous;
+      const next = { ...previous };
+      delete next[sessionId];
+      return next;
+    });
+    console.warn("[remote] retrying session timeline sync", { sessionId });
+    const client = clientRef.current;
+    if (client) {
+      try {
+        await client.recoverNow("request-failure");
+      } catch (error) {
+        console.error("[remote] timeline retry transport recovery failed", {
+          sessionId,
+          error: diagnosticError(error),
+        });
+      }
+    }
+    if (selectedRef.current === sessionId) syncEngineRef.current?.restart(sessionId, "open");
+  }, []);
   const selectedTitle =
     sessions.find(session => session.sessionId === selectedSessionId)?.title ?? "";
 
@@ -1366,6 +1473,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       draft,
       timeline,
       timelinePending,
+      timelineError,
       modelId,
       thinkingLevel,
       approvalTier,
@@ -1379,6 +1487,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       refreshSessions,
       refreshWorkspaces,
       selectSession,
+      retryTimeline,
       newConversation,
       closeConversation,
       sendMessage,
@@ -1431,6 +1540,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       downloadAttachment,
       sessions,
       timeline,
+      timelineError,
       timelinePending,
       unreadSessions,
       workspaces,
@@ -1441,6 +1551,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       approvalTier,
       sandboxAvailable,
       unpair,
+      retryTimeline,
     ],
   );
 

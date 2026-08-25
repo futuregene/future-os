@@ -906,6 +906,10 @@ export class RemoteClient {
         lastError = error;
         if (!isTransientNatsRequestError(error)) throw error;
         if (attempt < 2) {
+          // A retry on the same half-open generation only spends another
+          // timeout. Validate/rebuild the transport first; the stable command
+          // id keeps a reply lost during the swap idempotent on the desktop.
+          await this.recoverAfterTransientRequest(error);
           await new Promise(resolve => setTimeout(resolve, 250 * 2 ** attempt));
         }
       }

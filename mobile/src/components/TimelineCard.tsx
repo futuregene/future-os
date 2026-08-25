@@ -9,6 +9,7 @@ import {
   Paperclip,
   Pencil,
   TerminalSquare,
+  TriangleAlert,
   X,
 } from "lucide-react-native";
 import { useEffect, useRef, useState } from "react";
@@ -78,8 +79,9 @@ function toolKind(name: string): ToolKind {
   return "shell";
 }
 
-function ToolGlyph({ kind }: { kind: ToolKind }) {
+function ToolGlyph({ kind, failed = false }: { kind: ToolKind; failed?: boolean }) {
   const props = { color: colors.inkMuted, size: 14 };
+  if (failed) return <TriangleAlert {...props} />;
   switch (kind) {
     case "shell":
       return <TerminalSquare {...props} />;
@@ -101,6 +103,19 @@ function toolLabel(t: (key: string) => string, kind: ToolKind, complete: boolean
       return t(complete ? "chat.editCompleted" : "chat.editing");
     case "shell":
       return t(complete ? "chat.runCompleted" : "chat.runningCommand");
+  }
+}
+
+function failedToolLabel(t: (key: string) => string, kind: ToolKind): string {
+  switch (kind) {
+    case "shell":
+      return t("chat.runFailed");
+    case "read":
+      return t("chat.readFailed");
+    case "write":
+      return t("chat.writeFailed");
+    case "edit":
+      return t("chat.editFailed");
   }
 }
 
@@ -387,10 +402,10 @@ function CompactionDivider({
 
 /**
  * The inline tool-activity row inside a reply bubble (desktop parity:
- * AgentActivityLine). A failed tool (shell non-zero exit / error) renders
- * danger-styled; a collapsed same-kind burst carries its child calls on
- * `tool.children` and its count — the row reads "Ran N commands", and tapping
- * it reveals the individual targets.
+ * AgentActivityLine). A failed tool (shell non-zero exit / error) swaps its
+ * normal tool glyph for the desktop-matching alert glyph; a collapsed same-kind
+ * burst carries its child calls on `tool.children` and its count — the row
+ * reads "Ran N commands", and tapping it reveals the individual targets.
  */
 function ToolRow({ tool }: { tool: TimelineToolRow }) {
   const { t } = useTranslation();
@@ -400,23 +415,24 @@ function ToolRow({ tool }: { tool: TimelineToolRow }) {
   const detail = tool.detail?.trim() ? toolDetail(kind, tool.detail.trim()) : null;
   const children = tool.children && tool.children.length > 0 ? tool.children : null;
   const expandable = Boolean(detail || children);
-  const label =
-    tool.count != null && tool.count > 1
+  const label = failed
+    ? failedToolLabel(t, kind)
+    : tool.count != null && tool.count > 1
       ? t("chat.runCount", {
           count: tool.count,
           action: toolLabel(t, kind, true),
         })
       : toolLabel(t, kind, tool.complete);
   return (
-    <View style={[styles.inlineTool, failed ? styles.inlineToolFailed : null]}>
+    <View style={styles.inlineTool}>
       <Pressable
         accessibilityRole="button"
         disabled={!expandable}
         onPress={() => setExpanded(value => !value)}
         style={styles.toolHeader}
       >
-        <ToolGlyph kind={kind} />
-        <Text style={[styles.toolText, failed ? styles.toolTextFailed : null]}>{label}</Text>
+        <ToolGlyph failed={failed} kind={kind} />
+        <Text style={styles.toolText}>{label}</Text>
         {expandable ? (
           expanded ? (
             <ChevronUp color={colors.inkMuted} size={14} />
@@ -424,15 +440,20 @@ function ToolRow({ tool }: { tool: TimelineToolRow }) {
             <ChevronDown color={colors.inkMuted} size={14} />
           )
         ) : null}
-        {/* A single call's target unfolds inline to the right of the label on
-            tap. Mobile intentionally uses the filename (see toolDetail), then
-            tail-truncates it instead of following desktop's full-path display. */}
-        {expanded && detail && !children ? (
+        {/* File targets remain compact beside the action label. Shell commands
+            are intentionally rendered below: they can be arbitrarily long and
+            must not be truncated on a phone. */}
+        {expanded && detail && !children && kind !== "shell" ? (
           <Text ellipsizeMode="tail" numberOfLines={1} selectable style={styles.inlineToolTarget}>
             {detail}
           </Text>
         ) : null}
       </Pressable>
+      {expanded && detail && !children && kind === "shell" ? (
+        <Text selectable style={styles.toolDetailText}>
+          {detail}
+        </Text>
+      ) : null}
       {expanded && children ? (
         <View style={styles.inlineToolChildren}>
           {children.map((child, index) => (
@@ -781,13 +802,6 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     gap: 2,
   },
-  inlineToolFailed: {
-    backgroundColor: colors.dangerSoft,
-    borderRadius: radius.md,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 4,
-  },
-  toolTextFailed: { color: colors.danger },
   inlineToolTarget: {
     flex: 1,
     marginLeft: spacing.sm,

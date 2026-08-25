@@ -604,11 +604,13 @@ describe("RemoteClient request retry classification", () => {
         .mockRejectedValueOnce(new NatsError("timeout", ErrorCode.Timeout))
         .mockResolvedValueOnce({ data: response({ success: true, data: { ok: true } }) });
       (client as unknown as { connection: { request: jest.Mock } | null }).connection = { request };
+      const recover = jest.spyOn(client, "recoverAfterTransientRequest").mockResolvedValue(true);
 
       const pending = client.requestRetry<{ ok: boolean }>({ type: "list_sessions" }, "list");
       await jest.runAllTimersAsync();
       await expect(pending).resolves.toMatchObject({ data: { ok: true } });
       expect(request).toHaveBeenCalledTimes(2);
+      expect(recover).toHaveBeenCalledTimes(1);
       const first = JSON.parse(new TextDecoder().decode(request.mock.calls[0]?.[1]));
       const second = JSON.parse(new TextDecoder().decode(request.mock.calls[1]?.[1]));
       expect(first.id).toBe(second.id);
