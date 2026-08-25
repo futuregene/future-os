@@ -215,7 +215,6 @@ pre.raw { background: var(--bg-2); border-radius: 7px; padding: 10px 12px; font:
       <button class="tab" data-view="detail" id="tab-detail" style="display:none" onclick="showView('detail')">Goal</button>
     </nav>
     <div class="hdr-right">
-      <span class="hdr-model" data-tip="Model used for NEW `future loop run` turns (from agent settings.json default_model or --model flag). Past runs record only token/cost deltas, not the model.">model <span class="mv" id="hdr-model">—</span></span>
       <span id="root-path" class="mono" data-tip="Loop state root: the project-local .future/loop directory this dashboard reads (override with FUTURE_LOOP_ROOT or --root)."></span>
       <span class="live" id="live" data-tip="Live connection to the dashboard server (SSE push; falls back to polling). Green = receiving updates."><span class="dot"></span><span id="live-txt">connecting</span></span>
       <span id="clock" class="mono"></span>
@@ -301,7 +300,6 @@ function connect(){
   let es;
   try { es = new EventSource("/api/stream"); } catch(e){ return pollLoop(); }
   es.addEventListener("overview", ev => { OVERVIEW = JSON.parse(ev.data); setLive(true);
-    if(OVERVIEW.model && OVERVIEW.model.default_model) $("#hdr-model").textContent = OVERVIEW.model.default_model;
     renderOverview(); syncDetailTab(); });
   es.addEventListener("goals", ev => { if(OVERVIEW) OVERVIEW.goals = JSON.parse(ev.data);
     if(DETAIL_ID) loadDetail(DETAIL_ID, true); });
@@ -345,7 +343,6 @@ const TIP = {
 function renderOverview(){
   const o = OVERVIEW; if(!o) return;
   $("#root-path").textContent = shorten(o.root);
-  if(o.model && o.model.default_model) $("#hdr-model").textContent = o.model.default_model;
   const t = o.totals;
   const goalRows = o.goals.map(g => {
     const pct = g.todos_total ? Math.round(100*g.todos_done/g.todos_total) : 0;
@@ -379,7 +376,7 @@ function renderOverview(){
     </div>
     ${attn}
     <div class="sect"><h2>Goals <span class="count">${t.goals}</span></h2>
-      ${o.goals.length? `<div class="goals">${goalRows}</div>` : `<div class="empty card">No goals yet — <code>future loop goal init --objective "…"</code></div>`}
+      ${o.goals.length? `<div class="goals">${goalRows}</div>` : `<div class="empty card">No goals yet — <code>future loop goal init --objective \"…\"</code></div>`}
     </div>`;
 }
 
@@ -389,30 +386,6 @@ async function loadDetail(id, soft){
   renderDetail();
   try { EVENTS = await api("/api/goals/"+encodeURIComponent(id)+"/events?limit=150"); } catch(e){ EVENTS = null; }
   renderEvents();
-}
-async function gateResolve(todoId, question){
-  openDrawer(`Resolve gate`, `
-    <div class="fgroup"><div class="fk">gate question</div><div class="fv">${esc(question||todoId)}</div></div>
-    <div class="fgroup"><div class="fk">decision *</div><textarea id="gate-dec" rows="3" placeholder="approve / reject / a concrete decision…"></textarea></div>
-    <div class="fgroup"><div class="fk">note (optional)</div><input type="text" id="gate-note" placeholder="context for the record"></div>
-    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px">
-      <button class="btn" onclick="closeDrawer()">Cancel</button>
-      <button class="btn primary" onclick="doGateResolve('${esc(todoId)}')">Resolve gate</button></div>`);
-}
-async function doGateResolve(todoId){
-  const decision = $("#gate-dec").value.trim(); if(!decision) return toast("decision is required", true);
-  const note = $("#gate-note").value.trim();
-  try { const r = await api("/api/goals/"+encodeURIComponent(DETAIL_ID)+"/gate",
-    {method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify({todo_id: todoId, decision, note: note||undefined})});
-    toast(r.message||"gate resolved"); closeDrawer(); loadDetail(DETAIL_ID, true);
-  } catch(e){ toast(e.message, true); }
-}
-async function goalCancel(){
-  if(!confirm("Cancel this goal? Automation stops; state is retained.")) return;
-  try { const r = await api("/api/goals/"+encodeURIComponent(DETAIL_ID)+"/lifecycle",
-    {method:"POST", headers:{"content-type":"application/json"}, body: JSON.stringify({action:"cancel", reason:"cancelled from web ui"})});
-    toast(r.message); loadDetail(DETAIL_ID, true);
-  } catch(e){ toast(e.message, true); }
 }
 function openDrawer(title, html){ $("#drawer-head").innerHTML = `<b style="font-size:13px">${title}</b><button class="x" onclick="closeDrawer()">✕</button>`;
   $("#drawer-body").innerHTML = html; $("#drawer").classList.add("open"); }
@@ -453,8 +426,7 @@ function renderDetail(){
       <button class="btn" onclick="location.hash=''">← Overview</button>
       ${statusBadge(g.status)} ${g.terminal? badge("terminal closure","b-info","validated closure: every todo done/superseded, closure intent declared, no acceptance gaps"):""}
       <span class="chip" data-tip="goal id">${esc(g.goal_id)}</span>
-      <span style="flex:1"></span>
-      ${g.status!=="cancelled" && !g.terminal ? `<button class="btn danger" data-tip="stop automation for this goal (state retained for audit)" onclick="goalCancel()">Cancel goal</button>`:""}
+      <span class="badge b-mut" data-tip="This dashboard is read-only. Resolve gates and cancel goals from the future loop CLI." style="margin-left:auto">read-only</span>
     </div>
     <div class="dhead"><div class="obj">${esc(g.objective)}<div class="path" data-tip="goal working directory · created at · ledger length">${esc(shorten(g.cwd))} · created ${tsLocal(g.created_at)} · ${g.event_count} ledger events</div></div></div>
     <div class="dtabs">${tabs}</div>
@@ -497,9 +469,9 @@ function renderDTab(g, d, gates, unvalidated, deliveriesByTodo, openObl){
         </dl></div>
     </div>
     ${gates.length? `<div class="sect"><h2 data-tip="${esc(TIP.openGates)}">Open gates <span class="count">${gates.length} — all work frozen</span></h2>
-      <div class="twrap"><table><thead><tr>${TH("id","gate todo id")}${TH("question","the concrete decision a human must make")}<th></th></tr></thead><tbody>
+      <div class="twrap"><table><thead><tr>${TH("id","gate todo id")}${TH("question","the concrete decision a human must make")}${TH("resolve via CLI","read-only dashboard — resolve with the future loop CLI")}</tr></thead><tbody>
       ${gates.map(t=>`<tr><td class="mono">${esc(t.id)}</td><td>${esc(t.gate_question||t.text)}</td>
-        <td><button class="btn primary" onclick='gateResolve(${JSON.stringify(t.id)}, ${JSON.stringify(t.gate_question||t.text)})'>Resolve</button></td></tr>`).join("")}
+        <td><code class="mono" style="font-size:11px;color:var(--tx-2)" data-tip="run this in a terminal to resolve the gate">future loop gate resolve --goal ${esc(g.goal_id)} --todo-id ${esc(t.id)} --decision \"…\"</code></td></tr>`).join("")}
       </tbody></table></div></div>`:""}
     <div class="sect"><h2 data-tip="Todo dependency DAG — an arrow A→B means A blocks B (B cannot run until A is done/superseded). Click a node for full detail.">Dependency graph <span class="count">${g.todos.length} nodes</span></h2>
       <div class="panel" style="padding:6px"><div id="graph"></div></div></div>`;
@@ -519,28 +491,25 @@ function renderDTab(g, d, gates, unvalidated, deliveriesByTodo, openObl){
       return `<tr class="clickable" onclick='inspectTodo(${JSON.stringify(t.id)})'>
         <td class="mono" style="white-space:nowrap">${esc(t.id)}</td>
         <td><span class="prio prio-${esc(t.priority)}" data-tip="priority: P0 highest — the kernel sorts the frontier by priority first">${esc(t.priority)}</span></td>
-        <td class="ttitle"><div class="t" data-tip="${esc(t.text)}">${esc(t.title||t.text)}</div>${gateQ}${dec}${lease}${val}${blockedBy}</td>
+        <td class="ttitle"><div class="t" data-tip="${esc(t.text)}">${esc(t.title||t.text)}${t.failed_attempts? ` <span class="chip" data-tip="failed validation attempts / budget before replan">${t.failed_attempts}/${t.max_validation_attempts}</span>`:""}</div>${gateQ}${dec}${lease}${val}${blockedBy}</td>
         <td>${classBadge(t.class)}</td><td>${statusBadge(t.status)}</td>
         <td class="num" data-tip="turns on this todo">${t.runs||"—"}</td>
         <td class="num" data-tip="input tokens (LLM in)">${t.runs? tok(t.tokens_in):"—"}</td>
         <td class="num" data-tip="output tokens (LLM out)">${t.runs? tok(t.tokens_out):"—"}</td>
         <td class="num" data-tip="LLM cost spent on this todo">${t.runs? money(t.cost):"—"}</td>
         <td class="mono" style="white-space:nowrap">${span}</td>
-        <td>${dv? statusBadge(dv.outcome):""}${unvalidated.has(t.id)? badge("unvalidated","b-bad","completed past its --verify gate (never exited 0) — does NOT count toward terminal closure"):""}</td>
-        <td style="white-space:nowrap">${t.status==="open"&&t.class==="user_gate"? `<button class="btn primary" onclick="event.stopPropagation();gateResolve('${esc(t.id)}', ${JSON.stringify(t.gate_question||t.text)})">Resolve</button>`:""}
-          ${t.failed_attempts? `<span class="chip" data-tip="failed validation attempts / budget before replan">${t.failed_attempts}/${t.max_validation_attempts}</span>`:""}</td></tr>`;
+        <td>${dv? statusBadge(dv.outcome):""}${unvalidated.has(t.id)? badge("unvalidated","b-bad","completed past its --verify gate (never exited 0) — does NOT count toward terminal closure"):""}</td></tr>`;
     }).join("");
     el.innerHTML = `<div class="sect"><h2>Todos <span class="count">${g.todos.length} · ${g.todos.filter(t=>t.status==="open").length} open</span></h2>
       <div class="twrap"><table><thead><tr>
         ${TH("id","todo id (goal-scoped)")}${TH("pri","priority P0/P1/P2 — the decision kernel sorts by it first")}${TH("todo","title / gate question / lease / verify / blockers")}${TH("class","advancement · user_gate · user_action · monitor · blocker")}${TH("status","open · done · superseded · deferred · blocked")}
-        ${TH("runs","bounded turns spent on this todo")}${TH("tok in","input tokens (LLM)")}${TH("tok out","output tokens (LLM)")}${TH("cost","LLM cost on this todo")}${TH("first → latest run","when work on this todo started / last happened")}${TH("delivery","post-delivery outcome: delivered → verified/failed/rework")}<th></th></tr></thead>
+        ${TH("runs","bounded turns spent on this todo")}${TH("tok in","input tokens (LLM)")}${TH("tok out","output tokens (LLM)")}${TH("cost","LLM cost on this todo")}${TH("first → latest run","when work on this todo started / last happened")}${TH("delivery","post-delivery outcome: delivered → verified/failed/rework")}</tr></thead>
       <tbody>${rows}</tbody></table></div></div>`;
     return;
   }
 
   if(dTab === "agents"){
     const agentRows = g.agents.map(a => `<tr><td class="mono">${esc(a.id)}</td>
-      <td><span class="chip" data-tip="model for NEW runs by this worker (loop-wide default: agent settings.json default_model or --model flag; not recorded per past run)">${esc(a.model||"—")}</span></td>
       <td>${a.capabilities.length? a.capabilities.map(c=>`<span class="chip" data-tip="declared capability">${esc(c)}</span> `).join(""):"—"}</td>
       <td class="mono">${a.active_leases.length? a.active_leases.map(x=>`<span class="chip" data-tip="todo currently leased to this worker">${esc(x)}</span>`).join(" "):"—"}</td>
       <td class="num" data-tip="turns executed">${a.runs||"—"}</td>
@@ -562,7 +531,7 @@ function renderDTab(g, d, gates, unvalidated, deliveriesByTodo, openObl){
     el.innerHTML = `
       <div class="sect"><h2 data-tip="Registered worker identities for this goal (one lane per --agent-id). Model/cost/tokens aggregated from the run ledger.">Workers <span class="count">${g.agents.length}</span></h2>
         ${g.agents.length? `<div class="twrap"><table><thead><tr>
-          ${TH("worker","agent id (registered peer)")}${TH("model","model for new runs — loop-wide default, not recorded per past run")}${TH("capabilities","declared capabilities (metadata)")}${TH("active leases","todos this worker currently holds")}${TH("runs","turns executed")}${TH("tok in","input tokens")}${TH("tok out","output tokens")}${TH("cost","LLM cost")}${TH("first → latest run","activity window")}${TH("heartbeat","last scheduler heartbeat — silence past threshold raises a liveness alert")}
+          ${TH("worker","agent id (registered peer)")}${TH("capabilities","declared capabilities (metadata)")}${TH("active leases","todos this worker currently holds")}${TH("runs","turns executed")}${TH("tok in","input tokens")}${TH("tok out","output tokens")}${TH("cost","LLM cost")}${TH("first → latest run","activity window")}${TH("heartbeat","last scheduler heartbeat — silence past threshold raises a liveness alert")}
           </tr></thead><tbody>${agentRows}</tbody></table></div>`:`<div class="empty card">No agents registered</div>`}
       </div>
       ${alerts? `<div class="sect"><h2 data-tip="scheduler heartbeat went silent past the threshold — the host automation may be dead">Liveness alerts</h2><div class="twrap"><table><thead><tr>${TH("agent","worker id")}${TH("silent / threshold","elapsed silence vs alert threshold")}${TH("seq","consecutive breach count")}${TH("when","alert time")}</tr></thead><tbody>${alerts}</tbody></table></div></div>`:""}
@@ -655,7 +624,7 @@ function inspectTodo(id){
     ${row("lease", t.claimed_by? t.claimed_by+" · expires "+tsLocal(t.lease_expires_at)+" ("+ago(t.lease_expires_at)+")"+(t.holder_alive===false?" · HOLDER DEAD":"") : null)}
     ${row("evidence", esc(t.evidence))}
     <div class="fgroup"><div class="fk">timestamps</div><div class="fv mono">updated ${tsLocal(t.updated_at)}${t.completed_at?" · completed "+tsLocal(t.completed_at):""}</div></div>
-    ${t.status==="open"&&t.class==="user_gate"? `<button class="btn primary" onclick='gateResolve(${JSON.stringify(t.id)}, ${JSON.stringify(t.gate_question||t.text)})'>Resolve gate</button>`:""}
+    ${t.status==="open"&&t.class==="user_gate"? `<div class="fgroup"><div class="fk">resolve (CLI)</div><div class="fv mono" style="font-size:11px">future loop gate resolve --goal ${esc(DETAIL_ID)} --todo-id ${esc(t.id)} --decision \"…\"</div></div>`:""}
   `);
 }
 

@@ -238,7 +238,7 @@ fn build_cli_registry() -> CommandRegistry {
     r.command(
         goal,
         "ui",
-        "local web dashboard (read-mostly: gate resolve / goal cancel) on 127.0.0.1",
+        "local read-only web dashboard on 127.0.0.1",
         "ui [--port N] [--root DIR] [--no-open]",
     );
     r.command(
@@ -2524,20 +2524,11 @@ fn print_ledger_read_note(store: &Store, goal_id: &str) {
     }
 }
 
-/// Web-UI parity projection refresh: the dashboard appends events through
-/// the store directly, so it calls this instead of duplicating the
-/// next-action + active-state sync convention every CLI mutation follows.
-pub fn refresh_projections_after_append(store: &Store, goal_id: &str) -> Result<()> {
-    refresh_next_action(store, goal_id)?;
-    sync_compat(store, goal_id)
-}
-
 // ── ui ─────────────────────────────────────────────────────────────────────
 
 /// `loop ui [--port N] [--root DIR] [--no-open]` — serve the local web
-/// dashboard. Read-mostly (gate resolve / goal cancel are the only
-/// mutations); all state is replayed from the same event ledger the CLI
-/// reads, on `127.0.0.1` only.
+/// dashboard. Strictly read-only (GET only) over the loop state root
+/// (`.future/loop/`); run mutations stay in the CLI. Binds 127.0.0.1.
 async fn cmd_webui(args: &[String]) -> Result<()> {
     let mut port: u16 = 7717;
     let mut root: Option<String> = None;

@@ -10,7 +10,7 @@ use crate::decision;
 use crate::state::{
     now_epoch, DeliveryState, FailureKind, Goal, RunRecord, TaskClass, Todo, TodoStatus,
 };
-use crate::store::{Event, Store};
+use crate::store::Store;
 use crate::work_items::{attention, replan_obligation, task_graph};
 
 /// Serialize a SystemTime as epoch seconds (JSON has no SystemTime).
@@ -162,12 +162,9 @@ pub struct AgentView {
     pub cost: f64,
     pub first_run_at: Option<u64>,
     pub last_run_at: Option<u64>,
-    /// Model used for NEW runs of this agent (loop-wide default — the
-    /// kernel does not persist per-run model; see `model_config`).
-    pub model: String,
 }
 
-fn agent_views(goal: &Goal, now: u64, default_model: &str) -> Vec<AgentView> {
+fn agent_views(goal: &Goal, now: u64) -> Vec<AgentView> {
     let mut ids: Vec<String> = goal.registered_agents.clone();
     for a in goal.scheduler_heartbeats.keys() {
         if !ids.iter().any(|x| x == a) {
@@ -228,7 +225,6 @@ fn agent_views(goal: &Goal, now: u64, default_model: &str) -> Vec<AgentView> {
                 cost: nnz(cost),
                 first_run_at,
                 last_run_at,
-                model: default_model.to_string(),
             }
         })
         .collect()
@@ -322,52 +318,6 @@ fn spend_view(goal: &Goal, now: u64) -> SpendView {
         }
     }
     v
-}
-
-/// Loop-run model configuration. The loop kernel does not persist which
-/// model a turn used (only token/cost deltas land in the run ledger), so
-/// the dashboard shows the model that NEW runs will use. Resolution order
-/// mirrors `run`: explicit `--model` flag (not visible here) → agent
-/// settings `default_model` → first credentialed catalog entry.
-#[derive(Debug, Clone, Serialize)]
-pub struct ModelConfig {
-    /// Effective model used when `run` is invoked without `--model`.
-    pub default_model: Option<String>,
-    /// Where the value came from: `settings.json` | null (agent fallback).
-    pub source: Option<String>,
-    /// ~/.future/agent/settings.json (shown so the user knows where to edit).
-    pub settings_path: String,
-    pub note: String,
-}
-
-pub fn model_config() -> ModelConfig {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_default();
-    let settings_path = format!("{home}/.future/agent/settings.json");
-    let mut model = None;
-    let mut source = None;
-    if let Ok(text) = std::fs::read_to_string(&settings_path) {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-            let m = v
-                .get("default_model")
-                .and_then(|m| m.as_str())
-                .map(str::trim)
-                .filter(|m| !m.is_empty())
-                .map(str::to_string);
-            if m.is_some() {
-                model = m;
-                source = Some("settings.json");
-            }
-        }
-    }
-    ModelConfig {
-        default_model: model,
-        source: source.map(str::to_string),
-        settings_path,
-        note: "applies to new `run` turns; past runs record only token/cost deltas, not the model"
-            .to_string(),
-    }
 }
 
 /// JSON payloads must not carry `-0.0` (an empty run history sums to
@@ -465,7 +415,6 @@ pub struct Overview {
     pub totals: OverviewTotals,
     pub attention: attention::AttentionQueue,
     pub goals: Vec<GoalCard>,
-    pub model: ModelConfig,
 }
 
 /// Replay every registered goal (a goal whose ledger fails to replay is
@@ -549,7 +498,6 @@ pub fn overview(store: &Store) -> Result<Overview> {
         totals,
         attention: queue,
         goals: cards,
-        model: model_config(),
     })
 }
 
@@ -579,8 +527,6 @@ pub struct GoalDetail {
     pub authority: crate::state::Authority,
     pub execution_profile: crate::state::ExecutionProfile,
     pub event_count: usize,
-    /// Model applied to new runs (loop-wide; see `model_config`).
-    pub model: ModelConfig,
 }
 
 pub fn goal_detail(store: &Store, goal_id: &str) -> Result<Option<GoalDetail>> {
@@ -596,8 +542,6 @@ pub fn goal_detail(store: &Store, goal_id: &str) -> Result<Option<GoalDetail>> {
     runs.truncate(200);
     let graph = task_graph::build_task_graph(&goal).ok();
     let event_count = store.events(goal_id).map(|e| e.len()).unwrap_or(0);
-    let model = model_config();
-    let default_model = model.default_model.clone().unwrap_or_default();
     Ok(Some(GoalDetail {
         goal_id: goal.goal_id.clone(),
         objective: goal.objective.clone(),
@@ -610,7 +554,7 @@ pub fn goal_detail(store: &Store, goal_id: &str) -> Result<Option<GoalDetail>> {
         attention: attention::goal_attention_item(&goal),
         replan_obligations: replan_obligation::detect_obligations(&goal),
         todos,
-        agents: agent_views(&goal, now, &default_model),
+        agents: agent_views(&goal, now),
         acceptance: goal.acceptance.clone(),
         deliveries: goal.delivery_states.clone(),
         unvalidated_deliveries: goal
@@ -627,7 +571,6 @@ pub fn goal_detail(store: &Store, goal_id: &str) -> Result<Option<GoalDetail>> {
         authority: goal.authority.clone(),
         execution_profile: goal.execution_profile.clone(),
         event_count,
-        model,
     }))
 }
 
@@ -683,75 +626,9 @@ pub fn events_page(store: &Store, goal_id: &str, limit: usize) -> Result<Option<
     Ok(Some(views))
 }
 
-#[derive(Debug, serde::Deserialize)]
-pub struct GateResolveBody {
-    pub todo_id: String,
-    pub decision: String,
-    pub note: Option<String>,
-}
-
-pub fn resolve_gate(store: &mut Store, goal_id: &str, body: &GateResolveBody) -> Result<String> {
-    if body.decision.trim().is_empty() {
-        anyhow::bail!("decision must not be empty");
-    }
-    let goal = store
-        .replay(goal_id)?
-        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
-    let gate = goal
-        .todo(&body.todo_id)
-        .ok_or_else(|| anyhow::anyhow!("todo {} not found", body.todo_id))?;
-    if gate.class != TaskClass::UserGate {
-        anyhow::bail!("todo {} is not a user gate", body.todo_id);
-    }
-    if gate.status != TodoStatus::Open {
-        anyhow::bail!("gate {} is already resolved", body.todo_id);
-    }
-    store.append(Event::GateResolved {
-        goal_id: goal_id.to_string(),
-        todo_id: body.todo_id.clone(),
-        decision: body.decision.trim().to_string(),
-        note: body.note.clone().filter(|n| !n.trim().is_empty()),
-        ts: now_epoch(),
-    })?;
-    crate::console::refresh_projections_after_append(store, goal_id)?;
-    Ok(format!("gate {} resolved", body.todo_id))
-}
-
-#[derive(Debug, serde::Deserialize)]
-pub struct LifecycleBody {
-    pub action: String,
-    pub reason: Option<String>,
-}
-
-pub fn set_lifecycle(store: &mut Store, goal_id: &str, body: &LifecycleBody) -> Result<String> {
-    let goal = store
-        .replay(goal_id)?
-        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
-    match body.action.as_str() {
-        "cancel" => {
-            if goal.status == "cancelled" {
-                anyhow::bail!("goal {goal_id} is already cancelled");
-            }
-            let reason = body
-                .reason
-                .clone()
-                .filter(|r| !r.trim().is_empty())
-                .unwrap_or_else(|| "cancelled from web ui".to_string());
-            store.append(Event::GoalCancelled {
-                goal_id: goal_id.to_string(),
-                reason,
-                ts: now_epoch(),
-            })?;
-            crate::console::refresh_projections_after_append(store, goal_id)?;
-            Ok(format!("goal {goal_id} cancelled"))
-        }
-        "resume" => anyhow::bail!(
-            "resume is not supported by the loop kernel (no GoalResumed event) — \
-             create a follow-up goal or steer via `todo update`"
-        ),
-        other => anyhow::bail!("unknown lifecycle action `{other}` (cancel)"),
-    }
-}
+// The dashboard is strictly read-only: it projects the event ledger and
+// never appends to it. Mutations (gate resolve, goal cancel, …) stay in
+// the CLI (`future loop gate resolve`, `future loop goal cancel`).
 
 /// Compact per-goal push payload for the SSE stream (avoids resending full
 /// details every tick; the detail view refetches on `goals` events anyway).

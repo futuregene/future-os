@@ -77,7 +77,7 @@ pub async fn run_server(root: String, port: u16, open_browser: bool) -> Result<(
     }
 
     println!("future loop ui — dashboard at http://127.0.0.1:{port}/  (root {root})");
-    println!("Ctrl-C to stop; state is read live from the loop ledger.");
+    println!("read-only; state is projected live from the loop ledger. Ctrl-C to stop.");
     if open_browser {
         open_in_browser(&format!("http://127.0.0.1:{port}/"));
     }
@@ -108,19 +108,17 @@ fn open_in_browser(url: &str) {
 }
 
 const MAX_HEADER_BYTES: usize = 64 * 1024;
-const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 struct Request {
     method: String,
     path: String,
     query: String,
-    body: Vec<u8>,
 }
 
 async fn read_request(stream: &mut TcpStream) -> Result<Option<Request>> {
     let mut buf = Vec::with_capacity(8192);
     let mut chunk = [0u8; 8192];
-    // Read headers.
+    // Read headers (read-only dashboard: no request bodies are consumed).
     let header_end = loop {
         if let Some(pos) = find_subslice(&buf, b"\r\n\r\n") {
             break pos + 4;
@@ -144,31 +142,10 @@ async fn read_request(stream: &mut TcpStream) -> Result<Option<Request>> {
         Some((p, q)) => (p.to_string(), q.to_string()),
         None => (target.clone(), String::new()),
     };
-    let mut content_length = 0usize;
-    for line in lines {
-        if let Some((name, value)) = line.split_once(':') {
-            if name.trim().eq_ignore_ascii_case("content-length") {
-                content_length = value.trim().parse().unwrap_or(0);
-            }
-        }
-    }
-    if content_length > MAX_BODY_BYTES {
-        anyhow::bail!("body too large");
-    }
-    let mut body = buf.split_off(header_end);
-    while body.len() < content_length {
-        let n = stream.read(&mut chunk).await?;
-        if n == 0 {
-            break;
-        }
-        body.extend_from_slice(&chunk[..n]);
-    }
-    body.truncate(content_length);
     Ok(Some(Request {
         method,
         path,
         query,
-        body,
     }))
 }
 
@@ -261,6 +238,15 @@ async fn handle(
         return serve_sse(stream, root, rx).await;
     }
 
+    // Read-only dashboard: reject any non-GET before routing.
+    if req.method != "GET" {
+        let body = serde_json::json!({"ok": false, "error": "read-only dashboard — use the `future loop` CLI for mutations"});
+        let response = json_response(405, &body);
+        stream.write_all(&response).await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
+
     let response = route(&req, &root);
     stream.write_all(&response).await?;
     stream.shutdown().await?;
@@ -286,12 +272,6 @@ fn route(req: &Request, root: &str) -> Vec<u8> {
             Ok(o) => json_response(200, &serde_json::json!({"ok": true, "data": o})),
             Err(e) => error_response(500, &format!("{e:#}")),
         };
-    }
-    if req.method == "GET" && path == "/api/config" {
-        return json_response(
-            200,
-            &serde_json::json!({"ok": true, "data": api::model_config()}),
-        );
     }
     // /api/goals/{id}/... segments
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
@@ -325,45 +305,10 @@ fn route(req: &Request, root: &str) -> Vec<u8> {
                     Err(e) => error_response(500, &format!("{e:#}")),
                 };
             }
-            ("POST", Some("gate")) => {
-                return post_json(&req.body, root, &goal_id, PostKind::Gate);
-            }
-            ("POST", Some("lifecycle")) => {
-                return post_json(&req.body, root, &goal_id, PostKind::Lifecycle);
-            }
             _ => return error_response(404, "unknown route"),
         }
     }
     error_response(404, "unknown route")
-}
-
-enum PostKind {
-    Gate,
-    Lifecycle,
-}
-
-fn post_json(body: &[u8], root: &str, goal_id: &str, kind: PostKind) -> Vec<u8> {
-    // Mutations need a mutable store (append takes &mut self).
-    let mut store = match crate::store::Store::open(root) {
-        Ok(s) => s,
-        Err(e) => return error_response(500, &format!("open store: {e:#}")),
-    };
-    let result: Result<String> = (|| match kind {
-        PostKind::Gate => {
-            let body: api::GateResolveBody = serde_json::from_slice(body)
-                .context("invalid JSON body (expected {\"todo_id\",\"decision\"})")?;
-            api::resolve_gate(&mut store, goal_id, &body)
-        }
-        PostKind::Lifecycle => {
-            let body: api::LifecycleBody = serde_json::from_slice(body)
-                .context("invalid JSON body (expected {\"action\":\"cancel\"})")?;
-            api::set_lifecycle(&mut store, goal_id, &body)
-        }
-    })();
-    match result {
-        Ok(message) => json_response(200, &serde_json::json!({"ok": true, "message": message})),
-        Err(e) => error_response(400, &format!("{e:#}")),
-    }
 }
 
 async fn send_snapshot(stream: &mut TcpStream, root: &str) -> Result<()> {
