@@ -795,39 +795,56 @@ pub fn shell_display_name() -> &'static str {
 
 /// Whether the OS-level sandbox is usable on this platform.
 pub fn platform_sandbox_available() -> bool {
+    platform_sandbox_availability().unwrap_or(false)
+}
+
+/// Resolve product sandbox support without collapsing a transient Windows
+/// probe failure into an authoritative unsupported result.
+pub(crate) fn platform_sandbox_availability() -> std::io::Result<bool> {
     #[cfg(target_os = "macos")]
     {
-        Path::new("/usr/bin/sandbox-exec").exists()
+        Ok(Path::new("/usr/bin/sandbox-exec").exists())
     }
     #[cfg(target_os = "windows")]
     {
-        cached_windows_sandbox_probe().available
+        cached_windows_sandbox_probe().map(|probe| probe.available)
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        false
+        Ok(false)
     }
 }
 
 #[cfg(target_os = "windows")]
-fn cached_windows_sandbox_probe() -> &'static WindowsSandboxProbe {
-    WINDOWS_SANDBOX_PROBE.get_or_init(|| match probe_windows_sandbox_host() {
-        Ok(result) => {
-            tracing::info!(
-                available = result.available,
-                code = result.code,
-                "Windows sandbox host probe completed"
-            );
-            result
-        }
-        Err(error) => {
-            tracing::warn!(
-                error_kind = ?error.kind(),
-                "Windows sandbox host probe failed"
-            );
-            WindowsSandboxProbe::unavailable("probe_failed", error)
-        }
-    })
+fn cached_windows_sandbox_probe() -> std::io::Result<&'static WindowsSandboxProbe> {
+    if let Some(result) = WINDOWS_SANDBOX_PROBE.get() {
+        return Ok(result);
+    }
+
+    let result = probe_windows_sandbox_host()?;
+    if let Some(diagnostic) = result.diagnostic() {
+        // Initialization and cleanup failures can be transient (for example,
+        // while another process is releasing a capability lock). Do not turn
+        // them into a process-lifetime unsupported verdict.
+        tracing::warn!(
+            code = result.code,
+            error = diagnostic,
+            "Windows sandbox host probe failed"
+        );
+        return Err(std::io::Error::other(format!(
+            "Windows sandbox probe failed [{}]",
+            result.code
+        )));
+    }
+    tracing::info!(
+        available = result.available,
+        code = result.code,
+        "Windows sandbox host probe completed"
+    );
+    let _ = WINDOWS_SANDBOX_PROBE.set(result);
+    WINDOWS_SANDBOX_PROBE
+        .get()
+        .ok_or_else(|| std::io::Error::other("Windows sandbox probe cache was not initialized"))
 }
 
 #[cfg(target_os = "windows")]
@@ -893,7 +910,7 @@ pub(crate) fn probe_windows_sandbox_host() -> std::io::Result<WindowsSandboxProb
 pub(crate) fn probe_windows_sandbox_product() -> std::io::Result<WindowsSandboxProbe> {
     #[cfg(target_os = "windows")]
     {
-        Ok(cached_windows_sandbox_probe().clone())
+        Ok(cached_windows_sandbox_probe()?.clone())
     }
     #[cfg(not(target_os = "windows"))]
     probe_windows_sandbox_host()

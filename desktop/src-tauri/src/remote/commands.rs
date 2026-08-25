@@ -20,20 +20,20 @@ static COMMAND_EPISODE: LazyLock<super::FailureEpisode> = LazyLock::new(Default:
 
 type ReplySlot = Arc<tokio::sync::Mutex<Option<Vec<u8>>>>;
 
-async fn product_sandbox_available() -> bool {
+async fn product_sandbox_available() -> Result<bool, crate::AppError> {
     #[cfg(target_os = "macos")]
     {
-        true
+        Ok(true)
     }
     #[cfg(target_os = "windows")]
     {
         crate::agent_bridge::probe_windows_sandbox()
             .await
-            .is_ok_and(|result| result.available)
+            .map(|result| result.available)
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        false
+        Ok(false)
     }
 }
 
@@ -783,7 +783,13 @@ async fn handle_command(
         "get_settings" => {
             match crate::store::get_app_settings() {
                 Ok(settings) => {
-                    let sandbox_available = product_sandbox_available().await;
+                    let sandbox_available = match product_sandbox_available().await {
+                        Ok(available) => available,
+                        Err(error) => {
+                            reply(client, &msg, false, Value::Null, Some(&error.to_string())).await;
+                            return;
+                        }
+                    };
                     reply(
                         client,
                         &msg,
@@ -807,8 +813,15 @@ async fn handle_command(
             // here is the same as flipping it in the desktop Settings. It takes
             // effect on the next session establishment, where the bridge pushes
             // it to the agent via `set_agent_sandbox_policy`.
-            let tier = if cmd.tier == "sandbox" && !product_sandbox_available().await {
-                "manual".to_string()
+            let tier = if cmd.tier == "sandbox" {
+                match product_sandbox_available().await {
+                    Ok(true) => cmd.tier.clone(),
+                    Ok(false) => "manual".to_string(),
+                    Err(error) => {
+                        reply(client, &msg, false, Value::Null, Some(&error.to_string())).await;
+                        return;
+                    }
+                }
             } else {
                 cmd.tier.clone()
             };

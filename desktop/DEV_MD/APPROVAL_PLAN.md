@@ -223,6 +223,8 @@ Windows `sandbox` 档的 shell 调用新增显式能力请求；示意结构：
 
 路径能力只是在 RestrictedToken 的第二次写检查中增加许可，**不会提升当前用户本来没有的 NTFS 权限**。若正常用户 SID 对目标也无写权，批准后仍应返回原生权限错误，不得尝试改 owner、绕过 DACL 或请求 UAC。
 
+本期 Windows 后端明确是 Unelevated：shell 仍以当前真实用户为主体，路径能力卡表示“允许这次内容写入范围”，不表示已经获得 Elevated 独立用户等级的防删除保证。`scope=file` 不授 capability `DELETE`，但当前用户对父目录已有的 `FILE_DELETE_CHILD` 仍可能允许删除目标；既有 Everyone/Logon/`Users`/`Authenticated Users` 宽 ACL 也属于知情边界。普通卡片不堆叠这些实现细节，但开发文档、测试与 review 不得把“修改文件”解读成“OS 已绝对禁止删除”。完整边界与单专用用户后续路线见 SANDBOX_PLAN §11.6、§11.10。
+
 ## 7. 启用范围与三档审批
 
 审批以**单一枚举 `tier`** 表达，session 建立时经 `set_sandbox_policy { tier }` 下发（proto `string tier`）。三档：
@@ -272,5 +274,6 @@ v1 的 `read-only / workspace-write / danger-full-access` 三种模式与 `untru
 | V11（2026-08-21） | Windows `sandbox` 定义为 unelevated **写保护**，不声称具备 macOS Seatbelt 的 shell deny-read；UI 必须明确能力差异 |
 | V12（2026-08-21） | Windows shell 额外写权限必须声明具体路径；批准只扩展对应 capability 并保持 RestrictedToken，不以笼统 error 5 触发整命令脱沙盒重跑 |
 | V13（2026-08-21） | 所有平台复用 `ApprovalPrompt`；普通卡片由可信后端用标题表达“行为 + 目标”，单目标不重复字段，技术 enforcement 数据不展示，原始命令折叠；多目标最多 8 项且整组决策，payload 无法可信解析时 fail closed |
+| V14（2026-08-25） | Windows 本期范围冻结为 Unelevated；真实用户主体、`FILE_DELETE_CHILD` 与既有宽 ACL 是知情能力边界，不以 Elevated 保证验收本期。后续若升级独立安全主体，优先单独评估一个专用本地用户，不混入当前 PR |
 
 沿用 v1 未变的决策：macOS escalation 按命令放行（原 Q2）、`.git` 不排除（Q4）、`sandbox-exec` deprecated 风险接受（Q5）、失败特征启发式保守（Q6）、temp 目录读写全开。Windows 改用路径能力放行；Linux 后续再做。

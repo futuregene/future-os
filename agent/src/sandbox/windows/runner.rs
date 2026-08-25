@@ -31,6 +31,11 @@ static ACTIVE_CAPABILITIES: OnceLock<Mutex<ActiveCapabilities>> = OnceLock::new(
 
 #[derive(Default)]
 struct ActiveCapabilities {
+    states: HashMap<PathBuf, ActiveCapabilityState>,
+}
+
+#[derive(Default)]
+struct ActiveCapabilityState {
     names: HashMap<String, usize>,
     process_lock: Option<CapabilityFileLock>,
 }
@@ -101,6 +106,7 @@ impl Drop for CapabilityFileLock {
 /// Keeps capability generations alive while their restricted process tree can
 /// still use inherited ACEs. GC only revokes a SID when no lease references it.
 pub(crate) struct CapabilityLease {
+    state_path: PathBuf,
     names: Vec<String>,
 }
 
@@ -121,14 +127,18 @@ impl CapabilityLease {
         let mut active = active_capabilities()
             .lock()
             .map_err(|_| io::Error::other("active capability lock is poisoned"))?;
-        if active.names.is_empty() {
-            debug_assert!(active.process_lock.is_none());
-            active.process_lock = Some(CapabilityFileLock::acquire(state_path)?);
+        let state = active.states.entry(state_path.to_path_buf()).or_default();
+        if state.names.is_empty() {
+            debug_assert!(state.process_lock.is_none());
+            state.process_lock = Some(CapabilityFileLock::acquire(state_path)?);
         }
         for name in &names {
-            *active.names.entry(name.clone()).or_default() += 1;
+            *state.names.entry(name.clone()).or_default() += 1;
         }
-        Ok(Self { names })
+        Ok(Self {
+            state_path: state_path.to_path_buf(),
+            names,
+        })
     }
 }
 
@@ -137,8 +147,11 @@ impl Drop for CapabilityLease {
         let Ok(mut active) = active_capabilities().lock() else {
             return;
         };
+        let Some(state) = active.states.get_mut(&self.state_path) else {
+            return;
+        };
         for name in &self.names {
-            let remove = match active.names.get_mut(name) {
+            let remove = match state.names.get_mut(name) {
                 Some(count) if *count > 1 => {
                     *count -= 1;
                     false
@@ -147,11 +160,12 @@ impl Drop for CapabilityLease {
                 None => false,
             };
             if remove {
-                active.names.remove(name);
+                state.names.remove(name);
             }
         }
-        if active.names.is_empty() {
-            active.process_lock.take();
+        if state.names.is_empty() {
+            state.process_lock.take();
+            active.states.remove(&self.state_path);
         }
     }
 }
@@ -322,10 +336,10 @@ fn reconcile_stale_records(
     let active = active_capabilities()
         .lock()
         .map_err(|_| io::Error::other("active capability lock is poisoned"))?
-        .names
-        .keys()
-        .cloned()
-        .collect::<HashSet<_>>();
+        .states
+        .get(state_path)
+        .map(|state| state.names.keys().cloned().collect::<HashSet<_>>())
+        .unwrap_or_default();
     // A failed revoke leaves both the ACE and metadata intact so a later run
     // can retry. Removing metadata first would turn recoverable cleanup into an
     // undiscoverable persistent ACE.
@@ -443,12 +457,13 @@ fn reset_capabilities_at(state_path: &Path) -> io::Result<usize> {
         .get_or_init(|| Mutex::new(()))
         .lock()
         .map_err(|_| io::Error::other("Windows capability preparation lock is poisoned"))?;
-    if !active_capabilities()
+    let state_is_active = active_capabilities()
         .lock()
         .map_err(|_| io::Error::other("active capability lock is poisoned"))?
-        .names
-        .is_empty()
-    {
+        .states
+        .get(state_path)
+        .is_some_and(|state| !state.names.is_empty());
+    if state_is_active {
         return Err(io::Error::new(
             io::ErrorKind::WouldBlock,
             "Windows sandbox permissions are in use by an active command",
@@ -546,6 +561,26 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
         drop(first);
         CapabilityFileLock::acquire(&state_path).unwrap();
+    }
+
+    #[test]
+    fn active_capabilities_block_only_their_own_state_file() {
+        let fixture = tempfile::tempdir().unwrap();
+        let active_state_path = fixture.path().join("active/capabilities.json");
+        let probe_state_path = fixture.path().join("probe/capabilities.json");
+        let plan = WindowsSandboxPlan {
+            writable_roots: vec![fixture.path().join("workspace")],
+            ..WindowsSandboxPlan::default()
+        };
+        let records = policy_records(&plan);
+        let lease = CapabilityLease::acquire(&records, &active_state_path).unwrap();
+
+        let active_error = reset_capabilities_at(&active_state_path).unwrap_err();
+        assert_eq!(active_error.kind(), io::ErrorKind::WouldBlock);
+        assert_eq!(reset_capabilities_at(&probe_state_path).unwrap(), 0);
+
+        drop(lease);
+        assert_eq!(reset_capabilities_at(&active_state_path).unwrap(), 0);
     }
 
     #[test]
