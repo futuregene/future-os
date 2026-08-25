@@ -44,7 +44,10 @@ if not defined DRY_RUN set "DRY_RUN=0"
 set "AGENT_LOG=%LOG_DIR%\future-agent-test.log"
 set "AGENT_ERR=%LOG_DIR%\future-agent-test.err.log"
 set "AGENT_PID_FILE=%LOG_DIR%\future-agent-test.pid"
-set "AGENT_BIN=%AGENT_DIR%\target\debug\future-agent.exe"
+rem `agent` belongs to the root Cargo workspace, so cargo build writes this
+rem binary to the workspace target directory. Do not launch agent\target here:
+rem that can be a stale pre-workspace artifact with an older RPC command set.
+set "AGENT_BIN=%ROOT_DIR%\target\debug\future-agent.exe"
 set "AGENT_PID="
 
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
