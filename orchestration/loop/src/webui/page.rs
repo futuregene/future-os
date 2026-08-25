@@ -421,6 +421,30 @@ function sparkline(runs){
     <div class="legend"><span>runs/day · last 14d</span><span>peak <b>${mx}</b></span></div>`;
 }
 
+/* Live in-flight worker runs: one row per .future/loop/runs/*.live.jsonl with
+   real-time in/out tokens + cost summed from teed `usage` events. */
+function renderActiveRuns(g){
+  const runs = g.active_runs||[];
+  if(!runs.length) return "";
+  const rows = runs.map(r => {
+    const st = r.active ? badge("running","b-ok","stream is live — last event within 90s")
+                        : badge("idle","b-mut","no recent stream events — run may have ended");
+    return `<tr>
+      <td class="mono" style="white-space:nowrap">${r.agent_id? esc(r.agent_id) : "—"}</td>
+      <td class="mono" style="white-space:nowrap">${r.todo_id? esc(r.todo_id) : "—"}</td>
+      <td class="num">${tok(r.tokens_in)}</td>
+      <td class="num">${tok(r.tokens_out)}</td>
+      <td class="num">${money(r.cost)}</td>
+      <td class="mono" style="white-space:nowrap">${ago(r.last_activity_at)}</td>
+      <td>${st}</td>
+    </tr>`;
+  }).join("");
+  return `<div class="sect"><h2 data-tip="Live worker runs — one row per in-flight run, real-time tokens/cost summed from streamed usage events (written to .future/loop/runs/*.live.jsonl)">Active runs <span class="count">${runs.length}</span></h2>
+    <div class="twrap"><table><thead><tr>
+      ${TH("worker","agent id running this turn")}${TH("todo","work item being run")}${TH("tok in","prompt tokens so far")}${TH("tok out","completion tokens so far")}${TH("cost","cost so far")}${TH("last event","time since last stream event")}${TH("state","running / idle")}
+    </tr></thead><tbody>${rows}</tbody></table></div></div>`;
+}
+
 /* Column header with tooltip */
 const TH = (label, tip) => `<th class="tip" data-tip="${esc(tip)}">${label}</th>`;
 
@@ -489,6 +513,7 @@ function renderDTab(g, d, gates, unvalidated, deliveriesByTodo, openObl){
           <dt data-tip="turn outcomes over 7d: ok / verify-gate failure / recoverable infra (e.g. 429) / hard error">7d outcomes</dt><dd>${spend.outcomes_7d.succeeded} ok · ${spend.outcomes_7d.verify_failed} verify-fail · ${spend.outcomes_7d.infra_failed} infra · ${spend.outcomes_7d.errored} err</dd>
         </dl></div>
     </div>
+    ${renderActiveRuns(g)}
     ${gates.length? `<div class="sect"><h2 data-tip="${esc(TIP.openGates)}">Open gates <span class="count">${gates.length} — all work frozen</span></h2>
       <div class="twrap"><table><thead><tr>${TH("id","gate todo id")}${TH("question","the concrete decision a human must make")}${TH("resolve via CLI","read-only dashboard — resolve with the future loop CLI")}</tr></thead><tbody>
       ${gates.map(t=>`<tr><td class="mono">${esc(t.id)}</td><td>${esc(t.gate_question||t.text)}</td>
@@ -550,6 +575,7 @@ function renderDTab(g, d, gates, unvalidated, deliveriesByTodo, openObl){
     const accRows = g.acceptance.map(a => `<tr><td class="mono">${esc(a.id)}</td><td>${esc(a.description)}</td>
       <td>${a.satisfied? badge("satisfied","b-ok"):badge("open","b-warn","terminal closure requires every gap satisfied")}</td></tr>`).join("");
     el.innerHTML = `
+      ${renderActiveRuns(g)}
       <div class="sect"><h2 data-tip="Registered worker identities for this goal (one lane per --agent-id). Model/cost/tokens aggregated from the run ledger.">Workers <span class="count">${g.agents.length}</span></h2>
         ${g.agents.length? `<div class="twrap"><table><thead><tr>
           ${TH("worker","agent id (registered peer)")}${TH("capabilities","declared capabilities (metadata)")}${TH("active leases","todos this worker currently holds")}${TH("runs","turns executed")}${TH("tok in","input tokens")}${TH("tok out","output tokens")}${TH("cost","LLM cost")}${TH("first → latest run","activity window")}${TH("heartbeat","last scheduler heartbeat — silence past threshold raises a liveness alert")}

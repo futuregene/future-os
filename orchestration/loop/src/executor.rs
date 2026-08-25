@@ -207,6 +207,7 @@ pub async fn execute_turn(
     client: &mut AgentClient,
     session_id: &str,
     goal: &Goal,
+    agent_id: Option<&str>,
     todo: &Todo,
     turn: u32,
     prev: Option<&RunRecord>,
@@ -240,6 +241,33 @@ pub async fn execute_turn(
         .prompt(session_id, &message, &client_request_id)
         .await?;
     let live_path = runs_dir.map(|d| d.join(format!("{run_id}.live.jsonl")));
+    // Write a run-header line FIRST so the read-only dashboard can associate
+    // this live run with its worker/todo and expose real-time token/cost.
+    // (`run_turn` then appends streamed events to the same file.)
+    if let Some(path) = &live_path {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let header = serde_json::json!({
+            "type": "run_header",
+            "idx": 0,
+            "wall_ts": now_epoch(),
+            "run_id": run_id,
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "todo_id": todo.id,
+            "goal_id": goal.goal_id,
+        });
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(path)
+        {
+            use std::io::Write;
+            let _ = writeln!(f, "{header}");
+        }
+    }
     let summary: RunSummary = client
         .run_turn(session_id, &run_id, live_path.as_deref(), progress)
         .await?;
