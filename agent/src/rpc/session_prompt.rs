@@ -191,12 +191,6 @@ impl ServerSession {
         {
             return Err(crate::runtime::RunQueueError::PersistenceUnavailable(error).into());
         }
-        if busy_policy == crate::runtime::BusyPolicy::RejectIfBusy
-            && self.runtime.snapshot().is_some()
-            && self.scheduler.active().is_none()
-        {
-            return Err(crate::runtime::RunQueueError::Busy.into());
-        }
         let settings = ScheduledSettingsSnapshot {
             settings_schema_version: 1,
             model: self.model.clone(),

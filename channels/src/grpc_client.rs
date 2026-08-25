@@ -165,7 +165,7 @@ impl AgentClient {
         message: &str,
         images: Vec<ImageInput>,
     ) -> Result<String> {
-        self.prompt_with_policy(session_id, message, images, "reject_if_busy")
+        self.prompt_with_policy(session_id, message, images, "enqueue_if_busy")
             .await
     }
 
@@ -803,7 +803,7 @@ mod tests {
 
         let prompts = ts::recorded_of(&shared, "prompt");
         assert_eq!(prompts.len(), 2);
-        assert_eq!(prompts[0].busy_policy, "reject_if_busy");
+        assert_eq!(prompts[0].busy_policy, "enqueue_if_busy");
         assert_eq!(prompts[1].busy_policy, "supersede_session");
         assert_eq!(prompts[0].images.len(), 2);
         assert!(matches!(

@@ -67,8 +67,6 @@ pub enum RunQueueError {
     DuplicateRequestConflict(String),
     #[error("run_id `{0}` already exists in this Agent instance")]
     DuplicateRunId(String),
-    #[error("session already has pending work")]
-    Busy,
     #[error("supersede_session requires the atomic session scheduler operation")]
     SupersedeRequiresSessionOperation,
     #[error("session queue is full (limit {limit})")]
@@ -301,13 +299,11 @@ impl InMemoryRunQueue {
             return Ok(existing_ack(&state, identity));
         }
 
-        let busy = state.active.is_some() || !state.queued.is_empty();
-        match (busy, busy_policy) {
-            (true, BusyPolicy::RejectIfBusy) => return Err(RunQueueError::Busy),
-            (_, BusyPolicy::SupersedeSession) => {
-                return Err(RunQueueError::SupersedeRequiresSessionOperation)
-            }
-            _ => {}
+        // reject_if_busy is gone: a busy session simply enqueues (the default
+        // follow-up policy). Supersede is never honored through plain accept;
+        // it must go through the atomic `supersede` operation.
+        if busy_policy == BusyPolicy::SupersedeSession {
+            return Err(RunQueueError::SupersedeRequiresSessionOperation);
         }
         if payload_bytes > self.max_request_bytes {
             return Err(RunQueueError::RequestTooLarge {
@@ -739,7 +735,9 @@ mod tests {
     }
 
     #[test]
-    fn reject_if_busy_never_mutates_queue() {
+    fn busy_accept_enqueues_when_a_run_is_pending() {
+        // With reject_if_busy removed, the default (enqueue) policy appends a
+        // new request behind the already-accepted one instead of rejecting it.
         let queue = queue();
         queue
             .accept(
@@ -749,16 +747,16 @@ mod tests {
                 Value::Null,
             )
             .unwrap();
-        let error = queue
+        let second = queue
             .accept(
                 "request-2",
                 Some("run-2"),
-                BusyPolicy::RejectIfBusy,
+                BusyPolicy::EnqueueIfBusy,
                 Value::Null,
             )
-            .unwrap_err();
-        assert_eq!(error, RunQueueError::Busy);
-        assert_eq!(queue.queued().len(), 1);
+            .unwrap();
+        assert_eq!(second.accepted_state, RunAcceptedState::Queued);
+        assert_eq!(queue.queued().len(), 2);
     }
 
     #[test]

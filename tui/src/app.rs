@@ -1391,7 +1391,7 @@ impl<T: TerminalIo> App<T> {
                 let tx = self.op_tx.clone();
                 if let Some(message) = message {
                     tokio::spawn(async move {
-                        let result = client.prompt(&message, "reject_if_busy").await;
+                        let result = client.prompt(&message, "enqueue_if_busy").await;
                         let _ = tx.send(UiCmd::InitialPromptDone(result));
                     });
                 }
@@ -2642,7 +2642,7 @@ impl<T: TerminalIo> App<T> {
         let tx = self.op_tx.clone();
         let message = value.to_string();
         tokio::spawn(async move {
-            let result = client.prompt(&message, "reject_if_busy").await;
+            let result = client.prompt(&message, "enqueue_if_busy").await;
             let _ = tx.send(UiCmd::PromptAck {
                 local_id: local_message_id,
                 result,

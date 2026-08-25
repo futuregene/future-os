@@ -234,11 +234,6 @@ impl Loop {
             // time-to-first-byte takes effect immediately instead of blocking
             // on the request to return (especially noticeable on Windows where
             // flaky connections make this phase slow).
-            // Drain any mid-turn steering notes and fold them into this step's
-            // system prompt (the frozen snapshot semantics for model/tools/
-            // config are unchanged — steering is an additive operator channel).
-            let step_system_prompt =
-                fold_steering_into_prompt(&ctx.system_prompt, &mut self.steering_notes.lock());
             let stream_result = match self
                 .await_or_interrupt(
                     self.provider
@@ -246,7 +241,7 @@ impl Loop {
                             model: ctx.model.clone(),
                             messages: work_messages.clone(),
                             tools: tool_defs.clone(),
-                            system_prompt: step_system_prompt,
+                            system_prompt: ctx.system_prompt.clone(),
                         }),
                     interrupt_rx.as_mut(),
                 )
@@ -1216,24 +1211,6 @@ fn is_retryable_size_error(err_msg: &str) -> bool {
     err_msg.starts_with("[CTX_LIMIT]")
 }
 
-/// Drain pending mid-turn steering notes and fold them into the system prompt
-/// for the next LLM call. Notes are consumed exactly once; an empty queue
-/// returns the base prompt unchanged.
-fn fold_steering_into_prompt(
-    base: &str,
-    notes: &mut parking_lot::MutexGuard<'_, Vec<String>>,
-) -> String {
-    if notes.is_empty() {
-        return base.to_string();
-    }
-    let drained = std::mem::take(&mut **notes);
-    format!(
-        "{}\n\n── steering update (injected mid-turn by the orchestrator) ──\n{}",
-        base,
-        drained.join("\n\n")
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2134,25 +2111,6 @@ mod tests {
             .to_string()
             .contains("refusing repeated compaction"));
         assert_eq!(committed.load(std::sync::atomic::Ordering::Relaxed), 1);
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn run_folds_steering_notes_into_system_prompt() {
-        let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
-        let loop_ = Loop::new(provider.clone(), "mock");
-        loop_.steering_notes.lock().push("be brief".to_string());
-        let ctx = StreamContext {
-            system_prompt: "base".to_string(),
-            ..Default::default()
-        };
-        let _ = loop_
-            .run_streaming_with_messages(user_messages("hi"), &ctx, noop_on_text, |_| {}, None)
-            .await
-            .unwrap();
-        let prompts = provider.system_prompts.lock().clone();
-        assert_eq!(prompts.len(), 1);
-        assert!(prompts[0].contains("base"));
-        assert!(prompts[0].contains("be brief"));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3096,28 +3054,6 @@ mod tests {
         let mut args = serde_json::Value::String("{\"a\":1".to_string());
         repair_partial_tool_args(&mut args);
         assert_eq!(args, serde_json::Value::String("{\"a\":1}".to_string()));
-    }
-
-    #[test]
-    fn steering_fold_returns_base_when_empty() {
-        let cell = std::sync::Arc::new(parking_lot::Mutex::new(vec![]));
-        let mut guard = cell.lock();
-        assert_eq!(
-            fold_steering_into_prompt("base prompt", &mut guard),
-            "base prompt"
-        );
-    }
-
-    #[test]
-    fn steering_fold_drains_once_and_appends() {
-        let cell = std::sync::Arc::new(parking_lot::Mutex::new(vec!["do X instead".to_string()]));
-        let mut guard = cell.lock();
-        let out = fold_steering_into_prompt("base", &mut guard);
-        assert!(out.contains("base"));
-        assert!(out.contains("do X instead"));
-        assert!(guard.is_empty(), "notes drained exactly once");
-        let out2 = fold_steering_into_prompt("base", &mut guard);
-        assert_eq!(out2, "base", "second call sees an empty queue");
     }
 
     #[test]

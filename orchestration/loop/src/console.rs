@@ -2661,7 +2661,7 @@ fn print_goal_status(goal: &Goal) {
     let spent: u64 = goal.history.len() as u64;
     println!("spent     : {spent} turns");
     // O3: idle-turn no-progress breaches (recent last) — the orchestrator's
-    // signal to nudge via `todo update` steering.
+    // signal to nudge the worker on its next turn.
     for np in goal.turn_no_progress.iter().rev().take(3) {
         println!(
             "no-progress: turn todo={} agent={} idle={}s tools={} ts={}",
@@ -3688,115 +3688,6 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     result
 }
 
-/// One steer poll step: read newly appended ledger lines since `offset` and
-/// inject any `todo_updated` text for `todo_id` into the session. Returns
-/// the new offset. Extracted from the watch loop for testability.
-#[doc(hidden)] // test-visible seam for steer_todo_updates
-pub async fn steer_poll_once(
-    events_path: &std::path::Path,
-    offset: u64,
-    todo_id: &str,
-    client: &mut Option<crate::agent_client::AgentClient>,
-    session_id: &str,
-) -> u64 {
-    use std::io::{Read, Seek, SeekFrom};
-    let Ok(meta) = std::fs::metadata(events_path) else {
-        return offset;
-    };
-    if meta.len() <= offset {
-        return offset;
-    }
-    let mut buf = String::new();
-    let read = (|| -> std::io::Result<()> {
-        let mut f = std::fs::File::open(events_path)?;
-        f.seek(SeekFrom::Start(offset))?;
-        f.read_to_string(&mut buf)?;
-        Ok(())
-    })();
-    if read.is_err() {
-        return offset;
-    }
-    let new_offset = meta.len();
-    for line in buf.lines() {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        if v.get("kind").and_then(|k| k.as_str()) != Some("todo_updated") {
-            continue;
-        }
-        if v.get("todo_id").and_then(|t| t.as_str()) != Some(todo_id) {
-            continue;
-        }
-        let Some(new_text) = v.get("text").and_then(|t| t.as_str()) else {
-            continue;
-        };
-        if client.is_none() {
-            *client = crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr())
-                .await
-                .ok();
-        }
-        if let Some(c) = client.as_mut() {
-            let msg = format!(
-                "ORCHESTRATOR STEERING (todo {todo_id} updated mid-turn — new instructions below; adjust your current work accordingly):\n{new_text}"
-            );
-            if c.steer(session_id, &msg).await.is_err() {
-                *client = None; // reconnect on the next event
-            }
-        }
-    }
-    new_offset
-}
-
-/// Mid-turn steering watcher: tail the goal ledger; when the orchestrator
-/// updates the CURRENT todo's text mid-turn (`todo update --text`), inject the
-/// new instructions into the running session via the `steer` RPC (drained by
-/// the agent at its next step boundary). Runs as a background task for the
-/// duration of one turn; never completes on its own (all error paths retry).
-async fn steer_todo_updates(events_path: std::path::PathBuf, todo_id: String, session_id: String) {
-    let mut offset = std::fs::metadata(&events_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
-    let mut client: Option<crate::agent_client::AgentClient> = None;
-    #[cfg(test)]
-    let mut polls = 0usize;
-    loop {
-        tokio::time::sleep(steer_poll_interval()).await;
-        offset = steer_poll_once(&events_path, offset, &todo_id, &mut client, &session_id).await;
-        #[cfg(test)]
-        {
-            polls += 1;
-            if steer_test_should_stop(polls) {
-                break;
-            }
-        }
-    }
-}
-
-/// Steer watch poll cadence (short under cfg(test) so the seam test runs
-/// instantly without tokio's test-util time control).
-fn steer_poll_interval() -> std::time::Duration {
-    #[cfg(test)]
-    {
-        std::time::Duration::from_millis(1)
-    }
-    #[cfg(not(test))]
-    {
-        std::time::Duration::from_secs(10)
-    }
-}
-
-/// Test seam: bounds the (otherwise infinite) steer watch loop so tests can
-/// drive one poll and observe a clean exit.
-#[cfg(test)]
-static STEER_TEST_MAX_POLLS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
-#[cfg(test)]
-fn steer_test_should_stop(polls: usize) -> bool {
-    let max = STEER_TEST_MAX_POLLS.load(std::sync::atomic::Ordering::Relaxed);
-    max > 0 && polls >= max
-}
-
 /// Claim the packet's selected todo under a lease BEFORE executing —
 /// atomically (check+append under one lock) so two concurrent
 /// `run --agent-id` workers can never both win the same todo; on contention,
@@ -3981,15 +3872,6 @@ async fn run_turns(
             .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found (deleted while running?)"))?;
         let runs_dir = std::path::PathBuf::from(store.root_path()).join("runs");
         let _ = std::fs::create_dir_all(&runs_dir);
-        // Mid-turn steering: watch the ledger for orchestrator `todo update`s
-        // targeting THIS todo and inject them into the running session (the
-        // turn envelope is only composed at turn start, so without this the
-        // agent never sees updates until the next turn). Aborted after the turn.
-        let steer_handle = tokio::spawn(steer_todo_updates(
-            store.goal_dir(goal_id).join("events.jsonl"),
-            todo_id.clone(),
-            session_id.to_string(),
-        ));
         // O3: progress signals for this turn (tool starts observed on the
         // stream; read at turn end, including the budget-truncation path).
         let progress = std::sync::Arc::new(TurnProgressTracker::new(now_epoch()));
@@ -4018,7 +3900,6 @@ async fn run_turns(
             {
                 Ok(r) => r?,
                 Err(_) => {
-                    steer_handle.abort();
                     // O3: budget truncation is a turn end — evaluate the
                     // no-progress window against the observed tool starts
                     // before stopping the run.
@@ -4032,7 +3913,6 @@ async fn run_turns(
         } else {
             turn_future.await?
         };
-        steer_handle.abort();
         println!(
             "   run={} state={} tools=[{}] cost=¥{:.4}",
             record.run_id,
@@ -4238,8 +4118,8 @@ async fn run_turns(
 
 /// O3: evaluate the no-progress window at turn end (normal or budget-truncated)
 /// and append a `TurnNoProgress` ledger event when breached. Detection +
-/// bookkeeping only — nudge injection is the orchestrator's job via the
-/// existing todo update steering channel.
+/// bookkeeping only — nudging the worker is the orchestrator's job via a
+/// `todo update` (picked up at the next turn).
 fn record_no_progress_if_idle(
     store: &mut Store,
     goal_id: &str,
@@ -7220,56 +7100,7 @@ mod coverage_tests {
     }
 
     #[tokio::test]
-    async fn steer_watch_loop_exits_via_test_seam() {
-        // Two polls: the first does not stop (false edge), the second does.
-        STEER_TEST_MAX_POLLS.store(2, std::sync::atomic::Ordering::Relaxed);
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.jsonl");
-        steer_todo_updates(path, "t1".to_string(), "sess".to_string()).await;
-        STEER_TEST_MAX_POLLS.store(0, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    #[tokio::test]
-    async fn steer_poll_read_failures_and_missing_text() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.jsonl");
-        let mut client = None;
-        // Missing file → metadata guard leaves the offset unchanged.
-        let off = steer_poll_once(&path, 0, "t1", &mut client, "sess").await;
-        assert_eq!(off, 0);
-        // Non-UTF8 content → read_to_string fails → offset unchanged.
-        std::fs::write(&path, [0xffu8, 0xfe, 0xfd]).unwrap();
-        let off = steer_poll_once(&path, 0, "t1", &mut client, "sess").await;
-        assert_eq!(off, 0);
-        // A todo_updated line without `text` is skipped (no steer connect).
-        std::fs::write(&path, "{\"kind\":\"todo_updated\",\"todo_id\":\"t1\"}\n").unwrap();
-        let off = steer_poll_once(&path, 0, "t1", &mut client, "sess").await;
-        assert!(off > 0);
-        assert!(client.is_none());
-    }
-
-    #[tokio::test]
-    async fn steer_poll_connect_failure_leaves_client_none() {
-        std::env::set_var("FUTURE_LOOP_AGENT_ADDR", "127.0.0.1:1");
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.jsonl");
-        std::fs::write(
-            &path,
-            "{\"kind\":\"todo_updated\",\"todo_id\":\"t1\",\"text\":\"new\"}\n",
-        )
-        .unwrap();
-        let mut client = None;
-        let off = steer_poll_once(&path, 0, "t1", &mut client, "sess").await;
-        assert!(off > 0);
-        assert!(
-            client.is_none(),
-            "connect to a closed port fails → client None"
-        );
-        std::env::remove_var("FUTURE_LOOP_AGENT_ADDR");
-    }
-
-    #[test]
-    fn claim_loop_breaks_when_nothing_is_selected() {
+    async fn claim_loop_breaks_when_nothing_is_selected() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_string_lossy().into_owned();
         let mut store = Store::open(&root).unwrap();

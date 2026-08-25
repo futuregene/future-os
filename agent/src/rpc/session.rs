@@ -841,16 +841,6 @@ impl ServerSession {
         self.agent_loop.try_write().unwrap().system_prompt = new_prompt;
     }
 
-    /// Mid-turn steering: queue a note that the RUNNING turn drains at its
-    /// next step boundary (via the shared steering cell that links the shared
-    /// Loop and its run snapshot). Unlike `append_system_prompt` — which only
-    /// takes effect on the next run — this reaches the in-flight turn.
-    pub fn steer(&mut self, note: &str) {
-        if let Ok(loop_) = self.agent_loop.try_read() {
-            loop_.steering_notes.lock().push(note.to_string());
-        }
-    }
-
     pub fn set_ephemeral(&mut self, ephemeral: bool) {
         self.ephemeral = ephemeral;
     }

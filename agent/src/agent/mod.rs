@@ -71,12 +71,6 @@ pub struct Loop {
     /// mid-run compaction is disabled, so selecting a smaller model never
     /// mutates history at click time and cannot send an oversized next request.
     pub preflight_context_check: bool,
-    /// Mid-turn steering notes: orchestrators/injected operator messages that
-    /// must reach a RUNNING turn. The run loop drains this cell at every step
-    /// and appends pending notes to the system prompt of the next LLM call.
-    /// Shared between the shared Loop and its `independent_copy` snapshot (like
-    /// the compaction cells) so notes written mid-run are seen by the snapshot.
-    pub steering_notes: Arc<Mutex<Vec<String>>>,
 }
 
 impl Loop {
@@ -102,7 +96,6 @@ impl Loop {
             stream_incomplete: Arc::new(AtomicBool::new(false)),
             model_registry: None,
             preflight_context_check: false,
-            steering_notes: Arc::new(Mutex::new(vec![])),
         }
     }
 
@@ -143,9 +136,6 @@ impl Loop {
         copy.preflight_context_check = self.preflight_context_check;
         copy.context_manager = self.context_manager.clone();
         copy.active_checkpoint = self.active_checkpoint.clone();
-        // Share the steering cell with the snapshot so notes pushed while the
-        // snapshot runs are delivered at its next step boundary.
-        copy.steering_notes = self.steering_notes.clone();
         copy
     }
 

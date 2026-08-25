@@ -481,7 +481,13 @@ impl RunClient {
         }
 
         let mut session_id: String;
+        // A freshly-created session (fork / no --session / no --continue) is
+        // guaranteed idle, so the stream can subscribe before the prompt
+        // without missing an early event. An existing session may be busy, so
+        // follow-up/steering there must prompt first and filter by run_id.
+        let mut is_fresh = false;
         if let Some(fork_entry) = &config.fork {
+            is_fresh = true;
             // Fork needs an explicit parent session. Without --session, fork
             // from the most recently updated session.
             let mut parent_id = config.session.clone();
@@ -590,6 +596,7 @@ impl RunClient {
         } else {
             // Fresh session for every standalone run — isolates model/thinking/
             // tool changes so they never bleed into subsequent invocations.
+            is_fresh = true;
             let new_session = self.new_session(&config.cwd).await?;
             session_id = new_session
                 .get("sessionId")
@@ -646,18 +653,19 @@ impl RunClient {
             self.set_cwd(&config.cwd, &session_id).await?;
         }
 
-        // 4. Stream + prompt. The default (`reject_if_busy`) keeps the
-        // subscribe-before-prompt order so no early event is missed; steering
-        // and follow-up prompt first so we learn the accepted run's id, then
-        // subscribe scoped to that run (skipping a superseded/queued
-        // predecessor's tail).
+        // 4. Stream + prompt. The default follow-up policy (enqueue_if_busy)
+        // on a fresh session keeps the subscribe-before-prompt order so no
+        // early event is missed; steering and follow-up on an existing session
+        // prompt first so we learn the accepted run's id, then subscribe scoped
+        // to that run (skipping a superseded/queued predecessor's tail).
         if verbose {
             out.write_err("Running...\n");
         }
-        let busy_policy: &str = if config.busy_policy.is_empty() {
-            BUSY_REJECT
+        let is_supersede = config.busy_policy == BUSY_SUPERSEDE;
+        let busy_policy: &str = if is_supersede {
+            BUSY_SUPERSEDE
         } else {
-            config.busy_policy.as_str()
+            BUSY_ENQUEUE
         };
         #[allow(clippy::type_complexity)]
         let on_text: Option<Box<dyn Fn(&str) + Send>> = if config.mode == "text" {
@@ -667,9 +675,9 @@ impl RunClient {
             None
         };
 
-        let (events, text) = if busy_policy == BUSY_REJECT {
-            // Default: subscribe before prompting so no early event is missed,
-            // then prompt and wait for the (single) run to settle.
+        let (events, text) = if !is_supersede && is_fresh {
+            // Fresh session + follow-up (idle): subscribe before prompting so
+            // no early event is missed, then prompt and wait for the run.
             let stream_session = session_id.clone();
             let stream_addr = self.addr.clone();
             let out_stream = out.clone();
@@ -689,10 +697,10 @@ impl RunClient {
             // 6. Wait for events to complete
             await_stream(rx, handle).await?
         } else {
-            // steering / follow-up: prompt first to learn the accepted run id,
-            // then stream that run only. The agent queues (or, for steering,
-            // aborts the active run and queues) the new prompt, so its events
-            // always arrive after the acknowledgement.
+            // steering, or follow-up on a possibly-busy existing session:
+            // prompt first to learn the accepted run id, then stream that run
+            // only. The agent queues (or, for steering, aborts the active run
+            // and queues) the new prompt, so its events arrive after the ack.
             let ack = self
                 .prompt(&config.message, &session_id, busy_policy)
                 .await?;
@@ -835,8 +843,7 @@ fn parse_stream_event(event: &StreamEvent, raw_data: &Map<String, Value>) -> Val
 }
 
 /// `busy_policy` values carried on the `prompt` command (mirror the agent's
-/// `BusyPolicy`). Empty is treated as the default `reject_if_busy`.
-pub const BUSY_REJECT: &str = "reject_if_busy";
+/// `BusyPolicy`). Empty is treated as the default `enqueue_if_busy`.
 pub const BUSY_ENQUEUE: &str = "enqueue_if_busy";
 pub const BUSY_SUPERSEDE: &str = "supersede_session";
 
@@ -859,9 +866,9 @@ pub struct RunConfig {
     pub cwd: String,
     pub verbose: bool,
     pub message: String,
-    /// How a prompt interacts with an in-progress run: `reject_if_busy`
-    /// (default / empty), `enqueue_if_busy` (follow-up), or
-    /// `supersede_session` (steering — interrupts the active run).
+    /// How a prompt interacts with an in-progress run: empty / `enqueue_if_busy`
+    /// (follow-up, the default) or `supersede_session` (steering — interrupts
+    /// the active run).
     pub busy_policy: String,
 }
 
@@ -1561,6 +1568,8 @@ mod tests {
         assert_eq!(agent.seen_of("set_cwd").len(), 1);
         assert_eq!(agent.seen_of("prompt")[0].message, "hello");
         assert_eq!(agent.seen_of("prompt")[0].session_id, "s-new");
+        // The default follow-up policy is enqueue_if_busy (reject is gone).
+        assert_eq!(agent.seen_of("prompt")[0].busy_policy, "enqueue_if_busy");
     }
 
     #[tokio::test]
@@ -1597,11 +1606,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_follow_up_uses_enqueue_policy() {
+    async fn run_follow_up_on_existing_session_enqueues_and_filters() {
+        // The default follow-up policy on an EXISTING (possibly busy) session:
+        // the prompt is enqueued behind the active run and the stream waits for
+        // the queued run's answer, skipping the active run's tail.
         let mut agent = MockAgent::default();
         agent
             .responses
-            .insert("new_session".into(), "{\"sessionId\":\"s-follow\"}".into());
+            .insert("switch_session".into(), "{\"cancelled\":false}".into());
         agent.responses.insert(
             "prompt".into(),
             "{\"run_id\":\"run-q\",\"run_epoch\":1,\"accepted_state\":\"queued\",\"queue_position\":1}"
@@ -1617,11 +1629,13 @@ mod tests {
         let client = RunClient::new(&addr);
         let (out, _) = Output::memory();
         let mut config = run_config("continue please");
-        config.busy_policy = BUSY_ENQUEUE.to_string();
+        config.session = Some("s-busy".to_string());
         let result = client.run(&config, &out).await.expect("run");
         assert_eq!(result.text, "queued answer");
+        assert_eq!(result.events.len(), 2);
         let prompts = agent.seen_of("prompt");
         assert_eq!(prompts[0].busy_policy, "enqueue_if_busy");
+        assert_eq!(agent.seen_of("switch_session")[0].session_id, "s-busy");
     }
 
     #[tokio::test]

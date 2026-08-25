@@ -1,7 +1,7 @@
 //! Coverage sweep for console.rs remainder: unknown-flag parse arms across
-//! every command, the steer poll seam, the monitor claim-race re-decide
-//! loop, wall-clock-budget success arm, session-cleanup warning, and assorted
-//! print arms unreachable through the happy paths.
+//! every command, the monitor claim-race re-decide loop, wall-clock-budget
+//! success arm, session-cleanup warning, and assorted print arms unreachable
+//! through the happy paths.
 
 mod common;
 
@@ -280,111 +280,6 @@ fn unknown_flags_hard_error_everywhere() {
         "--zz",
         "1",
     ]);
-}
-
-// ── steer poll seam ────────────────────────────────────────────────────────
-
-#[test]
-fn steer_poll_once_arms() {
-    let cr = cli_root();
-    let (_rt, shared) = mock_env(MockState::default());
-    let gid = init_goal(&cr, "steer drive");
-    let events_path = open_store(&cr).goal_dir(&gid).join("events.jsonl");
-    let rt2 = rt();
-    rt2.block_on(async {
-        use std::io::Write as _;
-        let mut client = None;
-        // Missing file → offset unchanged.
-        let off = future_loop::console::steer_poll_once(
-            std::path::Path::new("/nonexistent/events.jsonl"),
-            0,
-            "t1",
-            &mut client,
-            "sess",
-        )
-        .await;
-        assert_eq!(off, 0);
-        // Fresh append beyond the current length → poll processes new lines.
-        let meta_len = std::fs::metadata(&events_path).unwrap().len();
-        let off = future_loop::console::steer_poll_once(
-            &events_path,
-            meta_len,
-            "t1",
-            &mut client,
-            "sess",
-        )
-        .await;
-        assert_eq!(off, meta_len, "no new content");
-        // Append a mix: bad json, wrong kind, wrong todo, no text, and a hit.
-        let mut store = open_store(&cr);
-        store
-            .append(future_loop::store::Event::TodoAdded {
-                goal_id: gid.clone(),
-                todo: Todo::advancement("t1", "steer me"),
-                ts: now_epoch(),
-            })
-            .unwrap();
-        // Hand-craft the todo_updated line variants (the CLI sets both text
-        // and kind via Event::TodoUpdated serialization).
-        store
-            .append(future_loop::store::Event::TodoUpdated {
-                goal_id: gid.clone(),
-                todo_id: "t1".into(),
-                text: Some("new instructions".into()),
-                status: None,
-                evidence: None,
-                note: None,
-                priority: None,
-                resume_when: None,
-                blocks: None,
-                acceptance: None,
-                ts: now_epoch(),
-            })
-            .unwrap();
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(&events_path)
-            .unwrap()
-            .write_all(b"{broken\n")
-            .unwrap();
-        let before = std::fs::metadata(&events_path).unwrap().len();
-        assert!(before > off);
-        let off2 =
-            future_loop::console::steer_poll_once(&events_path, off, "t1", &mut client, "sess")
-                .await;
-        assert_eq!(off2, before);
-        // The todo_updated hit connected to the mock and steered.
-        assert!(shared
-            .lock()
-            .unwrap()
-            .recorded
-            .contains(&"steer".to_string()));
-        // A poll against a DIFFERENT todo id: no new steer call.
-        let n = shared.lock().unwrap().recorded.len();
-        let _ = future_loop::console::steer_poll_once(
-            &events_path,
-            off,
-            "other-todo",
-            &mut client,
-            "sess",
-        )
-        .await;
-        let _ = future_loop::console::steer_poll_once(&events_path, off, "t1", &mut client, "sess")
-            .await;
-        // steer failure → client reset (next matching event reconnects).
-        let st = MockState {
-            fail_commands: ["steer".to_string()].into_iter().collect(),
-            ..Default::default()
-        };
-        let (addr2, _shared2) = spawn_mock(st).await;
-        std::env::set_var("FUTURE_LOOP_AGENT_ADDR", &addr2);
-        let mut client2 = None;
-        let _ =
-            future_loop::console::steer_poll_once(&events_path, off, "t1", &mut client2, "sess2")
-                .await;
-        assert!(client2.is_none(), "failed steer resets the client");
-        let _ = n;
-    });
 }
 
 // ── monitor claim-race re-decide loop ──────────────────────────────────────

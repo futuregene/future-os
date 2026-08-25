@@ -200,21 +200,6 @@ impl AgentClient {
         Ok(())
     }
 
-    /// Queue a mid-turn steering note (drained by the running turn at its next
-    /// LLM step, unlike append_system_prompt which applies from the next run).
-    pub async fn steer(&mut self, session_id: &str, text: &str) -> Result<()> {
-        self.call(
-            "steer",
-            session_id,
-            RpcCommand {
-                system_prompt: text.to_string(),
-                ..Default::default()
-            },
-        )
-        .await?;
-        Ok(())
-    }
-
     /// Select the model for this session (e.g. "future/deepseek-v4-flash").
     pub async fn set_model(&mut self, session_id: &str, model: &str) -> Result<()> {
         self.call(
@@ -260,7 +245,7 @@ impl AgentClient {
                 RpcCommand {
                     message: message.to_string(),
                     client_request_id: client_request_id.to_string(),
-                    busy_policy: "reject_if_busy".to_string(),
+                    busy_policy: "enqueue_if_busy".to_string(),
                     ..Default::default()
                 },
             )

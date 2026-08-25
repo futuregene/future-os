@@ -863,8 +863,8 @@ pub struct LivenessAlert {
 
 /// O3: one idle-turn (no-progress) breach — the turn ended with no write-class
 /// tool (write/edit/shell) started inside the no-progress window. Folded from
-/// `TurnNoProgress` events; the orchestrator nudges via the todo update
-/// steering channel (the loop itself never auto-injects).
+/// `TurnNoProgress` events; the orchestrator nudges via a `todo update`
+/// (picked up at the next turn; the loop itself never auto-injects).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TurnNoProgressRecord {
     pub goal_id: String,

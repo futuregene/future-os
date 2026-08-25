@@ -174,7 +174,7 @@ impl FutureAgent for MockAgent {
                     .to_string()
             }),
             // Trivial acks (set_model / set_thinking_level / append_system_prompt /
-            // steer / delete_session / abort): empty data → Value::Null path.
+            // delete_session / abort): empty data → Value::Null path.
             _ => String::new(),
         };
         Ok(response(&cmd, true, data, String::new()))

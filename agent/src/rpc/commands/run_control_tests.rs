@@ -378,7 +378,7 @@ fn approval_decision_rejected_and_cancelled_modes() {
 // ── coverage batch 1: simple session-scoped setters ─────────────────────
 
 #[test]
-fn prompt_reject_if_busy_reports_active_run_details() {
+fn prompt_default_enqueues_when_busy() {
     let state = make_app_state();
     let session = state.get_session("default").unwrap();
     session
@@ -387,12 +387,12 @@ fn prompt_reject_if_busy_reports_active_run_details() {
         .begin(Some("run-active"), Some("request-active"))
         .unwrap();
 
+    // Default (empty) busy policy now enqueues instead of rejecting.
     let mut cmd = make_cmd("prompt");
-    cmd.message = "rejected".to_string(); // default busy policy: reject_if_busy
+    cmd.message = "queued behind the active run".to_string();
     let resp = parse_response(&handle_command_internal(&state, cmd));
-    assert_eq!(resp["success"], false);
-    assert_eq!(resp["error_code"], "busy");
-    assert_eq!(resp["error_data"]["active_run_id"], "run-active");
+    assert_eq!(resp["success"], true);
+    assert_eq!(resp["data"]["accepted_state"], "queued");
 }
 
 #[test]

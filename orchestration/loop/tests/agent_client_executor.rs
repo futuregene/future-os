@@ -78,7 +78,6 @@ fn session_and_command_happy_paths() {
             .append_system_prompt(&session, "boundary")
             .await
             .unwrap();
-        client.steer(&session, "note").await.unwrap();
         client.set_model(&session, "future/k3").await.unwrap();
         client.set_thinking_level(&session, "low").await.unwrap();
 
@@ -112,7 +111,6 @@ fn session_and_command_happy_paths() {
         for expected in [
             "new_session",
             "append_system_prompt",
-            "steer",
             "set_model",
             "set_thinking_level",
             "prompt",

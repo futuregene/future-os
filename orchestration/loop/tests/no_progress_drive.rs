@@ -1,6 +1,6 @@
 //! O3 drive: idle-turn (no-progress) detection — pure evaluation, stream
 //! tracking, and the budget-truncation ledger path. Detection + bookkeeping
-//! only: no auto-injection (orchestrators nudge via todo update steering).
+//! only: no auto-injection (orchestrators nudge via a `todo update`).
 
 mod common;
 
