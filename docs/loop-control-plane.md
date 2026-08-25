@@ -48,6 +48,7 @@ agent executes one bounded turn (gRPC) → writes evidence → kernel decides th
 | Gate | `gate resolve` | Any open user gate freezes all work until resolved; user-actions (non-blocking human to-dos) surface to the user without freezing the agent |
 | Delivery closure | `delivery status/record` | Completion lands in a pending `delivered` state; an operator resolves it as `verified/failed/rework`; unverified deliveries auto-derive a follow-up after 3 turns |
 | Terminal | `frontier show` | Validated closure: todos done/superseded + closure intent + no acceptance gaps + no pending deferred work; `frontier` gives the terminal judgement with gap detail |
+| Dashboard | `ui` | Local web dashboard on 127.0.0.1: goal cards, attention queue, kernel decision, todo DAG, agents/leases, delivery closure, run/event ledgers — live over SSE; gate resolve & goal cancel included |
 | Quota | `quota should-run/usage/spend/decisions` | The deterministic should-run kernel: scheduling, refusal reasons, and spend are all auditable |
 | Scheduler | `scheduler tick/show/liveness` | Monitor cadence, host-failure records, liveness heartbeats |
 | Multi-agent | `agent contract/recipe/succession/collective` | One goal, several workers: contract (backups / handoff rules), named recipes for one-command onboarding, auto back-up promotion on offline timeout, wake roster, collective turn ledger |
@@ -96,10 +97,32 @@ future loop run --goal G --agent-id mac-worker --model M --thinking-level L --ma
 future loop gate resolve --goal G --todo-id GATE --decision "approve"
 
 # 5. Observe and close
+future loop ui                       # live web dashboard (http://127.0.0.1:7717)
 future loop status --goal G
 future loop frontier show --goal G        # terminal judgement + gap detail
 future loop delivery record --goal G ...  # verified / failed / rework
 ```
+
+## Web dashboard (`future loop ui`)
+
+`future loop ui [--port N] [--root DIR] [--no-open]` serves a local,
+read-mostly dashboard on `127.0.0.1` (default port 7717). It replays the
+same event ledger as the CLI on every request and pushes changes over SSE,
+so the page is always a faithful, live projection — no separate state.
+
+- **Overview**: fleet totals (active/terminal/cancelled goals, open gates,
+  24h/7d runs/cost/quota slots), the attention queue (severity, waiting-on,
+  recommended action), and per-goal cards sorted by triage order.
+- **Goal detail**: the kernel's should-run decision (reason + code + waiting
+  on), next action, spend/throughput (14-day sparkline, token/cost/slot
+  buckets, 7-day outcome split), the todo dependency DAG (layered,
+  click-through inspector with verify/acceptance/lease/evidence detail),
+  todos table, agents & leases & liveness alerts, delivery closure, replan
+  obligations, acceptance gaps, semantic history, and the run + event
+  ledgers.
+- **Actions**: resolve user gates and cancel a goal from the page (both
+  append the same ledger events as the CLI); everything else is read-only
+  by design — drive work with `future loop run`.
 
 ## Hard checks first (conventions fail, gates hold)
 

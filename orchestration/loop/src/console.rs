@@ -131,6 +131,7 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         "frontier" => cmd_frontier(&store, &args[1..]),
         "profile" => cmd_profile(&mut store, &args[1..]),
         "status" => cmd_status(&store, &args[1..]),
+        "ui" => cmd_webui(&args[1..]).await,
         "quota" => cmd_quota(&store, &args[1..]),
         "scheduler" => cmd_scheduler(&mut store, &args[1..]),
         "store" => cmd_store(&mut store, &args[1..]),
@@ -173,6 +174,7 @@ const JOURNEY_ASSIGNMENTS: &[(&str, Journey)] = &[
     // Start here — first goal, first status, install checks
     ("goal", Journey::Starter),
     ("status", Journey::Starter),
+    ("ui", Journey::Starter),
     ("doctor", Journey::Starter),
     ("agent", Journey::Starter),
     // Daily operator — the day-to-day control surface
@@ -232,6 +234,12 @@ fn build_cli_registry() -> CommandRegistry {
         "status",
         "project the active state",
         "status [--goal G] [--format json]",
+    );
+    r.command(
+        goal,
+        "ui",
+        "local web dashboard (read-mostly: gate resolve / goal cancel) on 127.0.0.1",
+        "ui [--port N] [--root DIR] [--no-open]",
     );
     r.command(
         goal,
@@ -2514,6 +2522,55 @@ fn print_ledger_read_note(store: &Store, goal_id: &str) {
     }) {
         println!("note      : {note}");
     }
+}
+
+/// Web-UI parity projection refresh: the dashboard appends events through
+/// the store directly, so it calls this instead of duplicating the
+/// next-action + active-state sync convention every CLI mutation follows.
+pub fn refresh_projections_after_append(store: &Store, goal_id: &str) -> Result<()> {
+    refresh_next_action(store, goal_id)?;
+    sync_compat(store, goal_id)
+}
+
+// ── ui ─────────────────────────────────────────────────────────────────────
+
+/// `loop ui [--port N] [--root DIR] [--no-open]` — serve the local web
+/// dashboard. Read-mostly (gate resolve / goal cancel are the only
+/// mutations); all state is replayed from the same event ledger the CLI
+/// reads, on `127.0.0.1` only.
+async fn cmd_webui(args: &[String]) -> Result<()> {
+    let mut port: u16 = 7717;
+    let mut root: Option<String> = None;
+    let mut open_browser = true;
+    reject_unknown_flags(args, &["--port", "--root", "--no-open"])?;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--no-open" => {
+                open_browser = false;
+                i += 1;
+            }
+            "--port" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow::anyhow!("--port requires a value"))?;
+                port = v
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("--port must be 0-65535 (0 picks a free port)"))?;
+                i += 2;
+            }
+            "--root" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow::anyhow!("--root requires a value"))?;
+                root = Some(v.clone());
+                i += 2;
+            }
+            other => bail!("unknown argument `{other}`"),
+        }
+    }
+    let root = root.unwrap_or_else(root_dir);
+    crate::webui::run_server(root, port, open_browser).await
 }
 
 /// `loop status --format json` — machine-readable projection (goal, todos
