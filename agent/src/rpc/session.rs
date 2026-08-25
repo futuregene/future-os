@@ -658,8 +658,8 @@ impl ServerSession {
                 }
             }
         }
-        let reserve_tokens = ((context_window as f64 * 0.1) as i32).max(16384);
-        let keep_tokens = ((context_window as f64 * 0.2) as i32).max(reserve_tokens);
+        let (reserve_tokens, keep_tokens) =
+            crate::compaction::context_token_budgets(context_window);
         let active_checkpoint = self
             .session_manager
             .load(&self.session_id)
