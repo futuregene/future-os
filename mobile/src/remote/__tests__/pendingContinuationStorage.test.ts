@@ -38,6 +38,11 @@ describe("pending continuation storage", () => {
     await expect(loadPendingContinuation()).resolves.toBeNull();
   });
 
+  it("ignores corrupt JSON", async () => {
+    mockData.set("futureos.remote.pending-continuation.v1", "not json{");
+    await expect(loadPendingContinuation()).resolves.toBeNull();
+  });
+
   it("only clears the matching operation", async () => {
     await savePendingContinuation(pending);
     await clearPendingContinuation("stale-command");

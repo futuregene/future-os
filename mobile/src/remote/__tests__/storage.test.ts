@@ -56,6 +56,26 @@ describe("credential storage", () => {
     expect(mockedStore.deleteItemAsync).toHaveBeenCalled();
   });
 
+  test("loadCredentials clears and returns null when the device identity is missing", async () => {
+    // Every credential field is present but the device id is gone — a corrupt
+    // bundle must self-heal so a fresh pair re-establishes both.
+    mockedStore.getItemAsync.mockImplementation(async key =>
+      key === "futureos.remote.device-id.v1" ? null : "value",
+    );
+    expect(await loadCredentials()).toBeNull();
+    expect(mockedStore.deleteItemAsync).toHaveBeenCalled();
+  });
+
+  test("a rejected credential operation does not poison the queue", async () => {
+    mockedStore.setItemAsync.mockRejectedValueOnce(new Error("storage full"));
+    await expect(saveCredentials(credentials)).rejects.toThrow("storage full");
+
+    // The rejection handler resets the queue, so the next write still runs.
+    mockedStore.setItemAsync.mockResolvedValue(undefined);
+    await saveCredentials(credentials);
+    expect(mockedStore.setItemAsync).toHaveBeenCalled();
+  });
+
   test("loadCredentials rebuilds a full credential set", async () => {
     mockedStore.getItemAsync.mockImplementation(async key => {
       const byKey: Record<string, string> = {
