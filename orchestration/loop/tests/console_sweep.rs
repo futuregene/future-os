@@ -16,6 +16,20 @@ fn rt() -> tokio::runtime::Runtime {
         .unwrap()
 }
 
+/// Spawn a child, kill it, reap it — its pid is now guaranteed dead.
+#[cfg(unix)]
+fn dead_pid() -> u32 {
+    let mut child = std::process::Command::new("sh")
+        .arg("-c")
+        .arg("sleep 30")
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    child.kill().unwrap();
+    child.wait().unwrap();
+    pid
+}
+
 fn mock_env(state: MockState) -> (tokio::runtime::Runtime, common::mock_agent::SharedState) {
     let rt = rt();
     let (addr, shared) = rt.block_on(spawn_mock(state));
@@ -599,6 +613,52 @@ fn notify_supervisor_enqueues_to_registered_session_only() {
         assert_eq!(calls[0].1, "enqueue_if_busy");
     });
     std::env::remove_var("FUTURE_LOOP_AGENT_ADDR");
+}
+
+/// The dead-worker push: a claimed todo whose holder process is gone is
+/// reported to the registered supervisor via an `infra_stopped` prompt.
+#[cfg(unix)]
+#[test]
+fn notify_dead_holders_pushes_to_registered_supervisor() {
+    let _cr = cli_root();
+    let gid = init_goal(&_cr, "dead worker push");
+    cli_ok(&[
+        "supervisor",
+        "register",
+        "--goal",
+        &gid,
+        "--session-id",
+        "sup-sess",
+    ]);
+    let todo_id = first_todo_id(&_cr.root, &gid);
+    let mut store = open_store(&_cr);
+    // Inject a claimed todo whose holder process is gone (SIGKILL without a
+    // release) — the exact state a crashed worker leaves behind.
+    store
+        .append(future_loop::store::Event::TodoClaimed {
+            goal_id: gid.clone(),
+            todo_id: todo_id.clone(),
+            agent_id: "w1".to_string(),
+            lease_expires_at: now_epoch() + 3600,
+            holder_pid: Some(dead_pid()),
+            ts: now_epoch(),
+        })
+        .unwrap();
+
+    let rt = rt();
+    let (addr, shared) = rt.block_on(spawn_mock(MockState::default()));
+    std::env::set_var("FUTURE_LOOP_AGENT_ADDR", &addr);
+    rt.block_on(async {
+        future_loop::console::notify_dead_holders(&mut store, &gid)
+            .await
+            .unwrap();
+    });
+    std::env::remove_var("FUTURE_LOOP_AGENT_ADDR");
+
+    let calls = shared.lock().unwrap().prompt_calls.clone();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, "sup-sess");
+    assert_eq!(calls[0].1, "enqueue_if_busy");
 }
 
 #[test]
