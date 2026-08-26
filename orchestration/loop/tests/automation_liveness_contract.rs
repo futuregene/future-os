@@ -394,6 +394,7 @@ fn run_path_writeback_uses_the_same_cadence_derivation() {
         spend_source: Some("heartbeat".into()),
         validation: None,
         failure_kind: None,
+        truncation: None,
     };
     let before = future_loop::state::now_epoch();
     future_loop::executor::writeback(&mut goal, &record, Some(false), None);

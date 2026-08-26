@@ -77,6 +77,7 @@ mod tests {
             spend_source: Some("run".to_string()),
             validation: None,
             failure_kind: None,
+            truncation: None,
         }
     }
 

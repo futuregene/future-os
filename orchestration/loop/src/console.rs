@@ -7202,6 +7202,7 @@ mod coverage_tests {
             recorded_at: 1_700_000_000,
             spend_source: Some("run".to_string()),
             failure_kind: None,
+            truncation: None,
             validation: None,
         }
     }
@@ -8049,6 +8050,7 @@ mod cli_quirks_tests {
                     recorded_at: 2,
                     spend_source: None,
                     failure_kind: None,
+                    truncation: None,
                 },
                 ts: 2,
             }),
@@ -8756,6 +8758,7 @@ mod residual_branch_tests {
             recorded_at: 1,
             spend_source: Some("run".into()),
             failure_kind: None,
+            truncation: None,
             validation: None,
         };
         std::fs::write(

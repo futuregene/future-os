@@ -561,6 +561,8 @@ impl ServerSession {
         run_loop
             .stream_incomplete
             .store(false, std::sync::atomic::Ordering::SeqCst);
+        // Reset any prior run's truncation context — it is per-run.
+        *run_loop.stream_truncation.lock() = None;
         // Stamp run identity on the message itself, not just the journal
         // entry: the terminal history rewrite regenerates entries from the
         // in-memory messages, so identity injected only at the entry layer
@@ -863,6 +865,10 @@ impl ServerSession {
             let stream_incomplete = run_loop
                 .stream_incomplete
                 .load(std::sync::atomic::Ordering::SeqCst);
+            // Truncation context (how far the run progressed before the model
+            // stream cut off) — surfaced on `run_terminal` / `agent_end` when
+            // the run ended incomplete.
+            let stream_truncation = run_loop.stream_truncation.lock().clone();
             if let Some(error) = broadcaster.persistence_error() {
                 let _ = runtime.mark_persistence_degraded(&task_lease, &error);
                 return;
@@ -910,6 +916,7 @@ impl ServerSession {
             // still needed after the task completes (terminal event dispatch).
             let commit_run_id = task_lease.run_id.clone();
             let commit_run_error = run_error.clone();
+            let commit_truncation = stream_truncation.clone();
             let persistence_task = tokio::task::spawn_blocking(move || {
                 if is_ephemeral {
                     return anyhow::Ok(());
@@ -968,12 +975,13 @@ impl ServerSession {
                     task_lease.epoch,
                     task_lease.run_sequence,
                 );
-                let terminal = crate::session::SessionEntry::run_terminal(
+                let terminal = crate::session::SessionEntry::run_terminal_with_truncation(
                     &commit_run_id,
                     terminal_state,
                     run_output_tokens,
                     run_duration_ms,
                     commit_run_error.as_deref(),
+                    commit_truncation.as_ref(),
                 );
 
                 // Append-only fast path: terminal marker + refreshed session_info,
@@ -1056,6 +1064,14 @@ impl ServerSession {
                     });
                     if stream_incomplete {
                         data["reason"] = serde_json::Value::String("incomplete".to_string());
+                    }
+                    if let Some(t) = &stream_truncation {
+                        data["truncation"] = serde_json::json!({
+                            "turns_so_far": t.turns_so_far,
+                            "output_len": t.output_len,
+                            "tool_calls_so_far": t.tool_calls_so_far,
+                            "detected_by": t.detected_by,
+                        });
                     }
                     broadcaster.broadcast(crate::rpc::SseEvent {
                         event_type: "agent_end".to_string(),

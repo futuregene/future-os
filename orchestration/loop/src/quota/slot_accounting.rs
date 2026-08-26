@@ -152,6 +152,7 @@ mod tests {
             spend_source: source.map(|s| s.to_string()),
             validation: None,
             failure_kind: None,
+            truncation: None,
         }
     }
 

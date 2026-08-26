@@ -528,7 +528,7 @@ function renderDTab(g, d, gates, unvalidated, deliveriesByTodo, openObl){
   if(dTab === "todos"){
     const rows = g.todos.map(t => {
       const dv = deliveriesByTodo[t.id];
-      const lease = t.claimed_by ? `<div class="sub" data-tip="A lease is the bounded execution window a worker holds on this todo. Each lease records the worker's process id (pid); if that process is no longer alive, the lease is orphaned and auto-reclaimed — this one is orphaned (holder process is dead).">lease ${esc(t.claimed_by)} · exp ${ago(t.lease_expires_at)}${t.holder_alive===false?" · <span class='sev-high'>holder dead</span>":""}</div>` : "";
+      const lease = t.claimed_by ? `<div class="sub" data-tip="A lease is the bounded execution window a worker holds on this todo. Each lease records the worker's process id (pid); if that process is no longer alive, the lease is orphaned and auto-reclaimed — this one is orphaned (holder process is dead).">lease ${esc(t.claimed_by)} · exp ${ago(t.lease_expires_at)}${t.holder_alive===false && (t.status==="open"||t.status==="deferred"||t.status==="blocked") ? " · <span class='sev-high'>holder dead</span>" : (t.holder_alive===false? " · holder process dead (closed)":"")}</div>` : "";
       const val = t.validator ? `<div class="sub mono" data-tip="independent verify command run after each turn; exit 0 = validated${t.passed_validation?" · passed":""}">✓ ${esc(t.validator)}${t.passed_validation?" · passed":(t.status==="done"?" · <span class='sev-high'>UNVALIDATED</span>":"")}</div>` : "";
       const gateQ = t.gate_question ? `<div class="sub">❓ ${esc(t.gate_question)}</div>` : "";
       const dec = t.decision ? `<div class="sub">→ ${esc(t.decision)}</div>` : "";
@@ -671,7 +671,7 @@ function inspectTodo(id){
     ${row("monitor due", t.monitor_due_at? tsLocal(t.monitor_due_at)+" ("+ago(t.monitor_due_at)+")" : null)}
     ${row("no-change polls", t.consecutive_no_change || null)}
     ${row("resume when", esc(t.resume_when_text))}
-    ${row("lease", t.claimed_by? t.claimed_by+" · expires "+tsLocal(t.lease_expires_at)+" ("+ago(t.lease_expires_at)+")"+(t.holder_alive===false?" · holder process dead (orphaned lease, auto-reclaimed)":"") : null)}
+    ${row("lease", t.claimed_by? t.claimed_by+" · expires "+tsLocal(t.lease_expires_at)+" ("+ago(t.lease_expires_at)+")"+(t.holder_alive===false ? (t.status==="open"||t.status==="deferred"||t.status==="blocked" ? " · holder process dead (orphaned lease, auto-reclaimed)" : " · holder process dead (closed)") : "") : null)}
     ${row("evidence", esc(t.evidence))}
     <div class="fgroup"><div class="fk">timestamps</div><div class="fv mono">updated ${tsLocal(t.updated_at)}${t.completed_at?" · completed "+tsLocal(t.completed_at):""}</div></div>
     ${t.status==="open"&&t.class==="user_gate"? `<div class="fgroup"><div class="fk">resolve (CLI)</div><div class="fv mono" style="font-size:11px">future loop gate resolve --goal ${esc(DETAIL_ID)} --todo-id ${esc(t.id)} --decision \"…\"</div></div>`:""}

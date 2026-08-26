@@ -111,6 +111,7 @@ mod tests {
             recorded_at: at,
             spend_source: None,
             failure_kind: None,
+            truncation: None,
         }
     }
 

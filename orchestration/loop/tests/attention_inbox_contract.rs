@@ -32,6 +32,7 @@ fn run(evidence: &str) -> RunRecord {
         spend_source: None,
         validation: None,
         failure_kind: None,
+        truncation: None,
     }
 }
 

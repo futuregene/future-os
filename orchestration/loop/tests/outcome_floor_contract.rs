@@ -25,6 +25,7 @@ fn run_record(turn: u32, todo_id: &str, state: &str, tools: usize, evidence: &st
         spend_source: None,
         validation: None,
         failure_kind: None,
+        truncation: None,
     }
 }
 

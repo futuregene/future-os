@@ -23,6 +23,25 @@ pub type PersistCallback = Arc<dyn Fn(&mut crate::types::AgentMessage) + Send + 
 pub type CheckpointCallback =
     Arc<dyn Fn(&crate::compaction::ContextCheckpoint) -> Result<()> + Send + Sync>;
 
+/// How far a run had progressed when its model stream was judged truncated,
+/// and how the truncation was detected. Captured at the truncation point so
+/// the run commit path can surface it on `run_terminal` / `agent_end` — this
+/// is what lets an orchestrator tell "cut off mid-work" (worth resuming) from
+/// "model went silent immediately" (likely a prompt/connection problem).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct StreamTruncation {
+    /// LLM turns completed inside this run before the stream cut off.
+    pub turns_so_far: i32,
+    /// Length (chars) of the accumulated assistant text prefix at cut-off.
+    pub output_len: usize,
+    /// Tool calls the model had emitted (executed or not) before cut-off.
+    pub tool_calls_so_far: usize,
+    /// `idle_timeout` = the stream went silent for a whole idle window;
+    /// `finish_incomplete` = the provider sent an explicit incomplete finish;
+    /// `eof_no_terminal` = the stream closed without any terminal event.
+    pub detected_by: String,
+}
+
 /// Per-session state passed into `run_streaming_with_messages`.  Callbacks
 /// are session-specific (they capture session_id, messages_arc, broadcaster)
 /// and must NOT be stored on the shared Loop — otherwise concurrent sessions
@@ -63,6 +82,13 @@ pub struct Loop {
     /// Read by the run commit path so both the journal and `agent_end` preserve
     /// `incomplete` instead of presenting a truncated prefix as completed.
     pub stream_incomplete: Arc<AtomicBool>,
+    /// Context captured at the moment the stream was judged truncated: how far
+    /// the run had progressed (turns, output length, tool calls produced) and
+    /// how the truncation was detected. Surfaced on `run_terminal` / `agent_end`
+    /// so orchestrators can tell "cut off mid-work" (worth resuming) from
+    /// "model went silent immediately" (likely a prompt/connection problem).
+    /// Empty when the run ended cleanly.
+    pub stream_truncation: Arc<parking_lot::Mutex<Option<StreamTruncation>>>,
     /// Cached model registry — avoids re-deserialising the 906-model catalog
     /// on auto-compaction checks and image-support queries inside the hot loop.
     pub model_registry: Option<Arc<parking_lot::RwLock<crate::models::Registry>>>,
@@ -94,6 +120,7 @@ impl Loop {
             cumulative_cost: Arc::new(parking_lot::Mutex::new(0.0)),
             last_prompt_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             stream_incomplete: Arc::new(AtomicBool::new(false)),
+            stream_truncation: Arc::new(parking_lot::Mutex::new(None)),
             model_registry: None,
             preflight_context_check: false,
         }

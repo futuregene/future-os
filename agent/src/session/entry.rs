@@ -202,14 +202,29 @@ impl SessionEntry {
 
     /// Marker written at a run's commit boundary. `content` carries
     /// `{ run_id, state, run_tokens, run_duration_ms }` plus `error` when
-    /// `state` is `error`. A run is only recoverable as completed once this
-    /// marker is durable.
+    /// `state` is `error`, plus `truncation` when `state` is `incomplete`.
+    /// A run is only recoverable as completed once this marker is durable.
     pub fn run_terminal(
         run_id: &str,
         state: &str,
         run_tokens: i64,
         run_duration_ms: i64,
         error: Option<&str>,
+    ) -> Self {
+        Self::run_terminal_with_truncation(run_id, state, run_tokens, run_duration_ms, error, None)
+    }
+
+    /// `run_terminal` with an optional truncation context (set only when the
+    /// run ended `incomplete` because the model stream cut off). The context
+    /// records how far the run had progressed so consumers can tell "cut off
+    /// mid-work" from "model went silent immediately".
+    pub fn run_terminal_with_truncation(
+        run_id: &str,
+        state: &str,
+        run_tokens: i64,
+        run_duration_ms: i64,
+        error: Option<&str>,
+        truncation: Option<&crate::agent::StreamTruncation>,
     ) -> Self {
         let mut content = serde_json::json!({
             "run_id": run_id,
@@ -219,6 +234,14 @@ impl SessionEntry {
         });
         if let Some(error) = error {
             content["error"] = serde_json::Value::String(error.to_string());
+        }
+        if let Some(t) = truncation {
+            content["truncation"] = serde_json::json!({
+                "turns_so_far": t.turns_so_far,
+                "output_len": t.output_len,
+                "tool_calls_so_far": t.tool_calls_so_far,
+                "detected_by": t.detected_by,
+            });
         }
         Self {
             id: generate_entry_id(),
