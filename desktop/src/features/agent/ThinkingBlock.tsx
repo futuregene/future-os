@@ -1,5 +1,5 @@
 import { cn } from "../../lib/cn";
-import { MarkdownContent } from "../markdown/MarkdownContent";
+import { StreamingMarkdownContent } from "../markdown/MarkdownContent";
 
 /**
  * Dimmed, always-expanded display of the model's reasoning for one point in the
@@ -25,7 +25,7 @@ export function ThinkingBlock({
         "[&_*]:text-ink-muted",
       )}
     >
-      <MarkdownContent content={text} workspaceId={workspaceId} live={live} />
+      <StreamingMarkdownContent content={text} workspaceId={workspaceId} live={live} />
     </div>
   );
 }

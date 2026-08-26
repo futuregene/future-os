@@ -13,7 +13,7 @@ import { emitFutureEvent } from "../../lib/futureEvents";
 import { useNow } from "../../lib/useNow";
 import { FilePreviewOverlay } from "../filepreview/FilePreviewOverlay";
 import { previewKindForPath } from "../filepreview/previewKind";
-import { MarkdownContent } from "../markdown/MarkdownContent";
+import { StreamingMarkdownContent } from "../markdown/MarkdownContent";
 import { SafeLink } from "../markdown/renderers/SafeLink";
 import { AgentActivityLine, AgentActivityList } from "./AgentActivityList";
 import { splitExternalLinkSegments } from "./externalLinks";
@@ -155,7 +155,7 @@ function MessageBlockImpl({
                   {segments.map((segment) => {
                     if (segment.kind === "text") {
                       return (
-                        <MarkdownContent
+                        <StreamingMarkdownContent
                           content={segment.text}
                           key={segment.id}
                           live={segment.id === liveSegmentId}
@@ -195,7 +195,13 @@ function MessageBlockImpl({
             : message.content
               ? isUser
                 ? <UserMessageText content={message.content} />
-                : <MarkdownContent content={message.content} workspaceId={workspaceId} live={streaming} />
+                : (
+                    <StreamingMarkdownContent
+                      content={message.content}
+                      workspaceId={workspaceId}
+                      live={streaming}
+                    />
+                  )
               : null}
           {message.attachments && message.attachments.length > 0
             ? (

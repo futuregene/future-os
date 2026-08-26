@@ -30,9 +30,12 @@
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-i18next": "^17.0.8",
+    "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
+    "remark-parse": "^11.0.0",
     "shiki": "^4.3.0",
-    "tailwind-merge": "^3.6.0"
+    "tailwind-merge": "^3.6.0",
+    "unified": "^11.0.5"
   },
   "devDependencies": {
     "@antfu/eslint-config": "^9.1.0",
