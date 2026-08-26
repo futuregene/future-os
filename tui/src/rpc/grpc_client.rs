@@ -240,7 +240,7 @@ impl GrpcClient {
     /// `call(type, cmd)` — injects `id`/`type`/`sessionId` (from the current
     /// session) into `cmd`, waits up to 5 s for the stream to connect when
     /// disconnected, executes with a 30 s deadline, and parses the JSON data
-    /// payload (raw string passthrough on parse failure, `Null` when empty).
+    /// payload (typed-first decode, `Null` when empty or non-JSON).
     async fn call(&self, r#type: &str, mut cmd: RpcCommand) -> Result<Value, String> {
         // Wait for connection if not yet connected (first call or
         // reconnecting): await the event stream's first frame, bounded by 5 s.
@@ -615,13 +615,10 @@ async fn execute_unary(addr: &str, cmd: RpcCommand, timeout_secs: u64) -> Result
         });
     }
 
-    if response.data.is_empty() {
-        return Ok(Value::Null);
-    }
-    match serde_json::from_str::<Value>(&response.data) {
-        Ok(value) => Ok(value),
-        Err(_) => Ok(Value::String(response.data)),
-    }
+    // Typed-first decode, shared with the CLI/GUI clients: the typed
+    // `payload` wins, then the JSON `data` string. Non-JSON `data` yields
+    // `Null` rather than a string passthrough.
+    Ok(future_rpc::decode::response_data(&response))
 }
 
 // ─── Event stream manager ──────────────────────────────────────────────────
@@ -1599,7 +1596,8 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("connection refused"));
 
-        // Empty data → Null; non-JSON data → String.
+        // Empty data → Null; non-JSON data now also decodes to Null
+        // (typed-first decode, no string passthrough).
         let addr = spawn_api_mock(ApiMock {
             data_by_type: Arc::new(std::sync::Mutex::new(StdHashMap::from([
                 ("get_state".into(), String::new()),
@@ -1629,7 +1627,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(v, Value::String("raw text".into()));
+        assert!(v.is_null());
     }
 
     /// Mock whose event stream is fed by a test-owned channel of Results
