@@ -5128,6 +5128,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cursor_report_without_pending_query_is_consumed_silently() {
+        // A well-formed DSR report arriving with NO pending query (the
+        // cursor_recheck_row snapshot was already taken or never issued) must
+        // be consumed without forcing a redraw — exercises the None arm of
+        // the `if let Some(expected) = self.cursor_recheck_row.take()` guard.
+        let (mut app, _rx) = running_app(100, 10);
+        app.do_render();
+        app.render_now = false;
+        assert!(app.cursor_recheck_row.is_none());
+        app.handle_input("\x1b[5;1R"); // well-formed, no pending query
+        assert!(!app.render_now, "no pending query → no forced redraw");
+    }
+
+    #[tokio::test]
     async fn streaming_tick_rechecks_cursor_position() {
         // While streaming, on_tick issues a DSR cursor query once per
         // CURSOR_RECHECK_INTERVAL and then waits until the next window.
