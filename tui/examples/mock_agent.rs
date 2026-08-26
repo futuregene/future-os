@@ -98,6 +98,10 @@ const REPLY_TEXT: &str =
 struct MockAgent {
     /// Active event subscribers (one channel per stream_events connection).
     subs: Arc<std::sync::Mutex<Vec<mpsc::UnboundedSender<StreamEvent>>>>,
+    /// Delay between streamed prompt events (ms). 0 (default) keeps the
+    /// golden-screen timing deterministic; used by the tmux attach repro to
+    /// keep the reply streaming while a client detaches/reattaches.
+    stream_delay_ms: u64,
 }
 
 impl MockAgent {
@@ -120,6 +124,7 @@ impl MockAgent {
     fn schedule_prompt_events(&self, prompt_text: &str) {
         let subs = self.subs.clone();
         let prompt_text = prompt_text.to_string();
+        let stream_delay_ms = self.stream_delay_ms;
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(100)).await;
             let events = [
@@ -153,6 +158,9 @@ impl MockAgent {
             ];
             let senders: Vec<mpsc::UnboundedSender<StreamEvent>> = subs.lock().unwrap().clone();
             for (idx, (ty, data)) in events.iter().enumerate() {
+                if idx > 0 && stream_delay_ms > 0 {
+                    tokio::time::sleep(Duration::from_millis(stream_delay_ms)).await;
+                }
                 let event = StreamEvent {
                     r#type: (*ty).into(),
                     data: data.clone(),
@@ -219,6 +227,7 @@ impl FutureAgent for MockAgent {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut port = 50051u16;
+    let mut stream_delay_ms = 0u64;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -227,8 +236,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     port = v.parse().unwrap_or(50051);
                 }
             }
+            "--stream-delay-ms" => {
+                if let Some(v) = args.next() {
+                    stream_delay_ms = v.parse().unwrap_or(0);
+                }
+            }
             "--help" | "-h" => {
-                println!("usage: mock_agent --port <port>");
+                println!("usage: mock_agent --port <port> [--stream-delay-ms <ms>]");
                 return Ok(());
             }
             other => {
@@ -241,6 +255,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = format!("127.0.0.1:{port}");
     let agent = MockAgent {
         subs: Arc::new(std::sync::Mutex::new(Vec::new())),
+        stream_delay_ms,
     };
     println!("mock agent listening on {addr}");
     Server::builder()

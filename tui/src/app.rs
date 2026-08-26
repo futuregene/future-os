@@ -1343,7 +1343,14 @@ impl<T: TerminalIo> App<T> {
         if let Some(d) = self.resize_deadline {
             if now >= d {
                 self.resize_deadline = None;
-                self.request_render(false);
+                // A terminal resize is our only reliable in-band signal that
+                // the terminal was externally reset (e.g. a tmux client
+                // attach that changed the pane size). Force a full redraw:
+                // the differential renderer moves the cursor relative to the
+                // last-tracked row, so after an external reset it would
+                // otherwise keep writing to the wrong rows ("A / AB / ABC"
+                // scrolling). A full redraw re-anchors the cursor.
+                self.request_render(true);
             }
         }
 
@@ -1881,6 +1888,21 @@ impl<T: TerminalIo> App<T> {
 
     /// Receives complete sequences from the terminal's StdinBuffer.
     pub fn handle_input(&mut self, data: &str) {
+        // Terminal focus events. A tmux client attach (or window focus
+        // regain) can reset the terminal's cursor position out from under the
+        // differential renderer — its relative cursor moves are keyed to the
+        // last-tracked row, so the next frame would otherwise write each
+        // growing stream line on a fresh row ("A / AB / ABC / ABCD"
+        // scrolling). Focus-in is the standard signal to force a full redraw
+        // and re-anchor the cursor.
+        if data == "\x1b[I" {
+            self.request_render(true);
+            return;
+        }
+        if data == "\x1b[O" {
+            return;
+        }
+
         // Cell size response.
         if self.consume_cell_size_response(data) {
             self.request_render(false);
@@ -4276,6 +4298,130 @@ mod tests {
         app.terminal.writes.borrow().join("")
     }
 
+    // ─── Cursor-tracking terminal (tmux-attach desync repro) ───────────
+
+    /// Track the terminal's cursor *row* by replaying the ANSI the app writes.
+    /// Columns and SGR/OSC are ignored; only row-changing sequences matter
+    /// (LF, CUU/CUD, CUP/home). This mirrors what a real terminal does — and
+    /// what tmux's screen buffer does — so we can simulate an external cursor
+    /// reset (a client attach) and observe the differential renderer diverge.
+    fn track_row(mut row: usize, chunk: &str) -> usize {
+        let bytes = chunk.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'\n' => {
+                    row += 1;
+                    i += 1;
+                }
+                b'\r' => i += 1, // CR: no row change
+                0x1b => {
+                    if bytes.get(i + 1) == Some(&b'[') {
+                        let start = i + 2;
+                        let mut j = start;
+                        while j < bytes.len() && !(0x40..=0x7e).contains(&bytes[j]) {
+                            j += 1;
+                        }
+                        if j < bytes.len() {
+                            let params = std::str::from_utf8(&bytes[start..j]).unwrap_or("");
+                            match bytes[j] as char {
+                                'A' => {
+                                    let n: usize = params.parse().unwrap_or(1);
+                                    row = row.saturating_sub(n);
+                                }
+                                'B' => {
+                                    let n: usize = params.parse().unwrap_or(1);
+                                    row += n;
+                                }
+                                'H' | 'f' => {
+                                    if params.is_empty() {
+                                        row = 0;
+                                    } else if let Some((r, _)) = params.split_once(';') {
+                                        row = r.parse::<usize>().unwrap_or(1).saturating_sub(1);
+                                    }
+                                }
+                                _ => {} // J/K/G/m/h/l/... — no row change
+                            }
+                            i = j + 1;
+                            continue;
+                        }
+                    }
+                    // OSC / unknown escape: skip the ESC byte; the rest falls
+                    // through as ordinary (row-neutral) bytes.
+                    i += 1;
+                }
+                _ => i += 1,
+            }
+        }
+        row
+    }
+
+    struct TrackingTerminal {
+        writes: Rc<RefCell<Vec<String>>>,
+        cursor_row: Rc<RefCell<usize>>,
+        cols: u16,
+        rows: u16,
+        on_input: Option<Box<dyn FnMut(String) + Send + 'static>>,
+        on_resize: Option<Box<dyn FnMut() + Send + 'static>>,
+    }
+
+    impl TerminalIo for TrackingTerminal {
+        fn write(&self, data: &str) {
+            self.writes.borrow_mut().push(data.to_string());
+            let mut row = *self.cursor_row.borrow();
+            row = track_row(row, data);
+            *self.cursor_row.borrow_mut() = row;
+        }
+        fn columns(&self) -> u16 {
+            self.cols
+        }
+        fn rows(&self) -> u16 {
+            self.rows
+        }
+        fn hide_cursor(&self) {}
+        fn show_cursor(&self) {}
+        fn start(
+            &mut self,
+            on_input: Box<dyn FnMut(String) + Send + 'static>,
+            on_resize: Box<dyn FnMut() + Send + 'static>,
+        ) -> std::io::Result<()> {
+            self.on_input = Some(on_input);
+            self.on_resize = Some(on_resize);
+            Ok(())
+        }
+        fn stop(&mut self) {}
+        fn drain_input(&mut self, _max_ms: u64, _idle_ms: u64) {}
+        fn set_exit_signal_callback(&mut self, _cb: Option<Box<dyn FnMut() + Send + 'static>>) {}
+    }
+
+    fn make_tracking_app(
+        cols: u16,
+        rows: u16,
+    ) -> (
+        App<TrackingTerminal>,
+        mpsc::UnboundedReceiver<UiCmd>,
+        Rc<RefCell<usize>>,
+    ) {
+        let (op_tx, op_rx) = mpsc::unbounded_channel();
+        let (client, _events, _conn) = GrpcClient::new("127.0.0.1:1");
+        let cursor_row = Rc::new(RefCell::new(0usize));
+        let app = App::new(
+            TrackingTerminal {
+                writes: Rc::new(RefCell::new(Vec::new())),
+                cursor_row: Rc::clone(&cursor_row),
+                cols,
+                rows,
+                on_input: None,
+                on_resize: None,
+            },
+            Arc::new(client),
+            op_tx,
+            &CliOptions::default(),
+            std::env::temp_dir().join("tui-test-settings.json"),
+        );
+        (app, op_rx, cursor_row)
+    }
+
     // ─── Pure helpers ──────────────────────────────────────────────────
 
     #[test]
@@ -4812,6 +4958,108 @@ mod tests {
         app.request_render(true);
         assert!(app.previous_lines.is_empty());
         assert!(app.render_now);
+    }
+
+    #[tokio::test]
+    async fn resize_forces_full_redraw_even_when_size_unchanged() {
+        // A resize (SIGWINCH, e.g. a size-changing tmux client attach) is the
+        // only reliable in-band signal that the terminal was externally reset.
+        // It must force a full redraw (clear screen) so the differential
+        // renderer re-anchors its cursor even when the new size is identical
+        // (spurious SIGWINCH) — otherwise the relative cursor moves would
+        // keep writing growing stream lines onto fresh rows.
+        let (mut app, _rx) = running_app(100, 30);
+        app.do_render();
+        app.terminal.writes.borrow_mut().clear();
+
+        app.request_resize_render();
+        // Make the debounce deadline due, then tick once.
+        app.resize_deadline = Some(Instant::now() - Duration::from_millis(1));
+        app.on_tick();
+
+        let out = render_writes(&app);
+        assert!(
+            out.contains("\x1b[2J"),
+            "resize must force a full redraw with clear, got: {out:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn focus_in_forces_full_redraw() {
+        // Focus-in (\x1b[I) is the standard signal for "the terminal was just
+        // re-shown" (tmux attach with focus-events on). It must force a full
+        // redraw so a desynced cursor is re-anchored.
+        let (mut app, _rx) = running_app(100, 30);
+        app.do_render();
+        app.terminal.writes.borrow_mut().clear();
+
+        app.handle_input("\x1b[I");
+        app.on_tick(); // request_render(true) set render_now; flush it
+
+        let out = render_writes(&app);
+        assert!(
+            out.contains("\x1b[2J"),
+            "focus-in must force a full redraw with clear, got: {out:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn focus_out_is_ignored() {
+        // Focus-out (\x1b[O) carries no redraw obligation; it must be swallowed
+        // before key parsing (which would otherwise treat it as an unknown key).
+        let (mut app, _rx) = running_app(100, 30);
+        app.do_render();
+        app.terminal.writes.borrow_mut().clear();
+        app.handle_input("\x1b[O");
+        assert!(!app.render_now);
+        assert!(!app.render_requested);
+    }
+
+    #[tokio::test]
+    async fn attach_desync_scrolls_stream_and_full_redraw_reanchors() {
+        // End-to-end reproduction of the tmux-attach bug: the differential
+        // renderer moves the cursor relative to `hardware_cursor_row`. When a
+        // tmux client attach resets the terminal's real cursor without a
+        // SIGWINCH (same size), the next diff frame writes its growing stream
+        // line on the wrong row — the "A / AB / ABC / ABCD" scrolling symptom.
+        // A forced full redraw (focus-in) must re-anchor the real cursor to the
+        // app's belief.
+        let (mut app, _rx, cursor) = make_tracking_app(100, 10);
+        app.running = true;
+        app.chat
+            .add_message(ChatMessage::new("u".into(), ChatRole::User, "prompt"));
+        app.chat
+            .add_message(ChatMessage::new("a".into(), ChatRole::Assistant, ""));
+        app.do_render();
+        // Sanity: after a clean render, the terminal's real cursor matches the
+        // app's tracked cursor (the escape sequences landed where the app
+        // believed they would).
+        assert_eq!(*cursor.borrow(), app.hardware_cursor_row);
+
+        // External reset (attach): the terminal's real cursor moves without the
+        // app observing it.
+        *cursor.borrow_mut() = 0;
+
+        // Stream a delta through the differential renderer.
+        app.chat.append_to_last_message("hello");
+        app.do_render();
+        // The relative move was applied from the wrong base row, so the real
+        // cursor no longer matches the app's belief.
+        assert_ne!(
+            *cursor.borrow(),
+            app.hardware_cursor_row,
+            "an externally-reset cursor must desync the differential renderer"
+        );
+
+        // The fix: a focus-in (tmux attach with focus-events on) forces a full
+        // redraw, re-anchoring the real cursor to the app's belief.
+        app.handle_input("\x1b[I");
+        app.on_tick();
+        assert_eq!(
+            *cursor.borrow(),
+            app.hardware_cursor_row,
+            "a full redraw must re-anchor the real cursor"
+        );
     }
 
     #[tokio::test]
