@@ -364,3 +364,29 @@ fn worker_list_scans_live_sessions() {
     cli_ok(&["worker", "list", "--goal", &gid]);
     cli_ok(&["worker", "list", "--goal", &gid, "--json"]);
 }
+
+#[test]
+fn diagnose_text_and_json() {
+    let cr = cli_root();
+    let gid = init_goal(&cr, "diagnose");
+    // Missing goal.
+    let err = cli_err(&["diagnose"]);
+    assert!(err.contains("--goal required"), "{err}");
+    // Unknown goal.
+    let err = cli_err(&["diagnose", "--goal", "ghost"]);
+    assert!(err.contains("not found"), "{err}");
+
+    cli_ok(&["diagnose", "--goal", &gid]);
+    cli_ok(&["diagnose", "--goal", &gid, "--format", "json"]);
+}
+
+#[test]
+fn attention_goal_all_and_json() {
+    let cr = cli_root();
+    let gid = init_goal(&cr, "attention");
+    cli_ok(&["attention", "--goal", &gid]);
+    cli_ok(&["attention", "--goal", &gid, "--json"]);
+    cli_ok(&["attention", "--all"]);
+    let err = cli_err(&["attention"]);
+    assert!(err.contains("--goal"), "{err}");
+}
