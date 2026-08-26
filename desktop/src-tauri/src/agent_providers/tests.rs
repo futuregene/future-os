@@ -1048,6 +1048,17 @@ async fn custom_provider_delete_paths() {
 }
 
 #[test]
+fn delete_local_removes_the_auth_entry_on_success() {
+    let _home = HomeGuard::new("wr-delete-auth-ok");
+    upsert_custom_provider_with_catalog(input("authdel", "AuthDel", true), &fixture_catalog())
+        .unwrap();
+    crate::auth_store::set_provider_key("authdel", "sk-del").unwrap();
+    delete_custom_provider_with_catalog("authdel".to_string(), &fixture_catalog()).unwrap();
+    // The auth half of the transactional delete also succeeded.
+    assert!(crate::auth_store::read().unwrap().get("authdel").is_none());
+}
+
+#[test]
 fn delete_local_is_a_noop_for_unknown_ids() {
     let _home = HomeGuard::new("wr-delete-noop");
     let catalog = fixture_catalog();

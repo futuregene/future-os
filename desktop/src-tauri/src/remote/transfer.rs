@@ -2288,6 +2288,13 @@ mod flow_tests {
         assert_eq!(prepared.mime_type, "image/jpeg");
         assert_eq!(prepared.variant, "preview");
         std::fs::remove_file(prepared.path).unwrap();
+
+        // A small valid PNG cache → served as image/png (the png extension arm).
+        let png = dir.join("ok.png");
+        image::DynamicImage::new_rgb8(10, 10).save(&png).unwrap();
+        let prepared = cached_image_preview("photo.png", &png).unwrap().unwrap();
+        assert_eq!(prepared.mime_type, "image/png");
+        std::fs::remove_file(prepared.path).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
     }
 

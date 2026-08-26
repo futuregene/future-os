@@ -541,7 +541,11 @@ mod tests {
             crate::auth_store::test_support::HomeGuard::new("agent-supervisor-quit-response");
         crate::store::initialize_app_store().unwrap();
         crate::commands::agent_mock::ensure_mock_agent();
-        crate::commands::agent_mock::script_mock_agent(Default::default());
+        // Fail the abort RPC so the best-effort abort-error arm is also covered.
+        crate::commands::agent_mock::script_mock_agent(crate::commands::agent_mock::MockScript {
+            transport_fail: ["abort".to_string()].into_iter().collect(),
+            ..Default::default()
+        });
         QUIT_DIALOG_OPEN.store(true, Ordering::SeqCst);
         QUIT_CONFIRMED.store(false, Ordering::SeqCst);
         let mut exited = false;

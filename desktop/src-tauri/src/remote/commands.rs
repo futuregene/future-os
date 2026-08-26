@@ -3408,6 +3408,9 @@ mod bridge_tests {
             vec![
                 json!({ "entryType": "assistant", "meta": { "run_id": running.id } }),
                 json!({ "entryType": "assistant", "meta": { "run_id": failed.id } }),
+                // An entry referencing a run with no persisted outcome takes
+                // the `outcome.is_none()` (else) arm of the match.
+                json!({ "entryType": "assistant", "meta": { "run_id": "ghost-run" } }),
             ],
         );
         // The running run has no duration (ended_at NULL) and keeps its status.
@@ -3417,5 +3420,7 @@ mod bridge_tests {
         assert_eq!(entries[1]["run_status"], json!("failed"));
         assert!(entries[1]["run_duration_ms"].is_number());
         assert_eq!(entries[1]["run_error"], json!("boom"));
+        // The ghost entry is left untouched.
+        assert!(entries[2].get("run_status").is_none());
     }
 }
