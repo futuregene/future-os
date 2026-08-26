@@ -161,6 +161,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_skill_guide_fetches_the_platform_guide() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("cmd-skills-guide");
+        // Point the platform at a mock serving an empty (all-default) guide,
+        // so the unauthenticated fetch parses without a real network call.
+        let url = mock_http_server(vec![(200, "application/json", b"{}".to_vec())]);
+        crate::auth_store::set_future_base_url(&format!("{url}/api")).unwrap();
+        let guide = get_skill_guide().await.expect("guide");
+        assert!(guide.links.help.is_empty());
+        assert!(guide.skills.coach_prompt.zh.is_empty());
+    }
+
+    #[tokio::test]
     async fn install_skill_rejects_a_bad_id_before_fs_work() {
         let _home = crate::auth_store::test_support::HomeGuard::new("cmd-skills-install");
         assert!(install_skill("../evil".into(), "1.0".into()).await.is_err());

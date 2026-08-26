@@ -2024,6 +2024,20 @@ mod bridge_tests {
             error.to_string().contains("get_events_since failed"),
             "{error}"
         );
+
+        // OutOfRange (the agent rejecting its own oversized tail) gets the
+        // tailored rebuild-and-restart message.
+        mock.push(
+            "get_events_since",
+            Reply::Status(tonic::Code::OutOfRange, "too big"),
+        );
+        let error = get_events_since("s".to_string(), "r".to_string(), 0)
+            .await
+            .expect_err("out-of-range");
+        assert!(
+            error.to_string().contains("exceeded the 32 MiB gRPC cap"),
+            "{error}"
+        );
         mock.push("get_events_since", Reply::Reject("stale run".to_string()));
         let error = get_events_since("s".to_string(), "r".to_string(), 0)
             .await

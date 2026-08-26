@@ -1595,6 +1595,173 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn approve_and_consume_windows_capability_roundtrip() {
+        let (prepared, _targets, receipt) = capability_binding_fixture();
+        let sandbox = Arc::new(ResolvedSandbox::disabled("/tmp"));
+        with_tool_scope(
+            ScopeOptions {
+                workspace: "/tmp".to_string(),
+                permission_level: "all".to_string(),
+                interrupt_flag: Arc::new(AtomicBool::new(false)),
+                sandbox,
+                escalation: None,
+                on_sandboxed: None,
+            },
+            async {
+                // Nothing approved yet → consume returns None.
+                assert!(consume_windows_capability(&prepared).is_none());
+                // Approve, then consume returns the exact receipt and drains it.
+                approve_windows_capability(receipt.clone());
+                assert_eq!(consume_windows_capability(&prepared), Some(receipt.clone()));
+                assert!(consume_windows_capability(&prepared).is_none());
+                // A prepared permission with no approval is also None.
+                let no_approval = crate::sandbox::windows_request::PreparedWritePermissions {
+                    command_hash: "h".into(),
+                    targets: vec![],
+                    approval: None,
+                };
+                assert!(consume_windows_capability(&no_approval).is_none());
+            },
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn shell_handler_additional_permissions_without_approval() {
+        // A target inside the workspace (disabled sandbox → Allow) needs no
+        // approval: the handler runs the command with no capability receipt.
+        let workspace = test_path("shell-additional-allow");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let target = workspace.join("target.txt");
+        std::fs::write(&target, "x").unwrap();
+        let result = with_workspace_scope(
+            workspace.to_string_lossy().to_string(),
+            "all".to_string(),
+            async {
+                shell_handler(serde_json::json!({
+                    "command": "echo ok",
+                    "additional_permissions": {
+                        "write": [{
+                            "path": target.to_string_lossy(),
+                            "scope": "file",
+                            "reason": "test"
+                        }]
+                    }
+                }))
+                .await
+            },
+        )
+        .await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().contains("ok"));
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[tokio::test]
+    async fn shell_handler_additional_permissions_require_approval_receipt() {
+        // An enabled (Manual) sandbox marks a write outside the workspace and
+        // outside /tmp as Ask → needs_approval. Without a receipt it fails fast.
+        let workspace = test_path("shell-additional-ask");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let outside = std::env::current_dir()
+            .unwrap()
+            .join(format!("__cov_outside_{}.txt", std::process::id()));
+        std::fs::write(&outside, "x").unwrap();
+        let sandbox = Arc::new(ResolvedSandbox::resolve(
+            &crate::sandbox::SandboxPolicy {
+                tier: crate::sandbox::SandboxTier::Manual,
+            },
+            &workspace.to_string_lossy(),
+        ));
+        let result = with_tool_scope(
+            ScopeOptions {
+                workspace: workspace.to_string_lossy().to_string(),
+                permission_level: "all".to_string(),
+                interrupt_flag: Arc::new(AtomicBool::new(false)),
+                sandbox,
+                escalation: None,
+                on_sandboxed: None,
+            },
+            async {
+                shell_handler(serde_json::json!({
+                    "command": "echo ok",
+                    "additional_permissions": {
+                        "write": [{
+                            "path": outside.to_string_lossy(),
+                            "scope": "file",
+                            "reason": "test"
+                        }]
+                    }
+                }))
+                .await
+            },
+        )
+        .await;
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("approval receipt"), "{error}");
+        let _ = std::fs::remove_file(&outside);
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[tokio::test]
+    async fn shell_handler_additional_permissions_consumes_approved_receipt() {
+        let workspace = test_path("shell-additional-approved");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let outside = std::env::current_dir()
+            .unwrap()
+            .join(format!("__cov_approved_{}.txt", std::process::id()));
+        std::fs::write(&outside, "x").unwrap();
+        let sandbox = Arc::new(ResolvedSandbox::resolve(
+            &crate::sandbox::SandboxPolicy {
+                tier: crate::sandbox::SandboxTier::Manual,
+            },
+            &workspace.to_string_lossy(),
+        ));
+        let permissions = crate::sandbox::windows_request::AdditionalPermissions {
+            write: vec![crate::sandbox::windows_request::WritePermissionRequest {
+                path: outside.to_string_lossy().to_string(),
+                scope: crate::sandbox::windows_request::WriteScope::File,
+                reason: "test".to_string(),
+            }],
+        };
+        let result = with_tool_scope(
+            ScopeOptions {
+                workspace: workspace.to_string_lossy().to_string(),
+                permission_level: "all".to_string(),
+                interrupt_flag: Arc::new(AtomicBool::new(false)),
+                sandbox: sandbox.clone(),
+                escalation: None,
+                on_sandboxed: None,
+            },
+            async {
+                // Pre-approve by deriving the receipt from the same command+target.
+                let prepared =
+                    crate::sandbox::windows_request::prepare(&sandbox, "echo ok", &permissions)
+                        .unwrap();
+                let receipt = prepared.approved_receipt("req-1".to_string()).unwrap();
+                approve_windows_capability(receipt);
+
+                shell_handler(serde_json::json!({
+                    "command": "echo ok",
+                    "additional_permissions": {
+                        "write": [{
+                            "path": outside.to_string_lossy(),
+                            "scope": "file",
+                            "reason": "test"
+                        }]
+                    }
+                }))
+                .await
+            },
+        )
+        .await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().contains("ok"));
+        let _ = std::fs::remove_file(&outside);
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
     #[test]
     #[cfg(windows)]
     fn clixml_lines_are_stripped_but_real_text_survives() {

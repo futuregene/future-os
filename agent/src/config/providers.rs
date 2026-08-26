@@ -1346,4 +1346,243 @@ mod tests {
         let error = write_bytes_atomic(std::path::Path::new("/"), b"{}", false).unwrap_err();
         assert!(error.contains("failed to write"), "{error}");
     }
+
+    // ─── validation error arms ───────────────────────────────────────────────
+
+    fn model_spec(id: &str) -> ProviderModelSpec {
+        ProviderModelSpec {
+            id: id.to_string(),
+            name: "Model".to_string(),
+            modalities: vec!["text".to_string()],
+            context_window: 4096,
+            max_tokens: 1024,
+        }
+    }
+
+    #[test]
+    fn validate_auth_mutation_rejects_invalid_provider_id() {
+        let error = validate_auth_mutation(&mutation("Bad Provider!")).unwrap_err();
+        assert!(error.contains("lowercase"));
+    }
+
+    #[test]
+    fn validate_auth_mutation_rejects_control_char_api_key() {
+        let m = AuthMutation {
+            key: Some("bad\u{0}key".to_string()),
+            ..mutation("ok-id")
+        };
+        let error = validate_auth_mutation(&m).unwrap_err();
+        assert!(error.contains("API key"));
+    }
+
+    #[test]
+    fn validate_auth_mutation_accepts_absent_key_and_base_url() {
+        validate_auth_mutation(&mutation("ok-id")).unwrap();
+    }
+
+    #[test]
+    fn validate_auth_mutation_rejects_non_http_scheme() {
+        let m = AuthMutation {
+            base_url: Some("ftp://example.com".to_string()),
+            ..mutation("ok-id")
+        };
+        let error = validate_auth_mutation(&m).unwrap_err();
+        assert!(error.contains("http"));
+    }
+
+    #[test]
+    fn validate_provider_upsert_rejects_invalid_id() {
+        let spec = ProviderUpsertSpec {
+            id: "Bad ID".into(),
+            ..Default::default()
+        };
+        assert!(validate_provider_upsert(&spec)
+            .unwrap_err()
+            .contains("lowercase"));
+    }
+
+    #[test]
+    fn validate_provider_upsert_rejects_invalid_name() {
+        let spec = ProviderUpsertSpec {
+            id: "ok-id".into(),
+            name: Some(String::new()),
+            ..Default::default()
+        };
+        assert!(validate_provider_upsert(&spec)
+            .unwrap_err()
+            .contains("name"));
+    }
+
+    #[test]
+    fn validate_provider_upsert_rejects_unknown_api() {
+        let spec = ProviderUpsertSpec {
+            id: "ok-id".into(),
+            api: Some("gpt".into()),
+            ..Default::default()
+        };
+        assert!(validate_provider_upsert(&spec)
+            .unwrap_err()
+            .contains("API type"));
+    }
+
+    #[test]
+    fn validate_provider_upsert_rejects_non_http_scheme() {
+        let spec = ProviderUpsertSpec {
+            id: "ok-id".into(),
+            base_url: Some("ftp://x".into()),
+            ..Default::default()
+        };
+        assert!(validate_provider_upsert(&spec)
+            .unwrap_err()
+            .contains("http"));
+    }
+
+    #[test]
+    fn validate_provider_upsert_rejects_invalid_api_key() {
+        let spec = ProviderUpsertSpec {
+            id: "ok-id".into(),
+            api_key: Some("bad\nkey".into()),
+            ..Default::default()
+        };
+        assert!(validate_provider_upsert(&spec)
+            .unwrap_err()
+            .contains("API key"));
+    }
+
+    #[test]
+    fn validate_provider_upsert_rejects_set_and_clear_key() {
+        let spec = ProviderUpsertSpec {
+            id: "ok-id".into(),
+            api_key: Some("k".into()),
+            clear_api_key: true,
+            ..Default::default()
+        };
+        assert!(validate_provider_upsert(&spec)
+            .unwrap_err()
+            .contains("set and clear"));
+    }
+
+    #[test]
+    fn validate_provider_upsert_rejects_too_many_models() {
+        let models = (0..101).map(|i| model_spec(&format!("m{i}"))).collect();
+        let spec = ProviderUpsertSpec {
+            id: "ok-id".into(),
+            models,
+            ..Default::default()
+        };
+        assert!(validate_provider_upsert(&spec)
+            .unwrap_err()
+            .contains("too many models"));
+    }
+
+    #[test]
+    fn validate_provider_upsert_rejects_duplicate_model_id() {
+        let spec = ProviderUpsertSpec {
+            id: "ok-id".into(),
+            models: vec![model_spec("m1"), model_spec("m1")],
+            ..Default::default()
+        };
+        assert!(validate_provider_upsert(&spec)
+            .unwrap_err()
+            .contains("model id"));
+    }
+
+    #[test]
+    fn validate_provider_upsert_rejects_invalid_model_name() {
+        let mut bad = model_spec("m1");
+        bad.name = "name\nwith-control".to_string();
+        let spec = ProviderUpsertSpec {
+            id: "ok-id".into(),
+            models: vec![bad],
+            ..Default::default()
+        };
+        assert!(validate_provider_upsert(&spec)
+            .unwrap_err()
+            .contains("model name"));
+    }
+
+    #[test]
+    fn validate_provider_upsert_rejects_invalid_modalities() {
+        let mut bad = model_spec("m1");
+        bad.modalities = vec!["audio".to_string()];
+        let spec = ProviderUpsertSpec {
+            id: "ok-id".into(),
+            models: vec![bad],
+            ..Default::default()
+        };
+        assert!(validate_provider_upsert(&spec)
+            .unwrap_err()
+            .contains("modalities"));
+    }
+
+    #[test]
+    fn validate_provider_upsert_rejects_non_positive_token_limits() {
+        let mut bad = model_spec("m1");
+        bad.context_window = 0;
+        let spec = ProviderUpsertSpec {
+            id: "ok-id".into(),
+            models: vec![bad],
+            ..Default::default()
+        };
+        assert!(validate_provider_upsert(&spec)
+            .unwrap_err()
+            .contains("positive"));
+    }
+
+    #[test]
+    fn validate_provider_upsert_rejects_max_tokens_exceeding_context() {
+        let mut bad = model_spec("m1");
+        bad.max_tokens = 9999;
+        let spec = ProviderUpsertSpec {
+            id: "ok-id".into(),
+            models: vec![bad],
+            ..Default::default()
+        };
+        assert!(validate_provider_upsert(&spec)
+            .unwrap_err()
+            .contains("exceed"));
+    }
+
+    #[test]
+    fn delete_provider_rejects_invalid_id() {
+        assert!(delete_provider("Bad ID").unwrap_err().contains("lowercase"));
+    }
+
+    #[test]
+    fn apply_provider_upsert_no_models_change_returns_ok() {
+        let mut root: Map<String, Value> =
+            serde_json::from_str(r#"{"providers":{"existing":{"name":"x"}}}"#).unwrap();
+        let spec = ProviderUpsertSpec {
+            id: "existing".into(),
+            ..Default::default()
+        };
+        apply_provider_upsert(&mut root, &spec).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn upsert_auth_write_fails_without_models_change_skips_restore() {
+        let _ = (!skip_if_root()).then(upsert_auth_write_fails_no_models_body);
+    }
+
+    #[cfg(unix)]
+    fn upsert_auth_write_fails_no_models_body() {
+        let (_dir, _auth, _models) = temp_paths("upsert-auth-fail-nomodels");
+        let readonly = _dir.path().join("readonly");
+        std::fs::create_dir(&readonly).unwrap();
+        let auth = readonly.join("auth.json");
+        std::fs::write(&auth, "{}\n").unwrap();
+        let models = _dir.path().join("models.json");
+        std::fs::write(&models, "{}\n").unwrap();
+        make_readonly(&readonly);
+        // Only the API key changes → models_change is false → no models write
+        // and no restore on the auth-write-failure path.
+        let spec = ProviderUpsertSpec {
+            id: "newprov".to_string(),
+            api_key: Some("sk-x".to_string()),
+            ..Default::default()
+        };
+        let error = upsert_provider_files(&auth, &models, &spec).unwrap_err();
+        assert!(error.contains("failed to write"), "{error}");
+    }
 }

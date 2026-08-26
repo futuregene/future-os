@@ -2924,14 +2924,17 @@ mod bridge_tests {
             .call(json!({ "id": unique("cmd"), "type": "set_approval_tier", "tier": "sandbox" }))
             .await;
         assert_eq!(reply["success"], json!(true), "got: {reply}");
-        assert_eq!(
-            reply["data"]["approvalTier"],
-            json!(if cfg!(target_os = "macos") {
-                "sandbox"
-            } else {
-                "manual"
-            })
-        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(reply["data"]["approvalTier"], json!("sandbox"));
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(reply["data"]["approvalTier"], json!("manual"));
+
+        // A non-sandbox tier takes the else branch (no host probe at all).
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "set_approval_tier", "tier": "manual" }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["approvalTier"], json!("manual"));
 
         bridge.stop();
     }
@@ -3321,5 +3324,103 @@ mod bridge_tests {
             handle.is_finished(),
             "supervisor must observe the dead task"
         );
+    }
+
+    #[tokio::test]
+    async fn command_loop_subscribe_failure_logs_and_returns() {
+        let nats = FakeNats::start().await;
+        let client = nats_connect_once(&nats).await;
+        // Sever the connection before the loop subscribes → `queue_subscribe`
+        // fails and the loop returns without panicking (the error is logged).
+        nats.kill();
+        let creds = bridge_creds();
+        let pair_id = creds.pair_id.clone();
+        let handshake = HandshakeState::new(
+            creds,
+            Arc::new(AtomicBool::new(false)),
+            format!("bridge_{}", unique("cmd")),
+        );
+        command_loop(client, pair_id, new_reply_slots(), handshake).await;
+    }
+
+    #[tokio::test]
+    async fn unpair_command_acknowledges_and_spawns_cleanup() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-unpair").await;
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "unpair" }))
+            .await;
+        assert_eq!(reply["success"], json!(true));
+        // Give the spawned cleanup a moment to run (it is a no-op without a
+        // persisted pairing).
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        bridge.stop();
+    }
+
+    #[test]
+    fn entries_with_run_status_covers_empty_and_error_outcomes() {
+        let _home = HomeGuard::new("cmd-run-status");
+        init_store();
+
+        // A session with no runs → outcomes empty → entries returned unchanged.
+        let unchanged = entries_with_run_status("sess-empty", vec![json!({ "a": 1 })]);
+        assert_eq!(unchanged.len(), 1);
+        assert!(unchanged[0].get("run_status").is_none());
+
+        let session = unique("sess-status");
+        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: None,
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some(session.clone()),
+        })
+        .unwrap();
+        // A still-running run (ended_at NULL) → duration `_ => None` arm.
+        let running = crate::store::create_run(crate::store::CreateRunInput {
+            id: Some(unique("run-running")),
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .unwrap();
+        // A failed run with an error message → run_error inserted.
+        let failed = crate::store::create_run(crate::store::CreateRunInput {
+            id: Some(unique("run-failed")),
+            thread_id: thread.id,
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .unwrap();
+        crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
+            run_id: failed.id.clone(),
+            status: "failed".to_string(),
+            error_message: Some("boom".to_string()),
+            error_type: None,
+        })
+        .unwrap();
+
+        let entries = entries_with_run_status(
+            &session,
+            vec![
+                json!({ "entryType": "assistant", "meta": { "run_id": running.id } }),
+                json!({ "entryType": "assistant", "meta": { "run_id": failed.id } }),
+                // An entry referencing a run with no persisted outcome takes
+                // the `outcome.is_none()` (else) arm of the match.
+                json!({ "entryType": "assistant", "meta": { "run_id": "ghost-run" } }),
+            ],
+        );
+        // The running run has no duration (ended_at NULL) and keeps its status.
+        assert_eq!(entries[0]["run_status"], json!("running"));
+        assert!(entries[0].get("run_duration_ms").is_none());
+        // The failed run carries the stored raw error and a duration.
+        assert_eq!(entries[1]["run_status"], json!("failed"));
+        assert!(entries[1]["run_duration_ms"].is_number());
+        assert_eq!(entries[1]["run_error"], json!("boom"));
+        // The ghost entry is left untouched.
+        assert!(entries[2].get("run_status").is_none());
     }
 }

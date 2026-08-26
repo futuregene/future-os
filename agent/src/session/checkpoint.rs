@@ -359,4 +359,87 @@ mod tests {
             "valid-cp"
         );
     }
+
+    #[test]
+    fn latest_checkpoint_accepts_legacy_compaction_without_range() {
+        // A legacy compaction entry (non-v2 schema, string summary) has no
+        // range references; checkpoint_is_valid must accept it outright.
+        let mut entry = SessionEntry::new_user("user", serde_json::json!("ignored"));
+        entry.entry_type = ENTRY_TYPE_COMPACTION.into();
+        entry.role = ENTRY_TYPE_SYSTEM.into();
+        entry.content = Some(serde_json::json!({
+            "summary": "[Context compaction: old summary]",
+            "tokens_in": 99
+        }));
+        let parsed = latest_context_checkpoint(&[entry]).expect("legacy checkpoint is valid");
+        assert!(parsed.legacy_without_cutoff);
+        assert_eq!(parsed.tokens_before, 99);
+    }
+
+    #[test]
+    fn latest_checkpoint_rejects_v2_without_range_refs() {
+        let checkpoint = ContextCheckpoint {
+            entry_id: "entry-no-range".into(),
+            checkpoint_id: "cp-no-range".into(),
+            covered_from_entry_id: None,
+            cutoff_entry_id: None,
+            summary: vec![ContentBlock::text("summary")],
+            tokens_before: 100,
+            tokens_after: 10,
+            trigger: CompactionTrigger::Automatic,
+            phase: None,
+            algorithm_version: "v2".into(),
+            model: "model".into(),
+            context_window: 200,
+            created_at: chrono::Utc::now(),
+            legacy_without_cutoff: false,
+        };
+        assert!(latest_context_checkpoint(&[checkpoint_to_entry(&checkpoint)]).is_none());
+    }
+
+    #[test]
+    fn latest_checkpoint_rejects_v2_with_dangling_covered_from() {
+        let first = SessionEntry::new_user("user", serde_json::json!("first"));
+        let checkpoint = ContextCheckpoint {
+            entry_id: "entry-dangling-covered".into(),
+            checkpoint_id: "cp-dangling-covered".into(),
+            covered_from_entry_id: Some("missing-covered".into()),
+            cutoff_entry_id: Some(first.id.clone()),
+            summary: vec![ContentBlock::text("summary")],
+            tokens_before: 100,
+            tokens_after: 10,
+            trigger: CompactionTrigger::Automatic,
+            phase: None,
+            algorithm_version: "v2".into(),
+            model: "model".into(),
+            context_window: 200,
+            created_at: chrono::Utc::now(),
+            legacy_without_cutoff: false,
+        };
+        let entries = vec![first, checkpoint_to_entry(&checkpoint)];
+        assert!(latest_context_checkpoint(&entries).is_none());
+    }
+
+    #[test]
+    fn non_user_entry_is_not_a_legacy_string_checkpoint() {
+        let assistant = SessionEntry::new_assistant(serde_json::json!("hi"), vec![]);
+        assert!(entry_to_checkpoint(&assistant).is_none());
+    }
+
+    #[test]
+    fn legacy_string_marker_in_user_text_is_readable() {
+        let user = SessionEntry::new_user(
+            "user",
+            serde_json::json!("[Context compaction: legacy text]"),
+        );
+        let parsed = entry_to_checkpoint(&user).expect("legacy marker is readable");
+        assert!(parsed.legacy_without_cutoff);
+        assert_eq!(parsed.checkpoint_id, format!("legacy_{}", user.id));
+    }
+
+    #[test]
+    fn non_string_non_array_user_content_is_not_a_legacy_checkpoint() {
+        let user = SessionEntry::new_user("user", serde_json::json!({"type": "text"}));
+        assert!(entry_to_checkpoint(&user).is_none());
+    }
 }
