@@ -1554,7 +1554,7 @@ async fn enqueue_prompt_releases_active_when_scheduled_start_fails() {
 async fn scheduled_run_fifo_mismatch_reports_error() {
     let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("x")]), "fifo-mismatch");
     let mut session = fixture.session;
-    *super::SCHEDULED_DEQUEUE_HOOK.lock() = Some((
+    super::SCHEDULED_DEQUEUE_HOOK.lock().insert(
         "run-a".to_string(),
         Box::new(|sess: &mut crate::rpc::ServerSession| {
             // Queue a foreign run and move run-a to the back, so start_next
@@ -1569,7 +1569,7 @@ async fn scheduled_run_fifo_mismatch_reports_error() {
                 .unwrap();
             sess.scheduler.test_move_front_to_back();
         }),
-    ));
+    );
     let result = session.enqueue_prompt(
         "hi",
         &[],
@@ -1585,19 +1585,22 @@ async fn scheduled_run_fifo_mismatch_reports_error() {
 async fn scheduled_run_empty_dequeue_reports_error() {
     let fixture = run_fixture(ScriptedProvider::new(vec![text_turn("x")]), "empty-dequeue");
     let mut session = fixture.session;
-    *super::SCHEDULED_DEQUEUE_HOOK.lock() = Some((
-        "run-a".to_string(),
+    // Distinct run id from scheduled_run_fifo_mismatch_reports_error: the
+    // hook map is keyed per run id, so two parallel tests arm their own
+    // slots and can never overwrite or consume each other's hook.
+    super::SCHEDULED_DEQUEUE_HOOK.lock().insert(
+        "run-b".to_string(),
         Box::new(|sess: &mut crate::rpc::ServerSession| {
             // Drain the queue after the peek, so start_next finds nothing.
             sess.scheduler
                 .cancel_all_queued(crate::runtime::QueuedCancellationReason::Cancelled);
         }),
-    ));
+    );
     let result = session.enqueue_prompt(
         "hi",
         &[],
         &[],
-        Some("run-a"),
+        Some("run-b"),
         "req-a",
         crate::runtime::BusyPolicy::EnqueueIfBusy,
     );

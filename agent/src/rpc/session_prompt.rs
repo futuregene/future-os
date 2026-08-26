@@ -61,16 +61,25 @@ impl<'a> PromptText<'a> {
 /// Test-only hook fired by `start_next_scheduled` right after it peeks the
 /// front queued run, keyed on that run id, so a test can reorder/drain the
 /// queue before `prompt_internal` calls `start_next` (FIFO-mismatch / empty
-/// dequeue defensive arms).
+/// dequeue defensive arms). One slot per run id: parallel tests with
+/// distinct run ids never overwrite or consume each other's hook (a single
+/// shared `Option` slot would race — the last test to arm it wins and the
+/// other test's peek finds nothing).
 #[cfg(test)]
-type SessionHook = Option<(String, Box<dyn Fn(&mut ServerSession) + Send>)>;
+type ScheduledDequeueHook = Box<dyn Fn(&mut ServerSession) + Send>;
 
 #[cfg(test)]
-static SCHEDULED_DEQUEUE_HOOK: parking_lot::Mutex<SessionHook> = parking_lot::Mutex::new(None);
+static SCHEDULED_DEQUEUE_HOOK: std::sync::LazyLock<
+    parking_lot::Mutex<std::collections::HashMap<String, ScheduledDequeueHook>>,
+> = std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
 
 /// Test-only hook fired by `prompt_internal` right before `runtime.spawn`,
 /// keyed on the accepted run id, so a test can occupy the task slot and
-/// reach the spawn double-occupancy error arm.
+/// reach the spawn double-occupancy error arm. Single-slot `Option`: exactly
+/// one test uses it, so no cross-test arm/consume race exists.
+#[cfg(test)]
+type SessionHook = Option<(String, Box<dyn Fn(&mut ServerSession) + Send>)>;
+
 #[cfg(test)]
 static RUN_SPAWN_HOOK: parking_lot::Mutex<SessionHook> = parking_lot::Mutex::new(None);
 
@@ -332,11 +341,9 @@ impl ServerSession {
         debug_assert_eq!(snapshot.settings.model, payload.settings.model);
         #[cfg(test)]
         {
-            let mut slot = SCHEDULED_DEQUEUE_HOOK.lock();
-            if matches!(slot.as_ref(), Some((sid, _)) if sid == &request.run_id) {
-                if let Some((_, hook)) = slot.take() {
-                    hook(self);
-                }
+            let mut slots = SCHEDULED_DEQUEUE_HOOK.lock();
+            if let Some(hook) = slots.remove(&request.run_id) {
+                hook(self);
             }
         }
         let lease = self.prompt_internal(

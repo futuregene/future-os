@@ -523,7 +523,16 @@ fn save_future_models_cache_inner(cache: &FutureModelsCache) {
     // polls models every 10s; a test reading right after a background
     // refresh) observe an empty/partial file. Rename swaps the contents
     // atomically within the same directory on all supported platforms.
-    let tmp = path.with_extension("tmp");
+    // The temp name MUST be unique per writer: a fixed `models.tmp` shared
+    // by two concurrent writers lets their write/rename interleavings leave
+    // a torn file at the final path (flaky "disk cache load returned None
+    // right after a successful sync" under parallel tests).
+    static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = path.with_extension(format!(
+        "tmp-{}-{}",
+        std::process::id(),
+        TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     if std::fs::write(&tmp, json).is_ok() {
         let _ = std::fs::rename(&tmp, &path);
     }

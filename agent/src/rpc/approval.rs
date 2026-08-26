@@ -2156,7 +2156,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn request_file_tool_cancelled_and_rejected_with_note() {
-        let _home_guard = crate::HOME_ENV_LOCK.lock().unwrap();
+        let _home_guard = crate::test_support::home_env_lock();
         let ws = temp_ws("file-cancel");
         let sandbox = enabled(&ws);
         let broadcaster = SseBroadcaster::new();
@@ -2290,7 +2290,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
 
     #[test]
     fn approval_shape_edit_tool_variants() {
-        let _home_guard = crate::HOME_ENV_LOCK.lock().unwrap();
+        let _home_guard = crate::test_support::home_env_lock();
         let ws = temp_ws("shape-edit");
         let sandbox = enabled(&ws);
         // Canonicalize: the resolved workspace is canonical (macOS symlinks
