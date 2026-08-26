@@ -385,6 +385,27 @@ fn get_fork_messages_extracts_first_text_block_only() {
     assert!(messages[0]["timestamp"].is_string());
 }
 
+#[test]
+fn get_fork_messages_handles_legacy_bare_string_content() {
+    let state = make_app_state();
+    // A pre-block-array journal stored user content as a bare string. The
+    // save path canonicalizes string content to a block array, so this legacy
+    // shape is written directly to disk to exercise the fallback branch.
+    std::fs::create_dir_all(&state.session_manager.dir).unwrap();
+    std::fs::write(
+        state.session_manager.dir.join("legacy-src.jsonl"),
+        r#"{"id":"legacy-user-1","type":"user","role":"user","content":"plain legacy text","timestamp":"2024-01-01T00:00:00Z"}"#,
+    )
+    .unwrap();
+
+    let cmd = make_cmd_for("get_fork_messages", "legacy-src");
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true);
+    let messages = resp["data"]["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["content"], "plain legacy text");
+}
+
 // ── coverage batch 1: new_session variants ──────────────────────────────
 
 #[test]
@@ -553,6 +574,81 @@ fn get_session_entries_renders_roles_and_run_stats() {
     assert_eq!(assistant_entry["duration_ms"], 1500);
     let tool_entry = &entries[3];
     assert_eq!(tool_entry["content"], "tool output");
+}
+
+#[test]
+fn get_session_entries_covers_compaction_billed_deltas_and_empty_info() {
+    let state = make_app_state();
+    // A session_info with no content exercises the `if let Some(content)`
+    // false branch in the run-stats scan (a corrupted/legacy metadata entry).
+    let mut info_no_content = crate::session::SessionEntry::session_info(
+        serde_json::json!({}),
+        "mock".to_string(),
+        "low".to_string(),
+    );
+    info_no_content.content = None;
+    // A billed-usage snapshot: tokens_in / tokens_cache_r feed the per-run
+    // deltas surfaced on the final assistant entry.
+    let info_billed = crate::session::SessionEntry::session_info(
+        serde_json::json!({"tokens_in": 100, "tokens_cache_r": 50}),
+        "mock".to_string(),
+        "low".to_string(),
+    );
+    let assistant = crate::session::SessionEntry::new_assistant(
+        serde_json::json!([{"type": "text", "text": "answer"}]),
+        vec![],
+    );
+    let terminal = crate::session::SessionEntry::run_terminal(
+        "run-1",
+        crate::session::RUN_STATE_COMPLETED,
+        42,
+        1500,
+        None,
+    );
+    let mut compaction = crate::session::SessionEntry::new_user("user", serde_json::json!(null));
+    compaction.entry_type = crate::session::ENTRY_TYPE_COMPACTION.to_string();
+    compaction.role = "system".to_string();
+    compaction.content = Some(serde_json::json!({"checkpoint_id": "cp-1"}));
+
+    save_via(
+        &state,
+        "default",
+        "mock",
+        vec![
+            info_no_content,
+            info_billed,
+            assistant,
+            terminal,
+            compaction,
+        ],
+    );
+
+    let resp = parse_response(&handle_command_internal(
+        &state,
+        make_cmd("get_session_entries"),
+    ));
+    assert_eq!(resp["success"], true);
+    let entries = resp["data"]["entries"].as_array().unwrap();
+
+    // The assistant entry carries the billed-usage deltas (100 in / 50 cache)
+    // derived from the session_info counters.
+    let assistant_entry = entries
+        .iter()
+        .find(|e| e["entry_type"] == "assistant")
+        .unwrap();
+    assert_eq!(assistant_entry["output_tokens"], 42);
+    assert_eq!(assistant_entry["duration_ms"], 1500);
+    assert_eq!(assistant_entry["input_tokens"], 100);
+    assert_eq!(assistant_entry["cache_read_tokens"], 50);
+
+    // The compaction entry keeps its raw checkpoint content and clears the
+    // display text.
+    let compaction_entry = entries
+        .iter()
+        .find(|e| e["entry_type"] == crate::session::ENTRY_TYPE_COMPACTION)
+        .unwrap();
+    assert_eq!(compaction_entry["content"], "");
+    assert_eq!(compaction_entry["checkpoint"]["checkpoint_id"], "cp-1");
 }
 
 #[test]
