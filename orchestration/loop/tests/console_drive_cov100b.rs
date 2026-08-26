@@ -309,3 +309,58 @@ fn contract_show_with_validation_issues() {
     ]);
     assert!(err.contains("invalid multi-agent contract"), "{err}");
 }
+
+fn write_live_run(root: &str, name: &str, header: &str) {
+    let dir = std::path::Path::new(root).join("runs");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(name), format!("{header}\n")).unwrap();
+}
+
+#[test]
+fn worker_list_and_stop_edges() {
+    let cr = cli_root();
+    let gid = init_goal(&cr, "worker edges");
+    // Register an agent so `worker list` shows it idle.
+    cli_ok(&["agent", "register", "--goal", &gid, "--agent-id", "w1"]);
+
+    // Unknown subcommand.
+    let err = cli_err(&["worker", "bogus", "--goal", &gid]);
+    assert!(err.contains("unknown worker subcommand"), "{err}");
+    // Missing goal.
+    let err = cli_err(&["worker", "list"]);
+    assert!(err.contains("--goal required"), "{err}");
+
+    // list with a registered-but-idle agent (no live run yet).
+    cli_ok(&["worker", "list", "--goal", &gid]);
+    cli_ok(&["worker", "list", "--goal", &gid, "--json"]);
+
+    // stop with neither --agent-id nor --all → error.
+    let err = cli_err(&["worker", "stop", "--goal", &gid]);
+    assert!(err.contains("--agent-id"), "{err}");
+    // stop --all with no live sessions → nothing to stop (no agent needed).
+    cli_ok(&["worker", "stop", "--goal", &gid, "--all"]);
+    // stop by a non-live agent → nothing to stop.
+    cli_ok(&["worker", "stop", "--goal", &gid, "--agent-id", "ghost"]);
+}
+
+#[test]
+fn worker_list_scans_live_sessions() {
+    let cr = cli_root();
+    let gid = init_goal(&cr, "worker scan");
+    cli_ok(&["agent", "register", "--goal", &gid, "--agent-id", "w1"]);
+    // Seed a run header (fresh) so scan_worker_sessions returns a session;
+    // the agent is unreachable here, so streaming stays false → "ended".
+    let header = serde_json::json!({
+        "type": "run_header",
+        "wall_ts": 1_700_000_000u64,
+        "run_id": "run-a",
+        "session_id": "sess-a",
+        "agent_id": "w1",
+        "todo_id": "todo_1",
+        "goal_id": gid,
+    })
+    .to_string();
+    write_live_run(&cr.root, "run_a.live.jsonl", &header);
+    cli_ok(&["worker", "list", "--goal", &gid]);
+    cli_ok(&["worker", "list", "--goal", &gid, "--json"]);
+}
