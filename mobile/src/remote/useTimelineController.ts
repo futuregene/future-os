@@ -224,6 +224,7 @@ export function useTimelineController({
     return () => {
       unsubscribe();
       syncEngineRef.current = null;
+      engine.clear();
     };
   }, [clientRef, loadHistory]);
 
