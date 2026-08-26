@@ -148,7 +148,7 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         "scope" => cmd_scope(&store, &args[1..]),
         "lane" => cmd_lane(&store, &args[1..]),
         "supervisor" => cmd_supervisor(&mut store, &args[1..]),
-        "worker" => cmd_worker(&store, &args[1..]).await,
+        "worker" => cmd_worker(&mut store, &args[1..]).await,
         "task-graph" => cmd_task_graph(&store, &args[1..]),
         "attention" => cmd_attention(&store, &args[1..]),
         "inbox" => cmd_inbox(&store, &args[1..]),
@@ -322,7 +322,7 @@ fn build_cli_registry() -> CommandRegistry {
     r.command(
         agent,
         "worker",
-        "list/stop goal workers by agent-id (gRPC session abort — not pkill)",
+        "list/stop goal workers (ledger stop signal + gRPC abort — not pkill)",
         "worker list --goal G [--format json] | worker stop --goal G [--agent-id A | --all] [--delete]",
     );
 
@@ -3665,7 +3665,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     let reason = match last_failure_kind {
         None => "turns completed or no turn ran".to_string(),
         Some(crate::state::FailureKind::InfraRecoverable) => {
-            "interrupted by a recoverable infra event (e.g. HTTP 429 / transient disconnect) — LLM state intact".to_string()
+            "interrupted by a recoverable event (e.g. HTTP 429 / transient disconnect / operator stop) — LLM state intact".to_string()
         }
         Some(crate::state::FailureKind::ScienceVerifyFailed) => {
             "verify gate rejected the output — reasoning produced a bad artifact".to_string()
@@ -3847,7 +3847,29 @@ async fn run_turns(
     // state; rebuild it from the run files before the first decision and
     // record the ProjectionRepaired audit event.
     run_index_self_heal(store, goal_id)?;
+    // Worker stop scan cursor: only `worker_stopped` events appended AFTER
+    // this run started can stop it (a stale stop must not kill future runs).
+    let stop_events_path = store.goal_dir(goal_id).join("events.jsonl");
+    let mut stop_scan_offset = std::fs::metadata(&stop_events_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
     loop {
+        // Turn-boundary check: an operator-issued `worker_stopped` ledger
+        // event (worker stop cmd) makes this run client exit cleanly —
+        // distinct from steering, which drains an instruction and continues.
+        let (stop_requested, new_offset) =
+            worker_stop_requested(&stop_events_path, stop_scan_offset, agent_id);
+        stop_scan_offset = new_offset;
+        if stop_requested {
+            // An operator stop is an intentional interruption, not a science
+            // failure: classify it infra-recoverable so the retention record
+            // marks the session resumable and a relaunch with the default
+            // policy continues the same context (unless the operator also
+            // passed --delete, which reclaims the session).
+            *last_failure_kind = Some(crate::state::FailureKind::InfraRecoverable);
+            println!("   ■ worker stop received — exiting run loop (session retained)");
+            break;
+        }
         turn += 1;
         if turn > max_turns {
             bail!("max-turns ({max_turns}) reached without validated closure");
@@ -4334,6 +4356,49 @@ async fn run_turns(
 }
 
 // ── Down-channel steering watcher ──────────────────────────────────────────
+
+/// Does the goal ledger contain a `worker_stopped` event at/after `offset`
+/// targeting this worker (`agent_id` match, or a broadcast with none)?
+/// Returns `(stopped, new_offset)` — callers scan incrementally so a stop
+/// issued BEFORE this run started does not kill it. Pure + unit-testable.
+fn worker_stop_requested(
+    events_path: &std::path::Path,
+    offset: u64,
+    agent_id: Option<&str>,
+) -> (bool, u64) {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(meta) = std::fs::metadata(events_path) else {
+        return (false, offset);
+    };
+    if meta.len() <= offset {
+        return (false, offset);
+    }
+    let mut buf = String::new();
+    let read = (|| -> std::io::Result<()> {
+        let mut f = std::fs::File::open(events_path)?;
+        f.seek(SeekFrom::Start(offset))?;
+        f.read_to_string(&mut buf)?;
+        Ok(())
+    })();
+    if read.is_err() {
+        return (false, offset);
+    }
+    let new_offset = meta.len();
+    let stopped = buf.lines().any(|line| {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            return false;
+        };
+        if v.get("kind").and_then(|k| k.as_str()) != Some("worker_stopped") {
+            return false;
+        }
+        match (agent_id, v.get("agent_id").and_then(|a| a.as_str())) {
+            (Some(me), Some(target)) => me == target,
+            (_, None) => true,
+            (None, Some(_)) => false,
+        }
+    });
+    (stopped, new_offset)
+}
 
 /// One down-channel poll step: read newly appended ledger lines since `offset`
 /// and, when a `WorkerSteered` event targeting THIS worker (matching
@@ -5443,10 +5508,10 @@ fn scan_worker_sessions(runs_dir: &std::path::Path, goal_id: &str) -> Vec<Worker
 /// agent is streaming it right now (an in-flight run). This is the loop's
 /// deterministic agent-id ↔ session-id surface (fills the gap where the
 /// supervisor completion report does not carry the session id).
-async fn cmd_worker(store: &Store, args: &[String]) -> Result<()> {
+async fn cmd_worker(store: &mut Store, args: &[String]) -> Result<()> {
     let sub = args.first().map(|s| s.as_str()).unwrap_or("");
     match sub {
-        "list" => cmd_worker_list(store, &args[1..]).await,
+        "list" => cmd_worker_list(&*store, &args[1..]).await,
         "stop" | "kill" => cmd_worker_stop(store, &args[1..]).await,
         other => bail!(
             "unknown worker subcommand `{other}` (try `{} worker --help`)",
@@ -5539,13 +5604,16 @@ async fn cmd_worker_list(store: &Store, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// `future loop worker stop --goal G [--agent-id A | --all] [--delete]` — kill
-/// a worker's in-flight run by aborting its backing agent session over gRPC
-/// (NOT `pkill`). `abort` requests cooperative cancellation of the active run,
-/// which makes the agent emit `agent_end(state=cancelled)` and the worker's
-/// `run` client exit cleanly. With `--delete`, the session is also reclaimed
-/// after the abort. `--all` stops every worker with a live run for this goal.
-async fn cmd_worker_stop(store: &Store, args: &[String]) -> Result<()> {
+/// `future loop worker stop --goal G [--agent-id A | --all] [--delete]` —
+/// stop a worker by writing a `WorkerStopped` event to the goal ledger (the
+/// authoritative in-band stop signal the `run` client tails at every turn
+/// boundary — NOT `pkill`), then aborting any in-flight agent session over
+/// gRPC so the current turn ends promptly instead of running to completion.
+/// The run client exits its loop at the next turn boundary and retains the
+/// session (resumable per `--session-policy`); `--delete` also reclaims the
+/// backing agent session afterwards so a later `run` starts fresh. `--all`
+/// broadcasts the stop to every worker with a live session for this goal.
+async fn cmd_worker_stop(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut agent_id = None;
     let mut all = false;
@@ -5587,6 +5655,30 @@ async fn cmd_worker_stop(store: &Store, args: &[String]) -> Result<()> {
             goal_id
         );
         return Ok(());
+    }
+
+    // The stop signal is the LEDGER EVENT: the run client tails events.jsonl
+    // and exits at its next turn boundary. Append BEFORE aborting so the stop
+    // is durable even if the abort fails (the turn then ends on its own and
+    // the run client still exits at the boundary).
+    if all {
+        store.append(Event::WorkerStopped {
+            goal_id: goal_id.clone(),
+            agent_id: None,
+            ts: crate::state::now_epoch(),
+        })?;
+        println!(
+            "■ stop broadcast to every worker of {goal_id} — run clients exit at their next turn boundary"
+        );
+    } else if let Some(a) = agent_id.as_deref() {
+        store.append(Event::WorkerStopped {
+            goal_id: goal_id.clone(),
+            agent_id: Some(a.to_string()),
+            ts: crate::state::now_epoch(),
+        })?;
+        println!(
+            "■ stop sent to worker {a} of {goal_id} — run client exits at its next turn boundary"
+        );
     }
 
     let mut client =
@@ -7123,6 +7215,12 @@ fn describe_event(event: &crate::store::Event) -> String {
                 "worker_steered agent={} instruction=\"{}\"",
                 agent_id.as_deref().unwrap_or("broadcast"),
                 instruction
+            );
+        }
+        Event::WorkerStopped { agent_id, .. } => {
+            return format!(
+                "worker_stopped agent={}",
+                agent_id.as_deref().unwrap_or("broadcast")
             );
         }
     };
@@ -9200,5 +9298,54 @@ mod todo_verify_hint_tests {
         );
         assert_eq!(by_agent.get("worker-b"), Some(&"sess-b"));
         assert!(!by_agent.contains_key("worker-f"));
+    }
+
+    #[test]
+    fn worker_stop_requested_matches_target_broadcast_and_respects_offset() {
+        let dir = tempfile::tempdir().unwrap();
+        let events = dir.path().join("events.jsonl");
+        let line = |kind: &str, agent: Option<&str>| {
+            let agent_field = agent
+                .map(|a| format!(",\"agent_id\":\"{a}\""))
+                .unwrap_or_default();
+            format!("{{\"kind\":\"{kind}\"{agent_field},\"ts\":1}}\n")
+        };
+        std::fs::write(
+            &events,
+            format!(
+                "{}{}{}",
+                line("worker_steered", Some("worker-a")),
+                line("worker_stopped", Some("worker-a")),
+                line("worker_stopped", Some("worker-b")),
+            ),
+        )
+        .unwrap();
+
+        // A targeted stop reaches only its worker; steering is never a stop.
+        let (stopped_a, offset_a) = super::worker_stop_requested(&events, 0, Some("worker-a"));
+        assert!(stopped_a);
+        let (stopped_b, _) = super::worker_stop_requested(&events, 0, Some("worker-b"));
+        assert!(stopped_b);
+        let (stopped_c, _) = super::worker_stop_requested(&events, 0, Some("worker-c"));
+        assert!(!stopped_c, "an unrelated worker must ignore others' stops");
+
+        // A stop issued BEFORE the run started (offset beyond it) must not kill it.
+        let (stopped_after, _) = super::worker_stop_requested(&events, offset_a, Some("worker-a"));
+        assert!(
+            !stopped_after,
+            "stale stops before run start must be ignored"
+        );
+
+        // A broadcast (no agent_id) reaches every worker.
+        let broadcast = dir.path().join("broadcast.jsonl");
+        std::fs::write(&broadcast, line("worker_stopped", None)).unwrap();
+        let (stopped_bc, _) = super::worker_stop_requested(&broadcast, 0, Some("worker-c"));
+        assert!(stopped_bc, "broadcast stop must reach every worker");
+
+        // Missing file: no stop, offset unchanged.
+        let missing = dir.path().join("nope.jsonl");
+        let (stopped_m, off_m) = super::worker_stop_requested(&missing, 7, Some("worker-a"));
+        assert!(!stopped_m);
+        assert_eq!(off_m, 7);
     }
 }

@@ -551,6 +551,17 @@ pub enum Event {
         instruction: String,
         ts: u64,
     },
+    /// An operator asked a worker to STOP: interrupt any in-flight turn and
+    /// exit the run loop at the next turn boundary (unlike `WorkerSteered`,
+    /// which drains an instruction and keeps running). `agent_id` `None`
+    /// broadcasts to every worker of this goal. Projection-only: the run
+    /// client tails the ledger for it; replay ignores it.
+    WorkerStopped {
+        goal_id: String,
+        #[serde(default)]
+        agent_id: Option<String>,
+        ts: u64,
+    },
 }
 
 impl Event {
@@ -595,7 +606,8 @@ impl Event {
             | Event::SuccessionOccurred { goal_id, .. }
             | Event::ReplanRuleSetUpdated { goal_id, .. }
             | Event::SupervisorRegistered { goal_id, .. }
-            | Event::WorkerSteered { goal_id, .. } => goal_id,
+            | Event::WorkerSteered { goal_id, .. }
+            | Event::WorkerStopped { goal_id, .. } => goal_id,
         }
     }
 }
@@ -1909,6 +1921,9 @@ fn apply(goal: &mut Goal, event: Event) {
                 ts,
             });
         }
+        // Projection-only: the run client tails the raw ledger for it; replay
+        // deliberately ignores it (a stale stop must not kill future runs).
+        Event::WorkerStopped { .. } => {}
     }
 }
 
