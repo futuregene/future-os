@@ -1536,6 +1536,18 @@ mod tests {
 
     fn noop_on_event(_: RunEvent) {}
 
+    fn record_compaction_event(
+        events: &Arc<parking_lot::Mutex<Vec<&'static str>>>,
+        event: RunEvent,
+    ) {
+        match event {
+            RunEvent::CompactionStarted { .. } => events.lock().push("compaction_started"),
+            RunEvent::CompactionCommitted { .. } => events.lock().push("compaction_committed"),
+            RunEvent::CompactionFailed { .. } => events.lock().push("compaction_failed"),
+            _ => {}
+        }
+    }
+
     /// Install a thread-local tracing subscriber that discards output. The
     /// verbose log macros only evaluate their arguments when a subscriber
     /// enables the callsite — without one, argument lines never execute.
@@ -2140,18 +2152,7 @@ mod tests {
                 noop_on_text,
                 {
                     let events = events.clone();
-                    move |event| match event {
-                        RunEvent::CompactionStarted { .. } => {
-                            events.lock().push("compaction_started")
-                        }
-                        RunEvent::CompactionCommitted { .. } => {
-                            events.lock().push("compaction_committed")
-                        }
-                        RunEvent::CompactionFailed { .. } => {
-                            events.lock().push("compaction_failed")
-                        }
-                        _ => {}
-                    }
+                    move |event| record_compaction_event(&events, event)
                 },
                 None,
             )
@@ -2394,18 +2395,7 @@ mod tests {
                 noop_on_text,
                 {
                     let events = events.clone();
-                    move |event| match event {
-                        RunEvent::CompactionStarted { .. } => {
-                            events.lock().push("compaction_started")
-                        }
-                        RunEvent::CompactionFailed { .. } => {
-                            events.lock().push("compaction_failed")
-                        }
-                        RunEvent::CompactionCommitted { .. } => {
-                            events.lock().push("compaction_committed")
-                        }
-                        _ => {}
-                    }
+                    move |event| record_compaction_event(&events, event)
                 },
                 None,
             )
@@ -3489,5 +3479,323 @@ mod tests {
         loop_.abort();
         let out = loop_.await_or_interrupt(async { 42 }, None).await;
         assert_eq!(out, None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_fills_empty_tool_id_from_delta() {
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![
+                ModelStreamEvent::ToolInputStart {
+                    index: 0,
+                    id: String::new(),
+                    name: "echo".into(),
+                    arguments: Some(serde_json::json!("{}")),
+                    provider_metadata: Default::default(),
+                },
+                ModelStreamEvent::ToolInputDelta {
+                    index: 0,
+                    id: "t1".into(),
+                    delta: String::new(),
+                    snapshot: false,
+                },
+                ev_toolcall_end(),
+                ev_stop(),
+            ]),
+            Script::Events(vec![ev_text("done"), ev_stop()]),
+        ]);
+        let loop_ = Loop::new(provider, "mock").with_tools(vec![echo_tool()]);
+        loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_handles_tool_input_end_without_start() {
+        // ToolInputEnd with an index beyond the array exercises both the resize
+        // and the get_or_insert_with creation arm.
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![
+                ModelStreamEvent::ToolInputEnd {
+                    index: 3,
+                    id: "t3".into(),
+                    name: "echo".into(),
+                    arguments: serde_json::Value::Null,
+                    provider_metadata: Default::default(),
+                },
+                ev_stop(),
+            ]),
+            Script::Events(vec![ev_text("done"), ev_stop()]),
+        ]);
+        let loop_ = Loop::new(provider, "mock").with_tools(vec![echo_tool()]);
+        loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_builds_partial_assistant_with_reasoning_on_stream_error() {
+        // Reasoning followed by a stream error hits the partial-assistant path
+        // with non-empty reasoning content.
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![
+            ModelStreamEvent::ReasoningStart { id: "r".into() },
+            ModelStreamEvent::ReasoningDelta {
+                id: "r".into(),
+                text: "thinking".into(),
+            },
+            ModelStreamEvent::ReasoningEnd {
+                id: "r".into(),
+                provider_metadata: Default::default(),
+            },
+            ModelStreamEvent::Error {
+                message: "boom".to_string(),
+            },
+        ])]);
+        let loop_ = Loop::new(provider, "mock");
+        let (_, messages) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(messages.iter().any(|m| m.reasoning_text() == "thinking"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_merges_repeated_toolcall_start_with_provider_metadata() {
+        let mut meta = crate::types::ProviderMetadata::new();
+        meta.insert("openai".into(), serde_json::json!({"id": "call_1"}));
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![
+                ModelStreamEvent::ToolInputStart {
+                    index: 0,
+                    id: "t1".into(),
+                    name: "echo".into(),
+                    arguments: Some(serde_json::json!("{}")),
+                    provider_metadata: Default::default(),
+                },
+                // Same-id repeat with non-empty provider_metadata → merge arm.
+                ModelStreamEvent::ToolInputStart {
+                    index: 0,
+                    id: "t1".into(),
+                    name: "echo".into(),
+                    arguments: Some(serde_json::json!("{\"a\":1}")),
+                    provider_metadata: meta.clone(),
+                },
+                ev_toolcall_end(),
+                ev_stop(),
+            ]),
+            Script::Events(vec![ev_text("done"), ev_stop()]),
+        ]);
+        let loop_ = Loop::new(provider, "mock").with_tools(vec![echo_tool()]);
+        loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn provider_limit_without_context_manager_fails_with_events() {
+        let provider = ScriptedProvider::new(vec![Script::Fail(
+            "[CTX_LIMIT] Request exceeds the model's maximum context length (HTTP 400)."
+                .to_string(),
+        )]);
+        let config = crate::types::AgentConfig {
+            max_retries: 1,
+            ..Default::default()
+        };
+        let loop_ = Loop::new(provider, "mock").with_config(config);
+        // No context_manager → provider-limit recovery is unavailable.
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let result = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                {
+                    let events = events.clone();
+                    move |event| match event {
+                        RunEvent::CompactionStarted { .. } => events.lock().push("started"),
+                        RunEvent::CompactionFailed { .. } => events.lock().push("failed"),
+                        _ => {}
+                    }
+                },
+                None,
+            )
+            .await;
+        assert!(result.is_err());
+        assert_eq!(events.lock().as_slice(), ["started", "failed"]);
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn provider_limit_mid_turn_without_context_manager_fails() {
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![
+                ev_toolcall_start(0, "t1", "echo", "{}"),
+                ev_toolcall_end(),
+                ev_stop(),
+            ]),
+            Script::Fail(
+                "[CTX_LIMIT] Request exceeds the model's maximum context length (HTTP 400)."
+                    .to_string(),
+            ),
+        ]);
+        let config = crate::types::AgentConfig {
+            max_retries: 1,
+            ..Default::default()
+        };
+        let loop_ = Loop::new(provider, "mock")
+            .with_tools(vec![echo_tool()])
+            .with_config(config);
+        let result = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn automatic_compaction_without_checkpoint_callback_skips_commit() {
+        // Automatic compaction producing a checkpoint with no on_checkpoint
+        // callback skips the commit (the closing-brace coverage point).
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
+        let mut loop_ = Loop::new(provider, "mock");
+        loop_.context_manager = Some(crate::compaction::ContextManager {
+            enabled: true,
+            reserve_tokens: 8191,
+            keep_recent_tokens: 1,
+            context_window: 8192,
+            model: "mock".into(),
+        });
+        let mut messages = user_messages("old");
+        messages.push(AgentMessage {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::text("older reply")],
+            ..Default::default()
+        });
+        messages.push(AgentMessage::new_user("user", serde_json::json!("latest")));
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                messages,
+                &StreamContext::default(),
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "ok");
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn provider_limit_commit_failure_emits_compaction_failed() {
+        let provider = ScriptedProvider::new(vec![Script::Fail(
+            "[CTX_LIMIT] Request exceeds the model's maximum context length (HTTP 400)."
+                .to_string(),
+        )]);
+        let config = crate::types::AgentConfig {
+            max_retries: 1,
+            ..Default::default()
+        };
+        let mut loop_ = Loop::new(provider, "mock").with_config(config);
+        loop_.context_manager = Some(crate::compaction::ContextManager {
+            enabled: false,
+            reserve_tokens: 1,
+            keep_recent_tokens: 1,
+            context_window: 1,
+            model: "mock".into(),
+        });
+        let mut messages = Vec::new();
+        for i in 0..12 {
+            let role = if i % 2 == 0 { "user" } else { "assistant" };
+            messages.push(AgentMessage {
+                role: role.to_string(),
+                content: vec![ContentBlock::text(format!("message {i} ").repeat(200))],
+                ..Default::default()
+            });
+        }
+        messages.push(AgentMessage::new_user(
+            "user",
+            serde_json::json!("fresh question"),
+        ));
+        for message in &mut messages {
+            message.ensure_journal_entry_id();
+        }
+        let result = loop_
+            .run_streaming_with_messages(
+                messages,
+                &StreamContext {
+                    on_checkpoint: Some(Arc::new(|_| Err(anyhow!("checkpoint commit failed")))),
+                    ..Default::default()
+                },
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await;
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("checkpoint commit failed"));
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn provider_limit_unchanged_with_empty_messages_fails_no_progress() {
+        // With nothing to compact, provider-limit recovery returns Unchanged and
+        // reports "no progress" instead of looping.
+        let provider = ScriptedProvider::new(vec![Script::Fail(
+            "[CTX_LIMIT] Request exceeds the model's maximum context length (HTTP 400)."
+                .to_string(),
+        )]);
+        let config = crate::types::AgentConfig {
+            max_retries: 1,
+            ..Default::default()
+        };
+        let mut loop_ = Loop::new(provider, "mock").with_config(config);
+        loop_.context_manager = Some(crate::compaction::ContextManager {
+            enabled: true,
+            reserve_tokens: 1,
+            keep_recent_tokens: 1,
+            context_window: 1,
+            model: "mock".into(),
+        });
+        let result = loop_
+            .run_streaming_with_messages(
+                vec![],
+                &StreamContext::default(),
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await;
+        assert!(result.unwrap_err().to_string().contains("no progress"));
     }
 }

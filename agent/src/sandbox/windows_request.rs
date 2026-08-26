@@ -490,4 +490,68 @@ mod tests {
         .unwrap_err();
         assert!(home_error.to_string().contains("home root"));
     }
+
+    #[test]
+    fn prepare_propagates_prepare_with_errors() {
+        // An empty path fails `prepare_with`; the `?` in `prepare` must
+        // propagate the error (not silently succeed).
+        let sandbox = ResolvedSandbox::disabled("/tmp");
+        let permissions = AdditionalPermissions {
+            write: vec![WritePermissionRequest {
+                path: "  ".to_string(),
+                scope: WriteScope::File,
+                reason: "needed".to_owned(),
+            }],
+        };
+        let error = prepare(&sandbox, "cmd", &permissions).unwrap_err();
+        assert!(error.to_string().contains("path must not be empty"));
+    }
+
+    #[test]
+    fn empty_reason_is_rejected() {
+        let workspace = temp_dir("empty-reason");
+        let permissions = AdditionalPermissions {
+            write: vec![WritePermissionRequest {
+                path: workspace.to_string_lossy().into_owned(),
+                scope: WriteScope::Subtree,
+                reason: "  ".to_owned(),
+            }],
+        };
+        let error =
+            prepare_with(&workspace, "c", &permissions, |_| Decision::Ask, None).unwrap_err();
+        assert!(error.to_string().contains("reason must not be empty"));
+    }
+
+    #[test]
+    fn overlong_reason_is_rejected() {
+        let workspace = temp_dir("long-reason");
+        let permissions = AdditionalPermissions {
+            write: vec![WritePermissionRequest {
+                path: workspace.to_string_lossy().into_owned(),
+                scope: WriteScope::Subtree,
+                reason: "x".repeat(MAX_REASON_CHARS + 1),
+            }],
+        };
+        let error =
+            prepare_with(&workspace, "c", &permissions, |_| Decision::Ask, None).unwrap_err();
+        assert!(error.to_string().contains("reason is too long"));
+    }
+
+    #[test]
+    fn file_scope_on_directory_is_rejected() {
+        let workspace = temp_dir("file-on-dir-workspace");
+        let dir = temp_dir("file-on-dir-target");
+        let permissions = AdditionalPermissions {
+            write: vec![WritePermissionRequest {
+                path: dir.to_string_lossy().into_owned(),
+                scope: WriteScope::File,
+                reason: "modify directory".to_owned(),
+            }],
+        };
+        let error =
+            prepare_with(&workspace, "c", &permissions, |_| Decision::Ask, None).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("file scope requires an existing regular file"));
+    }
 }

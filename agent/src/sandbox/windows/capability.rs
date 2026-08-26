@@ -551,4 +551,130 @@ mod tests {
         state.merge([record.clone()]).unwrap();
         assert_eq!(state.records, vec![record]);
     }
+
+    #[test]
+    fn policy_fingerprint_covers_allow_carveout_and_unsupported_globs() {
+        use crate::sandbox::rules::Access;
+        use crate::sandbox::windows_plan::UnenforcedWindowsRule;
+        let workspace = std::env::current_dir().unwrap().join("winplan-fp");
+        let plan = WindowsSandboxPlan {
+            writable_roots: vec![workspace.clone()],
+            write_carveouts: vec![WindowsWriteCarveout {
+                path: workspace.join(".env"),
+                decision: Decision::Allow,
+            }],
+            unsupported_write_globs: vec![
+                UnenforcedWindowsRule {
+                    matcher: WindowsRuleMatcher::Subtree(workspace.clone()),
+                    access: Access::Write,
+                    decision: Decision::Ask,
+                },
+                UnenforcedWindowsRule {
+                    matcher: WindowsRuleMatcher::Regex(".*".to_string()),
+                    access: Access::Write,
+                    decision: Decision::Deny,
+                },
+                UnenforcedWindowsRule {
+                    matcher: WindowsRuleMatcher::Regex("b".to_string()),
+                    access: Access::Write,
+                    decision: Decision::Allow,
+                },
+            ],
+            ..WindowsSandboxPlan::default()
+        };
+        let fingerprint = policy_fingerprint(&plan);
+        assert_eq!(fingerprint.len(), 64);
+        assert_eq!(fingerprint, policy_fingerprint(&plan));
+    }
+
+    #[test]
+    fn request_records_reject_empty_request_id() {
+        let roots = vec![(
+            std::env::current_dir().unwrap().join("x"),
+            WriteScope::Subtree,
+        )];
+        let error = request_records(&plan(), "  ", &roots).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn request_records_reject_empty_approved_roots() {
+        let error = request_records(&plan(), "request-empty", &[]).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn state_merge_identical_record_is_idempotent() {
+        let record = policy_records(&plan()).remove(0);
+        let mut state = CapabilityState::default();
+        state.merge([record.clone()]).unwrap();
+        // Merging the same record again takes the `existing == record` continue.
+        state.merge([record]).unwrap();
+        assert_eq!(state.records.len(), 1);
+    }
+
+    #[test]
+    fn save_atomic_rejects_parentless_path() {
+        let state = CapabilityState::default();
+        let error = state.save_atomic(std::path::Path::new("/")).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn state_rejects_unsupported_schema() {
+        let state = CapabilityState {
+            schema_version: 999,
+            ..Default::default()
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let error = state
+            .save_atomic(&directory.path().join("state.json"))
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn state_rejects_invalid_record() {
+        let mut state = CapabilityState::default();
+        let mut record = policy_records(&plan()).remove(0);
+        record.name.clear();
+        state.records.push(record);
+        let directory = tempfile::tempdir().unwrap();
+        let error = state
+            .save_atomic(&directory.path().join("state.json"))
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[cfg(unix)]
+    fn skip_if_root() -> bool {
+        unsafe { libc::geteuid() == 0 }
+    }
+
+    #[cfg(unix)]
+    fn make_readonly(path: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o555)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_atomic_cleans_up_temporary_on_write_failure() {
+        let _ = (!skip_if_root()).then(save_atomic_cleanup_body);
+    }
+
+    #[cfg(unix)]
+    fn save_atomic_cleanup_body() {
+        let directory = tempfile::tempdir().unwrap();
+        let readonly = directory.path().join("readonly");
+        std::fs::create_dir(&readonly).unwrap();
+        make_readonly(&readonly);
+        let state = CapabilityState::default();
+        assert!(state.save_atomic(&readonly.join("state.json")).is_err());
+        // The temporary file was cleaned up (no stray .tmp left behind).
+        assert_eq!(std::fs::read_dir(&readonly).unwrap().count(), 0);
+        // Restore write permission so TempDir can remove the tree.
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
 }
