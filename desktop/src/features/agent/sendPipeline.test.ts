@@ -7,6 +7,7 @@ import { createRun, getRun, listRunEvents, updateRunStatus } from "../../integra
 import { buildReferenceContext } from "./buildReferencePrompt";
 import { runSendPipeline } from "./sendPipeline";
 import { finalizeTemporaryAttachmentSources } from "./threadAttachments";
+import { updatePendingMessageFromRunEvents } from "./threadRunProjection";
 
 vi.mock("../../integrations/storage/threadStore", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../integrations/storage/threadStore")>();
@@ -32,6 +33,16 @@ vi.mock("./threadAttachments", () => ({
 vi.mock("./buildReferencePrompt", () => ({
   buildReferenceContext: vi.fn(async () => ""),
 }));
+vi.mock("./threadRunProjection", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./threadRunProjection")>();
+  return {
+    ...actual,
+    // Delegate to the real implementation by default (the streaming tests below
+    // exercise the live-preview projection through it); the race test overrides
+    // this to control when the projection promise settles.
+    updatePendingMessageFromRunEvents: vi.fn(actual.updatePendingMessageFromRunEvents),
+  };
+});
 
 const emitFutureEvent = vi.fn();
 vi.mock("../../lib/futureEvents", () => ({
@@ -309,6 +320,73 @@ describe("runSendPipeline stream/failure edges", () => {
       // journal IPCs concurrently, but the newest tail is still consumed.
       expect(listRunEventsSince).toHaveBeenCalledTimes(2);
     });
+    resolveReply({
+      content: "answer",
+      complete: true,
+      sessionId: "session-1",
+      sessionRecreated: false,
+    });
+    await send;
+  });
+
+  it("re-queues a trailing update that lands between the loop exit and its finally", async () => {
+    const { listen } = await import("@tauri-apps/api/event");
+    let handler: ((event: { payload: Record<string, unknown> }) => void) | null = null;
+    vi.mocked(listen).mockImplementation(async (...args: unknown[]) => {
+      handler = args[1] as typeof handler;
+      return () => {};
+    });
+
+    let resolveReply!: (value: { content: string; complete: boolean; sessionId: string; sessionRecreated: boolean }) => void;
+    vi.mocked(sendPromptToFutureAgent).mockImplementation(
+      () => new Promise((resolve) => {
+        resolveReply = resolve;
+      }),
+    );
+    vi.mocked(getRun).mockResolvedValue(storedRun({ status: "completed", endedAt: 2_000 }));
+    vi.mocked(listRunEvents).mockResolvedValue([]);
+
+    // First projection settles on a controlled promise; later calls resolve
+    // immediately so the re-queued iteration terminates cleanly.
+    let firstCallPromise!: Promise<void>;
+    let resolveFirst!: () => void;
+    let calls = 0;
+    vi.mocked(updatePendingMessageFromRunEvents).mockImplementation(() => {
+      calls += 1;
+      if (calls === 1) {
+        firstCallPromise = new Promise<void>((resolve) => {
+          resolveFirst = resolve;
+        });
+        return firstCallPromise;
+      }
+      return Promise.resolve();
+    });
+
+    const setMessages = vi.fn();
+    const send = runSendPipeline(makeDeps(setMessages), { content: "hello", attachments: [] });
+    await vi.waitFor(() => {
+      expect(handler).not.toBeNull();
+    });
+
+    // First event starts the streaming loop (iteration 1, awaiting update #1).
+    handler!({ payload: { updates: [{ runId: "run-1", resetProjection: false }] } });
+    await vi.waitFor(() => {
+      expect(calls).toBe(1);
+    });
+
+    // Schedule a trailing event to fire in the microtask gap AFTER the loop's
+    // await continuation (which exits the loop) but BEFORE its `.finally` — the
+    // exact race the guard on the re-queue line exists to recover from.
+    firstCallPromise.then(() => {
+      handler!({ payload: { updates: [{ runId: "run-1", resetProjection: false }] } });
+    });
+    resolveFirst();
+
+    // The re-queued update spins up a fresh loop iteration (a second call).
+    await vi.waitFor(() => {
+      expect(calls).toBe(2);
+    });
+
     resolveReply({
       content: "answer",
       complete: true,

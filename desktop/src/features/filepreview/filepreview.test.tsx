@@ -108,6 +108,23 @@ describe("previewLoadingGate", () => {
     expect(hook.current).toEqual({ showContent: true, showLoading: false });
     hook.unmount();
   });
+
+  it("moves straight to ready once the minimum visible time has elapsed", () => {
+    vi.useFakeTimers();
+    let loading = true;
+    const hook = renderHook(() => usePreviewLoadingGate(loading));
+
+    act(() => vi.advanceTimersByTime(PREVIEW_LOADING_DELAY_MS));
+    expect(hook.current).toEqual({ showContent: false, showLoading: true });
+
+    // The visible window has already elapsed by the time loading flips off.
+    act(() => vi.advanceTimersByTime(PREVIEW_LOADING_MIN_VISIBLE_MS));
+    loading = false;
+    hook.rerender();
+
+    expect(hook.current).toEqual({ showContent: true, showLoading: false });
+    hook.unmount();
+  });
 });
 
 describe("imagePreview", () => {
@@ -181,6 +198,19 @@ describe("markdownPreview", () => {
     expect(onError).toHaveBeenCalledTimes(1);
     cleanup();
   });
+
+  it("shows a loading notice while a slow read is in flight", async () => {
+    vi.useFakeTimers();
+    invokeMock.mockImplementation(() => new Promise(() => {}));
+    const { container, cleanup } = mount(createElement(MarkdownPreview, {
+      path: "/w/doc.md",
+      onError: vi.fn(),
+    }));
+    act(() => vi.advanceTimersByTime(PREVIEW_LOADING_DELAY_MS));
+    await flushAsync();
+    expect(container.textContent).toContain("Loading preview");
+    cleanup();
+  });
 });
 
 describe("jsonPreview", () => {
@@ -212,6 +242,64 @@ describe("jsonPreview", () => {
     await flushAsync();
     expect(container.textContent).toContain("Invalid JSON");
     expect(container.textContent).toContain("{bad");
+    cleanup();
+  });
+
+  it("routes read failures to onError", async () => {
+    invokeMock.mockRejectedValue(new Error("unreadable"));
+    const onError = vi.fn();
+    const { cleanup } = mount(createElement(JsonPreview, { path: "/w/bad.json", onError }));
+    await flushAsync();
+    expect(onError).toHaveBeenCalledTimes(1);
+    cleanup();
+  });
+
+  it("shows a loading notice while a slow read is in flight", async () => {
+    vi.useFakeTimers();
+    invokeMock.mockImplementation(() => new Promise(() => {}));
+    const { container, cleanup } = mount(createElement(JsonPreview, {
+      path: "/w/data.json",
+      onError: vi.fn(),
+    }));
+    act(() => vi.advanceTimersByTime(PREVIEW_LOADING_DELAY_MS));
+    await flushAsync();
+    expect(container.textContent).toContain("Loading preview");
+    cleanup();
+  });
+
+  it("styles string tokens distinctly from keys", async () => {
+    invokeMock.mockResolvedValue({
+      content: "{\"name\":\"hello\"}",
+      size: 16,
+      truncated: false,
+      validUtf8: true,
+    });
+    const { container, cleanup } = mount(createElement(JsonPreview, {
+      path: "/w/s.json",
+      onError: vi.fn(),
+    }));
+    await flushAsync();
+    expect(container.querySelector(".text-success")?.textContent).toBe("\"hello\"");
+    cleanup();
+  });
+
+  it("recomputes the visible window when the JSON scrolls", async () => {
+    invokeMock.mockResolvedValue({
+      content: JSON.stringify({ a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }),
+      size: 80,
+      truncated: false,
+      validUtf8: true,
+    });
+    const { container, cleanup } = mount(createElement(JsonPreview, {
+      path: "/w/data.json",
+      onError: vi.fn(),
+    }));
+    await flushAsync();
+    const scroller = container.querySelector(".overflow-auto");
+    expect(scroller).toBeTruthy();
+    act(() => {
+      scroller!.dispatchEvent(new Event("scroll"));
+    });
     cleanup();
   });
 });

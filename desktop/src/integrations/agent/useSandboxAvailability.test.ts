@@ -1,9 +1,48 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+import { act } from "react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { flushAsync, renderHook } from "../../test/renderHook";
 import {
   probeWindowsSandboxWithRetry,
   shouldPersistSandboxFallback,
   windowsSandboxAvailable,
 } from "./useSandboxAvailability";
+
+const invokeMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: (command: string, args?: unknown) => invokeMock(command, args),
+}));
+
+// Load a fresh module instance so the module-level `windowsProbe` cache and the
+// platform flags are isolated per test.
+async function loadWindowsModule(): Promise<typeof import("./useSandboxAvailability")> {
+  vi.resetModules();
+  vi.doMock("../../lib/platform", () => ({ isMacOS: false, isWindows: true }));
+  return await import("./useSandboxAvailability");
+}
+
+async function loadMacModule(): Promise<typeof import("./useSandboxAvailability")> {
+  vi.resetModules();
+  vi.doMock("../../lib/platform", () => ({ isMacOS: true, isWindows: false }));
+  return await import("./useSandboxAvailability");
+}
+
+async function loadNeutralModule(): Promise<typeof import("./useSandboxAvailability")> {
+  vi.resetModules();
+  vi.doUnmock("../../lib/platform");
+  return await import("./useSandboxAvailability");
+}
+
+afterEach(() => {
+  vi.doUnmock("../../lib/platform");
+  invokeMock.mockReset();
+});
+
+async function settle() {
+  for (let index = 0; index < 10; index += 1)
+    await flushAsync();
+}
 
 describe("windowsSandboxAvailable", () => {
   it("reflects the native host probe without a separate product switch", () => {
@@ -91,5 +130,91 @@ describe("probeWindowsSandboxWithRetry", () => {
     ).rejects.toThrow("connection refused");
 
     expect(attempts).toBe(3);
+  });
+});
+
+describe("useSandboxAvailability", () => {
+  it("is definitive available on macOS without probing", async () => {
+    const { useSandboxAvailability } = await loadMacModule();
+    const h = renderHook(() => useSandboxAvailability());
+    expect(h.current).toEqual({ available: true, definitive: true, resolved: true });
+    expect(invokeMock).not.toHaveBeenCalled();
+    h.unmount();
+  });
+
+  it("is definitive unavailable on a non-mac, non-Windows platform", async () => {
+    const { useSandboxAvailability } = await loadNeutralModule();
+    const h = renderHook(() => useSandboxAvailability());
+    expect(h.current).toEqual({ available: false, definitive: true, resolved: true });
+    expect(invokeMock).not.toHaveBeenCalled();
+    h.unmount();
+  });
+
+  it("resolves the native probe on Windows and caches the shared promise", async () => {
+    invokeMock.mockResolvedValue({ available: true, code: "available" });
+    const { useSandboxAvailability } = await loadWindowsModule();
+
+    const h = renderHook(() => useSandboxAvailability());
+    expect(h.current).toEqual({ available: false, definitive: false, resolved: false });
+    await settle();
+    expect(h.current).toEqual({ available: true, definitive: true, resolved: true });
+    h.unmount();
+
+    // The shared probe is cached: a second mount reuses it instead of probing again.
+    const h2 = renderHook(() => useSandboxAvailability());
+    expect(h2.current).toEqual({ available: false, definitive: false, resolved: false });
+    await settle();
+    expect(h2.current).toEqual({ available: true, definitive: true, resolved: true });
+    h2.unmount();
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed after exhausting retries and lets a later mount retry", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      invokeMock.mockRejectedValue(new Error("connection refused"));
+      const { useSandboxAvailability } = await loadWindowsModule();
+
+      const h = renderHook(() => useSandboxAvailability());
+      expect(h.current).toEqual({ available: false, definitive: false, resolved: false });
+      await act(async () => {
+        await vi.runAllTimersAsync();
+      });
+      expect(h.current).toEqual({ available: false, definitive: false, resolved: true });
+      h.unmount();
+    }
+    finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores a probe result that lands after unmount", async () => {
+    let resolveProbe!: (value: { available: boolean; code: string }) => void;
+    invokeMock.mockImplementation(
+      () =>
+        new Promise<{ available: boolean; code: string }>((resolve) => {
+          resolveProbe = resolve;
+        }),
+    );
+    const { useSandboxAvailability } = await loadWindowsModule();
+
+    const h = renderHook(() => useSandboxAvailability());
+    expect(h.current).toEqual({ available: false, definitive: false, resolved: false });
+    h.unmount();
+    // Resolve after unmount; the stale result must not update state.
+    resolveProbe({ available: true, code: "available" });
+    await settle();
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("useSandboxAvailability (mutable platform)", () => {
+  it("reports the platform verdict through the public hook shape", async () => {
+    const { useSandboxAvailability } = await loadWindowsModule();
+    invokeMock.mockResolvedValue({ available: false, code: "write_boundary_failed" });
+    const h = renderHook(() => useSandboxAvailability());
+    await settle();
+    expect(h.current).toEqual({ available: false, definitive: true, resolved: true });
+    h.unmount();
   });
 });

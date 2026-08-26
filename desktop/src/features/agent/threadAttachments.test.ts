@@ -78,6 +78,23 @@ describe("persistImageAttachments", () => {
     });
   });
 
+  it("keeps a local (non-ephemeral) image's path and attaches its thumbnail", async () => {
+    generateImageThumbnail.mockResolvedValue("/thumb/local.jpg");
+
+    await expect(persistImageAttachments([
+      { kind: "image", name: "local.png", path: "/Users/me/Downloads/local.png" },
+    ], "thread-1")).resolves.toEqual({
+      attachments: [{
+        kind: "image",
+        name: "local.png",
+        path: "/Users/me/Downloads/local.png",
+        thumbnail: "/thumb/local.jpg",
+      }],
+      temporarySources: [],
+    });
+    expect(importEphemeralImage).not.toHaveBeenCalled();
+  });
+
   it("deletes a promoted temp source only when the caller finalizes it", async () => {
     deleteTempAttachment.mockResolvedValue(undefined);
     await finalizeTemporaryAttachmentSources(["/tmp/futureos-attachments/ok.png"]);

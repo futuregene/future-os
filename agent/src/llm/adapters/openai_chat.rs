@@ -231,31 +231,21 @@ fn lower_messages(request: &ModelRequest, replay_reasoning: bool) -> Vec<Value> 
     }
     for message in &request.messages {
         let blocks = message.model_content();
-        let tool_results: Vec<_> = blocks
-            .iter()
-            .filter_map(|block| match block {
-                ContentBlock::ToolResult {
-                    tool_call_id,
-                    content,
-                    ..
-                } => Some(json!({
-                    "role": "tool",
-                    "tool_call_id": tool_call_id,
-                    "content": content,
-                })),
-                _ => None,
-            })
-            .collect();
-        if !tool_results.is_empty() {
-            messages.extend(tool_results);
-            continue;
-        }
-
+        let mut tool_results = Vec::new();
         let mut content = Vec::new();
         let mut reasoning = String::new();
         let mut tool_calls = Vec::new();
         for block in blocks {
             match block {
+                ContentBlock::ToolResult {
+                    tool_call_id,
+                    content: result,
+                    ..
+                } => tool_results.push(json!({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": result,
+                })),
                 ContentBlock::Text { text } => content.push(json!({"type": "text", "text": text})),
                 ContentBlock::Image { image_url } => {
                     if let Some(url) = image_url.url {
@@ -268,8 +258,11 @@ fn lower_messages(request: &ModelRequest, replay_reasoning: bool) -> Vec<Value> 
                     "type": "function",
                     "function": {"name": name, "arguments": arguments_string(&args)},
                 })),
-                ContentBlock::ToolResult { .. } => {}
             }
+        }
+        if !tool_results.is_empty() {
+            messages.extend(tool_results);
+            continue;
         }
         let mut wire = Map::new();
         wire.insert("role".into(), json!(message.role));
@@ -745,5 +738,266 @@ mod tests {
             apply_reasoning(&mut body, &target, &config);
             assert_eq!(body, expected);
         }
+    }
+
+    fn test_target(protocol: ProtocolConfig, generation: GenerationConfig) -> ResolvedModelTarget {
+        ResolvedModelTarget {
+            model_id: "m".into(),
+            route: ProviderRoute {
+                provider_id: "p".into(),
+                base_url: "https://example.test/v1".into(),
+                api_key: "k".into(),
+                auth: crate::llm::schema::AuthScheme::Bearer,
+                headers: Default::default(),
+            },
+            protocol,
+            capabilities: Default::default(),
+            generation,
+        }
+    }
+
+    #[test]
+    fn build_body_rejects_non_chat_target() {
+        let target = test_target(
+            ProtocolConfig::AnthropicMessages(
+                crate::llm::schema::AnthropicMessagesConfig::default(),
+            ),
+            GenerationConfig::default(),
+        );
+        let request = ModelRequest {
+            model: "m".into(),
+            system_prompt: String::new(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+        };
+        let error = OpenAiChatAdapter.build_body(&target, &request).unwrap_err();
+        assert!(error.to_string().contains("non-chat target"));
+    }
+
+    #[test]
+    fn build_body_serializes_tools_temperature_and_max_tokens() {
+        let config = OpenAiChatConfig {
+            tool_stream: true,
+            max_tokens_field: crate::llm::schema::ChatMaxTokensField::MaxCompletionTokens,
+            ..Default::default()
+        };
+        let target = test_target(
+            ProtocolConfig::OpenAiChat(config),
+            GenerationConfig {
+                temperature: Some(0.5),
+                max_output_tokens: Some(123),
+                ..Default::default()
+            },
+        );
+        let request = ModelRequest {
+            model: "m".into(),
+            system_prompt: String::new(),
+            messages: Vec::new(),
+            tools: vec![crate::types::ToolDef {
+                tool_type: "function".into(),
+                function: crate::types::FunctionDef {
+                    name: "f".into(),
+                    description: "d".into(),
+                    parameters: json!({"type": "object"}),
+                },
+            }],
+        };
+        let body = OpenAiChatAdapter.build_body(&target, &request).unwrap();
+        assert!(body["tools"].is_array());
+        assert_eq!(body["tool_stream"], true);
+        assert_eq!(body["temperature"], 0.5);
+        assert_eq!(body["max_completion_tokens"], 123);
+    }
+
+    #[test]
+    fn decode_frame_ignores_empty_data() {
+        let adapter = OpenAiChatAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &SseFrame {
+                    event: None,
+                    data: "   ".into(),
+                },
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn decode_frame_tool_call_without_arguments_starts_only() {
+        let adapter = OpenAiChatAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(json!({
+                    "choices": [{"delta": {"tool_calls": [
+                        {"index": 0, "id": "call_0", "function": {"name": "f"}}
+                    ]}}]
+                })),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [ModelStreamEvent::ToolInputStart { .. }]
+        ));
+    }
+
+    #[test]
+    fn decode_frame_emits_usage_and_maps_every_token_bucket() {
+        let adapter = OpenAiChatAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(json!({
+                    "choices": [{"delta": {"content": "hi"}}],
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 20,
+                        "total_tokens": 30,
+                        "prompt_tokens_details": {"cached_tokens": 5, "cache_write_tokens": 6},
+                        "completion_tokens_details": {"reasoning_tokens": 7},
+                        "credit_cost": 0.5
+                    }
+                })),
+                state.as_mut(),
+            )
+            .unwrap();
+        let usage = events
+            .iter()
+            .find_map(|event| match event {
+                ModelStreamEvent::Usage(usage) => Some(usage),
+                _ => None,
+            })
+            .expect("usage event expected");
+        assert_eq!(usage.prompt_tokens, 10);
+        assert_eq!(usage.completion_tokens, 20);
+        assert_eq!(usage.total_tokens, 30);
+        assert_eq!(usage.cache_read_tokens, Some(5));
+        assert_eq!(usage.cache_write_tokens, Some(6));
+        assert_eq!(usage.reasoning_tokens, Some(7));
+        assert_eq!(usage.credit_cost, Some(0.5));
+    }
+
+    #[test]
+    fn finish_stream_after_finish_returns_empty() {
+        let adapter = OpenAiChatAdapter;
+        let mut state = adapter.new_stream_state();
+        adapter
+            .decode_frame(
+                &frame(json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(adapter.finish_stream(state.as_mut()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn lower_messages_handles_tool_results_and_multimodal_blocks() {
+        let request = ModelRequest {
+            model: "m".into(),
+            system_prompt: String::new(),
+            messages: vec![
+                crate::types::AgentMessage {
+                    role: "tool".into(),
+                    content: vec![ContentBlock::tool_result("call_1", "result text", false)],
+                    ..Default::default()
+                },
+                crate::types::AgentMessage {
+                    role: "assistant".into(),
+                    content: vec![
+                        ContentBlock::text("hi"),
+                        ContentBlock::image("http://img.example/1.png"),
+                        ContentBlock::reasoning("thinking", ProviderMetadata::new()),
+                        ContentBlock::tool_call(
+                            "call_2",
+                            "fn",
+                            json!({"a": 1}),
+                            ProviderMetadata::new(),
+                        ),
+                    ],
+                    ..Default::default()
+                },
+            ],
+            tools: Vec::new(),
+        };
+        let messages = lower_messages(&request, true);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["role"], "tool");
+        assert_eq!(messages[0]["tool_call_id"], "call_1");
+        assert_eq!(messages[0]["content"], "result text");
+
+        let assistant = &messages[1];
+        assert_eq!(assistant["role"], "assistant");
+        assert_eq!(assistant["reasoning_content"], "thinking");
+        assert_eq!(assistant["tool_calls"][0]["function"]["name"], "fn");
+        let content = assistant["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0], json!({"type": "text", "text": "hi"}));
+        assert_eq!(
+            content[1],
+            json!({"type": "image_url", "image_url": {"url": "http://img.example/1.png"}})
+        );
+    }
+
+    #[test]
+    fn apply_reasoning_none_and_effort_arms() {
+        let mut target = test_target(
+            ProtocolConfig::OpenAiChat(OpenAiChatConfig::default()),
+            GenerationConfig {
+                thinking_level: "high".into(),
+                ..Default::default()
+            },
+        );
+        target.capabilities.reasoning.supported = true;
+
+        let config = OpenAiChatConfig {
+            reasoning: ChatReasoningFormat::None,
+            ..Default::default()
+        };
+        let mut body = json!({});
+        apply_reasoning(&mut body, &target, &config);
+        assert_eq!(body, json!({"reasoning_effort": "high"}));
+
+        let config = OpenAiChatConfig {
+            reasoning: ChatReasoningFormat::ReasoningEffort,
+            supports_reasoning_effort: true,
+            ..Default::default()
+        };
+        let mut body = json!({});
+        apply_reasoning(&mut body, &target, &config);
+        assert_eq!(body, json!({"reasoning_effort": "high"}));
+    }
+
+    #[test]
+    fn arguments_string_serializes_non_string_values() {
+        assert_eq!(arguments_string(&json!({"a": 1})), "{\"a\":1}");
+        assert_eq!(arguments_string(&json!("literal")), "literal");
+    }
+
+    #[test]
+    fn map_finish_reason_covers_length_filter_and_unknown() {
+        assert_eq!(map_finish_reason("length"), FinishReason::Length);
+        assert_eq!(map_finish_reason("max_tokens"), FinishReason::Length);
+        assert_eq!(
+            map_finish_reason("content_filter"),
+            FinishReason::ContentFilter
+        );
+        assert_eq!(
+            map_finish_reason("weird"),
+            FinishReason::Unknown("weird".into())
+        );
+    }
+
+    #[test]
+    fn finish_is_idempotent() {
+        let mut state = ChatStreamState::default();
+        let events = finish(&mut state, FinishReason::Stop, None).unwrap();
+        assert!(!events.is_empty());
+        assert!(finish(&mut state, FinishReason::Stop, None)
+            .unwrap()
+            .is_empty());
     }
 }
