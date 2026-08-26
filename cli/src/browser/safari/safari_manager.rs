@@ -234,6 +234,21 @@ mod tests {
         }
     }
 
+    /// Kill a spawned child on drop (macOS/Linux `kill`). Prevents the
+    /// `fake_driver.py` processes launched by tests from leaking as orphans.
+    #[cfg(unix)]
+    struct KillChild(Option<i64>);
+    #[cfg(unix)]
+    impl Drop for KillChild {
+        fn drop(&mut self) {
+            if let Some(pid) = self.0 {
+                let _ = std::process::Command::new("kill")
+                    .arg(pid.to_string())
+                    .status();
+            }
+        }
+    }
+
     fn set_driver_override(path: &str) -> OverrideReset {
         *SAFARIDRIVER_PATH_OVERRIDE.lock().unwrap() = Some(path.to_string());
         OverrideReset
@@ -466,6 +481,12 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
         let result = safari_start(free_port().await, Some("http://x/"))
             .await
             .expect("start");
+        // Reap the fake-driver child this test spawned on exit (even on panic).
+        let driver_pid = match &result.connection {
+            BrowserConnectionConfig::Webdriver { driver_pid, .. } => *driver_pid,
+            _ => None,
+        };
+        let _kill = KillChild(driver_pid);
         assert_eq!(result.status, "started");
         assert_eq!(result.connection.session_id(), Some("fake-sid"));
         assert!(matches!(
