@@ -489,7 +489,10 @@ fn compact_json(value: &serde_json::Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{file_path_from_tool_output, is_soft_fail_command, nonzero_exit_code};
+    use super::{
+        file_path_from_tool_output, is_soft_fail_command, nonzero_exit_code,
+        persist_agent_tool_projection,
+    };
 
     #[test]
     fn parses_write_and_edit_success_prose() {
@@ -513,6 +516,14 @@ mod tests {
         assert_eq!(file_path_from_tool_output("Edited"), None);
         assert_eq!(file_path_from_tool_output("Read 40 lines"), None);
         assert_eq!(file_path_from_tool_output(""), None);
+    }
+
+    #[test]
+    fn unknown_event_types_are_ignored() {
+        // The caller pre-filters to the six projected types; the catch-all arm
+        // is the defensive no-op for any other event type reaching this helper.
+        persist_agent_tool_projection("run-1", "text_chunk", "{}", 0);
+        persist_agent_tool_projection("run-1", "agent_end", "{}", 0);
     }
 
     #[test]

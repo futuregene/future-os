@@ -68,6 +68,17 @@ fn custom_model(id: &str, name: &str, supports_images: bool) -> CustomProviderMo
 }
 
 #[test]
+fn custom_provider_model_serde_defaults_context_window_and_max_tokens() {
+    // Deserializing a model with no explicit limits invokes the two serde
+    // `default = "default_*"` const fns (the default window / max-token caps).
+    let model: CustomProviderModel = serde_json::from_str(r#"{"id":"m1"}"#).unwrap();
+    assert_eq!(model.context_window, 128_000);
+    assert_eq!(model.max_tokens, 16_384);
+    assert_eq!(model.name, "");
+    assert!(!model.supports_images);
+}
+
+#[test]
 fn create_rejects_existing_id() {
     let _home = HomeGuard::new("dup-id");
     let catalog = fixture_catalog();
@@ -626,6 +637,17 @@ fn validate_model_rules() {
         .unwrap_err()
         .to_string()
         .contains("cannot exceed"));
+
+    // Non-positive limits (context window or max tokens) are rejected.
+    let mut nonpositive = valid_input();
+    nonpositive.models = vec![CustomProviderModel {
+        max_tokens: 0,
+        ..custom_model("m1", "", false)
+    }];
+    assert!(validate_custom_provider(nonpositive)
+        .unwrap_err()
+        .to_string()
+        .contains("positive integers"));
 }
 
 // ── catalog.rs ──────────────────────────────────────────────────────────────
@@ -819,6 +841,82 @@ async fn builtin_base_url_update_paths() {
 }
 
 #[tokio::test]
+async fn update_builtin_provider_atomic_paths() {
+    let _lock = mock_agent_lock();
+    let _home = HomeGuard::new("wr-atomic");
+    let agent = ensure_mock_agent();
+    let input = |id: &str, base_url: Option<&str>, api_key: Option<&str>, update_api_key: bool| {
+        UpdateBuiltinProviderInput {
+            id: id.to_string(),
+            base_url: base_url.map(str::to_string),
+            api_key: api_key.map(str::to_string),
+            update_api_key,
+        }
+    };
+
+    // Full atomic update: base URL + API key, update_api_key = true.
+    let view = update_builtin_provider(input(
+        "deepseek",
+        Some("https://custom.example.com/v1"),
+        Some("sk-atomic"),
+        true,
+    ))
+    .await
+    .unwrap();
+    assert!(agent.served("upsert_provider", ""));
+    assert!(view.builtin.iter().any(|p| p.id == "deepseek"));
+
+    // Clear-key path (update_api_key = true with no key).
+    update_builtin_provider(input("deepseek", None, None, true))
+        .await
+        .unwrap();
+
+    // Base URL only, update_api_key = false (id validation branch).
+    let view = update_builtin_provider(input(
+        "deepseek",
+        Some("https://other.example.com/v1"),
+        None,
+        false,
+    ))
+    .await
+    .unwrap();
+    assert!(view.builtin.iter().any(|p| p.id == "deepseek"));
+
+    // update_api_key = false rejects empty/reserved/unknown ids.
+    for id in ["", "future", "unknown-provider"] {
+        assert!(update_builtin_provider(input(id, None, None, false))
+            .await
+            .is_err());
+    }
+
+    // Neither a base URL nor a key change was supplied.
+    assert!(
+        update_builtin_provider(input("deepseek", None, None, false))
+            .await
+            .is_err()
+    );
+}
+
+#[test]
+fn upsert_local_persists_the_auth_key_on_success() {
+    let _home = HomeGuard::new("wr-upsert-key-ok");
+    let catalog = fixture_catalog();
+    let mut create = valid_input();
+    create.api_key = Some("sk-persisted".to_string());
+    upsert_custom_provider_with_catalog(create, &catalog).unwrap();
+    // The auth half of the transactional write succeeded and persisted.
+    assert_eq!(
+        crate::auth_store::read()
+            .unwrap()
+            .get("prov")
+            .and_then(Value::as_object)
+            .and_then(|entry| entry.get("key"))
+            .and_then(Value::as_str),
+        Some("sk-persisted")
+    );
+}
+
+#[tokio::test]
 async fn custom_provider_upsert_paths() {
     let _lock = mock_agent_lock();
     let _home = HomeGuard::new("wr-upsert-rpc");
@@ -958,6 +1056,17 @@ async fn custom_provider_delete_paths() {
     assert!(delete_custom_provider("whatever".to_string())
         .await
         .is_err());
+}
+
+#[test]
+fn delete_local_removes_the_auth_entry_on_success() {
+    let _home = HomeGuard::new("wr-delete-auth-ok");
+    upsert_custom_provider_with_catalog(input("authdel", "AuthDel", true), &fixture_catalog())
+        .unwrap();
+    crate::auth_store::set_provider_key("authdel", "sk-del").unwrap();
+    delete_custom_provider_with_catalog("authdel".to_string(), &fixture_catalog()).unwrap();
+    // The auth half of the transactional delete also succeeded.
+    assert!(crate::auth_store::read().unwrap().get("authdel").is_none());
 }
 
 #[test]

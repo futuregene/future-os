@@ -2193,6 +2193,19 @@ mod flow_tests {
             .unwrap()
             .contains("expired or does not exist"));
 
+        // A non-numeric pull index takes the `index.parse::<u64>()` error arm.
+        let nonnum_reply = format!("rep-{}", unique("nonnum"));
+        nats.inject(
+            &format!("p.{pair}.xfer.up.download_loop.pull.abc"),
+            Some(&nonnum_reply),
+            Vec::new(),
+        );
+        let reply = await_publish(&mut tap, &nonnum_reply, Duration::from_secs(5)).await;
+        assert!(reply.json()["error"]
+            .as_str()
+            .unwrap()
+            .contains("Invalid chunk index"));
+
         // A transfer request without a reply subject is processed but never
         // answered (the reply-match `None` arm).
         nats.inject(&format!("p.{pair}.xfer.up.ghost.bogus.0"), None, Vec::new());
@@ -2208,5 +2221,160 @@ mod flow_tests {
         );
         cancel_upload(&upload_id).unwrap();
         std::fs::remove_file(&download_path).ok();
+    }
+
+    #[test]
+    fn prune_preview_cache_removes_expired_files() {
+        let dir = preview_cache_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let expired = dir.join("expired.jpg");
+        std::fs::write(&expired, b"old").unwrap();
+        let fresh = dir.join("fresh.jpg");
+        std::fs::write(&fresh, b"new").unwrap();
+
+        // Backdate the expired file past TRANSFER_TTL so only it is swept.
+        let past = SystemTime::now() - Duration::from_secs(3600);
+        std::fs::File::options()
+            .write(true)
+            .open(&expired)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(past))
+            .unwrap();
+
+        prune_preview_cache();
+
+        assert!(!expired.exists(), "expired cache file removed");
+        assert!(fresh.exists(), "fresh cache file kept");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn prepare_original_rejects_oversized_files() {
+        let dir = std::env::temp_dir().join(unique("futureos-original-oversize"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let big = dir.join("big.bin");
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len(MAX_FILE_BYTES + 1)
+            .unwrap();
+        let error = prepare_original(&big, "big.bin").unwrap_err();
+        assert!(error.to_string().contains("10 MiB"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn cached_image_preview_handles_empty_invalid_and_jpeg_caches() {
+        let dir = std::env::temp_dir().join(unique("futureos-cache-preview"));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Empty cache file → removed, None.
+        let empty = dir.join("empty.jpg");
+        std::fs::write(&empty, b"").unwrap();
+        assert!(cached_image_preview("photo.jpg", &empty).unwrap().is_none());
+        assert!(!empty.exists());
+
+        // Valid image but larger than the mobile edge → invalidated.
+        let big = dir.join("big.jpg");
+        image::DynamicImage::new_rgb8(MOBILE_PREVIEW_MAX_EDGE + 1, 1)
+            .save(&big)
+            .unwrap();
+        assert!(cached_image_preview("photo.jpg", &big).unwrap().is_none());
+        assert!(!big.exists());
+
+        // A small valid JPEG cache → served as image/jpeg (non-png extension arm).
+        let ok = dir.join("ok.jpg");
+        image::DynamicImage::new_rgb8(10, 10).save(&ok).unwrap();
+        let prepared = cached_image_preview("photo.jpg", &ok).unwrap().unwrap();
+        assert_eq!(prepared.mime_type, "image/jpeg");
+        assert_eq!(prepared.variant, "preview");
+        std::fs::remove_file(prepared.path).unwrap();
+
+        // A small valid PNG cache → served as image/png (the png extension arm).
+        let png = dir.join("ok.png");
+        image::DynamicImage::new_rgb8(10, 10).save(&png).unwrap();
+        let prepared = cached_image_preview("photo.png", &png).unwrap().unwrap();
+        assert_eq!(prepared.mime_type, "image/png");
+        std::fs::remove_file(prepared.path).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persist_image_preview_cache_skips_when_cache_exists() {
+        let dir = std::env::temp_dir().join(unique("futureos-persist-cache"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.jpg");
+        image::DynamicImage::new_rgb8(5, 5).save(&source).unwrap();
+        let prepared = PreparedPreview {
+            path: source.clone(),
+            name: "x.jpg".to_string(),
+            mime_type: "image/jpeg".to_string(),
+            preview_kind: "image".to_string(),
+            variant: "preview".to_string(),
+        };
+        let cache = dir.join("cache.jpg");
+        std::fs::write(&cache, b"already there").unwrap();
+        // `cache_path.exists()` → early return without touching the cache.
+        persist_image_preview_cache(&prepared, &cache);
+        assert_eq!(std::fs::read(&cache).unwrap(), b"already there");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn prepare_download_variant_rejects_disallowed_types_and_unknown_variants() {
+        let _lock = mock_agent_lock();
+        let _home = HomeGuard::new("xfer-disallowed");
+        let agent = ensure_mock_agent();
+        let session = unique("sess");
+        let dir = std::env::temp_dir().join(unique("futureos-dl-disallowed"));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // An extension that maps to an unknown MIME is not downloadable on mobile.
+        let weird = dir.join("archive.zzz");
+        std::fs::write(&weird, b"data").unwrap();
+        agent.set_session_entries(
+            &session,
+            json!({"entries":[{"meta":{"attachments":[{"path": weird.to_string_lossy(),"name":"archive.zzz"}]}}]}),
+        );
+        let error = prepare_download_variant(&session, &weird.to_string_lossy(), "preview")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("not available on mobile"));
+
+        // An unknown variant is rejected before any preparation work.
+        let notes = dir.join("notes.txt");
+        std::fs::write(&notes, b"hi").unwrap();
+        agent.set_session_entries(
+            &session,
+            json!({"entries":[{"meta":{"attachments":[{"path": notes.to_string_lossy(),"name":"notes.txt"}]}}]}),
+        );
+        let error = prepare_download_variant(&session, &notes.to_string_lossy(), "weird")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("Unsupported download variant"));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn transfer_loop_subscribe_failure_records_and_recovers() {
+        // A severed connection makes the subscription fail and records a
+        // failure episode (the `record` arm).
+        let nats = FakeNats::start().await;
+        let client = nats_connect_once(&nats).await;
+        nats.kill();
+        let pair = unique("pair");
+        let active = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let handle = spawn_transfer_loop(client, pair.clone(), active.clone());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(handle.is_finished(), "failed subscribe must return");
+
+        // A healthy re-connection reports recovery (the `recovered()` Some arm).
+        let nats2 = FakeNats::start().await;
+        let client2 = nats_connect_once(&nats2).await;
+        let handle2 = spawn_transfer_loop(client2, pair.clone(), active);
+        nats2
+            .wait_for_sub(&format!("p.{pair}.xfer.up.>"), Duration::from_secs(5))
+            .await;
+        handle2.abort();
     }
 }

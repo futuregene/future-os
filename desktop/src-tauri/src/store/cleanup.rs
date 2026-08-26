@@ -611,6 +611,41 @@ mod tests {
     }
 
     #[test]
+    fn archive_finished_runs_errors_when_archive_migration_did_not_complete() {
+        let _home = HomeGuard::new("archive-runs-unsupported");
+        // Build the app DB manually with a legacy `runs` table (no
+        // `archived_at` column), as an older build that never completed the
+        // optional archive migration would leave it. The command must report
+        // the unavailable error instead of touching a table it cannot archive.
+        let app_dir = crate::store::app_data_path()
+            .expect("app data path")
+            .app_dir;
+        std::fs::create_dir_all(&app_dir).expect("create app dir");
+        let conn = Connection::open(PathBuf::from(&app_dir).join("app.db")).expect("open app db");
+        conn.execute_batch(
+            "CREATE TABLE runs (
+                 id TEXT PRIMARY KEY,
+                 thread_id TEXT NOT NULL,
+                 trigger_message_id TEXT,
+                 status TEXT NOT NULL,
+                 model_provider TEXT,
+                 model_id TEXT,
+                 started_at INTEGER,
+                 ended_at INTEGER,
+                 error_message TEXT,
+                 error_type TEXT,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL
+             );",
+        )
+        .expect("create legacy runs table");
+        drop(conn);
+
+        let error = archive_finished_runs("thread_x").expect_err("archive unavailable");
+        assert!(error.to_string().contains("unavailable"));
+    }
+
+    #[test]
     fn orphan_image_dirs_keeps_only_live_threads() {
         let conn = test_conn();
         // Active thread -> its image dir is kept.

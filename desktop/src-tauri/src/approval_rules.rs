@@ -179,6 +179,35 @@ mod tests {
     }
 
     #[test]
+    fn rejects_an_empty_or_oversized_batch() {
+        let ws = temp_ws("batch-size");
+        let dir = ws.to_string_lossy().to_string();
+        let empty: &[(String, String)] = &[];
+        let err = append_workspace_allow_rules(&dir, empty).unwrap_err();
+        assert!(err.to_string().contains("1 to 8"));
+
+        let oversized: Vec<(String, String)> = (0..9)
+            .map(|i| (format!("path/{i}"), "read".to_string()))
+            .collect();
+        let err = append_workspace_allow_rules(&dir, &oversized).unwrap_err();
+        assert!(err.to_string().contains("1 to 8"));
+        // Nothing was written for either rejected batch.
+        assert!(!ws.join(".future/approval_rule.json").exists());
+    }
+
+    #[test]
+    fn rejects_an_empty_rule_path() {
+        let ws = temp_ws("empty-path");
+        let err = append_workspace_allow_rules(
+            ws.to_string_lossy().as_ref(),
+            &[("   ".to_string(), "read".to_string())],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not be empty"));
+        assert!(!ws.join(".future/approval_rule.json").exists());
+    }
+
+    #[test]
     fn non_array_rules_field_is_rebuilt() {
         let ws = temp_ws("nonarray");
         std::fs::create_dir_all(ws.join(".future")).unwrap();
