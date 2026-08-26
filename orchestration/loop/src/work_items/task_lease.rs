@@ -185,6 +185,25 @@ pub fn expire(todo: &mut Todo, now: u64) -> Result<LeaseOp> {
     }
 }
 
+/// Todos stranded by a dead lease holder: `claimed_by` is set (a worker
+/// claimed the slice), the todo is still open, and the recorded `holder_pid`
+/// no longer answers `kill -0` (SIGKILL / crash / host failure without a
+/// release). These are the candidates the scheduler tick reports up-channel
+/// so the orchestrator can relaunch a dead worker instead of only discovering
+/// it on a later poll. A completed/superseded todo with a stale orphaned
+/// lease is NOT stranded — it no longer needs a live worker.
+pub fn dead_holder_todos(goal: &crate::state::Goal) -> Vec<&crate::state::Todo> {
+    goal.todos
+        .iter()
+        .filter(|t| {
+            t.status == TodoStatus::Open
+                && t.claimed_by.is_some()
+                && t.holder_pid
+                    .is_some_and(|pid| !crate::compat::pid_alive(pid))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,5 +318,49 @@ mod tests {
         assert_eq!(normalize_ttl(0).unwrap(), DEFAULT_TASK_LEASE_TTL_SECONDS);
         assert!(normalize_ttl(MAX_TASK_LEASE_TTL_SECONDS + 1).is_err());
         assert_eq!(normalize_ttl(120).unwrap(), 120);
+    }
+
+    /// Spawn a child, kill it, reap it — its pid is now guaranteed dead.
+    #[cfg(unix)]
+    fn dead_pid() -> u32 {
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("sleep 30")
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        pid
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dead_holder_todos_detects_stranded_open_leases() {
+        let mut goal = crate::state::Goal::new("g1", "objective", "/tmp");
+        let dead = dead_pid();
+
+        // A dead holder on an OPEN todo is stranded.
+        let mut stranded = Todo::advancement("t1", "work");
+        stranded.claimed_by = Some("alice".into());
+        stranded.holder_pid = Some(dead);
+        stranded.status = TodoStatus::Open;
+        // A live holder (our own pid) is not stranded.
+        let mut live = Todo::advancement("t2", "work");
+        live.claimed_by = Some("bob".into());
+        live.holder_pid = Some(std::process::id());
+        live.status = TodoStatus::Open;
+        // A completed todo with a stale dead lease is harmless, not stranded.
+        let mut done = Todo::advancement("t3", "work");
+        done.claimed_by = Some("carol".into());
+        done.holder_pid = Some(dead);
+        done.status = TodoStatus::Done;
+        goal.todos = vec![stranded, live, done];
+
+        let ids: Vec<&str> = dead_holder_todos(&goal)
+            .iter()
+            .map(|t| t.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["t1"]);
     }
 }
