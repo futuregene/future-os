@@ -608,4 +608,291 @@ mod tests {
         assert!(String::from_utf8_lossy(&buf).contains("405"));
         let _ = server.await;
     }
+
+    #[tokio::test]
+    async fn handle_peer_closed_before_request_is_ok() {
+        let (root, _dir) = store_root();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, _rx) = watch::channel(String::new());
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        client.write_all(b"GET /partial").await.unwrap();
+        drop(client);
+        let (stream, _) = listener.accept().await.unwrap();
+        let rx = tx.subscribe();
+        handle(stream, Arc::new(root), rx).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_request_rejects_oversized_headers() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let write_task = tokio::spawn(async move {
+            let big = vec![b'a'; MAX_HEADER_BYTES + 8192];
+            let _ = client.write_all(&big).await;
+        });
+        assert!(read_request(&mut stream).await.is_err());
+        let _ = write_task.await;
+    }
+
+    #[test]
+    fn route_runs_events_missing_goal_404_and_corrupt_ledger_500() {
+        let (root, _dir) = store_root();
+        // Missing goal → 404 on the runs/events sub-routes.
+        let runs404 = route(
+            &Request {
+                method: "GET".into(),
+                path: "/api/goals/nope/runs".into(),
+                query: String::new(),
+            },
+            &root,
+        );
+        assert!(String::from_utf8_lossy(&runs404).contains("404 Not Found"));
+        let events404 = route(
+            &Request {
+                method: "GET".into(),
+                path: "/api/goals/nope/events".into(),
+                query: String::new(),
+            },
+            &root,
+        );
+        assert!(String::from_utf8_lossy(&events404).contains("404 Not Found"));
+
+        // Corrupt g1's ledger → replay fails → 500 for detail and runs.
+        let store = Store::open(&root).unwrap();
+        std::fs::write(store.goal_dir("g1").join("events.jsonl"), "not-json\n").unwrap();
+        let detail = route(
+            &Request {
+                method: "GET".into(),
+                path: "/api/goals/g1".into(),
+                query: String::new(),
+            },
+            &root,
+        );
+        assert!(String::from_utf8_lossy(&detail).contains("500"));
+        let runs500 = route(
+            &Request {
+                method: "GET".into(),
+                path: "/api/goals/g1/runs".into(),
+                query: String::new(),
+            },
+            &root,
+        );
+        assert!(String::from_utf8_lossy(&runs500).contains("500"));
+    }
+
+    #[tokio::test]
+    async fn send_snapshot_writes_a_frame() {
+        let (root, _dir) = store_root();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (mut stream, _) = listener.accept().await.unwrap();
+        send_snapshot(&mut stream, &root).await.unwrap();
+        stream.shutdown().await.unwrap();
+        let mut buf = Vec::new();
+        client.read_to_end(&mut buf).await.unwrap();
+        let text = String::from_utf8_lossy(&buf);
+        assert!(text.contains("event: overview"));
+        assert!(text.contains("event: goals"));
+    }
+
+    #[tokio::test]
+    async fn serve_sse_writes_head_snapshot_and_exits_when_gone() {
+        let (root, _dir) = store_root();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = watch::channel(String::new());
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        drop(tx); // broadcaster gone → serve_sse exits after the initial snapshot.
+        let server = tokio::spawn(async move { serve_sse(stream, Arc::new(root), rx).await });
+        let mut buf = Vec::new();
+        client.read_to_end(&mut buf).await.unwrap();
+        let text = String::from_utf8_lossy(&buf);
+        assert!(text.contains("text/event-stream"));
+        assert!(text.contains("event: overview"));
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn serve_sse_pushes_on_broadcaster_change() {
+        let (root, _dir) = store_root();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = watch::channel(String::new());
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        let server = tokio::spawn(async move { serve_sse(stream, Arc::new(root), rx).await });
+        // A broadcaster push triggers the changed() arm; dropping the sender
+        // afterwards lets serve_sse exit on the gone arm.
+        let _ = tx.send("changed-fp".to_string());
+        drop(tx);
+        let mut buf = Vec::new();
+        client.read_to_end(&mut buf).await.unwrap();
+        assert!(String::from_utf8_lossy(&buf).contains("event: overview"));
+        let _ = server.await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn serve_sse_sends_ping_on_timeout() {
+        let (root, _dir) = store_root();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = watch::channel(String::new());
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        let server = tokio::spawn(async move { serve_sse(stream, Arc::new(root), rx).await });
+        // Let serve_sse write the head + initial snapshot and register its
+        // 15s heartbeat timeout before advancing the paused clock.
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
+        // Advance past the 15s heartbeat timeout → serve_sse wakes and writes
+        // the ping comment.
+        tokio::time::advance(std::time::Duration::from_secs(16)).await;
+        // Let serve_sse observe the elapsed timeout and write the ping BEFORE
+        // dropping the sender (otherwise rx.changed() sees the drop first and
+        // exits on the gone arm without writing a ping).
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
+        drop(tx);
+        let mut buf = Vec::new();
+        client.read_to_end(&mut buf).await.unwrap();
+        assert!(String::from_utf8_lossy(&buf).contains(": ping"));
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn run_server_bind_failure_returns_err() {
+        let (root, _dir) = store_root();
+        // Hold a port, then ask run_server to bind the same one → bind fails.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(run_server(root, port, false).await.is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn run_server_serves_and_broadcaster_ticks() {
+        let (root, _dir) = store_root();
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+
+        let server_root = root.clone();
+        let handle = tokio::spawn(async move { run_server(server_root, port, false).await });
+
+        // Poll until the server has bound and is accepting.
+        let mut client = None;
+        for _ in 0..500 {
+            if let Ok(c) = tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+                client = Some(c);
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        let mut client = client.expect("server binds and accepts");
+        client
+            .write_all(b"GET /api/overview HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = Vec::new();
+        client.read_to_end(&mut buf).await.unwrap();
+        assert!(String::from_utf8_lossy(&buf).contains("200 OK"));
+
+        // First broadcaster tick: computes the initial fingerprint.
+        tokio::time::advance(std::time::Duration::from_millis(1300)).await;
+        // Append a todo → the projection changes → the next tick's fingerprint
+        // differs and the broadcaster pushes (tx.send path).
+        let mut store = Store::open(&root).unwrap();
+        store
+            .append(crate::store::Event::TodoAdded {
+                goal_id: "g1".into(),
+                todo: crate::state::Todo::advancement("T2", "more work"),
+                ts: crate::state::now_epoch(),
+            })
+            .unwrap();
+        tokio::time::advance(std::time::Duration::from_millis(1300)).await;
+        // Corrupt the store root so the next tick hits the open-failure retry.
+        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::write(&root, b"x").unwrap();
+        tokio::time::advance(std::time::Duration::from_millis(1300)).await;
+
+        handle.abort();
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn handle_routes_to_sse_stream() {
+        let (root, _dir) = store_root();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = watch::channel(String::new());
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        client
+            .write_all(b"GET /api/stream HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        drop(tx); // broadcaster gone → serve_sse exits after the initial snapshot.
+        let server = tokio::spawn(async move { handle(stream, Arc::new(root), rx).await });
+        let mut buf = Vec::new();
+        client.read_to_end(&mut buf).await.unwrap();
+        let text = String::from_utf8_lossy(&buf);
+        assert!(text.contains("text/event-stream"));
+        assert!(text.contains("event: overview"));
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn serve_sse_returns_when_initial_snapshot_fails() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = watch::channel(String::new());
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        drop(tx);
+        // Invalid root → the initial send_snapshot's Store::open fails.
+        let server = tokio::spawn(async move {
+            serve_sse(stream, Arc::new("/nonexistent/not/a/store".to_string()), rx).await
+        });
+        let mut buf = Vec::new();
+        client.read_to_end(&mut buf).await.unwrap();
+        // The SSE head is still written before the snapshot attempt.
+        assert!(String::from_utf8_lossy(&buf).contains("text/event-stream"));
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn serve_sse_returns_when_change_snapshot_fails() {
+        let (root, _dir) = store_root();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = watch::channel(String::new());
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        let root_arc = Arc::new(root.clone());
+        let server = tokio::spawn(async move { serve_sse(stream, root_arc, rx).await });
+
+        // Synchronize: read the SSE head, then yield until the initial
+        // snapshot has been written (Store::open succeeded on the valid root).
+        let mut head = [0u8; 100];
+        client.read_exact(&mut head).await.unwrap();
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
+        // Invalidate the store (turn the root into a FILE so Store::open's
+        // create_dir_all fails), then push a change: the changed() arm
+        // re-snapshots and Store::open fails → serve_sse returns.
+        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::write(&root, b"x").unwrap();
+        let _ = tx.send("changed".to_string());
+        drop(tx);
+        let mut buf = head.to_vec();
+        client.read_to_end(&mut buf).await.unwrap();
+        let _ = server.await;
+    }
 }
