@@ -260,6 +260,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn save_approval_rules_writes_and_injects_all() {
+        use crate::commands::agent_mock::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_approval_rules");
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([("add_session_rule".to_string(), "{}".to_string())]),
+            ..Default::default()
+        });
+        save_approval_rules(SaveApprovalRulesInput {
+            thread_id: thread.id.clone(),
+            rules: vec![
+                SaveApprovalRuleEntry {
+                    path: "src/**".into(),
+                    access: "read".into(),
+                },
+                SaveApprovalRuleEntry {
+                    path: "docs/**".into(),
+                    access: "write".into(),
+                },
+            ],
+        })
+        .await
+        .expect("save rules");
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
     async fn save_approval_rule_errors_for_unknown_thread() {
         let _home = HomeGuard::new("cmd_approval_rule_ghost");
         crate::store::initialize_app_store().expect("init store");

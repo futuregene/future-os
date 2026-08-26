@@ -120,6 +120,18 @@ mod tests {
         assert!(agent.served("upsert_provider", ""));
         assert!(view.builtin.iter().any(|p| p.id == "deepseek"));
 
+        // atomic builtin update (base URL + key in one form submission)
+        let view = update_builtin_provider(agent_providers::UpdateBuiltinProviderInput {
+            id: "deepseek".to_string(),
+            base_url: Some("https://atomic.example.com/v1".to_string()),
+            api_key: Some("sk-atomic".to_string()),
+            update_api_key: true,
+        })
+        .await
+        .expect("atomic update");
+        assert!(agent.served("upsert_provider", ""));
+        assert!(view.builtin.iter().any(|p| p.id == "deepseek"));
+
         // delete
         let view = delete_custom_provider("acme".to_string())
             .await

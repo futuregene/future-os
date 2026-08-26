@@ -903,6 +903,11 @@ mod tests {
         let (canonical, size) = validate_image_preview_path(&small.display().to_string()).unwrap();
         assert_eq!(canonical, small.canonicalize().unwrap());
         assert_eq!(size, 5);
+
+        // A directory is not a file — the preview path must be a regular file.
+        let dir = root.join("a_dir");
+        fs::create_dir_all(&dir).unwrap();
+        assert!(validate_image_preview_path(&dir.display().to_string()).is_err());
     }
 
     #[test]
