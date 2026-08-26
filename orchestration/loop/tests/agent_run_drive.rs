@@ -7,7 +7,7 @@
 
 mod common;
 
-use common::mock_agent::{completed_events, ev, spawn_mock, MockState};
+use common::mock_agent::{completed_events, ev, spawn_mock, AttachPlan, MockState};
 #[cfg(unix)]
 use common::todo_id_by_text;
 use common::{add_todo, cli, cli_err, cli_ok, cli_root, first_todo_id, init_goal, open_store};
@@ -592,6 +592,169 @@ fn run_notifies_supervisor_on_hard_failure() {
     let reports: Vec<_> = calls.iter().filter(|(sid, _)| sid == "sup-sess").collect();
     assert_eq!(reports.len(), 1, "one failure report: {calls:?}");
     assert_eq!(reports[0].1, "enqueue_if_busy");
+}
+
+/// A registered supervisor receives a report when a worker exhausts its
+/// incomplete-retry budget: the stream closes before `agent_end` on every
+/// turn (terminal_state=incomplete), and after N consecutive turns the run
+/// `break`s — previously silently, leaving the supervisor blind to the stop.
+///
+/// The mock assigns run ids `mock-run-1`, `mock-run-2`, … on successive
+/// prompts, and its replay loop sends every scripted event whose `run_id`
+/// matches the current run; events that never match (and no `agent_end`)
+/// produce the incomplete state on every turn.
+#[test]
+fn run_notifies_supervisor_on_incomplete_budget_exhausted() {
+    let cr = cli_root();
+    let (_rt, shared) = mock_env(MockState {
+        // One tool event bound to a run id the mock never serves: every turn
+        // sees a stream with no matching events and no agent_end → incomplete.
+        events: vec![ev(
+            "mock-run-x",
+            0,
+            "tool_start",
+            "{\"tool_name\":\"write\"}",
+        )],
+        ..Default::default()
+    });
+    let goal = init_goal(&cr, "notify on incomplete budget");
+    cli_ok(&[
+        "supervisor",
+        "register",
+        "--goal",
+        &goal,
+        "--session-id",
+        "sup-sess",
+    ]);
+    // One todo, --max-turns 5, budget 2: turn1 + turn2 incomplete → break at
+    // the exhausted budget (turn 2), not at max-turns.
+    cli_ok(&[
+        "run",
+        "--goal",
+        &goal,
+        "--anonymous",
+        "--max-turns",
+        "5",
+        "--max-incomplete-retries",
+        "2",
+    ]);
+    let st = shared.lock().unwrap();
+    let reports: Vec<_> = st
+        .prompt_calls
+        .iter()
+        .zip(st.prompt_messages.iter())
+        .filter(|((sid, _), _)| sid == "sup-sess")
+        .collect();
+    assert_eq!(
+        reports.len(),
+        1,
+        "one incomplete-budget report: {:?}",
+        st.prompt_calls
+    );
+    assert_eq!(reports[0].0 .1, "enqueue_if_busy");
+    assert!(
+        reports[0]
+            .1
+            .contains("stopped before completion (incomplete_budget)"),
+        "incomplete-budget stop reported: {}",
+        reports[0].1
+    );
+}
+
+/// A registered supervisor receives a report when the worker dies on a gRPC
+/// transport failure (h2 reset / mid-stream non-gap error). This exit never
+/// reaches a writeback, so without this report the supervisor would be left
+/// polling a worker that already stopped.
+#[test]
+fn run_notifies_supervisor_on_transport_error() {
+    let cr = cli_root();
+    let (_rt, shared) = mock_env(MockState {
+        // A non-DataLoss mid-stream error: no reconnect, the turn fails.
+        stream_attach_plan: vec![AttachPlan::HardErrorAfter(0)],
+        ..Default::default()
+    });
+    let goal = init_goal(&cr, "notify on transport");
+    cli_ok(&[
+        "supervisor",
+        "register",
+        "--goal",
+        &goal,
+        "--session-id",
+        "sup-sess",
+    ]);
+    let err = cli_err(&["run", "--goal", &goal, "--anonymous", "--max-turns", "1"]);
+    assert!(err.contains("stream error"), "{err}");
+    let st = shared.lock().unwrap();
+    let reports: Vec<_> = st
+        .prompt_calls
+        .iter()
+        .zip(st.prompt_messages.iter())
+        .filter(|((sid, _), _)| sid == "sup-sess")
+        .collect();
+    assert_eq!(
+        reports.len(),
+        1,
+        "one transport report: {:?}",
+        st.prompt_calls
+    );
+    assert_eq!(reports[0].0 .1, "enqueue_if_busy");
+    assert!(
+        reports[0]
+            .1
+            .contains("stopped before completion (transport)"),
+        "transport stop reported: {}",
+        reports[0].1
+    );
+}
+
+/// A registered supervisor receives a report when a turn outlives its
+/// wall-clock budget (--max-turn-secs). The early return previously skipped
+/// the ②/③ reports, leaving the supervisor blind to the stop.
+#[test]
+fn run_notifies_supervisor_on_timeout() {
+    let cr = cli_root();
+    let (_rt, shared) = mock_env(MockState {
+        hang_stream: true,
+        ..Default::default()
+    });
+    let goal = init_goal(&cr, "notify on timeout");
+    cli_ok(&[
+        "supervisor",
+        "register",
+        "--goal",
+        &goal,
+        "--session-id",
+        "sup-sess",
+    ]);
+    cli_ok(&[
+        "run",
+        "--goal",
+        &goal,
+        "--anonymous",
+        "--max-turn-secs",
+        "1",
+        "--max-turns",
+        "3",
+    ]);
+    let st = shared.lock().unwrap();
+    let reports: Vec<_> = st
+        .prompt_calls
+        .iter()
+        .zip(st.prompt_messages.iter())
+        .filter(|((sid, _), _)| sid == "sup-sess")
+        .collect();
+    assert_eq!(
+        reports.len(),
+        1,
+        "one timeout report: {:?}",
+        st.prompt_calls
+    );
+    assert_eq!(reports[0].0 .1, "enqueue_if_busy");
+    assert!(
+        reports[0].1.contains("stopped before completion (timeout)"),
+        "timeout stop reported: {}",
+        reports[0].1
+    );
 }
 
 /// A registered supervisor receives a report when a user gate opens
