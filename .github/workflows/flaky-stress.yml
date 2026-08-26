@@ -13,9 +13,6 @@ permissions: read-all
 #   gh workflow run flaky-stress.yml --ref <branch>
 
 on:
-  push:
-    branches:
-      - 'claude/flaky-hunt'
   workflow_dispatch:
 
 jobs:
