@@ -79,4 +79,4 @@ pub fn build_macos_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<
 
 // NOTE: build_macos_menu cannot run in unit tests — muda requires menu
 // construction on the main thread (test threads are workers). Documented in
-// coverage/acceptance-waivers.md as W-menu.
+// coverage/baseline-100/acceptance-waivers.md as W-menu.

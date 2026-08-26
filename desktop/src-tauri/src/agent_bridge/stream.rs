@@ -787,6 +787,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn collect_fails_fast_on_a_non_retryable_stream_error() {
+        let mock = mock_agent();
+        // A contract/request-shape error (PermissionDenied) cannot improve by
+        // waiting, so the collector must surface it instead of reattaching.
+        mock.push_stream(StreamScript::Events(
+            vec![stream_event("run-1", 0, "text_chunk", r#"{"text":"a"}"#)],
+            Some((tonic::Code::PermissionDenied, "contract broken")),
+        ));
+        let error = collect_agent_response(None, "run-1", "sess-1", "thread-1")
+            .await
+            .expect_err("non-retryable");
+        match error {
+            CollectError::App(app_error) => assert!(
+                app_error
+                    .to_string()
+                    .contains("Future Agent event stream failed"),
+                "{app_error}"
+            ),
+            CollectError::RunGone(reason) => panic!("unexpected run-gone: {reason}"),
+        }
+        // No reattach was attempted for a non-retryable code.
+        assert_eq!(mock.stream_requests().len(), 1);
+    }
+
+    #[tokio::test]
     async fn collect_idx_gap_forces_reattach_and_run_gone_surfaces() {
         let mock = mock_agent();
         // idx skips 1 → gap → drop the stream and reattach.

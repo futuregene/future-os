@@ -120,6 +120,16 @@ mod tests {
     }
 
     #[test]
+    fn open_url_rejects_non_http_schemes_before_reaching_the_os() {
+        // The command wrapper validates the scheme before handing to the OS
+        // opener, so an unsafe scheme fails without launching a browser.
+        assert!(open_url("file:///etc/passwd".into()).is_err());
+        assert!(open_url("ftp://x".into()).is_err());
+        assert!(open_url("javascript:alert(1)".into()).is_err());
+        assert!(open_url("   ".into()).is_err());
+    }
+
+    #[test]
     fn remote_status_and_stop_report_no_bridge_when_idle() {
         let _home = HomeGuard::new("remote_idle");
         let status = remote_status().expect("status");

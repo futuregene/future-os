@@ -482,7 +482,8 @@ mod tests {
                 get_thread_agent_state,
                 get_session_entries,
                 archive_finished_runs,
-                attach_remote_stream
+                attach_remote_stream,
+                compact_thread_context
             ],
             &[
                 "fork_thread",
@@ -495,6 +496,7 @@ mod tests {
                 "get_session_entries",
                 "archive_finished_runs",
                 "attach_remote_stream",
+                "compact_thread_context",
             ],
         );
         // `fork_thread` takes three arguments, so the empty-body rejection only
@@ -692,6 +694,33 @@ mod tests {
         let thread = make_thread(&_home, None);
         let error = compact_thread_context(thread.id).await.unwrap_err();
         assert!(error.to_string().contains("no context to compact"));
+    }
+
+    #[tokio::test]
+    async fn compact_thread_context_returns_empty_object_for_empty_agent_data() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_compact_empty_data");
+        let thread = make_thread(&_home, Some("sess_compact_empty"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([("compact".to_string(), String::new())]),
+            ..Default::default()
+        });
+        let value = compact_thread_context(thread.id).await.expect("compact");
+        assert_eq!(value, serde_json::json!({}));
+        script_mock_agent(MockScript::default());
+    }
+
+    #[test]
+    fn mark_thread_opened_delegates_to_the_store() {
+        let _home = init("cmd_mark_opened");
+        let thread = make_thread(&_home, None);
+        mark_thread_opened(thread.id.clone()).expect("mark opened");
+        // The store records the open timestamp; the command is a thin wrapper.
+        let reopened = store::get_thread(&thread.id)
+            .expect("get thread")
+            .expect("present");
+        assert!(reopened.last_opened_at.is_some());
     }
 
     #[tokio::test]

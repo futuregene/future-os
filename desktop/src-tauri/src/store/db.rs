@@ -727,6 +727,37 @@ mod tests {
     }
 
     #[test]
+    fn apply_schema_swallows_a_failed_run_archive_migration() {
+        // Pre-create schema_migrations with a CHECK that rejects the versioned
+        // migration's INSERT, so the migration transaction fails and rolls
+        // back. `apply_schema` must log-and-continue (the archive column is
+        // optional UI metadata) rather than aborting startup.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (
+                 version TEXT PRIMARY KEY,
+                 applied_at INTEGER NOT NULL,
+                 CHECK (version <> 'v1.1.3-runs-archived-at')
+             );",
+        )
+        .unwrap();
+
+        apply_schema(&conn).unwrap();
+
+        // The rest of the schema still applied, and the rejected version was
+        // never recorded.
+        assert!(column_exists(&conn, "runs", "archived_at").unwrap());
+        let recorded: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 'v1.1.3-runs-archived-at'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(recorded, 0);
+    }
+
+    #[test]
     fn run_thread_id_reads_the_owning_thread() {
         let conn = test_support::memory_conn();
         conn.execute_batch(

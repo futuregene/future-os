@@ -301,14 +301,27 @@ pub fn confirm_quit<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     // `show` is non-blocking: it presents on the main thread and invokes the
     // callback (on a background thread) once the user answers.
     dialog.show(move |confirmed| {
-        if !confirmed {
-            QUIT_DIALOG_OPEN.store(false, Ordering::SeqCst);
-            return;
-        }
-        // Commit to quitting before any close can be re-requested.
-        QUIT_CONFIRMED.store(true, Ordering::SeqCst);
-        confirmed_quit_flow(&callback_app, &sessions, || callback_app.exit(0));
+        handle_quit_dialog_response(confirmed, &callback_app, &sessions, || callback_app.exit(0));
     });
+}
+
+/// Body of the force-quit dialog response: on cancel clear the in-progress flag;
+/// on confirm commit to quitting and run the abort/kill/exit flow. Extracted so
+/// the response handling is testable without a native dialog (whose callback
+/// only fires on user interaction).
+fn handle_quit_dialog_response<R: tauri::Runtime>(
+    confirmed: bool,
+    app: &tauri::AppHandle<R>,
+    sessions: &[String],
+    exit: impl FnOnce(),
+) {
+    if !confirmed {
+        QUIT_DIALOG_OPEN.store(false, Ordering::SeqCst);
+        return;
+    }
+    // Commit to quitting before any close can be re-requested.
+    QUIT_CONFIRMED.store(true, Ordering::SeqCst);
+    confirmed_quit_flow(app, sessions, exit);
 }
 
 /// Body of the force-quit confirmation: abort every running session, wait for
@@ -503,6 +516,45 @@ mod tests {
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build mock app");
         confirm_quit(app.handle().clone());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn cleanup_windows_sandbox_permissions_is_a_noop_off_windows() {
+        // On non-Windows the function body is compiled out; calling it directly
+        // covers its (empty) fn declaration and closing brace.
+        cleanup_windows_sandbox_permissions();
+    }
+
+    #[test]
+    fn handle_quit_dialog_response_cancels_and_confirms() {
+        // Cancel path: only clears the in-progress flag, never exits.
+        QUIT_DIALOG_OPEN.store(true, Ordering::SeqCst);
+        let mut cancel_exited = false;
+        handle_quit_dialog_response(false, &mock_handle(), &[], || cancel_exited = true);
+        assert!(!cancel_exited, "cancel must not exit");
+        assert!(!QUIT_DIALOG_OPEN.load(Ordering::SeqCst));
+
+        // Confirm path: commits to quitting and runs the abort/wait/exit flow.
+        let _lock = crate::commands::agent_mock::mock_agent_lock();
+        let _home =
+            crate::auth_store::test_support::HomeGuard::new("agent-supervisor-quit-response");
+        crate::store::initialize_app_store().unwrap();
+        crate::commands::agent_mock::ensure_mock_agent();
+        // Fail the abort RPC so the best-effort abort-error arm is also covered.
+        crate::commands::agent_mock::script_mock_agent(crate::commands::agent_mock::MockScript {
+            transport_fail: ["abort".to_string()].into_iter().collect(),
+            ..Default::default()
+        });
+        QUIT_DIALOG_OPEN.store(true, Ordering::SeqCst);
+        QUIT_CONFIRMED.store(false, Ordering::SeqCst);
+        let mut exited = false;
+        handle_quit_dialog_response(true, &mock_handle(), &["sess-quit".to_string()], || {
+            exited = true
+        });
+        assert!(exited);
+        assert!(QUIT_CONFIRMED.load(Ordering::SeqCst));
+        crate::commands::agent_mock::script_mock_agent(Default::default());
     }
 
     #[test]

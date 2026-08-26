@@ -439,17 +439,14 @@ fn lower_messages(request: &ModelRequest) -> Result<Vec<Value>> {
 }
 
 fn push_message(messages: &mut Vec<Value>, role: &str, content: Vec<Value>) {
-    if let Some(previous) = messages.last_mut() {
-        if previous.get("role").and_then(Value::as_str) == Some(role) {
-            if let Some(previous_content) =
-                previous.get_mut("content").and_then(Value::as_array_mut)
-            {
-                previous_content.extend(content);
-                return;
-            }
-        }
+    let target = messages
+        .last_mut()
+        .filter(|previous| previous.get("role").and_then(Value::as_str) == Some(role))
+        .and_then(|previous| previous.get_mut("content").and_then(Value::as_array_mut));
+    match target {
+        Some(previous_content) => previous_content.extend(content),
+        None => messages.push(json!({"role": role, "content": content})),
     }
-    messages.push(json!({"role": role, "content": content}));
 }
 
 fn anthropic_reasoning_metadata(signature: &str, redacted_data: Option<&str>) -> ProviderMetadata {
@@ -695,13 +692,8 @@ mod tests {
         };
         let events = adapter.decode_frame(&stop, state.as_mut()).unwrap();
         assert_eq!(events.len(), 1);
-        let ModelStreamEvent::Finish {
-            reason: FinishReason::Stop,
-            usage: Some(usage),
-        } = &events[0]
-        else {
-            panic!("message_stop must emit exactly one final usage snapshot")
-        };
+        let (reason, usage) = expect_finish_usage(&events[0]);
+        assert_eq!(reason, &FinishReason::Stop);
         assert_eq!(usage.prompt_tokens, 1102);
         assert_eq!(usage.completion_tokens, 205);
         assert_eq!(usage.total_tokens, 1307);
@@ -840,5 +832,430 @@ mod tests {
         assert!(
             matches!(events.as_slice(), [ModelStreamEvent::Error { message }] if message == "boom")
         );
+    }
+
+    fn expect_finish_usage(event: &ModelStreamEvent) -> (&FinishReason, &Usage) {
+        match event {
+            ModelStreamEvent::Finish {
+                reason,
+                usage: Some(usage),
+            } => (reason, usage),
+            other => panic!("expected Finish with usage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "expected Finish with usage")]
+    fn expect_finish_usage_rejects_non_finish_events() {
+        expect_finish_usage(&ModelStreamEvent::Error {
+            message: "x".into(),
+        });
+    }
+
+    #[test]
+    fn build_body_rejects_non_anthropic_target() {
+        let target = ResolvedModelTarget {
+            model_id: "m".into(),
+            route: crate::llm::schema::ProviderRoute {
+                provider_id: "p".into(),
+                base_url: "https://example.test".into(),
+                api_key: "k".into(),
+                auth: crate::llm::schema::AuthScheme::Bearer,
+                headers: Default::default(),
+            },
+            protocol: ProtocolConfig::OpenAiChat(crate::llm::schema::OpenAiChatConfig::default()),
+            capabilities: Default::default(),
+            generation: crate::llm::schema::GenerationConfig::default(),
+        };
+        let error = AnthropicMessagesAdapter
+            .build_body(&target, &empty_request())
+            .unwrap_err();
+        assert!(error.to_string().contains("non-anthropic target"));
+    }
+
+    #[test]
+    fn build_body_uses_capabilities_max_tokens_when_generation_absent() {
+        let mut t = target(None, 0);
+        t.capabilities.max_output_tokens = 2048;
+        let body = AnthropicMessagesAdapter
+            .build_body(&t, &empty_request())
+            .unwrap();
+        assert_eq!(body["max_tokens"], 2048);
+    }
+
+    #[test]
+    fn build_body_serializes_tools_system_and_temperature() {
+        let mut t = target(None, 0);
+        t.generation.temperature = Some(0.5);
+        let request = ModelRequest {
+            model: "claude".into(),
+            system_prompt: "sys".into(),
+            messages: Vec::new(),
+            tools: vec![crate::types::ToolDef {
+                tool_type: "function".into(),
+                function: crate::types::FunctionDef {
+                    name: "f".into(),
+                    description: "d".into(),
+                    parameters: json!({"type": "object"}),
+                },
+            }],
+        };
+        let body = AnthropicMessagesAdapter.build_body(&t, &request).unwrap();
+        assert!(body["tools"].is_array());
+        assert_eq!(body["system"][0]["text"], "sys");
+        assert_eq!(body["temperature"], 0.5);
+    }
+
+    #[test]
+    fn decode_frame_ignores_empty_data() {
+        let adapter = AnthropicMessagesAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &SseFrame {
+                    event: None,
+                    data: "   ".into(),
+                },
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn thinking_block_deltas_emit_reasoning_and_signature() {
+        let adapter = AnthropicMessagesAdapter;
+        let mut state = adapter.new_stream_state();
+        let start = adapter
+            .decode_frame(
+                &frame(
+                    "content_block_start",
+                    json!({
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {"type": "thinking", "signature": "sig-"}
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(matches!(
+            start.as_slice(),
+            [ModelStreamEvent::ReasoningStart { .. }]
+        ));
+
+        let delta = adapter
+            .decode_frame(
+                &frame(
+                    "content_block_delta",
+                    json!({
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "thinking_delta", "thinking": "think"}
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(matches!(
+            delta.as_slice(),
+            [ModelStreamEvent::ReasoningDelta { text, .. }] if text == "think"
+        ));
+
+        let signature = adapter
+            .decode_frame(
+                &frame(
+                    "content_block_delta",
+                    json!({
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "signature_delta", "signature": "rest"}
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(signature.is_empty());
+    }
+
+    #[test]
+    fn unknown_content_block_types_are_tracked_and_ignored() {
+        let adapter = AnthropicMessagesAdapter;
+        let mut state = adapter.new_stream_state();
+        let start = adapter
+            .decode_frame(
+                &frame(
+                    "content_block_start",
+                    json!({
+                        "type": "content_block_start",
+                        "index": 5,
+                        "content_block": {"type": "server_tool_use", "id": "x"}
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(start.is_empty());
+        let delta = adapter
+            .decode_frame(
+                &frame(
+                    "content_block_delta",
+                    json!({
+                        "type": "content_block_delta",
+                        "index": 5,
+                        "delta": {"type": "server_tool_input_delta", "input": "x"}
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(delta.is_empty());
+    }
+
+    #[test]
+    fn content_block_stop_on_other_and_missing_blocks() {
+        let adapter = AnthropicMessagesAdapter;
+        let mut state = adapter.new_stream_state();
+        adapter
+            .decode_frame(
+                &frame(
+                    "content_block_start",
+                    json!({
+                        "type": "content_block_start",
+                        "index": 5,
+                        "content_block": {"type": "server_tool_use"}
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        let other = adapter
+            .decode_frame(
+                &frame(
+                    "content_block_stop",
+                    json!({"type": "content_block_stop", "index": 5}),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(other.is_empty());
+
+        let missing = adapter
+            .decode_frame(
+                &frame(
+                    "content_block_stop",
+                    json!({"type": "content_block_stop", "index": 99}),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn ping_and_unknown_events_are_ignored() {
+        let adapter = AnthropicMessagesAdapter;
+        let mut state = adapter.new_stream_state();
+        for data in [json!({"type": "ping"}), json!({"type": "totally_unknown"})] {
+            let events = adapter
+                .decode_frame(
+                    &SseFrame {
+                        event: None,
+                        data: data.to_string(),
+                    },
+                    state.as_mut(),
+                )
+                .unwrap();
+            assert!(events.is_empty());
+        }
+    }
+
+    #[test]
+    fn finish_stream_emits_incomplete_when_not_finished() {
+        let adapter = AnthropicMessagesAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter.finish_stream(state.as_mut()).unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [ModelStreamEvent::Finish {
+                reason: FinishReason::Incomplete,
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn finish_stream_after_finish_returns_empty() {
+        let adapter = AnthropicMessagesAdapter;
+        let mut state = adapter.new_stream_state();
+        adapter
+            .decode_frame(
+                &frame("message_stop", json!({"type": "message_stop"})),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(adapter.finish_stream(state.as_mut()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn lower_messages_routes_text_by_role() {
+        let request = ModelRequest {
+            model: "claude".into(),
+            system_prompt: String::new(),
+            messages: vec![
+                crate::types::AgentMessage {
+                    role: "user".into(),
+                    content: vec![ContentBlock::text("u")],
+                    ..Default::default()
+                },
+                crate::types::AgentMessage {
+                    role: "assistant".into(),
+                    content: vec![ContentBlock::text("a")],
+                    ..Default::default()
+                },
+            ],
+            tools: Vec::new(),
+        };
+        let messages = lower_messages(&request).unwrap();
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[0]["content"][0]["text"], "u");
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(messages[1]["content"][0]["text"], "a");
+    }
+
+    #[test]
+    fn lower_messages_serializes_images_and_rejects_non_data_urls() {
+        let request = ModelRequest {
+            model: "claude".into(),
+            system_prompt: String::new(),
+            messages: vec![crate::types::AgentMessage {
+                role: "user".into(),
+                content: vec![ContentBlock::image("data:image/png;base64,AAAA")],
+                ..Default::default()
+            }],
+            tools: Vec::new(),
+        };
+        let messages = lower_messages(&request).unwrap();
+        assert_eq!(messages[0]["content"][0]["type"], "image");
+        assert_eq!(
+            messages[0]["content"][0]["source"]["media_type"],
+            "image/png"
+        );
+        assert_eq!(messages[0]["content"][0]["source"]["data"], "AAAA");
+
+        let request = ModelRequest {
+            model: "claude".into(),
+            system_prompt: String::new(),
+            messages: vec![crate::types::AgentMessage {
+                role: "user".into(),
+                content: vec![ContentBlock::image("http://example/1.png")],
+                ..Default::default()
+            }],
+            tools: Vec::new(),
+        };
+        let error = lower_messages(&request).unwrap_err();
+        assert!(error.to_string().contains("base64 data URL"));
+
+        // An image block with no URL is silently skipped.
+        let request = ModelRequest {
+            model: "claude".into(),
+            system_prompt: String::new(),
+            messages: vec![crate::types::AgentMessage {
+                role: "user".into(),
+                content: vec![ContentBlock::Image {
+                    image_url: crate::types::ImageUrlData { url: None },
+                }],
+                ..Default::default()
+            }],
+            tools: Vec::new(),
+        };
+        let messages = lower_messages(&request).unwrap();
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn lower_messages_replays_redacted_thinking() {
+        let mut metadata = ProviderMetadata::new();
+        metadata.insert("anthropic".into(), json!({"redacted_data": "opaque"}));
+        let request = ModelRequest {
+            model: "claude".into(),
+            system_prompt: String::new(),
+            messages: vec![crate::types::AgentMessage {
+                role: "assistant".into(),
+                content: vec![ContentBlock::reasoning("", metadata)],
+                ..Default::default()
+            }],
+            tools: Vec::new(),
+        };
+        let messages = lower_messages(&request).unwrap();
+        assert_eq!(messages[0]["content"][0]["type"], "redacted_thinking");
+        assert_eq!(messages[0]["content"][0]["data"], "opaque");
+    }
+
+    #[test]
+    fn lower_messages_merges_consecutive_same_role_messages() {
+        let request = ModelRequest {
+            model: "claude".into(),
+            system_prompt: String::new(),
+            messages: vec![
+                crate::types::AgentMessage {
+                    role: "user".into(),
+                    content: vec![ContentBlock::text("one")],
+                    ..Default::default()
+                },
+                crate::types::AgentMessage {
+                    role: "user".into(),
+                    content: vec![ContentBlock::text("two")],
+                    ..Default::default()
+                },
+            ],
+            tools: Vec::new(),
+        };
+        let messages = lower_messages(&request).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[0]["content"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn update_usage_records_cache_creation_tokens() {
+        let mut usage = Usage::default();
+        update_usage(
+            &mut usage,
+            &json!({
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_read_input_tokens": 3,
+                "cache_creation_input_tokens": 4
+            }),
+        );
+        assert_eq!(usage.prompt_tokens, 10);
+        assert_eq!(usage.completion_tokens, 5);
+        assert_eq!(usage.cache_read_tokens, Some(3));
+        assert_eq!(usage.cache_write_tokens, Some(4));
+        assert_eq!(usage.total_tokens, 15);
+    }
+
+    #[test]
+    fn map_finish_reason_covers_all_variants() {
+        assert_eq!(map_finish_reason("end_turn"), FinishReason::Stop);
+        assert_eq!(map_finish_reason("stop_sequence"), FinishReason::Stop);
+        assert_eq!(map_finish_reason("tool_use"), FinishReason::ToolCalls);
+        assert_eq!(map_finish_reason("max_tokens"), FinishReason::Length);
+        assert_eq!(map_finish_reason("pause_turn"), FinishReason::Incomplete);
+        assert_eq!(map_finish_reason("refusal"), FinishReason::Refusal);
+        assert_eq!(
+            map_finish_reason("weird"),
+            FinishReason::Unknown("weird".into())
+        );
+    }
+
+    #[test]
+    fn anthropic_effort_maps_levels() {
+        assert_eq!(anthropic_effort("minimal"), "low");
+        assert_eq!(anthropic_effort("low"), "low");
+        assert_eq!(anthropic_effort("medium"), "medium");
+        assert_eq!(anthropic_effort("xhigh"), "max");
+        assert_eq!(anthropic_effort("whatever"), "high");
     }
 }

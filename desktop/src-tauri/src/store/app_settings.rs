@@ -271,6 +271,24 @@ mod tests {
     }
 
     #[test]
+    fn update_records_false_dismissed_flags() {
+        let (_home, conn) = guarded_conn("settings_dismissed_false");
+        drop(conn);
+        let updated = update_app_settings(UpdateAppSettingsInput {
+            approval_tier: None,
+            hidden_models: None,
+            show_thinking: None,
+            auto_upgrade_skills: None,
+            auto_connect_remote: None,
+            skill_guide_dismissed: Some(false),
+            skill_intro_dismissed: Some(false),
+        })
+        .expect("update");
+        assert!(!updated.skill_guide_dismissed);
+        assert!(!updated.skill_intro_dismissed);
+    }
+
+    #[test]
     fn normalize_tier_keeps_known_values() {
         for tier in ["off", "sandbox", "manual"] {
             assert_eq!(normalize_tier(tier), tier);

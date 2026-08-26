@@ -521,6 +521,164 @@ fn delete_provider_rejects_builtin_and_reports_storage_errors() {
 }
 
 #[test]
+fn list_providers_reports_builtin_and_custom_providers() {
+    let home = TestHome::new();
+    let state = make_app_state();
+
+    // Pick a real builtin provider id so the baseUrl-override branch of the
+    // builtin loop (and its `override_url.unwrap_or(...)` fallback) is hit.
+    let builtin_id = {
+        let registry = state.model_registry.read();
+        registry
+            .builtin_provider_summaries()
+            .keys()
+            .next()
+            .expect("builtin catalog is never empty")
+            .clone()
+    };
+    // A second builtin id, this time shadowed by a full custom config (name +
+    // api) so the builtin loop hits the `custom_ids.contains(..) => continue`
+    // arm and the entry shows up in the custom list instead.
+    let shadow_id = {
+        let registry = state.model_registry.read();
+        let mut ids: Vec<String> = registry
+            .builtin_provider_summaries()
+            .keys()
+            .cloned()
+            .collect();
+        ids.sort();
+        ids.into_iter()
+            .find(|id| *id != builtin_id)
+            .expect("catalog has multiple builtin providers")
+    };
+
+    // models.json: a full custom provider (name/api/models), an api-only
+    // provider (name falls back to id), an override-only provider (baseUrl
+    // only — filtered out of both custom_ids and the custom list), a
+    // baseUrl override for a builtin id, and a full custom config that
+    // shadows a second builtin id.
+    std::fs::create_dir_all(home.models_path().parent().unwrap()).unwrap();
+    std::fs::write(
+        home.models_path(),
+        serde_json::json!({
+            "providers": {
+                "myprov": {
+                    "name": "My Provider",
+                    "api": "anthropic",
+                    "baseUrl": "https://api.example.com",
+                    "models": [
+                        {"id": "m1", "name": "Model One", "modalities": ["text"]},
+                        {"id": "m2", "modalities": ["text", "image"]}
+                    ]
+                },
+                "noname": {
+                    "api": "openai-completions",
+                    "models": [{"id": "n1", "modalities": ["text"]}]
+                },
+                "override-only": {
+                    "baseUrl": "https://override.example.com"
+                },
+                (builtin_id.clone()): {
+                    "baseUrl": "https://custom-builtin.example.com"
+                },
+                (shadow_id.clone()): {
+                    "name": "Shadowed Builtin",
+                    "api": "openai-completions"
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // auth.json: a key for myprov (has_key true) and a keyless entry for
+    // noname (has_key false).
+    std::fs::create_dir_all(home.auth_path().parent().unwrap()).unwrap();
+    std::fs::write(
+        home.auth_path(),
+        serde_json::json!({
+            "myprov": {"type": "api_key", "key": "sk-key"},
+            "noname": {"type": "api_key"}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let resp = parse_response(&handle_command_internal(&state, make_cmd("list_providers")));
+    assert_eq!(resp["success"], true);
+
+    let builtin = resp["data"]["builtin"].as_array().unwrap();
+    let custom = resp["data"]["custom"].as_array().unwrap();
+
+    // builtin: future first, then the overridden builtin provider.
+    assert_eq!(builtin[0]["id"], "future");
+    let overridden = builtin
+        .iter()
+        .find(|p| p["id"] == builtin_id)
+        .expect("overridden builtin present");
+    assert_eq!(overridden["baseUrl"], "https://custom-builtin.example.com");
+    assert_eq!(overridden["hasApiKey"], false);
+    // The shadowed builtin id is skipped from the builtin list (custom_ids
+    // collision) and surfaces as a custom provider instead.
+    assert!(builtin.iter().all(|p| p["id"] != shadow_id));
+
+    // custom: myprov, noname and the shadowed builtin (sorted by id);
+    // override-only filtered out.
+    let ids: Vec<&str> = custom.iter().map(|p| p["id"].as_str().unwrap()).collect();
+    let mut expected = vec!["myprov", "noname", shadow_id.as_str()];
+    expected.sort();
+    assert_eq!(ids, expected);
+    let shadowed = custom
+        .iter()
+        .find(|p| p["id"] == shadow_id)
+        .expect("shadowed builtin present in custom list");
+    assert_eq!(shadowed["name"], "Shadowed Builtin");
+
+    let myprov = custom.iter().find(|p| p["id"] == "myprov").unwrap();
+    assert_eq!(myprov["name"], "My Provider");
+    assert_eq!(myprov["hasApiKey"], true);
+    let myprov_models = myprov["models"].as_array().unwrap();
+    assert_eq!(myprov_models.len(), 2);
+    let m1 = myprov_models.iter().find(|m| m["id"] == "m1").unwrap();
+    assert_eq!(m1["name"], "Model One");
+    assert_eq!(m1["supportsImages"], false);
+    let m2 = myprov_models.iter().find(|m| m["id"] == "m2").unwrap();
+    assert_eq!(m2["name"], "m2");
+    assert_eq!(m2["supportsImages"], true);
+
+    let noname = custom.iter().find(|p| p["id"] == "noname").unwrap();
+    assert_eq!(noname["name"], "noname");
+    assert_eq!(noname["hasApiKey"], false);
+}
+
+#[test]
+fn list_providers_reports_error_on_corrupt_documents() {
+    let home = TestHome::new();
+    let state = make_app_state();
+    std::fs::create_dir_all(home.models_path().parent().unwrap()).unwrap();
+    std::fs::write(home.models_path(), "{corrupt").unwrap();
+    let resp = parse_response(&handle_command_internal(&state, make_cmd("list_providers")));
+    assert_eq!(resp["success"], false);
+}
+
+#[test]
+fn upsert_provider_create_only_reports_created() {
+    let _home = TestHome::new();
+    let state = make_app_state();
+    let mut cmd = make_cmd("upsert_provider");
+    cmd.provider_config = Some(crate::config::providers::ProviderUpsertSpec {
+        id: "brand-new-prov".to_string(),
+        name: Some("Brand New".to_string()),
+        api: Some("openai-completions".to_string()),
+        create_only: true,
+        ..Default::default()
+    });
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true);
+    assert_eq!(resp["data"]["id"], "brand-new-prov");
+}
+
+#[test]
 fn get_commands_lists_discovered_skills() {
     let home = TestHome::new();
     let skill_dir = home.path().join(".future/agent/skills/cov-skill");

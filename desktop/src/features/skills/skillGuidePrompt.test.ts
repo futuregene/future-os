@@ -1,5 +1,15 @@
-import { describe, expect, it } from "vitest";
-import { buildCoachPrompt } from "./skillGuidePrompt";
+import { describe, expect, it, vi } from "vitest";
+import { getLanguage } from "../../i18n";
+import { getSkillGuide } from "../../integrations/skills/skillsClient";
+import { buildCoachPrompt, fetchCoachPrompt, fetchSkillManualUrl } from "./skillGuidePrompt";
+
+vi.mock("../../i18n", () => ({
+  getLanguage: vi.fn(),
+}));
+
+vi.mock("../../integrations/skills/skillsClient", () => ({
+  getSkillGuide: vi.fn(),
+}));
 
 function guide(overrides: {
   coachZh?: string;
@@ -51,5 +61,29 @@ describe("buildCoachPrompt", () => {
   it("returns an empty string when both prompts are empty", () => {
     const prompt = buildCoachPrompt(guide({ coachZh: "", coachEn: "" }), "zh");
     expect(prompt).toBe("");
+  });
+});
+
+describe("fetchCoachPrompt", () => {
+  it("fetches the guide and builds the coach prompt for the UI language", async () => {
+    vi.mocked(getLanguage).mockReturnValue("zh");
+    vi.mocked(getSkillGuide).mockResolvedValue(guide());
+    await expect(fetchCoachPrompt()).resolves.toBe("你是教练，参考手册：[技能使用手册](https://example.com/manual-zh)");
+    expect(getSkillGuide).toHaveBeenCalledTimes(1);
+    expect(getLanguage).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("fetchSkillManualUrl", () => {
+  it("returns the manual URL for the UI language when it is a web URL", async () => {
+    vi.mocked(getLanguage).mockReturnValue("en");
+    vi.mocked(getSkillGuide).mockResolvedValue(guide());
+    await expect(fetchSkillManualUrl()).resolves.toBe("https://example.com/manual-en");
+  });
+
+  it("returns null when the manual is not a web URL", async () => {
+    vi.mocked(getLanguage).mockReturnValue("zh");
+    vi.mocked(getSkillGuide).mockResolvedValue(guide({ manualZh: "技能" }));
+    await expect(fetchSkillManualUrl()).resolves.toBeNull();
   });
 });

@@ -2,6 +2,7 @@ import type { AgentMessage } from "@future-os/thread-projection";
 import type { StoredRun, StoredRunEvent } from "../../integrations/storage/threadStore";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { emitFutureEvent } from "../../lib/futureEvents";
 import {
   applyRecoveredEvents,
   applyRunMetadata,
@@ -167,6 +168,15 @@ describe("buildStreamingPreview", () => {
     listRunEventsSince.mockResolvedValue(textEvents("r-b2", "content"));
     const bubble = await buildStreamingPreview("r-b2", 500);
     expect(bubble).toMatchObject({ id: "stream_r-b2", content: "content", status: "streaming" });
+  });
+
+  it("emits file-tree-refresh when tool activity appears", async () => {
+    vi.mocked(emitFutureEvent).mockClear();
+    listRunEventsSince.mockResolvedValue(runEvents("r-tool", [
+      ["toolcall_start", { tool_name: "read", tool_args: { path: "/a.ts" } }],
+    ]));
+    await buildStreamingPreview("r-tool");
+    expect(emitFutureEvent).toHaveBeenCalledWith("file-tree-refresh", undefined);
   });
 });
 
