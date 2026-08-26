@@ -1995,6 +1995,7 @@ mod tests {
         }
         let provider = MinimalProvider;
         provider.set_api_key("ignored");
+        provider.set_base_url("https://x.test");
         provider.update_thinking("high", 1234);
         // The canonical model stream implementation is callable too.
         let mut stream = provider
@@ -2096,5 +2097,56 @@ mod tests {
             .unwrap();
         let result = runtime.block_on((tool.handler)(serde_json::json!({})));
         assert_eq!(result.unwrap(), "ok");
+    }
+
+    #[test]
+    fn deserialize_tool_message_wraps_text_in_tool_result() {
+        let msg: AgentMessage = serde_json::from_value(serde_json::json!({
+            "role": "tool",
+            "content": [{"type": "text", "text": "result"}],
+            "tool_call_id": "tc1"
+        }))
+        .unwrap();
+        assert!(msg.content.iter().any(|b| matches!(
+            b,
+            ContentBlock::ToolResult { content, .. } if content == "result"
+        )));
+    }
+
+    #[test]
+    fn deserialize_tool_message_with_non_text_block_extracts_empty_text() {
+        let msg: AgentMessage = serde_json::from_value(serde_json::json!({
+            "role": "tool",
+            "content": [{"type": "reasoning", "text": "r"}],
+            "tool_call_id": "tc1"
+        }))
+        .unwrap();
+        assert!(msg.content.iter().any(|b| matches!(
+            b,
+            ContentBlock::ToolResult { content, .. } if content.is_empty()
+        )));
+    }
+
+    #[test]
+    fn convert_from_llm_tool_role_wraps_text_into_tool_result() {
+        let msgs = vec![Message {
+            role: "tool".to_string(),
+            content: Some(serde_json::json!([
+                {"type": "text", "text": "result text"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}}
+            ])),
+            tool_call_id: "tc1".to_string(),
+            ..Default::default()
+        }];
+        let agent_msgs = convert_from_llm(msgs);
+        let result = agent_msgs[0]
+            .content
+            .iter()
+            .find_map(|b| match b {
+                ContentBlock::ToolResult { content, .. } => Some(content.as_str()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(result, "result text");
     }
 }
