@@ -356,6 +356,54 @@ mod tests {
     }
 
     #[test]
+    fn open_user_todo_owns_the_frontier() {
+        let mut g = Goal::new("g", "o", "/tmp");
+        g.add(Todo::user_gate("G1", "approve this?", &[]));
+        let d = select_replan_rule(&g);
+        assert_eq!(d.rule, RULE_OPEN_USER_TODO);
+        assert!(!d.derives_obligation);
+        assert!(d.reason.contains("blocking user work"));
+    }
+
+    #[test]
+    fn advancement_remains_on_a_blocked_frontier() {
+        let mut g = Goal::new("g", "o", "/tmp");
+        // An open EXTERNAL blocker (not a user gate) gates the advancement, so
+        // blocking_user_open_count stays 0; the open monitor keeps
+        // monitor_count > 0. runnable == 0 → monitor_only_lane, and the
+        // open-but-blocked advancement fires RULE_ADVANCEMENT_REMAINS.
+        g.add(Todo::blocker("B1", "wait for authority", &["A1"]));
+        g.add(Todo::advancement("A1", "work").blocking(&["B1"]));
+        g.add(Todo::monitor("M1", "watch", Duration::from_secs(60)));
+        let d = select_replan_rule(&g);
+        assert_eq!(d.rule, RULE_ADVANCEMENT_REMAINS);
+        assert!(!d.derives_obligation);
+        assert!(d.reason.contains("advancement work remains"));
+    }
+
+    #[test]
+    fn unknown_only_rule_set_falls_back_to_default_order() {
+        // `effective_rule_ids` folds a set of only-unknown ids back to the
+        // default order before `select_replan_rule` is reached; drive the
+        // in-function fallback directly with a known-but-non-matching rule.
+        let facts = ReplanFacts {
+            existing_replan_required: false,
+            blocking_user_open_count: 0,
+            succession_gap_count: 0,
+            acceptance_gap_count: 0,
+            selectable_frontier_advancement: 0,
+            advancement_open_count: 0,
+            monitor_count: 0,
+            monitor_no_change_streak_triggered: false,
+            monitor_only_lane: true,
+        };
+        // RULE_OPEN_USER_TODO does not match (no blocking user work); the
+        // default-order loop resolves to NO_OPEN_MONITOR (monitor_count == 0).
+        let d = select_replan_rule_with_set(&facts, &[RULE_OPEN_USER_TODO.to_string()]);
+        assert_eq!(d.rule, RULE_NO_OPEN_MONITOR);
+    }
+
+    #[test]
     fn custom_rule_set_respects_declared_order() {
         let mut g = Goal::new("g", "o", "/tmp");
         g.add(Todo::advancement("T1", "work"));
