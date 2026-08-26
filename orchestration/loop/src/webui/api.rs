@@ -881,4 +881,196 @@ mod tests {
         assert_eq!(b.tokens_in, 5);
         assert!((b.cost - 0.0005).abs() < 1e-9);
     }
+
+    // ── projection fixtures ────────────────────────────────────────────────
+
+    fn rec(
+        todo_id: &str,
+        run_id: &str,
+        recorded_at: u64,
+        kind: FailureKind,
+        cost: f64,
+    ) -> RunRecord {
+        RunRecord {
+            turn: 1,
+            todo_id: todo_id.to_string(),
+            run_id: run_id.to_string(),
+            terminal_state: "completed".to_string(),
+            error: None,
+            tokens_in_delta: 10,
+            tokens_out_delta: 5,
+            cost_delta: cost,
+            tools: vec![],
+            evidence: String::new(),
+            recorded_at,
+            spend_source: None,
+            validation: None,
+            failure_kind: Some(kind),
+            truncation: None,
+        }
+    }
+
+    fn open_store_with_goal() -> (Store, tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().to_string_lossy()).unwrap();
+        let mut goal = Goal::new("g1", "objective", "/tmp");
+        goal.add(Todo::advancement("T1", "work"));
+        let mut done = Todo::advancement("T2", "done work");
+        done.complete(true, vec![]);
+        goal.add(done);
+        goal.add(Todo::user_gate("G1", "approve?", &["T3"]));
+        goal.add(Todo::monitor(
+            "M1",
+            "watch",
+            std::time::Duration::from_secs(60),
+        ));
+        goal.register_agent("a1", vec!["shell".to_string()]);
+        goal.scheduler_heartbeats.insert("a1".to_string(), 100);
+        let ts = goal.created_at;
+        store.register(&goal).unwrap();
+        store
+            .append(crate::store::Event::GoalStarted {
+                goal_id: "g1".into(),
+                ts,
+            })
+            .unwrap();
+        for t in [
+            Todo::advancement("T1", "work"),
+            {
+                let mut d = Todo::advancement("T2", "done work");
+                d.complete(true, vec![]);
+                d
+            },
+            Todo::user_gate("G1", "approve?", &["T3"]),
+            Todo::monitor("M1", "watch", std::time::Duration::from_secs(60)),
+        ] {
+            store
+                .append(crate::store::Event::TodoAdded {
+                    goal_id: "g1".into(),
+                    todo: t,
+                    ts,
+                })
+                .unwrap();
+        }
+        store
+            .append(crate::store::Event::AgentOnboarded {
+                goal_id: "g1".into(),
+                agent_id: "a1".into(),
+                capabilities: vec!["shell".into()],
+                workspaces: vec![],
+                ts,
+            })
+            .unwrap();
+        let now = now_epoch();
+        store
+            .append_run("g1", &rec("T1", "a1-run", now, FailureKind::None, 0.5))
+            .unwrap();
+        store
+            .append_run(
+                "g1",
+                &rec("T1", "a1-run2", now, FailureKind::ScienceVerifyFailed, 0.25),
+            )
+            .unwrap();
+        store
+            .append_run(
+                "g1",
+                &rec("T1", "a1-run3", now, FailureKind::InfraRecoverable, 0.125),
+            )
+            .unwrap();
+        store
+            .append_run(
+                "g1",
+                &rec("T1", "a1-run4", now, FailureKind::HardError, 0.0625),
+            )
+            .unwrap();
+        (store, dir, "g1".to_string())
+    }
+
+    #[test]
+    fn epoch_secs_and_label_helpers() {
+        assert!(epoch_secs(None).is_none());
+        assert_eq!(epoch_secs(Some(SystemTime::UNIX_EPOCH)), Some(0));
+
+        use crate::state::TodoStatus;
+        let t = Todo::advancement("x", "x");
+        assert_eq!(class_label(&t), "advancement");
+        assert_eq!(status_label(&t), "open");
+        let mut m = Todo::monitor("m", "w", std::time::Duration::from_secs(1));
+        assert_eq!(class_label(&m), "monitor");
+        m.status = TodoStatus::Done;
+        assert_eq!(status_label(&m), "done");
+    }
+
+    #[test]
+    fn nnz_normalizes_zero() {
+        assert_eq!(nnz(0.0), 0.0);
+        assert_eq!(nnz(-0.0), 0.0);
+        assert_eq!(nnz(1.5), 1.5);
+    }
+
+    #[test]
+    fn overview_and_goals_push_project_goal() {
+        let (store, _dir, _gid) = open_store_with_goal();
+        let ov = overview(&store).unwrap();
+        assert_eq!(ov.totals.goals, 1);
+        assert_eq!(ov.totals.active, 1);
+        assert_eq!(ov.goals.len(), 1);
+        assert_eq!(ov.goals[0].goal_id, "g1");
+        assert_eq!(ov.goals[0].todos_total, 4);
+        assert_eq!(ov.goals[0].open_gates, 1);
+
+        let push = goals_push(&store).unwrap();
+        assert_eq!(push.len(), 1);
+        assert_eq!(push[0].goal_id, "g1");
+    }
+
+    #[test]
+    fn goal_detail_projects_todos_agents_spend_and_runs() {
+        let (store, _dir, gid) = open_store_with_goal();
+        let detail = goal_detail(&store, &gid).unwrap().unwrap();
+        assert_eq!(detail.goal_id, "g1");
+        assert_eq!(detail.todos.len(), 4);
+        assert_eq!(detail.agents.len(), 1);
+        assert_eq!(detail.agents[0].id, "a1");
+        assert_eq!(detail.agents[0].capabilities, vec!["shell".to_string()]);
+        assert_eq!(detail.runs.len(), 4);
+        // spend totals fold all four runs.
+        assert_eq!(detail.spend.total.runs, 4);
+        // outcomes split: one per failure kind.
+        assert_eq!(detail.spend.outcomes_7d.succeeded, 1);
+        assert_eq!(detail.spend.outcomes_7d.verify_failed, 1);
+        assert_eq!(detail.spend.outcomes_7d.infra_failed, 1);
+        assert_eq!(detail.spend.outcomes_7d.errored, 1);
+    }
+
+    #[test]
+    fn goal_detail_missing_goal_is_none() {
+        let (store, _dir, _gid) = open_store_with_goal();
+        assert!(goal_detail(&store, "nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn runs_page_and_events_page_cover_empty_and_missing() {
+        let (store, _dir, gid) = open_store_with_goal();
+        let runs = runs_page(&store, &gid, 2).unwrap().unwrap();
+        assert_eq!(runs.len(), 2, "limit truncates to the newest two");
+        assert!(runs_page(&store, "nope", 10).unwrap().is_none());
+
+        let events = events_page(&store, &gid, 10).unwrap().unwrap();
+        assert!(!events.is_empty());
+        assert!(events_page(&store, "nope", 10).unwrap().is_none());
+    }
+
+    #[test]
+    fn replay_all_skips_a_corrupt_ledger() {
+        let (store, _dir, gid) = open_store_with_goal();
+        // Truncate the ledger so replay fails → the goal is skipped.
+        let ledger = store.goal_dir(&gid).join("events.jsonl");
+        std::fs::write(&ledger, "not-json\n").unwrap();
+        assert!(replay_all(&store).is_empty());
+        // overview still returns Ok with zero goals (one corrupt goal must
+        // not blank the whole dashboard).
+        let ov = overview(&store).unwrap();
+        assert_eq!(ov.totals.goals, 0);
+    }
 }
