@@ -25,10 +25,17 @@ The agent's tool set is deliberately minimal: `read`, `write`, `edit`,
   equivalent control in other clients). Nothing writes to your filesystem or
   executes a shell command silently unless you have explicitly configured an
   auto-approve policy.
-- **Sandbox tiers.** Three levels: `off` / `manual` / macOS Seatbelt.
-  - ⚠️ **Known gap:** system-level sandboxing currently exists only on macOS
-    (Seatbelt). Windows and Linux rely on approval gating alone. Closing this
-    gap is on the roadmap — contributions welcome.
+- **Sandbox tiers.** Three levels: `off` / `manual` / `sandbox`.
+  - `off` — no approval, no sandbox; everything runs.
+  - `manual` — approval rules on; shell commands ask before running (default).
+  - `sandbox` — approval rules on; shell commands run inside the OS sandbox
+    where one is available: macOS Seatbelt, or the Windows unelevated
+    restricted-token sandbox.
+  - ⚠️ **Known gaps:** Linux has no OS-level sandbox yet and relies on approval
+    gating alone. The Windows sandbox is a first version that enforces **write
+    protection only** (shell reads and network remain open), so it is not yet
+    equivalent to macOS Seatbelt. Closing these gaps is on the roadmap —
+    contributions welcome.
 - **Channel bridge.** The IM bridge (Feishu / DingTalk) connects the same
   local agent to chat platforms. Messages you send the bot can drive the same
   approval-gated tools; treat bot configuration (app credentials, allowed

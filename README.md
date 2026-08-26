@@ -44,7 +44,7 @@
 | Category | Details |
 |---|---|
 | **Multi-Interface** | Terminal UI (TUI), desktop app (GUI), mobile apps (Android & iOS), CLI, IM bots — one agent, everywhere |
-| **Trust-First Tool Execution** | read, write, edit, shell — every call gated by your approval; sandbox tiers (off / manual / macOS Seatbelt); a lean tool set, no prompt bloat |
+| **Trust-First Tool Execution** | read, write, edit, shell — every call gated by your approval; sandbox tiers (`off` / `manual` / `sandbox`), with an OS sandbox on macOS (Seatbelt) and Windows (restricted token); a lean tool set, no prompt bloat |
 | **Model Flexibility** | 3800+ built-in models across 140+ providers ([catalog](docs/wiki/en/Models.md)); custom providers via `models.json`; scoped model lists |
 | **Loop Engineering** | Durable goals/todos/gates/monitors for long-horizon runs of 24+ hours — deterministic should-run kernel, event-sourced state, hard checks (evidence floor / acceptance contracts / verify gates), lease liveness, multi-agent ([guide](docs/loop-control-plane.md)) |
 | **Powerful Built-in Skills** | 15+ skills out of the box for everyday agent work — image read & generation, PDF/Word parsing, web search, browser control, slides, software install, and the `/future-loop` long-run goal orchestrator ([builtin](https://github.com/futuregene/future-skills/tree/main/builtin)) |
