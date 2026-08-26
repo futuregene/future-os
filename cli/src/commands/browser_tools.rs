@@ -66,6 +66,12 @@ pub fn is_browser_tool(name: &str) -> bool {
 static BROWSER_LAUNCHER_OVERRIDE: std::sync::Mutex<Option<Option<(String, String)>>> =
     std::sync::Mutex::new(None);
 
+/// Test-only record of browser child PIDs spawned by `browser_start`, so tests
+/// can reap the `fake_chrome.py` processes they launch (those `serve_forever()`
+/// fakes otherwise leak as orphans across repeated test runs).
+#[cfg(test)]
+static SPAWNED_BROWSER_PIDS: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+
 /// `findBrowserLauncher`, honoring the test override.
 fn launcher_for(executable_path: Option<&str>) -> Option<(String, String)> {
     #[cfg(test)]
@@ -188,12 +194,22 @@ async fn browser_start(args: &Map<String, Value>) -> Result<LocalToolResult, Str
     #[cfg(not(windows))]
     {
         // `spawn(..., { detached: true, stdio: "ignore" })` + `child.unref()`.
-        let _ = tokio::process::Command::new(&command)
+        let child = tokio::process::Command::new(&command)
             .args(&chrome_args)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn();
+        #[cfg(test)]
+        if let Ok(child) = &child {
+            if let Some(pid) = child.id() {
+                SPAWNED_BROWSER_PIDS.lock().unwrap().push(pid);
+            }
+        }
+        // Non-test builds intentionally detach + unref the child (matches the
+        // TS `child.unref()` semantics); the handle is otherwise unused there.
+        #[cfg(not(test))]
+        drop(child);
     }
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -1061,6 +1077,22 @@ mod tests {
         InternalTypeResult,
     };
     use crate::browser::browser_state::load_browser_config;
+
+    /// Kill every browser child PID recorded by `browser_start` on drop, so the
+    /// `fake_chrome.py` fakes launched by tests don't leak as orphan processes.
+    #[cfg(unix)]
+    struct SpawnedBrowserCleanup;
+    #[cfg(unix)]
+    impl Drop for SpawnedBrowserCleanup {
+        fn drop(&mut self) {
+            let pids = std::mem::take(&mut *SPAWNED_BROWSER_PIDS.lock().unwrap());
+            for pid in pids {
+                let _ = std::process::Command::new("kill")
+                    .arg(pid.to_string())
+                    .status();
+            }
+        }
+    }
 
     // ── MockSession ───────────────────────────────────────────────────
 
@@ -2317,6 +2349,9 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
     async fn start_launch_becomes_reachable_reports_started() {
+        // Reap the fake-chrome child this test spawns on exit (even on panic).
+        let _cleanup = SpawnedBrowserCleanup;
+        SPAWNED_BROWSER_PIDS.lock().unwrap().clear();
         let (_g, _e, dir) = isolated_home().await;
         // Fake chrome: a python script serving /json/version on the port
         // given via --remote-debugging-port.
