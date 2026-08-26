@@ -1,19 +1,17 @@
 //! Encode side of the typed-RPC wire contract: JSON payload `Value` →
 //! typed proto payload. Called at the agent's gRPC boundary to populate
-//! `RpcResponse.payload` / `StreamEvent.payload` alongside the dual-written
-//! JSON `data` string.
+//! `RpcResponse.payload` / `StreamEvent.payload`. Typed commands ride the
+//! typed `payload` alone; untyped commands keep the JSON `data` string.
 //!
 //! Defensive by contract: unknown commands, unexpected shapes, or parse
 //! failures return `None` — the client then falls back to `data`. A malformed
 //! typed payload must never reach the wire, and nothing here panics.
 
 use crate::payloads::{
-    strip_legacy_aliases, EventsSincePayload, GetStatePayload, ProjectionPayload,
-    ReplayEventPayload, SessionEntryPayload, SessionSummaryPayload, GET_STATE_ALIASES,
-    SESSION_SUMMARY_ALIASES, TERMINAL_ACK_ALIASES,
+    EventsSincePayload, GetStatePayload, ProjectionPayload, ReplayEventPayload,
+    SessionEntryPayload, SessionSummaryPayload,
 };
 use crate::proto;
-use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 /// Encode a unary response's JSON payload into its typed wire form. Returns
@@ -45,30 +43,10 @@ pub fn response_payload(command: &str, data: &Value) -> Option<proto::ResponsePa
     kind.map(|kind| proto::ResponsePayload { kind: Some(kind) })
 }
 
-/// Deserialize a (dual-casing) wire JSON value into a payload struct: drop the
-/// legacy duplicate keys first (serde rejects duplicate field names), then let
-/// the serde aliases pick up legacy-only spellings from pre-migration agents.
-fn from_wire_value<T: DeserializeOwned>(mut value: Value, aliases: &[(&str, &str)]) -> Option<T> {
-    strip_legacy_aliases(&mut value, aliases);
-    serde_json::from_value(value).ok()
-}
-
 // ── get_state ────────────────────────────────────────────────────────────────
 
 fn get_state(data: &Value) -> Option<proto::SessionState> {
-    // The wire JSON carries legacy duplicates at the top level and inside each
-    // recentTerminalAcks entry; strip both before deserializing.
-    let mut value = data.clone();
-    strip_legacy_aliases(&mut value, GET_STATE_ALIASES);
-    if let Some(acks) = value
-        .get_mut("recentTerminalAcks")
-        .and_then(Value::as_array_mut)
-    {
-        for ack in acks {
-            strip_legacy_aliases(ack, TERMINAL_ACK_ALIASES);
-        }
-    }
-    let payload: GetStatePayload = serde_json::from_value(value).ok()?;
+    let payload: GetStatePayload = serde_json::from_value(data.clone()).ok()?;
     Some(get_state_to_proto(&payload))
 }
 
@@ -243,7 +221,7 @@ fn list_sessions(data: &Value) -> Option<proto::ListSessionsResponse> {
     let rows = data.get("sessions")?.as_array()?;
     let mut sessions = Vec::with_capacity(rows.len());
     for row in rows {
-        let payload: SessionSummaryPayload = from_wire_value(row.clone(), SESSION_SUMMARY_ALIASES)?;
+        let payload: SessionSummaryPayload = serde_json::from_value(row.clone()).ok()?;
         sessions.push(session_summary_to_proto(&payload));
     }
     Some(proto::ListSessionsResponse { sessions })
