@@ -334,6 +334,41 @@ impl AgentClient {
         self.session_totals(session_id).await.is_ok()
     }
 
+    /// Session ids with an in-flight run (the agent's in-memory streaming
+    /// set). This is the authoritative "is a worker's turn actively running
+    /// right now" signal for `worker stop` / `worker list` — it never touches
+    /// disk and never hydrates a session.
+    pub async fn list_streaming_sessions(&mut self) -> Result<Vec<String>> {
+        let v = self
+            .call("list_streaming_sessions", "", Default::default())
+            .await?;
+        Ok(v["sessionIds"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// Raw `list_sessions` payload scoped to `cwd` (empty = all). Useful for
+    /// reconciling which agent sessions exist on disk and their streaming
+    /// status; returns the agent's `{sessions: [...]}` object as-is.
+    pub async fn list_sessions(&mut self, cwd: &str) -> Result<serde_json::Value> {
+        let v = self
+            .call(
+                "list_sessions",
+                "",
+                RpcCommand {
+                    cwd: cwd.to_string(),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        Ok(v)
+    }
+
     /// Subscribe to one canonical run from its beginning (atomic attach closes
     /// the prompt-ack -> subscribe loss window) and collect events until
     /// `agent_end` (or the stream closes / errors).

@@ -148,6 +148,7 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         "scope" => cmd_scope(&store, &args[1..]),
         "lane" => cmd_lane(&store, &args[1..]),
         "supervisor" => cmd_supervisor(&mut store, &args[1..]),
+        "worker" => cmd_worker(&store, &args[1..]).await,
         "task-graph" => cmd_task_graph(&store, &args[1..]),
         "attention" => cmd_attention(&store, &args[1..]),
         "inbox" => cmd_inbox(&store, &args[1..]),
@@ -201,6 +202,7 @@ const JOURNEY_ASSIGNMENTS: &[(&str, Journey)] = &[
     ("scope", Journey::Driver),
     ("lane", Journey::Driver),
     ("supervisor", Journey::Driver),
+    ("worker", Journey::Driver),
     // Setup & automation — one-time configuration
     ("models", Journey::Setup),
     ("authority", Journey::Setup),
@@ -316,6 +318,12 @@ fn build_cli_registry() -> CommandRegistry {
         "supervisor",
         "supervisor register|steer|proposal/receipt events (G-16)",
         "supervisor register|steer|propose|receipt|events --goal G ...",
+    );
+    r.command(
+        agent,
+        "worker",
+        "list/stop goal workers by agent-id (gRPC session abort — not pkill)",
+        "worker list --goal G [--format json] | worker stop --goal G [--agent-id A | --all] [--delete]",
     );
 
     let ops = r.group("ops", "operations / diagnostics");
@@ -5356,6 +5364,258 @@ fn join_ids(ids: &[String]) -> String {
     }
 }
 
+/// One worker's backing agent session, resolved from a `run_header` line in
+/// `.future/loop/runs/*.live.jsonl`. This is the loop's own, deterministic
+/// agent-id ↔ session-id tie — the source of truth for `worker stop`/`list`,
+/// never `ls -t` mtime guessing.
+#[derive(Debug, Clone, serde::Serialize)]
+struct WorkerSession {
+    agent_id: String,
+    session_id: String,
+    run_id: String,
+    todo_id: String,
+    wall_ts: u64,
+    /// Populated by `worker list` (not `stop`): whether the agent currently
+    /// has this session streaming (an in-flight run).
+    streaming: bool,
+}
+
+/// Scan `.future/loop/runs/*.live.jsonl` for `run_header` lines belonging to
+/// `goal_id`, and collapse to the most recent session per agent (max wall_ts).
+/// Pure + unit-testable; the caller injects the runs dir (the `root_path`/
+/// `runs` subdir).
+fn scan_worker_sessions(runs_dir: &std::path::Path, goal_id: &str) -> Vec<WorkerSession> {
+    let mut by_agent: std::collections::HashMap<String, WorkerSession> =
+        std::collections::HashMap::new();
+    let Ok(entries) = std::fs::read_dir(runs_dir) else {
+        return vec![];
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() || !path.to_string_lossy().ends_with(".live.jsonl") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        // The run_header is always the FIRST line.
+        let Some(first) = text.lines().next() else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(first) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) != Some("run_header") {
+            continue;
+        }
+        if v.get("goal_id").and_then(|g| g.as_str()) != Some(goal_id) {
+            continue;
+        }
+        let Some(agent_id) = v.get("agent_id").and_then(|a| a.as_str()) else {
+            continue;
+        };
+        let session_id = v.get("session_id").and_then(|s| s.as_str()).unwrap_or("");
+        let run_id = v.get("run_id").and_then(|s| s.as_str()).unwrap_or("");
+        let todo_id = v.get("todo_id").and_then(|s| s.as_str()).unwrap_or("");
+        let wall_ts = v.get("wall_ts").and_then(|n| n.as_u64()).unwrap_or(0);
+        let fresh = WorkerSession {
+            agent_id: agent_id.to_string(),
+            session_id: session_id.to_string(),
+            run_id: run_id.to_string(),
+            todo_id: todo_id.to_string(),
+            wall_ts,
+            streaming: false,
+        };
+        match by_agent.get(agent_id) {
+            Some(prev) if prev.wall_ts >= fresh.wall_ts => {}
+            _ => {
+                by_agent.insert(agent_id.to_string(), fresh);
+            }
+        }
+    }
+    let mut out: Vec<WorkerSession> = by_agent.into_values().collect();
+    out.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
+    out
+}
+
+/// `future loop worker list --goal G [--format json]` — the registered workers
+/// of a goal, each mapped to its current backing agent session and whether the
+/// agent is streaming it right now (an in-flight run). This is the loop's
+/// deterministic agent-id ↔ session-id surface (fills the gap where the
+/// supervisor completion report does not carry the session id).
+async fn cmd_worker(store: &Store, args: &[String]) -> Result<()> {
+    let sub = args.first().map(|s| s.as_str()).unwrap_or("");
+    match sub {
+        "list" => cmd_worker_list(store, &args[1..]).await,
+        "stop" | "kill" => cmd_worker_stop(store, &args[1..]).await,
+        other => bail!(
+            "unknown worker subcommand `{other}` (try `{} worker --help`)",
+            prog()
+        ),
+    }
+}
+
+async fn cmd_worker_list(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    reject_unknown_flags(args, &["--goal", "--format", "--json"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let runs_dir = std::path::PathBuf::from(store.root_path()).join("runs");
+    let mut sessions = scan_worker_sessions(&runs_dir, &goal_id);
+
+    // Cross-reference the agent's live streaming set so we can report which
+    // workers actually have an in-flight run right now.
+    let mut streaming: Vec<String> = vec![];
+    if let Ok(mut client) =
+        crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr()).await
+    {
+        streaming = client.list_streaming_sessions().await.unwrap_or_default();
+    }
+    for s in &mut sessions {
+        s.streaming = streaming.iter().any(|sid| sid == &s.session_id);
+    }
+
+    // Also surface registered agents with NO live run yet (idle / between turns).
+    let mut seen: std::collections::HashSet<String> =
+        sessions.iter().map(|s| s.agent_id.clone()).collect();
+    for aid in &goal.registered_agents {
+        if seen.insert(aid.clone()) {
+            sessions.push(WorkerSession {
+                agent_id: aid.clone(),
+                session_id: String::new(),
+                run_id: String::new(),
+                todo_id: String::new(),
+                wall_ts: 0,
+                streaming: false,
+            });
+        }
+    }
+    sessions.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
+
+    if wants_json(args) {
+        println!("{}", serde_json::to_string_pretty(&sessions)?);
+        return Ok(());
+    }
+    println!("workers for {goal_id}:");
+    println!(
+        "  {:<16} {:<9} {:<40} {:<22} run_id",
+        "agent_id", "status", "session_id", "todo_id"
+    );
+    for s in &sessions {
+        let status = if s.streaming {
+            "running"
+        } else if s.session_id.is_empty() {
+            "idle"
+        } else {
+            "ended"
+        };
+        let sid = if s.session_id.is_empty() {
+            "-".to_string()
+        } else {
+            s.session_id.clone()
+        };
+        let tid = if s.todo_id.is_empty() {
+            "-".to_string()
+        } else {
+            s.todo_id.clone()
+        };
+        let rid = if s.run_id.is_empty() {
+            "-".to_string()
+        } else {
+            s.run_id.clone()
+        };
+        println!(
+            "  {:<16} {:<9} {:<40} {:<22} {}",
+            s.agent_id, status, sid, tid, rid
+        );
+    }
+    Ok(())
+}
+
+/// `future loop worker stop --goal G [--agent-id A | --all] [--delete]` — kill
+/// a worker's in-flight run by aborting its backing agent session over gRPC
+/// (NOT `pkill`). `abort` requests cooperative cancellation of the active run,
+/// which makes the agent emit `agent_end(state=cancelled)` and the worker's
+/// `run` client exit cleanly. With `--delete`, the session is also reclaimed
+/// after the abort. `--all` stops every worker with a live run for this goal.
+async fn cmd_worker_stop(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut agent_id = None;
+    let mut all = false;
+    let mut delete = false;
+    reject_unknown_flags(args, &["--goal", "--agent-id", "--all", "--delete"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        } else if k == "--all" {
+            all = true;
+        } else if k == "--delete" {
+            delete = true;
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    if !all && agent_id.is_none() {
+        bail!("specify --agent-id A (one worker) or --all (every worker)");
+    }
+    let _goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let runs_dir = std::path::PathBuf::from(store.root_path()).join("runs");
+    let sessions = scan_worker_sessions(&runs_dir, &goal_id);
+
+    // Select targets: the named agent, or every worker with a live session.
+    let targets: Vec<WorkerSession> = match agent_id.as_deref() {
+        Some(a) => sessions
+            .iter()
+            .filter(|s| s.agent_id == a)
+            .cloned()
+            .collect(),
+        None => sessions.clone(),
+    };
+    if targets.is_empty() {
+        println!(
+            "no live worker session(s) found for {} — nothing to stop (workers may already be idle)",
+            goal_id
+        );
+        return Ok(());
+    }
+
+    let mut client =
+        crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr()).await?;
+    for t in &targets {
+        match client.abort(&t.session_id).await {
+            Ok(()) => {
+                println!(
+                    "✗ aborted agent session {} (agent {} / todo {})",
+                    t.session_id, t.agent_id, t.todo_id
+                );
+            }
+            Err(e) => {
+                println!(
+                    "⚠ abort failed for agent {} (session {}): {}",
+                    t.agent_id, t.session_id, e
+                );
+            }
+        }
+        if delete && !t.session_id.is_empty() {
+            match client.delete_session(&t.session_id).await {
+                Ok(()) => println!("  ↦ deleted session {}", t.session_id),
+                Err(e) => println!("  ⚠ delete failed for {}: {}", t.session_id, e),
+            }
+        }
+    }
+    Ok(())
+}
+
 /// `loopx scope --goal G --agent-id A [--exclude X]` — the identity-scoped
 /// frontier. P3 acceptance: two agents under one goal each hold a frontier
 /// that never crosses into the other's claimed slices.
@@ -8881,5 +9141,64 @@ mod todo_verify_hint_tests {
                 "{text:?} should not look like a code todo"
             );
         }
+    }
+
+    #[test]
+    fn scan_worker_sessions_parses_run_headers_and_keeps_latest_per_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let runs = dir.path().join("runs");
+        std::fs::create_dir_all(&runs).unwrap();
+
+        let header = |sid: &str, agent: &str, ts: u64| {
+            format!(
+                "{{\"type\":\"run_header\",\"idx\":0,\"wall_ts\":{ts},\"run_id\":\"r-{sid}\",\"session_id\":\"{sid}\",\"agent_id\":\"{agent}\",\"todo_id\":\"todo-{agent}\",\"goal_id\":\"g1\"}}\n"
+            )
+        };
+        // Two runs for worker-a (the later ts wins), one for worker-b, one foreign goal.
+        std::fs::write(
+            runs.join("ra1.live.jsonl"),
+            header("sess-a1", "worker-a", 100),
+        )
+        .unwrap();
+        std::fs::write(
+            runs.join("ra2.live.jsonl"),
+            header("sess-a2", "worker-a", 200),
+        )
+        .unwrap();
+        std::fs::write(
+            runs.join("rb.live.jsonl"),
+            header("sess-b", "worker-b", 150),
+        )
+        .unwrap();
+        std::fs::write(
+            runs.join("foreign.live.jsonl"),
+            header("sess-f", "worker-f", 999),
+        )
+        .unwrap();
+        // Non-run_header first line must be skipped.
+        std::fs::write(runs.join("noise.live.jsonl"), "{\"type\":\"tool_start\"}\n").unwrap();
+
+        // Rewrite the foreign goal's header with goal_id g2 so it is excluded.
+        let foreign = "{\"type\":\"run_header\",\"wall_ts\":999,\"run_id\":\"r-f\",\"session_id\":\"sess-f\",\"agent_id\":\"worker-f\",\"todo_id\":\"t-f\",\"goal_id\":\"g2\"}\n"
+            .to_string();
+        std::fs::write(runs.join("foreign.live.jsonl"), foreign).unwrap();
+
+        let sessions = super::scan_worker_sessions(&runs, "g1");
+        let by_agent: std::collections::HashMap<&str, &str> = sessions
+            .iter()
+            .map(|s| (s.agent_id.as_str(), s.session_id.as_str()))
+            .collect();
+        assert_eq!(
+            by_agent.len(),
+            2,
+            "foreign goal and noise must be excluded: {sessions:?}"
+        );
+        assert_eq!(
+            by_agent.get("worker-a"),
+            Some(&"sess-a2"),
+            "latest run must win"
+        );
+        assert_eq!(by_agent.get("worker-b"), Some(&"sess-b"));
+        assert!(!by_agent.contains_key("worker-f"));
     }
 }
