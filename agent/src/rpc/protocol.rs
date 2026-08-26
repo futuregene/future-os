@@ -208,6 +208,13 @@ impl RpcResponse {
 /// is effectively disconnected and should reconnect.
 const MAX_RUN_EVENTS: usize = 2_000;
 
+/// Live-subscriber broadcast ring capacity. Sized for high-reasoning model
+/// bursts (measured ~3.4k `thinking_delta` events/sec at xhigh), not the
+/// nominal ~15-30 events/sec of a normal turn. A receiver falling further
+/// than this behind gets `RecvError::Lagged`, which the gRPC layer surfaces
+/// as a `DataLoss` "event stream gap".
+pub const BROADCAST_RING_CAPACITY: usize = 4_096;
+
 struct RunState {
     run_id: String,
     epoch: i64,
@@ -275,11 +282,8 @@ pub struct SseBroadcaster {
 
 impl SseBroadcaster {
     pub fn new() -> Self {
-        // 256 slots is enough — measured rate is ~15-30 events/sec during
-        // streaming, so 256 slots tolerates ~10s of client lag.  A client
-        // behind by more than 256 events is effectively disconnected and
-        // should resync via `events_since` anyway.
-        let (tx, _) = broadcast::channel(256);
+        // Ring sized for high-reasoning model bursts — see BROADCAST_RING_CAPACITY.
+        let (tx, _) = broadcast::channel(BROADCAST_RING_CAPACITY);
         Self {
             tx,
             run: std::sync::Arc::new(parking_lot::Mutex::new(RunState {

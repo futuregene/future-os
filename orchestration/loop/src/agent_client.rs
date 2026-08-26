@@ -488,7 +488,25 @@ async fn consume_run_stream(
     live_log: Option<&std::path::Path>,
     progress: Option<&TurnProgressTracker>,
 ) -> StreamOutcome {
+    use std::io::Write;
     use tokio_stream::StreamExt;
+    // One buffered writer for the whole subscription. The previous code
+    // opened + appended + closed the live-log file once per event; a
+    // thinking-heavy turn emits tens of thousands of deltas, so that path
+    // cost ~50k open/close syscalls and starved the event drain — which then
+    // lagged the agent's bounded broadcast ring and died with `DataLoss`
+    // ("event stream gap"). Reusing a single buffered handle keeps the drain
+    // ahead of the event rate. Best-effort: a failed open degrades to no-tee
+    // (the live log is observational, not load-bearing).
+    let mut live_writer: Option<std::io::BufWriter<std::fs::File>> = live_log
+        .and_then(|path| {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .ok()
+        })
+        .map(std::io::BufWriter::new);
     let mut last_idx: i64 = -1;
     while let Some(ev) = stream.next().await {
         let ev = match ev {
@@ -506,7 +524,7 @@ async fn consume_run_stream(
         let Some(data) = parse_data(&ev) else {
             continue;
         };
-        if let Some(path) = live_log {
+        if let Some(writer) = live_writer.as_mut() {
             let wall_ts = crate::state::now_epoch();
             let mut line = serde_json::json!({
                 "type": ev.r#type.as_str(),
@@ -526,14 +544,7 @@ async fn consume_run_stream(
                     line["usage"] = u.clone();
                 }
             }
-            let _ = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .map(|mut f| {
-                    use std::io::Write;
-                    let _ = writeln!(f, "{}", line);
-                });
+            let _ = writeln!(writer, "{}", line);
         }
         // O3: fold tool_start into the progress tracker (write-class
         // starts reset the idle clock; all starts count).
@@ -586,6 +597,9 @@ async fn consume_run_stream(
             }
             _ => {}
         }
+    }
+    if let Some(mut writer) = live_writer {
+        let _ = writer.flush();
     }
     StreamOutcome::Closed
 }

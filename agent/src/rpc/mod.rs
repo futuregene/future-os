@@ -19,7 +19,7 @@ use std::sync::{Arc, LazyLock};
 
 pub use approval::{ApprovalDecision, ApprovalDecisionStatus, ApprovalGate};
 pub use commands::handle_command_internal;
-pub use protocol::{RpcCommand, RpcResponse, SseBroadcaster, SseEvent};
+pub use protocol::{RpcCommand, RpcResponse, SseBroadcaster, SseEvent, BROADCAST_RING_CAPACITY};
 pub use session::ServerSession;
 
 /// Provider/auth configuration is process-wide Agent state, not chat state.
