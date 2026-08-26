@@ -45,6 +45,8 @@ export function splitStreamingMarkdown(raw: string, live: boolean): StreamingMar
     const start = index === 0 ? 0 : starts[index]!;
     const end = starts[index + 1] ?? raw.length;
     if (end <= start)
+      /* v8 ignore next -- remark emits strictly increasing, in-range top-level
+         offsets, so a non-positive-length block never materializes */
       continue;
     blocks.push({
       content: raw.slice(start, end),

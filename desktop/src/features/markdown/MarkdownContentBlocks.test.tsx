@@ -187,6 +187,29 @@ describe("markdownContent reference resolution", () => {
     cleanup();
   });
 
+  it("falls back to a chip when a resolved local image fails to load", async () => {
+    resolveReferencesMock.mockResolvedValue([{
+      targetType: "file",
+      targetId: "assets/pic.png",
+      status: "resolved",
+      data: { path: "/w/assets/pic.png", name: "pic.png", insideWorkspace: true, relativePath: "assets/pic.png" },
+    }]);
+    const { container, cleanup } = mount(createElement(MarkdownContent, {
+      content: "![diagram](assets/pic.png)",
+      workspaceId: "w-local-image-fail",
+    }));
+    await flushStore();
+    await flushAsync();
+    const img = container.querySelector("img");
+    expect(img).toBeTruthy();
+    act(() => {
+      img!.dispatchEvent(new Event("error"));
+    });
+    await flushAsync();
+    expect(container.querySelector("img")).toBeNull();
+    cleanup();
+  });
+
   it("renders a local Markdown image relative to the previewed file", async () => {
     resolvePreviewLinkMock.mockResolvedValue({ path: "/w/assets/pic.png", name: "pic.png" });
     const { container, cleanup } = mount(createElement(MarkdownContent, {
