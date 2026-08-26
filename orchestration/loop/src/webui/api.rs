@@ -1180,4 +1180,151 @@ mod tests {
         let ov = overview(&store).unwrap();
         assert_eq!(ov.totals.goals, 0);
     }
+
+    #[test]
+    fn spend_view_cutoff_boundaries_cover_old_runs() {
+        let (store, _dir, gid) = open_store_with_goal();
+        // A run older than the 7-day window folds into `total` only; the
+        // `recorded_at >= cutoff_7d` false branch (the `}` on the if) is the
+        // otherwise-unreachable skip edge when every run is fresh.
+        let old = now_epoch().saturating_sub(8 * 24 * 3600);
+        store
+            .append_run(&gid, &rec("T1", "old-run", old, FailureKind::None, 0.1))
+            .unwrap();
+        let detail = goal_detail(&store, &gid).unwrap().unwrap();
+        assert_eq!(detail.spend.total.runs, 5);
+        assert_eq!(detail.spend.runs_7d.runs, 4);
+        assert_eq!(detail.spend.runs_24h.runs, 4);
+        // The old run is excluded from the 7d outcomes split.
+        assert_eq!(detail.spend.outcomes_7d.succeeded, 1);
+    }
+
+    #[test]
+    fn overview_ranks_and_totals_across_goal_states() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().to_string_lossy()).unwrap();
+
+        fn register(store: &mut Store, goal: &Goal, todos: Vec<Todo>) {
+            let ts = goal.created_at;
+            store.register(goal).unwrap();
+            store
+                .append(crate::store::Event::GoalStarted {
+                    goal_id: goal.goal_id.clone(),
+                    ts,
+                })
+                .unwrap();
+            for t in todos {
+                store
+                    .append(crate::store::Event::TodoAdded {
+                        goal_id: goal.goal_id.clone(),
+                        todo: t,
+                        ts,
+                    })
+                    .unwrap();
+            }
+        }
+
+        // 1. Cancelled → rank 3 + totals.cancelled.
+        let cancelled = Goal::new("g_cancel", "cancelled obj", "/tmp");
+        register(&mut store, &cancelled, vec![]);
+        store
+            .append(crate::store::Event::GoalCancelled {
+                goal_id: "g_cancel".into(),
+                reason: "test".into(),
+                ts: cancelled.created_at,
+            })
+            .unwrap();
+
+        // 2. Terminal (single validated-complete todo) → rank 3 + totals.terminal.
+        let mut terminal = Goal::new("g_term", "terminal obj", "/tmp");
+        let mut done = Todo::advancement("T1", "done");
+        done.complete(true, vec![]);
+        terminal.add(done.clone());
+        register(&mut store, &terminal, vec![done]);
+
+        // 3. Open user gate → rank 0.
+        let mut gate = Goal::new("g_gate", "gate obj", "/tmp");
+        let g = Todo::user_gate("G1", "approve?", &["T3"]);
+        gate.add(g.clone());
+        register(&mut store, &gate, vec![g]);
+
+        // 4. Liveness breach without a gate → severity "high" → rank 1.
+        let mut live = Goal::new("g_live", "live obj", "/tmp");
+        let open = Todo::advancement("T1", "work");
+        live.add(open.clone());
+        register(&mut store, &live, vec![open]);
+        store
+            .append(crate::store::Event::AutomationLivenessAlert {
+                goal_id: "g_live".into(),
+                agent_id: "stuck".into(),
+                elapsed_secs: 100,
+                threshold_secs: 60,
+                consecutive: 1,
+                ts: 200,
+            })
+            .unwrap();
+
+        // 5. Plain open advancement → severity "action" → rank 2.
+        let mut plain = Goal::new("g_plain", "plain obj", "/tmp");
+        let t = Todo::advancement("T1", "work");
+        plain.add(t.clone());
+        register(&mut store, &plain, vec![t]);
+
+        let ov = overview(&store).unwrap();
+        assert_eq!(ov.totals.goals, 5);
+        assert_eq!(ov.totals.cancelled, 1);
+        assert_eq!(ov.totals.terminal, 1);
+        assert_eq!(ov.totals.active, 3);
+
+        // Triage rank: gate(0) < high(1) < action(2) < terminal/cancelled(3).
+        assert_eq!(ov.goals[0].goal_id, "g_gate");
+        assert_eq!(ov.goals[1].goal_id, "g_live");
+        assert_eq!(ov.goals[2].goal_id, "g_plain");
+        let tail: Vec<&str> = ov.goals[3..].iter().map(|c| c.goal_id.as_str()).collect();
+        assert!(tail.contains(&"g_term") && tail.contains(&"g_cancel"));
+    }
+
+    #[test]
+    fn scan_active_runs_edge_case_lines() {
+        let root = tempfile::tempdir().unwrap();
+        let p = root.path();
+        let runs = p.join("runs");
+        std::fs::create_dir_all(&runs).unwrap();
+
+        // A directory with a `.live.jsonl` name → read_to_string fails (649).
+        std::fs::create_dir(runs.join("dir.live.jsonl")).unwrap();
+
+        // Valid JSON but no `type` field → skipped (667).
+        std::fs::write(runs.join("notype.live.jsonl"), b"{\"foo\":1}\n").unwrap();
+
+        // Header without `wall_ts` → the wall_ts if-let else branch (674).
+        std::fs::write(
+            runs.join("nowallts.live.jsonl"),
+            b"{\"type\":\"run_header\",\"goal_id\":\"g1\",\"run_id\":\"r1\"}\n",
+        )
+        .unwrap();
+
+        // `usage` line without a `usage` object (708) + unknown type arm (713).
+        std::fs::write(
+            runs.join("misc.live.jsonl"),
+            concat!(
+                "{\"type\":\"run_header\",\"goal_id\":\"g1\",\"run_id\":\"r2\",\"wall_ts\":1}\n",
+                "{\"type\":\"usage\",\"wall_ts\":2}\n",
+                "{\"type\":\"mystery\",\"wall_ts\":3}\n",
+            ),
+        )
+        .unwrap();
+
+        let views = scan_active_runs(p.to_str().unwrap(), "g1");
+        let ids: Vec<&str> = views.iter().map(|v| v.run_id.as_str()).collect();
+        assert!(ids.contains(&"r1"));
+        assert!(ids.contains(&"r2"));
+        assert!(!ids.contains(&"notype") && !ids.contains(&"dir"));
+
+        // The no-wall_ts run is inactive with no timestamps.
+        let r1 = views.iter().find(|v| v.run_id == "r1").unwrap();
+        assert!(!r1.active);
+        assert_eq!(r1.started_at, None);
+        assert_eq!(r1.last_activity_at, None);
+    }
 }

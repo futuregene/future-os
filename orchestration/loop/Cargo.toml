@@ -21,7 +21,8 @@ path = "src/main.rs"
 # e.g. the unified `future` CLI) does NOT need protoc.
 future-rpc = { path = "../../packages/rpc" }
 tonic.workspace = true
-tokio.workspace = true
+# test-util: paused time (tokio::time::advance) for the webui server/SSE tests.
+tokio = { workspace = true, features = ["test-util"] }
 tokio-stream.workspace = true
 serde.workspace = true
 serde_json.workspace = true
