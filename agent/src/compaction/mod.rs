@@ -596,7 +596,17 @@ pub fn compact(
         // valid cut point so we still trim something.
         let valid = find_valid_cut_points(&messages);
         if let Some(&fallback) = valid.iter().find(|&&cp| cp > 0) {
-            return compact_from(messages, fallback, tokens_before);
+            // find_valid_cut_points lists `tool` results too, so the fallback
+            // can land on a tool message whose preceding assistant tool_calls
+            // would be cut away — leaving the compacted conversation to open
+            // with a tool result and no matching assistant (the LLM API
+            // rejects that with HTTP 400). Re-run the same adjust step as the
+            // primary path, and only cut when it resolves to a safe non-zero
+            // point; otherwise give up rather than emit an invalid prefix.
+            let fallback = adjust_cut_for_tool_context(&messages, fallback);
+            if fallback > 0 {
+                return compact_from(messages, fallback, tokens_before);
+            }
         }
         return (messages, None);
     }
@@ -1096,6 +1106,51 @@ mod tests {
         let (result, compacted) = compact(msgs.clone(), &opts);
         assert!(compacted.is_none());
         assert_eq!(result.len(), msgs.len());
+    }
+
+    #[test]
+    fn compact_fallback_never_opens_with_orphaned_tool_message() {
+        // When the primary cut point resolves to 0 (the char-based estimate
+        // is far below the API-reported tokens), the fallback branch picks
+        // the smallest non-zero valid cut point. That point can be a `tool`
+        // message (find_valid_cut_points lists tool results, but excludes the
+        // preceding assistant that owns the tool_calls). Cutting there would
+        // open the compacted conversation with a tool result and no matching
+        // assistant — which the LLM API rejects with HTTP 400. The fallback
+        // must re-run adjust_cut_for_tool_context exactly like the primary
+        // path.
+        let msgs = vec![
+            text_msg("user", "q"),
+            Message {
+                role: "assistant".to_string(),
+                content: None,
+                tool_calls: Some(vec![crate::types::ToolCall {
+                    id: "t1".to_string(),
+                    call_type: "function".to_string(),
+                    function: crate::types::ToolCallFn {
+                        name: "shell".to_string(),
+                        arguments: serde_json::json!("{}"),
+                    },
+                }]),
+                ..Default::default()
+            },
+            text_msg("tool", "result"),
+        ];
+        let opts = CompactOptions {
+            reserve_tokens: 0,
+            keep_recent_tokens: 1_000_000,
+            context_window: 1_000,
+            tokens_before: 100_000,
+        };
+        let (result, compacted) = compact(msgs, &opts);
+        assert!(compacted.is_some());
+        // [0] = compaction marker (user), [1] = assistant owning the
+        // tool_calls, [2] = tool result. Never [0]=marker, [1]=tool.
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].role, "user");
+        assert_eq!(result[1].role, "assistant");
+        assert!(result[1].tool_calls.is_some());
+        assert_eq!(result[2].role, "tool");
     }
 
     #[test]
