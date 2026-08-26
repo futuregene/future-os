@@ -111,4 +111,39 @@ mod tests {
         let error = decoder.push(&vec![b'x'; MAX_EVENT_BYTES + 1]).unwrap_err();
         assert!(error.to_string().contains("SSE event exceeded"));
     }
+
+    #[test]
+    fn rejects_invalid_utf8_in_frame() {
+        let mut decoder = SseDecoder::default();
+        let error = decoder.push(&[0xff, 0xfe, b'\n']).unwrap_err();
+        assert!(error.to_string().contains("invalid UTF-8"));
+    }
+
+    #[test]
+    fn ignores_unknown_field_names() {
+        let mut decoder = SseDecoder::default();
+        let frames = decoder.push(b"id: 42\ndata: hi\n\n").unwrap();
+        assert_eq!(
+            frames,
+            vec![SseFrame {
+                event: None,
+                data: "hi".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn finish_flushes_buffered_data_without_trailing_newline() {
+        let mut decoder = SseDecoder::default();
+        assert!(decoder.finish().unwrap().is_empty());
+        decoder.push(b"data: tail").unwrap();
+        let frames = decoder.finish().unwrap();
+        assert_eq!(
+            frames,
+            vec![SseFrame {
+                event: None,
+                data: "tail".into(),
+            }]
+        );
+    }
 }

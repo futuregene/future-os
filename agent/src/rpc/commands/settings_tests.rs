@@ -141,6 +141,19 @@ fn compact_empty_session() {
 }
 
 #[test]
+fn compact_reports_busy_loop_error() {
+    let state = make_app_state();
+    // Hold the run-configuration lock so the compaction snapshot's try_read
+    // fails — the manual /compact path must report that as a clean error.
+    let session = state.get_session("default").unwrap();
+    let agent_loop = session.read().agent_loop.clone();
+    let _guard = agent_loop.try_write().unwrap();
+    let resp = parse_response(&handle_command_internal(&state, make_cmd("compact")));
+    assert_eq!(resp["success"], false);
+    assert!(resp["error"].as_str().unwrap().contains("busy"));
+}
+
+#[test]
 fn shell_echo() {
     let state = make_app_state();
     std::fs::create_dir_all(&state.welcome_cwd).unwrap();

@@ -554,6 +554,15 @@ mod tests {
             usage: None,
         }))
         .is_none());
+
+        let (event_type, data) = project(RunEvent::Model(ModelStreamEvent::Error {
+            message: "boom".into(),
+        }));
+        assert_eq!(event_type, "error");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&data).unwrap(),
+            serde_json::json!({"type": "error", "error": "boom"})
+        );
     }
 
     // ─── build_user_message ────────────────────────────────────────────────
