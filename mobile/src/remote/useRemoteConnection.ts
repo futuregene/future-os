@@ -82,9 +82,7 @@ export function useRemoteConnection({
   const presenceStateRef = useRef<PresenceState>(INITIAL_PRESENCE_STATE);
   const lastPresenceReceiptRef = useRef(0);
   const networkAvailableRef = useRef<boolean | null>(null);
-  const refreshNetworkStateRef = useRef<() => Promise<boolean>>(
-    async () => networkAvailableRef.current !== false,
-  );
+  const refreshNetworkStateRef = useRef(async () => networkAvailableRef.current !== false);
 
   useEffect(() => {
     credentialsRef.current = credentials;

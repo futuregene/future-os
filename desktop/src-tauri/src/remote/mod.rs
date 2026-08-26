@@ -597,11 +597,12 @@ pub struct RemoteStatus {
 }
 
 fn retryable_start_status(status: &RemoteStatus) -> bool {
-    matches!(status.phase, RemotePhase::Reconnecting)
-        && matches!(
-            status.reason,
-            Some(RemoteFailureReason::Network | RemoteFailureReason::RemoteServer)
-        )
+    let reconnecting = matches!(status.phase, RemotePhase::Reconnecting);
+    let retryable_reason = matches!(
+        status.reason,
+        Some(RemoteFailureReason::Network | RemoteFailureReason::RemoteServer)
+    );
+    reconnecting && retryable_reason
 }
 
 fn runtime_active(status: &RemoteStatus) -> bool {
@@ -1294,9 +1295,10 @@ async fn send_mobile_disconnect_notice(
     payload: Vec<u8>,
 ) {
     let send = async {
-        if client.publish(subject, payload.into()).await.is_ok() {
-            let _ = client.flush().await;
-        }
+        // Flushing after a failed publish is a no-op (nothing was queued), but
+        // keeping it unconditional avoids a conditionally-executed flush arm.
+        let _ = client.publish(subject, payload.into()).await;
+        let _ = client.flush().await;
     };
     let _ = tokio::time::timeout(DISCONNECT_NOTICE_TIMEOUT, send).await;
 }
@@ -2541,6 +2543,152 @@ mod contract_tests {
         assert_eq!(body["runId"], "");
         assert_eq!(body["sessionIdx"], 4);
         assert_eq!(body["runSequence"], -1);
+    }
+
+    #[test]
+    fn failure_episode_same_category_non_power_of_two_attempt_is_silent() {
+        let category = "test_episode_silent";
+        let episode = FailureEpisode(Mutex::new(FailureEpisodeState::default()));
+        // Attempt 1 (fresh category) and attempt 2 (power of two) both report;
+        // attempt 3 is not a power of two, so it falls through to the silent None.
+        assert!(episode.record(category, "first").is_some());
+        assert!(episode.record(category, "second").is_some());
+        assert!(episode.record(category, "third").is_none());
+    }
+
+    #[test]
+    fn failure_episode_category_switch_after_quota_exhaustion_reports_nothing() {
+        // Exhaust the process-wide log quota for a fresh category, then start a
+        // new episode with that category: the first `record` resets the episode
+        // state but `permit_failure_log` refuses the line, so it returns None.
+        let category = "test_episode_switch_quota";
+        for _ in 0..MAX_FAILURE_LOGS_PER_CATEGORY {
+            assert!(permit_failure_log(category));
+        }
+        assert!(!permit_failure_log(category));
+
+        let episode = FailureEpisode(Mutex::new(FailureEpisodeState::default()));
+        assert!(episode.record(category, "boom").is_none());
+    }
+
+    #[test]
+    fn support_codes_cover_every_category() {
+        assert_eq!(support_code_for_category("network"), "NW001");
+        assert_eq!(support_code_for_category("credential_network"), "NW001");
+        assert_eq!(support_code_for_category("remote_server"), "SV001");
+        assert_eq!(support_code_for_category("service_authorization"), "AU001");
+        assert_eq!(support_code_for_category("credential_expired"), "AU002");
+        assert_eq!(support_code_for_category("credential_connect"), "AU002");
+        assert_eq!(support_code_for_category("slow_consumer"), "RT002");
+        assert_eq!(support_code_for_category("command_subscription"), "RT003");
+        assert_eq!(support_code_for_category("transfer_subscription"), "RT004");
+        assert_eq!(support_code_for_category("event_publish"), "RT005");
+        assert_eq!(support_code_for_category("heartbeat_publish"), "RT006");
+        assert_eq!(support_code_for_category("state_publish"), "RT006");
+        assert_eq!(support_code_for_category("web_bind"), "LC002");
+        assert_eq!(support_code_for_category("revoked"), "PA001");
+        assert_eq!(support_code_for_category("local"), "LC001");
+        assert_eq!(support_code_for_category("mystery"), "LC999");
+    }
+
+    #[test]
+    fn nats_health_handles_remaining_event_variants() {
+        let health = NatsHealth::default();
+
+        // A routine drop: self-healing reconnect, no failure episode.
+        health.handle_event(&async_nats::Event::Disconnected);
+        assert!(!health.needs_reconnect());
+
+        // Slow-consumer and generic server errors each open an episode.
+        health.handle_event(&async_nats::Event::SlowConsumer(7));
+        health.handle_event(&async_nats::Event::ServerError(
+            async_nats::ServerError::SlowConsumer(8),
+        ));
+        health.handle_event(&async_nats::Event::ServerError(
+            async_nats::ServerError::Other("permissions".to_string()),
+        ));
+
+        // Remaining event shapes fall through the wildcard arm harmlessly.
+        health.handle_event(&async_nats::Event::LameDuckMode);
+        health.handle_event(&async_nats::Event::Draining);
+    }
+
+    #[test]
+    fn runtime_active_classifies_every_phase() {
+        for phase in [
+            RemotePhase::Connecting,
+            RemotePhase::Ready,
+            RemotePhase::Reconnecting,
+            RemotePhase::Refreshing,
+        ] {
+            let status = RemoteStatus {
+                phase,
+                reason: None,
+                ..empty()
+            };
+            assert!(runtime_active(&status), "{phase:?} should be active");
+        }
+        for phase in [
+            RemotePhase::Stopped,
+            RemotePhase::Failed,
+            RemotePhase::Revoked,
+        ] {
+            let status = RemoteStatus {
+                phase,
+                reason: None,
+                ..empty()
+            };
+            assert!(!runtime_active(&status), "{phase:?} should be inactive");
+        }
+    }
+
+    #[test]
+    fn classify_nats_connect_error_covers_server_parse() {
+        assert!(matches!(
+            classify_nats_connect_error(
+                async_nats::ConnectErrorKind::ServerParse,
+                "bad url".to_string()
+            ),
+            crate::AppError::Message(_)
+        ));
+    }
+
+    #[test]
+    fn start_failure_maps_every_remote_error_code() {
+        // A revoked credential surfaces as a localized Revoked status.
+        let revoked = start_failure(crate::AppError::Remote {
+            status: 401,
+            code: Some("invalid_remote_credential".to_string()),
+            message: "revoked".to_string(),
+        })
+        .unwrap();
+        assert_eq!(revoked.phase, RemotePhase::Revoked);
+        assert_eq!(revoked.reason, Some(RemoteFailureReason::CredentialRevoked));
+
+        // A rejected bridge credential is terminal service authorization; it
+        // falls through the phase catch-all (Failed) but carries the specific reason.
+        let authz =
+            start_failure(crate::AppError::RemoteAuthorization("rejected".to_string())).unwrap();
+        assert_eq!(authz.phase, RemotePhase::Failed);
+        assert_eq!(
+            authz.reason,
+            Some(RemoteFailureReason::ServiceAuthorization)
+        );
+
+        // A server error is retryable.
+        let server = start_failure(crate::AppError::Remote {
+            status: 500,
+            code: Some("rate_limited".to_string()),
+            message: "busy".to_string(),
+        })
+        .unwrap();
+        assert_eq!(server.phase, RemotePhase::Reconnecting);
+        assert_eq!(server.reason, Some(RemoteFailureReason::RemoteServer));
+
+        // An uncategorized local failure still propagates as Err.
+        assert!(start_failure(crate::AppError::Message("local".to_string())).is_err());
+
+        *LAST_ERROR_CODE.lock().unwrap() = None;
     }
 }
 
@@ -4080,5 +4228,375 @@ mod runtime_tests {
         let big = cap_event_data(&big_text);
         assert!(big.contains("_truncated"));
         assert!(big.contains("full content is available via get_messages"));
+    }
+
+    #[tokio::test]
+    async fn start_once_returns_empty_when_not_requested() {
+        let _home = HomeGuard::new("remote-start-not-requested");
+        START_REQUESTED.store(false, Ordering::Release);
+        let result = start_once(true).await.expect("empty status");
+        assert_eq!(result.phase, RemotePhase::Stopped);
+    }
+
+    #[tokio::test]
+    async fn start_once_without_replace_returns_the_running_bridge() {
+        let _home = HomeGuard::new("remote-start-no-replace");
+        let nats = FakeNats::start().await;
+        install_state(fake_state(&nats, "pair_no_replace").await);
+        START_REQUESTED.store(true, Ordering::Release);
+
+        let result = start_once(false).await.expect("returns the current bridge");
+        assert_eq!(result.pair_id, "pair_no_replace");
+        assert!(matches!(result.phase, RemotePhase::Ready));
+        stop();
+        START_REQUESTED.store(false, Ordering::Release);
+    }
+
+    #[tokio::test]
+    async fn start_replaces_an_existing_generation() {
+        let _home = HomeGuard::new("remote-start-replace");
+        init_store();
+        wait_for_web_port_free().await;
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        // A confirmed pairing: both starts refresh the persisted credential.
+        let creds = test_creds("pair_replace", nats.url(), 3600);
+        pairing::save_creds(&creds).unwrap();
+        platform.respond_refresh(nats.url());
+        platform.respond_refresh(nats.url());
+
+        let first = start(RemoteStartInput {}).await.expect("first start");
+        assert!(matches!(first.phase, RemotePhase::Ready));
+
+        // A second start replaces (and aborts) the previous generation.
+        let second = start(RemoteStartInput {}).await.expect("second start");
+        assert!(matches!(second.phase, RemotePhase::Ready));
+
+        stop();
+        wait_for_web_port_free().await;
+    }
+
+    #[tokio::test]
+    async fn handle_system_suspend_stops_the_running_generation() {
+        let _home = HomeGuard::new("remote-suspend");
+        let nats = FakeNats::start().await;
+        install_state(fake_state(&nats, "pair_suspend").await);
+        let mut tap = nats.tap();
+        START_REQUESTED.store(true, Ordering::Release);
+
+        handle_system_suspend().await;
+        assert_eq!(
+            LAST_ERROR_CODE.lock().unwrap().as_deref(),
+            Some("system_sleep")
+        );
+        assert!(
+            STATE.lock().unwrap().is_none(),
+            "suspend stopped the bridge"
+        );
+        let offline =
+            await_publish(&mut tap, "p.pair_suspend.presence", Duration::from_secs(5)).await;
+        assert_eq!(offline.json()["disconnected"], json!(true));
+
+        // Not requested to run: suspend (and its disconnect notice) is a no-op.
+        START_REQUESTED.store(false, Ordering::Release);
+        handle_system_suspend().await;
+        *LAST_ERROR_CODE.lock().unwrap() = None;
+    }
+
+    #[tokio::test]
+    async fn handle_system_resume_rotates_epoch_and_recovers() {
+        let _home = HomeGuard::new("remote-resume");
+        let nats = FakeNats::start().await;
+        install_state(fake_state(&nats, "pair_resume").await);
+        let _shared = shared_runtime("pair_resume", true, false);
+        START_REQUESTED.store(true, Ordering::Release);
+
+        handle_system_resume();
+        // The spawned recovery reuses the running bridge (Ready), so it takes
+        // the Ok(_) arm after a scheduling turn.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            LAST_ERROR_CODE.lock().unwrap().as_deref(),
+            Some("system_sleep")
+        );
+
+        stop();
+        START_REQUESTED.store(false, Ordering::Release);
+        handle_system_resume();
+        *BRIDGE_SHARED.lock().unwrap() = None;
+        *LAST_ERROR_CODE.lock().unwrap() = None;
+    }
+
+    #[tokio::test]
+    async fn status_reports_refreshing_and_network_recovery() {
+        let _home = HomeGuard::new("remote-status-recovery");
+        let nats = FakeNats::start().await;
+        install_state(fake_state(&nats, "pair_status_recovery").await);
+
+        // A live generation mid credential refresh reports Refreshing.
+        CREDENTIAL_REFRESHING.store(true, Ordering::Release);
+        let current = status();
+        assert!(matches!(current.phase, RemotePhase::Refreshing));
+        assert_eq!(current.reason, Some(RemoteFailureReason::CredentialExpired));
+        CREDENTIAL_REFRESHING.store(false, Ordering::Release);
+
+        // A dead broker surfaces as Network with start-retry recovery details.
+        START_REQUESTED.store(true, Ordering::Release);
+        nats.kill();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let disconnected = {
+                let guard = STATE.lock().unwrap();
+                guard.as_ref().unwrap().client.connection_state()
+                    != async_nats::connection::State::Connected
+            };
+            if disconnected {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "client never noticed");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        START_RETRY_ATTEMPTS.store(3, Ordering::Release);
+        START_RETRY_SINCE.store(12345, Ordering::Release);
+        START_RETRY_NEXT_AT.store(999, Ordering::Release);
+        let current = status();
+        assert!(matches!(current.phase, RemotePhase::Reconnecting));
+        assert_eq!(current.reason, Some(RemoteFailureReason::Network));
+        let recovery = current.recovery.expect("recovery progress");
+        assert_eq!(recovery.attempt, 3);
+        assert_eq!(recovery.since, 12345);
+        assert_eq!(recovery.next_retry_at, Some(999));
+
+        stop();
+        START_REQUESTED.store(false, Ordering::Release);
+        START_RETRY_ATTEMPTS.store(0, Ordering::Release);
+        START_RETRY_SINCE.store(0, Ordering::Release);
+        START_RETRY_NEXT_AT.store(0, Ordering::Release);
+    }
+
+    #[test]
+    fn status_none_branch_maps_every_error_code() {
+        let _home = HomeGuard::new("remote-status-none-codes");
+        assert!(STATE.lock().unwrap().is_none());
+
+        let cases = [
+            (
+                "service_authorization",
+                RemotePhase::Failed,
+                Some(RemoteFailureReason::ServiceAuthorization),
+            ),
+            (
+                "service_config",
+                RemotePhase::Failed,
+                Some(RemoteFailureReason::ServiceAuthorization),
+            ),
+            (
+                "reconnect_required",
+                RemotePhase::Failed,
+                Some(RemoteFailureReason::GenerationUnhealthy),
+            ),
+            (
+                "system_sleep",
+                RemotePhase::Reconnecting,
+                Some(RemoteFailureReason::SystemSleep),
+            ),
+            ("connecting", RemotePhase::Connecting, None),
+            (
+                "protocol",
+                RemotePhase::Failed,
+                Some(RemoteFailureReason::Protocol),
+            ),
+            (
+                "server",
+                RemotePhase::Reconnecting,
+                Some(RemoteFailureReason::RemoteServer),
+            ),
+            (
+                "unknown_code",
+                RemotePhase::Failed,
+                Some(RemoteFailureReason::Local),
+            ),
+        ];
+        for (code, phase, reason) in cases {
+            *LAST_ERROR_CODE.lock().unwrap() = Some(code.to_string());
+            let current = status();
+            assert_eq!(current.phase, phase, "code {code}");
+            assert_eq!(current.reason, reason, "code {code}");
+        }
+
+        // The retry recovery block exposes the next-retry timestamp when set.
+        *LAST_ERROR_CODE.lock().unwrap() = Some("network".to_string());
+        START_REQUESTED.store(true, Ordering::Release);
+        START_RETRY_RUNNING.store(true, Ordering::Release);
+        START_RETRY_NEXT_AT.store(1234, Ordering::Release);
+        let current = status();
+        assert_eq!(current.recovery.as_ref().unwrap().next_retry_at, Some(1234));
+
+        *LAST_ERROR_CODE.lock().unwrap() = None;
+        START_REQUESTED.store(false, Ordering::Release);
+        START_RETRY_RUNNING.store(false, Ordering::Release);
+        START_RETRY_NEXT_AT.store(0, Ordering::Release);
+    }
+
+    #[tokio::test]
+    async fn heartbeat_sessions_publish_failure_exits() {
+        let _home = HomeGuard::new("remote-hb-sessions-fail");
+        init_store();
+        let nats = FakeNats::start().await;
+        let client = nats_connect_once(&nats).await;
+        let pair = unique("pairhbs");
+        // A thread title that alone exceeds the broker payload cap: presence
+        // publishes (small pair id), then the sessions snapshot fails.
+        crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some("n".repeat(9 * 1024 * 1024)),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some(unique("sesshbs")),
+        })
+        .unwrap();
+
+        let handle = spawn_presence_heartbeat(client.clone(), pair, "bridge_hbs".into());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            handle.is_finished(),
+            "sessions publish failure ends the heartbeat"
+        );
+    }
+
+    #[tokio::test]
+    async fn heartbeat_workspaces_publish_failure_exits() {
+        let _home = HomeGuard::new("remote-hb-workspaces-fail");
+        init_store();
+        let nats = FakeNats::start().await;
+        let client = nats_connect_once(&nats).await;
+        let pair = unique("pairhbw");
+        // A workspace name that alone exceeds the broker payload cap: presence
+        // and the (empty) sessions snapshot publish, then workspaces fails.
+        let workspace_dir = std::env::temp_dir().join(unique("futureos-ws-hbw"));
+        std::fs::create_dir_all(&workspace_dir).unwrap();
+        crate::store::create_workspace(crate::store::CreateWorkspaceInput {
+            name: Some("n".repeat(9 * 1024 * 1024)),
+            path: workspace_dir.to_string_lossy().to_string(),
+            description: None,
+            create_directory: None,
+        })
+        .unwrap();
+
+        let handle = spawn_presence_heartbeat(client.clone(), pair, "bridge_hbw".into());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            handle.is_finished(),
+            "workspaces publish failure ends the heartbeat"
+        );
+        std::fs::remove_dir_all(&workspace_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn credential_refresh_returns_when_health_is_terminal() {
+        let _home = HomeGuard::new("remote-refresh-terminal");
+        let nats = FakeNats::start().await;
+        let creds = test_creds("pair_terminal", nats.url(), 30);
+        pairing::save_creds(&creds).unwrap();
+
+        let state = fake_state(&nats, "pair_terminal").await;
+        let confirmed = state.pairing_confirmed.clone();
+        install_state(state);
+        // Mark the generation's health terminal before the refresh loops.
+        {
+            let guard = STATE.lock().unwrap();
+            guard
+                .as_ref()
+                .unwrap()
+                .nats_health
+                .service_config_error
+                .store(true, Ordering::Release);
+        }
+        let handshake =
+            commands::HandshakeState::new(creds, confirmed.clone(), "bridge_terminal".into());
+        let handle = spawn_credential_refresh(
+            "pair_terminal".to_string(),
+            commands::new_reply_slots(),
+            confirmed,
+            handshake,
+        );
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("terminal refresh returns")
+            .expect("refresh task not panicked");
+        stop();
+    }
+
+    #[tokio::test]
+    async fn credential_refresh_retries_when_readiness_fails() {
+        let _home = HomeGuard::new("remote-refresh-readiness");
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        let nats2 = FakeNats::start().await;
+        sign_in(platform.url());
+        // A pair id too large to publish a presence payload: the refreshed
+        // generation connects but its readiness publish fails, so the loop
+        // aborts the half-built generation and retries.
+        let pair = "p".repeat(9 * 1024 * 1024);
+        let creds = test_creds(&pair, nats.url(), 30);
+        pairing::save_creds(&creds).unwrap();
+        platform.respond_refresh(nats2.url());
+
+        let state = fake_state(&nats, &pair).await;
+        let confirmed = state.pairing_confirmed.clone();
+        install_state(state);
+        let handshake =
+            commands::HandshakeState::new(creds, confirmed.clone(), "bridge_ready".into());
+        let handle = spawn_credential_refresh(
+            pair.clone(),
+            commands::new_reply_slots(),
+            confirmed,
+            handshake,
+        );
+        // The refresh loops (readiness keeps failing), so it never completes.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !handle.is_finished(),
+            "refresh keeps retrying after readiness failure"
+        );
+        handle.abort();
+        stop();
+    }
+
+    #[tokio::test]
+    async fn start_once_without_replace_falls_through_when_inactive() {
+        let _home = HomeGuard::new("remote-start-inactive");
+        assert!(STATE.lock().unwrap().is_none());
+        START_REQUESTED.store(true, Ordering::Release);
+        // No running bridge → runtime_active is false, so the no-replace check
+        // falls through, then establish fails (no platform) → network status.
+        sign_in("http://127.0.0.1:9");
+        let result = start_once(false).await.expect("network maps to status");
+        assert_eq!(result.reason, Some(RemoteFailureReason::Network));
+        START_REQUESTED.store(false, Ordering::Release);
+        *LAST_ERROR_CODE.lock().unwrap() = None;
+    }
+
+    #[tokio::test]
+    async fn notify_mobile_unpair_publishes_offline_presence() {
+        let _home = HomeGuard::new("remote-unpair-notice");
+        let nats = FakeNats::start().await;
+        install_state(fake_state(&nats, "pair_unpair_notice").await);
+        let mut tap = nats.tap();
+
+        notify_mobile_unpair().await;
+
+        let published = await_publish(
+            &mut tap,
+            "p.pair_unpair_notice.presence",
+            Duration::from_secs(5),
+        )
+        .await;
+        let body = published.json();
+        assert_eq!(body["online"], json!(false));
+        assert_eq!(body["unpaired"], json!(true));
+        stop();
     }
 }

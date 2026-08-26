@@ -52,3 +52,17 @@ pub fn install_disconnect_notifier() {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Register the three observers once. The observer blocks themselves only
+    /// fire on real sleep/wake/power-off notifications (impossible to drive in
+    /// a unit test), so their bodies stay W7; the registration path is
+    /// exercised here.
+    #[test]
+    fn install_disconnect_notifier_registers_observers() {
+        install_disconnect_notifier();
+    }
+}

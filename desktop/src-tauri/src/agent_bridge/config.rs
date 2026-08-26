@@ -212,18 +212,16 @@ mod tests {
     use super::*;
 
     /// Run one closure with a deliberately unparseable agent endpoint so
-    /// `connect_agent` fails, then restore the mock's address.
+    /// `connect_agent` fails, then restore the mock's address. Every caller
+    /// holds the mock guard first, so the endpoint env var is always set.
     async fn with_broken_endpoint<F: std::future::Future<Output = Result<bool, AppError>>>(
         call: impl FnOnce() -> F,
     ) -> Result<bool, AppError> {
-        let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").ok();
+        let prev =
+            std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock guard sets the agent endpoint");
         std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
         let result = call().await;
-        if let Some(prev) = prev {
-            std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
-        } else {
-            std::env::remove_var("FUTURE_AGENT_GRPC_ADDR");
-        }
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
         result
     }
 
@@ -396,5 +394,66 @@ mod tests {
         assert_eq!(config.base_url, "https://other.openai.azure.com/openai");
         assert!(config.api_key.is_empty());
         assert!(config.clear_api_key);
+    }
+
+    #[tokio::test]
+    async fn update_builtin_provider_skips_api_key_when_none() {
+        let mock = mock_agent();
+        mock.push("upsert_provider", Reply::Data("{}".to_string()));
+        assert!(
+            update_builtin_provider("future", Some("https://x.example"), None)
+                .await
+                .expect("ok")
+        );
+        let config = mock.requests_of("upsert_provider")[0]
+            .provider_config
+            .clone()
+            .expect("provider config");
+        assert_eq!(config.base_url, "https://x.example");
+        assert!(config.api_key.is_empty());
+        assert!(!config.clear_api_key);
+    }
+
+    #[tokio::test]
+    async fn list_providers_error_paths() {
+        let mock = mock_agent();
+
+        // Transport-level failure surfaces through the map_err arm.
+        mock.push(
+            "list_providers",
+            Reply::Status(tonic::Code::Unavailable, "agent down"),
+        );
+        let error = list_providers().await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Unable to list Future Agent providers"),
+            "error: {error}"
+        );
+
+        // Rejection without a message gets a synthesized one.
+        mock.push("list_providers", Reply::Reject(String::new()));
+        let error = list_providers().await.unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Future Agent rejected the provider snapshot request."
+        );
+
+        // Rejection with a message passes it through.
+        mock.push(
+            "list_providers",
+            Reply::Reject("provider table corrupt".to_string()),
+        );
+        let error = list_providers().await.unwrap_err();
+        assert_eq!(error.to_string(), "provider table corrupt");
+
+        // A successful response that isn't valid provider JSON maps to a
+        // deserialization error.
+        mock.push("list_providers", Reply::Data("not-json".to_string()));
+        let error = list_providers().await.unwrap_err();
+        assert!(
+            error.to_string().contains("invalid provider snapshot"),
+            "error: {error}"
+        );
     }
 }
