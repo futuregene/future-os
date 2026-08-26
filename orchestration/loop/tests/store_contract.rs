@@ -333,5 +333,17 @@ fn replay_folds_supervisor_registration_and_worker_steer() {
     let steer = rebuilt.pending_steer.as_ref().expect("steer folded");
     assert_eq!(steer.agent_id.as_deref(), Some("worker-a"));
     assert_eq!(steer.instruction, "targeted steer");
+
+    // A worker-stop event is projection-only: replay ignores it (it must not
+    // kill a future run) — exercising the explicit ignore arm.
+    store
+        .append(Event::WorkerStopped {
+            goal_id: "g1".into(),
+            agent_id: Some("worker-a".into()),
+            ts: ts + 3,
+        })
+        .unwrap();
+    let rebuilt = store.replay("g1").unwrap().unwrap();
+    assert_eq!(rebuilt.supervisor_session_id.as_deref(), Some("sup-sess-1"));
     assert_eq!(steer.ts, ts + 2);
 }

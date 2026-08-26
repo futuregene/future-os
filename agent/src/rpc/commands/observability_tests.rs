@@ -259,7 +259,7 @@ fn get_runtime_metrics_exposes_five_observability_values() {
 }
 
 #[test]
-fn get_state_emits_canonical_and_legacy_session_name() {
+fn get_state_emits_canonical_session_name() {
     let state = make_app_state();
     state.sessions.read()["default"]
         .write()
@@ -267,7 +267,8 @@ fn get_state_emits_canonical_and_legacy_session_name() {
     let resp = parse_response(&handle_command_internal(&state, make_cmd("get_state")));
     assert_eq!(resp["success"], true);
     assert_eq!(resp["data"]["sessionName"], "My session");
-    assert_eq!(resp["data"]["session_name"], "My session");
+    // Canonical only — no legacy snake_case alias.
+    assert!(resp["data"].get("session_name").is_none());
     // Spot-check canonical camelCase keys around it.
     assert!(resp["data"].get("agentInstanceId").is_some());
     assert!(resp["data"].get("autoCompactionEnabled").is_some());
@@ -357,7 +358,7 @@ fn get_events_since_pages_a_live_run_with_max_events() {
     let resp = parse_response(&handle_command_internal(&state, cmd));
     assert_eq!(resp["success"], true);
     let data = &resp["data"];
-    // The paged envelope must still encode its typed payload (dual-write).
+    // The paged envelope must still encode its typed payload.
     assert!(future_rpc::encode::response_payload("get_events_since", data).is_some());
     let events = data["events"].as_array().unwrap();
     assert_eq!(events.len(), 2);

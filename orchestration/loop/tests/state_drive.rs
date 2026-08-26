@@ -97,6 +97,10 @@ fn goal_query_and_mutation_arms() {
     let p = goal.agent_profiles.iter().find(|p| p.id == "a1").unwrap();
     assert!(p.has("web"));
     assert!(!p.has("shell"));
+    // agent_capabilities: found profile returns its declared capabilities;
+    // an unregistered agent falls back to an empty list.
+    assert_eq!(goal.agent_capabilities("a1"), vec!["web".to_string()]);
+    assert!(goal.agent_capabilities("ghost").is_empty());
     // is_registered_agent.
     assert!(goal.is_registered_agent(Some("a1")));
     assert!(!goal.is_registered_agent(Some("ghost")));

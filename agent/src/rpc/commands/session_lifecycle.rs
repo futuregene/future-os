@@ -70,7 +70,7 @@ pub(crate) fn cmd_list_sessions(state: &AppState, cmd: &RpcCommand, id: &str) ->
         .filter(|s| cwd_filter.is_empty() || s.cwd == cwd_filter)
         .map(|s| {
             let is_streaming = active_flags.get(&s.id).copied().unwrap_or(false);
-            let mut value = serde_json::to_value(crate::rpc::payloads::SessionSummaryPayload {
+            let value = serde_json::to_value(crate::rpc::payloads::SessionSummaryPayload {
                 id: s.id,
                 session_name: s.name,
                 model: s.model,
@@ -82,17 +82,6 @@ pub(crate) fn cmd_list_sessions(state: &AppState, cmd: &RpcCommand, id: &str) ->
                 is_streaming,
             })
             .unwrap_or_default();
-            crate::rpc::payloads::inject_legacy_aliases(
-                &mut value,
-                &[
-                    ("sessionName", "session_name"),
-                    ("updatedAt", "updated_at"),
-                    ("parentSessionId", "parent_session_id"),
-                    ("firstMessage", "first_message"),
-                    ("queryCount", "query_count"),
-                    ("isStreaming", "is_streaming"),
-                ],
-            );
             value
         })
         .collect();

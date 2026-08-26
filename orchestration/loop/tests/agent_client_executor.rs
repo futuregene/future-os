@@ -197,6 +197,44 @@ fn command_error_paths() {
 }
 
 #[test]
+fn list_streaming_sessions_parses_ids_and_defaults_empty() {
+    rt().block_on(async {
+        let (addr, shared) = spawn_mock(MockState::default()).await;
+        let mut client = AgentClient::connect(&addr).await.unwrap();
+
+        // Non-empty id list, with a non-string entry filtered out.
+        shared.lock().unwrap().raw.insert(
+            "list_streaming_sessions".to_string(),
+            r#"{"sessionIds":["s1","s2",42]}"#.to_string(),
+        );
+        let ids = client.list_streaming_sessions().await.unwrap();
+        assert_eq!(ids, vec!["s1".to_string(), "s2".to_string()]);
+
+        // Missing key / non-array → empty default.
+        shared
+            .lock()
+            .unwrap()
+            .raw
+            .insert("list_streaming_sessions".to_string(), "{}".to_string());
+        assert!(client.list_streaming_sessions().await.unwrap().is_empty());
+    });
+}
+
+#[test]
+fn list_sessions_scopes_to_cwd() {
+    rt().block_on(async {
+        let (addr, shared) = spawn_mock(MockState::default()).await;
+        shared.lock().unwrap().raw.insert(
+            "list_sessions".to_string(),
+            r#"{"sessions":[{"id":"a"}]}"#.to_string(),
+        );
+        let mut client = AgentClient::connect(&addr).await.unwrap();
+        let v = client.list_sessions("/workspace").await.unwrap();
+        assert_eq!(v["sessions"][0]["id"], "a");
+    });
+}
+
+#[test]
 fn abort_is_transport_covered() {
     rt().block_on(async {
         let (addr, _) = spawn_mock(MockState::default()).await;
