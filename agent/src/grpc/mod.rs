@@ -574,10 +574,10 @@ mod tests {
         broadcaster.start_run("run-lag".to_string(), 7);
         let receiver = broadcaster.subscribe();
 
-        // The production broadcast channel holds 256 events. Keeping this
-        // receiver idle while publishing more than that deterministically
-        // produces BroadcastStreamRecvError::Lagged on its first read.
-        for idx in 0..300 {
+        // Keeping this receiver idle while publishing past the ring capacity
+        // deterministically produces BroadcastStreamRecvError::Lagged on its
+        // first read (one more event than the ring holds overflows it).
+        for idx in 0..=(crate::rpc::BROADCAST_RING_CAPACITY as u64) {
             broadcaster.broadcast(SseEvent::new(
                 "text_chunk",
                 serde_json::json!({"text": idx.to_string()}),
@@ -1062,8 +1062,8 @@ mod tests {
             state: grpc_app_state(false),
         };
         // Subscribe with a type filter, then overflow the broadcast channel
-        // (capacity 256) without draining: the next poll yields Lagged,
-        // which must bypass the filter and surface as DataLoss.
+        // without draining: the next poll yields Lagged, which must bypass
+        // the filter and surface as DataLoss.
         let response = service
             .stream_events(tonic::Request::new(proto::StreamRequest {
                 session_id: "default".to_string(),
@@ -1076,7 +1076,7 @@ mod tests {
             let sess = service.state.get_session("default").unwrap();
             let sess = sess.read();
             sess.broadcaster.start_run("run-flood".to_string(), 1);
-            for idx in 0..300 {
+            for idx in 0..=(crate::rpc::BROADCAST_RING_CAPACITY as u64) {
                 sess.broadcaster.broadcast(SseEvent::new(
                     "text_chunk",
                     serde_json::json!({"text": idx.to_string()}),
