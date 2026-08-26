@@ -87,15 +87,12 @@ impl RunClient {
             });
         }
 
-        // `response.data` is a JSON string; try to parse it, else pass the
-        // raw string through (mirrors the TS try/parse/catch).
-        if response.data.is_empty() {
-            return Ok(Value::Null);
-        }
-        match serde_json::from_str::<Value>(&response.data) {
-            Ok(value) => Ok(value),
-            Err(_) => Ok(Value::String(response.data)),
-        }
+        // Typed-first decode, shared with the TUI/GUI clients: the typed
+        // `payload` wins, then the JSON `data` string. Non-JSON `data` yields
+        // `Null` rather than a string passthrough — no CLI consumer relies on
+        // the raw-string form (the only non-JSON producer, `refresh_skills`,
+        // discards its result).
+        Ok(future_rpc::decode::response_data(&response))
     }
 
     /// `getAgentInfo()` — `get_agent_info` → `{version, skillsCount}`.
@@ -1205,13 +1202,13 @@ mod tests {
         // Every command got a millis id assigned.
         assert!(seen.iter().all(|c| !c.id.is_empty()));
 
-        // Non-JSON data passes through as a string; empty data → Null.
-        // (Unknown command types return the default "{}" → Null object.)
+        // Non-JSON data now decodes to Null (typed-first decode, no string
+        // passthrough); unknown command types return the default "{}" object.
         let raw = client
             .execute_command("notify", RpcCommand::default(), None, 5)
             .await
             .unwrap();
-        assert_eq!(raw, Value::String("not json at all".to_string()));
+        assert_eq!(raw, Value::Null);
         let empty = client
             .execute_command("unknown_type", RpcCommand::default(), None, 5)
             .await

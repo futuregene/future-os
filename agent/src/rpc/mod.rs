@@ -525,9 +525,8 @@ fn get_state_internal(
     let pending_approvals = state.approval_gate.pending_for_session(&session_id);
 
     // Typed payload (audit item 1): canonical camelCase keys from the
-    // GetStatePayload struct, plus legacy aliases for the spellings that
-    // pre-migration clients still read (`session_name`, snake_case ack keys).
-    let mut payload = serde_json::to_value(payloads::GetStatePayload {
+    // GetStatePayload struct.
+    let payload = serde_json::to_value(payloads::GetStatePayload {
         agent_instance_id: state.agent_instance_id.clone(),
         model: sess.model.clone(),
         image_support,
@@ -576,24 +575,6 @@ fn get_state_internal(
         pending_approvals,
     })
     .unwrap_or_default();
-    payloads::inject_legacy_aliases(&mut payload, &[("sessionName", "session_name")]);
-    // Option→iterator pipeline: the if-let form's closing brace collected a
-    // phantom zero-count coverage region here.
-    payload
-        .get_mut("recentTerminalAcks")
-        .and_then(serde_json::Value::as_array_mut)
-        .into_iter()
-        .flatten()
-        .for_each(|ack| {
-            payloads::inject_legacy_aliases(
-                ack,
-                &[
-                    ("runId", "run_id"),
-                    ("runSequence", "run_sequence"),
-                    ("clientRequestId", "client_request_id"),
-                ],
-            );
-        });
     Some(payload)
 }
 
@@ -1136,7 +1117,7 @@ mod tests {
     }
 
     #[test]
-    fn get_state_reports_api_cost_parent_and_terminal_ack_aliases() {
+    fn get_state_reports_api_cost_parent_and_terminal_ack() {
         let (_dir, state) = bare_app_state();
         // Persist a session file carrying a parent id (loaded for the state).
         // parent_session_id is recovered from the session_info entry, so the
@@ -1193,7 +1174,8 @@ mod tests {
         let text = payload.to_string();
         assert!(text.contains("\"parent-1\""), "{text}");
         assert!(text.contains("1.25"), "{text}");
-        assert!(text.contains("\"run_id\""), "{text}");
+        assert!(text.contains("\"runId\""), "{text}");
+        assert!(!text.contains("\"run_id\""), "no legacy alias: {text}");
     }
 
     #[test]
@@ -1328,8 +1310,8 @@ mod tests {
         let acks = value["recentTerminalAcks"].as_array().unwrap();
         assert_eq!(acks.len(), 1);
         assert_eq!(acks[0]["clientRequestId"], "req-ack");
-        // Legacy snake_case aliases are dual-written.
-        assert!(acks[0].get("client_request_id").is_some());
+        // Canonical camelCase only — no legacy snake_case alias.
+        assert!(acks[0].get("client_request_id").is_none());
     }
 
     #[test]

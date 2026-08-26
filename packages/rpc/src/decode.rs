@@ -1,16 +1,13 @@
 //! Decode side of the typed-RPC wire contract: typed proto payload →
-//! canonical JSON `Value` (with the migration-window legacy aliases
-//! re-injected, so downstream consumers see exactly what the dual-written
-//! `data` string carries), plus typed getters for clients that want the
-//! payload structs directly.
+//! canonical JSON `Value` (canonical camelCase keys), plus typed getters for
+//! clients that want the payload structs directly.
 //!
 //! Every entry point falls back to the JSON `data` string when the typed
-//! payload is absent (old agent, or a command that is not typed yet).
+//! payload is absent (an untyped command, or a pre-typed-RPC agent).
 
 use crate::payloads::{
-    inject_legacy_aliases, EventsSincePayload, GetStatePayload, ProjectionPayload,
-    ReplayEventPayload, SessionEntryPayload, SessionSummaryPayload, GET_STATE_ALIASES,
-    SESSION_SUMMARY_ALIASES, TERMINAL_ACK_ALIASES,
+    EventsSincePayload, GetStatePayload, ProjectionPayload, ReplayEventPayload,
+    SessionEntryPayload, SessionSummaryPayload,
 };
 use crate::proto;
 use proto::response_payload::Kind;
@@ -43,8 +40,7 @@ fn typed_response_data(resp: &proto::RpcResponse) -> Option<Value> {
     match kind {
         Kind::GetState(state) => {
             let payload = session_state_from_proto(state);
-            let mut value = serde_json::to_value(&payload).ok()?;
-            inject_get_state_aliases(&mut value);
+            let value = serde_json::to_value(&payload).ok()?;
             Some(value)
         }
         Kind::ListSessions(response) => {
@@ -55,12 +51,7 @@ fn typed_response_data(resp: &proto::RpcResponse) -> Option<Value> {
                 .map(|row| serde_json::to_value(&row))
                 .collect::<Result<_, _>>()
                 .ok()?;
-            let mut value = json!({ "sessions": rows });
-            // `sessions` was just built above, so the key is always an array;
-            // iterate infallibly rather than an if-let.
-            for row in value["sessions"].as_array_mut().into_iter().flatten() {
-                inject_legacy_aliases(row, SESSION_SUMMARY_ALIASES);
-            }
+            let value = json!({ "sessions": rows });
             Some(value)
         }
         Kind::GetSessionEntries(response) => {
@@ -107,21 +98,6 @@ fn typed_response_data(resp: &proto::RpcResponse) -> Option<Value> {
     }
 }
 
-/// Mirror of the agent's get_state alias injection (canonical sessionName
-/// plus snake_case TerminalAck keys) so typed-decoded values match the
-/// dual-written JSON exactly.
-fn inject_get_state_aliases(value: &mut Value) {
-    inject_legacy_aliases(value, GET_STATE_ALIASES);
-    if let Some(acks) = value
-        .get_mut("recentTerminalAcks")
-        .and_then(Value::as_array_mut)
-    {
-        for ack in acks {
-            inject_legacy_aliases(ack, TERMINAL_ACK_ALIASES);
-        }
-    }
-}
-
 // ── Typed getters (typed-first, JSON fallback) ──────────────────────────────
 
 /// get_state payload, decoded from the typed wire form when present.
@@ -129,10 +105,7 @@ pub fn decode_get_state(resp: &proto::RpcResponse) -> Option<GetStatePayload> {
     if let Some(Kind::GetState(state)) = resp.payload.as_ref().and_then(|p| p.kind.as_ref()) {
         return Some(session_state_from_proto(state));
     }
-    fallback_value(resp).and_then(|mut value| {
-        strip_for_get_state(&mut value);
-        serde_json::from_value(value).ok()
-    })
+    fallback_value(resp).and_then(|value| serde_json::from_value(value).ok())
 }
 
 /// list_sessions rows, decoded from the typed wire form when present.
@@ -151,8 +124,6 @@ pub fn decode_list_sessions(resp: &proto::RpcResponse) -> Option<Vec<SessionSumm
         let rows = value.get("sessions")?.as_array()?.clone();
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
-            let mut row = row;
-            crate::payloads::strip_legacy_aliases(&mut row, SESSION_SUMMARY_ALIASES);
             out.push(serde_json::from_value(row).ok()?);
         }
         Some(out)
@@ -196,18 +167,6 @@ fn fallback_value(resp: &proto::RpcResponse) -> Option<Value> {
         return None;
     }
     serde_json::from_str(&resp.data).ok()
-}
-
-fn strip_for_get_state(value: &mut Value) {
-    crate::payloads::strip_legacy_aliases(value, GET_STATE_ALIASES);
-    if let Some(acks) = value
-        .get_mut("recentTerminalAcks")
-        .and_then(Value::as_array_mut)
-    {
-        for ack in acks {
-            crate::payloads::strip_legacy_aliases(ack, TERMINAL_ACK_ALIASES);
-        }
-    }
 }
 
 // ── proto → payload struct conversions ──────────────────────────────────────
@@ -877,7 +836,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_list_sessions_injects_legacy_aliases() {
+    fn typed_list_sessions_decodes() {
         let resp = resp_with_payload(Kind::ListSessions(proto::ListSessionsResponse {
             sessions: vec![proto::SessionSummary {
                 id: "s1".to_string(),
@@ -887,7 +846,7 @@ mod tests {
         }));
         let value = response_data(&resp);
         assert_eq!(value["sessions"][0]["sessionName"], json!("Demo"));
-        assert_eq!(value["sessions"][0]["session_name"], json!("Demo"));
+        assert!(value["sessions"][0].get("session_name").is_none());
 
         let rows = decode_list_sessions(&resp).unwrap();
         assert_eq!(rows[0].id, "s1");
@@ -895,7 +854,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_get_state_injects_aliases_and_decodes_subobjects() {
+    fn typed_get_state_decodes_subobjects() {
         let state = proto::SessionState {
             session_id: Some("s1".to_string()),
             extensions: vec!["ext-a".to_string()],
@@ -922,8 +881,8 @@ mod tests {
         assert_eq!(value["extensions"], json!(["ext-a"]));
         let ack = &value["recentTerminalAcks"][0];
         assert_eq!(ack["runId"], json!("r0"));
-        assert_eq!(ack["run_id"], json!("r0"));
-        assert_eq!(ack["run_sequence"], json!(3));
+        assert!(ack.get("run_id").is_none());
+        assert!(ack.get("run_sequence").is_none());
         assert_eq!(value["requestedRun"]["error"], json!("boom"));
 
         let payload = decode_get_state(&resp).unwrap();
@@ -931,20 +890,9 @@ mod tests {
         assert_eq!(payload.extensions, Some(vec!["ext-a".to_string()]));
     }
 
-    /// The alias-injection helper must no-op cleanly when the get_state value
-    /// carries no recentTerminalAcks array.
+    /// The JSON fallback path deserializes canonical camelCase JSON.
     #[test]
-    fn inject_get_state_aliases_without_acks() {
-        let mut value = json!({"sessionName": "Demo"});
-        inject_get_state_aliases(&mut value);
-        assert_eq!(value["session_name"], json!("Demo"));
-        assert!(value.get("recentTerminalAcks").is_none());
-    }
-
-    /// The JSON fallback path strips the legacy duplicates before
-    /// deserializing — top-level aliases and per-ack snake_case keys.
-    #[test]
-    fn decode_get_state_fallback_strips_legacy_aliases() {
+    fn decode_get_state_fallback_deserializes() {
         let resp = resp_with_data(
             r#"{
                 "agentInstanceId": "a1", "model": "m", "imageSupport": false,
@@ -957,11 +905,11 @@ mod tests {
                 "totalCost": 0.0, "permissionLevel": "all", "createdBy": "tui",
                 "sourceMeta": null, "queuedRuns": [], "queuedCount": 0,
                 "pendingApprovals": [],
-                "sessionName": "Demo", "session_name": "Demo",
+                "sessionName": "Demo",
                 "recentTerminalAcks": [{
-                    "runId": "r0", "run_id": "r0",
-                    "runSequence": 4, "run_sequence": 4,
-                    "clientRequestId": "c0", "client_request_id": "c0",
+                    "runId": "r0",
+                    "runSequence": 4,
+                    "clientRequestId": "c0",
                     "state": "cancelled", "reason": "superseded"
                 }]
             }"#,
@@ -970,12 +918,6 @@ mod tests {
         assert_eq!(payload.session_name.as_deref(), Some("Demo"));
         assert_eq!(payload.recent_terminal_acks[0].run_id, "r0");
         assert_eq!(payload.recent_terminal_acks[0].run_sequence, 4);
-
-        // Absent-acks edge of the strip helper.
-        let mut bare = json!({"sessionName": "Demo", "session_name": "Demo"});
-        strip_for_get_state(&mut bare);
-        assert!(bare.get("session_name").is_none());
-        assert_eq!(bare["sessionName"], json!("Demo"));
     }
 
     #[test]
