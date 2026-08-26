@@ -151,6 +151,30 @@ describe("useSessionCatalog", () => {
     }
   });
 
+  test("refreshModels clears a never-populated list after the retry budget is spent", async () => {
+    jest.useFakeTimers();
+    try {
+      render();
+      request.mockResolvedValue({ data: { models: [] } });
+      let pending: Promise<void> | undefined;
+      act(() => {
+        pending = result.current.refreshModels();
+      });
+      await act(async () => {
+        await jest.runAllTimersAsync();
+      });
+      await act(async () => {
+        await pending;
+      });
+      // All four retry delays elapsed with an empty list; the catalogue stays
+      // empty (and is explicitly cleared because no previous list exists).
+      expect(result.current.models).toEqual([]);
+      expect(request).toHaveBeenCalledTimes(5);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test("refreshModels retries in the background after a failed first attempt", async () => {
     jest.useFakeTimers();
     try {

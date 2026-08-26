@@ -43,6 +43,16 @@ describe("pending prompt storage", () => {
     await expect(loadPendingPrompt()).resolves.toEqual(pending);
   });
 
+  test("ignores a record with an invalid shape", async () => {
+    mockedAsync.getItem.mockResolvedValueOnce(JSON.stringify({ version: 1 }));
+    await expect(loadPendingPrompt()).resolves.toBeNull();
+  });
+
+  test("ignores a record with corrupt JSON", async () => {
+    mockedAsync.getItem.mockResolvedValueOnce("not json{");
+    await expect(loadPendingPrompt()).resolves.toBeNull();
+  });
+
   test("a stale completion cannot clear a newer prompt", async () => {
     mockedAsync.getItem.mockResolvedValueOnce(JSON.stringify(pending));
     await clearPendingPrompt("prompt_old");
