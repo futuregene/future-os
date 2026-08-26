@@ -429,6 +429,11 @@ type InputListener = Box<dyn FnMut(&str) -> Option<InputListenerResult> + 'stati
 
 const MIN_RENDER_INTERVAL: Duration = Duration::from_millis(33);
 const RESIZE_DEBOUNCE: Duration = Duration::from_millis(150);
+/// Cadence for the DSR cursor-position recheck while streaming. A tmux
+/// client attach can reset the terminal's cursor without any signal when the
+/// pane size is unchanged and focus-events are off; periodically re-reading
+/// the real cursor position is the last-resort net that catches that case.
+const CURSOR_RECHECK_INTERVAL: Duration = Duration::from_millis(1000);
 const SEGMENT_RESET: &str = "\x1b[0m\x1b]8;;\x07"; // SGR reset + OSC 8 close
 
 /// `crypto.randomUUID()`.
@@ -569,6 +574,8 @@ pub struct App<T: TerminalIo> {
     resize_deadline: Option<Instant>,
     ac_query_deadline: Option<Instant>,
     pending_ac_query: Option<(String, usize)>,
+    cursor_recheck_at: Instant,
+    cursor_recheck_row: Option<usize>,
     timers: Vec<(Instant, TimerId)>,
     previous_width: usize,
     previous_height: usize,
@@ -656,6 +663,8 @@ impl<T: TerminalIo> App<T> {
             resize_deadline: None,
             ac_query_deadline: None,
             pending_ac_query: None,
+            cursor_recheck_at: Instant::now(),
+            cursor_recheck_row: None,
             timers: Vec::new(),
             previous_width: 0,
             previous_height: 0,
@@ -1363,6 +1372,15 @@ impl<T: TerminalIo> App<T> {
             }
         }
 
+        // While streaming, periodically re-read the terminal's real cursor
+        // position (DSR \x1b[6n). If it diverged from our tracked row — a
+        // tmux client attach that reset the cursor with no SIGWINCH and no
+        // focus event — the response forces a full redraw to re-anchor.
+        if self.state.streaming && now >= self.cursor_recheck_at {
+            self.cursor_recheck_at = now + CURSOR_RECHECK_INTERVAL;
+            self.query_cursor_position();
+        }
+
         let mut due = Vec::new();
         self.timers.retain(|(at, id)| {
             if *at <= now {
@@ -1906,6 +1924,11 @@ impl<T: TerminalIo> App<T> {
         // Cell size response.
         if self.consume_cell_size_response(data) {
             self.request_render(false);
+            return;
+        }
+
+        // DSR cursor-position response (polling net for cursor desync).
+        if self.consume_cursor_position_response(data) {
             return;
         }
 
@@ -3704,6 +3727,40 @@ impl<T: TerminalIo> App<T> {
         self.terminal.write("\x1b[16t");
     }
 
+    /// Ask the terminal for its real cursor position (DSR / CPR). The
+    /// expected row is snapshotted now: the terminal answers with the cursor
+    /// position at the moment it processes this query (before any render that
+    /// runs later in the same tick), so we must compare the answer against
+    /// the row we tracked when the query was issued — not the row after any
+    /// intervening render moved the cursor.
+    fn query_cursor_position(&mut self) {
+        self.cursor_recheck_row = Some(self.hardware_cursor_row);
+        self.terminal.write("\x1b[6n");
+    }
+
+    /// Parse a DSR cursor-position report (`\x1b[{row};{col}R`, 1-based) and
+    /// force a full redraw if the terminal's real row diverged from the row
+    /// snapshotted when the query was sent. This is the polling net for a
+    /// tmux attach that reset the cursor without a SIGWINCH or focus event.
+    fn consume_cursor_position_response(&mut self, data: &str) -> bool {
+        static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+        let re = RE.get_or_init(|| Regex::new(r"^\x1b\[(\d+);(\d+)R$").unwrap());
+        let Some(caps) = re.captures(data) else {
+            return false;
+        };
+        let reported_row = caps[1].parse::<usize>().unwrap_or(0);
+        if reported_row == 0 {
+            return true; // malformed row — consume, don't act
+        }
+        let real_row = reported_row - 1; // DSR is 1-based; we track 0-based
+        if let Some(expected) = self.cursor_recheck_row.take() {
+            if real_row != expected {
+                self.request_render(true);
+            }
+        }
+        true
+    }
+
     fn consume_cell_size_response(&mut self, data: &str) -> bool {
         static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
         let re = RE.get_or_init(|| Regex::new(r"^\x1b\[6;(\d+);(\d+)t$").unwrap());
@@ -5013,6 +5070,86 @@ mod tests {
         app.handle_input("\x1b[O");
         assert!(!app.render_now);
         assert!(!app.render_requested);
+    }
+
+    #[tokio::test]
+    async fn cursor_position_report_forces_redraw_on_divergence() {
+        // DSR is the polling net for an attach that reset the cursor with no
+        // SIGWINCH and no focus event. A report that matches the row
+        // snapshotted at query time is consumed silently; a diverged row
+        // forces a full redraw.
+        let (mut app, _rx) = running_app(100, 10);
+        app.do_render();
+        let synced_row = app.hardware_cursor_row;
+        app.terminal.writes.borrow_mut().clear();
+
+        // In sync: query snapshots the expected row, the matching report is
+        // consumed without forcing a redraw.
+        app.query_cursor_position();
+        app.handle_input(&format!("\x1b[{};1R", synced_row + 1));
+        assert!(!app.render_now);
+        assert!(!app.previous_lines.is_empty());
+
+        // Diverged (external reset): the report forces a full redraw.
+        app.query_cursor_position();
+        app.handle_input(&format!("\x1b[{};1R", synced_row + 2));
+        assert!(app.render_now);
+        assert!(app.previous_lines.is_empty());
+
+        // A stray report with no pending query is consumed without acting.
+        app.render_now = false;
+        app.render_requested = false;
+        app.handle_input("\x1b[0;1R"); // malformed row too
+        assert!(!app.render_now);
+    }
+
+    #[tokio::test]
+    async fn cursor_report_compares_against_query_snapshot_not_current_row() {
+        // The terminal answers the DSR query with the cursor position at the
+        // moment it processes the query. A render can run between issuing the
+        // query and receiving the answer, moving the cursor; comparing the
+        // answer against the *current* row would be a false positive and
+        // cause a spurious full redraw every time content grows during
+        // streaming. The query-time snapshot must be the comparison basis.
+        let (mut app, _rx) = running_app(100, 10);
+        app.do_render();
+        let snapshot_row = app.hardware_cursor_row;
+        app.query_cursor_position(); // snapshot = snapshot_row
+
+        // A render then grows the content and moves the cursor.
+        app.chat
+            .add_message(ChatMessage::new("x".into(), ChatRole::User, "more"));
+        app.do_render();
+        assert_ne!(app.hardware_cursor_row, snapshot_row);
+
+        // The answer matches the query-time snapshot → silent no-op.
+        app.handle_input(&format!("\x1b[{};1R", snapshot_row + 1));
+        assert!(!app.render_now);
+    }
+
+    #[tokio::test]
+    async fn streaming_tick_rechecks_cursor_position() {
+        // While streaming, on_tick issues a DSR cursor query once per
+        // CURSOR_RECHECK_INTERVAL and then waits until the next window.
+        let (mut app, _rx) = running_app(100, 10);
+        app.do_render();
+        app.terminal.writes.borrow_mut().clear();
+        app.state.streaming = true;
+        app.cursor_recheck_at = Instant::now() - Duration::from_millis(1);
+        app.on_tick();
+        assert!(render_writes(&app).contains("\x1b[6n"));
+
+        // Not queried again immediately (deadline pushed forward).
+        app.terminal.writes.borrow_mut().clear();
+        app.on_tick();
+        assert!(!render_writes(&app).contains("\x1b[6n"));
+
+        // Not queried when not streaming, even past the deadline.
+        app.state.streaming = false;
+        app.cursor_recheck_at = Instant::now() - Duration::from_millis(1);
+        app.terminal.writes.borrow_mut().clear();
+        app.on_tick();
+        assert!(!render_writes(&app).contains("\x1b[6n"));
     }
 
     #[tokio::test]
