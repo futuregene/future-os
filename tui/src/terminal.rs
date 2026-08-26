@@ -195,10 +195,12 @@ impl Terminal {
         self.backend.enable_raw()?;
         self.raw_enabled = true;
 
-        // Enter the alternate screen, enable bracketed paste, refresh size.
-        // On failure, restore the terminal before returning.
+        // Enter the alternate screen, enable bracketed paste + focus
+        // reporting, refresh size. On failure, restore the terminal before
+        // returning.
         write_str(&self.write_lock, "\x1b[?1049h");
         write_str(&self.write_lock, "\x1b[?2004h");
+        write_str(&self.write_lock, "\x1b[?1004h");
         self.refresh_size();
 
         self.stop_flag.store(false, Ordering::SeqCst);
@@ -391,8 +393,9 @@ impl Terminal {
             write_str(&self.write_lock, TERMINAL_PROGRESS_CLEAR_SEQUENCE);
         }
 
-        // Disable bracketed paste mode.
+        // Disable bracketed paste mode and focus reporting.
         write_str(&self.write_lock, "\x1b[?2004l");
+        write_str(&self.write_lock, "\x1b[?1004l");
 
         // Disable Kitty keyboard protocol.
         if self.kitty_active.load(Ordering::SeqCst) {
@@ -582,6 +585,7 @@ fn restore_terminal_for_exit(
 ) {
     write_str(write_lock, "\x1b[?25h");
     write_str(write_lock, "\x1b[?2004l");
+    write_str(write_lock, "\x1b[?1004l");
     if kitty_active.load(Ordering::SeqCst) {
         write_str(write_lock, "\x1b[<u");
         kitty_active.store(false, Ordering::SeqCst);
