@@ -528,11 +528,11 @@ mod tests {
 
     #[test]
     fn handle_quit_dialog_response_cancels_and_confirms() {
-        // Cancel path: only clears the in-progress flag, no exit.
+        // Cancel path: only clears the in-progress flag, never exits.
         QUIT_DIALOG_OPEN.store(true, Ordering::SeqCst);
-        handle_quit_dialog_response(false, &mock_handle(), &[], || {
-            unreachable!("cancel does not exit")
-        });
+        let mut cancel_exited = false;
+        handle_quit_dialog_response(false, &mock_handle(), &[], || cancel_exited = true);
+        assert!(!cancel_exited, "cancel must not exit");
         assert!(!QUIT_DIALOG_OPEN.load(Ordering::SeqCst));
 
         // Confirm path: commits to quitting and runs the abort/wait/exit flow.
