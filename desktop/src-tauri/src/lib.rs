@@ -1159,3 +1159,32 @@ mod runtime_update_tests {
         let _ = task.await;
     }
 }
+
+#[cfg(test)]
+mod startup_paths_tests {
+    use super::*;
+
+    #[test]
+    fn start_thread_streaming_monitor_spawns_the_loop() {
+        // The spawned loop parks (APP_HANDLE is unset in tests) and sleeps; this
+        // exercises the spawn wrapper itself. It is harmless — no handle, no
+        // sample, just an idle poll on a process-lifetime runtime.
+        start_thread_streaming_monitor();
+    }
+
+    #[test]
+    fn spawn_remote_auto_connect_returns_when_no_creds() {
+        // API key present + auto-connect enabled + no persisted pairing creds →
+        // the enabled gate evaluates fully (load_creds is None) and returns
+        // without spawning the bridge.
+        let _home = crate::auth_store::test_support::HomeGuard::new("remote-auto-connect");
+        crate::store::initialize_app_store().expect("init store");
+        crate::auth_store::set_future_login("sekret", "https://future-os.cn/api").unwrap();
+        crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
+            auto_connect_remote: Some(true),
+            ..Default::default()
+        })
+        .unwrap();
+        spawn_remote_auto_connect();
+    }
+}
