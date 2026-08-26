@@ -8,76 +8,24 @@ import {
   useRef,
   useState,
 } from "react";
-import * as Network from "expo-network";
-import { AppState, type AppStateStatus } from "react-native";
-import {
-  emptyTimeline,
-  markApprovalDecision,
-  mergeHistoryAttachments,
-  timelineFromEntries,
-  timelineFromHistory,
-  type TimelineState,
-} from "./timeline";
-import { isTransientNatsRequestError, RemoteClient } from "./client";
-import { MAX_PROMPT_MESSAGE_BYTES, randomId, utf8Bytes } from "./codec";
-import type { ConnectionState } from "./connectionState";
-import { classifyError } from "./connectionState";
-import { attemptPendingRevoke, claimPairingCode, serverRevoke } from "./pairing";
-import {
-  INITIAL_PRESENCE_STATE,
-  isDesktopOnline,
-  PRESENCE_RECEIPT_STALE_MS,
-  type PresenceState,
-} from "./presence";
-import { type RunCursor } from "./runCursor";
-import { SyncEngine, type ReconcileReason } from "./syncEngine";
-import { fetchEventsSince } from "./replay";
-import {
-  clearPendingPrompt,
-  loadPendingPrompt,
-  savePendingPrompt,
-  type PendingPrompt,
-} from "./pendingPromptStorage";
-import { clearSessionDraftIfMatches } from "./draftStorage";
+import type { TimelineState } from "./timeline";
+import { RemoteClient } from "./client";
+import { useConversationController } from "./useConversationController";
 import { useSessionCatalog } from "./useSessionCatalog";
-import {
-  clearCredentials,
-  clearPendingRevoke,
-  loadCredentials,
-  loadLastModel,
-  loadLastThinking,
-  loadPendingRevoke,
-  saveCredentials,
-  saveLastModel,
-  saveLastThinking,
-  savePendingRevoke,
-} from "./storage";
-import { modelProviderFromReference, modelReference } from "./types";
-import {
-  cachedPreviewForAttachment,
-  downloadPrepared,
-  prepareDownload,
-  rememberPreparedPreview,
-  uploadAttachments,
-} from "./files";
+import { usePromptOutbox } from "./usePromptOutbox";
+import { useRemoteConnection } from "./useRemoteConnection";
+import { useTimelineController } from "./useTimelineController";
 import type { File } from "expo-file-system";
 import type {
   ConnectionPhase,
   DownloadInfo,
-  EntriesData,
   HistoryAttachment,
-  HistoryData,
-  HistoryEntry,
-  HistoryMessage,
   MobileAttachment,
   Presence,
-  PromptAck,
   RemoteCredentials,
   RemoteModel,
   RemoteSession,
-  RemoteSessionState,
   RemoteWorkspace,
-  StreamEvent,
   ThinkingLevel,
 } from "./types";
 
@@ -146,127 +94,14 @@ interface RemoteContextValue {
   continueRun(sessionId: string, runId: string): Promise<void>;
 }
 
-const TIMELINE_LOAD_TIMEOUT_MS = 15_000;
-
-function diagnosticError(error: unknown): { name?: string; message: string; code?: unknown } {
-  if (error instanceof Error) {
-    return {
-      name: error.name,
-      message: error.message,
-      ...(error.cause && typeof error.cause === "object" && "code" in error.cause
-        ? { code: (error.cause as { code?: unknown }).code }
-        : {}),
-    };
-  }
-  return { message: String(error) };
-}
-
 const RemoteContext = createContext<RemoteContextValue | null>(null);
 
-function samePendingPrompt(
-  pending: PendingPrompt,
-  candidate: Omit<PendingPrompt, "version" | "commandId" | "createdAt">,
-): boolean {
-  const attachmentKey = (items: MobileAttachment[]) =>
-    items.map(item => `${item.localUri}\u0000${item.name}\u0000${item.transferSize}`).sort();
-  return (
-    pending.draftKey === candidate.draftKey &&
-    pending.sessionId === candidate.sessionId &&
-    pending.text.trim() === candidate.text.trim() &&
-    pending.modelId === candidate.modelId &&
-    pending.thinkingLevel === candidate.thinkingLevel &&
-    pending.mode === candidate.mode &&
-    pending.workspaceId === candidate.workspaceId &&
-    JSON.stringify(attachmentKey(pending.attachments)) ===
-      JSON.stringify(attachmentKey(candidate.attachments))
-  );
-}
-
-async function pendingPromptReceipt(
-  client: RemoteClient,
-  commandId: string,
-): Promise<PromptAck | null> {
-  return (
-    await client.requestRetry<PromptAck | null>(
-      { type: "get_prompt_receipt", promptId: commandId },
-      "list",
-    )
-  ).data;
-}
-
-async function deliverPendingPrompt(
-  client: RemoteClient,
-  pending: PendingPrompt,
-  checkReceipt: boolean,
-  receiptSupported: boolean,
-  onUploadProgress?: (completedBytes: number, totalBytes: number) => void,
-): Promise<PromptAck> {
-  if (checkReceipt && receiptSupported) {
-    const receipt = await pendingPromptReceipt(client, pending.commandId);
-    if (receipt) return receipt;
-  }
-  const uploaded = await uploadAttachments(client, pending.attachments, onUploadProgress);
-  return (
-    await client.requestRetry<PromptAck>(
-      {
-        id: pending.commandId,
-        type: "prompt",
-        sessionId: pending.sessionId,
-        message: pending.text.trim(),
-        modelId: pending.modelId,
-        providerId: modelProviderFromReference(pending.modelId),
-        level: pending.thinkingLevel,
-        ...(uploaded.length
-          ? { attachments: uploaded.map(attachment => ({ uploadId: attachment.uploadId! })) }
-          : {}),
-        ...(pending.mode === "workspace"
-          ? { mode: "workspace", workspaceId: pending.workspaceId }
-          : {}),
-      },
-      pending.sessionId,
-    )
-  ).data;
-}
-
-/**
- * Compares each session's status against the previously seen status map and
- * returns the ids whose run just finished (running/queued/waiting_approval →
- * completed/failed), plus the new status map. Pure — the caller owns state.
- */
+/** Composes the remote domain controllers and preserves the public useRemote API. */
 export function RemoteProvider({ children }: PropsWithChildren) {
-  const [phase, setPhase] = useState<ConnectionPhase>("booting");
-  const [error, setError] = useState<string | null>(null);
-  const [credentials, setCredentials] = useState<RemoteCredentials | null>(null);
-  const [presence, setPresence] = useState<Presence | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [draft, setDraft] = useState(false);
   const [draftMode, setDraftMode] = useState<"chat" | "workspace">("chat");
   const [draftWorkspaceId, setDraftWorkspaceId] = useState("");
-  const [modelId, setModelId] = useState("");
-  const [thinkingLevel, setThinkingLevelState] = useState<ThinkingLevel>("off");
-  const [sending, setSending] = useState(false);
-  const sendingRef = useRef(false);
-  const pendingRecoveryRef = useRef<Promise<void> | null>(null);
-  const [openingSession, setOpeningSession] = useState(false);
-  const [timelineErrors, setTimelineErrors] = useState<Record<string, "timeout">>({});
-  const [capabilities, setCapabilities] = useState<Set<string>>(() => new Set());
-  const fileTransferSupported = capabilities.has("file_transfer_v1");
-  const promptReceiptSupported = capabilities.has("prompt_receipt_v1");
-  const [clock, setClock] = useState(Date.now());
-  // Relative-heartbeat state (L7): the desktop-presence check judges staleness
-  // by clock-offset drift, so the running baseline survives recomputes. Reset
-  // on every reconnect so a clock that jumped while offline re-baselines.
-  const presenceStateRef = useRef<PresenceState>(INITIAL_PRESENCE_STATE);
-  // Local receipt time of the last presence packet — the fast desktop-death
-  // signal (beats arrive every 1s; a gap means the bridge stopped).
-  const lastPresenceReceiptRef = useRef(0);
-  // Per-session timelines: events for EVERY session are consumed (the desktop
-  // observer mirrors all of them), so a background run keeps advancing and
-  // switching to it renders its live state without a fresh history load. The
-  // draft (a conversation with no session yet) lives under the "" key until a
-  // prompt ack binds it to a real session.
-  const [timelines, setTimelines] = useState<Record<string, TimelineState>>({});
-  const timelinesRef = useRef<Record<string, TimelineState>>({});
   const clientRef = useRef<RemoteClient | null>(null);
   const credentialsRef = useRef<RemoteCredentials | null>(null);
   const selectedRef = useRef("");
@@ -298,129 +133,31 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // capture the epoch so their eventual ack cannot pull the UI back to a
   // conversation the user has already left.
   const conversationEpochRef = useRef(0);
-  const recoverRef = useRef<(sessionId?: string) => Promise<void>>(async () => undefined);
-  const hydrateAttachmentsRef = useRef<(sessionId: string) => Promise<void>>(async () => undefined);
-  // The per-session serial sync engine owns the timelines and cursors — every
-  // write goes through one lane per session (atomic cursor+timeline commits),
-  // and reconcile is the only backfill path. The cursors map mirrors the
-  // engine's for the send guard's live-streaming check.
-  const syncEngineRef = useRef<SyncEngine | null>(null);
-  const cursorsRef = useRef<Record<string, RunCursor>>({});
-  // Session streaming is mirrored for the send guard: reads must reflect the
-  // latest snapshot even before the subscriber's setState re-renders.
-  const streamingRef = useRef<Record<string, boolean>>({});
-  // Unsubscribes the engine's local commit feed only when the Provider itself
-  // unmounts. Pairing generations own network streams, not this UI listener.
-  const engineRefCleanupRef = useRef<(() => void) | null>(null);
-  const networkAvailableRef = useRef<boolean | null>(null);
-  // The network listener may be paused or delayed while the app is backgrounded.
-  // Foreground recovery uses this ref to obtain a fresh answer before deciding
-  // that a previously-offline device should remain disconnected.
-  const refreshNetworkStateRef = useRef<() => Promise<boolean>>(
-    async () => networkAvailableRef.current !== false,
-  );
-
-  useEffect(() => {
-    credentialsRef.current = credentials;
-  }, [credentials]);
   useEffect(() => {
     selectedRef.current = selectedSessionId;
   }, [selectedSessionId]);
-  useEffect(() => {
-    timelinesRef.current = timelines;
-  }, [timelines]);
-
-  /**
-   * Enqueue a reconcile instruction for a session (or all established sessions
-   * when `sessionId` is omitted) on the sync engine's serial lane.
-   */
-  const reconcileSession = useCallback(
-    (sessionId: string | undefined, reason: ReconcileReason, runId?: string) => {
-      const engine = syncEngineRef.current;
-      if (!engine) return;
-      if (sessionId) {
-        engine.reconcile(sessionId, reason, runId);
-      } else {
-        engine.reconcileAll(reason);
-      }
-    },
-    [],
-  );
-
-  const handleEvent = useCallback(
-    (event: StreamEvent, sessionId: string) => {
-      const sid = sessionId || "";
-      if (!sid) return;
-      if (event.type === "provider_config_changed") {
-        // Process-wide Agent completion mirrored on the `_global` subject.
-        // Re-read the catalogue from the authority; never project this as chat
-        // content or retain an endpoint-local optimistic model list.
-        void refreshModels();
-        return;
-      }
-      // Side effects that read event payloads directly (not timeline writes):
-      // these stay outside the lane because they don't mutate the session
-      // timeline — the lane only receives pure timeline events.
-      if (event.type === "run_snapshot") {
-        // The host replaced this run's replica with a folded projection. Folded
-        // events cannot be applied incrementally — a coalesced chunk's text
-        // spans idx values already applied — so reconcile the run from -1.
-        // Pass the runId explicitly: reconcile reads the live active run when
-        // none is given, and if that run has already rotated off, the folded
-        // run would be replayed against the wrong target and stay garbled.
-        reconcileSession(sid, "resend", event.runId ?? undefined);
-        return;
-      }
-      if (event.type === "session_name_changed") {
-        try {
-          const data = JSON.parse(event.data) as Record<string, unknown>;
-          const name = typeof data.name === "string" ? data.name.trim() : "";
-          if (name) {
-            setTitleOverrides(prev => ({ ...prev, [sid]: name }));
-            void refreshSessions();
-          }
-        } catch {
-          // Ignore a malformed rename payload.
-        }
-        return;
-      }
-      if (event.type === "user_message") {
-        // Live events intentionally contain only the text. Enrich this bubble
-        // from the durable entry without replacing streamed assistant content.
-        void hydrateAttachmentsRef.current(sid);
-      }
-      if (event.type === "approval_decision") {
-        try {
-          const data = JSON.parse(event.data) as Record<string, unknown>;
-          const approvalId = data.approval_request_id;
-          const status = data.status;
-          if (
-            approvalId &&
-            (status === "approved" || status === "rejected" || status === "cancelled")
-          ) {
-            const decision = status as "approved" | "rejected" | "cancelled";
-            const approvalRequestId = approvalId as string;
-            syncEngineRef.current?.mutate(sid, timeline => {
-              const has = timeline.items.some(
-                item =>
-                  item.kind === "approval" &&
-                  item.payload.approval_request_id === approvalRequestId,
-              );
-              return has ? markApprovalDecision(timeline, approvalRequestId, decision) : timeline;
-            });
-          }
-        } catch {
-          // Ignore a malformed decision payload.
-        }
-        return;
-      }
-      // Timeline events — live application, gap detection, prefix healing and
-      // snapshot flips all run on the session's serial lane.
-      syncEngineRef.current?.event(sid, event);
-      if (event.type === "agent_end") void refreshSessions();
-    },
-    [reconcileSession, refreshModels, refreshSessions, setTitleOverrides],
-  );
+  const {
+    timeline,
+    timelinePending,
+    timelineError,
+    syncEngineRef,
+    streamingRef,
+    hydrateAttachmentsRef,
+    reconcileSession,
+    handleEvent,
+    applySessionStreaming,
+    resetTimeline,
+    ensureDraftTimeline,
+    retryTimeline,
+  } = useTimelineController({
+    clientRef,
+    selectedRef,
+    selectedSessionId,
+    draft,
+    refreshModels,
+    refreshSessions,
+    setTitleOverrides,
+  });
 
   const closeConversation = useCallback(() => {
     conversationEpochRef.current += 1;
@@ -429,549 +166,20 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     setDraft(false);
     setDraftMode("chat");
     setDraftWorkspaceId("");
-    // Keep the per-session timeline caches — reopening a conversation renders
-    // its live state without a fresh history load.
+    // Keep per-session timeline caches so reopening renders live state.
     void refreshSessions();
     void refreshWorkspaces();
   }, [refreshSessions, refreshWorkspaces]);
-
-  const loadHistory = useCallback(async (sessionId: string): Promise<TimelineState> => {
-    const client = clientRef.current;
-    if (!client) return emptyTimeline();
-    // Prefer display entries — they carry user attachments (message-shaped
-    // history doesn't). Older desktops that don't know get_session_entries
-    // reply "Unsupported command" and fall through to the fallback below.
-    try {
-      const entries: HistoryEntry[] = [];
-      let offset = 0;
-      for (;;) {
-        const response = await client.requestRetry<EntriesData>(
-          { type: "get_session_entries", sessionId, offset },
-          sessionId,
-        );
-        entries.push(...(response.data.entries ?? []));
-        if (!response.data.hasMore) break;
-        const next = response.data.nextOffset;
-        if (typeof next !== "number" || next <= offset) break;
-        offset = next;
-      }
-      return timelineFromEntries(entries);
-    } catch {
-      // Fall through to message-shaped history.
-    }
-    const history: HistoryMessage[] = [];
-    let offset = 0;
-    for (;;) {
-      const response = await client.requestRetry<HistoryData>(
-        { type: "get_messages", sessionId, offset },
-        sessionId,
-      );
-      history.push(...(response.data.messages ?? []));
-      if (!response.data.hasMore) break;
-      const next = response.data.nextOffset;
-      if (typeof next !== "number" || next <= offset) break;
-      offset = next;
-    }
-    return timelineFromHistory(history);
-  }, []);
-
-  // The sync engine is created ONCE and survives client generations — a
-  // reconnect replaces the client, but reconcileAll (reconnect recovery) and
-  // the per-session lanes must keep running. Its deps read clientRef.current
-  // on every call, so a client swap needs no engine rebuild.
-  useEffect(() => {
-    const engine = new SyncEngine({
-      requestGetState: async sessionId => {
-        const client = clientRef.current;
-        if (!client) throw new Error("not_connected");
-        const response = await client.requestRetry<RemoteSessionState>(
-          { type: "get_state", sessionId },
-          sessionId,
-        );
-        return response.data;
-      },
-      requestHistory: loadHistory,
-      fetchReplay: async (sessionId, runId, sinceIdx) => {
-        const client = clientRef.current;
-        if (!client) throw new Error("not_connected");
-        const merged = await fetchEventsSince(client, sessionId, runId, sinceIdx);
-        return { ...merged, events: merged.events ?? [] };
-      },
-      onFailure: failure => {
-        console.error("[remote] session timeline sync failed", {
-          sessionId: failure.sessionId,
-          runId: failure.runId ?? null,
-          reason: failure.reason,
-          stage: failure.stage,
-          attempt: failure.attempt,
-          retryInMs: failure.retryInMs,
-          error: diagnosticError(failure.error),
-        });
-      },
-      onRecovered: sessionId => {
-        setTimelineErrors(previous => {
-          if (!previous[sessionId]) return previous;
-          const next = { ...previous };
-          delete next[sessionId];
-          return next;
-        });
-      },
-    });
-    const unsubscribe = engine.subscribe(commit => {
-      // Atomic cursor + timeline commit from the lane.
-      setTimelines(prev => {
-        const existing = prev[commit.sessionId];
-        return existing === commit.timeline
-          ? prev
-          : { ...prev, [commit.sessionId]: commit.timeline };
-      });
-      cursorsRef.current[commit.sessionId] = commit.cursor;
-      streamingRef.current[commit.sessionId] = commit.timeline.streaming;
-    });
-    syncEngineRef.current = engine;
-    engineRefCleanupRef.current = () => {
-      unsubscribe();
-    };
-    return () => {
-      engineRefCleanupRef.current?.();
-      engineRefCleanupRef.current = null;
-      syncEngineRef.current = null;
-    };
-  }, [loadHistory]);
-
-  // Reachability failures (desktop asleep, network down, relay blip) are
-  // normal business states: the reconnecting badge and the offline empty
-  // state already communicate them, so the red banner is reserved for
-  // unexpected errors only.
-  const recordError = useCallback((nextError: unknown) => {
-    if (classifyError(nextError) === "transport") return;
-    console.warn("[remote] unexpected non-transport error", nextError);
-    setError(nextError instanceof Error ? nextError.message : String(nextError));
-  }, []);
-
-  const connect = useCallback(
-    async (nextCredentials: RemoteCredentials) => {
-      // Dispose any previous client first — it owns its own reconnect timer,
-      // which must not keep running under a new pairing.
-      await clientRef.current?.close();
-      // Let RemoteClient own refresh failures too. Pre-refreshing here used to
-      // throw a transient token-endpoint outage past the client's backoff and
-      // incorrectly send a stored pairing back to the unpaired screen.
-      credentialsRef.current = nextCredentials;
-      setCredentials(nextCredentials);
-      setError(null);
-      setCapabilities(new Set());
-      const client = new RemoteClient(nextCredentials, {
-        onCredentials: next => {
-          setCredentials(next);
-          void saveCredentials(next);
-        },
-        onEvent: handleEvent,
-        onEventDecodeFailure: (sessionId, decodeError) => {
-          console.warn("[remote] malformed live event; reconciling session", {
-            sessionId,
-            error: decodeError,
-          });
-          reconcileSession(sessionId, "resend");
-        },
-        onPresence: nextPresence => {
-          if (nextPresence.unpaired) {
-            // The desktop sent an authenticated unpair notice before revoking
-            // the server credentials. Clear locally at once instead of waiting
-            // for the next token refresh to discover the revocation.
-            credentialsRef.current = null;
-            void clientRef.current?.close("Unpair");
-            clientRef.current = null;
-            syncEngineRef.current?.clear();
-            void clearCredentials();
-            setCredentials(null);
-            setPresence(null);
-            resetCatalog();
-            setSelectedSessionId("");
-            setDraft(false);
-            setTimelines({});
-            setTimelineErrors({});
-            cursorsRef.current = {};
-            streamingRef.current = {};
-            setPhase("unpaired");
-            setError(null);
-            return;
-          }
-          lastPresenceReceiptRef.current = Date.now();
-          setPresence(nextPresence);
-        },
-        onSessions: sessionList => {
-          const list: RemoteSession[] = sessionList.map(s => ({ ...s }));
-          applySessionSnapshot(list);
-          const currentId = selectedRef.current;
-          // An empty session list is a transient store failure, not a deletion
-          // signal (audit 05 L8): a single deleted session leaves the others in
-          // the list, so a wholly-empty list can only mean the desktop read
-          // failed or everything was cleared. Keep the conversation open rather
-          // than close it on a possibly-stale snapshot.
-          if (currentId && list.length > 0 && !list.some(item => item.sessionId === currentId)) {
-            closeConversation();
-          } else if (currentId) {
-            const streaming =
-              sessionList.find(session => session.sessionId === currentId)?.streaming ?? false;
-            setTimelines(prev => {
-              const existing = prev[currentId];
-              return existing && existing.streaming !== streaming
-                ? { ...prev, [currentId]: { ...existing, streaming } }
-                : prev;
-            });
-            // A snapshot flip (streaming true↔false) is a reconcile trigger:
-            // a run that settled may have lost its tail to an at-most-once drop
-            // (M11), and one that started again needs its head re-fetched (H3).
-            const engine = syncEngineRef.current;
-            if (engine) {
-              const before = streamingRef.current[currentId] ?? false;
-              if (before !== streaming) {
-                streamingRef.current[currentId] = streaming;
-                if (!streaming) {
-                  const timeline = engine.timelineFor(currentId);
-                  const run = timeline?.currentRunId;
-                  engine.reconcile(currentId, "snapshot-flip", run ?? undefined);
-                }
-              }
-            }
-          }
-        },
-        onWorkspaces: workspaceList => {
-          setWorkspaces(workspaceList);
-        },
-        onFeatures: features => {
-          setCapabilities(new Set(features));
-        },
-        onConnectionState: (state: ConnectionState) => {
-          // The FSM states map onto the UI phases. A transport disconnect
-          // while ready is handled internally by the client's own status loop
-          // and backoff timer — the context only mirrors the state.
-          if (state === "ready") {
-            setPhase("ready");
-            // A healthy link invalidates any lingering banner — connection
-            // complaints self-clear once the outage is over.
-            setError(null);
-          } else if (state === "revoked") {
-            setPhase("revoked");
-          } else if (state === "unpaired") {
-            setPhase("unpaired");
-          } else if (state === "refreshing") {
-            setPhase("refreshing");
-          } else if (state === "failed") {
-            setPhase("failed");
-          } else if (state === "connecting") {
-            setPhase("connecting");
-          } else {
-            setPhase("reconnecting");
-          }
-        },
-        onReconnected: () => {
-          // A reconnect can drop events for any cached conversation (NATS is
-          // at-most-once) — reconcile every established session. Also re-fetch
-          // the control-plane lists: a first connect that recovered from a
-          // failure never populated them (models included — the catalogue can
-          // have been empty while the desktop was warming up).
-          // Invalidate work still awaiting the previous socket generation.
-          // Enqueuing behind that work can leave a newly-ready connection with
-          // an indefinitely pending conversation load.
-          syncEngineRef.current?.restartAll("reconnect");
-          void refreshModels();
-          void refreshSessions();
-          void refreshWorkspaces();
-          // Re-baseline presence drift — a clock that jumped while the link was
-          // down would otherwise read as a permanent offset.
-          presenceStateRef.current = INITIAL_PRESENCE_STATE;
-        },
-        onError: nextError => {
-          recordError(nextError);
-        },
-      });
-      clientRef.current = client;
-      if (AppState.currentState === "background") client.pauseForBackground();
-      if (networkAvailableRef.current === false) client.setNetworkAvailable(false);
-      // The sync engine is created ONCE and survives client generations —
-      // reconcileAll (reconnect recovery) must keep working across a client
-      // replacement. Its deps read the live clientRef on every call.
-      await client.open();
-      // Catalogue reads are opportunistic. A stored pairing opened with no
-      // signal must stay paired/reconnecting instead of falling back to the QR
-      // screen merely because these first reads found no socket yet.
-      await Promise.allSettled([
-        refreshModels(),
-        refreshSessions(),
-        refreshWorkspaces(),
-        refreshSettings(),
-      ]);
-    },
-    [
-      applySessionSnapshot,
-      closeConversation,
-      handleEvent,
-      recordError,
-      reconcileSession,
-      resetCatalog,
-      refreshModels,
-      refreshSessions,
-      refreshWorkspaces,
-      refreshSettings,
-      setWorkspaces,
-    ],
-  );
-
-  useEffect(() => {
-    let active = true;
-    void (async () => {
-      try {
-        // A pending server-side revoke (M7) fires before anything else: an
-        // offline unpair queued it on the last run. A failure keeps the entry
-        // in storage (retries next launch) and must not block the normal boot.
-        const pending = await loadPendingRevoke();
-        if (pending) {
-          try {
-            await attemptPendingRevoke(pending);
-            await clearPendingRevoke();
-          } catch {
-            // Retry on the next launch.
-          }
-        }
-        if (!active) return;
-        const stored = await loadCredentials();
-        if (!active) return;
-        if (!stored) {
-          setPhase("unpaired");
-          return;
-        }
-        await connect(stored);
-      } catch (nextError) {
-        if (!active) return;
-        const message = nextError instanceof Error ? nextError.message : String(nextError);
-        setError(message);
-        setPhase("unpaired");
-      }
-    })();
-    return () => {
-      active = false;
-      void clientRef.current?.close();
-    };
-  }, [connect]);
-
-  const recoverLifecycle = useCallback(
-    async (reason: "foreground" | "network-restored" | "network-changed") => {
-      if (reason === "foreground") {
-        const available = await refreshNetworkStateRef.current();
-        if (!available) return;
-      }
-      const client = clientRef.current;
-      if (!client || !credentialsRef.current || networkAvailableRef.current === false) return;
-      try {
-        await client.recoverNow(reason);
-        if (clientRef.current !== client || !credentialsRef.current) return;
-        // Lifecycle recovery may have missed at-most-once events even when the
-        // foreground probe found a healthy socket, so always re-baseline and
-        // reconcile durable state after validation.
-        presenceStateRef.current = INITIAL_PRESENCE_STATE;
-        await recoverRef.current();
-      } catch (nextError) {
-        if (clientRef.current === client) recordError(nextError);
-      }
-    },
-    [recordError],
-  );
-
-  useEffect(() => {
-    let previous: AppStateStatus = AppState.currentState;
-    const subscription = AppState.addEventListener("change", next => {
-      const returnedToForeground = next === "active" && previous !== "active";
-      const enteredBackground = next === "background" && previous !== "background";
-      previous = next;
-      if (enteredBackground) clientRef.current?.pauseForBackground();
-      if (returnedToForeground) void recoverLifecycle("foreground");
-    });
-    return () => subscription.remove();
-  }, [recoverLifecycle]);
-
-  useEffect(() => {
-    let active = true;
-    let eventSeen = false;
-    let previousType: Network.NetworkStateType | undefined;
-
-    const observe = (state: Network.NetworkState, triggerRecovery = true): boolean => {
-      if (!active) return false;
-      const available =
-        state.type !== Network.NetworkStateType.NONE &&
-        state.isConnected !== false &&
-        state.isInternetReachable !== false;
-      const wasAvailable = networkAvailableRef.current;
-      const pathChanged =
-        wasAvailable === true &&
-        available &&
-        previousType !== undefined &&
-        previousType !== Network.NetworkStateType.UNKNOWN &&
-        state.type !== undefined &&
-        state.type !== Network.NetworkStateType.UNKNOWN &&
-        state.type !== previousType;
-      networkAvailableRef.current = available;
-      previousType = state.type;
-
-      const client = clientRef.current;
-      client?.setNetworkAvailable(available);
-      if (!available) return false;
-      if (triggerRecovery && wasAvailable === false) {
-        void recoverLifecycle("network-restored");
-      } else if (triggerRecovery && pathChanged) {
-        void recoverLifecycle("network-changed");
-      }
-      return true;
-    };
-
-    refreshNetworkStateRef.current = async () => {
-      try {
-        // Do not trigger a nested "network-restored" recovery here: the
-        // foreground caller immediately performs the single authoritative
-        // recovery after this fresh sample is applied.
-        return observe(await Network.getNetworkStateAsync(), false);
-      } catch (nextError) {
-        console.warn("[remote] foreground network refresh failed", { error: nextError });
-        return networkAvailableRef.current !== false;
-      }
-    };
-
-    void Network.getNetworkStateAsync()
-      .then(state => {
-        if (!eventSeen) observe(state);
-      })
-      .catch(() => undefined);
-    const subscription = Network.addNetworkStateListener(state => {
-      eventSeen = true;
-      observe(state);
-    });
-    return () => {
-      active = false;
-      subscription.remove();
-      refreshNetworkStateRef.current = async () => networkAvailableRef.current !== false;
-    };
-  }, [recoverLifecycle]);
-
-  useEffect(() => {
-    const timer = setInterval(() => setClock(Date.now()), 10_000);
-    return () => clearInterval(timer);
-  }, []);
-
-  const pair = useCallback(
-    async (code: string) => {
-      setPhase("claiming");
-      setError(null);
-      try {
-        const next = await claimPairingCode(code);
-        await connect(next);
-      } catch (nextError) {
-        setError(nextError instanceof Error ? nextError.message : String(nextError));
-        setPhase("unpaired");
-        throw nextError;
-      }
-    },
-    [connect],
-  );
-
-  const reconnect = useCallback(async () => {
-    const stored = credentials ?? (await loadCredentials());
-    if (!stored) {
-      setPhase("unpaired");
-      return;
-    }
-    try {
-      await connect(stored);
-    } catch (nextError) {
-      const message = nextError instanceof Error ? nextError.message : String(nextError);
-      if (message === "invalid_jwt") {
-        // A corrupt/revoked JWT can't be refreshed — retrying would loop. Drop
-        // the stored credentials so the user can re-pair instead.
-        credentialsRef.current = null;
-        await clearCredentials();
-        setCredentials(null);
-        setPhase("unpaired");
-        setError(null);
-      } else {
-        // The client handles transport failures internally (backoff retry);
-        // surface the error but let the connection phase keep driving.
-        setError(message);
-      }
-    }
-  }, [connect, credentials]);
-
-  const unpair = useCallback(async () => {
-    const current = credentials;
-    // Local deregistration — ALWAYS succeeds (M7). Even an offline unpair
-    // must free the device; only the server-side revoke is best-effort.
-    credentialsRef.current = null;
-    // If the desktop is online, ask it to unpair too. Do not let an unavailable
-    // desktop hold the local action hostage: the server revoke below remains
-    // the authoritative offline fallback.
-    const remoteUnpair = clientRef.current?.request({ type: "unpair" }).catch(() => undefined);
-    if (remoteUnpair) {
-      await Promise.race([remoteUnpair, new Promise<void>(resolve => setTimeout(resolve, 750))]);
-    }
-    await clientRef.current?.close();
-    clientRef.current = null;
-    // Stop and discard every pairing-owned network stream, but keep the
-    // Provider-owned local commit subscription so a later pair can render.
-    syncEngineRef.current?.clear();
-    if (current) {
-      try {
-        await serverRevoke(current);
-      } catch {
-        // Offline / token endpoint unreachable — queue the revoke for the
-        // next launch rather than blocking the local unpair.
-        await savePendingRevoke({
-          pairId: current.pairId,
-          deviceId: current.deviceId,
-          seed: current.seed,
-          refreshToken: current.refreshToken,
-          tokenUrl: current.tokenUrl,
-        });
-      }
-    }
-    await clearCredentials();
-    const pendingPrompt = await loadPendingPrompt();
-    if (pendingPrompt) await clearPendingPrompt(pendingPrompt.commandId);
-    setCredentials(null);
-    setPresence(null);
-    resetCatalog();
+  const resetConversation = useCallback(() => {
+    selectedRef.current = "";
     setSelectedSessionId("");
     setDraft(false);
-    setTimelines({});
-    setTimelineErrors({});
-    cursorsRef.current = {};
-    streamingRef.current = {};
-    setPhase("unpaired");
-    setError(null);
-  }, [credentials, resetCatalog]);
+    setDraftMode("chat");
+    setDraftWorkspaceId("");
+  }, []);
 
-  useEffect(() => {
-    hydrateAttachmentsRef.current = async sessionId => {
-      const engine = syncEngineRef.current;
-      if (!engine || !engine.timelineFor(sessionId)) return;
-      try {
-        const durable = await loadHistory(sessionId);
-        engine.mutate(sessionId, live => mergeHistoryAttachments(live, durable));
-      } catch {
-        // The entry can briefly lag the live event. A reconnect/session open
-        // repeats the merge from durable history.
-      }
-    };
-  }, [loadHistory]);
-
-  // ── Recovery (reconcile is the only backfill path) ──
-  //
-  // A reconnect can drop events for ANY cached conversation (NATS is
-  // at-most-once), and a snapshot flip can signal a run whose tail was lost.
-  // Both converge on the same instruction: reconcile the affected sessions on
-  // their serial lanes. The engine rebuilds from durable history + replay, so
-  // no full-resync/gap-fill special casing remains.
-
-  useEffect(() => {
-    recoverRef.current = async (sessionId?: string) => {
+  const recoverRemoteState = useCallback(
+    async (sessionId?: string) => {
       await Promise.allSettled([
         refreshModels(),
         refreshSessions(),
@@ -979,483 +187,103 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         refreshSettings(),
       ]);
       reconcileSession(sessionId, "reconnect");
-    };
-  }, [reconcileSession, refreshModels, refreshSessions, refreshWorkspaces, refreshSettings]);
-
-  const selectSession = useCallback(
-    async (sessionId: string) => {
-      const client = clientRef.current;
-      if (!client) return;
-      setOpeningSession(true);
-      conversationEpochRef.current += 1;
-      setSelectedSessionId(sessionId);
-      selectedRef.current = sessionId;
-      setDraft(false);
-      setUnreadSessions(prev => {
-        if (!prev.has(sessionId)) return prev;
-        const nextUnread = new Set(prev);
-        nextUnread.delete(sessionId);
-        return nextUnread;
-      });
-      try {
-        // Model + thinking come from the durable session state; the timeline
-        // itself reconciles on the lane (replay from the cursor / from -1 for
-        // a run whose prefix isn't proven).
-        const state = await client.requestRetry<RemoteSessionState>(
-          { type: "get_state", sessionId },
-          sessionId,
-        );
-        const currentModel = state.data.model ?? "";
-        const matchingModel = models.find(model => modelReference(model) === currentModel);
-        setModelId(matchingModel ? modelReference(matchingModel) : currentModel);
-        setThinkingLevelState(state.data.thinkingLevel ?? "off");
-      } catch (nextError) {
-        // A desktop still warming after a restart fails get_state; that is an
-        // expected reachability state (the timeline self-heals via reconcile),
-        // not banner-worthy.
-        recordError(nextError);
-      } finally {
-        setOpeningSession(false);
-      }
-      // Reconcile regardless of the state read: a desktop still warming after a
-      // restart fails get_state, but the history rebuild must not be skipped —
-      // the lane's own reconcile re-reads the state and self-heals once the
-      // backend recovers (reconnect recovery re-triggers established lanes).
-      syncEngineRef.current?.reconcile(sessionId, "open");
-      // A cached timeline may have been assembled from real-time events,
-      // whose user_message payload deliberately omits attachments.
-      void hydrateAttachmentsRef.current(sessionId);
     },
-    [hydrateAttachmentsRef, models, recordError, setUnreadSessions],
+    [reconcileSession, refreshModels, refreshSessions, refreshSettings, refreshWorkspaces],
   );
 
-  const newConversation = useCallback(
-    async (mode: "chat" | "workspace" = "chat", workspaceId = "") => {
-      const [lastModel, lastThinking] = await Promise.all([loadLastModel(), loadLastThinking()]);
-      const defaultOption = models.find(model => model.isDefault);
-      const defaultModel =
-        (lastModel && models.some(model => modelReference(model) === lastModel)
-          ? lastModel
-          : null) ??
-        (defaultOption ? modelReference(defaultOption) : null) ??
-        (models[0] ? modelReference(models[0]) : "");
-      conversationEpochRef.current += 1;
-      setSelectedSessionId("");
-      selectedRef.current = "";
-      setDraft(true);
-      setDraftMode(mode);
-      setDraftWorkspaceId(workspaceId);
-      setTimelines(prev => (prev[""] ? prev : { ...prev, "": emptyTimeline() }));
-      setModelId(defaultModel);
-      setThinkingLevelState((lastThinking as ThinkingLevel | null) ?? "off");
-    },
-    [models],
-  );
+  const {
+    phase,
+    error,
+    credentials,
+    presence,
+    desktopOnline,
+    capabilities,
+    fileTransferSupported,
+    promptReceiptSupported,
+    recordError,
+    pair,
+    reconnect,
+    unpair,
+    clearError,
+  } = useRemoteConnection({
+    clientRef,
+    credentialsRef,
+    selectedRef,
+    syncEngineRef,
+    handleEvent,
+    reconcileSession,
+    recoverRemoteState,
+    applySessionSnapshot,
+    applySessionStreaming,
+    setWorkspaces,
+    refreshModels,
+    refreshSessions,
+    refreshSettings,
+    refreshWorkspaces,
+    closeConversation,
+    resetConversation,
+    resetCatalog,
+    resetTimeline,
+  });
+  const {
+    modelId,
+    thinkingLevel,
+    openingSession,
+    selectSession,
+    newConversation,
+    prepareAttachment,
+    cachedAttachment,
+    downloadAttachment,
+    abort,
+    setModel,
+    setThinkingLevel,
+    setApprovalTier,
+    deleteSession,
+    decideApproval,
+  } = useConversationController({
+    clientRef,
+    selectedRef,
+    syncEngineRef,
+    hydrateAttachmentsRef,
+    conversationEpochRef,
+    models,
+    setSelectedSessionId,
+    setDraft,
+    setDraftMode,
+    setDraftWorkspaceId,
+    setUnreadSessions,
+    setApprovalTierState,
+    ensureDraftTimeline,
+    recordError,
+    removeSession,
+    closeConversation,
+  });
 
-  const sendMessage = useCallback(
-    async (
-      text: string,
-      attachments: MobileAttachment[] = [],
-      onUploadProgress?: (completedBytes: number, totalBytes: number) => void,
-    ) => {
-      const client = clientRef.current;
-      // Nothing to send is a no-op, not an error — the composer guards this too.
-      if (!text.trim() && attachments.length === 0) return;
-      if (!client) throw new Error("not_connected");
-      if (sendingRef.current) throw new Error("send_busy");
-      if (attachments.length > 0 && !fileTransferSupported) {
-        throw new Error("attachment_unsupported_desktop");
-      }
-      if (utf8Bytes(text) > MAX_PROMPT_MESSAGE_BYTES) {
-        throw new Error("prompt_too_large");
-      }
-      // Uploading can take long enough for the user to navigate elsewhere.
-      // Freeze every routing value now; never consult selectedRef again for
-      // this send operation.
-      const targetSessionId = selectedRef.current;
-      const targetDraft = draft;
-      const targetDraftMode = draftMode;
-      const targetDraftWorkspaceId = draftWorkspaceId;
-      const conversationEpoch = conversationEpochRef.current;
-      const engine = syncEngineRef.current;
-      const candidate = {
-        draftKey: targetSessionId || "draft:new",
-        sessionId: targetSessionId,
-        text,
-        attachments,
-        modelId,
-        thinkingLevel,
-        mode: targetDraft ? targetDraftMode : ("chat" as const),
-        workspaceId: targetDraft ? targetDraftWorkspaceId : "",
-      };
-      // A run may have started (on this device or another) after the composer
-      // cleared the input — a silent return here would swallow the user's
-      // message. Throw so the UI restores the draft instead. Reads the live
-      // mirror so the check reflects the latest lane snapshot even before the
-      // subscriber re-renders.
-      if (streamingRef.current[targetSessionId] ?? false) throw new Error("send_streaming");
-      let pending = await loadPendingPrompt();
-      let checkReceipt = false;
-      if (pending && samePendingPrompt(pending, candidate)) {
-        checkReceipt = true;
-      } else {
-        if (pending) {
-          // Resolve the previous intent before replacing it. If the desktop
-          // accepted it, clear only its matching draft; if it did not, the
-          // newly edited composer supersedes that unsent intent.
-          const previousReceipt = promptReceiptSupported
-            ? await pendingPromptReceipt(client, pending.commandId)
-            : null;
-          if (previousReceipt) {
-            await clearSessionDraftIfMatches(pending.draftKey, pending);
-          }
-          await clearPendingPrompt(pending.commandId);
-        }
-        pending = {
-          version: 1,
-          commandId: randomId("prompt"),
-          ...candidate,
-          createdAt: Date.now(),
-        };
-        // This write is the commit point for the user's send intent. Do it
-        // before clearing any UI or starting attachment uploads.
-        await savePendingPrompt(pending);
-      }
-      sendingRef.current = true;
-      setSending(true);
-      try {
-        // The optimistic bubble is a lane instruction (append to the current
-        // snapshot), not a whole-cache overwrite — events that landed during
-        // the upload stay (M8).
-        engine?.mutate(targetSessionId, timeline => {
-          const base = timeline ?? emptyTimeline();
-          if (base.items.some(item => item.id === `local:${pending.commandId}`)) return base;
-          return {
-            ...base,
-            items: [
-              ...base.items,
-              {
-                id: `local:${pending.commandId}`,
-                kind: "message",
-                role: "user",
-                text: text.trim(),
-                ...(attachments.length
-                  ? {
-                      attachments: attachments.map(attachment => ({
-                        path: attachment.localUri,
-                        name: attachment.name,
-                        kind: attachment.kind,
-                        mobilePreviewUnsupported: attachment.mobilePreviewUnsupported,
-                      })),
-                    }
-                  : {}),
-              },
-            ],
-          };
-        });
-        const response = await deliverPendingPrompt(
-          client,
-          pending,
-          checkReceipt,
-          promptReceiptSupported,
-          onUploadProgress,
-        );
-        await clearPendingPrompt(pending.commandId);
-        await clearSessionDraftIfMatches(pending.draftKey, pending);
-        const nextSessionId = response.sessionId;
-        if (nextSessionId && nextSessionId !== targetSessionId) {
-          // A draft just got bound to a real session. Migrate the optimistic
-          // bubble from the "" placeholder lane into the real session's lane —
-          // the real session's events have been landing there all along.
-          const stillViewingSentDraft = conversationEpochRef.current === conversationEpoch;
-          if (stillViewingSentDraft) {
-            selectedRef.current = nextSessionId;
-            setSelectedSessionId(nextSessionId);
-            setDraft(false);
-            setDraftMode("chat");
-            setDraftWorkspaceId("");
-          }
-          const draftItems = timelinesRef.current[targetSessionId]?.items ?? [];
-          const draftUser = draftItems.find(
-            item => item.kind === "message" && item.role === "user",
-          );
-          if (draftUser?.kind === "message") {
-            const textToMove = draftUser.text;
-            engine?.mutate(nextSessionId, timeline => {
-              const current = timeline ?? emptyTimeline();
-              const alreadyLanded = current.items.some(
-                item =>
-                  item.kind === "message" &&
-                  item.role === "user" &&
-                  item.text.trim() === textToMove.trim(),
-              );
-              if (alreadyLanded) return current;
-              return {
-                ...current,
-                items: [...current.items, draftUser],
-              };
-            });
-          }
-          engine?.mutate(targetSessionId, timeline => ({
-            ...(timeline ?? emptyTimeline()),
-            items: [],
-          }));
-          if (stillViewingSentDraft) {
-            void refreshSessions();
-          }
-        }
-      } catch (sendError) {
-        // Business/auth failures are definitive and leave the regular draft in
-        // place. Transport failures keep the outbox record for foreground or
-        // cold-start recovery with the same durable command id.
-        if (!isTransientNatsRequestError(sendError)) {
-          await clearPendingPrompt(pending.commandId);
-        }
-        throw sendError;
-      } finally {
-        sendingRef.current = false;
-        setSending(false);
-      }
-    },
-    [
-      draft,
-      draftMode,
-      draftWorkspaceId,
-      fileTransferSupported,
-      modelId,
-      promptReceiptSupported,
-      refreshSessions,
-      thinkingLevel,
-    ],
-  );
-
-  const recoverPendingPrompt = useCallback(async () => {
-    if (sendingRef.current) return;
-    if (pendingRecoveryRef.current) return pendingRecoveryRef.current;
-    const recovery = (async () => {
-      const client = clientRef.current;
-      if (!client || !credentialsRef.current) return;
-      const pending = await loadPendingPrompt();
-      if (!pending) return;
-      sendingRef.current = true;
-      setSending(true);
-      try {
-        const receipt = await deliverPendingPrompt(client, pending, true, promptReceiptSupported);
-        await clearPendingPrompt(pending.commandId);
-        await clearSessionDraftIfMatches(pending.draftKey, pending);
-        void refreshSessions();
-        reconcileSession(receipt.sessionId, "reconnect");
-      } catch (recoveryError) {
-        if (!isTransientNatsRequestError(recoveryError)) {
-          await clearPendingPrompt(pending.commandId);
-          recordError(recoveryError);
-        }
-      } finally {
-        sendingRef.current = false;
-        setSending(false);
-      }
-    })().finally(() => {
-      pendingRecoveryRef.current = null;
-    });
-    pendingRecoveryRef.current = recovery;
-    return recovery;
-  }, [promptReceiptSupported, reconcileSession, recordError, refreshSessions]);
-
-  // A cold start lands on the session list. Resume a staged send there; when
-  // ChatScreen is still mounted after a brief background trip, leave its draft
-  // visible and let the user's next tap reuse the same durable command id.
-  useEffect(() => {
-    if (phase === "ready" && !selectedRef.current && !draft) {
-      void recoverPendingPrompt();
-    }
-  }, [draft, phase, recoverPendingPrompt]);
-
-  const prepareAttachment = useCallback(
-    async (
-      attachment: HistoryAttachment,
-      variant: "preview" | "original" = "preview",
-      signal?: AbortSignal,
-      onWaiting?: () => void,
-    ) => {
-      const client = clientRef.current;
-      const sessionId = selectedRef.current;
-      if (!client || !sessionId) throw new Error("attachment_no_session");
-      const info = await prepareDownload(client, sessionId, attachment, variant, signal, onWaiting);
-      rememberPreparedPreview(attachment, info);
-      return info;
-    },
-    [],
-  );
-
-  const cachedAttachment = useCallback(
-    (attachment: HistoryAttachment, variant: "preview" | "original" = "preview") =>
-      cachedPreviewForAttachment(attachment, variant),
-    [],
-  );
-
-  const downloadAttachment = useCallback(
-    async (
-      info: DownloadInfo,
-      onProgress?: (completedBytes: number, totalBytes: number) => void,
-      signal?: AbortSignal,
-      onWaiting?: () => void,
-    ) => {
-      const client = clientRef.current;
-      if (!client) throw new Error("attachment_not_connected");
-      return downloadPrepared(client, info, onProgress, signal, onWaiting);
-    },
-    [],
-  );
-
-  const abort = useCallback(async () => {
-    const client = clientRef.current;
-    if (!client || !selectedRef.current) return;
-    await client.request({ type: "abort", sessionId: selectedRef.current }, selectedRef.current);
-  }, []);
-
-  const setModel = useCallback(async (nextModelId: string) => {
-    setModelId(nextModelId);
-    await saveLastModel(nextModelId);
-    const client = clientRef.current;
-    if (client && selectedRef.current) {
-      await client.request(
-        {
-          type: "set_model",
-          sessionId: selectedRef.current,
-          modelId: nextModelId,
-          providerId: modelProviderFromReference(nextModelId),
-        },
-        selectedRef.current,
-      );
-    }
-  }, []);
-
-  const setThinkingLevel = useCallback(async (level: ThinkingLevel) => {
-    setThinkingLevelState(level);
-    await saveLastThinking(level);
-    const client = clientRef.current;
-    if (client && selectedRef.current) {
-      await client.request(
-        { type: "set_thinking_level", sessionId: selectedRef.current, level },
-        selectedRef.current,
-      );
-    }
-  }, []);
-
-  const setApprovalTier = useCallback(
-    async (tier: string) => {
-      const client = clientRef.current;
-      if (!client) throw new Error("not_connected");
-      const data = await client.request<{ approvalTier: string }>(
-        { type: "set_approval_tier", tier },
-        "list",
-      );
-      setApprovalTierState(data.data.approvalTier);
-    },
-    [setApprovalTierState],
-  );
-
-  const continueRun = useCallback(async (sessionId: string, runId: string) => {
-    const client = clientRef.current;
-    if (!client) throw new Error("not_connected");
-    await client.request({ type: "continue_run", sessionId, runId }, sessionId);
-  }, []);
-
-  const deleteSession = useCallback(
-    async (sessionId: string, threadId: string) => {
-      if (await removeSession(sessionId, threadId)) {
-        closeConversation();
-      }
-    },
-    [closeConversation, removeSession],
-  );
-
-  const decideApproval = useCallback(async (id: string, decision: "approved" | "rejected") => {
-    const client = clientRef.current;
-    const sessionId = selectedRef.current;
-    if (!client || !sessionId) return;
-    await client.request(
-      {
-        type: "approval_decision",
-        sessionId,
-        entryId: id,
-        mode: decision,
-      },
-      sessionId,
-    );
-    syncEngineRef.current?.mutate(sessionId, timeline =>
-      markApprovalDecision(timeline, id, decision),
-    );
-  }, []);
-
-  const desktopOnline = useMemo(() => {
-    if (phase !== "ready") return false;
-    const next = isDesktopOnline(presence, clock, presenceStateRef.current);
-    presenceStateRef.current = next;
-    // Fast death detection: the bridge beats once per second, so a local
-    // receipt gap flags a dead desktop within ~25s — well before the
-    // skew-tolerant 60s staleness window would flip the badge.
-    return next.online && clock - lastPresenceReceiptRef.current < PRESENCE_RECEIPT_STALE_MS;
-  }, [clock, phase, presence]);
-  // The selected conversation's timeline — derived from the per-session cache
-  // so ChatScreen reads it exactly as before. An empty draft (no session yet)
-  // renders the "" cache.
-  const timeline = useMemo(
-    () => timelines[selectedSessionId || ""] ?? emptyTimeline(),
-    [selectedSessionId, timelines],
-  );
-  // True while the selected session's timeline has been requested but not yet
-  // committed (its first reconcile still in flight). Distinguishes "loading"
-  // from "genuinely empty" in the transcript.
-  const timelinePending = useMemo(
-    () => selectedSessionId !== "" && !draft && timelines[selectedSessionId] === undefined,
-    [selectedSessionId, draft, timelines],
-  );
-  const timelineError = selectedSessionId ? (timelineErrors[selectedSessionId] ?? null) : null;
-
-  useEffect(() => {
-    if (!timelinePending || !selectedSessionId || timelineError) return;
-    const sessionId = selectedSessionId;
-    const timer = setTimeout(() => {
-      if (selectedRef.current !== sessionId || timelinesRef.current[sessionId] !== undefined)
-        return;
-      console.error("[remote] session timeline load timed out", {
-        sessionId,
-        timeoutMs: TIMELINE_LOAD_TIMEOUT_MS,
-        phase,
-      });
-      setTimelineErrors(previous => ({ ...previous, [sessionId]: "timeout" }));
-    }, TIMELINE_LOAD_TIMEOUT_MS);
-    return () => clearTimeout(timer);
-  }, [phase, selectedSessionId, timelineError, timelinePending]);
-
-  const retryTimeline = useCallback(async () => {
-    const sessionId = selectedRef.current;
-    if (!sessionId) return;
-    setTimelineErrors(previous => {
-      if (!previous[sessionId]) return previous;
-      const next = { ...previous };
-      delete next[sessionId];
-      return next;
-    });
-    console.warn("[remote] retrying session timeline sync", { sessionId });
-    const client = clientRef.current;
-    if (client) {
-      try {
-        await client.recoverNow("request-failure");
-      } catch (error) {
-        console.error("[remote] timeline retry transport recovery failed", {
-          sessionId,
-          error: diagnosticError(error),
-        });
-      }
-    }
-    if (selectedRef.current === sessionId) syncEngineRef.current?.restart(sessionId, "open");
-  }, []);
+  const { sending, sendMessage, continueRun } = usePromptOutbox({
+    clientRef,
+    credentialsRef,
+    selectedRef,
+    streamingRef,
+    conversationEpochRef,
+    syncEngineRef,
+    phase,
+    draft,
+    draftMode,
+    draftWorkspaceId,
+    modelId,
+    thinkingLevel,
+    fileTransferSupported,
+    promptReceiptSupported,
+    setSelectedSessionId,
+    setDraft,
+    setDraftMode,
+    setDraftWorkspaceId,
+    refreshSessions,
+    reconcileSession,
+    recordError,
+  });
   const selectedTitle =
     sessions.find(session => session.sessionId === selectedSessionId)?.title ?? "";
-
-  const clearError = useCallback(() => setError(null), []);
 
   const value = useMemo<RemoteContextValue>(
     () => ({

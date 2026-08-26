@@ -813,6 +813,55 @@ export function appendUserMessage(
   };
 }
 
+/**
+ * Commit a prompt only after the desktop acknowledged it. The live
+ * `user_message` mirror can race ahead of the acknowledgement, so enrich that
+ * run-scoped bubble instead of appending a duplicate. Until this function is
+ * called, the composer remains the sole owner of the unsent text/attachments.
+ */
+export function commitAcknowledgedUserMessage(
+  state: TimelineState,
+  input: {
+    id: string;
+    runId: string;
+    text: string;
+    attachments?: HistoryAttachment[];
+  },
+): TimelineState {
+  const existingIndex = state.items.findIndex(
+    item =>
+      item.kind === "message" &&
+      item.role === "user" &&
+      (item.id === input.id ||
+        (item.runId === input.runId && item.text.trim() === input.text.trim())),
+  );
+  if (existingIndex >= 0) {
+    const existing = state.items[existingIndex];
+    if (!existing || existing.kind !== "message") return state;
+    const items = [...state.items];
+    items[existingIndex] = {
+      ...existing,
+      runId: input.runId,
+      ...(input.attachments?.length ? { attachments: input.attachments } : {}),
+    };
+    return { ...state, items };
+  }
+  return {
+    ...state,
+    items: [
+      ...state.items,
+      {
+        id: input.id,
+        kind: "message",
+        role: "user",
+        text: input.text,
+        runId: input.runId,
+        ...(input.attachments?.length ? { attachments: input.attachments } : {}),
+      },
+    ],
+  };
+}
+
 export function markApprovalDecision(
   state: TimelineState,
   approvalId: string,
