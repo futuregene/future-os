@@ -536,11 +536,23 @@ fn list_providers_reports_builtin_and_custom_providers() {
             .expect("builtin catalog is never empty")
             .clone()
     };
+    // A second builtin id, this time shadowed by a full custom config (name +
+    // api) so the builtin loop hits the `custom_ids.contains(..) => continue`
+    // arm and the entry shows up in the custom list instead.
+    let shadow_id = {
+        let registry = state.model_registry.read();
+        let mut ids: Vec<String> = registry.builtin_provider_summaries().keys().cloned().collect();
+        ids.sort();
+        ids.into_iter()
+            .find(|id| *id != builtin_id)
+            .expect("catalog has multiple builtin providers")
+    };
 
     // models.json: a full custom provider (name/api/models), an api-only
     // provider (name falls back to id), an override-only provider (baseUrl
-    // only — filtered out of both custom_ids and the custom list), and a
-    // baseUrl override for a builtin id.
+    // only — filtered out of both custom_ids and the custom list), a
+    // baseUrl override for a builtin id, and a full custom config that
+    // shadows a second builtin id.
     std::fs::create_dir_all(home.models_path().parent().unwrap()).unwrap();
     std::fs::write(
         home.models_path(),
@@ -564,6 +576,10 @@ fn list_providers_reports_builtin_and_custom_providers() {
                 },
                 (builtin_id.clone()): {
                     "baseUrl": "https://custom-builtin.example.com"
+                },
+                (shadow_id.clone()): {
+                    "name": "Shadowed Builtin",
+                    "api": "openai-completions"
                 }
             }
         })
@@ -598,10 +614,21 @@ fn list_providers_reports_builtin_and_custom_providers() {
         .expect("overridden builtin present");
     assert_eq!(overridden["baseUrl"], "https://custom-builtin.example.com");
     assert_eq!(overridden["hasApiKey"], false);
+    // The shadowed builtin id is skipped from the builtin list (custom_ids
+    // collision) and surfaces as a custom provider instead.
+    assert!(builtin.iter().all(|p| p["id"] != shadow_id));
 
-    // custom: myprov and noname (sorted by id); override-only filtered out.
+    // custom: myprov, noname and the shadowed builtin (sorted by id);
+    // override-only filtered out.
     let ids: Vec<&str> = custom.iter().map(|p| p["id"].as_str().unwrap()).collect();
-    assert_eq!(ids, vec!["myprov", "noname"]);
+    let mut expected = vec!["myprov", "noname", shadow_id.as_str()];
+    expected.sort();
+    assert_eq!(ids, expected);
+    let shadowed = custom
+        .iter()
+        .find(|p| p["id"] == shadow_id)
+        .expect("shadowed builtin present in custom list");
+    assert_eq!(shadowed["name"], "Shadowed Builtin");
 
     let myprov = custom.iter().find(|p| p["id"] == "myprov").unwrap();
     assert_eq!(myprov["name"], "My Provider");
