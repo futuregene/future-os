@@ -1148,6 +1148,61 @@ mod tests {
     }
 
     #[test]
+    fn run_columns_falls_back_when_archive_unsupported() {
+        // A legacy `runs` table without `archived_at` (the optional archive
+        // migration never applied) selects the NULL-projected column list.
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        conn.execute_batch(
+            "CREATE TABLE runs (
+                 id TEXT PRIMARY KEY,
+                 thread_id TEXT NOT NULL,
+                 trigger_message_id TEXT,
+                 status TEXT NOT NULL,
+                 model_provider TEXT,
+                 model_id TEXT,
+                 started_at INTEGER,
+                 ended_at INTEGER,
+                 error_message TEXT,
+                 error_type TEXT,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL
+             );",
+        )
+        .expect("create legacy runs table");
+        assert_eq!(
+            run_columns(&conn).expect("columns"),
+            RUN_COLUMNS_WITHOUT_ARCHIVE
+        );
+    }
+
+    #[test]
+    fn find_run_by_trigger_message_id_ignores_blank_ids() {
+        assert!(find_run_by_trigger_message_id("").expect("blank").is_none());
+        assert!(find_run_by_trigger_message_id("   ")
+            .expect("whitespace")
+            .is_none());
+    }
+
+    #[test]
+    fn normalize_tool_input_serializes_non_string_values() {
+        assert_eq!(normalize_tool_input(&serde_json::Value::Null), None);
+        assert_eq!(
+            normalize_tool_input(&serde_json::json!("keep")),
+            Some("keep".to_string())
+        );
+        // Non-null, non-string values (Responses/Anthropic native JSON args)
+        // are serialized back to their JSON representation.
+        assert_eq!(
+            normalize_tool_input(&serde_json::json!({"a": 1})),
+            Some(r#"{"a":1}"#.to_string())
+        );
+        assert_eq!(
+            normalize_tool_input(&serde_json::json!([1, 2, 3])),
+            Some("[1,2,3]".to_string())
+        );
+    }
+
+    #[test]
     fn create_run_records_thread_message_activity() {
         let (_home, conn) = guarded_conn("run_thread_activity");
         conn.execute_batch(

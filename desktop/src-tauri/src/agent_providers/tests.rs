@@ -637,6 +637,17 @@ fn validate_model_rules() {
         .unwrap_err()
         .to_string()
         .contains("cannot exceed"));
+
+    // Non-positive limits (context window or max tokens) are rejected.
+    let mut nonpositive = valid_input();
+    nonpositive.models = vec![CustomProviderModel {
+        max_tokens: 0,
+        ..custom_model("m1", "", false)
+    }];
+    assert!(validate_custom_provider(nonpositive)
+        .unwrap_err()
+        .to_string()
+        .contains("positive integers"));
 }
 
 // ── catalog.rs ──────────────────────────────────────────────────────────────
