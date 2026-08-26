@@ -509,4 +509,45 @@ mod tests {
         // Released after the write — no residual lock file.
         assert!(!lock_path(dir.path()).exists());
     }
+
+    #[test]
+    fn remove_lock_file_tolerates_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("never-created.lock");
+        // NotFound is swallowed (a concurrent cleaner already removed it).
+        assert!(remove_lock_file(&missing).is_ok());
+    }
+
+    #[test]
+    fn remove_lock_file_surfaces_other_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        // `remove_file` on a directory fails with EISDIR (not NotFound) on
+        // unix — the "other error" arm surfaces it instead of swallowing.
+        let subdir = dir.path().join("adir");
+        std::fs::create_dir(&subdir).unwrap();
+        assert!(remove_lock_file(&subdir).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_in_unwritable_dir_reports_contextual_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        // goal_dir exists but is read-only → `create_new(true)` fails with a
+        // non-AlreadyExists error (PermissionDenied) and surfaces the
+        // "create ACTIVE_GOAL_STATE.md.lock" context.
+        let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+        perms.set_mode(0o555);
+        std::fs::set_permissions(dir.path(), perms).unwrap();
+        let err = acquire_active_state_lock(dir.path()).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("create ACTIVE_GOAL_STATE.md.lock"),
+            "unexpected error: {msg}"
+        );
+        // Restore writability so the tempdir can be cleaned up.
+        let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(dir.path(), perms).unwrap();
+    }
 }

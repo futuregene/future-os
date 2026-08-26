@@ -101,10 +101,10 @@ mod tests {
         let long = "x".repeat(SEMANTIC_SUMMARY_MAX_CHARS + 100);
         g.record_semantic_event(KIND_REPLAN_ACKED, None, &long, 1);
         let event = &g.semantic_history[0];
+        let summary_chars = event.summary.chars().count();
         assert!(
-            event.summary.chars().count() <= SEMANTIC_SUMMARY_MAX_CHARS + 1,
-            "summary over the public-safe bound: {} chars",
-            event.summary.chars().count()
+            summary_chars <= SEMANTIC_SUMMARY_MAX_CHARS + 1,
+            "summary over the public-safe bound: {summary_chars} chars"
         );
         assert!(event.summary.ends_with('…'));
         assert_eq!(event.kind, KIND_REPLAN_ACKED);
