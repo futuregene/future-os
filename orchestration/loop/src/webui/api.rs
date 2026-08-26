@@ -881,4 +881,303 @@ mod tests {
         assert_eq!(b.tokens_in, 5);
         assert!((b.cost - 0.0005).abs() < 1e-9);
     }
+
+    // ── projection fixtures ────────────────────────────────────────────────
+
+    fn rec(
+        todo_id: &str,
+        run_id: &str,
+        recorded_at: u64,
+        kind: FailureKind,
+        cost: f64,
+    ) -> RunRecord {
+        RunRecord {
+            turn: 1,
+            todo_id: todo_id.to_string(),
+            run_id: run_id.to_string(),
+            terminal_state: "completed".to_string(),
+            error: None,
+            tokens_in_delta: 10,
+            tokens_out_delta: 5,
+            cost_delta: cost,
+            tools: vec![],
+            evidence: String::new(),
+            recorded_at,
+            spend_source: None,
+            validation: None,
+            failure_kind: Some(kind),
+            truncation: None,
+        }
+    }
+
+    fn open_store_with_goal() -> (Store, tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().to_string_lossy()).unwrap();
+        let mut goal = Goal::new("g1", "objective", "/tmp");
+        goal.add(Todo::advancement("T1", "work"));
+        let mut done = Todo::advancement("T2", "done work");
+        done.complete(true, vec![]);
+        goal.add(done);
+        goal.add(Todo::user_gate("G1", "approve?", &["T3"]));
+        goal.add(Todo::monitor(
+            "M1",
+            "watch",
+            std::time::Duration::from_secs(60),
+        ));
+        goal.register_agent("a1", vec!["shell".to_string()]);
+        goal.scheduler_heartbeats.insert("a1".to_string(), 100);
+        let ts = goal.created_at;
+        store.register(&goal).unwrap();
+        store
+            .append(crate::store::Event::GoalStarted {
+                goal_id: "g1".into(),
+                ts,
+            })
+            .unwrap();
+        for t in [
+            Todo::advancement("T1", "work"),
+            {
+                let mut d = Todo::advancement("T2", "done work");
+                d.complete(true, vec![]);
+                d
+            },
+            Todo::user_gate("G1", "approve?", &["T3"]),
+            Todo::monitor("M1", "watch", std::time::Duration::from_secs(60)),
+        ] {
+            store
+                .append(crate::store::Event::TodoAdded {
+                    goal_id: "g1".into(),
+                    todo: t,
+                    ts,
+                })
+                .unwrap();
+        }
+        store
+            .append(crate::store::Event::AgentOnboarded {
+                goal_id: "g1".into(),
+                agent_id: "a1".into(),
+                capabilities: vec!["shell".into()],
+                workspaces: vec![],
+                ts,
+            })
+            .unwrap();
+        let now = now_epoch();
+        store
+            .append_run("g1", &rec("T1", "a1-run", now, FailureKind::None, 0.5))
+            .unwrap();
+        store
+            .append_run(
+                "g1",
+                &rec("T1", "a1-run2", now, FailureKind::ScienceVerifyFailed, 0.25),
+            )
+            .unwrap();
+        store
+            .append_run(
+                "g1",
+                &rec("T1", "a1-run3", now, FailureKind::InfraRecoverable, 0.125),
+            )
+            .unwrap();
+        store
+            .append_run(
+                "g1",
+                &rec("T1", "a1-run4", now, FailureKind::HardError, 0.0625),
+            )
+            .unwrap();
+        (store, dir, "g1".to_string())
+    }
+
+    #[test]
+    fn epoch_secs_and_label_helpers() {
+        assert!(epoch_secs(None).is_none());
+        assert_eq!(epoch_secs(Some(SystemTime::UNIX_EPOCH)), Some(0));
+
+        use crate::state::TodoStatus;
+        let t = Todo::advancement("x", "x");
+        assert_eq!(class_label(&t), "advancement");
+        assert_eq!(status_label(&t), "open");
+        let mut m = Todo::monitor("m", "w", std::time::Duration::from_secs(1));
+        assert_eq!(class_label(&m), "monitor");
+        m.status = TodoStatus::Done;
+        assert_eq!(status_label(&m), "done");
+    }
+
+    #[test]
+    fn nnz_normalizes_zero() {
+        assert_eq!(nnz(0.0), 0.0);
+        assert_eq!(nnz(-0.0), 0.0);
+        assert_eq!(nnz(1.5), 1.5);
+    }
+
+    #[test]
+    fn overview_and_goals_push_project_goal() {
+        let (store, _dir, _gid) = open_store_with_goal();
+        let ov = overview(&store).unwrap();
+        assert_eq!(ov.totals.goals, 1);
+        assert_eq!(ov.totals.active, 1);
+        assert_eq!(ov.goals.len(), 1);
+        assert_eq!(ov.goals[0].goal_id, "g1");
+        assert_eq!(ov.goals[0].todos_total, 4);
+        assert_eq!(ov.goals[0].open_gates, 1);
+
+        let push = goals_push(&store).unwrap();
+        assert_eq!(push.len(), 1);
+        assert_eq!(push[0].goal_id, "g1");
+    }
+
+    #[test]
+    fn goal_detail_projects_todos_agents_spend_and_runs() {
+        let (store, _dir, gid) = open_store_with_goal();
+        let detail = goal_detail(&store, &gid).unwrap().unwrap();
+        assert_eq!(detail.goal_id, "g1");
+        assert_eq!(detail.todos.len(), 4);
+        assert_eq!(detail.agents.len(), 1);
+        assert_eq!(detail.agents[0].id, "a1");
+        assert_eq!(detail.agents[0].capabilities, vec!["shell".to_string()]);
+        assert_eq!(detail.runs.len(), 4);
+        // spend totals fold all four runs.
+        assert_eq!(detail.spend.total.runs, 4);
+        // outcomes split: one per failure kind.
+        assert_eq!(detail.spend.outcomes_7d.succeeded, 1);
+        assert_eq!(detail.spend.outcomes_7d.verify_failed, 1);
+        assert_eq!(detail.spend.outcomes_7d.infra_failed, 1);
+        assert_eq!(detail.spend.outcomes_7d.errored, 1);
+    }
+
+    #[test]
+    fn goal_detail_missing_goal_is_none() {
+        let (store, _dir, _gid) = open_store_with_goal();
+        assert!(goal_detail(&store, "nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn runs_page_and_events_page_cover_empty_and_missing() {
+        let (store, _dir, gid) = open_store_with_goal();
+        let runs = runs_page(&store, &gid, 2).unwrap().unwrap();
+        assert_eq!(runs.len(), 2, "limit truncates to the newest two");
+        assert!(runs_page(&store, "nope", 10).unwrap().is_none());
+
+        let events = events_page(&store, &gid, 10).unwrap().unwrap();
+        assert!(!events.is_empty());
+        assert!(events_page(&store, "nope", 10).unwrap().is_none());
+    }
+
+    #[test]
+    fn label_helpers_cover_every_variant() {
+        use crate::state::{TaskClass, TodoStatus};
+        for (class, label) in [
+            (TaskClass::Advancement, "advancement"),
+            (TaskClass::UserGate, "user_gate"),
+            (TaskClass::UserAction, "user_action"),
+            (TaskClass::Monitor, "monitor"),
+            (TaskClass::Blocker, "blocker"),
+        ] {
+            let mut t = Todo::advancement("t", "x");
+            t.class = class;
+            assert_eq!(class_label(&t), label);
+        }
+        for (status, label) in [
+            (TodoStatus::Open, "open"),
+            (TodoStatus::Done, "done"),
+            (TodoStatus::Superseded, "superseded"),
+            (TodoStatus::Deferred, "deferred"),
+            (TodoStatus::Blocked, "blocked"),
+        ] {
+            let mut t = Todo::advancement("t", "x");
+            t.status = status;
+            assert_eq!(status_label(&t), label);
+        }
+    }
+
+    #[test]
+    fn agent_views_infer_heartbeat_and_lease_agents() {
+        let mut goal = Goal::new("g", "o", "/tmp");
+        goal.register_agent("a1", vec!["shell".to_string()]);
+        // Heartbeat-only agent (never registered) + lease-inferred agent.
+        goal.scheduler_heartbeats.insert("hb_only".to_string(), 100);
+        let mut leased = Todo::advancement("T1", "work");
+        let now = now_epoch();
+        leased.claimed_by = Some("lease_only".to_string());
+        leased.lease_expires_at = Some(now + 60);
+        goal.add(leased);
+        let mut expired = Todo::advancement("T2", "expired lease");
+        expired.claimed_by = Some("lease_only".to_string());
+        expired.lease_expires_at = Some(now.saturating_sub(1));
+        goal.add(expired);
+
+        let views = agent_views(&goal, now);
+        let ids: Vec<&str> = views.iter().map(|v| v.id.as_str()).collect();
+        assert!(ids.contains(&"a1"));
+        assert!(ids.contains(&"hb_only"));
+        assert!(ids.contains(&"lease_only"));
+
+        let hb = views.iter().find(|v| v.id == "hb_only").unwrap();
+        assert_eq!(hb.last_heartbeat, Some(100));
+        assert!(hb.heartbeat_age_secs.is_some());
+
+        let lease = views.iter().find(|v| v.id == "lease_only").unwrap();
+        assert_eq!(lease.active_leases, vec!["T1".to_string()]);
+    }
+
+    #[test]
+    fn scan_active_runs_skips_non_live_non_header_and_foreign() {
+        let root = tempfile::tempdir().unwrap();
+        let p = root.path();
+        let runs = p.join("runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        // Not a .jsonl file.
+        std::fs::write(runs.join("note.txt"), b"x").unwrap();
+        // Not a .live.jsonl (missing .live stem).
+        std::fs::write(runs.join("plain.jsonl"), b"{}").unwrap();
+        // Unreadable JSON lines are skipped.
+        std::fs::write(runs.join("junk.live.jsonl"), b"not-json\n").unwrap();
+        // A foreign goal header.
+        std::fs::write(
+            runs.join("foreign.live.jsonl"),
+            b"{\"type\":\"run_header\",\"goal_id\":\"other\",\"agent_id\":\"a\",\"wall_ts\":1}\n",
+        )
+        .unwrap();
+        // A run with no agent_id header field is still projected (agent_id
+        // becomes None — the header carries no agent to map).
+        std::fs::write(
+            runs.join("noagent.live.jsonl"),
+            b"{\"type\":\"run_header\",\"goal_id\":\"g1\",\"wall_ts\":1}\n",
+        )
+        .unwrap();
+        // A valid run with usage string credit_cost + agent_end.
+        std::fs::write(
+            runs.join("good.live.jsonl"),
+            concat!(
+                "{\"type\":\"run_header\",\"goal_id\":\"g1\",\"agent_id\":\"a1\",\"session_id\":\"s\",\"run_id\":\"r\",\"todo_id\":\"t\",\"wall_ts\":100}\n",
+                "{\"type\":\"usage\",\"wall_ts\":101,\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"credit_cost\":\"0.5\"}}\n",
+                "{\"type\":\"agent_end\",\"wall_ts\":102}\n",
+            ),
+        )
+        .unwrap();
+
+        let views = scan_active_runs(p.to_str().unwrap(), "g1");
+        assert_eq!(views.len(), 2);
+        let v = views
+            .iter()
+            .find(|v| v.agent_id.as_deref() == Some("a1"))
+            .unwrap();
+        assert_eq!(v.tokens_in, 5);
+        assert_eq!(v.tokens_out, 2);
+        assert!(!v.active, "agent_end marks finished");
+        assert!((v.cost - 0.5).abs() < 1e-9);
+        let noagent = views.iter().find(|v| v.agent_id.is_none()).unwrap();
+        assert_eq!(noagent.run_id, "noagent");
+    }
+
+    #[test]
+    fn replay_all_skips_a_corrupt_ledger() {
+        let (store, _dir, gid) = open_store_with_goal();
+        // Truncate the ledger so replay fails → the goal is skipped.
+        let ledger = store.goal_dir(&gid).join("events.jsonl");
+        std::fs::write(&ledger, "not-json\n").unwrap();
+        assert!(replay_all(&store).is_empty());
+        // overview still returns Ok with zero goals (one corrupt goal must
+        // not blank the whole dashboard).
+        let ov = overview(&store).unwrap();
+        assert_eq!(ov.totals.goals, 0);
+    }
 }
