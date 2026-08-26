@@ -1,6 +1,7 @@
 import {
   applyStreamEvent,
   appendUserMessage,
+  commitAcknowledgedUserMessage,
   emptyTimeline,
   markApprovalDecision,
   mergeHistoryAttachments,
@@ -304,6 +305,62 @@ describe("projection reducer", () => {
 });
 
 describe("user message mirror", () => {
+  test("commits a user message only when the prompt acknowledgement is applied", () => {
+    const pending = emptyTimeline();
+    expect(pending.items).toEqual([]);
+
+    const accepted = commitAcknowledgedUserMessage(pending, {
+      id: "local:prompt-1",
+      runId: "run-1",
+      text: "check this",
+    });
+    expect(accepted.items).toEqual([
+      expect.objectContaining({
+        id: "local:prompt-1",
+        kind: "message",
+        role: "user",
+        runId: "run-1",
+        text: "check this",
+      }),
+    ]);
+  });
+
+  test("acknowledgement enriches an early live mirror instead of duplicating it", () => {
+    const mirrored = applyStreamEvent(emptyTimeline(), {
+      type: "user_message",
+      runId: "run-1",
+      data: JSON.stringify({ text: "check this" }),
+    });
+    const accepted = commitAcknowledgedUserMessage(mirrored, {
+      id: "local:prompt-1",
+      runId: "run-1",
+      text: "check this",
+      attachments: [{ path: "file:///photo.jpg", name: "photo.jpg", kind: "image" }],
+    });
+
+    expect(accepted.items).toHaveLength(1);
+    expect(accepted.items[0]).toMatchObject({
+      kind: "message",
+      role: "user",
+      runId: "run-1",
+      text: "check this",
+      attachments: [{ name: "photo.jpg", kind: "image" }],
+    });
+  });
+
+  test("replaying the same acknowledgement is idempotent", () => {
+    const input = {
+      id: "local:prompt-1",
+      runId: "run-1",
+      text: "check this",
+    };
+    const first = commitAcknowledgedUserMessage(emptyTimeline(), input);
+    const replayed = commitAcknowledgedUserMessage(first, input);
+
+    expect(replayed.items).toHaveLength(1);
+    expect(replayed.items[0]).toMatchObject(input);
+  });
+
   test("user_message from another device appends a user bubble", () => {
     const state = applyStreamEvent(emptyTimeline(), {
       type: "user_message",

@@ -5,6 +5,7 @@
 export {
   appendUserMessage,
   applyStreamEvent,
+  commitAcknowledgedUserMessage,
   emptyTimeline,
   markApprovalDecision,
   mergeHistoryAttachments,

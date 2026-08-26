@@ -678,6 +678,21 @@ async fn handle_command(
             .await
         }
         "continue_run" => {
+            // Continuations create a normal persisted run with this command id
+            // as its trigger. Consult that durable receipt before doing any
+            // work so retries remain idempotent after reply-cache expiry,
+            // mobile process death, or a desktop restart.
+            match remote_prompt_receipt(&cmd.id) {
+                Ok(Some(ack)) => {
+                    reply(client, &msg, true, ack, None).await;
+                    return;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    reply(client, &msg, false, Value::Null, Some(&error.to_string())).await;
+                    return;
+                }
+            }
             // Resume a failed run: synthesize a continue prompt from the run's
             // recent terminal events and push it through the normal prompt
             // pipeline (model/thinking default to the session's current values).
@@ -2970,8 +2985,9 @@ mod bridge_tests {
         agent.script("new_session", false, json!(null), "rejected");
 
         // Ok arm: continue the failed run → ack carries the fresh run ids.
+        let command_id = unique("cmd");
         let reply = bridge
-            .call(json!({ "id": unique("cmd"), "type": "continue_run", "sessionId": session, "runId": run.id }))
+            .call(json!({ "id": command_id, "type": "continue_run", "sessionId": session, "runId": run.id }))
             .await;
         assert_eq!(reply["success"], json!(true), "got: {reply}");
         assert_eq!(reply["data"]["sessionId"], json!(session));
@@ -2980,6 +2996,17 @@ mod bridge_tests {
         // The spawned pipeline settles the new run as failed (its session
         // provisioning is rejected) — poll until the run leaves the running state.
         let continued_run = reply["data"]["runId"].as_str().unwrap().to_string();
+
+        // Let the in-memory single-flight cache expire. The same command must
+        // still resolve to the persisted run receipt instead of creating a
+        // second continuation.
+        tokio::time::sleep(reply_slot_ttl() + Duration::from_millis(50)).await;
+        let retry = bridge
+            .call(json!({ "id": command_id, "type": "continue_run", "sessionId": session, "runId": run.id }))
+            .await;
+        assert_eq!(retry["success"], json!(true), "got: {retry}");
+        assert_eq!(retry["data"]["runId"], json!(continued_run));
+
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             let row = crate::store::get_run(&continued_run)
