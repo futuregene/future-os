@@ -236,7 +236,8 @@ fn contract_validation_rejects_empty_identifiers() {
     // Duplicate member within one collective.
     let mut c = MultiAgentContract::default();
     c.peers.insert("a".into(), peer(None, &[], &[]));
-    c.collectives.insert("c1".into(), vec!["a".into(), "a".into()]);
+    c.collectives
+        .insert("c1".into(), vec!["a".into(), "a".into()]);
     assert!(contract_issues(&c)
         .iter()
         .any(|i| i.contains("duplicate member `a`")));

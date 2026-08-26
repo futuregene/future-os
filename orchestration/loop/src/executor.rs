@@ -435,7 +435,11 @@ mod validator_tests {
         use super::classify_failure;
         use crate::state::{FailureKind, RunRecord, TaskValidation, ValidationStatus};
 
-        fn rec(terminal_state: &str, error: Option<&str>, validation: Option<TaskValidation>) -> RunRecord {
+        fn rec(
+            terminal_state: &str,
+            error: Option<&str>,
+            validation: Option<TaskValidation>,
+        ) -> RunRecord {
             RunRecord {
                 turn: 1,
                 todo_id: "T1".to_string(),
