@@ -2445,4 +2445,151 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
         assert!(result.is_error);
         assert!(result.result.contains("backend is not active"));
     }
+
+    #[test]
+    fn additional_permissions_invalid_shape_is_rejected() {
+        // The additional_permissions field must deserialize into the
+        // AdditionalPermissions struct; a malformed payload fails fast with a
+        // tool result instead of falling through to a plain command approval.
+        let ws = temp_ws("windows-capability-invalid");
+        let sandbox = enabled(&ws);
+        let gate = ApprovalGate::default();
+        let broadcaster = SseBroadcaster::new();
+        let result = gate.request(
+            &broadcaster,
+            "session",
+            &ws,
+            "shell",
+            "tool",
+            &serde_json::json!({
+                "command": "build-release",
+                "additional_permissions": {
+                    "write": "not-an-array"
+                }
+            }),
+            &sandbox,
+        );
+        let result = result.expect("invalid additional_permissions is rejected");
+        assert!(result.is_error);
+        assert!(result.result.contains("invalid additional_permissions"));
+    }
+
+    #[test]
+    fn windows_capability_shape_file_scope_title() {
+        use crate::sandbox::windows_request::{
+            ApprovalTarget, CapabilityApprovalSemantics, FrozenWriteTarget, WriteScope,
+        };
+
+        let ws = temp_ws("windows-capability-file");
+        let sandbox = enabled(&ws);
+        let file = Path::new(&ws).join("notes.txt");
+        std::fs::write(&file, "x").unwrap();
+        let file = file.canonicalize().unwrap();
+        let prepared = PreparedWritePermissions {
+            command_hash: "hash".to_string(),
+            targets: vec![FrozenWriteTarget {
+                normalized_path: file.clone(),
+                scope: WriteScope::File,
+                untrusted_reason: "unused".to_string(),
+                decision: Decision::Ask,
+            }],
+            approval: Some(CapabilityApprovalSemantics {
+                behavior: "modify_file",
+                targets: vec![ApprovalTarget {
+                    path: file.to_string_lossy().into_owned(),
+                    scope: WriteScope::File,
+                }],
+            }),
+        };
+
+        let shape = windows_capability_shape("edit-notes", &prepared, &sandbox);
+        // File scope uses the "modify" verb (not "manage files in").
+        assert!(shape.title.contains("modify"), "title: {}", shape.title);
+        assert_eq!(
+            shape.summary,
+            "FutureOS needs write access to this location for the current command."
+        );
+        assert!(shape.save_suggestion.is_some());
+    }
+
+    #[test]
+    fn windows_capability_shape_multi_target_title_and_summary() {
+        use crate::sandbox::windows_request::{
+            ApprovalTarget, CapabilityApprovalSemantics, FrozenWriteTarget, WriteScope,
+        };
+
+        let ws = temp_ws("windows-capability-multi");
+        let sandbox = enabled(&ws);
+        let a = Path::new(&ws).join("release");
+        let b = Path::new(&ws).join("cache");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let a = a.canonicalize().unwrap();
+        let b = b.canonicalize().unwrap();
+        let approval_targets = vec![
+            ApprovalTarget {
+                path: a.to_string_lossy().into_owned(),
+                scope: WriteScope::Subtree,
+            },
+            ApprovalTarget {
+                path: b.to_string_lossy().into_owned(),
+                scope: WriteScope::Subtree,
+            },
+        ];
+        let prepared = PreparedWritePermissions {
+            command_hash: "hash".to_string(),
+            targets: approval_targets
+                .iter()
+                .map(|t| FrozenWriteTarget {
+                    normalized_path: Path::new(&t.path).to_path_buf(),
+                    scope: t.scope,
+                    untrusted_reason: "unused".to_string(),
+                    decision: Decision::Ask,
+                })
+                .collect(),
+            approval: Some(CapabilityApprovalSemantics {
+                behavior: "manage_files",
+                targets: approval_targets,
+            }),
+        };
+
+        let shape = windows_capability_shape("build-release", &prepared, &sandbox);
+        assert!(shape.title.contains("2 locations"), "title: {}", shape.title);
+        assert_eq!(
+            shape.summary,
+            "FutureOS needs write access to all of these locations for the current command."
+        );
+    }
+
+    #[test]
+    fn windows_capability_shape_secret_target_suppresses_suggestion() {
+        use crate::sandbox::windows_request::{
+            ApprovalTarget, CapabilityApprovalSemantics, FrozenWriteTarget, WriteScope,
+        };
+
+        let _home_guard = crate::test_support::home_env_lock();
+        let ws = temp_ws("windows-capability-secret");
+        let sandbox = enabled(&ws);
+        // A secret path (~/.ssh) must suppress the persistable-rule suggestion.
+        let secret = dirs::home_dir().unwrap().join(".ssh/id_rsa");
+        let prepared = PreparedWritePermissions {
+            command_hash: "hash".to_string(),
+            targets: vec![FrozenWriteTarget {
+                normalized_path: secret.clone(),
+                scope: WriteScope::File,
+                untrusted_reason: "unused".to_string(),
+                decision: Decision::Ask,
+            }],
+            approval: Some(CapabilityApprovalSemantics {
+                behavior: "modify_file",
+                targets: vec![ApprovalTarget {
+                    path: secret.to_string_lossy().into_owned(),
+                    scope: WriteScope::File,
+                }],
+            }),
+        };
+
+        let shape = windows_capability_shape("touch-secret", &prepared, &sandbox);
+        assert!(shape.save_suggestion.is_none());
+    }
 }
