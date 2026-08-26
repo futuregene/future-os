@@ -357,3 +357,255 @@ async fn serve_sse(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::Store;
+
+    fn store_root() -> (String, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().to_string_lossy()).unwrap();
+        let goal = crate::state::Goal::new("g1", "objective", "/tmp");
+        let ts = goal.created_at;
+        store.register(&goal).unwrap();
+        store
+            .append(crate::store::Event::GoalStarted {
+                goal_id: "g1".into(),
+                ts,
+            })
+            .unwrap();
+        store
+            .append(crate::store::Event::TodoAdded {
+                goal_id: "g1".into(),
+                todo: crate::state::Todo::advancement("T1", "work"),
+                ts,
+            })
+            .unwrap();
+        (dir.path().to_string_lossy().into_owned(), dir)
+    }
+
+    #[test]
+    fn find_subslice_locate_or_none() {
+        assert_eq!(find_subslice(b"abc\r\n\r\n", b"\r\n\r\n"), Some(3));
+        assert_eq!(find_subslice(b"abc", b"\r\n\r\n"), None);
+        assert_eq!(find_subslice(b"", b"\r\n\r\n"), None);
+    }
+
+    #[test]
+    fn respond_covers_all_status_reasons() {
+        let body = b"{}";
+        for status in [200u16, 400, 404, 405, 500, 999] {
+            let r = respond(status, "application/json", body, &[("x-extra", "1")]);
+            let text = String::from_utf8_lossy(&r);
+            assert!(text.starts_with(&format!("HTTP/1.1 {status} ")));
+            assert!(text.contains("content-length: 2"));
+            if status == 405 {
+                assert!(text.contains("Method Not Allowed"));
+            }
+            if status == 999 {
+                assert!(text.contains("OK")); // fallback reason
+            }
+            assert!(text.contains("x-extra: 1"));
+        }
+    }
+
+    #[test]
+    fn json_and_error_responses() {
+        let j = json_response(200, &serde_json::json!({"ok": true}));
+        assert!(String::from_utf8_lossy(&j).contains("{\"ok\":true}"));
+        let e = error_response(404, "nope");
+        assert!(String::from_utf8_lossy(&e).contains("\"error\":\"nope\""));
+    }
+
+    #[test]
+    fn query_param_and_percent_decode() {
+        assert_eq!(query_param("a=1&b=2", "b"), Some("2".to_string()));
+        assert_eq!(query_param("a=1", "c"), None);
+        assert_eq!(query_param("", "a"), None);
+        // percent-decode on the value
+        assert_eq!(query_param("x=%20hi%21", "x"), Some(" hi!".to_string()));
+        assert_eq!(percent_decode("%41%42%43"), "ABC");
+        assert_eq!(percent_decode("plain"), "plain");
+        assert_eq!(percent_decode("%ZZ"), "%ZZ"); // invalid hex passthrough
+        assert_eq!(percent_decode("100%"), "100%"); // truncated passthrough
+    }
+
+    #[test]
+    fn snapshot_and_fingerprint() {
+        let (root, _dir) = store_root();
+        let store = Store::open(&root).unwrap();
+        let snap = snapshot(&store);
+        assert!(snap.overview.is_object());
+        assert!(snap.goals.is_array());
+        let fp = fingerprint(&snap);
+        assert!(fp.contains(':'));
+        // fingerprint is stable for identical content.
+        assert_eq!(fp, fingerprint(&snap));
+    }
+
+    #[test]
+    fn route_serves_index_overview_goal_runs_events_and_errors() {
+        let (root, _dir) = store_root();
+        let idx = route(
+            &Request {
+                method: "GET".into(),
+                path: "/".into(),
+                query: String::new(),
+            },
+            &root,
+        );
+        assert!(String::from_utf8_lossy(&idx).contains("text/html"));
+
+        let ov = route(
+            &Request {
+                method: "GET".into(),
+                path: "/api/overview".into(),
+                query: String::new(),
+            },
+            &root,
+        );
+        assert!(String::from_utf8_lossy(&ov).contains("\"ok\":true"));
+
+        let detail = route(
+            &Request {
+                method: "GET".into(),
+                path: "/api/goals/g1".into(),
+                query: String::new(),
+            },
+            &root,
+        );
+        assert!(String::from_utf8_lossy(&detail).contains("\"ok\":true"));
+
+        // missing goal → 404
+        let missing = route(
+            &Request {
+                method: "GET".into(),
+                path: "/api/goals/nope".into(),
+                query: String::new(),
+            },
+            &root,
+        );
+        assert!(String::from_utf8_lossy(&missing).contains("404 Not Found"));
+
+        // runs + events sub-routes with a limit query.
+        let runs = route(
+            &Request {
+                method: "GET".into(),
+                path: "/api/goals/g1/runs".into(),
+                query: "limit=5".into(),
+            },
+            &root,
+        );
+        assert!(String::from_utf8_lossy(&runs).contains("\"ok\":true"));
+        let events = route(
+            &Request {
+                method: "GET".into(),
+                path: "/api/goals/g1/events".into(),
+                query: String::new(),
+            },
+            &root,
+        );
+        assert!(String::from_utf8_lossy(&events).contains("\"ok\":true"));
+
+        // unknown goal sub-route → 404.
+        let unknown = route(
+            &Request {
+                method: "GET".into(),
+                path: "/api/goals/g1/bogus".into(),
+                query: String::new(),
+            },
+            &root,
+        );
+        assert!(String::from_utf8_lossy(&unknown).contains("404 Not Found"));
+
+        // totally unknown path → 404.
+        let err = route(
+            &Request {
+                method: "GET".into(),
+                path: "/nope".into(),
+                query: String::new(),
+            },
+            &root,
+        );
+        assert!(String::from_utf8_lossy(&err).contains("404 Not Found"));
+    }
+
+    #[test]
+    fn route_reports_open_store_failure() {
+        // Root that doesn't exist → Store::open fails → 500 error response.
+        let r = route(
+            &Request {
+                method: "GET".into(),
+                path: "/api/overview".into(),
+                query: String::new(),
+            },
+            "/nonexistent/definitely/not/a/store",
+        );
+        assert!(String::from_utf8_lossy(&r).contains("500 Internal Server Error"));
+    }
+
+    #[tokio::test]
+    async fn read_request_parses_request_line_and_query() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        client
+            .write_all(b"GET /api/overview?limit=3 HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let req = read_request(&mut stream).await.unwrap().unwrap();
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.path, "/api/overview");
+        assert_eq!(req.query, "limit=3");
+
+        // Peer closed without a full request → None.
+        let mut client2 = tokio::net::TcpStream::connect(addr).await.unwrap();
+        client2.write_all(b"GET /partial").await.unwrap();
+        drop(client2);
+        let (mut stream2, _) = listener.accept().await.unwrap();
+        assert!(read_request(&mut stream2).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn handle_serves_get_and_rejects_non_get() {
+        let (root, _dir) = store_root();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, _rx) = watch::channel(String::new());
+        let root_arc = Arc::new(root);
+
+        // GET /api/overview — connect first, then accept (accept before
+        // connect would deadlock the single-threaded runtime).
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        client
+            .write_all(b"GET /api/overview HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        let rx = tx.subscribe();
+        let root = root_arc.clone();
+        let server = tokio::spawn(async move { handle(stream, root, rx).await });
+        let mut buf = Vec::new();
+        client.read_to_end(&mut buf).await.unwrap();
+        assert!(String::from_utf8_lossy(&buf).contains("200 OK"));
+        let _ = server.await;
+
+        // POST → 405
+        let (tx2, _rx2) = watch::channel(String::new());
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        client
+            .write_all(b"POST /api/overview HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        let rx = tx2.subscribe();
+        let root = root_arc.clone();
+        let server = tokio::spawn(async move { handle(stream, root, rx).await });
+        let mut buf = Vec::new();
+        client.read_to_end(&mut buf).await.unwrap();
+        assert!(String::from_utf8_lossy(&buf).contains("405"));
+        let _ = server.await;
+    }
+}
