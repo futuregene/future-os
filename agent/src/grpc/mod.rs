@@ -326,14 +326,23 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
         let json_resp: JsonResp = serde_json::from_str(&resp_str)
             .map_err(|e| tonic::Status::internal(format!("Failed to parse response: {}", e)))?;
 
-        // Typed payload (dual-write): encode the JSON payload into its typed
-        // wire form for commands that have a ResponsePayload member. Untyped
-        // commands keep serving the JSON `data` string only; clients always
+        // Typed payload (dual-write retired): encode the JSON payload into its
+        // typed wire form for commands that have a ResponsePayload member.
+        // Typed commands carry the typed `payload` only (empty `data`); untyped
+        // commands keep the JSON `data` string. Clients decode typed-first and
         // fall back to `data` when `payload` is absent.
         let typed_payload = json_resp
             .data
             .as_ref()
             .and_then(|value| future_rpc::encode::response_payload(&json_resp.command, value));
+
+        let data = match &typed_payload {
+            Some(_) => String::new(),
+            None => json_resp
+                .data
+                .map(|d| serde_json::to_string(&d).unwrap_or_default())
+                .unwrap_or_default(),
+        };
 
         // Convert to proto response - error is Option<String>, need to handle None
         let proto_resp = proto::RpcResponse {
@@ -341,10 +350,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             r#type: json_resp.resp_type,
             command: json_resp.command,
             success: json_resp.success,
-            data: json_resp
-                .data
-                .map(|d| serde_json::to_string(&d).unwrap_or_default())
-                .unwrap_or_default(),
+            data,
             error: json_resp.error.unwrap_or_default(),
             error_code: json_resp.error_code.unwrap_or_default(),
             error_data: json_resp
@@ -739,7 +745,13 @@ mod tests {
         assert!(resp.success, "{}", resp.error);
         assert_eq!(resp.id, "cmd-1");
         assert_eq!(resp.command, "get_agent_info");
-        assert!(resp.data.contains("agentInstanceId"));
+        // get_agent_info is typed: dual-write retired → empty `data`, typed
+        // `payload` present.
+        assert!(
+            resp.data.is_empty(),
+            "typed command must not dual-write data"
+        );
+        assert!(resp.payload.is_some(), "typed payload present");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -779,8 +791,12 @@ mod tests {
             .expect("command succeeds");
         let resp = response.into_inner();
         assert!(resp.success, "{}", resp.error);
-        assert!(resp.data.contains("\"sessionId\":\"default\""));
-        // get_state is a Tier-1 command — the typed payload is dual-written.
+        // get_state is a Tier-1 command — dual-write retired: empty `data`,
+        // typed `payload` present.
+        assert!(
+            resp.data.is_empty(),
+            "typed command must not dual-write data"
+        );
         assert!(resp.payload.is_some(), "typed payload present");
     }
 

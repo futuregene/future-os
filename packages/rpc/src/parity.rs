@@ -1,15 +1,13 @@
 //! Wire-parity round-trips: for every Tier-1 command, a realistic fixture of
-//! the agent's dual-written JSON must survive encode → typed → decode
-//! unchanged (canonical casing, null-vs-absent semantics, legacy aliases).
-//! The same fixtures pin the fallback matrix: data-only (old agent),
-//! typed-only (future state), and both.
+//! the agent's canonical JSON must survive encode → typed → decode unchanged
+//! (canonical casing, null-vs-absent semantics). Typed commands ride the
+//! typed `payload` only (empty `data`); untyped commands keep the JSON string.
 
 use crate::{decode, encode, proto};
 use serde_json::{json, Value};
 
-/// Encode `fixture` (the agent's wire JSON), then decode all three wire
-/// states — dual-write, data-only (old agent), typed-only (future) — and
-/// require the exact original value every time.
+/// Encode `fixture` (the agent's canonical wire JSON), then decode the typed
+/// payload back and require the exact original value.
 fn assert_command_parity(command: &str, fixture: Value) {
     let payload = encode::response_payload(command, &fixture)
         .unwrap_or_else(|| panic!("{command}: encode returned None"));
@@ -19,44 +17,22 @@ fn assert_command_parity(command: &str, fixture: Value) {
         r#type: "response".to_string(),
         command: command.to_string(),
         success: true,
-        data: fixture.to_string(),
+        data: String::new(),
         error: String::new(),
         error_code: String::new(),
         error_data: String::new(),
-        payload: Some(payload.clone()),
+        payload: Some(payload),
     };
     assert_eq!(
         decode::response_data(&resp),
-        fixture,
-        "{command}: dual-write decode must equal the wire JSON"
-    );
-
-    let resp_old = proto::RpcResponse {
-        payload: None,
-        ..resp.clone()
-    };
-    assert_eq!(
-        decode::response_data(&resp_old),
-        fixture,
-        "{command}: data-only fallback must equal the wire JSON"
-    );
-
-    let resp_new = proto::RpcResponse {
-        data: String::new(),
-        payload: Some(payload),
-        ..resp.clone()
-    };
-    assert_eq!(
-        decode::response_data(&resp_new),
         fixture,
         "{command}: typed-only decode must equal the wire JSON"
     );
 }
 
-/// Full get_state wire JSON: canonical camelCase keys plus the migration
-/// aliases (sessionName→session_name, snake_case TerminalAck keys), null
-/// run-sequence semantics on the interrupted run, an object source_meta, a
-/// full approval card and a completed run_terminal.
+/// Full get_state wire JSON: canonical camelCase keys, null run-sequence
+/// semantics on the interrupted run, an object source_meta, a full approval
+/// card and a completed run_terminal.
 ///
 /// Parsed from a raw string: the fixture is too nested for the `json!`
 /// macro's default recursion limit.
@@ -71,7 +47,6 @@ fn get_state_fixture() -> Value {
             "isCompacting": false,
             "sessionId": "s1",
             "sessionName": "Demo",
-            "session_name": "Demo",
             "explicitSession": true,
             "autoCompactionEnabled": true,
             "queryCount": 2,
@@ -111,10 +86,7 @@ fn get_state_fixture() -> Value {
                 "runSequence": 4,
                 "clientRequestId": "c0",
                 "state": "cancelled",
-                "reason": "superseded",
-                "run_id": "r0",
-                "run_sequence": 4,
-                "client_request_id": "c0"
+                "reason": "superseded"
             }],
             "queuedCount": 1,
             "interruptedRun": {
@@ -159,37 +131,25 @@ fn list_sessions_fixture() -> Value {
             {
                 "id": "s1",
                 "sessionName": "My session",
-                "session_name": "My session",
                 "model": "future/future-model",
                 "cwd": "/w",
                 "updatedAt": "2026-08-05 12:00:00",
-                "updated_at": "2026-08-05 12:00:00",
                 "parentSessionId": "p1",
-                "parent_session_id": "p1",
                 "firstMessage": "hello",
-                "first_message": "hello",
                 "queryCount": 3,
-                "query_count": 3,
-                "isStreaming": false,
-                "is_streaming": false
+                "isStreaming": false
             },
             {
                 // Unnamed session: sessionName / firstMessage are JSON null.
                 "id": "s2",
                 "sessionName": null,
-                "session_name": null,
                 "model": "m",
                 "cwd": "/w2",
                 "updatedAt": "2026-08-06 09:00:00",
-                "updated_at": "2026-08-06 09:00:00",
                 "parentSessionId": "",
-                "parent_session_id": "",
                 "firstMessage": null,
-                "first_message": null,
                 "queryCount": 0,
-                "query_count": 0,
-                "isStreaming": true,
-                "is_streaming": true
+                "isStreaming": true
             }
         ]
     })
@@ -368,38 +328,6 @@ fn typed_getters_match_struct_semantics() {
         state.pending_approvals[0]["save_suggestion"]["match_value"],
         "ls"
     );
-}
-
-#[test]
-fn legacy_only_json_decodes_via_typed_getters() {
-    // A pre-migration agent wrote snake_case-only rows; the fallback path
-    // must still produce the struct via serde aliases.
-    let legacy = json!({
-        "sessions": [{
-            "id": "s1",
-            "session_name": "Legacy",
-            "model": "m",
-            "cwd": "/w",
-            "updated_at": "2026-01-01 00:00:00",
-            "parent_session_id": "",
-            "first_message": "hi",
-            "query_count": 1,
-            "is_streaming": false
-        }]
-    });
-    let resp = proto::RpcResponse {
-        id: "req-1".to_string(),
-        r#type: "response".to_string(),
-        command: "list_sessions".to_string(),
-        success: true,
-        data: legacy.to_string(),
-        error: String::new(),
-        error_code: String::new(),
-        error_data: String::new(),
-        payload: None,
-    };
-    let rows = decode::decode_list_sessions(&resp).expect("legacy fallback decode");
-    assert_eq!(rows[0].session_name.as_deref(), Some("Legacy"));
 }
 
 #[test]
