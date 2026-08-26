@@ -32,6 +32,16 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       rust_workspace: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.rust_workspace == 'true' || steps.filter.outputs.ci == 'true' }}
+      # Per-crate triggers for the rust-tests groups, so a PR that touches only
+      # one crate runs only that crate's test group. Each inherits the shared
+      # build-graph inputs (root manifest, lock, toolchain, future-rpc) — those
+      # affect every workspace crate.
+      rust_agent: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.rust_agent == 'true' || steps.filter.outputs.ci == 'true' }}
+      rust_tui_cli: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.rust_tui_cli == 'true' || steps.filter.outputs.ci == 'true' }}
+      rust_channels_rpc_loop: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.rust_channels_rpc_loop == 'true' || steps.filter.outputs.ci == 'true' }}
+      # Proto/codegen freshness only needs re-checking when a proto source,
+      # its build script, the generated output, or a build-dep version changes.
+      proto: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.proto == 'true' || steps.filter.outputs.ci == 'true' }}
       desktop_tauri: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.desktop_tauri == 'true' || steps.filter.outputs.ci == 'true' }}
       desktop_frontend: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.desktop_frontend == 'true' || steps.filter.outputs.ci == 'true' }}
       mobile: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.mobile == 'true' || steps.filter.outputs.ci == 'true' }}
@@ -47,12 +57,20 @@ jobs:
 
       - id: filter
         if: github.event_name == 'pull_request'
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
+          # v4.0.3+ supports 'some-with-excludes': a file is included only if it
+          # matches at least one non-negated pattern AND no `!`-negated pattern.
+          # The v3 default 'some' treats a `!` pattern as a match of "everything
+          # outside it", which made desktop_frontend/mobile match unrelated files
+          # like CLAUDE.md and run those suites on nearly every PR.
+          predicate-quantifier: 'some-with-excludes'
           filters: |
             # Changing this workflow must revalidate every suite.
             ci:
               - '.github/workflows/ci.yml'
+            # Aggregate: any workspace crate (or a shared build-graph file) —
+            # drives the workspace-level fmt/clippy and cross-platform build.
             rust_workspace:
               - 'Cargo.toml'
               - 'Cargo.lock'
@@ -66,6 +84,40 @@ jobs:
               # The loop control plane is a workspace member — its changes must
               # run the same fmt/clippy/test gates (previously missing here).
               - 'orchestration/**'
+            # Per-crate triggers. Shared inputs (manifest/lock/toolchain/rpc)
+            # are repeated so a change to any of them runs every group.
+            rust_agent:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.cargo/**'
+              - 'rust-toolchain.toml'
+              - 'packages/rpc/**'
+              - 'agent/**'
+            rust_tui_cli:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.cargo/**'
+              - 'rust-toolchain.toml'
+              - 'packages/rpc/**'
+              - 'tui/**'
+              - 'cli/**'
+            rust_channels_rpc_loop:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.cargo/**'
+              - 'rust-toolchain.toml'
+              - 'packages/rpc/**'
+              - 'channels/**'
+              - 'orchestration/**'
+            # Proto codegen freshness: only re-check when a proto source, its
+            # build script, the generated output, or a build-dep version could
+            # have drifted. Unrelated Rust changes skip the REGENERATE_PROTO
+            # cargo build.
+            proto:
+              - 'packages/rpc/**'
+              - 'channels/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
             desktop_tauri:
               - 'desktop/src-tauri/**'
               - '.cargo/**'
@@ -98,18 +150,41 @@ jobs:
   rust-quality:
     name: Rust fmt + clippy (Linux)
     needs: changes
-    if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.desktop_tauri == 'true'
     runs-on: ubuntu-latest
     steps:
+      # Always-present (no job-level `if`): a skipped required check is treated
+      # as unsatisfied, which would block docs-only PRs. Evaluate the gate here
+      # and gate every heavy step on it; an unaffected PR reports success via a
+      # no-op echo (the same pattern rust-tests uses).
+      - name: Is the Rust quality gate affected?
+        id: affected
+        env:
+          OUTPUTS: ${{ toJSON(needs.changes.outputs) }}
+        run: |
+          ws=$(echo "$OUTPUTS" | jq -r '.rust_workspace // "false"')
+          dt=$(echo "$OUTPUTS" | jq -r '.desktop_tauri // "false"')
+          if [ "$ws" = "true" ] || [ "$dt" = "true" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: No affected Rust quality checks
+        if: steps.affected.outputs.run != 'true'
+        run: echo "No Rust workspace or desktop Tauri changes; lint skipped."
+
       - name: Checkout
+        if: steps.affected.outputs.run == 'true'
         uses: actions/checkout@v5
 
       # Pinned to match rust-toolchain.toml so CI and local dev use the same
       # compiler. Bump both together (see build.yml for the same pin).
       - name: Setup Rust
+        if: steps.affected.outputs.run == 'true'
         uses: dtolnay/rust-toolchain@1.97.0
 
       - name: Cache Rust
+        if: steps.affected.outputs.run == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
@@ -122,11 +197,11 @@ jobs:
       # pinned toolchain, so a formatting failure returns immediately even when
       # an Ubuntu mirror is unhealthy.
       - name: rustfmt (workspace)
-        if: needs.changes.outputs.rust_workspace == 'true'
+        if: steps.affected.outputs.run == 'true' && needs.changes.outputs.rust_workspace == 'true'
         run: cargo fmt --check --all
 
       - name: rustfmt (desktop backend)
-        if: needs.changes.outputs.desktop_tauri == 'true'
+        if: steps.affected.outputs.run == 'true' && needs.changes.outputs.desktop_tauri == 'true'
         run: cargo fmt --check --manifest-path desktop/src-tauri/Cargo.toml
 
       # mold + binutils because .cargo/config.toml pins -fuse-ld=mold and clippy
@@ -136,6 +211,7 @@ jobs:
       # below — normal builds never run protoc (generation is gated on
       # REGENERATE_PROTO).
       - name: Install Linux deps
+        if: steps.affected.outputs.run == 'true'
         run: |
           bash scripts/ci/install-apt-packages.sh \
             build-essential \
@@ -153,7 +229,7 @@ jobs:
       # unless every `bundle.externalBin` sidecar is present. For lint empty
       # placeholders suffice.
       - name: Create placeholder sidecars
-        if: needs.changes.outputs.desktop_tauri == 'true'
+        if: steps.affected.outputs.run == 'true' && needs.changes.outputs.desktop_tauri == 'true'
         run: |
           triple=$(rustc -Vv | sed -n 's/^host: //p')
           mkdir -p desktop/src-tauri/binaries
@@ -163,7 +239,7 @@ jobs:
       # --all because the root manifest is a virtual workspace (no [package]);
       # --manifest-path would fail with "Failed to find targets".
       - name: clippy (workspace)
-        if: needs.changes.outputs.rust_workspace == 'true'
+        if: steps.affected.outputs.run == 'true' && needs.changes.outputs.rust_workspace == 'true'
         run: cargo clippy --workspace --all-targets --manifest-path Cargo.toml -- -D warnings
 
       # The generated wire code (future-rpc proto.rs, channels feishu_ws.rs) is
@@ -171,7 +247,7 @@ jobs:
       # Output is deterministic for pinned prost/tonic-build, so a regenerate
       # on the same source must be a no-op.
       - name: proto codegen is fresh
-        if: needs.changes.outputs.rust_workspace == 'true'
+        if: steps.affected.outputs.run == 'true' && needs.changes.outputs.proto == 'true'
         run: |
           (cd packages/rpc && REGENERATE_PROTO=1 cargo build)
           (cd channels && REGENERATE_PROTO=1 cargo build)
@@ -179,7 +255,7 @@ jobs:
 
       # ── desktop Tauri backend ──
       - name: clippy (desktop backend)
-        if: needs.changes.outputs.desktop_tauri == 'true'
+        if: steps.affected.outputs.run == 'true' && needs.changes.outputs.desktop_tauri == 'true'
         run: cargo clippy --all-targets --manifest-path desktop/src-tauri/Cargo.toml -- -D warnings
 
   # ─── Rust test gates (Linux) ──────────────────────────────────────────────
@@ -196,11 +272,14 @@ jobs:
   # required context "Rust tests (Linux)", so splitting/renaming groups never
   # requires touching the branch-protection ruleset.
   #
-  # Workspace groups gate on `rust_workspace` only: workspace crates do not
-  # depend on desktop/src-tauri, so a desktop-only change cannot break them
-  # (the reverse is NOT true — future-rpc feeds the Tauri backend, and the
-  # path filter marks packages/rpc/** as desktop_tauri too, so RPC changes also run
-  # the desktop group).
+  # Workspace groups gate on their own per-crate trigger (rust_agent /
+  # rust_tui_cli / rust_channels_rpc_loop) instead of the aggregate
+  # rust_workspace, so a PR that touches only one crate runs only that crate's
+  # test group. The aggregate still drives the workspace-level fmt/clippy and
+  # cross-platform build. Workspace crates do not depend on desktop/src-tauri,
+  # so a desktop-only change cannot break them (the reverse is NOT true —
+  # future-rpc feeds the Tauri backend, and the path filter marks packages/rpc/**
+  # as desktop_tauri too, so RPC changes also run the desktop group).
   #
   # CARGO_PROFILE_TEST_DEBUG=1 keeps file:line in panic backtraces while
   # dropping full debuginfo codegen — the dominant cost of building test
@@ -217,15 +296,15 @@ jobs:
       matrix:
         include:
           - name: agent
-            filter: rust_workspace
+            filter: rust_agent
             packages: -p future-agent
             desktop: 'false'
           - name: tui, cli
-            filter: rust_workspace
+            filter: rust_tui_cli
             packages: -p future-tui -p future-cli
             desktop: 'false'
           - name: channels, rpc, loop
-            filter: rust_workspace
+            filter: rust_channels_rpc_loop
             packages: -p future-channel -p future-rpc -p future-loop
             desktop: 'false'
           - name: desktop backend
