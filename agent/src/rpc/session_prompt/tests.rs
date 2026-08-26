@@ -978,6 +978,83 @@ async fn queued_follow_ups_merge_into_one_message() {
     );
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn queued_follow_ups_merge_model_context_sidecars() {
+    // When follow-ups carry non-empty model_context sidecars, coalescing joins
+    // them with a blank line exactly like the visible message text.
+    let provider = ScriptedProvider::new(vec![
+        Script::Stall(vec![text_event("stalled")]),
+        text_turn("merged answer"),
+    ]);
+    let fixture = run_fixture(provider, "merge-model-context");
+    let mut session = fixture.session;
+
+    let first = session.prompt("first", &[], &[], None, None).unwrap();
+    for _ in 0..200 {
+        if session.runtime.snapshot().is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    let ctx2 = "context-two".to_string();
+    let ctx3 = "context-three".to_string();
+    let a = session
+        .enqueue_prompt_with_model_context(
+            PromptText::new("second question", &ctx2),
+            &[],
+            &[],
+            None,
+            "req-2",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    let b = session
+        .enqueue_prompt_with_model_context(
+            PromptText::new("third question", &ctx3),
+            &[],
+            &[],
+            None,
+            "req-3",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    assert_eq!(a.accepted_state, crate::runtime::RunAcceptedState::Queued);
+    assert_eq!(b.accepted_state, crate::runtime::RunAcceptedState::Queued);
+    assert_eq!(session.scheduler.queued().len(), 2);
+
+    session.abort_run(Some(&first.run_id)).unwrap();
+    for _ in 0..500 {
+        if session.runtime.snapshot().is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(session.runtime.snapshot().is_none());
+
+    let started = session.start_next_scheduled().unwrap();
+    assert_eq!(
+        started.accepted_state,
+        crate::runtime::RunAcceptedState::Running
+    );
+
+    // The visible message still merges the two questions, and the
+    // non-display model_context sidecars are coalesced into the same block.
+    let user_messages: Vec<crate::types::AgentMessage> = session
+        .messages
+        .read()
+        .iter()
+        .filter(|m| m.role == "user")
+        .cloned()
+        .collect();
+    assert!(user_messages
+        .iter()
+        .any(|m| m.display_text() == "second question\n\nthird question"));
+    assert!(user_messages
+        .iter()
+        .any(|m| m.text().contains("context-two\n\ncontext-three")));
+}
+
 // ─── batch 3: rare error arms ──────────────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]
@@ -1768,4 +1845,100 @@ fn persist_user_message_with_empty_history_takes_slow_path() {
     session.persist_user_message(&lease).unwrap();
     let loaded = session.session_manager.load("s1").unwrap();
     assert!(!loaded.entries.is_empty());
+}
+
+#[test]
+fn rewrite_snapshot_reinserts_compaction_checkpoints() {
+    use crate::compaction::{CompactionTrigger, ContextCheckpoint};
+    use crate::session::{checkpoint_to_entry, Session, SessionEntry, ENTRY_TYPE_COMPACTION};
+    use crate::types::ContentBlock;
+
+    let dir = test_path("rewrite-checkpoints");
+    std::fs::create_dir_all(&dir).unwrap();
+    let manager = crate::session::Manager::new(dir.join("sessions"));
+
+    // Old session: one user entry, then a checkpoint whose cutoff is that
+    // entry, then a legacy checkpoint with no cutoff entry id.
+    let mut user_entry = SessionEntry::new_user("user", serde_json::json!("hello"));
+    user_entry.id = "entry-a".to_string();
+
+    let checkpoint = ContextCheckpoint {
+        entry_id: "cp-1".into(),
+        checkpoint_id: "cp-1".into(),
+        covered_from_entry_id: Some("entry-a".into()),
+        cutoff_entry_id: Some("entry-a".into()),
+        summary: vec![ContentBlock::text("summary")],
+        tokens_before: 100,
+        tokens_after: 10,
+        trigger: CompactionTrigger::Automatic,
+        phase: None,
+        algorithm_version: "v2".into(),
+        model: "model".into(),
+        context_window: 200,
+        created_at: chrono::Utc::now(),
+        legacy_without_cutoff: false,
+    };
+    let cp_entry = checkpoint_to_entry(&checkpoint);
+
+    let mut legacy_cp = SessionEntry::new_user("user", serde_json::json!(null));
+    legacy_cp.entry_type = ENTRY_TYPE_COMPACTION.to_string();
+    legacy_cp.role = "system".to_string();
+    legacy_cp.content = Some(serde_json::json!({"summary": "[legacy checkpoint]"}));
+
+    let old = Session::snapshot(
+        "s1".into(),
+        dir.to_string_lossy().to_string(),
+        "model".into(),
+        "session".into(),
+        String::new(),
+        vec![user_entry.clone(), cp_entry.clone(), legacy_cp.clone()],
+    );
+    manager.save(&old).unwrap();
+
+    // The rebuilt message reuses the same journal entry id as the cutoff.
+    let mut msg = crate::types::AgentMessage::new_user("user", serde_json::json!("hello"));
+    msg.metadata = Some(
+        [(
+            crate::types::AgentMessage::JOURNAL_ENTRY_ID_KEY.to_string(),
+            serde_json::Value::String("entry-a".into()),
+        )]
+        .into_iter()
+        .collect(),
+    );
+
+    let info_entry =
+        SessionEntry::session_info(serde_json::json!({}), "model".into(), "high".into());
+    let run_started = SessionEntry::run_started("run-1", 0);
+    let terminal = SessionEntry::run_terminal("run-1", "completed", 0, 0, None);
+
+    let rebuilt = crate::rpc::ServerSession::build_rewrite_snapshot(
+        &manager,
+        "s1",
+        &dir.to_string_lossy().to_string(),
+        "model",
+        "session",
+        "",
+        &[msg],
+        info_entry,
+        run_started,
+        terminal,
+    );
+
+    // Both checkpoints survive the rewrite; the one with a matching cutoff is
+    // re-inserted immediately after its cutoff entry.
+    let cp_pos = rebuilt
+        .entries
+        .iter()
+        .position(|e| e.id == "cp-1")
+        .expect("checkpoint survives rewrite");
+    let cutoff_pos = rebuilt
+        .entries
+        .iter()
+        .position(|e| e.id == "entry-a")
+        .expect("cutoff entry survives rewrite");
+    assert_eq!(cp_pos, cutoff_pos + 1);
+    assert!(rebuilt
+        .entries
+        .iter()
+        .any(|e| e.entry_type == ENTRY_TYPE_COMPACTION && e.id == legacy_cp.id));
 }
