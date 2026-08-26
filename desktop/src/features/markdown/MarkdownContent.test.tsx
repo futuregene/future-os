@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { MarkdownContent } from "./MarkdownContent";
+import { MarkdownContent, StreamingMarkdownContent } from "./MarkdownContent";
 import { splitStreamingMarkdown } from "./streamingMarkdownBlocks";
 
 describe("markdown content", () => {
@@ -82,5 +82,23 @@ describe("markdown content", () => {
 
     expect(html).toContain("run_store");
     expect(html).not.toContain("running");
+  });
+});
+
+describe("splitStreamingMarkdown empty input", () => {
+  it("returns no blocks for an empty string", () => {
+    expect(splitStreamingMarkdown("", true)).toEqual([]);
+  });
+});
+
+describe("streamingMarkdownContent", () => {
+  it("splits top-level blocks and renders each through MarkdownContent", () => {
+    const html = renderToStaticMarkup(
+      <StreamingMarkdownContent content="First paragraph.\n\nSecond paragraph" live />,
+    );
+
+    expect(html).toContain("First paragraph");
+    expect(html).toContain("Second paragraph");
+    expect(html).toContain("space-y-3");
   });
 });
