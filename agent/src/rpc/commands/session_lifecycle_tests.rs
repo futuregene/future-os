@@ -204,7 +204,7 @@ fn list_session_ids_reports_all_files_including_corrupt() {
 /// keys AND the legacy snake_case spellings, with identical values, so
 /// pre-migration clients keep working.
 #[test]
-fn list_sessions_emits_canonical_and_legacy_keys() {
+fn list_sessions_emits_canonical_keys() {
     let state = make_app_state();
     // list_sessions reads persisted session summaries, so persist one —
     // the summary fields come from the session_info entry.
@@ -231,19 +231,28 @@ fn list_sessions_emits_canonical_and_legacy_keys() {
     assert!(!entry["id"].as_str().unwrap().is_empty());
     assert_eq!(entry["sessionName"], "My session");
     assert_eq!(entry["firstMessage"], "hello");
-    for (canonical, legacy) in [
-        ("sessionName", "session_name"),
-        ("updatedAt", "updated_at"),
-        ("parentSessionId", "parent_session_id"),
-        ("firstMessage", "first_message"),
-        ("queryCount", "query_count"),
-        ("isStreaming", "is_streaming"),
+    for canonical in [
+        "sessionName",
+        "updatedAt",
+        "parentSessionId",
+        "firstMessage",
+        "queryCount",
+        "isStreaming",
     ] {
         assert!(entry.get(canonical).is_some(), "missing `{canonical}`");
-        assert_eq!(
-            entry.get(canonical),
-            entry.get(legacy),
-            "`{canonical}` and `{legacy}` must carry the same value"
+    }
+    // Canonical only — no legacy snake_case aliases.
+    for legacy in [
+        "session_name",
+        "updated_at",
+        "parent_session_id",
+        "first_message",
+        "query_count",
+        "is_streaming",
+    ] {
+        assert!(
+            entry.get(legacy).is_none(),
+            "legacy `{legacy}` must be absent"
         );
     }
 }

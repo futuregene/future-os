@@ -337,13 +337,7 @@ impl AgentClient {
             tokens_out: resp["tokensOut"].as_i64().unwrap_or(0),
             query_count: resp["queryCount"].as_i64().unwrap_or(0) as usize,
             session_id: resp["sessionId"].as_str().unwrap_or("").to_string(),
-            // Canonical `sessionName` since audit item 1; fall back to the
-            // legacy `session_name` emitted by older agents.
-            session_name: resp["sessionName"]
-                .as_str()
-                .or_else(|| resp["session_name"].as_str())
-                .unwrap_or("")
-                .to_string(),
+            session_name: resp["sessionName"].as_str().unwrap_or("").to_string(),
             cwd: resp["cwd"].as_str().unwrap_or("").to_string(),
             auto_compaction: resp["autoCompactionEnabled"].as_bool().unwrap_or(true),
             total_cost: resp["totalCost"].as_f64().unwrap_or(0.0),
@@ -965,24 +959,21 @@ mod tests {
         assert!((s.total_cost - 0.01).abs() < 1e-9);
         assert_eq!(s.permission_level, "all");
 
-        // Legacy session_name fallback + field defaults on an empty payload.
+        // Field defaults on an empty (legacy-key-free) payload.
         let mut state = MockState::default();
-        state
-            .responses
-            .insert("get_state".into(), r#"{"session_name":"legacy"}"#.into());
+        state.responses.insert("get_state".into(), r#"{}"#.into());
         let (mut c, _) = connect_to(state).await;
         let s = c.get_state("x").await.unwrap();
         assert_eq!(s.model, "?");
-        assert_eq!(s.session_name, "legacy");
+        assert_eq!(s.session_name, "");
         assert_eq!(s.thinking_level, "off");
         assert_eq!(s.permission_level, "all");
 
-        // Canonical sessionName wins over the legacy key.
+        // Canonical sessionName is read directly.
         let mut state = MockState::default();
-        state.responses.insert(
-            "get_state".into(),
-            r#"{"sessionName":"canon","session_name":"legacy"}"#.into(),
-        );
+        state
+            .responses
+            .insert("get_state".into(), r#"{"sessionName":"canon"}"#.into());
         let (mut c, _) = connect_to(state).await;
         assert_eq!(c.get_state("x").await.unwrap().session_name, "canon");
     }
