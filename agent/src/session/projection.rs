@@ -698,6 +698,107 @@ mod tests {
         let messages = build_context(&[assistant]);
         assert_eq!(messages[0].tool_calls.as_ref().unwrap().len(), 1);
     }
+
+    #[test]
+    fn agent_message_to_entry_empty_content_omits_content() {
+        let msg = crate::types::AgentMessage {
+            role: "user".to_string(),
+            content: vec![],
+            ..Default::default()
+        };
+        let entry = agent_message_to_entry(&msg);
+        assert!(entry.content.is_none());
+    }
+
+    #[test]
+    fn entries_to_agent_messages_tool_with_non_text_block() {
+        // A tool entry whose content carries a non-Text block (a reasoning
+        // block) exercises the `_ => None` arm of the text-extraction filter
+        // and yields an empty synthetic tool_result.
+        let mut tool = SessionEntry::new_tool("tc1", "result");
+        tool.content = Some(serde_json::json!([serde_json::to_value(
+            crate::types::ContentBlock::reasoning("reason", Default::default())
+        )
+        .unwrap()]));
+        let msgs = entries_to_agent_messages(&[tool], false);
+        assert_eq!(msgs.len(), 1);
+        assert!(msgs[0].content.iter().any(|b| matches!(
+            b,
+            crate::types::ContentBlock::ToolResult { content, .. } if content.is_empty()
+        )));
+    }
+
+    #[test]
+    fn hydrate_entry_projections_extracts_reasoning_tool_call_and_result() {
+        let mut entry = SessionEntry {
+            id: "e1".to_string(),
+            entry_type: ENTRY_TYPE_ASSISTANT.to_string(),
+            role: "assistant".to_string(),
+            content: Some(serde_json::json!([
+                serde_json::to_value(crate::types::ContentBlock::reasoning(
+                    "think",
+                    Default::default()
+                ))
+                .unwrap(),
+                serde_json::to_value(crate::types::ContentBlock::tool_call(
+                    "tc1",
+                    "run",
+                    serde_json::json!({}),
+                    Default::default(),
+                ))
+                .unwrap(),
+                serde_json::to_value(crate::types::ContentBlock::tool_result(
+                    "tc1", "done", false,
+                ))
+                .unwrap(),
+            ])),
+            tool_calls: vec![],
+            timestamp: chrono::Local::now(),
+            tool_call_id: String::new(),
+            name: String::new(),
+            tool_args: String::new(),
+            thinking: String::new(),
+            meta: None,
+        };
+        hydrate_entry_projections(&mut entry);
+        assert_eq!(entry.thinking, "think");
+        assert_eq!(entry.tool_calls.len(), 1);
+        assert_eq!(entry.tool_calls[0].id, "tc1");
+        assert_eq!(entry.tool_call_id, "tc1");
+    }
+
+    #[test]
+    fn hydrate_entry_projections_skips_already_hydrated_fields() {
+        // Already-populated fields take the "skip" branch of each `if …is_empty()`
+        // guard (the closing-brace coverage point), leaving them untouched.
+        let mut entry = SessionEntry {
+            id: "e2".to_string(),
+            entry_type: ENTRY_TYPE_ASSISTANT.to_string(),
+            role: "assistant".to_string(),
+            content: Some(serde_json::json!([serde_json::to_value(
+                crate::types::ContentBlock::text("hi")
+            )
+            .unwrap()])),
+            tool_calls: vec![crate::types::ToolCall {
+                id: "tc1".to_string(),
+                call_type: "function".to_string(),
+                function: crate::types::ToolCallFn {
+                    name: "run".to_string(),
+                    arguments: serde_json::json!({}),
+                },
+            }],
+            timestamp: chrono::Local::now(),
+            tool_call_id: "tc1".to_string(),
+            name: String::new(),
+            tool_args: String::new(),
+            thinking: "already".to_string(),
+            meta: None,
+        };
+        hydrate_entry_projections(&mut entry);
+        assert_eq!(entry.thinking, "already");
+        assert_eq!(entry.tool_calls.len(), 1);
+        assert_eq!(entry.tool_call_id, "tc1");
+    }
 }
 
 #[cfg(test)]
