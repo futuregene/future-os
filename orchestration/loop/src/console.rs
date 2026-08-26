@@ -3619,11 +3619,10 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         client.set_thinking_level(&session_id, &l).await?;
     }
 
-    // Run the turn loop. Session lifecycle: the kernel no longer blindly
-    // deletes the session — it records the retention state (id + failure
-    // classification + resumable advisory) on the goal and lets the NEXT
-    // caller decide. Deletion happens only when the session is NOT resumable
-    // (HardError / science failure / zombie — its reasoning state is broken).
+    // Run the turn loop. Session lifecycle: the session is never deleted —
+    // the kernel records the retention state (id + failure classification +
+    // resumable advisory) on the goal and lets the NEXT caller decide
+    // resume-vs-fresh via --session-policy / --resume-session.
     let mut last_failure_kind: Option<crate::state::FailureKind> = None;
     // Down-channel steering: watch the ledger for supervisor steering
     // instructions targeting THIS worker and abort the session mid-turn so the
@@ -3683,16 +3682,18 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         }
     }
 
-    // Delete the session ONLY when it is not resumable — a resumable session
-    // (infra interruption) is kept on the agent for the next caller to resume,
-    // so its accumulated exploration is not thrown away.
-    if !resumable {
-        if let Err(e) = client.delete_session(&session_id).await {
-            println!("   ⚠ session cleanup failed (best-effort): {e}");
-        }
-    } else {
+    // Session retention: never delete the agent session. The session (and its
+    // accumulated exploration) stays on the agent; the NEXT caller decides
+    // resume-vs-fresh. A resumable session (infra interruption) is also picked
+    // up by the default `auto` policy; a non-resumable one must be resumed
+    // explicitly.
+    if resumable {
         println!(
             "   ⤺ session {session_id} retained (resumable) — next `run` with default policy will resume it"
+        );
+    } else {
+        println!(
+            "   ⤺ session {session_id} retained — resume it with --session-policy resume or --resume-session"
         );
     }
     result
@@ -3752,7 +3753,7 @@ fn claim_selected_with_lease(
 }
 
 /// One `run` = one bounded turn loop against a fresh agent session. `cmd_run`
-/// owns the session lifecycle (create before, delete after); this function
+/// owns the session lifecycle (create before, retain after); this function
 /// only executes turns and writes back their ledger effects.
 ///
 /// `max_incomplete_retries`: consecutive `incomplete` turns (model stream
@@ -3761,7 +3762,7 @@ fn claim_selected_with_lease(
 ///
 /// `last_failure_kind`: out-parameter set to the failure classification of the
 /// LAST executed turn (`None` when no turn ran this invocation) — the caller
-/// uses it to decide session retention (resume vs delete), never the kernel.
+/// uses it to decide session retention (resume vs fresh), never the kernel.
 ///
 /// Enqueue an intervention report to the registered supervisor session (the
 /// up channel). `dedup_key` doubles as the idempotency key: re-sending the
