@@ -88,6 +88,26 @@ describe("credential storage", () => {
     await clearCredentials();
     expect(mockedStore.deleteItemAsync).toHaveBeenCalledTimes(8);
   });
+
+  test("serializes clear behind an in-flight credential save", async () => {
+    let finishSeedWrite: (() => void) | undefined;
+    mockedStore.setItemAsync.mockImplementation(async key => {
+      if (key !== "futureos.remote.seed.v1") return;
+      await new Promise<void>(resolve => {
+        finishSeedWrite = resolve;
+      });
+    });
+
+    const save = saveCredentials(credentials);
+    const clear = clearCredentials();
+    await Promise.resolve();
+    expect(mockedStore.deleteItemAsync).not.toHaveBeenCalled();
+
+    finishSeedWrite?.();
+    await save;
+    await clear;
+    expect(mockedStore.deleteItemAsync).toHaveBeenCalledTimes(8);
+  });
 });
 
 describe("device / model / thinking preferences", () => {

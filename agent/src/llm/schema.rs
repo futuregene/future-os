@@ -111,15 +111,24 @@ impl Default for OpenAiResponsesConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AnthropicThinkingMode {
+    #[default]
+    Manual,
+    Adaptive,
+}
+
 #[derive(Debug, Clone)]
 pub struct AnthropicMessagesConfig {
     pub version: String,
+    pub thinking_mode: AnthropicThinkingMode,
 }
 
 impl Default for AnthropicMessagesConfig {
     fn default() -> Self {
         Self {
             version: "2023-06-01".to_string(),
+            thinking_mode: AnthropicThinkingMode::Manual,
         }
     }
 }
@@ -291,7 +300,7 @@ impl ResolvedModelTarget {
                 ProtocolConfig::OpenAiResponses(OpenAiResponsesConfig::default())
             }
             ApiProtocol::AnthropicMessages => {
-                ProtocolConfig::AnthropicMessages(AnthropicMessagesConfig::default())
+                ProtocolConfig::AnthropicMessages(parse_anthropic_config(model)?)
             }
         };
         let auth = match api {
@@ -362,6 +371,57 @@ impl ResolvedModelTarget {
             },
         }
     }
+}
+
+fn parse_anthropic_config(model: &crate::models::Model) -> Result<AnthropicMessagesConfig> {
+    let configured = match model.compat.get("anthropicThinkingMode") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) => Some(value.as_str()),
+        Some(_) => {
+            bail!(
+                "provider `{}` model `{}` compat.anthropicThinkingMode must be a string",
+                model.provider,
+                model.id
+            )
+        }
+    };
+    let thinking_mode = match configured {
+        Some("manual") => AnthropicThinkingMode::Manual,
+        Some("adaptive") => AnthropicThinkingMode::Adaptive,
+        Some(other) => {
+            bail!(
+                "provider `{}` model `{}` has unsupported compat.anthropicThinkingMode `{other}`",
+                model.provider,
+                model.id
+            )
+        }
+        None if anthropic_model_uses_adaptive_thinking(&model.id) => {
+            AnthropicThinkingMode::Adaptive
+        }
+        None => AnthropicThinkingMode::Manual,
+    };
+    Ok(AnthropicMessagesConfig {
+        thinking_mode,
+        ..Default::default()
+    })
+}
+
+fn anthropic_model_uses_adaptive_thinking(model_id: &str) -> bool {
+    let id = model_id.to_ascii_lowercase().replace('.', "-");
+    [
+        "opus-4-6",
+        "opus-4-7",
+        "opus-4-8",
+        "opus-5",
+        "sonnet-4-6",
+        "sonnet-5",
+        "fable-5",
+        "mythos-5",
+        "opus-latest",
+        "sonnet-latest",
+    ]
+    .iter()
+    .any(|marker| id.contains(marker))
 }
 
 fn parse_chat_config(model: &crate::models::Model) -> Result<OpenAiChatConfig> {
@@ -530,5 +590,30 @@ mod tests {
             panic!("chat protocol expected")
         };
         assert_eq!(chat.reasoning, ChatReasoningFormat::None);
+    }
+
+    #[test]
+    fn anthropic_thinking_mode_uses_model_generation_with_explicit_override() {
+        let mut model = crate::models::Model {
+            id: "claude-opus-4-8".into(),
+            provider: "anthropic".into(),
+            api: "anthropic".into(),
+            ..Default::default()
+        };
+        let target = ResolvedModelTarget::from_model(&model, "key".into(), None, None).unwrap();
+        let ProtocolConfig::AnthropicMessages(config) = target.protocol else {
+            panic!("Anthropic protocol expected")
+        };
+        assert_eq!(config.thinking_mode, AnthropicThinkingMode::Adaptive);
+
+        model.compat.insert(
+            "anthropicThinkingMode".into(),
+            Value::String("manual".into()),
+        );
+        let target = ResolvedModelTarget::from_model(&model, "key".into(), None, None).unwrap();
+        let ProtocolConfig::AnthropicMessages(config) = target.protocol else {
+            panic!("Anthropic protocol expected")
+        };
+        assert_eq!(config.thinking_mode, AnthropicThinkingMode::Manual);
     }
 }

@@ -10,6 +10,7 @@ import { useTranslation } from "react-i18next";
 import { readTextFilePreview } from "../../integrations/storage/files";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 import { PreviewNotice } from "./PreviewNotice";
+import { usePreviewLoadingGate } from "./usePreviewLoadingGate";
 
 const ROW_HEIGHT = 22;
 const OVERSCAN_ROWS = 24;
@@ -29,11 +30,12 @@ export function JsonPreview({
   );
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
+  const gate = usePreviewLoadingGate(loading);
 
   useEffect(() => {
-    if (error)
+    if (error && gate.showContent)
       onErrorRef.current();
-  }, [error]);
+  }, [error, gate.showContent]);
 
   const prepared = useMemo(() => {
     if (!result)
@@ -54,8 +56,11 @@ export function JsonPreview({
     return { formatted, sourceLimited, validationError, validUtf8: result.validUtf8 };
   }, [result]);
 
-  if (loading || error || !prepared)
+  if (gate.showLoading)
     return <PreviewNotice message={t("filePreview.loading")} />;
+
+  if (!gate.showContent || error || !prepared)
+    return null;
 
   return (
     <div className="flex h-[min(80vh,48rem)] min-h-0 flex-col bg-surface text-sm text-ink">

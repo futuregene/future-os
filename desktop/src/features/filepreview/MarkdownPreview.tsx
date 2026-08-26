@@ -4,6 +4,7 @@ import { readTextFilePreview } from "../../integrations/storage/files";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 import { MarkdownContent } from "../markdown/MarkdownContent";
 import { PreviewNotice } from "./PreviewNotice";
+import { usePreviewLoadingGate } from "./usePreviewLoadingGate";
 
 /**
  * Renders a local `.md` file with the same renderer the chat uses
@@ -28,18 +29,22 @@ export function MarkdownPreview({
   // re-fire when callers pass a fresh callback each render.
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
+  const gate = usePreviewLoadingGate(loading);
 
   // A read failure routes to `onError` so the overlay falls back to the OS
   // default handler.
   useEffect(() => {
-    if (error)
+    if (error && gate.showContent)
       onErrorRef.current();
-  }, [error]);
+  }, [error, gate.showContent]);
 
   const content = loading || error || result == null ? null : result.content;
 
-  if (content == null)
+  if (gate.showLoading)
     return <PreviewNotice message={t("filePreview.loading")} />;
+
+  if (!gate.showContent || content == null)
+    return null;
 
   // The surface/rounded frame lives on the scroll container (in FilePreviewOverlay)
   // so its rounded corners stay visible at top and bottom while the text scrolls.

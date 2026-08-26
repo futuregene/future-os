@@ -92,6 +92,29 @@ async function deliverPendingPrompt(
   ).data;
 }
 
+async function deliverPendingContinuation(
+  client: RemoteClient,
+  pending: PendingContinuation,
+  checkReceipt: boolean,
+  receiptSupported: boolean,
+): Promise<PromptAck> {
+  if (checkReceipt && receiptSupported) {
+    const receipt = await pendingPromptReceipt(client, pending.commandId);
+    if (receipt) return receipt;
+  }
+  return (
+    await client.requestRetry<PromptAck>(
+      {
+        id: pending.commandId,
+        type: "continue_run",
+        sessionId: pending.sessionId,
+        runId: pending.sourceRunId,
+      },
+      pending.sessionId,
+    )
+  ).data;
+}
+
 interface PromptOutboxOptions {
   clientRef: MutableRefObject<RemoteClient | null>;
   credentialsRef: MutableRefObject<RemoteCredentials | null>;
@@ -317,10 +340,6 @@ export function usePromptOutbox({
     refreshSessions,
   ]);
 
-  useEffect(() => {
-    if (phase === "ready" && !selectedRef.current && !draft) void recoverPendingPrompt();
-  }, [draft, phase, recoverPendingPrompt, selectedRef]);
-
   const continueRun = useCallback(
     async (sessionId: string, runId: string) => {
       const inFlight = continuationInFlightRef.current;
@@ -335,10 +354,12 @@ export function usePromptOutbox({
         const client = clientRef.current;
         if (!client) throw new Error("not_connected");
         let pending = await loadPendingContinuation();
+        let checkReceipt = pending !== null;
         if (pending && (pending.sessionId !== sessionId || pending.sourceRunId !== runId)) {
           if (promptReceiptSupported) await pendingPromptReceipt(client, pending.commandId);
           await clearPendingContinuation(pending.commandId);
           pending = null;
+          checkReceipt = false;
         }
         if (!pending) {
           pending = {
@@ -351,10 +372,7 @@ export function usePromptOutbox({
           await savePendingContinuation(pending);
         }
         try {
-          await client.requestRetry<PromptAck>(
-            { id: pending.commandId, type: "continue_run", sessionId, runId },
-            sessionId,
-          );
+          await deliverPendingContinuation(client, pending, checkReceipt, promptReceiptSupported);
           await clearPendingContinuation(pending.commandId);
         } catch (continueError) {
           if (!isTransientNatsRequestError(continueError)) {
@@ -379,6 +397,60 @@ export function usePromptOutbox({
     },
     [clientRef, promptReceiptSupported],
   );
+
+  const recoverPendingContinuation = useCallback(async () => {
+    const client = clientRef.current;
+    if (!client || !credentialsRef.current || continuationInFlightRef.current) return;
+    const pending = await loadPendingContinuation();
+    if (!pending || continuationInFlightRef.current) return;
+
+    const operation = (async () => {
+      try {
+        const receipt = await deliverPendingContinuation(
+          client,
+          pending,
+          true,
+          promptReceiptSupported,
+        );
+        await clearPendingContinuation(pending.commandId);
+        void refreshSessions();
+        reconcileSession(receipt.sessionId || pending.sessionId, "reconnect", receipt.runId);
+      } catch (recoveryError) {
+        if (!isTransientNatsRequestError(recoveryError)) {
+          await clearPendingContinuation(pending.commandId);
+          recordError(recoveryError);
+        }
+      }
+    })();
+
+    continuationInFlightRef.current = {
+      sessionId: pending.sessionId,
+      sourceRunId: pending.sourceRunId,
+      promise: operation,
+    };
+    try {
+      await operation;
+    } finally {
+      if (continuationInFlightRef.current?.promise === operation) {
+        continuationInFlightRef.current = null;
+      }
+    }
+  }, [
+    clientRef,
+    credentialsRef,
+    promptReceiptSupported,
+    reconcileSession,
+    recordError,
+    refreshSessions,
+  ]);
+
+  useEffect(() => {
+    if (phase !== "ready") return;
+    void (async () => {
+      await recoverPendingPrompt();
+      await recoverPendingContinuation();
+    })();
+  }, [phase, recoverPendingContinuation, recoverPendingPrompt]);
 
   return { sending, sendMessage, continueRun };
 }

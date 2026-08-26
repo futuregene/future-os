@@ -132,13 +132,20 @@ pub(super) async fn prepare(
         Ok(summary) if valid_summary(&summary) => (summary, "semantic-v1"),
         Err(SummaryCallError::Cancelled) => return Err(ContextError::Cancelled),
         Ok(_) => {
-            tracing::warn!(
-                "semantic compaction returned an invalid summary; using emergency summary"
-            );
+            if plan.trigger != CompactionTrigger::ProviderContextLimit {
+                return Err(ContextError::InvalidSummary);
+            }
+            tracing::warn!("provider context-limit recovery received an invalid semantic summary; using emergency summary");
             (emergency_summary(&plan), "deterministic-emergency-v1")
         }
         Err(SummaryCallError::ContextLimit(error)) | Err(SummaryCallError::Other(error)) => {
-            tracing::warn!(error, "semantic compaction failed; using emergency summary");
+            if plan.trigger != CompactionTrigger::ProviderContextLimit {
+                return Err(ContextError::SummaryFailed(error));
+            }
+            tracing::warn!(
+                error,
+                "provider context-limit recovery compaction failed; using emergency summary"
+            );
             (emergency_summary(&plan), "deterministic-emergency-v1")
         }
     };
@@ -219,16 +226,32 @@ fn plan(
     } else {
         manager.keep_recent_tokens.max(1) as u64
     };
-    let cut = turn_aware_cut(
+    // Once a task is already in progress, retaining an oversized latest tool
+    // result can leave the "compacted" prompt above the model limit. In that
+    // case it is safer to summarize the complete active turn and continue from
+    // the structured handoff. Do not do this before the first model request:
+    // a lone, oversized user prompt has not been acted on yet and must not be
+    // silently replaced by a lossy summary.
+    let allow_full_active_turn = trigger == CompactionTrigger::Manual
+        || (phase == CompactionPhase::MidTurn
+            && matches!(
+                trigger,
+                CompactionTrigger::Automatic | CompactionTrigger::ProviderContextLimit
+            ));
+    let mut cut = turn_aware_cut(
         &prompt.messages,
         &costs,
         keep_recent_tokens,
         compact_all_when_every_turn_fits,
     )
+    .or_else(|| allow_full_active_turn.then_some(prompt.messages.len()))
     .ok_or(ContextError::NoValidBoundary)?;
+    if allow_full_active_turn && costs[cut..].iter().copied().sum::<u64>() > keep_recent_tokens {
+        cut = prompt.messages.len();
+    }
     if cut == 0
         || cut > prompt.messages.len()
-        || (cut == prompt.messages.len() && !compact_all_when_every_turn_fits)
+        || (cut == prompt.messages.len() && !allow_full_active_turn)
     {
         return Err(ContextError::NoValidBoundary);
     }
@@ -1029,9 +1052,7 @@ mod tests {
         }
     }
 
-    fn projected(role: &str, text: &str, id: &str) -> ProjectedMessage {
-        let mut message =
-            AgentMessage::new_user(role, serde_json::json!([{ "type": "text", "text": text }]));
+    fn projected_message(mut message: AgentMessage, id: &str) -> ProjectedMessage {
         message
             .metadata
             .get_or_insert_with(serde_json::Map::new)
@@ -1043,6 +1064,13 @@ mod tests {
             message,
             source_entry_ids: vec![id.to_string()],
         }
+    }
+
+    fn projected(role: &str, text: &str, id: &str) -> ProjectedMessage {
+        projected_message(
+            AgentMessage::new_user(role, serde_json::json!([{ "type": "text", "text": text }])),
+            id,
+        )
     }
 
     fn test_prompt() -> PromptContext {
@@ -1134,6 +1162,100 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].model, "old-model");
         assert!(requests[0].tools.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mid_turn_compaction_summarizes_an_oversized_active_tool_tail() {
+        let provider = ScriptedProvider::new([ScriptedReply::Summary(VALID_SUMMARY)]);
+        let prompt = PromptContext {
+            messages: vec![
+                projected("user", "audit the repository", "e1"),
+                projected_message(
+                    AgentMessage {
+                        role: "assistant".to_string(),
+                        content: vec![ContentBlock::tool_call(
+                            "call-1",
+                            "read",
+                            serde_json::json!({"path": "large.rs"}),
+                            Default::default(),
+                        )],
+                        ..Default::default()
+                    },
+                    "e2",
+                ),
+                projected_message(
+                    AgentMessage {
+                        role: "tool".to_string(),
+                        content: vec![ContentBlock::tool_result(
+                            "call-1",
+                            "x".repeat(20_000),
+                            false,
+                        )],
+                        ..Default::default()
+                    },
+                    "e3",
+                ),
+            ],
+            usage: ContextUsage {
+                input_tokens: Some(10_000),
+                estimated_input_tokens: 10_000,
+                context_window: 8_000,
+                ..Default::default()
+            },
+        };
+
+        let ContextPreparation::Compacted { prompt, checkpoint } = test_manager()
+            .prepare_semantic_with_phase(
+                prompt,
+                CompactionTrigger::Automatic,
+                CompactionPhase::MidTurn,
+                None,
+                &provider,
+                &AtomicBool::new(false),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected full active-turn compaction")
+        };
+
+        assert_eq!(checkpoint.covered_from_entry_id.as_deref(), Some("e1"));
+        assert_eq!(checkpoint.cutoff_entry_id.as_deref(), Some("e3"));
+        assert_eq!(checkpoint.phase, Some(CompactionPhase::MidTurn));
+        assert_eq!(
+            prompt.messages.len(),
+            1,
+            "the structured summary continues the task"
+        );
+        assert!(checkpoint.tokens_after < checkpoint.tokens_before);
+    }
+
+    #[tokio::test]
+    async fn pre_turn_compaction_does_not_replace_an_unseen_user_prompt() {
+        let provider = ScriptedProvider::new([]);
+        let prompt = PromptContext {
+            messages: vec![projected("user", &"x".repeat(40_000), "e1")],
+            usage: ContextUsage {
+                input_tokens: Some(10_000),
+                estimated_input_tokens: 10_000,
+                context_window: 8_000,
+                ..Default::default()
+            },
+        };
+
+        let result = test_manager()
+            .prepare_semantic_with_phase(
+                prompt,
+                CompactionTrigger::Automatic,
+                CompactionPhase::PreTurn,
+                None,
+                &provider,
+                &AtomicBool::new(false),
+            )
+            .await;
+
+        assert_eq!(result.unwrap_err(), ContextError::NoValidBoundary);
+        assert!(provider.requests.lock().is_empty());
     }
 
     #[tokio::test]
@@ -1261,9 +1383,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_retryable_failure_uses_deterministic_emergency_summary() {
+    async fn non_retryable_failure_does_not_commit_automatic_checkpoint() {
         let provider = ScriptedProvider::new([ScriptedReply::Error("authentication failed")]);
-        let prepared = test_manager()
+        let error = test_manager()
             .prepare_semantic(
                 test_prompt(),
                 CompactionTrigger::Automatic,
@@ -1272,15 +1394,53 @@ mod tests {
                 &AtomicBool::new(false),
             )
             .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            ContextError::SummaryFailed("authentication failed".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_context_limit_failure_uses_deterministic_emergency_summary() {
+        let provider = ScriptedProvider::new([ScriptedReply::Error("authentication failed")]);
+        let prepared = test_manager()
+            .prepare_semantic(
+                test_prompt(),
+                CompactionTrigger::ProviderContextLimit,
+                Some("preserve the exact user constraints"),
+                &provider,
+                &AtomicBool::new(false),
+            )
+            .await
             .unwrap();
         let ContextPreparation::Compacted { checkpoint, .. } = prepared else {
-            panic!("expected compaction")
+            panic!("expected emergency provider-limit compaction")
         };
         assert_eq!(checkpoint.algorithm_version, "deterministic-emergency-v1");
         let ContentBlock::Text { text } = &checkpoint.summary[0] else {
             panic!("expected text summary")
         };
         assert!(text.contains("preserve the exact user constraints"));
+    }
+
+    #[tokio::test]
+    async fn manual_failure_does_not_replace_the_full_history() {
+        let provider = ScriptedProvider::new([ScriptedReply::Error("authentication failed")]);
+        let error = test_manager()
+            .prepare_semantic(
+                test_prompt(),
+                CompactionTrigger::Manual,
+                None,
+                &provider,
+                &AtomicBool::new(false),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            ContextError::SummaryFailed("authentication failed".to_string())
+        );
     }
 
     #[tokio::test]

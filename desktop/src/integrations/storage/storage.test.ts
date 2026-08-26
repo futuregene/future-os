@@ -17,7 +17,7 @@ import {
   listDirectory,
   openExternalUrl,
   openPath,
-  readFileBase64,
+  prepareImagePreviewUrl,
   readTextFilePreview,
   resolvePreviewLinkPath,
   savePastedImage,
@@ -78,6 +78,7 @@ import {
 const invokeMock = vi.fn<(cmd: string, args?: unknown) => Promise<unknown>>();
 
 vi.mock("@tauri-apps/api/core", () => ({
+  convertFileSrc: (path: string) => `asset:${path}`,
   invoke: (cmd: string, args?: unknown) => invokeMock(cmd, args),
 }));
 
@@ -162,10 +163,9 @@ describe("storage invoke wrappers", () => {
     expect(invokeMock).toHaveBeenLastCalledWith("inspect_attachment", { path: "/a" });
     await validateImageAttachment("/i");
     expect(invokeMock).toHaveBeenLastCalledWith("validate_image_attachment", { path: "/i" });
-    await readFileBase64({ path: "/f", maxBytes: 8 });
-    expect(invokeMock).toHaveBeenLastCalledWith("read_file_base64", { maxBytes: 8, path: "/f" });
-    await readFileBase64({ path: "/f" });
-    expect(invokeMock).toHaveBeenLastCalledWith("read_file_base64", { maxBytes: null, path: "/f" });
+    invokeMock.mockResolvedValueOnce({ path: "/f", version: "10-8" });
+    await expect(prepareImagePreviewUrl("/f")).resolves.toBe("asset:/f?v=10-8");
+    expect(invokeMock).toHaveBeenLastCalledWith("prepare_image_preview", { path: "/f" });
     await generateImageThumbnail({ threadId: "t", sourcePath: "/s" });
     expect(invokeMock).toHaveBeenLastCalledWith("generate_image_thumbnail", { sourcePath: "/s", threadId: "t" });
     await importEphemeralImage({ threadId: "t", path: "/s", name: "n" });

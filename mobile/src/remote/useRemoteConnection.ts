@@ -107,14 +107,18 @@ export function useRemoteConnection({
   const connect = useCallback(
     async (nextCredentials: RemoteCredentials) => {
       await clientRef.current?.close();
+      // A successful pair must mean its credentials are durable. In
+      // particular, do not let the UI report success while SecureStore writes
+      // are still in flight and can be lost on immediate process suspension.
+      await saveCredentials(nextCredentials);
       credentialsRef.current = nextCredentials;
       setCredentials(nextCredentials);
       setError(null);
       setCapabilities(new Set());
       const client = new RemoteClient(nextCredentials, {
-        onCredentials: next => {
+        onCredentials: async next => {
+          await saveCredentials(next);
           setCredentials(next);
-          void saveCredentials(next);
         },
         onEvent: handleEvent,
         onEventDecodeFailure: (sessionId, decodeError) => {

@@ -24,43 +24,65 @@ const secureOptions: SecureStore.SecureStoreOptions = {
   keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
 };
 
-export async function loadCredentials(): Promise<RemoteCredentials | null> {
-  const entries = await Promise.all(
-    Object.entries(CREDENTIAL_KEYS).map(async ([field, key]) => [
-      field,
-      await SecureStore.getItemAsync(key, secureOptions),
-    ]),
+// SecureStore has no multi-key transaction. Keep credential bundle operations
+// in call order so readers never observe an in-process partial write, and an
+// older clear cannot race a newer pair and delete fields that were just written.
+let credentialOperationQueue: Promise<void> = Promise.resolve();
+
+function enqueueCredentialOperation<T>(operation: () => Promise<T>): Promise<T> {
+  const result = credentialOperationQueue.then(operation, operation);
+  credentialOperationQueue = result.then(
+    () => undefined,
+    () => undefined,
   );
-  if (entries.every(([, value]) => value == null)) return null;
-  if (entries.some(([, value]) => value == null)) {
-    await clearCredentials();
-    return null;
-  }
-  const deviceId = await loadDeviceId();
-  if (deviceId == null) {
-    // A credential bundle without its device identity is corrupt; clear it so a
-    // fresh pair re-establishes both.
-    await clearCredentials();
-    return null;
-  }
-  return { ...Object.fromEntries(entries), deviceId } as unknown as RemoteCredentials;
+  return result;
 }
 
-export async function saveCredentials(credentials: RemoteCredentials): Promise<void> {
-  const { deviceId, ...rest } = credentials;
-  const fields = Object.keys(CREDENTIAL_KEYS) as (keyof typeof rest)[];
-  await Promise.all([
-    ...fields.map(field =>
-      SecureStore.setItemAsync(CREDENTIAL_KEYS[field], rest[field], secureOptions),
-    ),
-    saveDeviceId(deviceId),
-  ]);
-}
-
-export async function clearCredentials(): Promise<void> {
+async function deleteCredentialFields(): Promise<void> {
   await Promise.all(
     Object.values(CREDENTIAL_KEYS).map(key => SecureStore.deleteItemAsync(key, secureOptions)),
   );
+}
+
+export async function loadCredentials(): Promise<RemoteCredentials | null> {
+  return enqueueCredentialOperation(async () => {
+    const entries = await Promise.all(
+      Object.entries(CREDENTIAL_KEYS).map(async ([field, key]) => [
+        field,
+        await SecureStore.getItemAsync(key, secureOptions),
+      ]),
+    );
+    if (entries.every(([, value]) => value == null)) return null;
+    if (entries.some(([, value]) => value == null)) {
+      await deleteCredentialFields();
+      return null;
+    }
+    const deviceId = await loadDeviceId();
+    if (deviceId == null) {
+      // A credential bundle without its device identity is corrupt; clear it so a
+      // fresh pair re-establishes both.
+      await deleteCredentialFields();
+      return null;
+    }
+    return { ...Object.fromEntries(entries), deviceId } as unknown as RemoteCredentials;
+  });
+}
+
+export async function saveCredentials(credentials: RemoteCredentials): Promise<void> {
+  return enqueueCredentialOperation(async () => {
+    const { deviceId, ...rest } = credentials;
+    const fields = Object.keys(CREDENTIAL_KEYS) as (keyof typeof rest)[];
+    await Promise.all([
+      ...fields.map(field =>
+        SecureStore.setItemAsync(CREDENTIAL_KEYS[field], rest[field], secureOptions),
+      ),
+      saveDeviceId(deviceId),
+    ]);
+  });
+}
+
+export async function clearCredentials(): Promise<void> {
+  return enqueueCredentialOperation(deleteCredentialFields);
 }
 
 export async function loadDeviceId(): Promise<string | null> {

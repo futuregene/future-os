@@ -195,29 +195,64 @@ pub fn validate_image_attachment(path: String) -> Result<(), crate::AppError> {
     Ok(())
 }
 
-/// Hard ceiling for [`read_file_base64`]: the whole file is buffered in memory
-/// (×1.33 as base64), so a caller-supplied limit must never be able to raise it.
-const READ_BASE64_MAX_BYTES: u64 = 25 * 1024 * 1024;
+const IMAGE_PREVIEW_MAX_BYTES: u64 = 25 * 1024 * 1024;
 
-/// Read a whole file as base64 (for client-side PDF text extraction). Errors if
-/// the file exceeds `max_bytes` (default and cap 25MB) — extraction targets must
-/// be small.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImagePreviewAsset {
+    path: String,
+    version: String,
+}
+
+/// Validate one local image path and expose exactly that canonical file through
+/// Tauri's asset protocol. The WebView then reads the bytes directly instead of
+/// receiving a 1.33x Base64 string over JSON IPC.
 #[tauri::command]
-pub fn read_file_base64(path: String, max_bytes: Option<u64>) -> Result<String, crate::AppError> {
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
+pub fn prepare_image_preview(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<ImagePreviewAsset, crate::AppError> {
+    prepare_image_preview_with(&app, &path)
+}
+
+fn prepare_image_preview_with<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    path: &str,
+) -> Result<ImagePreviewAsset, crate::AppError> {
+    use tauri::Manager;
+
+    let (canonical, size) = validate_image_preview_path(path)?;
+    app.asset_protocol_scope()
+        .allow_file(&canonical)
+        .map_err(|error| format!("failed to authorize image preview path: {error}"))?;
+    Ok(ImagePreviewAsset {
+        path: canonical.display().to_string(),
+        // The asset URL is path-based. Give every preparation a fresh version so
+        // reopening a changed file never reuses an old WebView cache entry.
+        version: format!("{}-{size}", unique_stamp()),
+    })
+}
+
+fn validate_image_preview_path(path: &str) -> Result<(PathBuf, u64), crate::AppError> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
         return Err("path cannot be empty.".to_string().into());
     }
     ensure_path_allowed(Path::new(trimmed))?;
-    let meta = std::fs::metadata(trimmed)?;
-    let limit = max_bytes
-        .unwrap_or(READ_BASE64_MAX_BYTES)
-        .clamp(1, READ_BASE64_MAX_BYTES);
-    if meta.len() > limit {
-        return Err(format!("File too large ({} bytes; limit {}).", meta.len(), limit).into());
+    let canonical = Path::new(trimmed).canonicalize()?;
+    let meta = std::fs::metadata(&canonical)?;
+    if !meta.is_file() {
+        return Err("image preview path must be a file.".to_string().into());
     }
-    Ok(STANDARD.encode(std::fs::read(trimmed)?))
+    if meta.len() > IMAGE_PREVIEW_MAX_BYTES {
+        return Err(format!(
+            "File too large ({} bytes; limit {}).",
+            meta.len(),
+            IMAGE_PREVIEW_MAX_BYTES
+        )
+        .into());
+    }
+    Ok((canonical, meta.len()))
 }
 
 /// A filesystem-safe, process-unique stamp (`<nanos>-<seq>`). The atomic seq
@@ -339,7 +374,7 @@ pub fn import_ephemeral_image(
     }
     // Guard the source: a copy-out of a protected credential file (e.g.
     // auth.json) would otherwise defeat `ensure_path_allowed` — the copy lands
-    // under a non-credential name/dir and becomes readable via read_file_base64.
+    // under a non-credential name/dir and becomes readable via the asset protocol.
     ensure_path_allowed(Path::new(source))?;
     let dir = crate::store::thread_images_dir(&thread_id)?.join("origin");
     std::fs::create_dir_all(&dir)?;
@@ -853,16 +888,39 @@ mod tests {
     }
 
     #[test]
-    fn read_file_base64_covers_edges() {
-        let root = future_root("base64");
-        assert!(read_file_base64("   ".into(), None).is_err());
+    fn validate_image_preview_path_covers_edges() {
+        let root = future_root("image_preview");
+        assert!(validate_image_preview_path("   ").is_err());
         let big = sparse_large(&root, "big.bin");
-        assert!(read_file_base64(big.display().to_string(), None).is_err());
+        assert!(validate_image_preview_path(&big.display().to_string()).is_err());
 
-        let small = root.join("small.txt");
+        let small = root.join("small.png");
         fs::write(&small, b"hello").unwrap();
-        let encoded = read_file_base64(small.display().to_string(), None).unwrap();
-        assert_eq!(encoded, "aGVsbG8=");
+        let (canonical, size) = validate_image_preview_path(&small.display().to_string()).unwrap();
+        assert_eq!(canonical, small.canonicalize().unwrap());
+        assert_eq!(size, 5);
+    }
+
+    #[test]
+    fn prepare_image_preview_authorizes_only_the_canonical_file() {
+        use tauri::Manager;
+
+        let root = future_root("image_preview_scope");
+        let source = root.join("source.png");
+        let other = root.join("other.png");
+        fs::write(&source, b"image bytes").unwrap();
+        fs::write(&other, b"other image bytes").unwrap();
+        let app = tauri::test::mock_app();
+
+        let asset =
+            prepare_image_preview_with(app.handle(), &source.display().to_string()).unwrap();
+        let refreshed =
+            prepare_image_preview_with(app.handle(), &source.display().to_string()).unwrap();
+        let canonical = source.canonicalize().unwrap();
+        assert_eq!(asset.path, canonical.display().to_string());
+        assert_ne!(asset.version, refreshed.version);
+        assert!(app.asset_protocol_scope().is_allowed(&canonical));
+        assert!(!app.asset_protocol_scope().is_allowed(other));
     }
 
     #[test]
