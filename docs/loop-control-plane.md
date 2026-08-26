@@ -69,8 +69,9 @@ Agent loads the future-loop skill (v3.x driving manual)
    ├─ 3. `goal init` + decompose todos (dependencies via --blocks, hard checks via --verify/--acceptance)
    ├─ 4. Drive turns: `run --max-turns 1 --agent-id <unique>`, relaunching the moment a turn exits
    ├─ 5. Correct a drifting worker via `todo update --text` (picked up at the next turn)
-   ├─ 6. Irreversible/expensive/user-only decisions → open a user gate and wait (gates freeze everything)
-   └─ 7. Close out: acceptance todo copies artifacts to the project root → validated closure (terminal)
+   ├─ 6. Interrupt a stuck worker mid-turn via `supervisor steer --goal G --instruction "..."`
+   ├─ 7. Irreversible/expensive/user-only decisions → open a user gate and wait (gates freeze everything)
+   └─ 8. Close out: acceptance todo copies artifacts to the project root → validated closure (terminal)
 ```
 
 **Skill vs CLI**: the skill owns "what to do when, how to decompose, how to
@@ -131,13 +132,38 @@ root, and only GET endpoints exist (any other method is a 405). Mutations
   dashboard holds no separate state and writes nothing.
 
 ## Hard checks first (conventions fail, gates hold)
-
 - Empty-evidence closures are **refused** (fail-closed by default; `--force` opens)
 - `--verify` makes "wrote it" mean "it compiles / the artifact exists" — attach one to every delivery todo
 - `--acceptance` turns "accepted by an external observable" into a hard check
 - Lease liveness self-heals: dead-process leases are reclaimed automatically — relaunching workers needs no manual release
 - Workspace guard: multi-agent write conflicts degrade to serial automatically
 - Idle turns (15 minutes without writes) are ledgered; correct the worker via `todo update --text` (applies at the next turn)
+
+## Bidirectional messaging (supervisor ↔ worker)
+
+The supervisor (the orchestrator agent running the `/future-loop` skill) and
+its workers exchange messages through the goal ledger — no in-process push
+channel. Both directions ride the same event-sourced state:
+
+- **Register the supervisor** (once per goal):
+  `future loop supervisor register --goal G --session-id <supervisor-agent-session>`
+  This binds the supervisor's agent session id to the goal; workers read it on
+  `replay` and target their reports at it.
+
+- **Down (supervisor → worker, an interrupt):**
+  `future loop supervisor steer --goal G [--agent-id A] --instruction "..."`
+  A `WorkerSteered` event lands in the ledger; the running worker's watch task
+  sees it and aborts the in-flight run (a real interrupt, `supersede_session`
+  semantics — not a system-prompt note). The next turn drains the instruction
+  into its envelope and follows it.
+
+- **Up (worker → supervisor, a report):**
+  At a turn boundary the worker enqueues a report (`enqueue_if_busy`, so it
+  never interrupts the supervisor) to the registered session for exactly three
+  state transitions: a user gate opens (①), a todo completes (②), or a todo
+  fails on a science/hard error (③). Each report is idempotent-keyed on the
+  transition, so re-sends across runs dedup. The durable user gate remains the
+  authoritative intervention channel if no supervisor is registered.
 
 ## Loop state is CLI-first
 

@@ -84,6 +84,18 @@ fn session_and_command_happy_paths() {
         let run_id = client.prompt(&session, "do work", "req-1").await.unwrap();
         assert_eq!(run_id, "mock-run-1");
 
+        // prompt_superseding sends the supersede_session policy (down-channel
+        // interrupt for hosts driving a raw agent session).
+        let run2 = client
+            .prompt_superseding(&session, "redirect now", "req-2")
+            .await
+            .unwrap();
+        assert_eq!(run2, "mock-run-2");
+        let prompt_calls = shared.lock().unwrap().prompt_calls.clone();
+        assert_eq!(prompt_calls.len(), 2);
+        assert_eq!(prompt_calls[0].1, "enqueue_if_busy");
+        assert_eq!(prompt_calls[1].1, "supersede_session");
+
         let totals = client.session_totals(&session).await.unwrap();
         assert_eq!(totals.tokens_in, 0);
 
