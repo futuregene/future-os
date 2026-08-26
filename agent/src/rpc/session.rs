@@ -2385,20 +2385,23 @@ mod tests {
     #[test]
     fn set_model_rejects_unknown_api_protocol() {
         let mut session = make_test_session("bad-api");
-        session.model_registry.write().test_insert(crate::models::Model {
-            id: "bad".to_string(),
-            name: "Bad".to_string(),
-            provider: "test".to_string(),
-            api: "not-a-real-protocol".to_string(),
-            base_url: String::new(),
-            api_key: String::new(),
-            reasoning: false,
-            input: vec!["text".to_string()],
-            output: vec!["text".to_string()],
-            context_window: 100_000,
-            max_tokens: 4_096,
-            ..Default::default()
-        });
+        session
+            .model_registry
+            .write()
+            .test_insert(crate::models::Model {
+                id: "bad".to_string(),
+                name: "Bad".to_string(),
+                provider: "test".to_string(),
+                api: "not-a-real-protocol".to_string(),
+                base_url: String::new(),
+                api_key: String::new(),
+                reasoning: false,
+                input: vec!["text".to_string()],
+                output: vec!["text".to_string()],
+                context_window: 100_000,
+                max_tokens: 4_096,
+                ..Default::default()
+            });
         // Resolution succeeds (the model is in the registry) but the unknown
         // API protocol makes provider construction fail → the error propagates.
         assert!(session.set_model("test/bad").is_err());

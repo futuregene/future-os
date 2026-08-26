@@ -2578,7 +2578,11 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
         };
 
         let shape = windows_capability_shape("build-release", &prepared, &sandbox);
-        assert!(shape.title.contains("2 locations"), "title: {}", shape.title);
+        assert!(
+            shape.title.contains("2 locations"),
+            "title: {}",
+            shape.title
+        );
         assert_eq!(
             shape.summary,
             "FutureOS needs write access to all of these locations for the current command."

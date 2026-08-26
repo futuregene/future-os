@@ -541,7 +541,11 @@ fn list_providers_reports_builtin_and_custom_providers() {
     // arm and the entry shows up in the custom list instead.
     let shadow_id = {
         let registry = state.model_registry.read();
-        let mut ids: Vec<String> = registry.builtin_provider_summaries().keys().cloned().collect();
+        let mut ids: Vec<String> = registry
+            .builtin_provider_summaries()
+            .keys()
+            .cloned()
+            .collect();
         ids.sort();
         ids.into_iter()
             .find(|id| *id != builtin_id)
@@ -659,7 +663,7 @@ fn list_providers_reports_error_on_corrupt_documents() {
 
 #[test]
 fn upsert_provider_create_only_reports_created() {
-    let home = TestHome::new();
+    let _home = TestHome::new();
     let state = make_app_state();
     let mut cmd = make_cmd("upsert_provider");
     cmd.provider_config = Some(crate::config::providers::ProviderUpsertSpec {
