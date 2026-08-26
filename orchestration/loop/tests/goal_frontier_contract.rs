@@ -68,6 +68,7 @@ fn run(turn: u32, todo_id: &str, at: u64, tools: &[&str], evidence: &str) -> Run
         recorded_at: at,
         spend_source: None,
         failure_kind: None,
+        truncation: None,
     }
 }
 

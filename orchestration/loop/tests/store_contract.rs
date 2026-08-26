@@ -248,6 +248,7 @@ mod crate_helper {
             spend_source: None,
             validation: None,
             failure_kind: None,
+            truncation: None,
         }
     }
 }

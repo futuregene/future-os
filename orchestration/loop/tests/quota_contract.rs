@@ -37,6 +37,7 @@ fn record(recorded_at: u64, source: &str, tools: bool, evidence: bool) -> RunRec
         spend_source: Some(source.into()),
         validation: None,
         failure_kind: None,
+        truncation: None,
     }
 }
 
@@ -98,6 +99,7 @@ fn legacy_records_default_to_completed_run_classification() {
         validation: None,
         terminal_state: "completed".into(),
         failure_kind: None,
+        truncation: None,
         ..record(0, "run", false, false)
     };
     assert_eq!(slot_spend(&legacy), 1, "legacy completed runs still spend");
@@ -106,6 +108,7 @@ fn legacy_records_default_to_completed_run_classification() {
         validation: None,
         terminal_state: "error".into(),
         failure_kind: None,
+        truncation: None,
         ..record(0, "run", false, false)
     };
     assert_eq!(

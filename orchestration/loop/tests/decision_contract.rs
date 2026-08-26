@@ -35,6 +35,7 @@ fn run_record(turn: u32, todo_id: &str, state: &str) -> RunRecord {
         spend_source: None,
         validation: None,
         failure_kind: None,
+        truncation: None,
     }
 }
 

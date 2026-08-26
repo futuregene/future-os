@@ -420,6 +420,9 @@ impl Loop {
             // The accumulated text is a prefix, not a finished answer.
             let mut stream_truncated = false;
             let mut saw_terminal_event = false;
+            // How the truncation was first detected, for the run-terminal
+            // context. Set at the same moment `stream_truncated` flips.
+            let mut truncation_detected_by: Option<&'static str> = None;
 
             loop {
                 let (stream_idle, complete_tool_call_idle) =
@@ -473,6 +476,11 @@ impl Loop {
                         // which is not a timeout.)
                         if event_timed_out || !saw_terminal_event {
                             stream_truncated = true;
+                            truncation_detected_by.get_or_insert(if event_timed_out {
+                                "idle_timeout"
+                            } else {
+                                "eof_no_terminal"
+                            });
                         }
                         break;
                     }
@@ -644,6 +652,7 @@ impl Loop {
                         saw_terminal_event = true;
                         if reason == FinishReason::Incomplete {
                             stream_truncated = true;
+                            truncation_detected_by.get_or_insert("finish_incomplete");
                         }
                         if let Some(ref usage) = usage {
                             self.process_usage_event(usage, &mut total_usage);
@@ -834,6 +843,19 @@ impl Loop {
             if stream_truncated {
                 self.stream_incomplete
                     .store(true, std::sync::atomic::Ordering::SeqCst);
+                // Capture how far the run had progressed and how the cut was
+                // detected, so the run commit path can surface it on
+                // `run_terminal` / `agent_end`. "Cut off mid-work" (turns or
+                // tool calls > 0) is worth resuming; "silent immediately" is
+                // more likely a prompt/connection problem.
+                *self.stream_truncation.lock() = Some(crate::agent::StreamTruncation {
+                    turns_so_far: turn as i32,
+                    output_len: assistant_text.len(),
+                    tool_calls_so_far: agent_tool_calls.len(),
+                    detected_by: truncation_detected_by
+                        .unwrap_or("eof_no_terminal")
+                        .to_string(),
+                });
                 if self.verbose {
                     tracing::warn!(
                         "[agent] stream truncated turns={} output_len={}",
@@ -1800,6 +1822,42 @@ mod tests {
         assert!(loop_
             .stream_incomplete
             .load(std::sync::atomic::Ordering::SeqCst));
+        // Truncation context captured: detected via an explicit incomplete
+        // finish, zero turns/tools progressed past the first stream.
+        let trunc = loop_.stream_truncation.lock().clone().expect("truncation");
+        assert_eq!(trunc.detected_by, "finish_incomplete");
+        assert_eq!(trunc.tool_calls_so_far, 0);
+        assert_eq!(trunc.output_len, "cut off".len());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn truncation_context_records_tool_progress() {
+        // A stream that produced a tool call before being cut off records the
+        // progress, distinguishing "cut off mid-work" from "silent at once".
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![
+            ev_text("working"),
+            ev_toolcall_start(0, "call_1", "echo", "{}"),
+            ev_toolcall_end(),
+            ModelStreamEvent::Finish {
+                reason: FinishReason::Incomplete,
+                usage: None,
+            },
+        ])]);
+        let loop_ = Loop::new(provider, "mock");
+        let _ = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        let trunc = loop_.stream_truncation.lock().clone().expect("truncation");
+        assert_eq!(trunc.detected_by, "finish_incomplete");
+        assert_eq!(trunc.tool_calls_so_far, 1);
+        assert_eq!(trunc.output_len, "working".len());
     }
 
     #[tokio::test(flavor = "current_thread")]

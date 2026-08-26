@@ -89,6 +89,7 @@ fn run_record(turn: u32) -> RunRecord {
         spend_source: None,
         validation: None,
         failure_kind: None,
+        truncation: None,
     }
 }
 

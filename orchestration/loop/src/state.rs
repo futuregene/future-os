@@ -562,6 +562,13 @@ pub struct RunRecord {
     /// by [`Goal::failure_kind_of`].
     #[serde(default)]
     pub failure_kind: Option<FailureKind>,
+    /// A1: the agent's own truncation verdict for an `incomplete` turn — the
+    /// `agent_end.truncation` block (turn/tool progress + how the cut was
+    /// detected). `None` on legacy lines, on non-incomplete turns, and when
+    /// the loop saw the event stream close without a terminal event (the
+    /// loop-side "no agent_end" case, distinct from an agent-reported cut).
+    #[serde(default)]
+    pub truncation: Option<serde_json::Value>,
 }
 
 /// Failure classification — WHY a turn did not deliver a verified outcome.

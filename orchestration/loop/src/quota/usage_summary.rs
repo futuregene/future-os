@@ -204,6 +204,7 @@ mod tests {
             spend_source: Some(source.to_string()),
             validation: None,
             failure_kind: None,
+            truncation: None,
         }
     }
 

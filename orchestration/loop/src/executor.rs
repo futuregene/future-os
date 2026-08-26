@@ -13,6 +13,27 @@ use crate::state::{
     ValidationStatus,
 };
 
+/// Evidence is a summary the orchestrator reads to decide what a worker
+/// actually landed — it is NOT a full transcript. Truncating head-only loses
+/// the conclusion (workers state findings last), so keep a bounded head AND
+/// tail with an explicit elision marker. Bounded because evidence is replayed
+/// into every subsequent turn envelope.
+pub fn truncate_evidence(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    // The elision marker is a 3-byte '…'. Head gets the bulk (context /
+    // approach); tail keeps the conclusion. All bounds are BYTE bounds
+    // (str::len), so they hold against any UTF-8 content.
+    const MARK: &str = "…";
+    let head_bytes = max * 3 / 4;
+    let tail_bytes = max - head_bytes - MARK.len();
+    let head = &text[..text.floor_char_boundary(head_bytes)];
+    let tail_start = text.floor_char_boundary(text.len() - tail_bytes);
+    let tail = &text[tail_start..];
+    format!("{head}{MARK}{tail}")
+}
+
 /// Backoff (seconds) a turn sleeps before the run exits when it ended in an
 /// HTTP 429 (engine overloaded / rate-limited). Relaunching immediately after
 /// a 429 re-hits the same throttle and burns turns without progress — a short
@@ -284,7 +305,7 @@ pub async fn execute_turn(
         tokens_out_delta: after.tokens_out.saturating_sub(before.tokens_out),
         cost_delta: (after.cost - before.cost).max(0.0),
         tools: summary.tools,
-        evidence: crate::decision::truncate(&summary.text, 2_000),
+        evidence: truncate_evidence(&summary.text, 4_000),
         recorded_at: now_epoch(),
         // G-7: stamped by the caller (main.rs writeback) with the mode-based
         // spend source before the record hits the ledger.
@@ -292,6 +313,10 @@ pub async fn execute_turn(
         // A: failure classification, stamped at writeback (None until then).
         failure_kind: None,
         validation: None,
+        // A1: the agent's own truncation verdict (model stream cut off
+        // mid-run) with turn/tool progress; `None` when the loop merely saw
+        // the event stream close without a terminal event.
+        truncation: summary.truncation,
     };
     // Independent validator (if any) runs after a completed turn; a failed or
     // interrupted turn never runs the validator (no material result to check).
@@ -423,6 +448,7 @@ mod validator_tests {
                 recorded_at: 0,
                 spend_source: Some("run".into()),
                 failure_kind: None,
+                truncation: None,
                 validation: None,
             }
         }
@@ -463,5 +489,23 @@ mod validator_tests {
         assert!(incomplete_continue_note(4, 3, "T1").is_none());
         // a zero bound disables retries entirely
         assert!(incomplete_continue_note(1, 0, "T1").is_none());
+    }
+
+    #[test]
+    fn truncate_evidence_keeps_head_and_tail() {
+        use super::truncate_evidence;
+        // Short enough: unchanged.
+        let short = "short evidence";
+        assert_eq!(truncate_evidence(short, 100), short);
+
+        // Long: keeps the head and the tail with an elision marker, and
+        // stays within the budget.
+        let body = "a".repeat(200);
+        let text = format!("{body}END-MARKER");
+        let out = truncate_evidence(&text, 100);
+        assert!(out.len() <= 100, "len {} > 100", out.len());
+        assert!(out.contains('…'), "elision marker: {out}");
+        assert!(out.starts_with('a'), "keeps head: {out}");
+        assert!(out.ends_with("END-MARKER"), "keeps tail: {out}");
     }
 }

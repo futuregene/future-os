@@ -137,6 +137,7 @@ pub async fn run_bridge(store: &mut Store, opts: &BridgeOptions) -> Result<()> {
             // A: failure classification, stamped at writeback (None until then).
             failure_kind: None,
             validation: None,
+            truncation: None,
         };
         // Completion contract: last remaining todo closes with no-follow-up;
         // otherwise remaining todos become successors.
