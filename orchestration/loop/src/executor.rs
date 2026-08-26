@@ -431,6 +431,72 @@ mod validator_tests {
     }
 
     #[test]
+    fn classify_failure_covers_all_terminal_branches() {
+        use super::classify_failure;
+        use crate::state::{FailureKind, RunRecord, TaskValidation, ValidationStatus};
+
+        fn rec(terminal_state: &str, error: Option<&str>, validation: Option<TaskValidation>) -> RunRecord {
+            RunRecord {
+                turn: 1,
+                todo_id: "T1".to_string(),
+                run_id: "run-1".to_string(),
+                terminal_state: terminal_state.to_string(),
+                error: error.map(str::to_string),
+                tokens_in_delta: 0,
+                tokens_out_delta: 0,
+                cost_delta: 0.0,
+                tools: vec![],
+                evidence: String::new(),
+                recorded_at: 0,
+                spend_source: None,
+                failure_kind: None,
+                truncation: None,
+                validation,
+            }
+        }
+
+        // A verify-gate failure is science regardless of terminal_state.
+        let failed = Some(TaskValidation {
+            schema_version: "v1".to_string(),
+            status: ValidationStatus::Failed,
+            validator_kind: "shell".to_string(),
+            summary: String::new(),
+            recovery_kind: None,
+            exit_code: Some(1),
+            ok: false,
+        });
+        assert_eq!(
+            classify_failure(&rec("completed", None, failed)),
+            FailureKind::ScienceVerifyFailed
+        );
+
+        // error + rate-limit → infra-recoverable (does NOT burn repair budget).
+        assert_eq!(
+            classify_failure(&rec("error", Some("Rate limited (HTTP 429)"), None)),
+            FailureKind::InfraRecoverable
+        );
+        // error + non-rate-limit → hard error.
+        assert_eq!(
+            classify_failure(&rec("error", Some("validator exited 1"), None)),
+            FailureKind::HardError
+        );
+        // completed without validation → none.
+        assert_eq!(
+            classify_failure(&rec("completed", None, None)),
+            FailureKind::None
+        );
+        // cancelled / incomplete / other → infra-recoverable.
+        assert_eq!(
+            classify_failure(&rec("cancelled", None, None)),
+            FailureKind::InfraRecoverable
+        );
+        assert_eq!(
+            classify_failure(&rec("incomplete", None, None)),
+            FailureKind::InfraRecoverable
+        );
+    }
+
+    #[test]
     fn incomplete_streak_counts_only_trailing_same_todo_records() {
         use super::{incomplete_streak, RunRecord};
         fn rec(turn: u32, todo: &str, state: &str) -> RunRecord {

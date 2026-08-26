@@ -1037,6 +1037,27 @@ mod tests {
         assert!(decode_events_since(&proto::RpcResponse::default()).is_none());
     }
 
+    /// `response_data` (typed-first) must decode the GetEventsSince kind too —
+    /// the getter path above exercises `events_since_from_proto` directly, so
+    /// this covers the `typed_response_data` match arm instead.
+    #[test]
+    fn response_data_decodes_get_events_since() {
+        let resp = resp_with_payload(Kind::GetEventsSince(proto::EventsSince {
+            run_id: "r1".to_string(),
+            events: vec![proto::ReplayEvent {
+                r#type: "text_chunk".to_string(),
+                data: r#"{"text":"hi"}"#.to_string(),
+                ..Default::default()
+            }],
+            truncated: false,
+            projection: None,
+            has_more: false,
+        }));
+        let value = response_data(&resp);
+        assert_eq!(value["runId"], json!("r1"));
+        assert_eq!(value["events"].as_array().unwrap().len(), 1);
+    }
+
     #[test]
     fn inflate_json_value_handles_empty_invalid_and_valid() {
         assert_eq!(inflate_json_value(""), Value::Null);
