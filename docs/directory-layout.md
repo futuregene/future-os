@@ -62,7 +62,7 @@ asking you to edit it and restart.
 Owned by `future-tui`. `settings.json` persists client-side settings
 (`defaultModel`, `defaultThinkingLevel`, `defaultPermissionLevel`,
 `enabledModelIds`); optional keybinding overrides go in `keybindings.json`;
-`debug.log` is the always-written runtime log, and `write.log` records raw
+`debug.log` is written when `PI_DEBUG_REDRAW=1`, and `write.log` records raw
 screen writes when `PI_TUI_WRITE_LOG=1`. See [tui.md](tui.md).
 
 ## `~/.future/app/` — desktop GUI
