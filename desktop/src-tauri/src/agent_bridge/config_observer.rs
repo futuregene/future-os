@@ -107,3 +107,107 @@ async fn observe_once(
         "global config stream ended".to_string(),
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_support::{mock_agent, stream_event, StreamScript};
+    use super::*;
+
+    #[tokio::test]
+    async fn observe_once_ping_snapshot_invalidates_and_ends() {
+        let mock = mock_agent();
+        mock.push_plain_stream(StreamScript::Events(
+            vec![stream_event("", 0, "ping", r#"{"revision":7}"#)],
+            None,
+        ));
+        let mut last_revision: Option<i64> = None;
+        let mut backoff = Duration::from_secs(5);
+        let result = observe_once(&mut last_revision, &mut backoff).await;
+        assert!(result.is_err(), "stream ends → Err");
+        assert_eq!(last_revision, Some(7));
+        assert_eq!(backoff, Duration::from_millis(250));
+    }
+
+    #[tokio::test]
+    async fn observe_once_tracks_revisions_and_skips_stale_and_unknown() {
+        let mock = mock_agent();
+        mock.push_plain_stream(StreamScript::Events(
+            vec![
+                stream_event("", 0, "provider_config_changed", r#"{"configRevision":3}"#),
+                stream_event("", 1, "provider_config_changed", r#"{"revision":3}"#),
+                stream_event("", 2, "provider_config_changed", r#"{"revision":5}"#),
+                stream_event("", 3, "thread_run", r#"{"revision":9}"#),
+                stream_event("", 4, "provider_config_changed", "not-json"),
+            ],
+            None,
+        ));
+        let mut last_revision: Option<i64> = None;
+        let mut backoff = Duration::from_millis(250);
+        let result = observe_once(&mut last_revision, &mut backoff).await;
+        assert!(result.is_err());
+        assert_eq!(last_revision, Some(5));
+    }
+
+    #[tokio::test]
+    async fn observe_once_surfaces_attach_failure() {
+        let mock = mock_agent();
+        mock.push_plain_stream(StreamScript::AttachError(
+            tonic::Code::Unavailable,
+            "stream attach failed",
+        ));
+        let mut last_revision: Option<i64> = None;
+        let mut backoff = Duration::from_millis(250);
+        let error = observe_once(&mut last_revision, &mut backoff)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("global config stream failed"));
+    }
+
+    #[tokio::test]
+    async fn observe_once_surfaces_stream_close_error() {
+        let mock = mock_agent();
+        mock.push_plain_stream(StreamScript::Events(
+            vec![stream_event("", 0, "ping", r#"{"revision":1}"#)],
+            Some((tonic::Code::Unavailable, "stream dropped")),
+        ));
+        let mut last_revision: Option<i64> = None;
+        let mut backoff = Duration::from_millis(250);
+        let error = observe_once(&mut last_revision, &mut backoff)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("global config stream closed"));
+    }
+
+    #[tokio::test]
+    async fn observe_once_connect_failure_propagates() {
+        let _mock = mock_agent();
+        let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock sets the endpoint");
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
+        let mut last_revision: Option<i64> = None;
+        let mut backoff = Duration::from_millis(250);
+        let result = observe_once(&mut last_revision, &mut backoff).await;
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn run_loop_reconnects_and_backs_off() {
+        let _mock = mock_agent();
+        let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock sets the endpoint");
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
+        let task = tokio::spawn(run());
+        // One full iteration: connect fails → eprintln → 250ms backoff sleep →
+        // backoff doubles. Abort before the second iteration's sleep completes.
+        tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+        task.abort();
+        let _ = task.await;
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
+    }
+
+    #[test]
+    fn spawn_provider_config_observer_runs_once() {
+        let _mock = mock_agent();
+        spawn_provider_config_observer();
+        spawn_provider_config_observer();
+    }
+}
