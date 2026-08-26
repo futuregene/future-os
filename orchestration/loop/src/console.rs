@@ -133,7 +133,7 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         "status" => cmd_status(&store, &args[1..]),
         "ui" => cmd_webui(&args[1..]).await,
         "quota" => cmd_quota(&store, &args[1..]),
-        "scheduler" => cmd_scheduler(&mut store, &args[1..]),
+        "scheduler" => cmd_scheduler(&mut store, &args[1..]).await,
         "store" => cmd_store(&mut store, &args[1..]),
         "backfill" => cmd_backfill(&mut store, &args[1..]),
         "privacy" => cmd_privacy(&store, &args[1..]),
@@ -2887,9 +2887,9 @@ fn quota_spend(store: &Store, args: &[String]) -> Result<()> {
 
 /// `loopx scheduler <tick|show|record-host-failure> --goal G [--agent-id A]`
 /// — drive the persisted scheduler state machine across decision cycles.
-fn cmd_scheduler(store: &mut Store, args: &[String]) -> Result<()> {
+async fn cmd_scheduler(store: &mut Store, args: &[String]) -> Result<()> {
     match args.first().map(|s| s.as_str()) {
-        Some("tick") => scheduler_tick(store, &args[1..]),
+        Some("tick") => scheduler_tick(store, &args[1..]).await,
         Some("show") => scheduler_show(store, &args[1..]),
         Some("record-host-failure") => scheduler_record_failure(store, &args[1..]),
         Some("ack") => scheduler_ack(store, &args[1..]),
@@ -2986,9 +2986,9 @@ fn scheduler_scope(
 /// [--progression 15,30,60] [--action tick_next]` — load the persisted state
 /// (or bootstrap it from the cadence profile), advance the progression, and
 /// write the new state. Restart-safe: progression persists across cycles.
-/// P1-3: each tick also lands a `SchedulerTicked` heartbeat (liveness) and
-/// projects the monitor poll plan (tick-driven poll policy executor).
-fn scheduler_tick(store: &mut Store, args: &[String]) -> Result<()> {
+/// P1-3: each tick also lands a `SchedulerTicked` heartbeat (liveness), the
+/// monitor poll plan, and a dead-worker push (see [`notify_dead_holders`]).
+async fn scheduler_tick(store: &mut Store, args: &[String]) -> Result<()> {
     let mut cadence_class = "monitor_backoff".to_string();
     let mut progression: Vec<i64> = vec![];
     let mut action = "tick_next".to_string();
@@ -3056,6 +3056,7 @@ fn scheduler_tick(store: &mut Store, args: &[String]) -> Result<()> {
         );
         record_tick_heartbeat(store, &goal_id, &agent, &action, &state)?;
         print_monitor_poll_plan(store, &goal_id)?;
+        notify_dead_holders(store, &goal_id).await?;
         return Ok(());
     }
 
@@ -3069,6 +3070,7 @@ fn scheduler_tick(store: &mut Store, args: &[String]) -> Result<()> {
     }
     record_tick_heartbeat(store, &goal_id, &agent, &action, &state)?;
     print_monitor_poll_plan(store, &goal_id)?;
+    notify_dead_holders(store, &goal_id).await?;
     Ok(())
 }
 
@@ -3818,6 +3820,49 @@ pub async fn notify_infra_stop(
         &format!("infra_stopped:{todo_id}:{kind}"),
     )
     .await;
+}
+
+/// Dead-worker push (the host-died case the recoverable infra stops above
+/// cannot reach): a worker that died mid-slice (SIGKILL / crash / host
+/// failure) executes no code, so the `transport` / `timeout` /
+/// `incomplete_budget` reports never fire. The scheduler tick is the periodic
+/// trigger that notices a lease whose holder pid is gone and pushes a report
+/// to the registered supervisor, so the orchestrator is prompted to relaunch
+/// rather than only discovering the dead worker on its next `status` poll.
+/// Best-effort: no supervisor, no reachable agent, or no dead holders is a
+/// no-op (the tick itself never fails over a lost notification).
+#[doc(hidden)] // test-visible seam
+pub async fn notify_dead_holders(store: &mut Store, goal_id: &str) -> Result<()> {
+    let Some(goal) = store.replay(goal_id)? else {
+        return Ok(());
+    };
+    let Some(supervisor) = goal.supervisor_session_id.clone() else {
+        return Ok(());
+    };
+    let dead: Vec<(String, u32)> = crate::work_items::task_lease::dead_holder_todos(&goal)
+        .into_iter()
+        .filter_map(|t| t.holder_pid.map(|pid| (t.id.clone(), pid)))
+        .collect();
+    if dead.is_empty() {
+        return Ok(());
+    }
+    let Ok(mut client) =
+        crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr()).await
+    else {
+        return Ok(());
+    };
+    for (todo_id, pid) in dead {
+        notify_supervisor(
+            &mut client,
+            Some(supervisor.as_str()),
+            &format!(
+                "[future-loop] goal {goal_id}: todo {todo_id} stopped before completion (host_died) — holder pid {pid} is gone (no release); relaunch to reclaim the lease"
+            ),
+            &format!("infra_stopped:{todo_id}:host_died:{pid}"),
+        )
+        .await;
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
