@@ -50,9 +50,8 @@ additions, including:
   contract (`future-rpc` dual-written payloads);
 - the unified `future loop` CLI and integration with the FutureOS TUI,
   desktop app, and skills;
-- capabilities with no upstream counterpart (explore graph,
-  pr_review_queue, canary smoke, automation liveness, read-model
-  self-healing, pid lockfiles / zombie takeover);
+- features with no upstream counterpart (canary smoke, automation
+  liveness, read-model self-healing, pid lockfiles / zombie takeover);
 - project-local state layout and FutureOS directory conventions.
 
 ## Relationship

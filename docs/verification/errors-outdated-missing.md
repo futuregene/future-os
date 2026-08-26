@@ -354,3 +354,46 @@ README.md L105-118（zh L100-113）列出 12 个命令，源码（tui/src/app.ts
   `agent register`（实际为 `onboard|list|contract|recipe|succession|collective`）
   与 `canary [--premerge]`（实际为 `canary smoke [--profile …] | canary premerge`）；
   版本 3.0.2 → 3.0.3。主仓库指针 bump 随本 round 一起提交。
+
+---
+
+## I. 2026-08-26 复核：全量文档（worktree `claude/docs-optimization`）
+
+> 对照当前工作树（HEAD `41a02ac4`）逐条核验根 README/SECURITY/CLAUDE、
+> docs/ 指南与 wiki、docs/dist、模块 README、desktop/CLAUDE 与 DEV_MD。
+> 注意：**H 节（2026-08-18）的「10 组 43 命令」已过时**——loop 控制面在
+> capability/extension 生态删除之后又进一步精简了 CLI 面。
+
+### I1. 已修正（本轮）
+
+| 条目 | 修正内容 | 源码依据 |
+|---|---|---|
+| README/SECURITY 沙箱三档名 | 「off / manual / macOS Seatbelt」→「`off` / `manual` / `sandbox`」；SECURITY 已知差距更新（Windows 已落地受限令牌沙箱、Linux 无沙箱） | agent/src/sandbox/mod.rs `SandboxTier{Off,Manual,Sandbox}`；`platform_sandbox_availability()` 含 windows 探针；agent/src/sandbox/windows/ 目录存在（#342） |
+| CLAUDE.md 本地主分支名 | `dev` → `main`（git branch 实测仅 `main`） | `git branch` 输出 |
+| loop-control-plane CLI 全景 | 「10 组 43 命令」→「7 组 40 命令」；删 handoff/benchmark/replay 组与 serve-status；agent 组去顶层 `list`（实为 `agent list` 子命令）、补 `worker`；goal 组补 `ui` | `future loop registry` 实测：goal5/todo6/agent5/ops18/work-items3/cli2/canary1 |
+| tui/directory-layout 的 debug.log | 「始终写入」→ `PI_DEBUG_REDRAW=1` 才写 | tui/src/app.rs `log_redraw`（`PI_DEBUG_REDRAW` != "1" 即 return） |
+| long-run-evidence-ledger crate 名 | `future-channels` → `future-channel`（en 4 处 + zh 4 处） | channels/Cargo.toml `name = "future-channel"`（自 PR #150 起即此名） |
+| orchestration/loop/UPSTREAM.md | 删除已移除的「explore graph, pr_review_queue」 | loop/src 全库 grep 0 命中（capability 生态已删） |
+| packages/rpc/README proto 路径 | `../proto/future.proto` → `proto/future.proto` | packages/rpc/build.rs `rerun-if-changed=proto/future.proto` |
+| desktop/CLAUDE.md | ①沙箱「(macOS only)」去掉（Windows 已支持）②悬空 `DEV_MD/PLAN.md` → `agent_providers/validate.rs` ③`agent_providers.rs` → `agent_providers/` 目录 ④文档地图尺寸+补全 plan 文档 | GeneralPage.tsx `useSandboxAvailability`+`isWindows`；agent_providers/ 目录；DEV_MD 无 PLAN.md |
+
+### I2. 核验无误（供后继跳过）
+
+- README：3826 模型 / 143 providers（agent/src/models/builtin/models.json）；15 内置技能（skills/builtin/）；工具集 = read/write/edit/shell（agent/src/tools/mod.rs `all_tools==coding_tools`）；17 斜杠命令 + 9 快捷键（tui/src/help_screen.rs）；`future skills list/install/install-builtin/uninstall/update`；`future auth login`。
+- SECURITY 工具集四件套、信任模型、报告流程与源码一致。
+- CLAUDE.md：workspace members、packages npm、package.json workspaces、proto 生成文件路径、API key 解析顺序（agent/src/rpc/session.rs `resolve_api_key` model→provider→model_key→default_key）、Feishu URL/60s 陈旧过滤、`make lint-rust` == CI clippy 旗标——全部无误。
+- channels-config.md 全字段/默认值与 channels/src/config.rs 一致；两桥各 9 斜杠命令；Feishu 30s / DingTalk 20s keepalive（feishu_ws.rs `DEFAULT_PING_INTERVAL=30`、dingtalk_ws.rs `PING_INTERVAL_SECS=20`）。
+- build-and-install：rust-toolchain 1.97.0、.nvmrc 24、make 目标/scripts 存在、7 测试套件。
+- wiki 13 页（en+zh）命令组/技能数/模型数/Feishu-DingTalk 口径与 `future --help`、分组帮助、源码一致；无 stale 命令引用。
+- dist 6 readme、wiki-prompt（15 技能、无 Hand-drawn/Subagent、`future` 非 `future-cli`）准确。
+- 模块 README：mobile（bundleIdentifier `cn.futureos.mobile`、deploymentTarget 16.4）、packages（4 包）、loop README/NOTICE、tui tests（golden-diff + tmux-diff harness）、tui/RESEARCH（P0/P1 决策日志）准确。
+- DEV_MD：CONNECTION.md 支持码与 remote/mod.rs 一致；COLOR.md token 与 tailwind.config.js 一致；plan 文档（APPROVAL_PLAN/SANDBOX_PLAN/CONTEXT_COMPACTION/PRODUCT/ER）按约定标注为 plan-vs-current 不重写。
+
+### I3. 范围说明（本轮）
+
+- **排除 skills/ 子模块**（git submodule，future-skills 仓库，2000+ 文件）。
+- **排除生成/状态文件**：Models.md（`make generate-models`）、THIRD_PARTY_NOTICES、
+  `.future/memory/`、coverage/。
+- **desktop/DEV_MD** 按用户拍板做「轻量 pass」——只修 CLAUDE.md 文档地图与悬空引用、
+  标注 plan-vs-current，不逐行重写规划文档。
+- 双语 lockstep：所有成对文档（README、docs/ 指南、wiki、ledger）en/zh 同步修改。

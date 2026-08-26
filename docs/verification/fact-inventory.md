@@ -6,6 +6,12 @@
 > 本文件只记录「文档说了什么 + 在哪说的」，**不判定对错**；判定留给核验步骤。
 > 行号以 2026-08-06 工作树为准。
 
+> **2026-08-26 增补（worktree `claude/docs-optimization`）**：全量文档复核的
+> 修正清单见 `errors-outdated-missing.md` §I（本文件 §1-§14 的旧 fact 快照未逐条
+> 重录——旧行号已漂移，仅作历史参照）。本轮复核范围扩大到 CLAUDE.md、desktop/CLAUDE.md、
+> 模块 README（mobile/packages/rpc/loop/tui），并修正沙箱三档名、loop CLI 命令面（7 组 40 命令）、
+> debug.log 门控、crate 名等（详见 §I）。
+
 - 生成时间：2026-08-06
 - 范围：`README.md`、`README.zh-CN.md`、`docs/` 全部 **45 个文件**（39 个 .md + 6 个 .txt；含 docs 根 6 个、wiki en/zh 各 13 个、architecture-audit 5 个、dist 6 个）
 - 不在范围：`CLAUDE.md`（agent 指令）、`desktop/CLAUDE.md`、`mobile/README.md`、`skills/README*.md`（组件级 README，非 README+docs 范畴）

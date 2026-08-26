@@ -67,8 +67,8 @@
 | 4 | 08-10 13:03 | completed | future-tui → 100%（PR #140、#141） | 33,663,407 | 152,044 | 44.66 | 270 |
 | 5 | 08-10 14:30 | error | future-cli 推进（双执行器冲突；由并发会话落地，PR #146、#147） | 71,805,042 | 322,458 | 89.42 | 493 |
 | 6 | 08-11 03:12 | completed | future-agent → 96.75%（PR #149） | 547,793,935 | 769,548 | 577.46 | 1,450 |
-| 7 | 08-11 06:09 | incomplete | future-channels 推进（turn 8 继续） | 167,851,903 | 549,848 | 193.99 | 842 |
-| 8 | 08-11 07:34 | completed | future-channels → lcov DA 100%（PR #150） | 81,609,442 | 310,002 | 101.68 | 546 |
+| 7 | 08-11 06:09 | incomplete | future-channel 推进（turn 8 继续） | 167,851,903 | 549,848 | 193.99 | 842 |
+| 8 | 08-11 07:34 | completed | future-channel → lcov DA 100%（PR #150） | 81,609,442 | 310,002 | 101.68 | 546 |
 | 9 | 08-11 08:27 | completed | 最终验收测量 + 豁免对账 | 13,305,340 | 95,796 | 20.62 | 220 |
 | 10 | 08-12 10:21 | completed | 交付物（`coverage/`）+ 门禁方法（FUTURE.md） | 539,804 | 18,080 | 2.03 | 26 |
 
@@ -85,7 +85,7 @@ lines 98.80%**，**3,864 个测试，0 失败**。
 | future-cli | 42.46% | 99.83%（summary 40 / per-line 15） | #146、#147 |
 | future-loop | 77.72% | 98.43%（summary 279 / per-line 191） | #148 |
 | future-agent | 84.44% | 96.75%（summary 987 / per-line 700） | #149 |
-| future-channels | 31.50% | 99.84%（summary 17 / per-line 0；lcov DA 100%） | #150 |
+| future-channel | 31.50% | 99.84%（summary 17 / per-line 0；lcov DA 100%） | #150 |
 | **总计** | **70.15%**（54,559/77,775） | **98.80%** | — |
 
 测试数：2,173 → 3,864（+1,691）。合并 PR 共 10 个：#138（工具）、
@@ -101,7 +101,7 @@ lines 98.80%**，**3,864 个测试，0 失败**。
 推进中发现的真实缺陷：**6 个真 bug**——future-loop 4 个（#148：
 `doctor --agent-addr` 与 `benchmark run --agent-addr` 嵌套 `block_on`
 panic、monitor 无变化轮询追加伪 `TodoCompleted`、`try_claim_todo`
-重建漏掉过期 arm）、future-channels 1 个（#150：gRPC client
+重建漏掉过期 arm）、future-channel 1 个（#150：gRPC client
 `entry_id` 遮蔽）、future-cli 1 个（CDP 分发循环订阅竞态）——另有
 **2 个 flake 根因**在 #151 修复（spawn_mock 抢端口竞态、
 `resolve_future_base_url` 环境泄漏）。

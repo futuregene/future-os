@@ -185,23 +185,20 @@ Because the state lives in the project and the skill runs through the agent
 service, a goal started in one client (e.g. the TUI) can be driven from any
 other (e.g. a Feishu chat).
 
-## CLI surface (10 groups, 43 commands)
+## CLI surface (7 groups, 40 commands)
 
 ```bash
-future loop registry        # every command
+future loop registry        # every command (groups/commands)
 future loop commands        # grouped by operator journey
 ```
 
-- **goal group**: `goal` `status` `models` `diagnose`
-- **todo group**: `todo` `gate` `replan` `frontier` `lease` `task-graph`
-- **agent group**: `agent` `list` `scope` `lane` `supervisor`
-- **ops group**: `version` `doctor` `history` `turn` `todo-event` `evidence-log` `backup` `authority` `profile` `quota` `scheduler` `store` `backfill` `privacy` `runs` `heartbeat-prompt` `worker-bridge` `serve-status` `run`
-- **work-items group**: `attention` `inbox` `delivery`
-- **handoff group**: `handoff`
-- **cli group**: `registry` `commands`
-- **benchmark group**: `benchmark`
-- **replay group**: `replay`
-- **canary group**: `canary`
+- **goal group** (5): `goal` `status` `ui` `models` `diagnose`
+- **todo group** (6): `todo` `gate` `replan` `frontier` `lease` `task-graph`
+- **agent group** (5): `agent` `scope` `lane` `supervisor` `worker`
+- **ops group** (18): `version` `doctor` `history` `turn` `todo-event` `evidence-log` `backup` `authority` `profile` `quota` `scheduler` `store` `backfill` `privacy` `runs` `heartbeat-prompt` `worker-bridge` `run`
+- **work-items group** (3): `attention` `inbox` `delivery`
+- **cli group** (2): `registry` `commands`
+- **canary group** (1): `canary`
 
 ## How it fits FutureOS
 

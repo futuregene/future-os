@@ -102,23 +102,20 @@ future loop delivery record --goal G ...  # verified / failed / rework
 经 agent 服务运行，所以在一个客户端（如 TUI）启动的目标可以在任何其他客户端
 （如飞书聊天）继续驾驶。
 
-## CLI 全景（10 组 43 命令）
+## CLI 全景（7 组 40 命令）
 
 ```bash
-future loop registry        # 全部命令
+future loop registry        # 全部命令（组/命令）
 future loop commands        # 按操作者旅程分组视图
 ```
 
-- **goal 组**：`goal` `status` `models` `diagnose`
-- **todo 组**：`todo` `gate` `replan` `frontier` `lease` `task-graph`
-- **agent 组**：`agent` `list` `scope` `lane` `supervisor`
-- **ops 组**：`version` `doctor` `history` `turn` `todo-event` `evidence-log` `backup` `authority` `profile` `quota` `scheduler` `store` `backfill` `privacy` `runs` `heartbeat-prompt` `worker-bridge` `serve-status` `run`
-- **work-items 组**：`attention` `inbox` `delivery`
-- **handoff 组**：`handoff`
-- **cli 组**：`registry` `commands`
-- **benchmark 组**：`benchmark`
-- **replay 组**：`replay`
-- **canary 组**：`canary`
+- **goal 组**（5）：`goal` `status` `ui` `models` `diagnose`
+- **todo 组**（6）：`todo` `gate` `replan` `frontier` `lease` `task-graph`
+- **agent 组**（5）：`agent` `scope` `lane` `supervisor` `worker`
+- **ops 组**（18）：`version` `doctor` `history` `turn` `todo-event` `evidence-log` `backup` `authority` `profile` `quota` `scheduler` `store` `backfill` `privacy` `runs` `heartbeat-prompt` `worker-bridge` `run`
+- **work-items 组**（3）：`attention` `inbox` `delivery`
+- **cli 组**（2）：`registry` `commands`
+- **canary 组**（1）：`canary`
 
 ## 与 FutureOS 其他部件的关系
 
