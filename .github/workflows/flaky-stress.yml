@@ -1,0 +1,71 @@
+name: Flaky stress
+
+permissions: read-all
+
+# Parallel flake hunt: every push to the hunt branch spawns one independent
+# run (deliberately NO concurrency group — accumulation of samples is the
+# point). Each run executes the test suites twice in a fresh VM: flakes that
+# depend on intra-process timing (mock-server accept races, Mutex-poison
+# cascades, tmp-path collisions, singleton-lock contention) are probabilistic
+# and need dozens of executions to surface.
+#
+# Also dispatchable once this file lands on the default branch:
+#   gh workflow run flaky-stress.yml --ref <branch>
+
+on:
+  push:
+    branches:
+      - 'claude/flaky-hunt'
+  workflow_dispatch:
+
+jobs:
+  stress:
+    name: flaky-stress
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+          cache-on-failure: true
+          cache-all-crates: true
+
+      # Same minimal dep set as the workspace rust-tests groups: mold is
+      # pinned by .cargo/config.toml, pkg-config/build-essential/binutils
+      # cover build scripts and linkers.
+      - name: Install Linux deps
+        run: |
+          bash scripts/ci/install-apt-packages.sh \
+            build-essential \
+            binutils \
+            mold \
+            pkg-config
+
+      # agent: the observed flake cluster (sync_future_models_cache
+      # Option::unwrap on None + two approval PoisonErrors) lives here.
+      - name: Stress agent tests
+        env:
+          CARGO_PROFILE_TEST_DEBUG: 1
+        run: |
+          for i in 1 2; do
+            echo "=== agent pass $i ==="
+            cargo test -p future-agent
+          done
+
+      # tui + cli: the documented embedded-agent singleton-lock flake
+      # (cli/tests/bin.rs) surfaces under intra-binary parallelism here.
+      - name: Stress tui+cli tests
+        env:
+          CARGO_PROFILE_TEST_DEBUG: 1
+        run: |
+          for i in 1 2; do
+            echo "=== tui+cli pass $i ==="
+            cargo test -p future-tui -p future-cli
+          done
