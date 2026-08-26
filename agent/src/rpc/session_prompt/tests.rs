@@ -1914,7 +1914,7 @@ fn rewrite_snapshot_reinserts_compaction_checkpoints() {
     let rebuilt = crate::rpc::ServerSession::build_rewrite_snapshot(
         &manager,
         "s1",
-        &dir.to_string_lossy().to_string(),
+        dir.to_string_lossy().as_ref(),
         "model",
         "session",
         "",

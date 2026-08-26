@@ -656,7 +656,7 @@ fn list_providers_reports_error_on_corrupt_documents() {
     let home = TestHome::new();
     let state = make_app_state();
     std::fs::create_dir_all(home.models_path().parent().unwrap()).unwrap();
-    std::fs::write(&home.models_path(), "{corrupt").unwrap();
+    std::fs::write(home.models_path(), "{corrupt").unwrap();
     let resp = parse_response(&handle_command_internal(&state, make_cmd("list_providers")));
     assert_eq!(resp["success"], false);
 }
