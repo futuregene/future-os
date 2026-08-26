@@ -1,5 +1,5 @@
-import type { StreamingMarkdownBlock } from "@future-os/markdown";
-import { splitStreamingMarkdown } from "@future-os/markdown";
+import type { StreamingMarkdownBlock } from "./streamingMarkdownBlocks";
+import { splitStreamingMarkdown } from "./streamingMarkdownBlocks";
 
 export interface StreamingMarkdownWorkerRequest {
   id: number;

@@ -27,7 +27,6 @@ import type {
   InlineNode,
   ListItemNode,
   MarkdownNode,
-  StreamingMarkdownBlock,
 } from "./types";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -76,47 +75,6 @@ export function parseFutureMarkdown(raw: string): FutureMarkdownDocument {
   }
   parseCache.set(raw, document);
   return document;
-}
-
-/**
- * Split a growing Markdown document at top-level parser boundaries. Everything
- * before the final block is immutable; the final block may still change meaning
- * when another line arrives (setext heading, list tightness, table, fence, ...).
- *
- * Reference definitions can affect blocks anywhere in the document, so keep
- * those documents whole until the stream settles instead of freezing a prefix
- * with incomplete definition context.
- */
-export function splitStreamingMarkdown(raw: string, live: boolean): StreamingMarkdownBlock[] {
-  if (!raw)
-    return [];
-
-  const tree = parseMdast(raw);
-  if (tree.children.some(node => node.type === "definition")) {
-    return [{ content: raw, live, start: 0 }];
-  }
-
-  const starts = tree.children
-    .map(node => node.position?.start.offset)
-    .filter((offset): offset is number => typeof offset === "number");
-  if (starts.length <= 1)
-    return [{ content: raw, live, start: 0 }];
-
-  const blocks: StreamingMarkdownBlock[] = [];
-  for (let index = 0; index < starts.length; index++) {
-    // Preserve leading whitespace in the first block. Subsequent parser offsets
-    // naturally retain the blank-line separator at the end of the prior slice.
-    const start = index === 0 ? 0 : starts[index]!;
-    const end = starts[index + 1] ?? raw.length;
-    if (end <= start)
-      continue;
-    blocks.push({
-      content: raw.slice(start, end),
-      live: live && index === starts.length - 1,
-      start,
-    });
-  }
-  return blocks.length > 0 ? blocks : [{ content: raw, live, start: 0 }];
 }
 
 function parseMdast(raw: string): Root {

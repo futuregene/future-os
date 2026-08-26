@@ -1,7 +1,7 @@
-import type { StreamingMarkdownBlock } from "@future-os/markdown";
 import type { StreamingMarkdownWorkerRequest, StreamingMarkdownWorkerResponse } from "./streamingMarkdown.worker";
-import { splitStreamingMarkdown } from "@future-os/markdown";
+import type { StreamingMarkdownBlock } from "./streamingMarkdownBlocks";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { splitStreamingMarkdown } from "./streamingMarkdownBlocks";
 
 interface Projection {
   blocks: StreamingMarkdownBlock[];

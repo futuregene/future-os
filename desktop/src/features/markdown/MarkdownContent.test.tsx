@@ -1,7 +1,7 @@
-import { splitStreamingMarkdown } from "@future-os/markdown";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { MarkdownContent } from "./MarkdownContent";
+import { splitStreamingMarkdown } from "./streamingMarkdownBlocks";
 
 describe("markdown content", () => {
   it("keeps completed top-level blocks stable and only marks the tail live", () => {
