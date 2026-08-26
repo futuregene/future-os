@@ -366,17 +366,23 @@ fn run_with_time_budget_success_path() {
 }
 
 #[test]
-fn run_session_cleanup_failure_is_a_warning() {
+fn run_retains_session() {
     let cr = cli_root();
-    let mut st = MockState {
+    let (_rt, shared) = mock_env(MockState {
         events: completed_events("mock-run-1"),
         ..Default::default()
-    };
-    st.fail_commands.insert("delete_session".to_string());
-    let (_rt, _shared) = mock_env(st);
-    let goal = init_goal(&cr, "cleanup warning");
-    // The run still succeeds; the cleanup failure is best-effort.
+    });
+    let goal = init_goal(&cr, "retain session");
     cli_ok(&["run", "--goal", &goal, "--anonymous"]);
+    // The agent session is NOT deleted when the run ends.
+    assert!(
+        shared
+            .lock()
+            .unwrap()
+            .live_sessions
+            .contains("mock-session-1"),
+        "session must be retained after a completed run"
+    );
 }
 
 // ── status print arms ──────────────────────────────────────────────────────
