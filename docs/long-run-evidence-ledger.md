@@ -73,8 +73,8 @@ Totals: **1,777,043,598 tokens in / 3,562,578 tokens out / ≈ $1,946.84**,
 | 4 | 08-10 13:03 | completed | future-tui → 100% (PRs #140, #141) | 33,663,407 | 152,044 | 44.66 | 270 |
 | 5 | 08-10 14:30 | error | future-cli push (dual-executor collision; landed via the concurrent session, PRs #146, #147) | 71,805,042 | 322,458 | 89.42 | 493 |
 | 6 | 08-11 03:12 | completed | future-agent → 96.75% (PR #149) | 547,793,935 | 769,548 | 577.46 | 1,450 |
-| 7 | 08-11 06:09 | incomplete | future-channels push (continued in turn 8) | 167,851,903 | 549,848 | 193.99 | 842 |
-| 8 | 08-11 07:34 | completed | future-channels → 100% lcov DA (PR #150) | 81,609,442 | 310,002 | 101.68 | 546 |
+| 7 | 08-11 06:09 | incomplete | future-channel push (continued in turn 8) | 167,851,903 | 549,848 | 193.99 | 842 |
+| 8 | 08-11 07:34 | completed | future-channel → 100% lcov DA (PR #150) | 81,609,442 | 310,002 | 101.68 | 546 |
 | 9 | 08-11 08:27 | completed | final acceptance measurement + waiver reconciliation | 13,305,340 | 95,796 | 20.62 | 220 |
 | 10 | 08-12 10:21 | completed | deliverables (`coverage/`) + gate method (FUTURE.md) | 539,804 | 18,080 | 2.03 | 26 |
 
@@ -91,7 +91,7 @@ lines 98.80%**, **3,864 tests, 0 failures**.
 | future-cli | 42.46% | 99.83% (40 summary / 15 per-line) | #146, #147 |
 | future-loop | 77.72% | 98.43% (279 summary / 191 per-line) | #148 |
 | future-agent | 84.44% | 96.75% (987 summary / 700 per-line) | #149 |
-| future-channels | 31.50% | 99.84% (17 summary / 0 per-line; lcov DA 100%) | #150 |
+| future-channel | 31.50% | 99.84% (17 summary / 0 per-line; lcov DA 100%) | #150 |
 | **TOTAL** | **70.15%** (54,559/77,775) | **98.80%** | — |
 
 Tests: 2,173 → 3,864 (+1,691). Merged PRs: 10 — #138 (tooling), six crate
@@ -109,7 +109,7 @@ Defects found by the push: **6 real bugs** — 4 in future-loop (#148:
 `doctor --agent-addr` and `benchmark run --agent-addr` nested-`block_on`
 panics, monitor no-change poll appending spurious `TodoCompleted`,
 `try_claim_todo` reconstruction missing the expiry arm), 1 in
-future-channels (#150: gRPC client `entry_id` shadowing), 1 in future-cli
+future-channel (#150: gRPC client `entry_id` shadowing), 1 in future-cli
 (CDP dispatch-loop subscribe race) — plus **2 flake root causes** fixed in
 #151 (spawn_mock port-steal race, `resolve_future_base_url` env leak).
 

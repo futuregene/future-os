@@ -23,11 +23,11 @@ The Rust workspace (`Cargo.toml`) members and their slice of `~/.future/` (see `
 
 ## Development workflow
 
-Development happens in an isolated git worktree (this repo uses `.claude/worktrees/<name>` on a `claude/*` branch), never in the local main branch. The local main branch (e.g. `dev`) is used by the user for local integration testing and may contain their own unrelated changes — do not treat it as a development branch.
+Development happens in an isolated git worktree (this repo uses `.claude/worktrees/<name>` on a `claude/*` branch), never in the local main branch. The local main branch (`main`) is used by the user for local integration testing and may contain their own unrelated changes — do not treat it as a development branch.
 
 - All code changes, including fmt / clippy / lint fixes, are made and committed in the worktree branch.
-- To let the user test locally, merge the worktree branch into the local main branch (`dev`) — never edit code directly on `dev` and then merge it back into the worktree.
-- Do not merge the local main branch (`dev`) into the worktree; if `dev` has user changes you need, ask the user rather than merging local main in.
+- To let the user test locally, merge the worktree branch into the local main branch (`main`) — never edit code directly on `main` and then merge it back into the worktree.
+- Do not merge the local main branch (`main`) into the worktree; if `main` has user changes you need, ask the user rather than merging local main in.
 
 ### Before opening a PR
 
