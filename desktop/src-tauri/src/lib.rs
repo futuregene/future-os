@@ -762,7 +762,7 @@ pub fn run() {
             read_text_file_preview,
             inspect_attachment,
             validate_image_attachment,
-            read_file_base64,
+            prepare_image_preview,
             generate_image_thumbnail,
             import_ephemeral_image,
             delete_temp_attachment,

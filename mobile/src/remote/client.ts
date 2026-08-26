@@ -40,7 +40,7 @@ interface HandshakeConfirmation {
 }
 
 export interface RemoteClientCallbacks {
-  onCredentials(credentials: RemoteCredentials): void;
+  onCredentials(credentials: RemoteCredentials): Promise<void>;
   onEvent(event: StreamEvent, sessionId: string): void;
   onEventDecodeFailure(sessionId: string, error: Error): void;
   onPresence(presence: Presence): void;
@@ -229,10 +229,14 @@ export class RemoteClient {
     this.signal({ type: "open_started" });
     const generation = ++this.generation;
     try {
+      const previous = this.credentials;
       const fresh = await ensureFreshCredentials(this.credentials);
       if (this.stopped || generation !== this.generation) return;
       this.credentials = fresh;
-      this.callbacks.onCredentials(fresh);
+      if (fresh !== previous) {
+        await this.callbacks.onCredentials(fresh);
+        if (this.stopped || generation !== this.generation) return;
+      }
       await this.connectSocket(generation);
       if (
         this.stopped ||
@@ -347,7 +351,8 @@ export class RemoteClient {
       const fresh = await refreshCredentials(this.credentials);
       if (this.stopped) return;
       this.credentials = fresh;
-      this.callbacks.onCredentials(fresh);
+      await this.callbacks.onCredentials(fresh);
+      if (this.stopped) return;
       // Re-open with the fresh token while retaining the old generation until
       // the replacement passes its readiness barrier. The FSM is already in
       // refreshing, so this does not expose a second ready connection.

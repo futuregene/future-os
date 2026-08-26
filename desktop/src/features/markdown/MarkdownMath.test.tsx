@@ -10,7 +10,7 @@ vi.mock("../../integrations/storage/markdownReferences", () => ({
 vi.mock("../../integrations/storage/files", () => ({
   openPath: () => Promise.resolve(),
   openExternalUrl: () => Promise.resolve(),
-  readFileBase64: () => Promise.resolve("QUJD"),
+  prepareImagePreviewUrl: (path: string) => Promise.resolve(`asset:${path}`),
   readTextFilePreview: () => Promise.resolve({ content: "", size: 0, truncated: false }),
   resolvePreviewLinkPath: () => Promise.resolve(null),
 }));

@@ -60,21 +60,21 @@ export function FilePreviewOverlay({
       {kind === "image"
         ? (
             <div className="relative z-10 flex max-h-full max-w-full items-center justify-center">
-              <ImagePreview name={name} onError={handleError} path={path} />
+              <ImagePreview key={path} name={name} onError={handleError} path={path} />
             </div>
           )
         : null}
       {kind === "markdown"
         ? (
             <div className="relative z-10 max-h-full w-full max-w-3xl overflow-y-auto rounded-lg bg-surface shadow-panel">
-              <MarkdownPreview onError={handleError} path={path} />
+              <MarkdownPreview key={path} onError={handleError} path={path} />
             </div>
           )
         : null}
       {kind === "json"
         ? (
             <div className="relative z-10 w-full max-w-5xl overflow-hidden rounded-lg bg-surface shadow-panel">
-              <JsonPreview onError={handleError} path={path} />
+              <JsonPreview key={path} onError={handleError} path={path} />
             </div>
           )
         : null}

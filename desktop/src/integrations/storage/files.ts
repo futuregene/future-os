@@ -1,3 +1,4 @@
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { invokeCommand } from "../tauri/invoke";
 
 /** One entry in a directory listing from {@link listDirectory}. */
@@ -79,11 +80,10 @@ export async function validateImageAttachment(path: string) {
   return invokeCommand<void>("validate_image_attachment", { path });
 }
 
-export async function readFileBase64(input: { path: string; maxBytes?: number | null }) {
-  return invokeCommand<string>("read_file_base64", {
-    maxBytes: input.maxBytes ?? null,
-    path: input.path,
-  });
+export async function prepareImagePreviewUrl(path: string) {
+  const asset = await invokeCommand<{ path: string; version: string }>("prepare_image_preview", { path });
+  const url = convertFileSrc(asset.path);
+  return `${url}${url.includes("?") ? "&" : "?"}v=${encodeURIComponent(asset.version)}`;
 }
 
 /**

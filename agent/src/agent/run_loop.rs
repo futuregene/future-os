@@ -156,11 +156,13 @@ impl Loop {
                     // The retry below must use exactly the checkpoint produced
                     // for this failed model step. A second automatic checkpoint
                     // here could hide a non-context provider failure in a loop.
-                    Ok(crate::compaction::ContextPreparation::Unchanged { prompt: projected })
+                    Ok(crate::compaction::ContextPreparation::Unchanged {
+                        prompt: projected.clone(),
+                    })
                 } else {
                     manager
                         .prepare_semantic_with_lifecycle(
-                            projected,
+                            projected.clone(),
                             automatic_trigger,
                             automatic_phase,
                             None,
@@ -172,7 +174,9 @@ impl Loop {
                         .await
                 }
             } else {
-                Ok(crate::compaction::ContextPreparation::Unchanged { prompt: projected })
+                Ok(crate::compaction::ContextPreparation::Unchanged {
+                    prompt: projected.clone(),
+                })
             };
             let prompt = match prepared {
                 Ok(crate::compaction::ContextPreparation::Unchanged { prompt }) => prompt,
@@ -203,7 +207,19 @@ impl Loop {
                         phase: automatic_phase,
                         error: error.to_string(),
                     });
-                    return Err(anyhow!(error));
+                    if matches!(
+                        error,
+                        crate::compaction::ContextError::InvalidSummary
+                            | crate::compaction::ContextError::SummaryFailed(_)
+                    ) {
+                        // Automatic semantic summarization is opportunistic.
+                        // Keep the current projection and let the model request
+                        // run; a real provider context-limit response below has
+                        // its own emergency recovery path.
+                        projected
+                    } else {
+                        return Err(anyhow!(error));
+                    }
                 }
             };
             let work_messages: Vec<AgentMessage> = prompt
@@ -277,7 +293,16 @@ impl Loop {
                             // derived from the app template (model_registry =
                             // None, e.g. tests) fall back to a fresh Registry
                             // so behaviour matches the pre-cache code.
-                            let provider_limit_phase = crate::compaction::CompactionPhase::MidTurn;
+                            // A rejected first prompt is still pre-turn: no
+                            // model response or tool result exists yet, so do
+                            // not replace that user input with a lossy
+                            // checkpoint. Once a completed model/tool round
+                            // exists, recovery may summarize the active turn.
+                            let provider_limit_phase = if turn == 0 {
+                                crate::compaction::CompactionPhase::PreTurn
+                            } else {
+                                crate::compaction::CompactionPhase::MidTurn
+                            };
                             let provider_limit_operation_id =
                                 format!("cmp_{}", crate::utils::generate_entry_id());
                             let Some(manager) = &self.context_manager else {
@@ -650,7 +675,7 @@ impl Loop {
                     }
                     ModelStreamEvent::Finish { reason, usage } => {
                         saw_terminal_event = true;
-                        if reason == FinishReason::Incomplete {
+                        if matches!(reason, FinishReason::Incomplete | FinishReason::Length) {
                             stream_truncated = true;
                             truncation_detected_by.get_or_insert("finish_incomplete");
                         }
@@ -1861,6 +1886,32 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn run_marks_length_stop_as_incomplete() {
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![
+            ev_text("cut off at max tokens"),
+            ModelStreamEvent::Finish {
+                reason: FinishReason::Length,
+                usage: None,
+            },
+        ])]);
+        let loop_ = Loop::new(provider, "mock");
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "cut off at max tokens");
+        assert!(loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn truncated_stream_with_tool_calls_appends_placeholder_results() {
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
             ev_toolcall_start(0, "call_1", "echo", "{}"),
@@ -2179,9 +2230,9 @@ mod tests {
             // The model-fit guard is mandatory and independent from optional
             // automatic compaction between tool turns.
             enabled: false,
-            reserve_tokens: 1,
+            reserve_tokens: 8_191,
             keep_recent_tokens: 1,
-            context_window: 1,
+            context_window: 8_192,
             model: "small".into(),
         });
         loop_.preflight_context_check = true;
@@ -2235,9 +2286,9 @@ mod tests {
         let mut loop_ = Loop::new(provider, "mock");
         loop_.context_manager = Some(crate::compaction::ContextManager {
             enabled: true,
-            reserve_tokens: 1,
+            reserve_tokens: 8_191,
             keep_recent_tokens: 1,
-            context_window: 1,
+            context_window: 8_192,
             model: "mock".into(),
         });
         let mut messages = user_messages("old");
@@ -2274,14 +2325,55 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn checkpoint_commit_failure_emits_compaction_failed_after_started() {
-        let provider = ScriptedProvider::new(vec![]);
+    async fn automatic_summary_failure_keeps_history_and_runs_the_model() {
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
         let mut loop_ = Loop::new(provider, "mock");
         loop_.context_manager = Some(crate::compaction::ContextManager {
             enabled: true,
             reserve_tokens: 1,
             keep_recent_tokens: 1,
             context_window: 1,
+            model: "mock".into(),
+        });
+        let mut messages = user_messages("old");
+        messages.push(AgentMessage {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::text("older reply")],
+            ..Default::default()
+        });
+        messages.push(AgentMessage::new_user("user", serde_json::json!("latest")));
+        let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (text, final_messages) = loop_
+            .run_streaming_with_messages(
+                messages,
+                &StreamContext::default(),
+                noop_on_text,
+                {
+                    let failed = failed.clone();
+                    move |event| {
+                        if matches!(event, RunEvent::CompactionFailed { .. }) {
+                            failed.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "ok");
+        assert!(failed.load(std::sync::atomic::Ordering::Relaxed));
+        assert_eq!(final_messages.len(), 4, "uncompacted history must survive");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn checkpoint_commit_failure_emits_compaction_failed_after_started() {
+        let provider = ScriptedProvider::new(vec![]);
+        let mut loop_ = Loop::new(provider, "mock");
+        loop_.context_manager = Some(crate::compaction::ContextManager {
+            enabled: true,
+            reserve_tokens: 8_191,
+            keep_recent_tokens: 1,
+            context_window: 8_192,
             model: "mock".into(),
         });
         let mut messages = user_messages("old");

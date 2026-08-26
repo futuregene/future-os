@@ -1,6 +1,7 @@
 use super::{data_url, namespaced_metadata, parse_json_arguments, ProtocolAdapter};
 use crate::llm::schema::{
-    ApiProtocol, FinishReason, ModelRequest, ModelStreamEvent, ProtocolConfig, ResolvedModelTarget,
+    AnthropicThinkingMode, ApiProtocol, FinishReason, ModelRequest, ModelStreamEvent,
+    ProtocolConfig, ResolvedModelTarget,
 };
 use crate::llm::sse::SseFrame;
 use crate::types::{ContentBlock, ProviderMetadata, Usage};
@@ -52,7 +53,7 @@ impl ProtocolAdapter for AnthropicMessagesAdapter {
     }
 
     fn build_body(&self, target: &ResolvedModelTarget, request: &ModelRequest) -> Result<Value> {
-        let ProtocolConfig::AnthropicMessages(_) = &target.protocol else {
+        let ProtocolConfig::AnthropicMessages(config) = &target.protocol else {
             bail!("Anthropic Messages adapter received a non-anthropic target")
         };
         let messages = lower_messages(request)?;
@@ -87,15 +88,23 @@ impl ProtocolAdapter for AnthropicMessagesAdapter {
                     .collect(),
             );
         }
-        let thinking_budget = target
-            .generation
-            .thinking_budget
-            .min(max_tokens.saturating_sub(1));
-        if thinking_budget >= MIN_THINKING_BUDGET_TOKENS {
-            body["thinking"] = json!({
-                "type": "enabled",
-                "budget_tokens": thinking_budget,
+        let thinking_enabled = target.generation.thinking_budget >= MIN_THINKING_BUDGET_TOKENS;
+        if thinking_enabled && config.thinking_mode == AnthropicThinkingMode::Adaptive {
+            body["thinking"] = json!({"type": "adaptive"});
+            body["output_config"] = json!({
+                "effort": anthropic_effort(&target.generation.thinking_level),
             });
+        } else if thinking_enabled {
+            let thinking_budget = target
+                .generation
+                .thinking_budget
+                .min(max_tokens.saturating_sub(1));
+            if thinking_budget >= MIN_THINKING_BUDGET_TOKENS {
+                body["thinking"] = json!({
+                    "type": "enabled",
+                    "budget_tokens": thinking_budget,
+                });
+            }
         } else if let Some(temperature) = target.generation.temperature {
             body["temperature"] = json!(temperature);
         }
@@ -475,11 +484,24 @@ fn update_usage(usage: &mut Usage, value: &Value) {
 
 fn map_finish_reason(reason: &str) -> FinishReason {
     match reason {
-        "end_turn" | "stop_sequence" | "pause_turn" => FinishReason::Stop,
+        "end_turn" | "stop_sequence" => FinishReason::Stop,
         "tool_use" => FinishReason::ToolCalls,
-        "max_tokens" => FinishReason::Length,
+        "max_tokens" | "model_context_window_exceeded" => FinishReason::Length,
+        // FutureOS does not currently send Anthropic server tools, so it
+        // cannot replay their opaque pause payload unchanged. Never surface a
+        // paused server-tool turn as a completed assistant response.
+        "pause_turn" => FinishReason::Incomplete,
         "refusal" => FinishReason::Refusal,
         other => FinishReason::Unknown(other.to_string()),
+    }
+}
+
+fn anthropic_effort(level: &str) -> &'static str {
+    match level {
+        "minimal" | "low" => "low",
+        "medium" => "medium",
+        "xhigh" => "max",
+        _ => "high",
     }
 }
 
@@ -505,6 +527,17 @@ mod tests {
                 ..Default::default()
             },
         }
+    }
+
+    fn adaptive_target(level: &str) -> ResolvedModelTarget {
+        let mut target = target(None, 16_000);
+        target.generation.thinking_level = level.to_string();
+        target.protocol =
+            ProtocolConfig::AnthropicMessages(crate::llm::schema::AnthropicMessagesConfig {
+                thinking_mode: AnthropicThinkingMode::Adaptive,
+                ..Default::default()
+            });
+        target
     }
 
     fn empty_request() -> ModelRequest {
@@ -534,6 +567,25 @@ mod tests {
             )
             .unwrap();
         assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn adaptive_thinking_uses_effort_instead_of_manual_budget() {
+        let body = AnthropicMessagesAdapter
+            .build_body(&adaptive_target("xhigh"), &empty_request())
+            .unwrap();
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["output_config"]["effort"], "max");
+        assert!(body["thinking"].get("budget_tokens").is_none());
+    }
+
+    #[test]
+    fn anthropic_stop_reasons_preserve_truncation() {
+        assert_eq!(map_finish_reason("pause_turn"), FinishReason::Incomplete);
+        assert_eq!(
+            map_finish_reason("model_context_window_exceeded"),
+            FinishReason::Length
+        );
     }
 
     fn frame(event: &str, data: Value) -> SseFrame {
