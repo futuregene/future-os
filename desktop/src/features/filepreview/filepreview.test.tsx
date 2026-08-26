@@ -2,18 +2,24 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { flushAsync } from "../../test/renderHook";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAsync, renderHook } from "../../test/renderHook";
 import { FilePreviewOverlay } from "./FilePreviewOverlay";
 import { ImagePreview } from "./ImagePreview";
 import { JsonPreview } from "./JsonPreview";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { imageMimeForPath, previewKindForPath } from "./previewKind";
 import { PreviewNotice } from "./PreviewNotice";
+import {
+  PREVIEW_LOADING_DELAY_MS,
+  PREVIEW_LOADING_MIN_VISIBLE_MS,
+  usePreviewLoadingGate,
+} from "./usePreviewLoadingGate";
 
 const invokeMock = vi.fn<(cmd: string, args?: unknown) => Promise<unknown>>(() => Promise.resolve(null));
 
 vi.mock("@tauri-apps/api/core", () => ({
+  convertFileSrc: (path: string) => `asset:${path}`,
   invoke: (cmd: string, args?: unknown) => invokeMock(cmd, args),
 }));
 
@@ -22,6 +28,10 @@ vi.mock("@tauri-apps/api/core", () => ({
 beforeEach(() => {
   invokeMock.mockReset();
   invokeMock.mockResolvedValue(null);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 function mount(node: React.ReactElement) {
@@ -66,18 +76,56 @@ describe("previewNotice", () => {
   });
 });
 
+describe("previewLoadingGate", () => {
+  it("keeps a preview that finishes within 200ms free of a loading notice", () => {
+    vi.useFakeTimers();
+    let loading = true;
+    const hook = renderHook(() => usePreviewLoadingGate(loading));
+
+    expect(hook.current).toEqual({ showContent: false, showLoading: false });
+    act(() => vi.advanceTimersByTime(PREVIEW_LOADING_DELAY_MS - 1));
+    loading = false;
+    hook.rerender();
+
+    expect(hook.current).toEqual({ showContent: true, showLoading: false });
+    hook.unmount();
+  });
+
+  it("holds a visible loading notice for at least 300ms", () => {
+    vi.useFakeTimers();
+    let loading = true;
+    const hook = renderHook(() => usePreviewLoadingGate(loading));
+
+    act(() => vi.advanceTimersByTime(PREVIEW_LOADING_DELAY_MS));
+    expect(hook.current).toEqual({ showContent: false, showLoading: true });
+
+    loading = false;
+    hook.rerender();
+    act(() => vi.advanceTimersByTime(PREVIEW_LOADING_MIN_VISIBLE_MS - 1));
+    expect(hook.current).toEqual({ showContent: false, showLoading: true });
+
+    act(() => vi.advanceTimersByTime(1));
+    expect(hook.current).toEqual({ showContent: true, showLoading: false });
+    hook.unmount();
+  });
+});
+
 describe("imagePreview", () => {
-  it("shows a loading notice, then the image", async () => {
-    invokeMock.mockResolvedValue("QUJD");
+  it("keeps a fast load quiet until the image has decoded", async () => {
+    invokeMock.mockResolvedValue({ path: "/w/pic.png", version: "1" });
     const { container, cleanup } = mount(createElement(ImagePreview, {
       path: "/w/pic.png",
       name: "pic.png",
       onError: vi.fn(),
     }));
-    expect(container.textContent).toContain("Loading");
+    expect(container.textContent).not.toContain("Loading");
     await flushAsync();
     const img = container.querySelector("img")!;
-    expect(img.getAttribute("src")).toBe("data:image/png;base64,QUJD");
+    expect(img.getAttribute("src")).toBe("asset:/w/pic.png?v=1");
+    expect(img.className).toContain("invisible");
+    act(() => img.dispatchEvent(new Event("load")));
+    await flushAsync();
+    expect(img.className).toContain("visible");
     cleanup();
   });
 
@@ -95,7 +143,7 @@ describe("imagePreview", () => {
   });
 
   it("img onError also routes to onError", async () => {
-    invokeMock.mockResolvedValue("QUJD");
+    invokeMock.mockResolvedValue({ path: "/w/pic.png", version: "1" });
     const onError = vi.fn();
     const { container, cleanup } = mount(createElement(ImagePreview, {
       path: "/w/pic.png",
@@ -106,6 +154,7 @@ describe("imagePreview", () => {
     act(() => {
       container.querySelector("img")!.dispatchEvent(new Event("error"));
     });
+    await flushAsync();
     expect(onError).toHaveBeenCalled();
     cleanup();
   });
@@ -118,6 +167,7 @@ describe("markdownPreview", () => {
       path: "/w/doc.md",
       onError: vi.fn(),
     }));
+    expect(container.textContent).not.toContain("Loading");
     await flushAsync();
     expect(container.querySelector("h1")?.textContent).toBe("Title");
     cleanup();
@@ -145,6 +195,7 @@ describe("jsonPreview", () => {
       path: "/w/data.json",
       onError: vi.fn(),
     }));
+    expect(container.textContent).not.toContain("Loading");
     await flushAsync();
     expect(container.textContent).toContain("900719925474099312345");
     expect(container.textContent).toContain("true");
@@ -179,7 +230,7 @@ describe("filePreviewOverlay", () => {
   });
 
   it("renders the image preview with a close button", async () => {
-    invokeMock.mockResolvedValue("QUJD");
+    invokeMock.mockResolvedValue({ path: "/w/a.png", version: "1" });
     const onClose = vi.fn();
     const { container, cleanup } = mount(createElement(FilePreviewOverlay, {
       path: "/w/a.png",
@@ -189,7 +240,10 @@ describe("filePreviewOverlay", () => {
       onClose,
     }));
     await flushAsync();
-    expect(container.querySelector("img")).not.toBeNull();
+    const image = container.querySelector("img")!;
+    act(() => image.dispatchEvent(new Event("load")));
+    await flushAsync();
+    expect(image.className).toContain("visible");
     const closeButton = container.querySelector("button[aria-label]")!;
     act(() => {
       closeButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));

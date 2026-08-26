@@ -153,6 +153,8 @@ pub enum ContextError {
     NoValidBoundary,
     #[error("context compaction produced an empty summary")]
     InvalidSummary,
+    #[error("context compaction summary failed: {0}")]
+    SummaryFailed(String),
     #[error("context compaction was cancelled")]
     Cancelled,
 }
@@ -169,8 +171,9 @@ pub struct ContextManager {
 impl ContextManager {
     /// Prepare context with a model-generated semantic summary. The selected
     /// session model/provider is reused with tools disabled; no hidden
-    /// compaction model is involved. Provider failures fall back to a richer
-    /// deterministic summary, while cancellation remains observable.
+    /// compaction model is involved. Provider failures remain observable so
+    /// callers do not commit a lossy checkpoint. Only the provider-context-
+    /// limit recovery path may use the deterministic emergency summary.
     pub async fn prepare_semantic(
         &self,
         prompt: PromptContext,

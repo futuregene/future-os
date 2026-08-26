@@ -11,7 +11,7 @@ const resolveReferencesMock = vi.fn<(w: string, refs: unknown[]) => Promise<Arra
   () => Promise.resolve([]),
 );
 const resolvePreviewLinkMock = vi.fn<(base: string, target: string) => Promise<{ path: string; name: string }>>();
-const readFileBase64Mock = vi.fn<(path: string) => Promise<string>>(() => Promise.resolve("QUJD"));
+const prepareImagePreviewUrlMock = vi.fn<(path: string) => Promise<string>>(path => Promise.resolve(`asset:${path}`));
 
 vi.mock("../../integrations/storage/markdownReferences", () => ({
   resolveMarkdownReferences: (w: string, refs: unknown[]) => resolveReferencesMock(w, refs),
@@ -20,7 +20,7 @@ vi.mock("../../integrations/storage/markdownReferences", () => ({
 vi.mock("../../integrations/storage/files", () => ({
   openPath: () => Promise.resolve(),
   openExternalUrl: () => Promise.resolve(),
-  readFileBase64: ({ path }: { path: string }) => readFileBase64Mock(path),
+  prepareImagePreviewUrl: (path: string) => prepareImagePreviewUrlMock(path),
   readTextFilePreview: () => Promise.resolve({ content: "", size: 0, truncated: false }),
   resolvePreviewLinkPath: (base: string, target: string) => resolvePreviewLinkMock(base, target),
 }));
@@ -182,8 +182,8 @@ describe("markdownContent reference resolution", () => {
     }));
     await flushStore();
     await flushAsync();
-    expect(container.querySelector("img")?.getAttribute("src")).toBe("data:image/png;base64,QUJD");
-    expect(readFileBase64Mock).toHaveBeenCalledWith("/w/assets/pic.png");
+    expect(container.querySelector("img")?.getAttribute("src")).toBe("asset:/w/assets/pic.png");
+    expect(prepareImagePreviewUrlMock).toHaveBeenCalledWith("/w/assets/pic.png");
     cleanup();
   });
 
@@ -195,7 +195,7 @@ describe("markdownContent reference resolution", () => {
     }));
     await flushAsync();
     await flushAsync();
-    expect(container.querySelector("img")?.getAttribute("src")).toBe("data:image/png;base64,QUJD");
+    expect(container.querySelector("img")?.getAttribute("src")).toBe("asset:/w/assets/pic.png");
     cleanup();
   });
 

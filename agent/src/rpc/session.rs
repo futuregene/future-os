@@ -2829,6 +2829,7 @@ mod tests {
     #[test]
     fn compact_with_real_history_reports_summary() {
         let mut session = make_test_session("compact");
+        session.agent_loop.try_write().unwrap().provider = Arc::new(SummaryProvider);
         let mut events = session.broadcaster.subscribe();
         session.model = "glm-4.5v".to_string(); // 64k catalog window
         session

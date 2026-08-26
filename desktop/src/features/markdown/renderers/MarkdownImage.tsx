@@ -2,10 +2,9 @@ import type { StoredFile } from "../../../integrations/storage/types";
 import { localFilePath } from "@future-os/markdown";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { readFileBase64 } from "../../../integrations/storage/files";
+import { prepareImagePreviewUrl } from "../../../integrations/storage/files";
 import { isStoredFile } from "../../../integrations/storage/typeGuards";
 import { useAsyncResource } from "../../../lib/useAsyncResource";
-import { imageMimeForPath } from "../../filepreview/previewKind";
 import { useFutureReference } from "../futureReferenceStore";
 import { usePreviewMarkdown } from "../PreviewMarkdownContext";
 import { usePreviewLinkPath } from "../usePreviewLinkPath";
@@ -45,7 +44,7 @@ function WorkspaceLocalImage({
   const resolved = useFutureReference(workspaceId, { targetId: target, targetType: "file" });
   // Only inline images that live inside the workspace: a model-authored absolute
   // path (e.g. `![x](/etc/passwd)`) must not become a read-arbitrary-file channel
-  // through readFileBase64. Out-of-workspace targets render as a fallback chip.
+  // through the asset protocol. Out-of-workspace targets render as a fallback chip.
   const file = resolved?.status === "resolved" && resolved.targetType === "file"
     && isStoredFile(resolved.data) && resolved.data.insideWorkspace
     ? resolved.data
@@ -79,15 +78,15 @@ function PreviewLocalImage({
 }
 
 function ResolvedLocalImage({ alt, file, title }: { alt: string; file: StoredFile; title?: string }) {
-  const { data: base64, error, loading } = useAsyncResource<string | null>(
-    () => readFileBase64({ path: file.path }),
+  const { data: imageUrl, error, loading } = useAsyncResource<string | null>(
+    () => prepareImagePreviewUrl(file.path),
     [file.path],
     null,
   );
   const [failedPath, setFailedPath] = useState<string | null>(null);
   const failed = failedPath === file.path;
 
-  if (loading || error || !base64 || failed)
+  if (loading || error || !imageUrl || failed)
     return <LocalImageFallback alt={alt} path={file.path} />;
 
   return (
@@ -95,7 +94,7 @@ function ResolvedLocalImage({ alt, file, title }: { alt: string; file: StoredFil
       alt={alt}
       className="my-2 max-h-80 max-w-full rounded-md border border-line-soft object-contain"
       onError={() => setFailedPath(file.path)}
-      src={`data:${imageMimeForPath(file.path)};base64,${base64}`}
+      src={imageUrl}
       title={title ?? file.path}
     />
   );
