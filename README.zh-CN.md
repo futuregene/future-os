@@ -44,7 +44,7 @@
 | 类别 | 说明 |
 |---|---|
 | **多端统一** | 终端界面 (TUI)、桌面应用 (GUI)、移动端 App（Android · iOS）、命令行 (CLI)、IM 机器人——一个 Agent，无处不在 |
-| **信任优先的工具执行** | read, write, edit, shell——每次调用都需你审批；沙箱分级（关闭 / 手动 / macOS Seatbelt）；工具集精简，杜绝 prompt 膨胀 |
+| **信任优先的工具执行** | read, write, edit, shell——每次调用都需你审批；沙箱分级（`off` / `manual` / `sandbox`），macOS（Seatbelt）与 Windows（受限令牌）提供 OS 级沙箱；工具集精简，杜绝 prompt 膨胀 |
 | **模型灵活** | 内置 3800+ 模型，覆盖 140+ Provider（[目录](docs/wiki/zh/Models.md)）；通过 `models.json` 自定义 Provider；支持模型范围限定 |
 | **Loop 工程** | 持久化目标/todos/门禁/监控，支撑 24+ 小时长程任务连续执行——确定性 should-run 内核、事件溯源状态、硬校验（证据下限/验收契约/verify 闸门）、租约活性自愈、多 agent（[指南](docs/loop-control-plane.zh-CN.md)） |
 | **强大的预设技能** | 内置 15+ 技能开箱即用，覆盖日常 Agent 场景——图片读取与生成、PDF/Word 解析、网页搜索、浏览器控制、幻灯片与软件安装，以及 `/future-loop` 长程目标编排器（[builtin](https://github.com/futuregene/future-skills/tree/main/builtin)） |

@@ -56,7 +56,7 @@ freshness gate that regenerates and fails on any diff.
 ## Contract rules
 
 - Proto field numbers are stable and MUST NOT be reused (see the header of
-  `../proto/future.proto`). Typed payload `oneof` members are append-only.
+  `proto/future.proto`). Typed payload `oneof` members are append-only.
 - Typed payloads attach to their host messages (`RpcResponse`, `StreamEvent`,
   `ProjectedRunEvent`, `ReplayEvent`) at field number 20; the JSON `data`
   field stays dual-written during the migration window.
