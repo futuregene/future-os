@@ -1202,4 +1202,137 @@ mod tests {
         // tokens_before is max(opts.tokens_before, estimated), so it's at least 500
         assert!(compact_opt.unwrap().tokens_before >= 500);
     }
+
+    #[test]
+    fn checkpoint_projection_legacy_without_cutoff_skips_marker_entry() {
+        let mut covered = AgentMessage::new_user("user", serde_json::json!("old"));
+        covered.ensure_journal_entry_id();
+        let covered_id = covered.journal_entry_id().unwrap().to_string();
+        let mut recent = AgentMessage {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::text("recent")],
+            ..Default::default()
+        };
+        recent.ensure_journal_entry_id();
+        let checkpoint = ContextCheckpoint {
+            entry_id: covered_id.clone(),
+            checkpoint_id: "cp-1".to_string(),
+            covered_from_entry_id: None,
+            cutoff_entry_id: None,
+            summary: vec![ContentBlock::text("summary")],
+            tokens_before: 100,
+            tokens_after: 10,
+            trigger: CompactionTrigger::Automatic,
+            phase: None,
+            algorithm_version: "v1".to_string(),
+            model: "model".to_string(),
+            context_window: 200,
+            created_at: chrono::Utc::now(),
+            legacy_without_cutoff: true,
+        };
+
+        let projected = project_prompt_context(
+            &[covered.clone(), recent.clone()],
+            Some(&checkpoint),
+            None,
+            200,
+        );
+        // The legacy marker entry is skipped; summary + recent remain.
+        assert_eq!(projected.messages.len(), 2);
+        assert_eq!(
+            serde_json::to_value(&projected.messages[1].message).unwrap(),
+            serde_json::to_value(&recent).unwrap()
+        );
+    }
+
+    #[test]
+    fn checkpoint_projection_ignores_non_text_summary_blocks() {
+        let checkpoint = ContextCheckpoint {
+            entry_id: "e".to_string(),
+            checkpoint_id: "cp".to_string(),
+            covered_from_entry_id: None,
+            cutoff_entry_id: None,
+            summary: vec![
+                ContentBlock::text("visible"),
+                ContentBlock::reasoning("hidden", Default::default()),
+            ],
+            tokens_before: 100,
+            tokens_after: 10,
+            trigger: CompactionTrigger::Automatic,
+            phase: None,
+            algorithm_version: "v1".to_string(),
+            model: "model".to_string(),
+            context_window: 200,
+            created_at: chrono::Utc::now(),
+            legacy_without_cutoff: false,
+        };
+
+        let projected = project_prompt_context(&[], Some(&checkpoint), None, 200);
+        assert_eq!(projected.messages.len(), 1);
+        let text = projected.messages[0].message.text();
+        assert!(text.contains("visible"));
+        assert!(!text.contains("hidden"));
+    }
+
+    #[test]
+    fn compact_gives_up_when_no_safe_cut_point_exists() {
+        // A single assistant message that owns tool_calls has no valid cut point
+        // (find_valid_cut_points excludes it), so the fallback branch must give
+        // up rather than emit an invalid prefix.
+        let msgs = vec![Message {
+            role: "assistant".to_string(),
+            content: None,
+            tool_calls: Some(vec![crate::types::ToolCall {
+                id: "t1".to_string(),
+                call_type: "function".to_string(),
+                function: crate::types::ToolCallFn {
+                    name: "shell".to_string(),
+                    arguments: serde_json::json!("{}"),
+                },
+            }]),
+            ..Default::default()
+        }];
+        let opts = CompactOptions {
+            reserve_tokens: 0,
+            keep_recent_tokens: 1,
+            context_window: 10,
+            tokens_before: 100,
+        };
+        let (result, compacted) = compact(msgs, &opts);
+        assert!(compacted.is_none());
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn compact_gives_up_when_fallback_adjusts_to_zero() {
+        // The first valid cut point > 0 is a `tool` message whose only
+        // tool-call owner sits at index 0, so adjust_cut_for_tool_context
+        // resolves it back to 0. The fallback must then give up rather than
+        // emit an invalid prefix (the inner `if fallback > 0` false branch).
+        let msgs = vec![
+            Message {
+                role: "assistant".to_string(),
+                content: None,
+                tool_calls: Some(vec![crate::types::ToolCall {
+                    id: "t1".to_string(),
+                    call_type: "function".to_string(),
+                    function: crate::types::ToolCallFn {
+                        name: "shell".to_string(),
+                        arguments: serde_json::json!("{}"),
+                    },
+                }]),
+                ..Default::default()
+            },
+            text_msg("tool", "result"),
+        ];
+        let opts = CompactOptions {
+            reserve_tokens: 0,
+            keep_recent_tokens: 1_000_000,
+            context_window: 1_000,
+            tokens_before: 100_000,
+        };
+        let (result, compacted) = compact(msgs, &opts);
+        assert!(compacted.is_none());
+        assert_eq!(result.len(), 2);
+    }
 }
