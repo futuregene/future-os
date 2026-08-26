@@ -17,6 +17,7 @@ import { PendingReference } from "./renderers/PendingReference";
 import { ReferenceChip } from "./renderers/ReferenceChip";
 import { SafeLink } from "./renderers/SafeLink";
 import { usePreviewLinkPath } from "./usePreviewLinkPath";
+import { useStreamingMarkdownBlocks } from "./useStreamingMarkdownBlocks";
 
 interface MarkdownContentProps {
   content: string;
@@ -55,6 +56,31 @@ function MarkdownContentImpl({ content, workspaceId, basePath, live }: MarkdownC
  * only covered the remark step).
  */
 export const MarkdownContent = memo(MarkdownContentImpl);
+
+/**
+ * Streaming-only presentation layer. Completed top-level blocks keep stable
+ * React keys while only the final block remains mutable.
+ */
+export const StreamingMarkdownContent = memo(({
+  content,
+  workspaceId,
+  live,
+}: Omit<MarkdownContentProps, "basePath">) => {
+  const blocks = useStreamingMarkdownBlocks(content, Boolean(live));
+
+  return (
+    <div className="space-y-3">
+      {blocks.map(block => (
+        <MarkdownContent
+          content={block.content}
+          key={block.start}
+          live={block.live}
+          workspaceId={workspaceId}
+        />
+      ))}
+    </div>
+  );
+});
 
 function renderBlock(node: MarkdownNode, workspaceId: string | null | undefined, key: string) {
   switch (node.type) {

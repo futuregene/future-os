@@ -52,6 +52,16 @@ export interface FutureMarkdownDocument {
   references: FutureReference[];
 }
 
+/** One top-level source slice used by the incremental chat renderer. */
+export interface StreamingMarkdownBlock {
+  /** Stable source offset used as the renderer key while later text grows. */
+  start: number;
+  /** Exact Markdown source for this top-level slice. */
+  content: string;
+  /** Only the final block of an in-flight reply remains mutable. */
+  live: boolean;
+}
+
 export function referenceKey(
   reference: Pick<FutureReference, "targetId" | "targetType">,
 ) {

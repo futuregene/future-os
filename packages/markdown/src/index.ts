@@ -5,7 +5,7 @@ export {
   remoteMarkdownImageUrl,
 } from "./localPath";
 export type { MarkdownTarget } from "./localPath";
-export { parseFutureMarkdown } from "./parseFutureMarkdown";
+export { parseFutureMarkdown, splitStreamingMarkdown } from "./parseFutureMarkdown";
 export { referenceKey } from "./types";
 export type {
   FutureMarkdownDocument,
@@ -15,5 +15,6 @@ export type {
   InlineNode,
   ListItemNode,
   MarkdownNode,
+  StreamingMarkdownBlock,
   TableNode,
 } from "./types";
