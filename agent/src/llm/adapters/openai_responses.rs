@@ -614,6 +614,7 @@ fn close_open(state: &mut ResponsesState) -> Vec<ModelStreamEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::schema::{GenerationConfig, OpenAiResponsesConfig, ProviderRoute};
 
     fn frame(event_type: &str, body: Value) -> SseFrame {
         SseFrame {
@@ -935,6 +936,529 @@ mod tests {
                 reason: FinishReason::ContentFilter,
                 ..
             }]
+        ));
+    }
+
+    fn target(protocol: ProtocolConfig) -> ResolvedModelTarget {
+        ResolvedModelTarget {
+            model_id: "m".into(),
+            route: ProviderRoute {
+                provider_id: "p".into(),
+                base_url: "https://example.test/v1".into(),
+                api_key: "k".into(),
+                auth: crate::llm::schema::AuthScheme::Bearer,
+                headers: Default::default(),
+            },
+            protocol,
+            capabilities: Default::default(),
+            generation: GenerationConfig::default(),
+        }
+    }
+
+    #[test]
+    fn build_body_rejects_non_responses_target() {
+        let target = target(ProtocolConfig::OpenAiChat(
+            crate::llm::schema::OpenAiChatConfig::default(),
+        ));
+        let request = ModelRequest {
+            model: "m".into(),
+            system_prompt: String::new(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+        };
+        let error = OpenAiResponsesAdapter
+            .build_body(&target, &request)
+            .unwrap_err();
+        assert!(error.to_string().contains("non-responses target"));
+    }
+
+    #[test]
+    fn build_body_serializes_tools_temperature_and_reasoning() {
+        let mut target = target(ProtocolConfig::OpenAiResponses(
+            OpenAiResponsesConfig::default(),
+        ));
+        target.capabilities.reasoning.supported = true;
+        target.generation.temperature = Some(0.5);
+        target.generation.max_output_tokens = Some(123);
+        target.generation.thinking_level = "high".into();
+        let request = ModelRequest {
+            model: "m".into(),
+            system_prompt: "system".into(),
+            messages: Vec::new(),
+            tools: vec![crate::types::ToolDef {
+                tool_type: "function".into(),
+                function: crate::types::FunctionDef {
+                    name: "f".into(),
+                    description: "d".into(),
+                    parameters: json!({"type": "object"}),
+                },
+            }],
+        };
+        let body = OpenAiResponsesAdapter
+            .build_body(&target, &request)
+            .unwrap();
+        assert!(body["tools"].is_array());
+        assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
+        assert_eq!(body["temperature"], 0.5);
+        assert_eq!(body["max_output_tokens"], 123);
+        assert_eq!(
+            body["reasoning"],
+            json!({"effort": "high", "summary": "auto"})
+        );
+        assert_eq!(body["input"][0]["role"], "developer");
+    }
+
+    #[test]
+    fn decode_frame_ignores_empty_and_done_data() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = adapter.new_stream_state();
+        for data in ["   ", "[DONE]"] {
+            let events = adapter
+                .decode_frame(
+                    &SseFrame {
+                        event: None,
+                        data: data.into(),
+                    },
+                    state.as_mut(),
+                )
+                .unwrap();
+            assert!(events.is_empty());
+        }
+    }
+
+    #[test]
+    fn output_item_added_reasoning_starts_reasoning() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(
+                    "response.output_item.added",
+                    json!({
+                        "type": "response.output_item.added",
+                        "output_index": 0,
+                        "item": {"type": "reasoning", "id": "rs_1"}
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [ModelStreamEvent::ReasoningStart { id }] if id == "rs_1"
+        ));
+    }
+
+    #[test]
+    fn output_item_added_ignores_unknown_item_types() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(
+                    "response.output_item.added",
+                    json!({
+                        "type": "response.output_item.added",
+                        "output_index": 0,
+                        "item": {"type": "message"}
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn output_text_done_emits_text_end() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = adapter.new_stream_state();
+        adapter
+            .decode_frame(
+                &frame(
+                    "response.output_text.delta",
+                    json!({
+                        "type": "response.output_text.delta",
+                        "output_index": 0,
+                        "item_id": "msg_0",
+                        "delta": "hi"
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        let events = adapter
+            .decode_frame(
+                &frame(
+                    "response.output_text.done",
+                    json!({
+                        "type": "response.output_text.done",
+                        "output_index": 0,
+                        "item_id": "msg_0"
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [ModelStreamEvent::TextEnd { id }] if id == "msg_0"
+        ));
+    }
+
+    #[test]
+    fn refusal_delta_emits_text_events() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(
+                    "response.refusal.delta",
+                    json!({
+                        "type": "response.refusal.delta",
+                        "output_index": 0,
+                        "item_id": "ref_0",
+                        "delta": "no"
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [ModelStreamEvent::TextStart { id }, ModelStreamEvent::TextDelta { text, .. }]
+                if id == "ref_0" && text == "no"
+        ));
+    }
+
+    #[test]
+    fn refusal_done_emits_text_end() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = adapter.new_stream_state();
+        adapter
+            .decode_frame(
+                &frame(
+                    "response.refusal.delta",
+                    json!({
+                        "type": "response.refusal.delta",
+                        "output_index": 0,
+                        "item_id": "ref_0",
+                        "delta": "no"
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        let events = adapter
+            .decode_frame(
+                &frame(
+                    "response.refusal.done",
+                    json!({
+                        "type": "response.refusal.done",
+                        "output_index": 0,
+                        "item_id": "ref_0"
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [ModelStreamEvent::TextEnd { id }] if id == "ref_0"
+        ));
+    }
+
+    #[test]
+    fn reasoning_text_delta_emits_reasoning_events() {
+        let adapter = OpenAiResponsesAdapter;
+        for ty in [
+            "response.reasoning_summary_text.delta",
+            "response.reasoning_text.delta",
+        ] {
+            let mut state = adapter.new_stream_state();
+            let events = adapter
+                .decode_frame(
+                    &frame(
+                        ty,
+                        json!({
+                            "type": ty,
+                            "output_index": 0,
+                            "item_id": "rs_0",
+                            "delta": "think"
+                        }),
+                    ),
+                    state.as_mut(),
+                )
+                .unwrap();
+            assert!(matches!(
+                events.as_slice(),
+                [ModelStreamEvent::ReasoningStart { id }, ModelStreamEvent::ReasoningDelta { text, .. }]
+                    if id == "rs_0" && text == "think"
+            ));
+        }
+    }
+
+    #[test]
+    fn output_item_done_without_prior_add_builds_tool_from_item() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(
+                    "response.output_item.done",
+                    json!({
+                        "type": "response.output_item.done",
+                        "output_index": 2,
+                        "item": {
+                            "type": "function_call",
+                            "id": "fc_9",
+                            "call_id": "call_9",
+                            "name": "lookup",
+                            "arguments": "{\"q\":1}"
+                        }
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [ModelStreamEvent::ToolInputEnd {
+                index: 2,
+                id,
+                name,
+                arguments,
+                ..
+            }] if id == "call_9" && name == "lookup" && arguments == &json!({"q": 1})
+        ));
+    }
+
+    #[test]
+    fn output_item_done_reasoning_emits_reasoning_end_with_encrypted() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(
+                    "response.output_item.done",
+                    json!({
+                        "type": "response.output_item.done",
+                        "output_index": 0,
+                        "item": {
+                            "type": "reasoning",
+                            "id": "rs_1",
+                            "encrypted_content": "cipher"
+                        }
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [ModelStreamEvent::ReasoningEnd { id, provider_metadata }]
+                if id == "rs_1"
+                    && provider_metadata["openai"]["encrypted_content"] == "cipher"
+        ));
+    }
+
+    #[test]
+    fn output_item_done_ignores_unknown_item_types() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(
+                    "response.output_item.done",
+                    json!({
+                        "type": "response.output_item.done",
+                        "output_index": 0,
+                        "item": {"type": "message"}
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn failed_and_error_events_emit_error() {
+        let adapter = OpenAiResponsesAdapter;
+
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(
+                    "response.failed",
+                    json!({
+                        "type": "response.failed",
+                        "response": {"error": {"message": "boom"}}
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [ModelStreamEvent::Error { message }] if message == "boom"
+        ));
+
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(
+                    "error",
+                    json!({"type": "error", "error": {"message": "boom2"}}),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [ModelStreamEvent::Error { message }] if message == "boom2"
+        ));
+
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame("error", json!({"type": "error", "message": "top boom"})),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [ModelStreamEvent::Error { message }] if message == "top boom"
+        ));
+
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(&frame("error", json!({"type": "error"})), state.as_mut())
+            .unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [ModelStreamEvent::Error { message }]
+                if message == "OpenAI Responses stream failed"
+        ));
+    }
+
+    #[test]
+    fn unknown_event_type_is_ignored() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(
+                    "response.something.weird",
+                    json!({"type": "response.something.weird"}),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn finish_stream_after_finish_returns_empty() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = adapter.new_stream_state();
+        adapter
+            .decode_frame(
+                &frame(
+                    "response.completed",
+                    json!({"type": "response.completed", "response": {"status": "completed"}}),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(adapter.finish_stream(state.as_mut()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn lower_message_serializes_image_blocks() {
+        let message = crate::types::AgentMessage {
+            role: "user".into(),
+            content: vec![ContentBlock::image("http://img/1.png")],
+            ..Default::default()
+        };
+        let mut input = Vec::new();
+        lower_message(&message, &mut input).unwrap();
+        assert_eq!(input[0]["type"], "message");
+        assert_eq!(input[0]["content"][0]["type"], "input_image");
+    }
+
+    #[test]
+    fn lower_message_ignores_reasoning_without_openai_metadata() {
+        let message = crate::types::AgentMessage {
+            role: "assistant".into(),
+            content: vec![ContentBlock::reasoning("plain", ProviderMetadata::new())],
+            ..Default::default()
+        };
+        let mut input = Vec::new();
+        lower_message(&message, &mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn arguments_string_serializes_both_shapes() {
+        assert_eq!(arguments_string(&json!("literal")), "literal");
+        assert_eq!(arguments_string(&json!({"a": 1})), "{\"a\":1}");
+    }
+
+    #[test]
+    fn incomplete_reason_unknown_maps_to_unknown() {
+        assert_eq!(
+            incomplete_reason(&json!({"incomplete_details": {"reason": "weird"}})),
+            FinishReason::Unknown("weird".into())
+        );
+        assert_eq!(incomplete_reason(&json!({})), FinishReason::Incomplete);
+    }
+
+    #[test]
+    fn finish_stream_closes_open_reasoning_and_tools() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = adapter.new_stream_state();
+        adapter
+            .decode_frame(
+                &frame(
+                    "response.output_item.added",
+                    json!({
+                        "type": "response.output_item.added",
+                        "output_index": 0,
+                        "item": {"type": "reasoning", "id": "rs_1"}
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        adapter
+            .decode_frame(
+                &frame(
+                    "response.output_item.added",
+                    json!({
+                        "type": "response.output_item.added",
+                        "output_index": 1,
+                        "item": {"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "lookup"}
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        let events = adapter.finish_stream(state.as_mut()).unwrap();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            ModelStreamEvent::ReasoningEnd { id, .. } if id == "rs_1"
+        )));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            ModelStreamEvent::ToolInputEnd { index: 1, id, .. } if id == "call_1"
+        )));
+        assert!(matches!(
+            events.last(),
+            Some(ModelStreamEvent::Finish {
+                reason: FinishReason::Incomplete,
+                ..
+            })
         ));
     }
 }

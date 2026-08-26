@@ -506,6 +506,248 @@ pub fn string_level_map(values: &HashMap<String, Value>) -> HashMap<String, Stri
 mod tests {
     use super::*;
 
+    fn expect_chat(protocol: ProtocolConfig) -> OpenAiChatConfig {
+        match protocol {
+            ProtocolConfig::OpenAiChat(chat) => chat,
+            other => panic!("chat protocol expected, got {other:?}"),
+        }
+    }
+
+    fn expect_anthropic(protocol: ProtocolConfig) -> AnthropicMessagesConfig {
+        match protocol {
+            ProtocolConfig::AnthropicMessages(config) => config,
+            other => panic!("Anthropic protocol expected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn protocol_canonical_names() {
+        assert_eq!(
+            ApiProtocol::OpenAiChatCompletions.canonical_name(),
+            "openai-completions"
+        );
+        assert_eq!(
+            ApiProtocol::OpenAiResponses.canonical_name(),
+            "openai-responses"
+        );
+        assert_eq!(ApiProtocol::AnthropicMessages.canonical_name(), "anthropic");
+    }
+
+    #[test]
+    fn max_tokens_field_keys() {
+        assert_eq!(ChatMaxTokensField::MaxTokens.key(), "max_tokens");
+        assert_eq!(
+            ChatMaxTokensField::MaxCompletionTokens.key(),
+            "max_completion_tokens"
+        );
+    }
+
+    #[test]
+    fn finish_reason_as_str_covers_every_variant() {
+        assert_eq!(FinishReason::Stop.as_str(), "stop");
+        assert_eq!(FinishReason::ToolCalls.as_str(), "tool_calls");
+        assert_eq!(FinishReason::Length.as_str(), "length");
+        assert_eq!(FinishReason::ContentFilter.as_str(), "content_filter");
+        assert_eq!(FinishReason::Refusal.as_str(), "refusal");
+        assert_eq!(FinishReason::Cancelled.as_str(), "cancelled");
+        assert_eq!(FinishReason::Incomplete.as_str(), "truncated");
+        assert_eq!(FinishReason::Error.as_str(), "error");
+        assert_eq!(FinishReason::Unknown("custom".into()).as_str(), "custom");
+    }
+
+    #[test]
+    fn from_model_rejects_unknown_protocol() {
+        let model = crate::models::Model {
+            id: "m".into(),
+            provider: "p".into(),
+            api: "bogus".into(),
+            ..Default::default()
+        };
+        let error = ResolvedModelTarget::from_model(&model, "key".into(), None, None).unwrap_err();
+        assert!(error.to_string().contains("unsupported model API protocol"));
+    }
+
+    #[test]
+    fn from_model_resolves_responses_protocol() {
+        let model = crate::models::Model {
+            id: "m".into(),
+            provider: "p".into(),
+            api: "responses".into(),
+            ..Default::default()
+        };
+        let target = ResolvedModelTarget::from_model(&model, "key".into(), None, None).unwrap();
+        assert!(matches!(
+            target.protocol,
+            ProtocolConfig::OpenAiResponses(_)
+        ));
+    }
+
+    #[test]
+    fn anthropic_thinking_mode_rejects_non_string_value() {
+        let mut model = crate::models::Model {
+            id: "m".into(),
+            provider: "p".into(),
+            api: "anthropic".into(),
+            ..Default::default()
+        };
+        model
+            .compat
+            .insert("anthropicThinkingMode".into(), Value::Bool(true));
+        let error = ResolvedModelTarget::from_model(&model, "key".into(), None, None).unwrap_err();
+        assert!(error.to_string().contains("must be a string"));
+    }
+
+    #[test]
+    fn anthropic_thinking_mode_adaptive_and_unknown_values() {
+        let mut model = crate::models::Model {
+            id: "m".into(),
+            provider: "p".into(),
+            api: "anthropic".into(),
+            ..Default::default()
+        };
+        model.compat.insert(
+            "anthropicThinkingMode".into(),
+            Value::String("adaptive".into()),
+        );
+        let target = ResolvedModelTarget::from_model(&model, "key".into(), None, None).unwrap();
+        assert_eq!(
+            expect_anthropic(target.protocol).thinking_mode,
+            AnthropicThinkingMode::Adaptive
+        );
+
+        model.compat.insert(
+            "anthropicThinkingMode".into(),
+            Value::String("bogus".into()),
+        );
+        let error = ResolvedModelTarget::from_model(&model, "key".into(), None, None).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("unsupported compat.anthropicThinkingMode"));
+    }
+
+    #[test]
+    fn chat_config_rejects_non_string_thinking_format() {
+        let mut model = crate::models::Model {
+            id: "m".into(),
+            provider: "p".into(),
+            api: "openai-completions".into(),
+            ..Default::default()
+        };
+        model
+            .compat
+            .insert("thinkingFormat".into(), Value::Bool(true));
+        let error = ResolvedModelTarget::from_model(&model, "key".into(), None, None).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("thinkingFormat must be a string"));
+    }
+
+    #[test]
+    fn chat_config_rejects_non_boolean_flag() {
+        let mut model = crate::models::Model {
+            id: "m".into(),
+            provider: "p".into(),
+            api: "openai-completions".into(),
+            ..Default::default()
+        };
+        model.compat.insert(
+            "supportsReasoningEffort".into(),
+            Value::String("yes".into()),
+        );
+        let error = ResolvedModelTarget::from_model(&model, "key".into(), None, None).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("supportsReasoningEffort must be a boolean"));
+    }
+
+    #[test]
+    fn chat_config_qwen_chat_template_and_other_formats() {
+        let chat = |compat: &str| -> OpenAiChatConfig {
+            let mut model = crate::models::Model {
+                id: "m".into(),
+                provider: "p".into(),
+                api: "openai-completions".into(),
+                ..Default::default()
+            };
+            model
+                .compat
+                .insert("thinkingFormat".into(), Value::String(compat.into()));
+            expect_chat(
+                ResolvedModelTarget::from_model(&model, "key".into(), None, None)
+                    .unwrap()
+                    .protocol,
+            )
+        };
+        assert_eq!(
+            chat("qwen-chat-template").reasoning,
+            ChatReasoningFormat::Qwen {
+                chat_template: true
+            }
+        );
+        assert_eq!(chat("zai").reasoning, ChatReasoningFormat::Zai);
+        assert_eq!(
+            chat("reasoning-split").reasoning,
+            ChatReasoningFormat::ReasoningSplit
+        );
+
+        let mut model = crate::models::Model {
+            id: "m".into(),
+            provider: "p".into(),
+            api: "openai-completions".into(),
+            ..Default::default()
+        };
+        model
+            .compat
+            .insert("thinkingFormat".into(), Value::String("bogus".into()));
+        let error = ResolvedModelTarget::from_model(&model, "key".into(), None, None).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("unsupported compat.thinkingFormat"));
+    }
+
+    #[test]
+    fn chat_config_rejects_unknown_max_tokens_field() {
+        let mut model = crate::models::Model {
+            id: "m".into(),
+            provider: "p".into(),
+            api: "openai-completions".into(),
+            ..Default::default()
+        };
+        model
+            .compat
+            .insert("maxTokensField".into(), Value::String("bogus".into()));
+        let error = ResolvedModelTarget::from_model(&model, "key".into(), None, None).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("unsupported compat.maxTokensField"));
+    }
+
+    #[test]
+    fn string_level_map_keeps_strings_and_drops_non_strings() {
+        let mut values = HashMap::new();
+        values.insert("a".into(), Value::String("1".into()));
+        values.insert("b".into(), Value::Bool(true));
+        values.insert("c".into(), Value::Null);
+        let out = string_level_map(&values);
+        assert_eq!(out.get("a"), Some(&"1".to_string()));
+        assert!(!out.contains_key("b"));
+        assert!(!out.contains_key("c"));
+    }
+
+    #[test]
+    #[should_panic(expected = "chat protocol expected")]
+    fn expect_chat_rejects_other_protocols() {
+        expect_chat(ProtocolConfig::AnthropicMessages(
+            AnthropicMessagesConfig::default(),
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "Anthropic protocol expected")]
+    fn expect_anthropic_rejects_other_protocols() {
+        expect_anthropic(ProtocolConfig::OpenAiChat(OpenAiChatConfig::default()));
+    }
+
     #[test]
     fn protocol_aliases_normalize() {
         assert_eq!(
@@ -543,9 +785,7 @@ mod tests {
         );
 
         let target = ResolvedModelTarget::from_model(&model, "key".into(), None, None).unwrap();
-        let ProtocolConfig::OpenAiChat(chat) = target.protocol else {
-            panic!("chat protocol expected")
-        };
+        let chat = expect_chat(target.protocol);
         assert_eq!(
             chat.reasoning,
             ChatReasoningFormat::Qwen {
@@ -570,9 +810,7 @@ mod tests {
             ..Default::default()
         };
         let target = ResolvedModelTarget::from_model(&qwen, "key".into(), None, None).unwrap();
-        let ProtocolConfig::OpenAiChat(chat) = target.protocol else {
-            panic!("chat protocol expected")
-        };
+        let chat = expect_chat(target.protocol);
         assert_eq!(
             chat.reasoning,
             ChatReasoningFormat::Qwen {
@@ -586,9 +824,7 @@ mod tests {
             ..qwen
         };
         let target = ResolvedModelTarget::from_model(&plain, "key".into(), None, None).unwrap();
-        let ProtocolConfig::OpenAiChat(chat) = target.protocol else {
-            panic!("chat protocol expected")
-        };
+        let chat = expect_chat(target.protocol);
         assert_eq!(chat.reasoning, ChatReasoningFormat::None);
     }
 
@@ -601,9 +837,7 @@ mod tests {
             ..Default::default()
         };
         let target = ResolvedModelTarget::from_model(&model, "key".into(), None, None).unwrap();
-        let ProtocolConfig::AnthropicMessages(config) = target.protocol else {
-            panic!("Anthropic protocol expected")
-        };
+        let config = expect_anthropic(target.protocol);
         assert_eq!(config.thinking_mode, AnthropicThinkingMode::Adaptive);
 
         model.compat.insert(
@@ -611,9 +845,7 @@ mod tests {
             Value::String("manual".into()),
         );
         let target = ResolvedModelTarget::from_model(&model, "key".into(), None, None).unwrap();
-        let ProtocolConfig::AnthropicMessages(config) = target.protocol else {
-            panic!("Anthropic protocol expected")
-        };
+        let config = expect_anthropic(target.protocol);
         assert_eq!(config.thinking_mode, AnthropicThinkingMode::Manual);
     }
 }
