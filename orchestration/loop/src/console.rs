@@ -7836,6 +7836,66 @@ mod coverage_tests {
                 consecutive: 1,
                 ts: 1,
             },
+            Event::TurnNoProgress {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                agent_id: Some("a".into()),
+                idle_secs: 60,
+                tool_calls_total: 3,
+                ts: 1,
+            },
+            Event::MultiAgentContractSet {
+                goal_id: "g".into(),
+                contract: crate::agents::multi_agent::MultiAgentContract {
+                    schema_version: crate::agents::multi_agent::MULTI_AGENT_CONTRACT_SCHEMA_VERSION
+                        .to_string(),
+                    peers: [(
+                        "p".to_string(),
+                        crate::agents::multi_agent::PeerRole {
+                            backup_for: None,
+                            capabilities: vec![],
+                            workspaces: vec![],
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                    handoff_rules: vec![],
+                    collectives: Default::default(),
+                },
+                ts: 1,
+            },
+            Event::AgentRecipeAdded {
+                goal_id: "g".into(),
+                recipe: crate::agents::multi_agent::AgentRecipe {
+                    schema_version: crate::agents::multi_agent::MULTI_AGENT_RECIPE_SCHEMA_VERSION
+                        .to_string(),
+                    name: "r".into(),
+                    capabilities: vec!["shell".into()],
+                    workspaces: vec![],
+                    priority: crate::state::Priority::P1,
+                },
+                ts: 1,
+            },
+            Event::SuccessionOccurred {
+                goal_id: "g".into(),
+                primary: "p".into(),
+                backup: "b".into(),
+                reason: "offline".into(),
+                ts: 1,
+            },
+            Event::ReplanRuleSetUpdated {
+                goal_id: "g".into(),
+                rule_set_version:
+                    crate::decision::goal_frontier::replan_rules::DEFAULT_REPLAN_RULE_SET_VERSION
+                        .to_string(),
+                rule_ids: vec!["r1".into()],
+                ts: 1,
+            },
+            Event::WorkerStopped {
+                goal_id: "g".into(),
+                agent_id: Some("a".into()),
+                ts: 1,
+            },
         ]
     }
 
@@ -8286,6 +8346,15 @@ mod cli_quirks_tests {
         let registry = build_cli_registry();
         let help = render_command_help(&registry, "nope-not-a-command", false);
         assert!(help.contains("unknown command"), "got: {help}");
+    }
+
+    #[test]
+    fn render_command_help_marks_experimental_commands() {
+        let mut registry = CommandRegistry::new();
+        let ops = registry.group("ops", "operations");
+        registry.command_experimental(ops, "doctor-x", "experimental probe", "doctor-x --goal G");
+        let help = render_command_help(&registry, "doctor-x", true);
+        assert!(help.contains("(experimental)"), "got: {help}");
     }
 
     #[test]
@@ -8956,6 +9025,44 @@ mod read_model_repair_cli_tests {
         let text = describe_event(&targeted);
         assert!(text.contains("worker-a"), "got: {text}");
     }
+
+    #[test]
+    fn describe_event_renders_anonymous_agent_fallbacks() {
+        let stopped = describe_event(&Event::WorkerStopped {
+            goal_id: "g1".to_string(),
+            agent_id: None,
+            ts: 1,
+        });
+        assert!(
+            stopped.contains("worker_stopped agent=broadcast"),
+            "got: {stopped}"
+        );
+
+        let no_progress = describe_event(&Event::TurnNoProgress {
+            goal_id: "g1".to_string(),
+            todo_id: "t1".to_string(),
+            agent_id: None,
+            idle_secs: 900,
+            tool_calls_total: 0,
+            ts: 1,
+        });
+        assert!(
+            no_progress.contains("agent=anonymous"),
+            "got: {no_progress}"
+        );
+
+        let heartbeat = describe_event(&Event::HeartbeatReceiptRecorded {
+            goal_id: "g1".to_string(),
+            agent_id: None,
+            turn_instance_id: "ti".to_string(),
+            todo_id: None,
+            decision: "run".to_string(),
+            reason_code: String::new(),
+            ts: 1,
+        });
+        assert!(heartbeat.contains("agent=anonymous"), "got: {heartbeat}");
+        assert!(heartbeat.contains("todo=-"), "got: {heartbeat}");
+    }
 }
 #[cfg(test)]
 mod event_touch_filter_tests {
@@ -9392,5 +9499,56 @@ mod todo_verify_hint_tests {
         let (stopped_m, off_m) = super::worker_stop_requested(&missing, 7, Some("worker-a"));
         assert!(!stopped_m);
         assert_eq!(off_m, 7);
+    }
+
+    #[test]
+    fn worker_stop_requested_read_error_and_foreign_agent_arms() {
+        let dir = tempfile::tempdir().unwrap();
+        let events = dir.path().join("events.jsonl");
+
+        // Non-UTF8 content → read_to_string fails → no stop, offset unchanged.
+        std::fs::write(&events, [0xffu8, 0xfe, 0xfd]).unwrap();
+        let (stopped, off) = super::worker_stop_requested(&events, 0, Some("worker-a"));
+        assert!(!stopped);
+        assert_eq!(off, 0);
+
+        // A non-JSON line is skipped; a stop targeting a NAMED worker is
+        // ignored by an anonymous caller (agent_id None).
+        std::fs::write(
+            &events,
+            "{broken\n{\"kind\":\"worker_stopped\",\"agent_id\":\"worker-a\",\"ts\":1}\n",
+        )
+        .unwrap();
+        let (stopped_anon, _) = super::worker_stop_requested(&events, 0, None);
+        assert!(!stopped_anon, "anonymous caller ignores targeted stops");
+    }
+
+    #[test]
+    fn scan_worker_sessions_skips_bad_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let runs = dir.path().join("runs");
+        std::fs::create_dir_all(&runs).unwrap();
+
+        // Path filter: a non-`.live.jsonl` file and a directory are skipped.
+        std::fs::write(runs.join("notes.txt"), "not a run\n").unwrap();
+        std::fs::create_dir_all(runs.join("subdir")).unwrap();
+        // Non-UTF8 content → read_to_string fails → skipped.
+        std::fs::write(runs.join("bad.live.jsonl"), [0xffu8, 0xfe, 0xfd]).unwrap();
+        // Empty file → no first line → skipped.
+        std::fs::write(runs.join("empty.live.jsonl"), "").unwrap();
+        // Non-JSON first line → skipped.
+        std::fs::write(runs.join("broken.live.jsonl"), "{broken\n").unwrap();
+        // run_header with no agent_id → skipped.
+        std::fs::write(
+            runs.join("noagent.live.jsonl"),
+            "{\"type\":\"run_header\",\"goal_id\":\"g1\"}\n",
+        )
+        .unwrap();
+
+        let sessions = super::scan_worker_sessions(&runs, "g1");
+        assert!(
+            sessions.is_empty(),
+            "all bad files must be skipped: {sessions:?}"
+        );
     }
 }
