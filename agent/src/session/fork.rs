@@ -175,7 +175,7 @@ fn for_each_entry<'a>(entries: &'a [SessionEntry], from_id: &str) -> Vec<&'a Ses
 mod tests {
     use super::*;
     use crate::compaction::{CompactionTrigger, ContextCheckpoint};
-    use crate::session::entry::{ENTRY_TYPE_ASSISTANT, ENTRY_TYPE_USER};
+    use crate::session::entry::{ENTRY_TYPE_ASSISTANT, ENTRY_TYPE_COMPACTION, ENTRY_TYPE_USER};
     use crate::session::manager::Manager;
     use crate::session::projection::{agent_message_to_entry, entries_to_agent_messages};
     use crate::session::run_journal::RUN_STATE_COMPLETED;
@@ -416,5 +416,89 @@ mod tests {
             .entries
             .iter()
             .any(|entry| Some(entry.id.as_str()) == remapped.cutoff_entry_id.as_deref()));
+    }
+
+    #[test]
+    fn fork_keeps_compaction_entry_with_non_object_content() {
+        let mut parent = Session::new("/tmp/test", "m", "");
+        let user = make_entry("u1", ENTRY_TYPE_USER, "user", "hi");
+        let cp = make_entry("cp", ENTRY_TYPE_COMPACTION, "system", "not-an-object");
+        let a1 = make_entry("a1", ENTRY_TYPE_ASSISTANT, "assistant", "answer");
+        parent.entries = vec![user, cp, a1.clone()];
+        let forked = fork_session(&parent, &a1.id);
+        // Non-object compaction content → early `return true` keeps the entry.
+        assert_eq!(
+            forked
+                .entries
+                .iter()
+                .filter(|e| e.entry_type == ENTRY_TYPE_COMPACTION)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn fork_keeps_compaction_entry_with_legacy_schema_version() {
+        let mut parent = Session::new("/tmp/test", "m", "");
+        let user = make_entry("u1", ENTRY_TYPE_USER, "user", "hi");
+        let mut cp = make_entry("cp", ENTRY_TYPE_COMPACTION, "system", "x");
+        cp.content = Some(serde_json::json!({ "schema_version": 1 }));
+        let a1 = make_entry("a1", ENTRY_TYPE_ASSISTANT, "assistant", "answer");
+        parent.entries = vec![user, cp, a1.clone()];
+        let forked = fork_session(&parent, &a1.id);
+        // Non-v2 schema checkpoint is kept untouched.
+        assert_eq!(
+            forked
+                .entries
+                .iter()
+                .filter(|e| e.entry_type == ENTRY_TYPE_COMPACTION)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn fork_drops_v2_compaction_missing_range_key() {
+        let mut parent = Session::new("/tmp/test", "m", "");
+        let user = make_entry("u1", ENTRY_TYPE_USER, "user", "hi");
+        let mut cp = make_entry("cp", ENTRY_TYPE_COMPACTION, "system", "x");
+        cp.content = Some(serde_json::json!({ "schema_version": 2, "cutoff_entry_id": "u1" }));
+        let a1 = make_entry("a1", ENTRY_TYPE_ASSISTANT, "assistant", "answer");
+        parent.entries = vec![user, cp, a1.clone()];
+        let forked = fork_session(&parent, &a1.id);
+        // A v2 checkpoint missing one range key is dropped.
+        assert_eq!(
+            forked
+                .entries
+                .iter()
+                .filter(|e| e.entry_type == ENTRY_TYPE_COMPACTION)
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn fork_drops_v2_compaction_referencing_out_of_fork_id() {
+        let mut parent = Session::new("/tmp/test", "m", "");
+        let user = make_entry("u1", ENTRY_TYPE_USER, "user", "hi");
+        let mut cp = make_entry("cp", ENTRY_TYPE_COMPACTION, "system", "x");
+        cp.content = Some(serde_json::json!({
+            "schema_version": 2,
+            "covered_from_entry_id": "u1",
+            "cutoff_entry_id": "not-in-fork"
+        }));
+        let a1 = make_entry("a1", ENTRY_TYPE_ASSISTANT, "assistant", "answer");
+        parent.entries = vec![user, cp, a1.clone()];
+        let forked = fork_session(&parent, &a1.id);
+        // A v2 checkpoint whose range references an id absent from the fork is
+        // dropped rather than leaving a dangling cutoff.
+        assert_eq!(
+            forked
+                .entries
+                .iter()
+                .filter(|e| e.entry_type == ENTRY_TYPE_COMPACTION)
+                .count(),
+            0
+        );
     }
 }
