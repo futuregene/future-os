@@ -1062,6 +1062,113 @@ mod tests {
     }
 
     #[test]
+    fn label_helpers_cover_every_variant() {
+        use crate::state::{TaskClass, TodoStatus};
+        for (class, label) in [
+            (TaskClass::Advancement, "advancement"),
+            (TaskClass::UserGate, "user_gate"),
+            (TaskClass::UserAction, "user_action"),
+            (TaskClass::Monitor, "monitor"),
+            (TaskClass::Blocker, "blocker"),
+        ] {
+            let mut t = Todo::advancement("t", "x");
+            t.class = class;
+            assert_eq!(class_label(&t), label);
+        }
+        for (status, label) in [
+            (TodoStatus::Open, "open"),
+            (TodoStatus::Done, "done"),
+            (TodoStatus::Superseded, "superseded"),
+            (TodoStatus::Deferred, "deferred"),
+            (TodoStatus::Blocked, "blocked"),
+        ] {
+            let mut t = Todo::advancement("t", "x");
+            t.status = status;
+            assert_eq!(status_label(&t), label);
+        }
+    }
+
+    #[test]
+    fn agent_views_infer_heartbeat_and_lease_agents() {
+        let mut goal = Goal::new("g", "o", "/tmp");
+        goal.register_agent("a1", vec!["shell".to_string()]);
+        // Heartbeat-only agent (never registered) + lease-inferred agent.
+        goal.scheduler_heartbeats.insert("hb_only".to_string(), 100);
+        let mut leased = Todo::advancement("T1", "work");
+        let now = now_epoch();
+        leased.claimed_by = Some("lease_only".to_string());
+        leased.lease_expires_at = Some(now + 60);
+        goal.add(leased);
+        let mut expired = Todo::advancement("T2", "expired lease");
+        expired.claimed_by = Some("lease_only".to_string());
+        expired.lease_expires_at = Some(now.saturating_sub(1));
+        goal.add(expired);
+
+        let views = agent_views(&goal, now);
+        let ids: Vec<&str> = views.iter().map(|v| v.id.as_str()).collect();
+        assert!(ids.contains(&"a1"));
+        assert!(ids.contains(&"hb_only"));
+        assert!(ids.contains(&"lease_only"));
+
+        let hb = views.iter().find(|v| v.id == "hb_only").unwrap();
+        assert_eq!(hb.last_heartbeat, Some(100));
+        assert!(hb.heartbeat_age_secs.is_some());
+
+        let lease = views.iter().find(|v| v.id == "lease_only").unwrap();
+        assert_eq!(lease.active_leases, vec!["T1".to_string()]);
+    }
+
+    #[test]
+    fn scan_active_runs_skips_non_live_non_header_and_foreign() {
+        let root = tempfile::tempdir().unwrap();
+        let p = root.path();
+        let runs = p.join("runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        // Not a .jsonl file.
+        std::fs::write(runs.join("note.txt"), b"x").unwrap();
+        // Not a .live.jsonl (missing .live stem).
+        std::fs::write(runs.join("plain.jsonl"), b"{}").unwrap();
+        // Unreadable JSON lines are skipped.
+        std::fs::write(runs.join("junk.live.jsonl"), b"not-json\n").unwrap();
+        // A foreign goal header.
+        std::fs::write(
+            runs.join("foreign.live.jsonl"),
+            b"{\"type\":\"run_header\",\"goal_id\":\"other\",\"agent_id\":\"a\",\"wall_ts\":1}\n",
+        )
+        .unwrap();
+        // A run with no agent_id header field is still projected (agent_id
+        // becomes None — the header carries no agent to map).
+        std::fs::write(
+            runs.join("noagent.live.jsonl"),
+            b"{\"type\":\"run_header\",\"goal_id\":\"g1\",\"wall_ts\":1}\n",
+        )
+        .unwrap();
+        // A valid run with usage string credit_cost + agent_end.
+        std::fs::write(
+            runs.join("good.live.jsonl"),
+            concat!(
+                "{\"type\":\"run_header\",\"goal_id\":\"g1\",\"agent_id\":\"a1\",\"session_id\":\"s\",\"run_id\":\"r\",\"todo_id\":\"t\",\"wall_ts\":100}\n",
+                "{\"type\":\"usage\",\"wall_ts\":101,\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"credit_cost\":\"0.5\"}}\n",
+                "{\"type\":\"agent_end\",\"wall_ts\":102}\n",
+            ),
+        )
+        .unwrap();
+
+        let views = scan_active_runs(p.to_str().unwrap(), "g1");
+        assert_eq!(views.len(), 2);
+        let v = views
+            .iter()
+            .find(|v| v.agent_id.as_deref() == Some("a1"))
+            .unwrap();
+        assert_eq!(v.tokens_in, 5);
+        assert_eq!(v.tokens_out, 2);
+        assert!(!v.active, "agent_end marks finished");
+        assert!((v.cost - 0.5).abs() < 1e-9);
+        let noagent = views.iter().find(|v| v.agent_id.is_none()).unwrap();
+        assert_eq!(noagent.run_id, "noagent");
+    }
+
+    #[test]
     fn replay_all_skips_a_corrupt_ledger() {
         let (store, _dir, gid) = open_store_with_goal();
         // Truncate the ledger so replay fails → the goal is skipped.
