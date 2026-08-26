@@ -2447,6 +2447,30 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
     }
 
     #[test]
+    fn additional_permissions_empty_write_falls_through_to_manual_shell() {
+        // An empty write list must NOT enter the Windows-capability path — it
+        // falls through to the normal manual-tier shell approval.
+        let ws = temp_ws("windows-capability-empty");
+        let sandbox = enabled(&ws);
+        let gate = ApprovalGate::default();
+        let broadcaster = SseBroadcaster::new();
+        let result = gate.request(
+            &broadcaster,
+            "session",
+            &ws,
+            "shell",
+            "tool",
+            &serde_json::json!({
+                "command": "ls -la",
+                "additional_permissions": {"write": []}
+            }),
+            &sandbox,
+        );
+        // "ls -la" is read-only → auto-allowed without a prompt.
+        assert!(result.is_none());
+    }
+
+    #[test]
     fn additional_permissions_invalid_shape_is_rejected() {
         // The additional_permissions field must deserialize into the
         // AdditionalPermissions struct; a malformed payload fails fast with a

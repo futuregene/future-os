@@ -40,6 +40,7 @@ fn sessionless_commands_do_not_require_session_id() {
     let sessionless = [
         "get_agent_info",
         "list_models",
+        "list_providers",
         "list_sessions",
         "list_streaming_sessions",
         "new_session",

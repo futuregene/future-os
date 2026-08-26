@@ -1117,6 +1117,18 @@ mod tests {
         }
     }
 
+    struct FailingProvider;
+
+    #[async_trait::async_trait]
+    impl LLMProvider for FailingProvider {
+        async fn stream_model(
+            &self,
+            _request: ModelRequest,
+        ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
+            Err(anyhow::anyhow!("compaction provider failed"))
+        }
+    }
+
     struct BlockingProvider {
         started: Arc<Notify>,
         release: Arc<Notify>,
@@ -2368,6 +2380,104 @@ mod tests {
         let result = session.compact("").unwrap();
         assert_eq!(result["messagesRemoved"], 0);
         assert_eq!(result["summary"], "");
+    }
+
+    #[test]
+    fn set_model_rejects_unknown_api_protocol() {
+        let mut session = make_test_session("bad-api");
+        session.model_registry.write().test_insert(crate::models::Model {
+            id: "bad".to_string(),
+            name: "Bad".to_string(),
+            provider: "test".to_string(),
+            api: "not-a-real-protocol".to_string(),
+            base_url: String::new(),
+            api_key: String::new(),
+            reasoning: false,
+            input: vec!["text".to_string()],
+            output: vec!["text".to_string()],
+            context_window: 100_000,
+            max_tokens: 4_096,
+            ..Default::default()
+        });
+        // Resolution succeeds (the model is in the registry) but the unknown
+        // API protocol makes provider construction fail → the error propagates.
+        assert!(session.set_model("test/bad").is_err());
+    }
+
+    #[test]
+    fn compact_provider_failure_broadcasts_and_errors() {
+        let mut session = make_test_session("compact-fail");
+        session.agent_loop.try_write().unwrap().provider = Arc::new(FailingProvider);
+        session.model = "glm-4.5v".to_string();
+        session
+            .last_prompt_tokens
+            .store(50_000, std::sync::atomic::Ordering::Relaxed);
+        {
+            let mut messages = session.messages.write();
+            for i in 0..10 {
+                let role = if i % 2 == 0 { "user" } else { "assistant" };
+                messages.push(crate::types::AgentMessage {
+                    role: role.to_string(),
+                    content: vec![crate::types::ContentBlock::text(
+                        format!("message {i} ").repeat(2000),
+                    )],
+                    ..Default::default()
+                });
+            }
+            for message in messages.iter_mut() {
+                message.ensure_journal_entry_id();
+            }
+        }
+        // The compaction summarizer fails → the error is broadcast and returned.
+        let result = session.compact("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn compact_checkpoint_commit_failure_broadcasts_and_errors() {
+        let mut session = make_test_session("compact-commit-fail");
+        session.agent_loop.try_write().unwrap().provider = Arc::new(SummaryProvider);
+        session.model = "glm-4.5v".to_string();
+        session
+            .last_prompt_tokens
+            .store(50_000, std::sync::atomic::Ordering::Relaxed);
+        {
+            let mut messages = session.messages.write();
+            for i in 0..10 {
+                let role = if i % 2 == 0 { "user" } else { "assistant" };
+                messages.push(crate::types::AgentMessage {
+                    role: role.to_string(),
+                    content: vec![crate::types::ContentBlock::text(
+                        format!("message {i} ").repeat(2000),
+                    )],
+                    ..Default::default()
+                });
+            }
+            for message in messages.iter_mut() {
+                message.ensure_journal_entry_id();
+            }
+        }
+        // Compaction produces a checkpoint, but persisting it fails.
+        session.persistence.fail_next_commit();
+        let result = session.compact("");
+        assert!(result.is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn key_recording_provider_streams_empty() {
+        use tokio_stream::StreamExt;
+        let observed = Arc::new(parking_lot::Mutex::new(String::new()));
+        let provider = KeyRecordingProvider(observed.clone());
+        let mut stream = provider
+            .stream_model(ModelRequest {
+                model: "mock".into(),
+                system_prompt: String::new(),
+                messages: vec![],
+                tools: vec![],
+            })
+            .await
+            .unwrap();
+        assert!(stream.next().await.is_none());
     }
 
     // ─── add_session_rule ───────────────────────────────────────────────────
