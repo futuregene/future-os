@@ -419,6 +419,15 @@ mod tests {
             .contains("Rate limited"));
     }
 
+    #[test]
+    fn stream_idle_timeout_defaults_when_override_absent() {
+        let _env = IDLE_TIMEOUT_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        std::env::remove_var("FUTURE_TEST_STREAM_IDLE_SECS");
+        assert_eq!(stream_idle_timeout_secs(), STREAM_IDLE_TIMEOUT_SECS);
+    }
+
     // ─── mock HTTP server ───────────────────────────────────────────────────
     /// One-shot HTTP server: accepts a single request, records its body, and
     /// replies with a canned (status, content_type, body). Loops so aborted
@@ -837,5 +846,283 @@ mod tests {
         })
         .await
         .expect("consumer drop should close the upstream stream promptly");
+    }
+
+    #[tokio::test]
+    async fn stream_model_reports_body_read_errors() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 16 * 1024];
+            let _ = stream.read(&mut request);
+            // Promise more bytes than we send, then close: reqwest reports a
+            // body read error while draining the response stream.
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 100\r\nConnection: close\r\n\r\ndata: x",
+                )
+                .unwrap();
+            stream.flush().unwrap();
+        });
+
+        let client = Client::from_target(chat_target(
+            &format!("http://127.0.0.1:{port}"),
+            "secret",
+            None,
+            None,
+        ));
+        let events: Vec<_> = client
+            .stream_model(canonical_request())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        assert!(matches!(
+            events.as_slice(),
+            [schema::ModelStreamEvent::Error { .. }]
+        ));
+    }
+
+    #[tokio::test]
+    async fn stream_model_flushes_buffered_frame_on_clean_eof() {
+        // No trailing blank line: the final SSE frame is only flushed by
+        // `decoder.finish()` once the upstream stream ends without a terminal
+        // event, and `finish_stream` then emits an incomplete finish.
+        let server = mock_server(|_| {
+            (
+                200,
+                "text/event-stream",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}".into(),
+            )
+        });
+        let client = Client::from_target(chat_target(&server.base_url, "secret", None, None));
+        let events: Vec<_> = client
+            .stream_model(canonical_request())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        assert!(events.iter().any(|event| matches!(
+            event,
+            schema::ModelStreamEvent::TextDelta { text, .. } if text == "hi"
+        )));
+        assert!(matches!(
+            events.last(),
+            Some(schema::ModelStreamEvent::Finish {
+                reason: schema::FinishReason::Incomplete,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn stream_model_flushes_done_marker_without_trailing_newline() {
+        // A trailing `[DONE]` without a blank line is only decoded by
+        // `decoder.finish()`, and marks the stream terminal so `finish_stream`
+        // is skipped.
+        let server = mock_server(|_| (200, "text/event-stream", "data: [DONE]".into()));
+        let client = Client::from_target(chat_target(&server.base_url, "secret", None, None));
+        let events: Vec<_> = client
+            .stream_model(canonical_request())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        assert!(matches!(
+            events.as_slice(),
+            [schema::ModelStreamEvent::Finish {
+                reason: schema::FinishReason::Incomplete,
+                ..
+            }]
+        ));
+    }
+
+    #[tokio::test]
+    async fn stream_model_ignores_invalid_json_in_buffered_tail() {
+        // Invalid JSON flushed by `decoder.finish()` fails `decode_frame`, which
+        // is silently skipped before `finish_stream` emits an incomplete finish.
+        let server = mock_server(|_| (200, "text/event-stream", "data: {not json}".into()));
+        let client = Client::from_target(chat_target(&server.base_url, "secret", None, None));
+        let events: Vec<_> = client
+            .stream_model(canonical_request())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        assert!(matches!(
+            events.as_slice(),
+            [schema::ModelStreamEvent::Finish {
+                reason: schema::FinishReason::Incomplete,
+                ..
+            }]
+        ));
+    }
+
+    #[tokio::test]
+    async fn stream_model_ignores_invalid_utf8_in_buffered_tail() {
+        // Invalid UTF-8 flushed by `decoder.finish()` makes `finish()` itself
+        // fail; the stream still terminates as incomplete.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 16 * 1024];
+            let _ = stream.read(&mut request);
+            let body = [0xffu8, 0xfe];
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+            stream.write_all(&body).unwrap();
+            stream.flush().unwrap();
+        });
+
+        let client = Client::from_target(chat_target(
+            &format!("http://127.0.0.1:{port}"),
+            "secret",
+            None,
+            None,
+        ));
+        let events: Vec<_> = client
+            .stream_model(canonical_request())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        assert!(matches!(
+            events.as_slice(),
+            [schema::ModelStreamEvent::Finish {
+                reason: schema::FinishReason::Incomplete,
+                ..
+            }]
+        ));
+    }
+
+    #[tokio::test]
+    async fn stream_model_reports_invalid_utf8_in_sse() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 16 * 1024];
+            let _ = stream.read(&mut request);
+            let body = [0xffu8, 0xfe, b'\n'];
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+            stream.write_all(&body).unwrap();
+            stream.flush().unwrap();
+        });
+
+        let client = Client::from_target(chat_target(
+            &format!("http://127.0.0.1:{port}"),
+            "secret",
+            None,
+            None,
+        ));
+        let events: Vec<_> = client
+            .stream_model(canonical_request())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        assert!(matches!(
+            events.as_slice(),
+            [schema::ModelStreamEvent::Error { message }]
+                if message.contains("invalid UTF-8")
+        ));
+    }
+
+    #[test]
+    fn normalize_http_error_ctx_limit_variants_and_generic_failure() {
+        // Each short-circuit OR operand that classifies a 400 as CTX_LIMIT.
+        assert!(normalize_http_error(400, "maximum context", "m", 0)
+            .to_string()
+            .starts_with("[CTX_LIMIT]"));
+        assert!(normalize_http_error(400, "context_length issue", "m", 0)
+            .to_string()
+            .starts_with("[CTX_LIMIT]"));
+        assert!(normalize_http_error(400, "too long", "m", 0)
+            .to_string()
+            .starts_with("[CTX_LIMIT]"));
+        // Generic failure arm.
+        assert!(normalize_http_error(500, "boom", "m", 0)
+            .to_string()
+            .contains("HTTP 500"));
+    }
+
+    #[tokio::test]
+    async fn mock_server_survives_aborted_connections() {
+        let server = mock_server_with_timeout(
+            |_| (200, "text/event-stream", "data: [DONE]\n\n".into()),
+            std::time::Duration::from_millis(100),
+        );
+        let addr = server.base_url.clone();
+        let host_port = addr.strip_prefix("http://").unwrap();
+        use std::io::Write;
+
+        // (1) Connect then close immediately: EOF during header read (Ok(0)).
+        drop(std::net::TcpStream::connect(host_port).unwrap());
+
+        // (2) Partial header then stall past read timeout: Err during header read.
+        {
+            let mut stream = std::net::TcpStream::connect(host_port).unwrap();
+            stream.write_all(b"POST / HTTP/1.1\r\nHost: x\r\n").unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+
+        // (3) Full headers + partial body then close: EOF during body read.
+        {
+            let mut stream = std::net::TcpStream::connect(host_port).unwrap();
+            stream
+                .write_all(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 50\r\n\r\npartial")
+                .unwrap();
+        }
+
+        // (4) Full headers then a delayed body then close: Ok(n) + EOF in body read.
+        {
+            let mut stream = std::net::TcpStream::connect(host_port).unwrap();
+            stream
+                .write_all(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 50\r\n\r\n")
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            stream.write_all(b"partial").unwrap();
+        }
+
+        // (5) Full headers + partial body then stall: Err during body read.
+        {
+            let mut stream = std::net::TcpStream::connect(host_port).unwrap();
+            stream
+                .write_all(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 50\r\n\r\npartial")
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        // A real request still succeeds after all the aborted probes.
+        let client = Client::from_target(chat_target(&server.base_url, "secret", None, None));
+        let events: Vec<_> = client
+            .stream_model(canonical_request())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        assert!(!events.is_empty());
     }
 }
