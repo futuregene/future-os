@@ -293,7 +293,16 @@ impl Loop {
                             // derived from the app template (model_registry =
                             // None, e.g. tests) fall back to a fresh Registry
                             // so behaviour matches the pre-cache code.
-                            let provider_limit_phase = crate::compaction::CompactionPhase::MidTurn;
+                            // A rejected first prompt is still pre-turn: no
+                            // model response or tool result exists yet, so do
+                            // not replace that user input with a lossy
+                            // checkpoint. Once a completed model/tool round
+                            // exists, recovery may summarize the active turn.
+                            let provider_limit_phase = if turn == 0 {
+                                crate::compaction::CompactionPhase::PreTurn
+                            } else {
+                                crate::compaction::CompactionPhase::MidTurn
+                            };
                             let provider_limit_operation_id =
                                 format!("cmp_{}", crate::utils::generate_entry_id());
                             let Some(manager) = &self.context_manager else {

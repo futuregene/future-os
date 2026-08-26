@@ -1,3 +1,10 @@
+import {
+  clearPendingContinuation,
+  loadPendingContinuation,
+  savePendingContinuation,
+  type PendingContinuation,
+} from "../pendingContinuationStorage";
+
 const mockData = new Map<string, string>();
 
 jest.mock("@react-native-async-storage/async-storage", () => ({
@@ -9,13 +16,6 @@ jest.mock("@react-native-async-storage/async-storage", () => ({
     mockData.delete(key);
   }),
 }));
-
-import {
-  clearPendingContinuation,
-  loadPendingContinuation,
-  savePendingContinuation,
-  type PendingContinuation,
-} from "../pendingContinuationStorage";
 
 const pending: PendingContinuation = {
   version: 1,
