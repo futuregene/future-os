@@ -132,4 +132,13 @@ describe("session draft storage", () => {
     await clearSessionDraftIfMatches("s1", { text: "hello", attachments: [attachment] });
     expect(mockedAsync.removeItem).not.toHaveBeenCalled();
   });
+
+  test("cold acknowledgement keeps the draft when the attachments differ", async () => {
+    const different = { ...attachment, transferSize: 999 };
+    mockedAsync.getItem.mockResolvedValueOnce(
+      JSON.stringify({ version: 1, text: "hello", attachments: [attachment] }),
+    );
+    await clearSessionDraftIfMatches("s1", { text: "hello", attachments: [different] });
+    expect(mockedAsync.removeItem).not.toHaveBeenCalled();
+  });
 });

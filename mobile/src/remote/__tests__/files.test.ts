@@ -1043,4 +1043,127 @@ describe("download & preview cache", () => {
       "transfer",
     );
   });
+
+  test("downloadPrepared aborts during the retry backoff timer", async () => {
+    const i: DownloadInfo = { ...info, size: 8, contentHash: "x" };
+    const client = mockClient();
+    const controller = new AbortController();
+    client.downloadChunk.mockRejectedValue(new Error("not_connected"));
+    client.request.mockResolvedValue({ success: true, data: {} });
+
+    await expect(
+      downloadPrepared(client as unknown as RemoteClient, i, undefined, controller.signal, () =>
+        setTimeout(() => controller.abort(), 0),
+      ),
+    ).rejects.toThrow("transfer_cancelled");
+    expect(client.request).toHaveBeenCalledWith(
+      { type: "download_cancel", transferId: "t1" },
+      "transfer",
+    );
+  });
+
+  test("prepareDownload cancels when aborted just after the response arrives", async () => {
+    const client = mockClient();
+    const controller = new AbortController();
+    let resolveRequest: ((value: unknown) => void) | undefined;
+    client.request.mockImplementation(
+      () =>
+        new Promise(resolve => {
+          resolveRequest = resolve;
+        }),
+    );
+
+    const pending = prepareDownload(
+      client as unknown as RemoteClient,
+      "s1",
+      { path: "/tmp/a.jpg", name: "a.jpg" },
+      "preview",
+      controller.signal,
+    );
+    // Resolve the prepare RPC, then abort in a microtask that runs after
+    // abortable's success handler but before prepareDownload resumes, so the
+    // defensive post-response abort check observes the cancellation.
+    resolveRequest!({ success: true, data: info });
+    queueMicrotask(() => controller.abort());
+
+    await expect(pending).rejects.toThrow("transfer_cancelled");
+    expect(client.request).toHaveBeenCalledWith(
+      { type: "download_cancel", transferId: "t1" },
+      "transfer",
+    );
+  });
+
+  test("prepareDownload cancels when aborted during cache verification", async () => {
+    mockFS.__set(cacheUri(info), { bytes: new Uint8Array(8) });
+    const client = mockClient();
+    const controller = new AbortController();
+    client.request.mockResolvedValue({ success: true, data: info });
+    mockedDigest.mockImplementationOnce(async () => {
+      controller.abort();
+      return new Uint8Array(
+        createHash("sha256")
+          .update(Buffer.from(new Uint8Array(8)))
+          .digest(),
+      );
+    });
+
+    await expect(
+      prepareDownload(
+        client as unknown as RemoteClient,
+        "s1",
+        { path: "/tmp/a.jpg", name: "a.jpg" },
+        "preview",
+        controller.signal,
+      ),
+    ).rejects.toThrow("transfer_cancelled");
+    expect(client.request).toHaveBeenCalledWith(
+      { type: "download_cancel", transferId: "t1" },
+      "transfer",
+    );
+  });
+
+  test("downloadPrepared cancels when aborted during cache verification", async () => {
+    mockFS.__set(cacheUri(info), { bytes: new Uint8Array(8) });
+    const client = mockClient();
+    const controller = new AbortController();
+    client.request.mockResolvedValue({ success: true, data: {} });
+    mockedDigest.mockImplementationOnce(async () => {
+      controller.abort();
+      return new Uint8Array(
+        createHash("sha256")
+          .update(Buffer.from(new Uint8Array(8)))
+          .digest(),
+      );
+    });
+
+    await expect(
+      downloadPrepared(client as unknown as RemoteClient, info, undefined, controller.signal),
+    ).rejects.toThrow("transfer_cancelled");
+    expect(client.request).toHaveBeenCalledWith(
+      { type: "download_cancel", transferId: "t1" },
+      "transfer",
+    );
+  });
+
+  test("downloadPrepared cancels when aborted on the final progress callback", async () => {
+    const fileBytes = new Uint8Array([1, 2, 3, 4]);
+    const i: DownloadInfo = { ...info, size: 4, chunkBytes: 4, contentHash: sha256Hex(fileBytes) };
+    const client = mockClient();
+    client.downloadChunk.mockResolvedValue(fileBytes);
+    client.request.mockResolvedValue({ success: true, data: {} });
+    const controller = new AbortController();
+
+    await expect(
+      downloadPrepared(
+        client as unknown as RemoteClient,
+        i,
+        () => controller.abort(),
+        controller.signal,
+      ),
+    ).rejects.toThrow("transfer_cancelled");
+    expect(client.request).toHaveBeenCalledWith(
+      { type: "download_cancel", transferId: "t1" },
+      "transfer",
+    );
+  });
 });

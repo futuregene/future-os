@@ -523,6 +523,50 @@ describe("SyncEngine", () => {
     expect(h.timelineOf("s1").streaming).toBe(false);
   });
 
+  test("restartAll rebuilds every real lane from durable state", async () => {
+    const run = nextRunId();
+    const h = new Harness(run);
+    h.journal.add(agentStart(run, 0));
+    h.journal.add(textChunk(run, 1, "hello"));
+    h.journal.add(agentEnd(run, 2));
+
+    h.engine.event("s1", textChunk(run, 1, "hello"));
+    await h.settle();
+    expect(h.textOf("s1")).toBe("hello");
+
+    // A reconnect rebuilds every real lane (the draft lane "" is skipped).
+    h.engine.restartAll("reconnect");
+    await h.settle();
+    expect(h.textOf("s1")).toBe("hello");
+    expect(h.timelineOf("s1").streaming).toBe(false);
+  });
+
+  test("a step during retry backoff defers to the pending retry timer", async () => {
+    const run = nextRunId();
+    const h = new Harness(run);
+    h.journal.add(agentStart(run, 0));
+    h.journal.add(textChunk(run, 1, "a"));
+    h.engine.event("s1", agentStart(run, 0));
+    h.engine.event("s1", textChunk(run, 1, "a"));
+    await h.settle();
+
+    h.journal.add(textChunk(run, 2, "b"));
+    h.journal.add(textChunk(run, 3, "c"));
+    h.journal.add(agentEnd(run, 4));
+    h.replayFailures = 1;
+    h.engine.event("s1", textChunk(run, 3, "c"));
+    h.engine.event("s1", agentEnd(run, 4));
+    await h.settle();
+
+    // The first reconcile failed and armed a retry timer. A mutation arriving
+    // inside the backoff window re-runs step(), which must defer to the pending
+    // timer (retryNotBefore > now) instead of re-entering the reconcile.
+    h.engine.mutate("s1", tl => tl);
+    await new Promise(resolve => setTimeout(resolve, 650));
+    expect(h.textOf("s1")).toBe("abc");
+    expect(h.timelineOf("s1").streaming).toBe(false);
+  });
+
   test("full reconcile drops a live user mirror duplicating a durable prompt", async () => {
     const h = new Harness();
     h.history = {

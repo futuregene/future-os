@@ -1181,6 +1181,36 @@ describe("run failure parity with the desktop", () => {
     ]);
   });
 
+  test("history reload anchors an empty-content failed run's bubble at the tail", () => {
+    // A failed run whose user entry carries no text and no attachments leaves
+    // no user item to anchor behind, so its failure bubble is appended unanchored.
+    const timeline = timelineFromEntries([
+      { id: "e1", role: "user", content: "", meta: { run_id: "run-1" }, run_status: "failed" },
+    ]);
+    expect(timeline.items).toEqual([
+      expect.objectContaining({
+        id: "failed_run-1",
+        kind: "message",
+        role: "assistant",
+        failed: true,
+      }),
+    ]);
+  });
+
+  test("an error event before any other run event still produces the failed bubble", () => {
+    const state = applyStreamEvent(emptyTimeline(), {
+      type: "error",
+      data: JSON.stringify({ error: "boom" }),
+      runId: "run-1",
+      idx: 0,
+    });
+    const reply = state.items.find(item => item.kind === "message" && item.role === "assistant");
+    if (!reply || reply.kind !== "message") throw new Error("assistant bubble missing");
+    expect(reply.failed).toBe(true);
+    expect(reply.error).toBe("boom");
+    expect(reply.streaming).toBe(false);
+  });
+
   test("history reload keeps a partial assistant reply instead of a synthesized bubble", () => {
     const timeline = timelineFromEntries([
       { id: "e1", role: "user", content: "hi", meta: { run_id: "run-1" }, run_status: "failed" },
