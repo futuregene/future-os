@@ -179,6 +179,7 @@ mod tests {
                 }
             }),
             failure_kind: None,
+            truncation: None,
         }
     }
 

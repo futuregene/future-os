@@ -39,6 +39,7 @@ fn sample_record(state: &str) -> RunRecord {
         spend_source: None,
         validation: None,
         failure_kind: None,
+        truncation: None,
     }
 }
 
@@ -589,6 +590,84 @@ fn execute_turn_error_turn_skips_validator() {
         .unwrap();
         assert_eq!(record.terminal_state, "error");
         assert!(record.validation.is_none(), "failed turn never validates");
+    });
+}
+
+/// A1: an `incomplete` `agent_end` carrying the agent's own truncation block
+/// (turn/tool progress + how the cut was detected) is surfaced on the
+/// `RunRecord.truncation` field — distinguishing "cut off mid-work" from the
+/// loop's "stream closed without a terminal event" (which leaves it `None`).
+#[test]
+fn execute_turn_surfaces_agent_truncation_on_incomplete() {
+    rt().block_on(async {
+        let events = vec![ev(
+            "mock-run-1",
+            0,
+            "agent_end",
+            "{\"state\":\"incomplete\",\"reason\":\"incomplete\",\"truncation\":{\"turns_so_far\":0,\"output_len\":8,\"tool_calls_so_far\":3,\"detected_by\":\"finish_incomplete\"}}",
+        )];
+        let (addr, _) = spawn_mock(MockState {
+            events,
+            ..Default::default()
+        })
+        .await;
+        let mut client = AgentClient::connect(&addr).await.unwrap();
+        let (goal, todo) = sample_goal_with_todo();
+        let record = execute_turn(
+            &mut client,
+            "sess",
+            &goal,
+            None,
+            &todo,
+            1,
+            None,
+            true,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(record.terminal_state, "incomplete");
+        let trunc = record.truncation.expect("agent truncation surfaced");
+        assert_eq!(trunc["tool_calls_so_far"], 3);
+        assert_eq!(trunc["detected_by"], "finish_incomplete");
+    });
+}
+
+/// A1: an `incomplete` turn where the loop saw the event stream close without
+/// any `agent_end` leaves `truncation` `None` — it is the loop's own "no
+/// terminal event" case, not an agent-reported mid-work cut.
+#[test]
+fn execute_turn_leaves_truncation_none_without_agent_end() {
+    rt().block_on(async {
+        let events = vec![ev("mock-run-1", 0, "text_chunk", "{\"text\":\"partial\"}")];
+        let (addr, _) = spawn_mock(MockState {
+            events,
+            ..Default::default()
+        })
+        .await;
+        let mut client = AgentClient::connect(&addr).await.unwrap();
+        let (goal, todo) = sample_goal_with_todo();
+        let record = execute_turn(
+            &mut client,
+            "sess",
+            &goal,
+            None,
+            &todo,
+            1,
+            None,
+            true,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(record.terminal_state, "incomplete");
+        assert!(record.truncation.is_none(), "no agent_end → no truncation");
     });
 }
 

@@ -259,6 +259,7 @@ fn stale_latest_run_warns_and_clears() {
         spend_source: Some("run".to_string()),
         validation: None,
         failure_kind: None,
+        truncation: None,
     };
     record.recorded_at = 1_000;
     store.append_run("g1", &record).unwrap();

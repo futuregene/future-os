@@ -146,6 +146,7 @@ mod tests {
             spend_source: Some("run".to_string()),
             validation: None,
             failure_kind: None,
+            truncation: None,
         };
         let msg = compose_turn_message(&g, g.todo("T1").unwrap(), Some(&prev));
         assert!(msg.contains("Evidence from the previous turn (todo T0)"));

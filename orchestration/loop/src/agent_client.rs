@@ -33,6 +33,13 @@ pub struct RunSummary {
     /// usage payload from agent_end, when present.
     pub usage: Option<Value>,
     pub duration_ms: Option<i64>,
+    /// Sub-classification of an `incomplete` terminal state. Set from the
+    /// agent's `agent_end.truncation` block when the AGENT judged the model
+    /// stream truncated (it carries turn/tool progress); `None` when the turn
+    /// ended any other way OR when the loop saw the event stream close without
+    /// a terminal event (no `agent_end` at all — the loop's own "closed
+    /// without a state" case, distinct from an agent-reported truncation).
+    pub truncation: Option<Value>,
 }
 
 /// Cumulative token/cost accounting for a session (from get_state).
@@ -356,6 +363,7 @@ impl AgentClient {
             text: String::new(),
             usage: None,
             duration_ms: None,
+            truncation: None,
         };
         // O5: resume cursor (last event idx actually observed) and the
         // original gap error (carried if the retry also fails).
@@ -526,6 +534,10 @@ async fn consume_run_stream(
                     .to_string();
                 summary.usage = data.get("usage").cloned();
                 summary.duration_ms = data.get("duration_ms").and_then(|v| v.as_i64());
+                // The agent's own truncation verdict (model stream cut off
+                // mid-run) — carries turn/tool progress. Distinct from the
+                // loop's "stream closed without a terminal event" case below.
+                summary.truncation = data.get("truncation").cloned();
                 return StreamOutcome::Done;
             }
             "error" => {

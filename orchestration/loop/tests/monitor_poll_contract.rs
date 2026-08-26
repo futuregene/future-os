@@ -208,6 +208,7 @@ fn no_change_polls_never_enter_the_spend_ledger() {
         spend_source: Some("heartbeat".into()),
         validation: None,
         failure_kind: None,
+        truncation: None,
     };
     future_loop::executor::writeback(&mut goal, &record, Some(false), None);
     assert_eq!(goal.history.len(), 0, "no-change polls are quota-neutral");
@@ -217,6 +218,7 @@ fn no_change_polls_never_enter_the_spend_ledger() {
         spend_source: Some("heartbeat".into()),
         validation: None,
         failure_kind: None,
+        truncation: None,
         ..record
     };
     future_loop::executor::writeback(&mut goal, &record2, Some(true), None);
