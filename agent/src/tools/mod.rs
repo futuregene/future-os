@@ -2724,7 +2724,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)] // HOME must stay pinned across awaits
     #[tokio::test(flavor = "current_thread")]
     async fn shell_sandbox_denial_post_hoc_denied_returns_annotated_output() {
-        let _home_guard = crate::HOME_ENV_LOCK.lock().unwrap();
+        let _home_guard = crate::test_support::home_env_lock();
         let ws =
             std::env::temp_dir().join(format!("futureos-esc3-{}", crate::utils::generate_id()));
         std::fs::create_dir_all(&ws).unwrap();
