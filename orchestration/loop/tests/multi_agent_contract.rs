@@ -184,6 +184,111 @@ fn contract_validation_rejects_bad_handoff_rules_and_collectives() {
 }
 
 #[test]
+fn contract_validation_rejects_empty_identifiers() {
+    // Empty peer id.
+    let mut c = MultiAgentContract::default();
+    c.peers.insert("".into(), peer(None, &[], &[]));
+    assert!(contract_issues(&c)
+        .iter()
+        .any(|i| i.contains("peer agent id must be non-empty")));
+
+    // Empty backup_for target.
+    let mut c = MultiAgentContract::default();
+    c.peers.insert("a".into(), peer(Some(""), &[], &[]));
+    assert!(contract_issues(&c)
+        .iter()
+        .any(|i| i.contains("backup_for must be non-empty")));
+
+    // Empty handoff from_event / to_role.
+    let mut c = MultiAgentContract::default();
+    c.peers.insert("a".into(), peer(None, &[], &[]));
+    c.handoff_rules.push(HandoffRule {
+        from_event: "".into(),
+        to_role: "a".into(),
+    });
+    assert!(contract_issues(&c)
+        .iter()
+        .any(|i| i.contains("from_event must be non-empty")));
+    c.handoff_rules.clear();
+    c.handoff_rules.push(HandoffRule {
+        from_event: "ev".into(),
+        to_role: "".into(),
+    });
+    assert!(contract_issues(&c)
+        .iter()
+        .any(|i| i.contains("to_role must be non-empty")));
+
+    // Empty collective name.
+    let mut c = MultiAgentContract::default();
+    c.peers.insert("a".into(), peer(None, &[], &[]));
+    c.collectives.insert("".into(), vec!["a".into()]);
+    assert!(contract_issues(&c)
+        .iter()
+        .any(|i| i.contains("collective name must be non-empty")));
+
+    // Collective with no members.
+    let mut c = MultiAgentContract::default();
+    c.collectives.insert("c1".into(), vec![]);
+    assert!(contract_issues(&c)
+        .iter()
+        .any(|i| i.contains("must have at least one member")));
+
+    // Duplicate member within one collective.
+    let mut c = MultiAgentContract::default();
+    c.peers.insert("a".into(), peer(None, &[], &[]));
+    c.collectives.insert("c1".into(), vec!["a".into(), "a".into()]);
+    assert!(contract_issues(&c)
+        .iter()
+        .any(|i| i.contains("duplicate member `a`")));
+}
+
+#[test]
+fn successor_offline_threshold_reads_env() {
+    // Unset → default.
+    std::env::remove_var("FUTURE_LOOP_SUCCESSOR_OFFLINE_SECS");
+    assert_eq!(
+        future_loop::agents::multi_agent::successor_offline_threshold_secs(),
+        30 * 60
+    );
+    // Valid shrink.
+    std::env::set_var("FUTURE_LOOP_SUCCESSOR_OFFLINE_SECS", "5");
+    assert_eq!(
+        future_loop::agents::multi_agent::successor_offline_threshold_secs(),
+        5
+    );
+    // Non-numeric → default.
+    std::env::set_var("FUTURE_LOOP_SUCCESSOR_OFFLINE_SECS", "abc");
+    assert_eq!(
+        future_loop::agents::multi_agent::successor_offline_threshold_secs(),
+        30 * 60
+    );
+    // Non-positive → default.
+    std::env::set_var("FUTURE_LOOP_SUCCESSOR_OFFLINE_SECS", "0");
+    assert_eq!(
+        future_loop::agents::multi_agent::successor_offline_threshold_secs(),
+        30 * 60
+    );
+    std::env::remove_var("FUTURE_LOOP_SUCCESSOR_OFFLINE_SECS");
+}
+
+#[test]
+fn recipe_rejects_bad_schema_version() {
+    let root = tmp_root("recipe-schema");
+    let mut store = Store::open(&root).unwrap();
+    open_goal(&mut store, "g1");
+    let bad = AgentRecipe {
+        schema_version: "not-a-version".into(),
+        name: "worker".into(),
+        capabilities: vec![],
+        workspaces: vec![],
+        priority: Priority::P1,
+    };
+    let err = record_recipe(&mut store, "g1", &bad).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("schema_version must be"), "got: {msg}");
+}
+
+#[test]
 fn record_contract_fails_closed_on_invalid_and_persists_valid() {
     let root = tmp_root("contract");
     let mut store = Store::open(&root).unwrap();
