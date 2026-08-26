@@ -536,6 +536,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(store.root_path());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn check_root_writable_reports_failure_on_readonly_root() {
+        use std::os::unix::fs::PermissionsExt;
+        let store = tmp_store("readonly");
+        let root = store.root_path();
+        // Read-only root → the probe write fails → "NOT writable" branch.
+        let mut perms = std::fs::metadata(&root).unwrap().permissions();
+        perms.set_mode(0o555);
+        std::fs::set_permissions(&root, perms).unwrap();
+        let outcome = check_root_writable(&store);
+        assert!(!outcome.passed);
+        assert!(outcome.detail.contains("NOT writable"));
+        // Restore writability so the tempdir can be cleaned up.
+        let mut perms = std::fs::metadata(&root).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&root, perms).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn check_detail_covers_vacuous_healthy_and_failures() {
         assert_eq!(

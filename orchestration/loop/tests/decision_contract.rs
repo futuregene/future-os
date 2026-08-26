@@ -82,6 +82,32 @@ fn gated_todo_is_not_runnable_while_gate_open() {
     assert_eq!(p.interaction_contract.agent_channel.selected_todo, None);
 }
 
+#[test]
+fn zombie_signal_is_surfaced_as_an_advisory() {
+    use future_loop::state::TurnNoProgressRecord;
+    let mut goal = Goal::new("g", "objective", "/tmp");
+    goal.add(Todo::advancement("T1", "Do the thing"));
+    // Two no-progress records for the runnable todo cross the LLM-zombie
+    // threshold → the advisory is appended to the delivery reason (it never
+    // forces a replan).
+    for ts in [1u64, 2] {
+        goal.turn_no_progress.push(TurnNoProgressRecord {
+            goal_id: "g".into(),
+            todo_id: "T1".into(),
+            agent_id: None,
+            idle_secs: 900,
+            tool_calls_total: 0,
+            ts,
+        });
+    }
+    let p = decide(&goal, now());
+    assert!(
+        p.reason.contains("no write-class tool"),
+        "reason: {}",
+        p.reason
+    );
+}
+
 // ── Contract: runnable advancement ⇒ bounded delivery ──────────────────────
 #[test]
 fn runnable_advancement_is_bounded_delivery() {
