@@ -250,7 +250,7 @@ fn empty_agent_state(session_name: &str) -> serde_json::Value {
     serde_json::json!({
         "model": null,
         "thinkingLevel": null,
-        "session_name": session_name,
+        "sessionName": session_name,
         "sessionId": null,
         "cwd": null,
         "parentSessionId": null,
@@ -298,8 +298,12 @@ pub async fn get_thread_agent_state(
         }
         return Err(format!("get_state rejected: {}", resp.error).into());
     }
-    let value = serde_json::from_str::<serde_json::Value>(&resp.data)
-        .map_err(|e| format!("get_state parse error: {e}"))?;
+    let value = future_rpc::decode::response_data(&resp);
+    if value.is_null() {
+        return Err("get_state typed payload is missing or invalid"
+            .to_string()
+            .into());
+    }
     // Converge the DB title toward the agent's session_name — the name shared
     // with every client (TUI `/name`, CLI, channels), whose renames never
     // reach the GUI DB. The sidebar treats the agent name as authoritative
@@ -307,7 +311,8 @@ pub async fn get_thread_agent_state(
     // a stale DB title surfaces as "the rename didn't survive a restart".
     // Best-effort; sync_thread_title never bumps updated_at (sidebar order).
     if let Some(name) = value
-        .get("session_name")
+        .get("sessionName")
+        .or_else(|| value.get("session_name"))
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|n| !n.is_empty())
@@ -343,11 +348,12 @@ pub async fn compact_thread_context(
         .map_err(|error| format!("compact RPC failed: {error}"))?
         .into_inner()
         .ok_or_rpc_error("compact returned an error")?;
-    if response.data.is_empty() {
-        return Ok(serde_json::json!({}));
-    }
-    serde_json::from_str(&response.data)
-        .map_err(|error| format!("compact response parse error: {error}").into())
+    let value = future_rpc::decode::response_data(&response);
+    Ok(if value.is_null() {
+        serde_json::json!({})
+    } else {
+        value
+    })
 }
 
 /// Fetch session entries from the agent (user, assistant, tool messages).
@@ -373,29 +379,18 @@ pub async fn get_session_entries(thread_id: String) -> Result<serde_json::Value,
         return Ok(serde_json::json!({ "entries": [] }));
     };
 
-    let mut client = crate::agent_bridge::connect_agent()
-        .await
-        .map_err(|e| format!("Agent unavailable: {e}"))?;
-    let cmd = crate::agent_bridge::get_session_entries_command(session_id.to_string());
-    let resp = client
-        .execute_command(cmd)
-        .await
-        .map_err(|e| format!("get_session_entries failed: {e}"))?
-        .into_inner();
-    if !resp.success {
+    let result = crate::agent_bridge::get_session_entries(session_id.to_string()).await;
+    if let Err(error) = &result {
         // A session the agent no longer knows (e.g. lost after an environment
         // switch restarts the agent) is benign for reads: report empty history,
         // matching a thread with no session. The prompt path recreates it on the
         // next send. Other rejections stay real errors.
-        if resp.error.contains("session not found") {
+        if error.to_string().contains("session not found") {
             return Ok(serde_json::json!({ "entries": [] }));
         }
-        return Err(resp.error.into());
+        return Err(error.to_string().into());
     }
-    let entries = future_rpc::decode::decode_session_entries(&resp).ok_or_else(|| {
-        "Parse error: typed session entries payload is missing or invalid".to_string()
-    })?;
-    Ok(serde_json::json!({ "entries": entries }))
+    result
 }
 
 #[tauri::command]
@@ -668,7 +663,7 @@ mod tests {
             .expect("state");
         assert_eq!(value["model"], serde_json::Value::Null);
         assert_eq!(value["sessionId"], serde_json::Value::Null);
-        assert_eq!(value["session_name"], serde_json::json!(thread.title));
+        assert_eq!(value["sessionName"], serde_json::json!(thread.title));
     }
 
     #[tokio::test]
@@ -983,18 +978,15 @@ mod tests {
         let _lock = mock_agent_lock();
         let _home = init("cmd_agent_state_ok");
         let thread = make_thread(&_home, Some("sess_state"));
-        crate::commands::agent_mock::ensure_mock_agent();
-        script_mock_agent(MockScript {
-            data: HashMap::from([(
-                "get_state".to_string(),
-                "{\"session_name\":\"Agent Name\",\"model\":\"m\"}".to_string(),
-            )]),
-            ..Default::default()
-        });
+        let agent = crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript::default());
+        let mut payload = crate::agent_bridge::get_state_payload("sess_state", false);
+        payload["sessionName"] = serde_json::json!("Agent Name");
+        agent.script_typed_for("get_state", "sess_state", payload);
         let value = get_thread_agent_state(thread.id.clone())
             .await
             .expect("state");
-        assert_eq!(value["session_name"], serde_json::json!("Agent Name"));
+        assert_eq!(value["sessionName"], serde_json::json!("Agent Name"));
         // Title converged toward the agent name.
         let reloaded = crate::store::get_thread(&thread.id)
             .expect("get")

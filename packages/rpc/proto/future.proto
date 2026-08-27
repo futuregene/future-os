@@ -1035,6 +1035,11 @@ message SessionEntry {
   optional string entry_type = 15;
   // Structured v2/legacy checkpoint payload serialized as JSON.
   optional string checkpoint = 16;
+  // Correlates a persisted tool result with its originating tool call.
+  optional string tool_call_id = 17;
+  // Authoritative tool-result status. Absent for legacy entries that did not
+  // persist an explicit status.
+  optional bool tool_result_is_error = 18;
 }
 
 // One event as replayed by get_events_since. Field names mirror the

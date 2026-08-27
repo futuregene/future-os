@@ -173,6 +173,10 @@ export interface HistoryEntry {
   thinking?: string | null;
   /** Tool calls an assistant entry introduced — rendered as activity rows. */
   tool_calls?: { id?: string; function?: { name?: string; arguments?: unknown } }[] | null;
+  /** Correlates a tool result with the originating assistant tool call. */
+  tool_call_id?: string | null;
+  /** Authoritative tool-result status when persisted by the agent. */
+  tool_result_is_error?: boolean | null;
   meta?: {
     /** Canonical Agent run identity (present on new entries). */
     run_id?: string;
@@ -182,6 +186,10 @@ export interface HistoryEntry {
   output_tokens?: number;
   /** Reply wall-clock duration in ms — paired with `output_tokens`. */
   duration_ms?: number;
+  /** Prompt tokens billed for this run. */
+  input_tokens?: number;
+  /** Cache-read subset of input tokens. */
+  cache_read_tokens?: number;
   /** Desktop-store run outcome, added by the remote bridge for recovery parity. */
   run_status?: "completed" | "failed" | "cancelled" | string;
   /** Raw run error for `run_status: "failed"` — the bridge pairs it with the

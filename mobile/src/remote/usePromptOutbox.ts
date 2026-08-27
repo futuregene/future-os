@@ -6,6 +6,7 @@ import { clearSessionDraftIfMatches } from "./draftStorage";
 import { uploadAttachments } from "./files";
 import {
   clearPendingContinuation,
+  discardPendingContinuation,
   loadPendingContinuation,
   savePendingContinuation,
   type PendingContinuation,
@@ -113,6 +114,16 @@ async function deliverPendingContinuation(
       pending.sessionId,
     )
   ).data;
+}
+
+function continuationMatchesCredentials(
+  pending: PendingContinuation,
+  credentials: RemoteCredentials,
+): boolean {
+  return (
+    pending.pairId === credentials.pairId &&
+    pending.expectedDesktopId === credentials.expectedDesktopId
+  );
 }
 
 interface PromptOutboxOptions {
@@ -352,8 +363,13 @@ export function usePromptOutbox({
 
       const operation = (async () => {
         const client = clientRef.current;
-        if (!client) throw new Error("not_connected");
+        const credentials = credentialsRef.current;
+        if (!client || !credentials) throw new Error("not_connected");
         let pending = await loadPendingContinuation();
+        if (pending && !continuationMatchesCredentials(pending, credentials)) {
+          await discardPendingContinuation();
+          pending = null;
+        }
         let checkReceipt = pending !== null;
         if (pending && (pending.sessionId !== sessionId || pending.sourceRunId !== runId)) {
           if (promptReceiptSupported) await pendingPromptReceipt(client, pending.commandId);
@@ -363,8 +379,10 @@ export function usePromptOutbox({
         }
         if (!pending) {
           pending = {
-            version: 1,
+            version: 2,
             commandId: randomId("continue"),
+            pairId: credentials.pairId,
+            expectedDesktopId: credentials.expectedDesktopId,
             sessionId,
             sourceRunId: runId,
             createdAt: Date.now(),
@@ -395,14 +413,19 @@ export function usePromptOutbox({
         }
       }
     },
-    [clientRef, promptReceiptSupported],
+    [clientRef, credentialsRef, promptReceiptSupported],
   );
 
   const recoverPendingContinuation = useCallback(async () => {
     const client = clientRef.current;
-    if (!client || !credentialsRef.current || continuationInFlightRef.current) return;
+    const credentials = credentialsRef.current;
+    if (!client || !credentials || continuationInFlightRef.current) return;
     const pending = await loadPendingContinuation();
     if (!pending || continuationInFlightRef.current) return;
+    if (!continuationMatchesCredentials(pending, credentials)) {
+      await discardPendingContinuation();
+      return;
+    }
 
     const operation = (async () => {
       try {

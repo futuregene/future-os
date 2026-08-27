@@ -201,6 +201,8 @@ describe("entry reducer", () => {
         meta: { run_id: "run-9" },
         output_tokens: 12,
         duration_ms: 3400,
+        input_tokens: 34,
+        cache_read_tokens: 21,
       },
       { id: "u2", role: "user", content: "thanks" },
     ]);
@@ -213,6 +215,8 @@ describe("entry reducer", () => {
       runId: "run-9",
       durationMs: 3400,
       outputTokens: 12,
+      inputTokens: 34,
+      cacheReadTokens: 21,
     });
     expect(reply.segments).toEqual([
       { id: expect.any(String), kind: "thinking", text: "reasoning…" },
@@ -322,6 +326,42 @@ describe("user message mirror", () => {
         runId: "run-1",
         text: "check this",
       }),
+    ]);
+  });
+
+  test("pairs persisted tool results by id and trusts explicit error status", () => {
+    const timeline = timelineFromEntries([
+      { id: "u1", role: "user", content: "run tools" },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "done",
+        tool_calls: [
+          { id: "call-read", function: { name: "read", arguments: { path: "/tmp/x" } } },
+          { id: "call-shell", function: { name: "shell", arguments: { command: "true" } } },
+        ],
+      },
+      {
+        id: "t2",
+        role: "tool",
+        content: "ok",
+        tool_call_id: "call-shell",
+        tool_result_is_error: true,
+      },
+      {
+        id: "t1",
+        role: "tool",
+        content: "Error: legacy-looking text",
+        tool_call_id: "call-read",
+        tool_result_is_error: false,
+      },
+    ]);
+    const reply = timeline.items.find(item => item.kind === "message" && item.role === "assistant");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    const tools = reply.segments?.filter(segment => segment.kind === "tool") ?? [];
+    expect(tools.map(segment => (segment.kind === "tool" ? segment.tool.status : null))).toEqual([
+      "completed",
+      "failed",
     ]);
   });
 

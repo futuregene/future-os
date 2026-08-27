@@ -15,12 +15,14 @@ mod skills;
 mod stream;
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+pub(crate) use self::test_support::get_state_payload;
 
 pub use self::approval::{decide_approval, inject_session_rule, reconcile_pending_approvals};
 pub(crate) use self::client::raw_agent_addr;
 pub use self::client::{
     compact_command, connect_agent, delete_session_command, get_available_models_command,
-    get_run_state_command, get_session_entries_command, get_state_command,
+    get_run_state_command, get_session_entries_page_command, get_state_command,
     list_streaming_sessions_command, map_rpc_error, set_default_model_command, set_model_command,
     set_session_name_command, set_thinking_level_command, RpcResponseExt,
 };
@@ -309,15 +311,43 @@ pub async fn get_session_messages(
 /// with cached thumbnails), which is how the GUI rebuilds attachment chips.
 pub async fn get_session_entries(session_id: String) -> Result<serde_json::Value, crate::AppError> {
     let mut client = connect_agent().await?;
-    let response = client
-        .execute_command(get_session_entries_command(session_id))
-        .await
-        .map_err(|status| format!("get_session_entries failed: {status}"))?
-        .into_inner()
-        .ok_or_rpc_error("get_session_entries returned an error")?;
-    let entries = future_rpc::decode::decode_session_entries(&response)
-        .ok_or_else(|| "get_session_entries typed payload is missing or invalid".to_string())?;
+    let entries = fetch_all_session_entries_with_client(&mut client, &session_id).await?;
     Ok(serde_json::json!({ "entries": entries }))
+}
+
+pub(super) async fn fetch_all_session_entries_with_client(
+    client: &mut crate::agent_proto::FutureAgentClient<tonic::transport::Channel>,
+    session_id: &str,
+) -> Result<Vec<future_rpc::payloads::SessionEntryPayload>, crate::AppError> {
+    const PAGE_SIZE: i64 = 250;
+    let mut offset = 0_i64;
+    let mut entries = Vec::new();
+    loop {
+        let response = client
+            .execute_command(get_session_entries_page_command(
+                session_id.to_string(),
+                offset,
+                PAGE_SIZE,
+            ))
+            .await
+            .map_err(|status| format!("get_session_entries failed: {status}"))?
+            .into_inner()
+            .ok_or_rpc_error("get_session_entries returned an error")?;
+        let page = future_rpc::decode::decode_session_entries_page(&response)
+            .ok_or_else(|| "get_session_entries typed page is missing or invalid".to_string())?;
+        entries.extend(page.entries);
+        if !page.has_more {
+            return Ok(entries);
+        }
+        if page.next_offset <= offset {
+            return Err(format!(
+                "get_session_entries returned a non-advancing offset: {} after {offset}",
+                page.next_offset
+            )
+            .into());
+        }
+        offset = page.next_offset;
+    }
 }
 
 /// Fetch the session's current state (model, thinkingLevel, isStreaming, etc.)
@@ -331,11 +361,12 @@ pub async fn get_session_state(session_id: String) -> Result<serde_json::Value, 
         .map_err(|status| format!("get_state failed: {status}"))?
         .into_inner()
         .ok_or_rpc_error("get_state returned an error")?;
-    if response.data.is_empty() {
-        Ok(serde_json::json!({}))
+    let value = future_rpc::decode::response_data(&response);
+    Ok(if value.is_null() {
+        serde_json::json!({})
     } else {
-        Ok(future_rpc::decode::response_data(&response))
-    }
+        value
+    })
 }
 
 /// Fetch the available model list from the agent (for the web client's model selector).
@@ -347,11 +378,12 @@ pub async fn get_available_models() -> Result<serde_json::Value, crate::AppError
         .map_err(|status| format!("get_available_models failed: {status}"))?
         .into_inner()
         .ok_or_rpc_error("get_available_models returned an error")?;
-    if response.data.is_empty() {
-        Ok(serde_json::json!({ "models": [] }))
+    let value = future_rpc::decode::response_data(&response);
+    Ok(if value.is_null() {
+        serde_json::json!({ "models": [] })
     } else {
-        Ok(future_rpc::decode::response_data(&response))
-    }
+        value
+    })
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -1694,8 +1726,8 @@ mod wire_decode_tests {
 #[cfg(test)]
 mod bridge_tests {
     use super::test_support::{
-        break_home, mock_agent, restore_home, seed_run, seed_thread, seed_workspace, Reply,
-        TestHome,
+        break_home, get_state_payload, mock_agent, restore_home, seed_run, seed_thread,
+        seed_workspace, Reply, TestHome,
     };
     use super::*;
 
@@ -1733,6 +1765,33 @@ mod bridge_tests {
             .expect("typed entries");
         assert_eq!(value["entries"][0]["id"], "e1");
 
+        mock.push_typed_data(
+            "get_session_entries",
+            serde_json::json!({
+                "entries": [{
+                    "id": "e2", "role": "user", "content": "next", "name": "",
+                    "tool_args": "", "timestamp": "2026-08-27T10:00:02Z"
+                }],
+                "hasMore": true,
+                "nextOffset": 1
+            }),
+        );
+        mock.push_typed_data(
+            "get_session_entries",
+            serde_json::json!({"entries": [{
+                "id": "e3", "role": "assistant", "content": "done", "name": "",
+                "tool_args": "", "timestamp": "2026-08-27T10:00:03Z"
+            }]}),
+        );
+        let value = get_session_entries("sess-1".to_string())
+            .await
+            .expect("paged entries");
+        assert_eq!(value["entries"].as_array().expect("entries").len(), 2);
+        let requests = mock.requests_of("get_session_entries");
+        let last_two = &requests[requests.len() - 2..];
+        assert_eq!(last_two[0].offset, Some(0));
+        assert_eq!(last_two[1].offset, Some(1));
+
         mock.push("get_session_entries", Reply::Data(String::new()));
         assert!(get_session_entries("sess-1".to_string()).await.is_err());
 
@@ -1741,6 +1800,12 @@ mod bridge_tests {
             .await
             .expect("state");
         assert_eq!(value["isStreaming"], true);
+        mock.push_typed_data("get_state", get_state_payload("sess-1", true));
+        let value = get_session_state("sess-1".to_string())
+            .await
+            .expect("typed state");
+        assert_eq!(value["sessionId"], "sess-1");
+        assert_eq!(value["thinkingLevel"], "medium");
         mock.push("get_state", Reply::Data(String::new()));
         let value = get_session_state("sess-1".to_string())
             .await
@@ -1750,6 +1815,22 @@ mod bridge_tests {
         mock.push_data("list_models", serde_json::json!({"models": [{"id": "m"}]}));
         let value = get_available_models().await.expect("models");
         assert_eq!(value["models"][0]["id"], "m");
+        mock.push_typed_data(
+            "list_models",
+            serde_json::json!({
+                "models": [{
+                    "id": "typed-model", "label": "Typed", "provider": "future",
+                    "supportsImages": false, "thinkingLevel": "medium",
+                    "contextWindow": 1000, "isDefault": true, "description": null,
+                    "descriptionEn": null, "recommended": true
+                }],
+                "defaultModel": "future/typed-model",
+                "isScoped": false,
+                "builtinProviders": {}
+            }),
+        );
+        let value = get_available_models().await.expect("typed models");
+        assert_eq!(value["models"][0]["id"], "typed-model");
         mock.push("list_models", Reply::Data(String::new()));
         let value = get_available_models().await.expect("models");
         assert_eq!(value, serde_json::json!({"models": []}));

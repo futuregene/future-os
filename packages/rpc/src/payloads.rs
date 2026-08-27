@@ -158,6 +158,20 @@ pub struct SessionEntryPayload {
     pub cache_read_tokens: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checkpoint: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_result_is_error: Option<bool>,
+}
+
+/// One page returned by `get_session_entries`.
+#[derive(Serialize, Deserialize)]
+pub struct SessionEntriesPage {
+    pub entries: Vec<SessionEntryPayload>,
+    #[serde(default, rename = "hasMore", alias = "has_more")]
+    pub has_more: bool,
+    #[serde(default, rename = "nextOffset", alias = "next_offset")]
+    pub next_offset: i64,
 }
 
 /// One replayed event (get_events_since; proto `ReplayEvent`). Keys mirror
@@ -318,6 +332,8 @@ mod tests {
             input_tokens: None,
             cache_read_tokens: None,
             checkpoint: None,
+            tool_call_id: None,
+            tool_result_is_error: None,
         };
         let value = serde_json::to_value(&payload).unwrap();
         assert_eq!(value["content"], json!("hi"));
@@ -329,6 +345,8 @@ mod tests {
             "duration_ms",
             "input_tokens",
             "cache_read_tokens",
+            "tool_call_id",
+            "tool_result_is_error",
         ] {
             assert!(value.get(key).is_none(), "{key} must be omitted");
         }

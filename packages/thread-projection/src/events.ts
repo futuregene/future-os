@@ -23,8 +23,15 @@ export interface SessionEntry {
   content: string;
   name?: string;
   tool_args?: string;
+  /** ID of the originating call for a persisted tool-result entry. */
+  tool_call_id?: string;
+  /** Explicit tool-result status; absent in legacy histories. */
+  tool_result_is_error?: boolean;
   thinking?: string;
-  tool_calls?: Array<{ id: string; function: { name: string; arguments: unknown } }>;
+  tool_calls?: Array<{
+    id: string;
+    function: { name: string; arguments: unknown };
+  }>;
   /** RFC3339 entry time; preserved across re-saves so history keeps real times. */
   timestamp?: string;
   /** Output tokens for the reply — only the final assistant entry of a run. */
