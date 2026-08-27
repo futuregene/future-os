@@ -452,13 +452,10 @@ impl RunClient {
             }
             events.push(event_json);
             if message.r#type == "agent_end" {
-                // Only the targeted run's terminal ends a filtered stream; an
-                // empty run_id is treated as a match (see the filter above).
-                if let Some(target) = target_run_id {
-                    if !message.run_id.is_empty() && message.run_id != target {
-                        continue;
-                    }
-                }
+                // Only the targeted run's terminal ends a filtered stream. The
+                // per-event filter above already skipped any foreign run_id, so
+                // by this point run_id is either empty or the target (no
+                // re-check needed).
                 break;
             }
         }
@@ -1136,12 +1133,30 @@ mod tests {
             .insert("new_session".into(), "{\"sessionId\":\"s9\"}".into());
         agent
             .responses
+            .insert("list_providers".into(), "{\"providers\":[]}".into());
+        agent
+            .responses
+            .insert("set_auth".into(), "{\"ok\":true}".into());
+        agent
+            .responses
             .insert("notify".into(), "not json at all".into());
         let addr = spawn_mock(agent.clone()).await;
         let client = RunClient::new(&addr);
 
         assert_eq!(client.get_agent_info().await.unwrap()["version"], "1.0");
         assert!(client.list_models().await.unwrap()["models"].is_array());
+        assert!(client.list_providers().await.unwrap()["providers"].is_array());
+        assert_eq!(
+            client
+                .set_auth(future_rpc::proto::AuthUpdate {
+                    provider: "builtin".to_string(),
+                    key: "k".to_string(),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()["ok"],
+            true
+        );
         let state = client.get_state(Some("s1")).await.unwrap();
         assert_eq!(state["model"], "m1");
         let state = client.get_state(None).await.unwrap();
