@@ -1163,6 +1163,49 @@ impl Goal {
         })
     }
 
+    /// Goal-level pending advancement, owner-aware, for the operator-facing
+    /// "is there work left" displays (`status` next line, `frontier show`
+    /// unclaimed count). Unlike `runnable_advancement()` (which is the shared
+    /// pool `agent_id=None` sees and so silently drops owner-scoped todos),
+    /// this counts an open advancement todo as pending when ANY worker can
+    /// claim it — either it is unowned (shared pool) or it is owner-scoped
+    /// and merely waiting for its owning agent. It deliberately does NOT
+    /// apply the live-lease filter (`claimed_by_other`): a todo leased by a
+    /// running worker is still "pending work" from the goal's perspective,
+    /// and the display layer must not report "all complete" while a worker
+    /// is mid-run.
+    ///
+    /// Returns `(claimable, owner_scoped)`: `claimable` = todos any agent can
+    /// run now (unowned, no live lease by another agent); `owner_scoped` =
+    /// todos reserved for a specific owner. Display code uses both so an
+    /// all-owner-scoped goal never reads as "all todos complete".
+    pub fn pending_advancement_owner_aware(&self) -> (Vec<&Todo>, Vec<&Todo>) {
+        let now_sys = SystemTime::now();
+        let now = now_epoch();
+        let mut claimable = vec![];
+        let mut owner_scoped = vec![];
+        for t in &self.todos {
+            let open = t.class == TaskClass::Advancement
+                && (t.status == TodoStatus::Open || t.is_due_deferred(now_sys))
+                && !self.is_blocked(t);
+            if !open {
+                continue;
+            }
+            match t.owner.as_deref() {
+                // Shared pool: pending unless a live lease hides it.
+                None => {
+                    if !t.claimed_by_other(None, now) {
+                        claimable.push(t);
+                    }
+                }
+                // Owner-scoped: always pending (waiting on its owner), even if
+                // the owner currently holds the lease — it is not "done".
+                Some(_) => owner_scoped.push(t),
+            }
+        }
+        (claimable, owner_scoped)
+    }
+
     /// Whether `agent_id` is a registered peer of this goal (LoopX:
     /// coordination.registered_agents — the precondition for quota --agent-id).
     pub fn is_registered_agent(&self, agent_id: Option<&str>) -> bool {

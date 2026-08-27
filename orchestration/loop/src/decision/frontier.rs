@@ -27,13 +27,18 @@ pub(crate) fn lane(goal: &Goal) -> &'static str {
 /// Compose the frontier projection snapshot: replan pressure plus the
 /// runnable-frontier and monitor counts.
 pub(crate) fn frontier_projection(goal: &Goal, replan_required: bool) -> FrontierProjection {
+    // Owner-aware pending count: the naive `runnable_advancement().count()`
+    // is the shared-pool (agent_id=None) frontier and so drops every
+    // owner-scoped todo, reporting `unclaimed_advancement=0` while an
+    // all-owner-scoped goal still has real work waiting on its owners.
+    let (claimable, owner_scoped) = goal.pending_advancement_owner_aware();
     FrontierProjection {
         replan_required,
         current_agent_advancement: goal
             .runnable_advancement()
             .filter(|t| t.failed_attempts > 0)
             .count(),
-        unclaimed_advancement: goal.runnable_advancement().count(),
+        unclaimed_advancement: claimable.len() + owner_scoped.len(),
         acceptance_gaps: goal.unsatisfied_gaps().len(),
         monitors_open: goal.open_monitors().count(),
         monitors_due: goal
@@ -86,6 +91,49 @@ mod tests {
         assert_eq!(fp.acceptance_gaps, 1);
         assert_eq!(fp.monitors_open, 1);
         assert_eq!(fp.monitors_due, 1);
+    }
+
+    #[test]
+    fn frontier_projection_counts_owner_scoped_todos_as_pending() {
+        // Regression: the naive `runnable_advancement().count()` is the
+        // shared-pool (agent_id=None) frontier and dropped owner-scoped
+        // todos, reporting unclaimed_advancement=0 while work waited on its
+        // owners. The projection must count owner-scoped todos as pending.
+        let mut g = Goal::new("g", "o", "/tmp");
+        let mut owned = Todo::advancement("T1", "owned work");
+        owned.owner = Some("solver-a".to_string());
+        g.add(owned);
+        g.add(Todo::advancement("T2", "shared work"));
+        let fp = frontier_projection(&g, false);
+        assert_eq!(
+            fp.unclaimed_advancement, 2,
+            "owner-scoped + shared todos both count as pending"
+        );
+    }
+
+    #[test]
+    fn pending_advancement_owner_aware_splits_shared_from_owned() {
+        let mut g = Goal::new("g", "o", "/tmp");
+        let mut a = Todo::advancement("T1", "owned A");
+        a.owner = Some("solver-a".to_string());
+        let mut b = Todo::advancement("T2", "owned B");
+        b.owner = Some("solver-b".to_string());
+        g.add(a);
+        g.add(b);
+        g.add(Todo::advancement("T3", "shared"));
+        let (claimable, owner_scoped) = g.pending_advancement_owner_aware();
+        let claimable_ids: Vec<&str> = claimable.iter().map(|t| t.id.as_str()).collect();
+        let owned_ids: Vec<&str> = owner_scoped.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(
+            claimable_ids,
+            vec!["T3"],
+            "only the unowned todo is shared-pool claimable"
+        );
+        assert_eq!(
+            owned_ids,
+            vec!["T1", "T2"],
+            "both owner-scoped todos are pending"
+        );
     }
 
     #[test]
