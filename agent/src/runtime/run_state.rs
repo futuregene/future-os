@@ -376,8 +376,7 @@ impl RunControl {
     /// True when the active run reached a terminal state it cannot leave on
     /// its own (`CancellationStuck` / `PersistenceDegraded`). Both keep
     /// `is_streaming` asserted forever (only a new `begin` self-heals a stuck
-    /// lease; degraded is intentionally fail-closed), so shutdown must treat
-    /// them as "exit now" rather than waiting for a settle that never comes.
+    /// lease; degraded is intentionally fail-closed).
     pub fn is_terminal_unrecoverable(&self) -> bool {
         self.state.lock().active.as_ref().is_some_and(|active| {
             matches!(
