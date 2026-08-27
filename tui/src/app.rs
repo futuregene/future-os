@@ -4844,6 +4844,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn thinking_deltas_continue_after_queued_message() {
+        // Regression: a user message queued mid-stream (enqueue_if_busy) is
+        // pushed after the streaming assistant. Thinking deltas must keep
+        // landing on that assistant, not silently drop or target the queued
+        // user message.
+        let (mut app, _rx) = make_app(100, 30);
+        app.handle_agent_event(&make_event("agent_start", "{}"));
+        app.handle_agent_event(&make_event("thinking_start", "{}"));
+        app.handle_agent_event(&make_event("thinking_delta", "{\"text\":\"reason one\"}"));
+
+        // Queue a message while thinking is streaming.
+        app.handle_agent_event(&make_event(
+            "user_message",
+            "{\"text\":\"queued while streaming\"}",
+        ));
+
+        app.handle_agent_event(&make_event("thinking_delta", "{\"text\":\" reason two\"}"));
+        app.handle_agent_event(&make_event("thinking_end", "{}"));
+
+        assert_eq!(
+            app.chat.last_assistant_thinking(),
+            Some("reason one reason two")
+        );
+        // The queued user message is still the literal last message.
+        assert_eq!(app.chat.last_message().unwrap().role, ChatRole::User);
+    }
+
+    #[tokio::test]
     async fn terminal_acks_map_to_run_states() {
         let (mut app, _rx) = make_app(100, 30);
         app.chat

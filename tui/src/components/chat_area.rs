@@ -557,27 +557,28 @@ impl ChatArea {
     }
 
     pub fn append_thinking_delta(&mut self, text: &str) {
-        if self.messages.is_empty() {
+        // Target the last assistant message, not the literal last message: a
+        // user message queued mid-stream (enqueue_if_busy) is pushed after the
+        // streaming assistant, and the thinking deltas still belong to that
+        // assistant turn. Using `find_assistant_index` mirrors
+        // `append_to_last_message`, which already survives a trailing queued
+        // user message.
+        let Some(idx) = self.find_assistant_index() else {
             return;
-        }
-        let last_idx = self.messages.len() - 1;
-        let last = &mut self.messages[last_idx];
-        if last.role == ChatRole::Assistant {
-            if let Some(thinking) = last.thinking.as_mut() {
-                thinking.push_str(text);
-                self.mark_message_dirty(last_idx);
-            }
+        };
+        let msg = &mut self.messages[idx];
+        if let Some(thinking) = msg.thinking.as_mut() {
+            thinking.push_str(text);
+            self.mark_message_dirty(idx);
         }
     }
 
     pub fn end_thinking(&mut self) {
-        if self.messages.is_empty() {
+        let Some(idx) = self.find_assistant_index() else {
             return;
-        }
-        let last_idx = self.messages.len() - 1;
-        let last = &self.messages[last_idx];
-        if last.role == ChatRole::Assistant && last.thinking.is_some() {
-            self.rerender_message(last_idx);
+        };
+        if self.messages[idx].thinking.is_some() {
+            self.rerender_message(idx);
         }
     }
 
@@ -835,6 +836,16 @@ impl ChatArea {
             .iter()
             .map(|m| (m.role, crate::utils::strip_ansi_codes(&m.content)))
             .collect()
+    }
+
+    /// Test-only view: the last assistant message's thinking text.
+    #[cfg(test)]
+    pub(crate) fn last_assistant_thinking(&self) -> Option<&str> {
+        self.messages
+            .iter()
+            .rev()
+            .find(|m| m.role == ChatRole::Assistant)
+            .and_then(|m| m.thinking.as_deref())
     }
 
     fn find_tool_index(&self, tool_id: &str) -> Option<usize> {
@@ -2400,9 +2411,12 @@ mod tests {
         assert_eq!(chat.messages[1].thinking.as_deref(), Some("think"));
         chat.end_thinking();
 
-        // A thinking delta on a non-assistant last message is dropped.
+        // A thinking delta with a user message queued after the streaming
+        // assistant still lands on that assistant (not dropped, not on the
+        // trailing user message).
         chat.add_message(ChatMessage::new("u2".into(), ChatRole::User, "q2"));
         chat.append_thinking_delta("dropped");
+        assert_eq!(chat.messages[1].thinking.as_deref(), Some("thinkdropped"));
         assert!(chat.messages.last().unwrap().thinking.is_none());
 
         // start_thinking on an assistant without thinking adds the section.
