@@ -13,20 +13,27 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 │   ├── auth.json              # credentials, keyed by model id or provider
 │   ├── sessions/              # flat JSONL session store (one file per session)
 │   ├── skills/                # installed user skills (APP_SKILLS_DIR)
+│   ├── browser/               # CLI browser-tool state (config.json, profile/, artifacts/)
+│   ├── images/                # CLI image-tool output directory
 │   └── logs/agent.log         # agent log (when logging is enabled)
+├── agent-app/                 # legacy credential dir (auth.json) read for back-compat
 ├── channels/
-│   └── config.json            # Feishu / DingTalk bridge config (see channels-config.md)
+│   ├── config.json            # Feishu / DingTalk bridge config (see channels-config.md)
+│   └── feishu/                # Feishu bridge data (session file, received files)
 ├── tui/                       # the terminal UI (future-tui)
 │   ├── settings.json          # defaultModel, defaultThinkingLevel, … (see tui.md)
 │   ├── keybindings.json       # optional keybinding overrides
 │   ├── debug.log              # TUI runtime log
-│   └── write.log              # raw screen-write log (PI_TUI_WRITE_LOG=1 only)
+│   ├── write.log              # raw screen-write log (PI_TUI_WRITE_LOG=1 only)
+│   └── crash.log              # panic backtrace appended on crash
 ├── app/                       # the desktop GUI (FutureOS app)
 │   ├── app.db                 # SQLite database (threads, runs, approvals, …)
 │   ├── images/                # per-thread image tree (thumb/ + origin/)
-│   └── review/                # per-workspace shadow git review repos
+│   ├── review/                # per-workspace shadow git review repos
+│   └── run_events/            # per-run event logs (JSONL)
 ├── workspaces/
 │   └── chat/                  # per-thread chat workspaces (agent session / thread id)
+├── remote_pairing.json        # desktop remote-bridge identity (nkey_seed + user_jwt)
 └── bin/                       # CLI / agent links: `future`, `future-agent` (see below)
 ```
 
@@ -47,7 +54,18 @@ vars:
 - `skills/` — one of the two skill discovery directories
   (`APP_SKILLS_DIR`); the other is `~/.agents/skills/` (`AGENTS_SKILLS_DIR`).
   Skills are plain directories with a `SKILL.md` + YAML frontmatter.
+- `browser/` — CLI browser-tool state (`config.json`, `profile/` for the
+  Chromium profile, `artifacts/` for screenshots). Honors `FUTURE_HOME`.
+- `images/` — output directory for the CLI image generation/editing tools
+  (`future tools call image …`).
 - `logs/agent.log` — written when logging is enabled.
+
+## `~/.future/agent-app/` — legacy credential directory
+
+The agent resolves `auth.json` from `~/.future/agent-app/auth.json` before
+`~/.future/agent/auth.json` (back-compat with credentials written by older
+GUI builds); both `agent/` and `agent-app/` are treated as credential
+locations by the GUI's file-access guard. New writes go to `~/.future/agent/`.
 
 ## `~/.future/channels/` — channel bridges
 
@@ -55,7 +73,8 @@ Owned by `future-channel` (the Feishu / DingTalk bridge). `config.json`
 holds the `agent`, `feishu` and `dingtalk` blocks — see
 [channels-config.md](channels-config.md) for the full schema and defaults.
 If the file is missing, the bridge writes a default template and exits,
-asking you to edit it and restart.
+asking you to edit it and restart. `feishu/` is the Feishu bridge's data
+directory (session file and received files/images).
 
 ## `~/.future/tui/` — terminal UI
 
@@ -63,7 +82,8 @@ Owned by `future-tui`. `settings.json` persists client-side settings
 (`defaultModel`, `defaultThinkingLevel`, `defaultPermissionLevel`,
 `enabledModelIds`); optional keybinding overrides go in `keybindings.json`;
 `debug.log` is written when `PI_DEBUG_REDRAW=1`, and `write.log` records raw
-screen writes when `PI_TUI_WRITE_LOG=1`. See [tui.md](tui.md).
+screen writes when `PI_TUI_WRITE_LOG=1`; `crash.log` receives the panic
+backtrace when the TUI crashes. See [tui.md](tui.md).
 
 ## `~/.future/app/` — desktop GUI
 
@@ -75,6 +95,12 @@ Owned by the Tauri desktop app (see `desktop/`):
   rather than the OS cache dir because macOS may purge the cache.
 - `review/` — shadow git repositories used for the review feature, one
   `<workspace_id>` subdir per workspace's runs.
+- `run_events/` — per-run event logs (JSONL), derived from the agent's JSONL
+  sessions.
+
+The desktop remote bridge keeps its pairing identity (`nkey_seed` +
+`user_jwt` + NATS addresses) in `~/.future/remote_pairing.json` (at the
+`~/.future` root, not under `app/`).
 
 ## `~/.future/workspaces/chat/` — chat workspaces
 
