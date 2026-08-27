@@ -1688,7 +1688,15 @@ impl<T: TerminalIo> App<T> {
                 {
                     self.terminal.write("\x07");
                 }
-                self.state.streaming = self.client.has_running_run();
+                // The session is single-active-run: `agent_end` means the one
+                // live run just finished, so streaming is now false. Don't ask
+                // `has_running_run()` — a stale `get_state` snapshot answered
+                // in the agent's "finalizing" window can already have rebuilt
+                // the client's run table and re-marked this run Running, and
+                // there is no later refresh to correct it (the footer spinner
+                // would stay up forever). The next run, if any, re-asserts
+                // streaming via its own `agent_start`.
+                self.state.streaming = false;
                 self.state.active_tool_count = 0;
                 self.state.tool_start_time = None;
                 let text = event.text();
@@ -3351,18 +3359,21 @@ impl<T: TerminalIo> App<T> {
         // agent broadcasts `agent_end` from inside the run task but only
         // clears `is_streaming` later, when the completion monitor calls
         // `RunControl::finish`. A refresh answered inside that window returns
-        // `isStreaming: true` + an `activeRun` in "finalizing". If our local
-        // event bookkeeping already marked that exact run terminal, the event
-        // stream is fresher — don't let the stale snapshot re-assert the
-        // spinner (there is no later refresh to correct it).
-        let stale_finalizing = match &s.active_run {
-            Some(active) if s.is_streaming && active.state == "finalizing" => self
+        // `isStreaming: true` plus an `activeRun` that may still report
+        // "finalizing" — or, because `get_state` reads `active_run.state`
+        // before it reads `is_streaming`, an even older "running". Don't gate
+        // on the snapshot's phase: if our local event bookkeeping already
+        // marked that exact run terminal, the event stream is fresher and the
+        // snapshot must not re-assert the spinner (there is no later refresh
+        // to correct it).
+        let stale_snapshot = match &s.active_run {
+            Some(active) if s.is_streaming => self
                 .chat
                 .run_state(&active.run_id)
                 .is_some_and(|rs| rs != RunState::Running && rs != RunState::Queued),
             _ => false,
         };
-        self.state.streaming = s.is_streaming && !stale_finalizing;
+        self.state.streaming = s.is_streaming && !stale_snapshot;
         if !self.state.streaming {
             self.state.active_tool_count = 0;
             self.state.tool_start_time = None;
@@ -4874,61 +4885,31 @@ mod tests {
     }
 
     /// Regression test for the "spinner keeps spinning after the reply
-    /// finishes" bug.
-    ///
-    /// The agent broadcasts `agent_end` from inside the run task, but only
-    /// clears `is_streaming` in the completion monitor that runs *after* the
-    /// task returns (`RunControl::finish`). A `get_state` that lands in that
-    /// window returns the stale `is_streaming: true` + `activeRun` in
-    /// "finalizing", and `apply_refresh_state` must not let it overwrite the
-    /// `streaming = false` the `agent_end` handler just set — with no later
-    /// refresh to correct it, the footer spinner would stay up forever.
-    #[tokio::test(flavor = "multi_thread")]
+    /// finishes" bug: a stale `get_state` snapshot answered in the agent's
+    /// "finalizing" window (is_streaming still true, activeRun still present)
+    /// must not re-assert streaming after `agent_end` already cleared it.
+    #[tokio::test]
     async fn stale_get_state_after_agent_end_must_not_reassert_streaming() {
-        let stale = r#"{
-            "sessionId":"s1",
-            "model":"openai/gpt-4o",
-            "thinkingLevel":"high",
-            "isStreaming":true,
-            "activeRun":{"runId":"run-1","epoch":1,"state":"finalizing","lastEventIdx":9}
-        }"#
-        .to_string();
-        let mock = AppMockAgent {
-            state_script: Some(std::sync::Arc::new(std::sync::Mutex::new(vec![stale]))),
-            ..Default::default()
-        };
-        let (addr, _seen) = spawn_app_mock_with(mock).await;
-        let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
-        app.client.set_current_session_id("s1");
+        let (mut app, _rx) = make_app(100, 30);
 
-        // A run is streaming.
-        app.handle_agent_event(&make_event("agent_start", "{}"));
-        assert!(app.state.streaming);
+        // Bind a user message to run-1 and mark the run active.
+        app.chat
+            .add_message(ChatMessage::new("m1".into(), ChatRole::User, "hi"));
+        app.chat
+            .bind_user_run("m1", "run-1", RunState::Running, None);
+        app.state.streaming = true;
 
-        // agent_end arrives; local run bookkeeping already marks it terminal,
-        // so the handler correctly clears streaming.
+        // agent_end marks the run terminal and clears streaming.
         app.handle_agent_event(&make_event_with_run("agent_end", "{}", "run-1"));
         assert!(!app.state.streaming, "agent_end must clear streaming");
 
-        // The handler's spawn_refresh races the agent's finish(): the mock
-        // answers get_state with the stale in-flight snapshot. The run is
-        // already terminal in local bookkeeping, so apply_refresh_state must
-        // ignore the stale streaming re-assertion.
-        for _ in 0..300 {
-            while let Ok(cmd) = rx.try_recv() {
-                app.handle_cmd(cmd);
-            }
-            if !_seen.lock().unwrap().is_empty() {
-                // get_state was served; give the Refreshed cmd one more tick
-                // to be processed before concluding.
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                while let Ok(cmd) = rx.try_recv() {
-                    app.handle_cmd(cmd);
-                }
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        // A stale get_state snapshot still reports the run active + finalizing.
+        let stale: RpcSessionState = serde_json::from_value(json_parse(
+            r#"{"sessionId":"s1","model":"openai/gpt-4o","thinkingLevel":"high","isStreaming":true,"activeRun":{"runId":"run-1","epoch":1,"state":"finalizing","lastEventIdx":9}}"#,
+        ))
+        .unwrap();
+        app.handle_cmd(UiCmd::Refreshed(Ok(stale)));
+
         assert!(
             !app.state.streaming,
             "stale finalizing snapshot must not re-assert streaming (spinner stuck)"
@@ -4938,37 +4919,9 @@ mod tests {
     /// Same race as above, but for a run this client never saw end (a foreign
     /// run owned by another client on the same session): local bookkeeping
     /// has no terminal record, so the snapshot's streaming must be trusted.
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test]
     async fn finalizing_snapshot_for_unknown_run_keeps_streaming() {
-        let state = r#"{
-            "sessionId":"s1",
-            "model":"openai/gpt-4o",
-            "thinkingLevel":"high",
-            "isStreaming":true,
-            "activeRun":{"runId":"foreign-run","epoch":1,"state":"finalizing","lastEventIdx":9}
-        }"#
-        .to_string();
-        let mock = AppMockAgent {
-            state_script: Some(std::sync::Arc::new(std::sync::Mutex::new(vec![state]))),
-            ..Default::default()
-        };
-        let (addr, _seen) = spawn_app_mock_with(mock).await;
-        let (op_tx, mut rx) = mpsc::unbounded_channel();
-        let (client, mut events, _conn) = GrpcClient::new(&addr);
-        let mut app = App::new(
-            FakeTerminal {
-                writes: Rc::new(RefCell::new(Vec::new())),
-                cols: 100,
-                rows: 30,
-                on_input: None,
-                on_resize: None,
-            },
-            Arc::new(client),
-            op_tx,
-            &CliOptions::default(),
-            std::env::temp_dir().join(format!("tui-test-settings-{}.json", random_id())),
-        );
-        app.client.set_current_session_id("s1");
+        let (mut app, _rx) = make_app(100, 30);
 
         // A foreign run streams: agent_start arrives over the event stream,
         // but this client has no message bound to the run.
@@ -4976,25 +4929,53 @@ mod tests {
         assert!(app.state.streaming);
 
         // The agent_end event is missed (raced past the subscription), and
-        // the periodic refresh is what tells the TUI the run is still live.
-        app.state.streaming = false;
-        app.spawn_refresh();
-        for _ in 0..300 {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            while let Ok(cmd) = rx.try_recv() {
-                app.handle_cmd(cmd);
-            }
-            // Keep the client's event receiver drained so the stream manager
-            // never sees a full channel.
-            while events.try_recv().is_ok() {}
-            let got_state = _seen.lock().unwrap().iter().any(|(t, _)| t == "get_state");
-            if got_state && rx.is_empty() {
-                break;
-            }
-        }
+        // the periodic refresh is what tells the TUI the run is still live:
+        // a finalizing snapshot for the unknown run must be trusted.
+        let state: RpcSessionState = serde_json::from_value(json_parse(
+            r#"{"sessionId":"s1","model":"openai/gpt-4o","thinkingLevel":"high","isStreaming":true,"activeRun":{"runId":"foreign-run","epoch":1,"state":"finalizing","lastEventIdx":9}}"#,
+        ))
+        .unwrap();
+        app.handle_cmd(UiCmd::Refreshed(Ok(state)));
+
         assert!(
             app.state.streaming,
             "finalizing snapshot for an unknown (foreign) run must keep streaming"
+        );
+    }
+
+    /// The `agent_end` handler clears streaming, but a `get_state` answered
+    /// just before `RunControl::finish` returns a stale snapshot that can
+    /// report the active run as "running" (not only "finalizing"): the agent
+    /// reads `active_run.state` *before* it reads `is_streaming`, so the
+    /// phase can lag the terminal transition. `apply_refresh_state` must not
+    /// let any such stale snapshot re-assert the spinner.
+    #[tokio::test]
+    async fn stale_running_snapshot_after_agent_end_must_not_reassert_streaming() {
+        let (mut app, _rx) = make_app(100, 30);
+
+        // Bind a user message to run-1 and mark the run active.
+        app.chat
+            .add_message(ChatMessage::new("m1".into(), ChatRole::User, "hi"));
+        app.chat
+            .bind_user_run("m1", "run-1", RunState::Running, None);
+        app.state.streaming = true;
+
+        // agent_end marks the run terminal and clears streaming.
+        app.handle_agent_event(&make_event_with_run("agent_end", "{}", "run-1"));
+        assert!(!app.state.streaming, "agent_end must clear streaming");
+        assert_eq!(app.chat.run_state("run-1"), Some(RunState::Terminal));
+
+        // A stale get_state snapshot still reports the run active with the
+        // older "running" phase (not "finalizing"), is_streaming still true.
+        let stale: RpcSessionState = serde_json::from_value(json_parse(
+            r#"{"sessionId":"s1","model":"openai/gpt-4o","thinkingLevel":"high","isStreaming":true,"activeRun":{"runId":"run-1","epoch":1,"state":"running","lastEventIdx":9}}"#,
+        ))
+        .unwrap();
+        app.handle_cmd(UiCmd::Refreshed(Ok(stale)));
+
+        assert!(
+            !app.state.streaming,
+            "stale 'running' snapshot must not re-assert streaming (spinner stuck)"
         );
     }
 
