@@ -1,77 +1,98 @@
-# Future Loop 架构简化：弱化规则型功能，强化 kanban 工具
+# Loop Architecture Simplification: a kanban tool, not a rule engine
 
-> 原则：**决策者是大模型（agent），不是 loop 内核。** loop 内核应该是一个
-> 「kanban 工具」——提供 todo 状态、verify 门、acceptance 契约、evidence、
-> lease 这些**确定性工具**，而不是一个「规则引擎」——替 agent 判断「你卡住了，
-> 停下来重新规划」。对 agent 的决策提示应该放在 `future-loop` SKILL.md 里，
-> 由 agent 自己读取、自己决策。
+> Principle: **the decision-maker is the model (the agent), not the loop
+> kernel.** The loop kernel should be a **kanban tool** — offering the
+> deterministic tools (todo state, verify gates, acceptance contracts,
+> evidence, leases) — not a **rule engine** that decides "you're stuck, stop
+> and replan" on the agent's behalf. Agent decision guidance lives in the
+> `future-loop` SKILL.md, which the agent reads and acts on itself.
 
-## 一、功能分类
+## I. Feature classification
 
-### A. 规则型功能（弱化：从「强制 replan」→「信号 + 继续交付」）
+### A. Rule-engine features (de-emphasized: "forced replan" → "signal + keep delivering")
 
-这些是内核「替 agent 判断卡住并强制 replan」的硬编码规则，本质上是把
-「你怎么决策」写死在内核里，违背「决策者是大模型」的原则：
+These were hard-coded kernel rules that decided "you're stuck" and forced a
+replan — the kernel making the agent's decisions for it, against the
+"the model decides" principle. Each is now an observation the agent reads,
+never a replan the kernel forces:
 
-| 规则 | 触发条件 | 弱化后 |
+| Rule | Former trigger | Now |
 |---|---|---|
-| outcome floor | `surface_streak >= threshold` | 记录信号，交付时在 reason 里附加提示 |
-| oscillation | A→V→A→V 交替 | 记录信号，交付时在 reason 里附加提示 |
-| repair budget | `failed_attempts > MAX` | 不再过滤失败 todo，交付时提示「已失败 N 次」 |
-| monitor stall | `consecutive_no_change >= 3` | 继续 quiet wait，提示「考虑 watch-lane expiry」 |
+| outcome floor | `surface_streak >= threshold` | record a signal; surface as an advisory in the delivery reason |
+| oscillation | A→V→A→V alternation | record a signal; surface as an advisory in the delivery reason |
+| repair budget | `failed_attempts > MAX` | failed todos stay runnable (no filtering); advisory notes "failed N times" |
+| monitor stall | `consecutive_no_change >= 3` | quiet wait + advisory ("consider watch-lane expiry") |
+| LLM zombie | `no_progress_turns >= 2` | advisory ("consider restarting with a fresh session") |
 
-### B. 正确性底线（保留：这是 kanban 的确定性语义，不是「替 agent 决策」）
+### B. Correctness floors (kept — deterministic kanban semantics, not "deciding for the agent")
 
-这些是「状态一致性」的硬约束，弱化它们会让 goal 陷入非法状态：
+These are state-consistency hard constraints. Weakening them would put the
+goal into an illegal state:
 
-| 底线 | 为什么必须保留 |
+| Floor | Why it must stay |
 |---|---|
-| succession closure missing | 完成必须声明 successor/no-follow-up，否则 goal 永远无法关闭 |
-| acceptance gap | 硬契约：acceptance token 必须满足 |
-| terminal 判定 | kanban 确定性状态：所有 todo done + gaps 满足才关闭 |
-| user gate | 用户门，冻结工作 |
-| blocker | 阻塞器 |
-| work leased to others | 并发正确性 |
-| verify 门 | 正确性：exit 0 才 complete |
-| lease | 并发互斥 |
+| succession closure missing | completion must declare a successor / no-follow-up, or the goal can never close |
+| acceptance gap | hard contract: the acceptance token must be satisfied |
+| terminal judgement | deterministic kanban state: all todos done + gaps satisfied |
+| user gate | a user gate freezes work |
+| blocker | a blocker |
+| work leased to others | concurrency correctness |
+| verify gate | correctness: exit 0 before complete |
+| lease | concurrency mutual exclusion |
+| validation budget | a `--verify` gate that keeps failing still bounds the run loop — a correctness floor, not a policy rule |
 
-### C. 移到 SKILL.md 的提示（agent 决策指引）
+### C. Decision guidance moved into SKILL.md
 
-内核不再「替 agent 决策」，但要在 SKILL.md 里教 agent **读信号、自主决策**：
+The kernel no longer decides for the agent, but SKILL.md teaches the agent
+to **read the signals and decide for itself**:
 
-- 看到 `surface_streak >= N` → 考虑换策略或 supersede
-- 看到振荡信号 → 考虑换验证方法或拆分 todo
-- 看到 `failed_attempts > 1` → 考虑 supersede 或找 operator
-- 看到 monitor 连续无变化 → 考虑 watch-lane expiry 或写 blocker
+- see `surface_streak >= N` → consider changing strategy or superseding
+- see the oscillation signal → consider a different validator or splitting the todo
+- see `failed_attempts > 1` → consider superseding or asking the operator
+- see a monitor with no change → consider watch-lane expiry or writing a blocker
 
-## 二、改动清单
+## II. What changed
 
-1. `decision/mod.rs`：移除规则型 replan 分支（outcome floor / oscillation /
-   repair budget / LLM zombie / monitor stall），交付 reason 附加信号提示
-2. `decision/stall.rs`：检测函数保留为「观察数据」（信号源），不再用于强制 replan
-3. `decision/oscillation.rs`：同上
-4. `console.rs`：run loop 删除 repair-budget break（只留 validation-budget break）
-5. `state.rs` + `agent_client.rs` + `console.rs`：**session retention** —— 同一
-   原则的产物。内核记录「会话为什么中断」（`SessionRetention`）+ 保留会话 id，
-   由调用方（`run --session-policy auto|fresh|resume` / `--resume-session ID`）
-   决定 resume-vs-fresh。内核不替调用方决定是否恢复会话。
-6. SKILL.md：新增「agent 决策指引」+「session retention」章节
-7. 信号暴露：`status` / `diagnose` 输出里保留这些信号（agent 可查询）
+1. `decision/mod.rs` — removed the rule-engine replan branches (outcome floor /
+   oscillation / repair budget / LLM zombie / monitor stall); the delivery
+   reason now carries the signals as **advisories**.
+2. `decision/stall.rs` — detectors kept as observation data (signal sources),
+   no longer used to force a replan.
+3. `decision/oscillation.rs` — same.
+4. `console.rs` — the run loop no longer breaks on repair-budget exhaustion
+   (only the validation-budget break remains).
+5. `state.rs` + `console.rs` — **session retention**, the same principle applied
+   to resume-vs-fresh: the kernel records *why* a session was interrupted
+   (`SessionRetention` with a `FailureKind`) and keeps the session id on disk;
+   the caller decides resume-vs-fresh via
+   `run --session-policy auto|fresh|resume` / `--resume-session ID`.
+6. SKILL.md — new "agent decision guidance" + "session retention" sections.
+7. Signal exposure — the signals stay visible in the delivery reason (the
+   agent sees them directly in the turn envelope) and are queryable.
 
-## 三、信号仍保留（不删除，只改用途）
+## III. Signals are retained (not deleted — repurposed)
 
 `outcome_floor_breach` / `oscillation_replan_reason` / `repair_exhausted` /
-`is_monitor_stalled` 这些检测函数**保留**——它们从「强制 replan 的触发器」变成
-「agent 可读的观察信号」，通过两个渠道暴露：
-1. 交付 reason 里附加提示（agent 在 turn envelope 里直接看到）
-2. `status` / `diagnose` 输出（agent 主动查询）
+`is_monitor_stalled` remain as detection functions. They went from
+"forced-replan triggers" to "agent-readable observations", exposed two ways:
 
-## 四、session retention（同一原则的延伸）
+1. as advisories in the delivery reason (the agent sees them directly in the
+   turn envelope);
+2. as queryable state (e.g. `status` / `diagnose`) the agent reads on demand.
 
-`resume-vs-fresh` 也是「决策权在调用方」的体现：内核只提供**观察数据**
-（会话为什么中断：`InfraRecoverable` = LLM 状态完好，可 resume；
-`HardError`/`ScienceVerifyFailed` = 推理状态已坏，应 fresh），不替调用方决定。
-调用方通过 `--session-policy` / `--resume-session` 显式决策，默认 `auto` 只
-resume 内核判定「可恢复」的会话。
+## IV. Session retention (the same principle extended)
 
-这样内核依然是「纯工具」——它提供状态和信号，但**不替 agent 做决策**。
+Resume-vs-fresh is also "the caller decides": the kernel only provides
+**observation data** — *why* the session was interrupted — and never decides.
+`FailureKind` classifies the interruption:
+
+- `InfraRecoverable` — LLM state intact (429 / rate-limit / connection reset /
+  agent crash / stream gap): **resumable**.
+- `ScienceVerifyFailed` — the verify gate rejected the output; the reasoning
+  state is broken: **fresh**.
+- `HardError` — the turn errored without a recoverable infra cause: **fresh**.
+
+The caller decides explicitly via `--session-policy` / `--resume-session`;
+the default `auto` resumes only sessions the kernel judged resumable
+(`InfraRecoverable`). The kernel stays a pure tool: it provides state and
+signals, but never makes the decision.
