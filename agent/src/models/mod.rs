@@ -241,7 +241,7 @@ pub fn get_default_model() -> Option<String> {
 /// Like `get_default_model` but reuses an existing registry to avoid
 /// re-deserialising the model catalog on every GUI poll.
 pub fn get_default_model_with(registry: &Registry) -> Option<String> {
-    let auth = crate::AuthStore::load();
+    let auth = &registry.auth_store;
     let all = registry.all_models();
 
     // A user-chosen global default (set by the onboarding model-picker) wins over
@@ -666,6 +666,11 @@ pub struct Registry {
     builtin: std::sync::Arc<Vec<Model>>,
     user: Vec<Model>,
     provider_overrides: HashMap<String, ProviderOverride>,
+    /// Credentials captured in the same immutable provider snapshot as the
+    /// model catalog and route overrides. Provider mutations replace the whole
+    /// Registry under one write lock; request paths therefore cannot observe a
+    /// new key with an old base URL, protocol, modality, or token limit.
+    auth_store: crate::AuthStore,
 }
 
 impl Registry {
@@ -717,7 +722,110 @@ impl Registry {
             builtin,
             user: user_models,
             provider_overrides: final_overrides,
+            auth_store,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_models_and_auth(models: Vec<Model>, auth_json: &str) -> Self {
+        Self {
+            builtin: std::sync::Arc::new(models),
+            user: Vec::new(),
+            provider_overrides: HashMap::new(),
+            auth_store: crate::AuthStore::from_json(auth_json).expect("valid test auth"),
+        }
+    }
+
+    /// Resolve the complete authoritative configuration for one LLM request.
+    ///
+    /// Sessions persist only the canonical `provider/model` reference. Every
+    /// request resolves that reference against the latest Registry snapshot so
+    /// provider key/base URL/headers and model protocol/modalities/context/token
+    /// limits never become session-owned cached state. Credential lookup is
+    /// exact by provider; no model-id or account-wide fallback is permitted.
+    pub fn resolve_for_request(&self, id: &str) -> Option<(Model, String)> {
+        let mut model = self.resolve(id)?;
+        // Future auth stores the platform API root (`{platform}/api`), not an
+        // OpenAI-compatible model route. Registry construction has already
+        // derived `{platform}/api/v1`; do not collapse it back to `/api` here.
+        // Other providers store their request base URL directly in auth.json.
+        if model.provider != "future" {
+            if let Some(base_url) = self.auth_store.base_url(&model.provider) {
+                model.base_url = base_url;
+            }
+        }
+        let api_key = self
+            .auth_store
+            .get(&model.provider)
+            .or_else(|| (!model.api_key.is_empty()).then(|| model.api_key.clone()))
+            .unwrap_or_default();
+        // Explicit user providers may intentionally be keyless (for example a
+        // local Ollama-compatible endpoint). Built-in providers are callable
+        // only with their own exact credential or embedded provider key.
+        if api_key.is_empty() && !self.is_user_defined(&model) {
+            return None;
+        }
+        Some((model, api_key))
+    }
+
+    /// Resolve the selected identity for an actual request, falling back to
+    /// the current replacement policy if the historical model disappeared or
+    /// its provider is no longer configured. This closes the narrow race where
+    /// a run was accepted just before an authoritative Registry swap.
+    pub fn resolve_request_target(&self, id: &str) -> Option<(String, Model, String)> {
+        if let Some((model, api_key)) = self.resolve_for_request(id) {
+            return Some((format!("{}/{}", model.provider, model.id), model, api_key));
+        }
+        let replacement = self.replacement_model(id)?;
+        let (model, api_key) = self.resolve_for_request(&replacement)?;
+        Some((replacement, model, api_key))
+    }
+
+    pub fn is_model_available(&self, id: &str) -> bool {
+        self.resolve_for_request(id).is_some()
+    }
+
+    pub fn request_model_accepts_images(&self, id: &str) -> bool {
+        self.resolve_request_target(id)
+            .is_some_and(|(_, model, _)| model.input.iter().any(|kind| kind == "image"))
+    }
+
+    /// Choose a deterministic replacement for an empty/removed/unconfigured
+    /// session model. Preserve the selected provider whenever it still has a
+    /// callable model; only cross providers when that provider itself is no
+    /// longer usable. The user-selected global default wins within the same
+    /// provider, followed by provider-recommended models and stable id order.
+    pub fn replacement_model(&self, current: &str) -> Option<String> {
+        let current_provider = current.split_once('/').map(|(provider, _)| provider);
+        let global_default = get_default_model_with(self);
+        if let (Some(provider), Some(default)) = (current_provider, global_default.as_deref()) {
+            if default.split_once('/').map(|(p, _)| p) == Some(provider) {
+                return Some(default.to_string());
+            }
+        }
+
+        if let Some(provider) = current_provider {
+            let mut same_provider = self
+                .all_models()
+                .into_iter()
+                .filter(|model| model.provider == provider)
+                .filter(|model| model.output.iter().any(|kind| kind == "text"))
+                .filter(|model| {
+                    self.is_model_available(&format!("{}/{}", model.provider, model.id))
+                })
+                .collect::<Vec<_>>();
+            same_provider.sort_by(|left, right| {
+                right
+                    .recommended
+                    .cmp(&left.recommended)
+                    .then_with(|| left.id.cmp(&right.id))
+            });
+            if let Some(model) = same_provider.first() {
+                return Some(format!("{}/{}", model.provider, model.id));
+            }
+        }
+
+        global_default
     }
 
     fn apply_override(&self, model: &mut Model) {
@@ -1851,6 +1959,7 @@ mod tests {
             builtin: std::sync::Arc::new(vec![]),
             user: vec![],
             provider_overrides: overrides,
+            auth_store: crate::AuthStore::default(),
         };
         let mut model = Model {
             provider: "testprov".to_string(),
@@ -1872,6 +1981,7 @@ mod tests {
             builtin: std::sync::Arc::new(vec![builtin]),
             user: vec![user],
             provider_overrides: HashMap::new(),
+            auth_store: crate::AuthStore::default(),
         };
         let models = reg.all_models();
         assert_eq!(models.len(), 1);
@@ -1886,6 +1996,7 @@ mod tests {
             builtin: std::sync::Arc::new(vec![builtin]),
             user: vec![user],
             provider_overrides: HashMap::new(),
+            auth_store: crate::AuthStore::default(),
         };
         let models = reg.all_models();
         assert_eq!(models.len(), 2);
@@ -1914,6 +2025,7 @@ mod tests {
             ]),
             user: vec![],
             provider_overrides: HashMap::new(),
+            auth_store: crate::AuthStore::default(),
         };
         let summaries = reg.builtin_provider_summaries();
         assert_eq!(summaries.len(), 1);

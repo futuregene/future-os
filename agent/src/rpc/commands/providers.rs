@@ -16,7 +16,7 @@ pub(crate) fn handle_reload_auth(state: &AppState, id: &str) -> String {
     // removed providers and models.json edits become visible to every
     // session — set_model now resolves against this cache instead of
     // constructing a fresh Registry per call.
-    refresh_registry_and_credentials(state);
+    refresh_authoritative_provider_state(state);
     let revision = crate::rpc::publish_provider_config_changed("*", "reload", true, true);
     RpcResponse::ok(
         id,
@@ -26,19 +26,23 @@ pub(crate) fn handle_reload_auth(state: &AppState, id: &str) -> String {
 }
 
 pub(crate) fn handle_sync_future_models(state: &AppState, id: &str) -> String {
+    let _provider_guard = PROVIDER_COMMAND_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     // Dedicated post-login initialization: synchronously fetch the Future
     // provider's models (warming the cache), then rebuild the registry against
     // that warm cache so the very next `list_models` returns a complete list.
     // Unlike `reload_auth`, this blocks on the network fetch — it is only ever
     // called once by the GUI's onboarding init flow, never on a hot path.
     let synced = crate::models::sync_future_models_cache();
-    *state.model_registry.write() = crate::models::Registry::new();
-    state.reload_all_credentials();
+    refresh_authoritative_provider_state(state);
     let model_count = state.model_registry.read().all_models().len();
+    let revision =
+        crate::rpc::publish_provider_config_changed("future", "models_synced", false, true);
     RpcResponse::ok(
         id,
         "sync_future_models",
-        serde_json::json!({ "synced": synced, "modelCount": model_count }),
+        serde_json::json!({ "synced": synced, "modelCount": model_count, "revision": revision }),
     )
 }
 
@@ -110,8 +114,6 @@ pub(crate) fn list_models_response(
     registry: &crate::models::Registry,
     include_builtin_providers: bool,
 ) -> String {
-    let auth = crate::AuthStore::load();
-
     // Always return all available models.  Scoping / defaults are client-side.
     // Builtin catalog models are only listed when they are credential-reachable
     // (an API key inline or in auth.json) — otherwise the picker would drown
@@ -123,8 +125,7 @@ pub(crate) fn list_models_response(
         .into_iter()
         .filter(|model| {
             registry.is_user_defined(model)
-                || !model.api_key.is_empty()
-                || auth.get(&model.provider).is_some()
+                || registry.is_model_available(&format!("{}/{}", model.provider, model.id))
         })
         .filter(|model| model.output.iter().any(|o| o == "text"))
         .collect();
@@ -304,12 +305,15 @@ fn provider_view(state: &AppState) -> Result<serde_json::Value, String> {
 }
 
 /// Rebuild the shared model registry so provider/models.json changes become
-/// visible to every session, then refresh each live session's cached
-/// credentials. Shared by `reload_auth` and the config-write commands, which
-/// apply it inline so clients need no follow-up refresh round-trip.
-fn refresh_registry_and_credentials(state: &AppState) {
+/// visible to every request, then reconcile only invalid session model
+/// references. Provider settings themselves are request-time authority and are
+/// never copied into sessions. Shared by `reload_auth` and config-write commands.
+/// Callers hold `PROVIDER_COMMAND_LOCK` and invoke this only after the durable
+/// mutation succeeds; they publish `provider_config_changed` only after this
+/// complete Registry revision is installed.
+fn refresh_authoritative_provider_state(state: &AppState) {
     *state.model_registry.write() = crate::models::Registry::new();
-    state.reload_all_credentials();
+    state.reconcile_provider_references();
 }
 
 /// Apply one auth.json mutation and refresh live state (see dispatch comment).
@@ -335,7 +339,7 @@ pub(crate) fn cmd_set_auth(state: &AppState, id: &str, cmd: &RpcCommand) -> Stri
     if let Err(error) = crate::config::providers::mutate_auth(mutation) {
         return RpcResponse::build_fail(id, "set_auth", &error);
     }
-    refresh_registry_and_credentials(state);
+    refresh_authoritative_provider_state(state);
     let revision = crate::rpc::publish_provider_config_changed(
         &mutation.provider,
         "auth_updated",
@@ -401,7 +405,7 @@ pub(crate) fn cmd_upsert_provider(state: &AppState, id: &str, cmd: &RpcCommand) 
     if let Err(error) = crate::config::providers::upsert_provider(spec) {
         return RpcResponse::build_fail(id, "upsert_provider", &error);
     }
-    refresh_registry_and_credentials(state);
+    refresh_authoritative_provider_state(state);
     let revision = crate::rpc::publish_provider_config_changed(
         &spec.id,
         if spec.create_only {
@@ -456,7 +460,7 @@ pub(crate) fn cmd_delete_provider(state: &AppState, id: &str, cmd: &RpcCommand) 
     if let Err(error) = crate::config::providers::delete_provider(provider_id) {
         return RpcResponse::build_fail(id, "delete_provider", &error);
     }
-    refresh_registry_and_credentials(state);
+    refresh_authoritative_provider_state(state);
     let revision = crate::rpc::publish_provider_config_changed(provider_id, "deleted", true, true);
     RpcResponse::ok(
         id,

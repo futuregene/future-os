@@ -164,7 +164,7 @@ fn list_sessions_returns_array() {
 fn list_session_ids_reports_all_files_including_corrupt() {
     let state = make_app_state();
     // Persist one real session.
-    let mut session = crate::session::Session::new("/tmp", "mock", "");
+    let mut session = crate::session::Session::new("/tmp", "mock");
     session
         .entries
         .push(crate::session::SessionEntry::session_info(
@@ -208,7 +208,7 @@ fn list_sessions_emits_canonical_keys() {
     let state = make_app_state();
     // list_sessions reads persisted session summaries, so persist one —
     // the summary fields come from the session_info entry.
-    let mut session = crate::session::Session::new("/tmp", "mock", "");
+    let mut session = crate::session::Session::new("/tmp", "mock");
     session.name = "My session".to_string();
     session
         .entries

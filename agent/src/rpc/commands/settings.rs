@@ -87,15 +87,14 @@ pub(crate) fn handle_cycle_model(
     // Use the cached registry — Registry::new() re-parses the 1.9 MB
     // catalog AND may do blocking network I/O (future provider
     // refresh) on every call.
-    let auth = crate::AuthStore::load();
-    let models: Vec<String> = state
-        .model_registry
-        .read()
+    let registry = state.model_registry.read();
+    let models: Vec<String> = registry
         .all_models()
         .into_iter()
-        .filter(|m| !m.api_key.is_empty() || auth.get(&m.provider).is_some())
+        .filter(|m| registry.is_model_available(&format!("{}/{}", m.provider, m.id)))
         .map(|m| format!("{}/{}", m.provider, m.id))
         .collect();
+    drop(registry);
 
     if models.is_empty() {
         return RpcResponse::ok(

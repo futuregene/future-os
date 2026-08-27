@@ -60,6 +60,10 @@ pub struct StreamContext {
 
 pub struct Loop {
     pub provider: Arc<dyn LLMProvider>,
+    /// Canonical `provider/model` reference. Provider/model configuration is
+    /// resolved from the Agent Registry at each LLM request; this field is an
+    /// identity only and never carries a configuration snapshot.
+    pub model_ref: String,
     pub model: String,
     pub system_prompt: String,
     pub tools: Vec<AgentTool>,
@@ -103,6 +107,7 @@ impl Loop {
     pub fn new(provider: Arc<dyn LLMProvider>, model: &str) -> Self {
         Self {
             provider,
+            model_ref: model.to_string(),
             model: model.to_string(),
             system_prompt: String::new(),
             tools: vec![],
@@ -158,6 +163,7 @@ impl Loop {
             .with_system_prompt(&self.system_prompt)
             .with_config(self.config.clone());
         copy.verbose = self.verbose;
+        copy.model_ref = self.model_ref.clone();
         copy.parallel_tools = self.parallel_tools;
         copy.model_registry = self.model_registry.clone();
         copy.preflight_context_check = self.preflight_context_check;

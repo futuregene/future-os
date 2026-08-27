@@ -314,6 +314,7 @@ fn cycle_model_advances_to_next_credentialled_model() {
     let auth_path = home.auth_path();
     std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
     std::fs::write(&auth_path, serde_json::to_string_pretty(&auth).unwrap()).unwrap();
+    *state.model_registry.write() = crate::models::Registry::new();
 
     let resp = parse_response(&handle_command_internal(&state, make_cmd("cycle_model")));
     assert_eq!(resp["success"], true);
@@ -448,6 +449,7 @@ fn cycle_model_fails_while_loop_is_locked() {
     let auth_path = home.auth_path();
     std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
     std::fs::write(&auth_path, serde_json::to_string_pretty(&auth).unwrap()).unwrap();
+    *state.model_registry.write() = crate::models::Registry::new();
 
     let session = state.get_session("default").unwrap();
     let agent_loop = session.read().agent_loop.clone();

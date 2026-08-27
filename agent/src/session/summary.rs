@@ -349,7 +349,7 @@ mod tests {
                 .as_nanos()
         ));
         let manager = Manager::new(dir.clone());
-        let mut session = Session::new("/tmp/test", "gpt-4o", "");
+        let mut session = Session::new("/tmp/test", "gpt-4o");
         session.entries.push(SessionEntry::session_info(
             serde_json::json!({"session_name": "named-session", "cwd": "/tmp/test", "model": "gpt-4o", "thinking_level": "high"}),
             "gpt-4o".to_string(),
@@ -411,7 +411,7 @@ mod tests {
                 .as_nanos()
         ));
         let manager = Manager::new(dir.clone());
-        let mut session = Session::new("/tmp/test", "gpt-4o", "");
+        let mut session = Session::new("/tmp/test", "gpt-4o");
         // No session_info entry — legacy/corrupt layout.
         session
             .entries

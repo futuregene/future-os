@@ -590,7 +590,6 @@ async fn async_main(
         .as_ref()
         .filter(|m| !m.base_url.is_empty())
         .map(|m| m.base_url.clone())
-        .or_else(|| auth_store.base_url(&resolved_model))
         .or_else(|| {
             model_config
                 .as_ref()
@@ -604,20 +603,15 @@ async fn async_main(
     };
 
     // Resolve API key from auth.json > model config
-    let api_key = auth_store
-        .get(&resolved_model)
-        .or_else(|| {
-            model_config
-                .as_ref()
-                .and_then(|m| auth_store.get(&m.provider))
-        })
+    let api_key = model_config
+        .as_ref()
+        .and_then(|m| auth_store.get(&m.provider))
         .or_else(|| {
             model_config
                 .as_ref()
                 .filter(|m| !m.api_key.is_empty())
                 .map(|m| m.api_key.clone())
         })
-        .or_else(|| auth_store.default_key())
         .unwrap_or_default();
 
     // Default thinking level (clients override per-session).

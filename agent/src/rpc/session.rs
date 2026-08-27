@@ -115,10 +115,9 @@ pub struct ServerSession {
     /// Runtime "allow in this workspace/chat" rules for the current run. Shared
     /// into the live sandbox at prompt start; cleared each new run.
     pub session_rules: crate::sandbox::rules::SessionRules,
-    /// Process-wide cached model registry (shared from `AppState`).  Used by
-    /// `set_model`/`reload_credentials` so hydrating N sessions costs zero
-    /// registry rebuilds; refreshed in place by the `reload_auth` command
-    /// after provider/auth changes on disk.
+    /// Process-wide authoritative provider/model Registry shared by every
+    /// session. Provider commands replace it atomically after durable writes;
+    /// actual LLM requests resolve all provider/model settings from it.
     pub model_registry: Arc<parking_lot::RwLock<crate::models::Registry>>,
 }
 
@@ -130,22 +129,6 @@ pub fn default_workspace() -> String {
         .join("workspace")
         .to_string_lossy()
         .to_string()
-}
-
-/// Resolve the API key for a model, in priority order: an entry keyed by the
-/// exact model id, then by its provider, then the model's own configured key
-/// (when non-empty), then the account-wide default. Empty string when none match.
-fn resolve_api_key(
-    auth: &crate::AuthStore,
-    model: &str,
-    provider: &str,
-    model_key: &str,
-) -> String {
-    auth.get(model)
-        .or_else(|| auth.get(provider))
-        .or_else(|| (!model_key.is_empty()).then(|| model_key.to_string()))
-        .or_else(|| auth.default_key())
-        .unwrap_or_default()
 }
 
 impl ServerSession {
@@ -396,8 +379,8 @@ impl ServerSession {
     }
 
     pub fn set_model(&mut self, model: &str) -> Result<()> {
-        // Resolve against the shared cached registry — never rebuilds it.
-        // The cache is refreshed by `reload_auth` when models.json changes.
+        // Resolve identity against the shared authoritative Registry. The
+        // resulting live client retains this identity, not these settings.
         let resolved = self.model_registry.read().resolve(model);
         // Store full provider/id as the canonical model identifier for display
         // and session persistence. Resolve bare ID to provider/id when possible.
@@ -411,36 +394,37 @@ impl ServerSession {
         // fit is deliberately NOT checked here: a selector click must not write
         // a checkpoint. The run loop checks immediately before its first LLM
         // request, using this newly selected provider and model window.
-        let new_provider = if let Some(model_config) = resolved.as_ref() {
+        if let Some(model_config) = resolved.as_ref() {
             let max_tokens = Some(crate::models::effective_max_tokens(model_config));
-            let auth = crate::AuthStore::load();
-            let api_key =
-                resolve_api_key(&auth, model, &model_config.provider, &model_config.api_key);
-            let target = crate::llm::schema::ResolvedModelTarget::from_model(
+            // Validate a known model's current protocol shape before publishing
+            // the identity. The resulting target is deliberately discarded.
+            crate::llm::schema::ResolvedModelTarget::from_model(
                 model_config,
-                api_key,
+                String::new(),
                 None,
                 max_tokens,
             )?;
-            let mut client = crate::llm::Client::from_target(target);
-            if !self.thinking_level.is_empty() {
-                client = client.with_thinking_level(&self.thinking_level);
-            }
-            let thinking_budget = self
-                .agent_loop
-                .try_read()
-                .map_err(|_| anyhow::anyhow!("session configuration is busy; retry /model"))?
-                .config
-                .thinking_budget;
-            if thinking_budget > 0 {
-                client = client.with_thinking_budget(thinking_budget);
-            }
-            Some(std::sync::Arc::new(client) as std::sync::Arc<dyn crate::types::LLMProvider>)
-        } else {
-            None
-        };
+        }
+        let mut client = crate::llm::Client::from_live_model(
+            canonical_model.clone(),
+            self.model_registry.clone(),
+        );
+        if !self.thinking_level.is_empty() {
+            client = client.with_thinking_level(&self.thinking_level);
+        }
+        let thinking_budget = self
+            .agent_loop
+            .try_read()
+            .map_err(|_| anyhow::anyhow!("session configuration is busy; retry /model"))?
+            .config
+            .thinking_budget;
+        if thinking_budget > 0 {
+            client = client.with_thinking_budget(thinking_budget);
+        }
+        let new_provider =
+            std::sync::Arc::new(client) as std::sync::Arc<dyn crate::types::LLMProvider>;
 
-        // Update the agent loop in one shot — both model name and provider endpoint.
+        // Update the agent loop in one shot — model identity and its dynamic client.
         // Fail explicitly when the loop is busy so the caller knows to retry
         // rather than silently continuing with the old model. Active runs use
         // snapshots and do not hold this control-plane lock.
@@ -449,6 +433,7 @@ impl ServerSession {
             .try_write()
             .map_err(|_| anyhow::anyhow!("session configuration is busy; retry /model"))?;
         self.model = canonical_model;
+        loop_.model_ref = self.model.clone();
         // Set agent loop model to bare canonical ID for LLM API calls.
         // The session-level self.model already holds the full provider/id.
         if let Some(ref mc) = resolved {
@@ -457,18 +442,10 @@ impl ServerSession {
             loop_.model = model.to_string();
         }
 
-        if let Some(model_config) = resolved {
-            if !model_config.input.iter().any(|input| input == "image") {
-                self.strip_image_content_from_messages();
-            }
-
-            // The fresh provider was built and validated before publishing the
-            // selection, so the next-run control plane cannot expose a
-            // half-built client.
-            if let Some(provider) = new_provider {
-                loop_.provider = provider;
-            }
-        }
+        // Always replace the provider client, including for an unresolved
+        // historical identity. It owns no target and therefore must resolve or
+        // replace that identity from the Registry at request time.
+        loop_.provider = new_provider;
         drop(loop_);
 
         // Persist through the same ordered queue as run appends/finalization.
@@ -482,86 +459,22 @@ impl ServerSession {
         Ok(())
     }
 
-    /// Re-resolve the API key for this session's current model from disk
-    /// (auth.json) and push it into the live provider. Called when credentials
-    /// change out-of-band — FutureGene login/logout, custom-provider key edits —
-    /// so the session doesn't keep serving prompts with the stale in-memory key
-    /// until the next `set_model` (the prompt path never re-reads auth.json).
-    ///
-    /// Unlike `set_model` this stays correct even when the model no longer
-    /// resolves: after logout the Future models drop out of the registry, so a
-    /// `resolve` miss must NOT leave the old key in place. We derive the provider
-    /// from the canonical `provider/id` model id and, resolving no key, clear the
-    /// credential so the stale one can't keep being used. The key-resolution
-    /// order mirrors `set_model` for parity.
-    ///
-    /// Active runs use a provider snapshot, so updating this control plane
-    /// affects the next request without mutating headers already sent by an
-    /// in-flight request.
-    ///
-    /// Also heals the `set_model` fallback: while the registry could not
-    /// resolve this model (catalog unavailable during a logout/broken-auth
-    /// window), `set_model` froze the full `provider/id` literal into the
-    /// loop, and upstream rejects that name ("Model 'provider/id' is not
-    /// configured"). Once the registry resolves the model again, restore the
-    /// bare id so the next request carries a name the server knows.
-    pub fn reload_credentials(&self) -> Result<()> {
-        if self.model.is_empty() {
-            let loop_ = self
-                .agent_loop
-                .try_read()
-                .map_err(|_| anyhow::anyhow!("run configuration is busy; retry prompt"))?;
-            loop_.provider.set_api_key("");
+    /// Reconcile only the persisted provider/model identity after a provider
+    /// commit or cold-history hydration. Provider configuration itself is never
+    /// copied here; request-time resolution also applies this replacement rule
+    /// to close the commit/request race.
+    pub fn reconcile_model_reference(&mut self) -> Result<()> {
+        let needs_replacement =
+            self.model.is_empty() || !self.model_registry.read().is_model_available(&self.model);
+        if !needs_replacement {
             return Ok(());
         }
-        let registry_resolved = self.model_registry.read().resolve(&self.model);
-        let provider = registry_resolved
-            .as_ref()
-            .map(|m| m.provider.clone())
-            .unwrap_or_else(|| self.model.split('/').next().unwrap_or("").to_string());
-
-        let auth = crate::AuthStore::load();
-        let model_key = registry_resolved
-            .as_ref()
-            .map(|m| m.api_key.clone())
-            .unwrap_or_default();
-        let base_url = registry_resolved
-            .as_ref()
-            .map(|m| m.base_url.clone())
-            .unwrap_or_default();
-        let api_key = resolve_api_key(&auth, &self.model, &provider, &model_key);
-
-        // The shared loop is a short-lived control plane; active runs own
-        // independent snapshots. Wait until the latest credential revision is
-        // installed so config commands cannot acknowledge while a session is
-        // still on the old key. A write lock is needed (not just for the
-        // interior-mutable provider) because the fallback heal below mutates
-        // `loop_.model`.
-        let mut loop_ = self
-            .agent_loop
-            .try_write()
-            .map_err(|_| anyhow::anyhow!("run configuration is busy; retry prompt"))?;
-        loop_.provider.set_api_key(&api_key);
-        if !base_url.is_empty() {
-            loop_.provider.set_base_url(&base_url);
-        }
-        // Fallback heal: `set_model` only ever stores the bare resolved id
-        // here, so any divergence means the loop still carries the unresolved
-        // literal from a resolve-miss window.
-        if let Some(mc) = registry_resolved.as_ref() {
-            if loop_.model != mc.id {
-                loop_.model = mc.id.clone();
-            }
-        }
-        Ok(())
-    }
-
-    fn strip_image_content_from_messages(&self) {
-        for message in self.messages.write().iter_mut() {
-            message
-                .content
-                .retain(|block| !matches!(block, crate::types::ContentBlock::Image { .. }));
-        }
+        let replacement = self
+            .model_registry
+            .read()
+            .replacement_model(&self.model)
+            .ok_or_else(|| anyhow::anyhow!("no configured provider has an available model"))?;
+        self.set_model(&replacement)
     }
 
     pub fn set_thinking_level(&mut self, level: &str) {
@@ -626,10 +539,10 @@ impl ServerSession {
         let mut messages = self.messages.read().clone();
         if messages.is_empty() {
             if let Ok(session) = self.session_manager.load(&self.session_id) {
-                let supports_images = crate::models::model_accepts_images_with(
-                    &self.model_registry.read(),
-                    &self.model,
-                );
+                let supports_images = self
+                    .model_registry
+                    .read()
+                    .request_model_accepts_images(&self.model);
                 messages =
                     crate::session::entries_to_agent_messages(&session.entries, supports_images);
                 if !messages.is_empty() {
@@ -936,7 +849,10 @@ impl ServerSession {
             } else {
                 session.model.clone()
             };
-            let supports_images = crate::models::model_accepts_images(&effective_model);
+            let supports_images = self
+                .model_registry
+                .read()
+                .request_model_accepts_images(&effective_model);
             let msgs = crate::session::entries_to_agent_messages(&session.entries, supports_images);
             if !session.model.is_empty() {
                 self.model = session.model.clone();
@@ -946,9 +862,9 @@ impl ServerSession {
                     id,
                 );
 
-                // Sync the agent loop's model + provider endpoint so the next
-                // prompt uses the saved model, not a stale leftover from the
-                // previous session. set_model persists via update_session_info,
+                // Sync the agent loop's model identity + dynamic client so the
+                // next prompt uses the saved model, not a stale leftover from
+                // the previous session. set_model persists via update_session_info,
                 // which fails for legacy session files lacking a session_info
                 // entry — log and defer to an explicit /model.
                 let _ = self.set_model(&self.model.clone()).inspect_err(|e| {
@@ -1100,23 +1016,6 @@ mod tests {
         }
     }
 
-    struct KeyRecordingProvider(Arc<parking_lot::Mutex<String>>);
-
-    #[async_trait::async_trait]
-    impl LLMProvider for KeyRecordingProvider {
-        async fn stream_model(
-            &self,
-            _request: ModelRequest,
-        ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
-            let (_tx, rx) = mpsc::channel(1);
-            Ok(ReceiverStream::new(rx))
-        }
-
-        fn set_api_key(&self, api_key: &str) {
-            *self.0.lock() = api_key.to_string();
-        }
-    }
-
     struct FailingProvider;
 
     #[async_trait::async_trait]
@@ -1231,23 +1130,6 @@ mod tests {
             ApprovalGate::default(),
             Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
         )
-    }
-
-    // ─── resolve_api_key ────────────────────────────────────────────────────
-
-    #[test]
-    fn resolve_api_key_prefers_model_id() {
-        let auth = crate::AuthStore::load();
-        // With an empty auth store, should fall back to model_key or empty
-        let key = resolve_api_key(&auth, "unknown/model", "unknown", "model_key_123");
-        assert!(key == "model_key_123" || key.is_empty());
-    }
-
-    #[test]
-    fn resolve_api_key_empty_model_key() {
-        let auth = crate::AuthStore::load();
-        let key = resolve_api_key(&auth, "unknown/model", "unknown", "");
-        assert!(key.is_empty() || !key.is_empty()); // just verify no panic
     }
 
     // ─── default_workspace ──────────────────────────────────────────────────
@@ -1476,32 +1358,6 @@ mod tests {
         }
         session.new_session().unwrap();
         assert!(session.get_messages().is_empty());
-    }
-
-    // ─── strip_image_content_from_messages ──────────────────────────────────
-
-    #[test]
-    fn strip_images_removes_image_blocks() {
-        let session = make_test_session("s1");
-        {
-            let mut msgs = session.messages.write();
-            msgs.push(crate::types::AgentMessage {
-                role: "user".to_string(),
-                content: vec![
-                    crate::types::ContentBlock::text("look"),
-                    crate::types::ContentBlock::image("data:image/png;base64,abc"),
-                ],
-                ..Default::default()
-            });
-        }
-        session.strip_image_content_from_messages();
-        let msgs = session.messages.read();
-        assert_eq!(msgs[0].content.len(), 1);
-        let is_expected_text = matches!(
-            &msgs[0].content[0],
-            crate::types::ContentBlock::Text { text } if text == "look"
-        );
-        assert!(is_expected_text, "expected a Text block holding 'look'");
     }
 
     // ─── coverage batch 16: scheduler/set_model/switch residuals ──────────
@@ -2466,23 +2322,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn key_recording_provider_streams_empty() {
-        use tokio_stream::StreamExt;
-        let observed = Arc::new(parking_lot::Mutex::new(String::new()));
-        let provider = KeyRecordingProvider(observed.clone());
-        let mut stream = provider
-            .stream_model(ModelRequest {
-                model: "mock".into(),
-                system_prompt: String::new(),
-                messages: vec![],
-                tools: vec![],
-            })
-            .await
-            .unwrap();
-        assert!(stream.next().await.is_none());
-    }
-
     // ─── add_session_rule ───────────────────────────────────────────────────
 
     #[test]
@@ -2581,116 +2420,6 @@ mod tests {
         let mut session = make_test_session("s1");
         session.disable_builtin_tools();
         // Should not panic
-    }
-
-    #[test]
-    fn strip_images_removes_image_blocks_v2() {
-        let session = make_test_session("s1");
-        session.messages.write().push(crate::types::AgentMessage {
-            role: "user".to_string(),
-            content: vec![
-                crate::types::ContentBlock::text("hello"),
-                crate::types::ContentBlock::image("data:image/png;base64,abc"),
-            ],
-            ..Default::default()
-        });
-        session.strip_image_content_from_messages();
-        let msgs = session.messages.read();
-        assert_eq!(msgs[0].content.len(), 1);
-    }
-
-    #[test]
-    fn reload_credentials_no_panic() {
-        let session = make_test_session("s1");
-        let _ = session.reload_credentials();
-    }
-
-    #[test]
-    fn reload_credentials_applies_authoritative_provider_key() {
-        let _home = crate::test_support::TestHome::new();
-        let auth_path = crate::config::providers::auth_json_path();
-        std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
-        std::fs::write(
-            auth_path,
-            r#"{"custom":{"type":"api_key","key":"new-key"}}"#,
-        )
-        .unwrap();
-
-        let observed = Arc::new(parking_lot::Mutex::new("old-key".to_string()));
-        let cwd = test_workspace();
-        let mut session = ServerSession::new(
-            "key-refresh".to_string(),
-            Arc::new(tokio::sync::RwLock::new(Loop::new(
-                Arc::new(KeyRecordingProvider(observed.clone())),
-                "model",
-            ))),
-            Arc::new(Manager::new(test_session_dir())),
-            &cwd,
-            Arc::new(SseBroadcaster::new()),
-            ApprovalGate::default(),
-            Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
-        );
-        session.model = "custom/model".to_string();
-
-        session.reload_credentials().unwrap();
-        assert_eq!(&*observed.lock(), "new-key");
-    }
-
-    #[test]
-    fn reload_credentials_heals_fallback_model_literal() {
-        let mut session = make_test_session("fallback-heal");
-        session.set_model("gpt-4o").unwrap();
-        let bare = session.agent_loop.try_read().unwrap().model.clone();
-        assert!(!bare.contains('/'), "resolved set_model stores the bare id");
-        // Simulate the resolve-miss window: set_model's fallback froze the
-        // full provider/id literal into the loop.
-        let canonical = session.model.clone();
-        assert!(canonical.contains('/'));
-        session.agent_loop.try_write().unwrap().model = canonical;
-
-        session.reload_credentials().unwrap();
-        assert_eq!(session.agent_loop.try_read().unwrap().model, bare);
-    }
-
-    #[test]
-    fn reload_credentials_keeps_consistent_model_id() {
-        let mut session = make_test_session("consistent-model");
-        session.set_model("gpt-4o").unwrap();
-        let before = session.agent_loop.try_read().unwrap().model.clone();
-
-        session.reload_credentials().unwrap();
-        assert_eq!(session.agent_loop.try_read().unwrap().model, before);
-    }
-
-    #[test]
-    fn reload_credentials_leaves_unresolved_model_literal() {
-        let mut session = make_test_session("unresolved-model");
-        // Resolve miss: the fallback stores the literal, and reload must not
-        // rewrite it while the registry still cannot resolve the model.
-        session.set_model("unknown-provider/unknown-model").unwrap();
-        assert_eq!(
-            session.agent_loop.try_read().unwrap().model,
-            "unknown-provider/unknown-model"
-        );
-
-        session.reload_credentials().unwrap();
-        assert_eq!(
-            session.agent_loop.try_read().unwrap().model,
-            "unknown-provider/unknown-model"
-        );
-    }
-
-    #[test]
-    fn reload_credentials_reports_busy_when_loop_is_read_locked() {
-        let mut session = make_test_session("busy-loop");
-        session.set_model("gpt-4o").unwrap();
-        // A held read guard makes the credential install's try_write fail.
-        let _read_guard = session.agent_loop.try_read().unwrap();
-        let error = session.reload_credentials().unwrap_err();
-        assert!(
-            error.to_string().contains("configuration is busy"),
-            "unexpected error: {error:#}"
-        );
     }
 
     #[test]

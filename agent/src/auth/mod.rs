@@ -9,13 +9,14 @@ use std::collections::HashMap;
 pub struct AuthEntry {
     #[serde(rename = "type")]
     pub entry_type: String,
+    #[serde(default)]
     pub key: String,
-    #[serde(rename = "baseUrl", default)]
+    #[serde(rename = "base_url", alias = "baseUrl", default)]
     pub base_url: Option<String>,
 }
 
 /// Auth store holding all provider credentials
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AuthStore {
     entries: HashMap<String, AuthEntry>,
 }
@@ -45,7 +46,7 @@ impl AuthStore {
     }
 
     /// Parse auth from JSON string
-    fn from_json(data: &str) -> Result<Self, String> {
+    pub(crate) fn from_json(data: &str) -> Result<Self, String> {
         let raw: HashMap<String, serde_json::Value> =
             serde_json::from_str(data).map_err(|e| e.to_string())?;
 
@@ -59,17 +60,12 @@ impl AuthStore {
         Ok(Self { entries })
     }
 
-    /// Get API key for a provider (case-insensitive, prefix match).
+    /// Get the API key for exactly one provider.
     ///
-    /// Resolution order:
-    /// 1. Exact key match in the HashMap ("deepseek-v4-pro").
-    /// 2. Case-insensitive exact match.
-    /// 3. Prefix match — prefers the **longest** matching entry name
-    ///    (most specific).  If two entries match and have the same
-    ///    length, alphabetical order breaks the tie.  This avoids
-    ///    non-deterministic resolution when multiple entries share a
-    ///    prefix (e.g. "deepseek-v4-flash" and "deepseek-v4-pro" both
-    ///    match query "deepseek").
+    /// Credentials are provider-owned authority. Model ids, provider-name
+    /// prefixes, and an account-wide "default" must never borrow another
+    /// provider's secret. Case-insensitive equality is retained only for
+    /// legacy auth files written before provider ids were normalized.
     pub fn get(&self, provider: &str) -> Option<String> {
         let provider_lower = provider.to_lowercase();
 
@@ -87,55 +83,20 @@ impl AuthStore {
             }
         }
 
-        // Prefix match: pick the **longest** matching entry name
-        // (most specific), with alphabetical tie-break.
-        let mut best: Option<(&String, &AuthEntry)> = None;
-        for (name, entry) in &self.entries {
-            if entry.key.is_empty() {
-                continue;
-            }
-            let name_lower = name.to_lowercase();
-            if name_lower.starts_with(&provider_lower) || provider_lower.starts_with(&name_lower) {
-                match best {
-                    None => best = Some((name, entry)),
-                    Some((best_name, _)) => {
-                        if name.len() > best_name.len()
-                            || (name.len() == best_name.len() && name.as_str() < best_name.as_str())
-                        {
-                            best = Some((name, entry));
-                        }
-                    }
-                }
-            }
-        }
-        if let Some((_, entry)) = best {
-            return Some(entry.key.clone());
-        }
-
         None
     }
 
-    /// Get base URL for a provider (case-insensitive, prefix match).
+    /// Get the base URL for exactly one provider.
     pub fn base_url(&self, provider: &str) -> Option<String> {
         let provider_lower = provider.to_lowercase();
         for (name, entry) in &self.entries {
             let name_lower = name.to_lowercase();
-            if name_lower == provider_lower || provider_lower.starts_with(&name_lower) {
+            if name_lower == provider_lower {
                 if let Some(ref url) = entry.base_url {
                     if !url.is_empty() {
                         return Some(url.trim_end_matches('/').to_string());
                     }
                 }
-            }
-        }
-        None
-    }
-
-    /// Get the first available API key as default
-    pub fn default_key(&self) -> Option<String> {
-        for entry in self.entries.values() {
-            if !entry.key.is_empty() {
-                return Some(entry.key.clone());
             }
         }
         None
@@ -151,7 +112,7 @@ mod tests {
     }
 
     #[test]
-    fn prefix_match_is_deterministic_preferring_longer_name() {
+    fn provider_lookup_never_uses_prefix_matches() {
         let store2 = make_store(
             r#"{
                 "deepseek":       {"type": "api_key", "key": "short-key"},
@@ -159,44 +120,21 @@ mod tests {
             }"#,
         );
 
-        // Query "deepseek" → exact match for "deepseek" wins, get "short-key"
         assert_eq!(store2.get("deepseek"), Some("short-key".to_string()));
-
-        // Query "deepseek-" → no exact match, both prefix-match.
-        // "deepseek-v4-pro" (16 chars) is longer than "deepseek" (8 chars).
-        assert_eq!(store2.get("deepseek-"), Some("long-key".to_string()));
+        assert_eq!(store2.get("deepseek-"), None);
     }
 
     #[test]
-    fn prefix_match_prefers_longer_name_over_shorter() {
-        // Simulate the ambiguous case: multiple entries sharing a prefix.
-        // Run many iterations to catch any HashMap-ordering non-determinism.
-        for _ in 0..100 {
-            let store = make_store(
-                r#"{
-                    "openai":      {"type": "api_key", "key": "generic"},
-                    "openai-gpt-5": {"type": "api_key", "key": "specific"}
-                }"#,
-            );
-            // "openai" → exact match for "openai" wins
-            assert_eq!(store.get("openai"), Some("generic".to_string()));
-            // "openai-" → prefix: "openai-gpt-5" (12) > "openai" (6), so "specific"
-            assert_eq!(store.get("openai-"), Some("specific".to_string()));
-        }
-    }
-
-    #[test]
-    fn exact_match_takes_priority_over_prefix() {
+    fn exact_match_is_case_insensitive_only() {
         let store = make_store(
             r#"{
                 "deepseek":       {"type": "api_key", "key": "generic"},
                 "deepseek-v4":    {"type": "api_key", "key": "specific"}
             }"#,
         );
-        // Exact key match
         assert_eq!(store.get("deepseek"), Some("generic".to_string()));
-        // Exact case-insensitive: "DeepSeek" vs "deepseek"
         assert_eq!(store.get("DeepSeek"), Some("generic".to_string()));
+        assert_eq!(store.get("deepseek-v4-pro"), None);
     }
 
     #[test]
@@ -230,17 +168,15 @@ mod tests {
     }
 
     #[test]
-    fn prefix_match_prefers_longer_name_when_query_is_shorter() {
+    fn similar_provider_names_remain_isolated() {
         let store = make_store(
             r#"{
                 "deepseek-v4-pro": {"type": "api_key", "key": "pro-key"},
                 "deepseek": {"type": "api_key", "key": "base-key"}
             }"#,
         );
-        // "deepseek" exact match → base-key
         assert_eq!(store.get("deepseek"), Some("base-key".to_string()));
-        // "deepseek-" no exact, both prefix match → prefer longer "deepseek-v4-pro"
-        assert_eq!(store.get("deepseek-"), Some("pro-key".to_string()));
+        assert_eq!(store.get("deepseek-"), None);
     }
 
     #[test]
@@ -257,14 +193,28 @@ mod tests {
     }
 
     #[test]
-    fn base_url_case_insensitive_prefix() {
+    fn base_url_reads_the_current_snake_case_storage_field() {
+        let store = make_store(
+            r#"{
+                "future": {"type": "api_key", "key": "k", "base_url": "https://future.example/api"}
+            }"#,
+        );
+        assert_eq!(
+            store.base_url("future"),
+            Some("https://future.example/api".to_string())
+        );
+    }
+
+    #[test]
+    fn base_url_does_not_use_prefix_matches() {
         let store = make_store(
             r#"{
                 "azure-openai": {"type": "api_key", "key": "key", "baseUrl": "https://my.openai.azure.com/"}
             }"#,
         );
+        assert_eq!(store.base_url("Azure-OpenAI-eus"), None);
         assert_eq!(
-            store.base_url("Azure-OpenAI-eus"),
+            store.base_url("Azure-OpenAI"),
             Some("https://my.openai.azure.com".to_string())
         );
     }
@@ -290,24 +240,6 @@ mod tests {
     }
 
     #[test]
-    fn default_key_returns_first_non_empty() {
-        let store = make_store(
-            r#"{
-                "a": {"type": "api_key", "key": ""},
-                "b": {"type": "api_key", "key": "valid-key"}
-            }"#,
-        );
-        assert!(store.default_key().is_some());
-        assert_ne!(store.default_key().as_deref(), Some(""));
-    }
-
-    #[test]
-    fn default_key_empty_store_returns_none() {
-        let store = make_store(r#"{}"#);
-        assert_eq!(store.default_key(), None);
-    }
-
-    #[test]
     fn base_url_matching_entry_without_url_returns_none() {
         // Name matches but the entry carries no baseUrl → falls through to None.
         let store = make_store(
@@ -326,7 +258,7 @@ mod tests {
         let auth_path = home.auth_path();
         std::fs::create_dir_all(&auth_path).unwrap();
         let store = AuthStore::load();
-        assert!(store.default_key().is_none());
+        assert!(store.get("future").is_none());
     }
 
     #[test]
@@ -338,13 +270,6 @@ mod tests {
         std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
         std::fs::write(&auth_path, "not json").unwrap();
         let store = AuthStore::load();
-        assert!(store.default_key().is_none());
-    }
-
-    #[test]
-    fn default_key_skips_empty_key_entries() {
-        // Only empty-key entries → the loop skips every return and ends at None.
-        let store = make_store(r#"{"a": {"type": "api_key", "key": ""}}"#);
-        assert_eq!(store.default_key(), None);
+        assert!(store.get("future").is_none());
     }
 }

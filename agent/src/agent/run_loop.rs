@@ -45,6 +45,7 @@ impl Loop {
             message.ensure_journal_entry_id();
         }
         let mut active_checkpoint = self.active_checkpoint.lock().clone();
+        let mut context_manager = self.context_manager.clone();
         // Validate: last message must not be from assistant
         if let Some(last) = messages.last() {
             if last.role == "assistant" {
@@ -106,11 +107,36 @@ impl Loop {
 
             // Emit turn_start
 
+            // Model limits are provider authority, not run/session state. A
+            // catalog edit can change context limits while a multi-turn agent
+            // run is active, so refresh the compaction budget from the same
+            // shared Registry before every actual LLM turn. The dynamic LLM
+            // client independently resolves protocol, route, headers,
+            // modalities and max-output tokens for the request itself.
+            if let (Some(registry), Some(manager)) =
+                (&self.model_registry, context_manager.as_mut())
+            {
+                let model_ref = if self.model_ref.is_empty() {
+                    ctx.model.as_str()
+                } else {
+                    self.model_ref.as_str()
+                };
+                if let Some((_identity, model, _api_key)) =
+                    registry.read().resolve_request_target(model_ref)
+                {
+                    manager.context_window = model.context_window.max(1);
+                    let (reserve_tokens, keep_recent_tokens) =
+                        crate::compaction::context_token_budgets(manager.context_window);
+                    manager.reserve_tokens = reserve_tokens;
+                    manager.keep_recent_tokens = keep_recent_tokens;
+                    manager.model = model.id;
+                }
+            }
+
             // Build a model-only projection from the immutable journal view.
             // A committed checkpoint changes this request's prompt but never
             // replaces `messages`, which remains the complete transcript.
-            let context_window = self
-                .context_manager
+            let context_window = context_manager
                 .as_ref()
                 .map(|manager| manager.context_window.max(1) as u64)
                 .unwrap_or(1_000_000);
@@ -151,7 +177,7 @@ impl Loop {
                     phase: automatic_phase,
                 });
             };
-            let prepared = if let Some(manager) = &self.context_manager {
+            let prepared = if let Some(manager) = &context_manager {
                 if provider_limit_checkpoint_id.is_some() {
                     // The retry below must use exactly the checkpoint produced
                     // for this failed model step. A second automatic checkpoint
@@ -305,7 +331,7 @@ impl Loop {
                             };
                             let provider_limit_operation_id =
                                 format!("cmp_{}", crate::utils::generate_entry_id());
-                            let Some(manager) = &self.context_manager else {
+                            let Some(manager) = &context_manager else {
                                 let error = anyhow!(
                                     "context compaction is unavailable for provider-limit recovery"
                                 );
