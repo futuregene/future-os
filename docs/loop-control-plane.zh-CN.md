@@ -79,10 +79,32 @@ future loop run --goal G --agent-id mac-worker --model M --thinking-level L --ma
 future loop gate resolve --goal G --todo-id GATE --decision "approve"
 
 # 5. 观察与闭环
+future loop ui                           # 实时 Web 仪表盘（http://127.0.0.1:7717）
 future loop status --goal G
 future loop frontier show --goal G        # 终局判定 + 缺口明细
 future loop delivery record --goal G ...  # verified / failed / rework
 ```
+
+## Web 仪表盘（`future loop ui`）
+
+`future loop ui [--port N] [--root DIR] [--no-open]` 在 `127.0.0.1`（默认端口 7717）
+起一个本地、**严格只读**的仪表盘。它每次请求都重放与 CLI 相同的事件账本，并通过
+SSE 推送变更，因此页面始终是 `.future/loop/` 的忠实、实时投影——仅此而已：服务端
+只读取 loop 状态根，且只存在 GET 端点（其他任何方法都返回 405）。所有变更（gate
+resolve、goal cancel 等）仍留在 CLI——页面只显示对应的 `future loop` 命令。
+
+- **总览（Overview）**：目标群（fleet）总数（活跃/终局/已取消目标、未决闸门、24h/7d
+  运行/成本/quota 槽位）、关注队列（严重度、等待项、建议动作），以及按 triage 排序
+  的目标卡片。
+- **目标详情（Goal detail，多标签页）**：Board —— 内核的 should-run 决策（原因 + 代码
+  + 等待项）、下一步动作、花费/吞吐（14 天 sparkline、token/成本/槽位分桶、7 天结果
+  拆分）、未决闸门，以及 todo 依赖 DAG（分层、可点选检查器，含 verify/acceptance/lease/
+  evidence 明细）；Todos —— 完整表格，含每个 todo 的 runs/token/成本汇总与活动窗口；
+  Workers —— agent 租约、心跳、活性告警、每个 worker 的成本/token 汇总、交付闭环、
+  replan 义务、验收缺口；Runs —— 运行账本（验证回执、失败类型、token、成本、证据）+
+  语义历史；Events —— 原始事件账本。
+- 所有状态在每次请求时都从 `.future/loop/` 投影出来；仪表盘不持有独立状态，也不写入
+  任何内容。
 
 ## 硬校验优先（约定靠不住，闸门靠得住）
 
@@ -92,6 +114,35 @@ future loop delivery record --goal G ...  # verified / failed / rework
 - 租约活性自愈：死进程的租约自动回收，重启 worker 不再需要手动 release
 - 工作区守卫：多 agent 写冲突自动降级串行
 - 空转回合（15 分钟无写入）会记账；用 `todo update --text` 纠正（下一回合生效）
+
+## 双向消息（supervisor ↔ worker）
+
+supervisor（运行 `/future-loop` 技能的编排 agent）与其 worker 通过目标账本交换消息——
+没有进程内推送通道。两个方向都走同一份事件源状态：
+
+- **注册 supervisor**（每个目标一次）：
+  `future loop supervisor register --goal G --session-id <supervisor-agent-session>`
+  这把 supervisor 的 agent 会话 id 绑定到目标；worker 在 `replay` 时读到它，并把报告
+  定向到它。
+
+- **下行（supervisor → worker，一次中断）：**
+  `future loop supervisor steer --goal G [--agent-id A] --instruction "..."`
+  一条 `WorkerSteered` 事件落入账本；运行中 worker 的 watch 任务看到它，并中止进行中的
+  运行（真正的 `supersede_session` 中断，不是 system-prompt 提示）。下一回合把这条指令
+  排入它的 envelope 并执行。
+
+- **上行（worker → supervisor，一次报告）：**
+  在回合边界，worker 把报告入队（`enqueue_if_busy`，因此绝不打断 supervisor）到已注册
+  会话，且恰好针对三种状态迁移：用户闸门打开（①）、todo 完成（②）、或 todo 因科学/
+  硬错误失败（③）。每条报告按迁移幂等键控，因此跨运行的重发会去重。若未注册
+  supervisor，持久化用户闸门仍是权威的干预通道。
+
+- **基础设施停止 + 死 worker：** 在到达回合边界写回之前退出的 worker（gRPC 传输丢失、
+  `--max-turn-secs` 超时、不完整重试预算耗尽）也会上报一条 `infra_stopped` 备注。
+  直接死掉的 worker（SIGKILL / 崩溃 / 宿主机故障）不执行任何代码，因此周期性的
+  `scheduler tick` 会检测到孤儿租约（持有者 pid 已死），并向已注册的 supervisor 推送
+  一条 `host_died` 备注，促使编排者重启，而不是只在下次 `status` 轮询时才发现有 worker
+  死了。
 
 ## loop 状态以 CLI 为准
 
