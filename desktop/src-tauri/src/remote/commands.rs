@@ -2467,8 +2467,13 @@ mod bridge_tests {
         agent.set_session_entries(
             &session,
             json!({ "entries": [{
-                "entryType": "assistant",
+                "id": "persisted-assistant",
+                "entry_type": "assistant",
+                "role": "assistant",
                 "content": "partial",
+                "name": "",
+                "tool_args": "",
+                "timestamp": "2026-08-27T10:00:00Z",
                 "meta": { "run_id": history_run.id }
             }] }),
         );
@@ -2488,6 +2493,32 @@ mod bridge_tests {
             .await;
         assert_eq!(reply["success"], json!(true));
         assert_eq!(reply["data"]["entries"].as_array().unwrap().len(), 1);
+
+        // Production sidecar responses carry typed payload only (`data` is
+        // empty); mobile history must still flow through the remote bridge.
+        agent.script_typed_for(
+            "get_session_entries",
+            &session,
+            json!({"entries": [{
+                "id": "typed-mobile-entry",
+                "role": "assistant",
+                "content": "typed mobile history",
+                "name": "",
+                "tool_args": "",
+                "timestamp": "2026-08-27T10:00:00Z"
+            }]}),
+        );
+        let reply = bridge
+            .call(
+                json!({ "id": unique("cmd"), "type": "get_session_entries", "sessionId": session }),
+            )
+            .await;
+        assert_eq!(reply["success"], json!(true));
+        assert_eq!(
+            reply["data"]["entries"][0]["content"],
+            json!("typed mobile history")
+        );
+
         agent.script_for("get_session_entries", &session, false, json!(null), "nope");
         let reply = bridge
             .call(

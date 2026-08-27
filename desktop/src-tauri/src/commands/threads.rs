@@ -392,7 +392,10 @@ pub async fn get_session_entries(thread_id: String) -> Result<serde_json::Value,
         }
         return Err(resp.error.into());
     }
-    serde_json::from_str(&resp.data).map_err(|e| format!("Parse error: {e}").into())
+    let entries = future_rpc::decode::decode_session_entries(&resp).ok_or_else(|| {
+        "Parse error: typed session entries payload is missing or invalid".to_string()
+    })?;
+    Ok(serde_json::json!({ "entries": entries }))
 }
 
 #[tauri::command]
@@ -1017,6 +1020,33 @@ mod tests {
             .await
             .expect("entries");
         assert_eq!(value["entries"], serde_json::json!([]));
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn get_session_entries_reads_typed_only_agent_history() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_entries_typed");
+        let thread = make_thread(&_home, Some("sess_entries_typed"));
+        script_mock_agent(MockScript::default());
+        let agent = crate::commands::agent_mock::ensure_mock_agent();
+        agent.script_typed_for(
+            "get_session_entries",
+            "sess_entries_typed",
+            serde_json::json!({"entries": [{
+                "id": "entry-typed",
+                "role": "user",
+                "content": "still here",
+                "name": "",
+                "tool_args": "",
+                "timestamp": "2026-08-27T10:00:00Z"
+            }]}),
+        );
+
+        let value = get_session_entries(thread.id.clone())
+            .await
+            .expect("typed entries");
+        assert_eq!(value["entries"][0]["content"], "still here");
         script_mock_agent(MockScript::default());
     }
 

@@ -87,6 +87,7 @@ struct ScriptedResponse {
     success: bool,
     data: String,
     error: String,
+    typed: bool,
 }
 
 #[derive(Default)]
@@ -126,6 +127,23 @@ impl MockAgent {
         self.script_for(command, "", success, data, error);
     }
 
+    /// Enqueue a typed-only response addressed to one session.
+    pub(crate) fn script_typed_for(&self, command: &str, session_id: &str, data: Value) {
+        let key = format!("{command}:{session_id}");
+        self.state
+            .lock()
+            .unwrap()
+            .scripts
+            .entry(key)
+            .or_default()
+            .push_back(ScriptedResponse {
+                success: true,
+                data: data.to_string(),
+                error: String::new(),
+                typed: true,
+            });
+    }
+
     /// Enqueue a one-shot response for `command` addressed to `session_id`.
     pub(crate) fn script_for(
         &self,
@@ -146,11 +164,43 @@ impl MockAgent {
                 success,
                 data: data.to_string(),
                 error: error.to_string(),
+                typed: false,
             });
     }
 
     /// Set the `get_session_entries` payload for one session.
-    pub(crate) fn set_session_entries(&self, session_id: &str, entries: Value) {
+    pub(crate) fn set_session_entries(&self, session_id: &str, mut entries: Value) {
+        // Keep convenient attachment-focused fixtures wire-valid now that the
+        // desktop consumes the typed SessionEntry contract.
+        for (index, entry) in entries
+            .get_mut("entries")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            let Some(object) = entry.as_object_mut() else {
+                continue;
+            };
+            object
+                .entry("id")
+                .or_insert_with(|| Value::String(format!("mock-entry-{index}")));
+            object
+                .entry("role")
+                .or_insert_with(|| Value::String("user".to_string()));
+            object
+                .entry("content")
+                .or_insert_with(|| Value::String(String::new()));
+            object
+                .entry("name")
+                .or_insert_with(|| Value::String(String::new()));
+            object
+                .entry("tool_args")
+                .or_insert_with(|| Value::String(String::new()));
+            object
+                .entry("timestamp")
+                .or_insert_with(|| Value::String("2026-08-27T00:00:00Z".to_string()));
+        }
         self.state
             .lock()
             .unwrap()
@@ -202,7 +252,7 @@ struct AgentService {
 
 impl AgentService {
     fn answer(&self, cmd: crate::agent_proto::RpcCommand) -> crate::agent_proto::RpcResponse {
-        let (success, data, error) = {
+        let (success, data, error, typed) = {
             let mut state = self.state.lock().unwrap();
             state
                 .requests
@@ -219,19 +269,33 @@ impl AgentService {
                         .and_then(VecDeque::pop_front)
                 });
             match scripted {
-                Some(response) => (response.success, response.data, response.error),
+                Some(response) => (
+                    response.success,
+                    response.data,
+                    response.error,
+                    response.typed,
+                ),
                 // The persistent facade (commands tests) — one-shot scripts
                 // take precedence over it.
                 None => {
                     if let Some(error) = state.persistent_errors.get(cmd.r#type.as_str()) {
-                        (false, String::new(), error.clone())
+                        (false, String::new(), error.clone(), false)
                     } else if let Some(data) = state.persistent_data.get(cmd.r#type.as_str()) {
-                        (true, data.clone(), String::new())
+                        (true, data.clone(), String::new(), false)
                     } else {
-                        default_answer(&cmd, &mut state)
+                        let (success, data, error) = default_answer(&cmd, &mut state);
+                        (success, data, error, false)
                     }
                 }
             }
+        };
+        let (data, payload) = if typed {
+            let value = serde_json::from_str(&data).expect("scripted typed response JSON");
+            let payload = future_rpc::encode::response_payload(&cmd.r#type, &value)
+                .expect("scripted typed payload must match its command");
+            (String::new(), Some(payload))
+        } else {
+            (data, None)
         };
         crate::agent_proto::RpcResponse {
             id: cmd.id.clone(),
@@ -240,6 +304,7 @@ impl AgentService {
             success,
             data,
             error,
+            payload,
             ..Default::default()
         }
     }

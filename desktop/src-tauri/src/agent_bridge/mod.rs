@@ -296,11 +296,9 @@ pub async fn get_session_entries(session_id: String) -> Result<serde_json::Value
         .map_err(|status| format!("get_session_entries failed: {status}"))?
         .into_inner()
         .ok_or_rpc_error("get_session_entries returned an error")?;
-    if response.data.is_empty() {
-        Ok(serde_json::json!({ "entries": [] }))
-    } else {
-        Ok(future_rpc::decode::response_data(&response))
-    }
+    let entries = future_rpc::decode::decode_session_entries(&response)
+        .ok_or_else(|| "get_session_entries typed payload is missing or invalid".to_string())?;
+    Ok(serde_json::json!({ "entries": entries }))
 }
 
 /// Fetch the session's current state (model, thinkingLevel, isStreaming, etc.)
@@ -1693,19 +1691,20 @@ mod bridge_tests {
             .expect("messages");
         assert_eq!(value, serde_json::json!({"messages": []}));
 
-        mock.push_data(
+        mock.push_typed_data(
             "get_session_entries",
-            serde_json::json!({"entries": [{"id": "e1"}]}),
+            serde_json::json!({"entries": [{
+                "id": "e1", "role": "assistant", "content": "world", "name": "",
+                "tool_args": "", "timestamp": "2026-08-27T10:00:01Z"
+            }]}),
         );
         let value = get_session_entries("sess-1".to_string())
             .await
-            .expect("entries");
+            .expect("typed entries");
         assert_eq!(value["entries"][0]["id"], "e1");
+
         mock.push("get_session_entries", Reply::Data(String::new()));
-        let value = get_session_entries("sess-1".to_string())
-            .await
-            .expect("entries");
-        assert_eq!(value, serde_json::json!({"entries": []}));
+        assert!(get_session_entries("sess-1".to_string()).await.is_err());
 
         mock.push_data("get_state", serde_json::json!({"isStreaming": true}));
         let value = get_session_state("sess-1".to_string())

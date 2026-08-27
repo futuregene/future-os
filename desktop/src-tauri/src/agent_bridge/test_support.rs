@@ -30,6 +30,8 @@ use crate::agent_proto::{RpcCommand, RpcResponse, StreamEvent, StreamRequest};
 pub(crate) enum Reply {
     /// `success = true` with the given JSON `data` string.
     Data(String),
+    /// `success = true` with the production typed payload and empty `data`.
+    TypedData(serde_json::Value),
     /// `success = false` with this error message.
     Reject(String),
     /// Transport-level failure (tonic status).
@@ -127,6 +129,13 @@ impl FutureAgent for MockAgent {
                 data,
                 String::new(),
             ))),
+            Reply::TypedData(data) => {
+                let payload = future_rpc::encode::response_payload(&cmd.r#type, &data)
+                    .expect("scripted typed payload must match its command");
+                let mut response = rpc_response(&cmd, true, String::new(), String::new());
+                response.payload = Some(payload);
+                Ok(tonic::Response::new(response))
+            }
             Reply::Reject(error) => Ok(tonic::Response::new(rpc_response(
                 &cmd,
                 false,
@@ -299,6 +308,11 @@ impl MockAgentGuard {
     /// Queue a successful reply whose `data` is the JSON rendering of `value`.
     pub(crate) fn push_data(&self, command_type: &str, value: serde_json::Value) {
         self.push(command_type, Reply::Data(value.to_string()));
+    }
+
+    /// Queue a production-shaped typed-only response (`data` stays empty).
+    pub(crate) fn push_typed_data(&self, command_type: &str, value: serde_json::Value) {
+        self.push(command_type, Reply::TypedData(value));
     }
 
     /// Queue a `get_run_state` reply (get_state carrying a run id) for one

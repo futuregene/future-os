@@ -3,7 +3,6 @@
 //! records + per-reply run records so they appear in the thread list and right
 //! panel immediately.
 
-use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
@@ -15,32 +14,17 @@ use crate::store;
 
 // ─── agent RPC types ────────────────────────────────────────────────────────
 
-/// Lightweight session summary from the agent's `list_sessions` RPC.
-///
-/// Field casing (audit item 1): the canonical wire keys are camelCase. The
-/// agent also emits snake_case legacy aliases alongside them during the
-/// migration window — the struct reads only the canonical camelCase keys, and
-/// the legacy keys are ignored (declaring an `alias` here would make serde see
-/// both spellings of the same field as a duplicate and reject the entry).
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// Desktop import shape derived from the typed `list_sessions` response.
+#[derive(Debug)]
 pub struct AgentSessionSummary {
     pub id: String,
-    #[serde(default, rename = "sessionName")]
     pub name: Option<String>,
-    // Tolerate a missing/null cwd (e.g. channel sessions) — an empty cwd is
-    // routed to a chat workspace by `thread_mode`, not dropped.
-    #[serde(default)]
     pub cwd: String,
-    #[serde(default)]
     pub model: String,
-    #[serde(default)]
     pub first_message: Option<String>,
-    #[serde(default)]
     #[allow(dead_code)]
     pub parent_session_id: String,
     /// Whether the agent is currently streaming a response for this session.
-    #[serde(default)]
     #[allow(dead_code)]
     pub is_streaming: bool,
 }
@@ -76,30 +60,22 @@ async fn list_agent_sessions() -> Vec<AgentSessionSummary> {
         return vec![];
     }
 
-    // Parse per-session rather than all-or-nothing: a single malformed entry
-    // must not drop every other importable session.
-    let value: serde_json::Value = match serde_json::from_str(&inner.data) {
-        Ok(value) => value,
-        Err(error) => {
-            eprintln!("FutureOS: session import parse failed: {error}");
-            return vec![];
-        }
+    let Some(sessions) = future_rpc::decode::decode_list_sessions(&inner) else {
+        eprintln!("FutureOS: session import parse failed: typed payload is missing or invalid");
+        return vec![];
     };
-    let raw_sessions = value
-        .get("sessions")
-        .and_then(|s| s.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let mut sessions = Vec::with_capacity(raw_sessions.len());
-    for raw in raw_sessions {
-        match serde_json::from_value::<AgentSessionSummary>(raw) {
-            Ok(summary) => sessions.push(summary),
-            Err(error) => {
-                eprintln!("FutureOS: skipping malformed session in import list: {error}");
-            }
-        }
-    }
     sessions
+        .into_iter()
+        .map(|summary| AgentSessionSummary {
+            id: summary.id,
+            name: summary.session_name,
+            cwd: summary.cwd,
+            model: summary.model,
+            first_message: summary.first_message,
+            parent_session_id: summary.parent_session_id,
+            is_streaming: summary.is_streaming,
+        })
+        .collect()
 }
 
 /// The set of session ids the agent currently knows about, with transport
@@ -152,11 +128,11 @@ async fn fetch_session_entries(session_id: &str) -> Vec<serde_json::Value> {
     if !resp.success {
         return vec![];
     }
-    serde_json::from_str::<serde_json::Value>(&resp.data)
-        .ok()
-        .and_then(|v| v.get("entries").cloned())
-        .and_then(|v| serde_json::from_value(v).ok())
+    future_rpc::decode::decode_session_entries(&resp)
         .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| serde_json::to_value(entry).ok())
+        .collect()
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -582,46 +558,6 @@ pub async fn import_missing_sessions() {
 mod tests {
     use super::*;
 
-    /// Audit item 1: the canonical casing of list_sessions rows is camelCase;
-    /// the struct must parse it directly. The agent also emits snake_case
-    /// legacy aliases alongside the canonical keys during the migration window,
-    /// so the struct reads ONLY the camelCase spellings — declaring aliases for
-    /// the legacy keys would make serde treat the two spellings of one field as
-    /// a duplicate and reject the whole entry.
-    #[test]
-    fn agent_session_summary_parses_list_sessions_json() {
-        let raw = serde_json::json!({
-            "id": "abc123",
-            "sessionName": "fix the login bug",
-            "model": "deepseek-v4-pro",
-            "cwd": "/Users/test/my-project",
-            "updatedAt": "2026-07-21 10:00:00",
-            "parentSessionId": "parent-1",
-            "firstMessage": "please fix the login bug on the homepage",
-            "queryCount": 5,
-            "isStreaming": true,
-            // Legacy snake_case aliases the agent still emits alongside the
-            // canonical keys — must be ignored, not treated as duplicates.
-            "session_name": "fix the login bug",
-            "first_message": "please fix the login bug on the homepage",
-            "parent_session_id": "parent-1",
-            "is_streaming": true,
-        });
-
-        let summary: AgentSessionSummary =
-            serde_json::from_value(raw).expect("should parse list_sessions JSON");
-
-        assert_eq!(summary.id, "abc123");
-        assert_eq!(summary.name.as_deref(), Some("fix the login bug"));
-        assert_eq!(
-            summary.first_message.as_deref(),
-            Some("please fix the login bug on the homepage")
-        );
-        assert_eq!(summary.cwd, "/Users/test/my-project");
-        assert_eq!(summary.model, "deepseek-v4-pro");
-        assert!(summary.is_streaming);
-    }
-
     /// session_title prefers first_message over name and cwd_basename.
     #[test]
     fn session_title_prefers_first_message() {
@@ -697,7 +633,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_agent_sessions_skips_malformed_entries_and_survives_errors() {
+    async fn list_agent_sessions_survives_rpc_and_payload_errors() {
         let mock = super::super::test_support::mock_agent();
 
         // Reject → empty.
@@ -706,7 +642,6 @@ mod tests {
             super::super::test_support::Reply::Reject("nope".into()),
         );
         assert!(list_agent_sessions().await.is_empty());
-
         // Transport error → empty.
         mock.push(
             "list_sessions",
@@ -720,18 +655,30 @@ mod tests {
             super::super::test_support::Reply::Data("not json".into()),
         );
         assert!(list_agent_sessions().await.is_empty());
+    }
 
-        // One valid + one malformed entry → only the valid one survives.
-        mock.push_data(
+    #[tokio::test]
+    async fn list_agent_sessions_decodes_typed_only_response() {
+        let mock = super::super::test_support::mock_agent();
+        mock.push_typed_data(
             "list_sessions",
-            serde_json::json!({"sessions": [
-                {"id": "s1", "sessionName": "ok", "cwd": "/ws/a", "model": "m", "firstMessage": "hi"},
-                42
-            ]}),
+            serde_json::json!({"sessions": [{
+                "id": "typed-session",
+                "sessionName": "Typed history",
+                "model": "future/k3",
+                "cwd": "/ws/typed",
+                "updatedAt": "2026-08-27 10:00:00",
+                "parentSessionId": "",
+                "firstMessage": "hello",
+                "queryCount": 1,
+                "isStreaming": false
+            }]}),
         );
+
         let sessions = list_agent_sessions().await;
         assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].id, "s1");
+        assert_eq!(sessions[0].id, "typed-session");
+        assert_eq!(sessions[0].first_message.as_deref(), Some("hello"));
     }
 
     #[tokio::test]
@@ -772,18 +719,31 @@ mod tests {
             super::super::test_support::Reply::Reject("no".into()),
         );
         assert!(fetch_session_entries("s").await.is_empty());
-
         mock.push(
             "get_session_entries",
             super::super::test_support::Reply::Data("not json".into()),
         );
         assert!(fetch_session_entries("s").await.is_empty());
+    }
 
-        mock.push_data(
+    #[tokio::test]
+    async fn fetch_session_entries_decodes_typed_only_response() {
+        let mock = super::super::test_support::mock_agent();
+        mock.push_typed_data(
             "get_session_entries",
-            serde_json::json!({"entries": [{"role": "assistant"}, {"role": "user"}]}),
+            serde_json::json!({"entries": [{
+                "id": "entry-1",
+                "role": "user",
+                "content": "hello",
+                "name": "",
+                "tool_args": "",
+                "timestamp": "2026-08-27T10:00:00Z"
+            }]}),
         );
-        assert_eq!(fetch_session_entries("s").await.len(), 2);
+
+        let entries = fetch_session_entries("typed-session").await;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["content"], "hello");
     }
 
     // ── thread_mode / is_desktop_chat_cwd ──────────────────────────────
@@ -1157,11 +1117,11 @@ mod tests {
     async fn import_one_creates_a_new_chat_thread_and_runs() {
         let _home = super::super::test_support::TestHome::new("import-new");
         let mock = super::super::test_support::mock_agent();
-        mock.push_data(
+        mock.push_typed_data(
             "get_session_entries",
             serde_json::json!({"entries": [
-                {"role": "assistant", "content": "a1"},
-                {"role": "assistant", "content": "a2"}
+                {"id": "a1", "role": "assistant", "content": "a1", "name": "", "tool_args": "", "timestamp": "2026-08-27T10:00:00Z"},
+                {"id": "a2", "role": "assistant", "content": "a2", "name": "", "tool_args": "", "timestamp": "2026-08-27T10:00:01Z"}
             ]}),
         );
         let s = summary("sess-new", "");
@@ -1235,21 +1195,24 @@ mod tests {
         let mock = super::super::test_support::mock_agent();
 
         // Empty list → silent Ok.
-        mock.push_data("list_sessions", serde_json::json!({}));
+        mock.push_typed_data("list_sessions", serde_json::json!({"sessions": []}));
         import_missing_sessions().await;
 
         // Two sessions, each with one assistant reply.
-        mock.push_data(
+        mock.push_typed_data(
             "list_sessions",
             serde_json::json!({"sessions": [
-                {"id": "sess-m1", "cwd": "", "model": "future/k3", "firstMessage": "one"},
-                {"id": "sess-m2", "cwd": "", "model": "future/k3", "firstMessage": "two"}
+                {"id": "sess-m1", "sessionName": null, "cwd": "", "model": "future/k3", "updatedAt": "2026-08-27 10:00:00", "parentSessionId": "", "firstMessage": "one", "queryCount": 1, "isStreaming": false},
+                {"id": "sess-m2", "sessionName": null, "cwd": "", "model": "future/k3", "updatedAt": "2026-08-27 10:00:00", "parentSessionId": "", "firstMessage": "two", "queryCount": 1, "isStreaming": false}
             ]}),
         );
-        for _ in 0..2 {
-            mock.push_data(
+        for index in 0..2 {
+            mock.push_typed_data(
                 "get_session_entries",
-                serde_json::json!({"entries": [{"role": "assistant"}]}),
+                serde_json::json!({"entries": [{
+                    "id": format!("reply-{index}"), "role": "assistant", "content": "ok",
+                    "name": "", "tool_args": "", "timestamp": "2026-08-27T10:00:01Z"
+                }]}),
             );
         }
         import_missing_sessions().await;
