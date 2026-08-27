@@ -408,18 +408,19 @@ fn get_state_internal(
     let cache_r = sess.tokens_cache_r.load(Ordering::Relaxed);
     let cache_w = sess.tokens_cache_w.load(Ordering::Relaxed);
 
-    // Prefer API-reported cost (Future platform returns `credit_cost` in
-    // the usage chunk).  When absent (most non-Future providers don't
-    // report it), fall back to token-count × model-price estimation.
+    // `cumulative_cost` accumulates the cost of every request: Future
+    // providers report an authoritative `credit_cost`, and other providers
+    // fall back to a token×price estimate inside the run loop. The estimate
+    // below is only a legacy fallback for sessions created before per-request
+    // accumulation existed (their journal records token usage but a zero
+    // cumulative cost).
     let api_cost = *sess.cumulative_cost.lock();
     let total_cost = if api_cost > 0.0 {
         api_cost
     } else if let Some(model_config) = registry.resolve(&sess.model) {
-        let input_cost = (tokens_in as f64 / 1_000_000.0) * model_config.cost.input;
-        let output_cost = (tokens_out as f64 / 1_000_000.0) * model_config.cost.output;
-        let cache_read_cost = (cache_r as f64 / 1_000_000.0) * model_config.cost.cache_read;
-        let cache_write_cost = (cache_w as f64 / 1_000_000.0) * model_config.cost.cache_write;
-        input_cost + output_cost + cache_read_cost + cache_write_cost
+        model_config
+            .cost
+            .estimate(tokens_in, tokens_out, cache_r, cache_w)
     } else {
         0.0
     };

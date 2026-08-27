@@ -873,13 +873,15 @@ impl Loop {
                 .map(agent_tool_call_to_tool_call)
                 .collect();
 
-            // Apply the final credit_cost from this LLM call to cumulative_cost.
-            // The upstream API sends progressive credit_cost updates in each
-            // usage chunk; total_usage holds the LAST (complete) value. Adding
-            // it here — once per LLM call — avoids the N× inflation that
-            // would result from accumulating every intermediate chunk.
+            // Apply this LLM call's final cost to cumulative_cost, once per
+            // call (total_usage holds the LAST complete usage chunk — adding
+            // every intermediate chunk would inflate the total N×). Future
+            // providers report an authoritative `credit_cost`; when absent
+            // (most other providers), fall back to a token×price estimate so
+            // mixed-model sessions still account for every request.
             if let Some(ref u) = total_usage {
-                if let Some(cost) = u.credit_cost {
+                let cost = u.credit_cost.unwrap_or_else(|| self.estimate_usage_cost(u));
+                if cost > 0.0 {
                     *self.cumulative_cost.lock() += cost;
                 }
             }
@@ -1108,6 +1110,31 @@ impl Loop {
         // inflates the total by N×. Instead, credit_cost is applied once at
         // the end of the LLM call using the final value from total_usage.
         *total_usage = Some(u.clone());
+    }
+
+    /// Estimate the cost of a single request's final usage when the upstream
+    /// API did not report an authoritative `credit_cost` (most non-Future
+    /// providers). Resolves the model's per-1M-token prices from the shared
+    /// registry and returns zero when the model is unknown or unpriced.
+    fn estimate_usage_cost(&self, usage: &crate::types::Usage) -> f64 {
+        let model_ref = if self.model_ref.is_empty() {
+            self.model.as_str()
+        } else {
+            self.model_ref.as_str()
+        };
+        let Some(model) = self
+            .model_registry
+            .as_ref()
+            .and_then(|registry| registry.read().resolve(model_ref))
+        else {
+            return 0.0;
+        };
+        model.cost.estimate(
+            usage.prompt_tokens,
+            usage.completion_tokens,
+            usage.cache_read_tokens.unwrap_or(0),
+            usage.cache_write_tokens.unwrap_or(0),
+        )
     }
 }
 
@@ -1685,6 +1712,62 @@ mod tests {
             15
         );
         drop(provider);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_estimates_cost_when_credit_cost_absent() {
+        // A non-Future model: the usage carries no credit_cost, but the catalog
+        // has a price, so the run loop accumulates a token×price estimate
+        // instead of silently dropping the request's cost (mixed-model bug).
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![
+            ModelStreamEvent::Usage(crate::types::Usage {
+                prompt_tokens: 1_000_000,
+                completion_tokens: 1_000_000,
+                total_tokens: 2_000_000,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+                reasoning_tokens: None,
+                credit_cost: None,
+                provider_metadata: None,
+            }),
+            ev_text("answer"),
+            ev_stop(),
+        ])]);
+        let mut loop_ = Loop::new(provider.clone(), "deepseek-chat");
+        loop_.model_ref = "deepseek/deepseek-chat".to_string();
+        loop_.model_registry = Some(std::sync::Arc::new(parking_lot::RwLock::new(
+            crate::models::Registry::from_models_and_auth(
+                vec![crate::models::Model {
+                    id: "deepseek-chat".to_string(),
+                    name: "DeepSeek Chat".to_string(),
+                    provider: "deepseek".to_string(),
+                    api: "chat".to_string(),
+                    base_url: "https://api.deepseek.com".to_string(),
+                    input: vec!["text".to_string()],
+                    output: vec!["text".to_string()],
+                    cost: crate::models::Cost {
+                        input: 1.0,
+                        output: 2.0,
+                        cache_read: 0.0,
+                        cache_write: 0.0,
+                    },
+                    ..Default::default()
+                }],
+                r#"{"deepseek":{"type":"api_key","key":"key"}}"#,
+            ),
+        )));
+        let _ = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        // 1M input × 1.0 + 1M output × 2.0 = 3.0.
+        assert!((*loop_.cumulative_cost.lock() - 3.0).abs() < 1e-9);
     }
 
     #[tokio::test(flavor = "current_thread")]
