@@ -23,6 +23,10 @@
     "title": "Auto-upgrade skills",
     "description": "Silently upgrade installed skills to their latest version each time the app opens"
   },
+  "bellOnComplete": {
+    "title": "Completion bell",
+    "description": "Play a sound and attract the window's attention when an agent finishes"
+  },
   "remote": {
     "autoConnect": {
       "title": "Auto-connect phone on launch",

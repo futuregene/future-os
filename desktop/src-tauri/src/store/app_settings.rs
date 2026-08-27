@@ -30,6 +30,9 @@ pub struct AppSettings {
     /// 知道了 / click-outside). Off by default; once set, the bubble and its
     /// blue dot never show again (until app data is wiped).
     pub skill_intro_dismissed: bool,
+    /// Play a completion bell + request window attention when an agent run
+    /// finishes. On by default.
+    pub bell_on_complete: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -42,6 +45,7 @@ pub struct UpdateAppSettingsInput {
     pub auto_connect_remote: Option<bool>,
     pub skill_guide_dismissed: Option<bool>,
     pub skill_intro_dismissed: Option<bool>,
+    pub bell_on_complete: Option<bool>,
 }
 
 const KEY_APPROVAL_TIER: &str = "approval_tier";
@@ -51,6 +55,7 @@ const KEY_AUTO_UPGRADE_SKILLS: &str = "auto_upgrade_skills";
 const KEY_AUTO_CONNECT_REMOTE: &str = "auto_connect_remote";
 const KEY_SKILL_GUIDE_DISMISSED: &str = "skill_guide_dismissed";
 const KEY_SKILL_INTRO_DISMISSED: &str = "skill_intro_dismissed";
+const KEY_BELL_ON_COMPLETE: &str = "bell_on_complete";
 
 pub fn get_app_settings() -> Result<AppSettings, crate::AppError> {
     let conn = connect()?;
@@ -98,6 +103,10 @@ pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings,
         };
         write_value(&tx, KEY_SKILL_INTRO_DISMISSED, value, now)?;
     }
+    if let Some(bell_on_complete) = input.bell_on_complete {
+        let value = if bell_on_complete { "true" } else { "false" };
+        write_value(&tx, KEY_BELL_ON_COMPLETE, value, now)?;
+    }
 
     let settings = read_app_settings(&tx)?;
     tx.commit()?;
@@ -126,6 +135,9 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
     let skill_intro_dismissed = read_value(conn, KEY_SKILL_INTRO_DISMISSED)?
         .map(|value| value == "true")
         .unwrap_or(false); // Off by default — the bubble shows once until dismissed.
+    let bell_on_complete = read_value(conn, KEY_BELL_ON_COMPLETE)?
+        .map(|value| value == "true")
+        .unwrap_or(true); // On by default — a finished run should get noticed.
     Ok(AppSettings {
         approval_tier,
         hidden_models,
@@ -134,6 +146,7 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
         auto_connect_remote,
         skill_guide_dismissed,
         skill_intro_dismissed,
+        bell_on_complete,
     })
 }
 
@@ -181,6 +194,7 @@ mod tests {
             auto_connect_remote: Some(true),
             skill_guide_dismissed: Some(true),
             skill_intro_dismissed: Some(true),
+            bell_on_complete: None,
         }
     }
 
@@ -228,9 +242,27 @@ mod tests {
             auto_connect_remote: None,
             skill_guide_dismissed: None,
             skill_intro_dismissed: None,
+            bell_on_complete: None,
         })
         .expect("update");
         assert_eq!(updated.approval_tier, "off");
+    }
+
+    #[test]
+    fn bell_on_complete_defaults_on_and_updates_off() {
+        let (_home, conn) = guarded_conn("settings_bell");
+        drop(conn);
+        // Absent → on by default.
+        let default = update_app_settings(UpdateAppSettingsInput::default()).expect("noop");
+        assert!(default.bell_on_complete);
+        // Explicit false → off, and persists across connections.
+        let updated = update_app_settings(UpdateAppSettingsInput {
+            bell_on_complete: Some(false),
+            ..Default::default()
+        })
+        .expect("update");
+        assert!(!updated.bell_on_complete);
+        assert!(!get_app_settings().expect("re-read").bell_on_complete);
     }
 
     #[test]
@@ -244,6 +276,7 @@ mod tests {
         write_value(&conn, KEY_SHOW_THINKING, "yes", 1).expect("write thinking");
         write_value(&conn, KEY_AUTO_UPGRADE_SKILLS, "0", 1).expect("write upgrade");
         write_value(&conn, KEY_AUTO_CONNECT_REMOTE, "true", 1).expect("write remote");
+        write_value(&conn, KEY_BELL_ON_COMPLETE, "yes", 1).expect("write bell");
 
         let settings = read_app_settings(&conn).expect("read");
         assert_eq!(settings.approval_tier, "off");
@@ -251,6 +284,7 @@ mod tests {
         assert!(!settings.show_thinking);
         assert!(!settings.auto_upgrade_skills);
         assert!(settings.auto_connect_remote);
+        assert!(!settings.bell_on_complete);
     }
 
     #[test]
@@ -265,6 +299,7 @@ mod tests {
             auto_connect_remote: None,
             skill_guide_dismissed: None,
             skill_intro_dismissed: None,
+            bell_on_complete: None,
         })
         .expect("noop update");
         assert_eq!(settings.approval_tier, "off", "defaults survive a noop");
@@ -282,6 +317,7 @@ mod tests {
             auto_connect_remote: None,
             skill_guide_dismissed: Some(false),
             skill_intro_dismissed: Some(false),
+            bell_on_complete: None,
         })
         .expect("update");
         assert!(!updated.skill_guide_dismissed);

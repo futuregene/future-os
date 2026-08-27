@@ -174,6 +174,8 @@ export function SettingsDialog({
                     onToggleShowThinking={value => onChangeSettings({ showThinking: value })}
                     autoUpgradeSkills={appSettings.autoUpgradeSkills}
                     onToggleAutoUpgradeSkills={value => onChangeSettings({ autoUpgradeSkills: value })}
+                    bellOnComplete={appSettings.bellOnComplete}
+                    onToggleBellOnComplete={value => onChangeSettings({ bellOnComplete: value })}
                   />
                 )
               : null}

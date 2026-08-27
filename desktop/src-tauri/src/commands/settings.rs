@@ -40,6 +40,7 @@ mod tests {
             auto_connect_remote: Some(true),
             skill_guide_dismissed: None,
             skill_intro_dismissed: None,
+            bell_on_complete: None,
         })
         .expect("update");
         assert_eq!(updated.approval_tier, "manual");

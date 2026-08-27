@@ -30,6 +30,11 @@ export interface AppSettings {
    * never show again (until app data is wiped).
    */
   skillIntroDismissed: boolean;
+  /**
+   * Play a completion bell and request window attention when an agent run
+   * finishes. On by default.
+   */
+  bellOnComplete: boolean;
 }
 
 /** Fallback used before the persisted settings load. */
@@ -41,6 +46,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   autoConnectRemote: false,
   skillGuideDismissed: false,
   skillIntroDismissed: false,
+  bellOnComplete: true,
 };
 
 export async function getAppSettings() {
@@ -55,6 +61,7 @@ export async function updateAppSettings(input: {
   autoConnectRemote?: boolean;
   skillGuideDismissed?: boolean;
   skillIntroDismissed?: boolean;
+  bellOnComplete?: boolean;
 }) {
   return invokeCommand<AppSettings>("update_app_settings", { input });
 }
