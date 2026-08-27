@@ -134,8 +134,8 @@ impl SessionRuntime {
     }
 
     /// True when the active run is terminally stuck/degraded and will never
-    /// release the session on its own. Shutdown uses this to skip the settle
-    /// wait instead of blocking on an `is_streaming` flag that stays up.
+    /// release the session on its own (only a new `begin` self-heals a stuck
+    /// lease; degraded is intentionally fail-closed).
     pub fn is_terminal_unrecoverable(&self) -> bool {
         self.control.is_terminal_unrecoverable()
     }

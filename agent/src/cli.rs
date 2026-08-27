@@ -101,55 +101,6 @@ fn abort_all_sessions(sessions: &SessionsMap) {
     }
 }
 
-/// Wait until no session reports an active stream, or `timeout` elapses.
-/// A session in a terminal unrecoverable state (cancellation-stuck /
-/// persistence-degraded) never clears its streaming flag, so it is treated
-/// as "cannot settle" and ends the wait immediately — the only recovery is
-/// restarting the agent, which is what shutdown is doing anyway.
-async fn wait_for_streams_to_settle(sessions: &SessionsMap, timeout: std::time::Duration) {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        let mut any_streaming = false;
-        let mut unrecoverable = 0usize;
-        for s in sessions.read().values() {
-            let s = s.read();
-            if !s.is_streaming.load(std::sync::atomic::Ordering::Relaxed) {
-                continue;
-            }
-            if s.runtime.is_terminal_unrecoverable() {
-                unrecoverable += 1;
-            } else {
-                any_streaming = true;
-            }
-        }
-        if unrecoverable > 0 && !any_streaming {
-            tracing::warn!(
-                unrecoverable,
-                "Active stream(s) are terminally stuck/degraded and cannot settle — exiting now"
-            );
-            break;
-        }
-        if !any_streaming && unrecoverable == 0 {
-            tracing::info!("All streams finished — exiting");
-            break;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            let active = sessions
-                .read()
-                .values()
-                .filter(|s| {
-                    s.read()
-                        .is_streaming
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                })
-                .count();
-            tracing::warn!("Shutdown timeout — forcing exit with {active} active stream(s)");
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
-}
-
 #[derive(Parser)]
 #[command(name = "future-agent")]
 #[command(version = crate::utils::VERSION)]
@@ -736,11 +687,10 @@ async fn async_main(
         loop_template,
     };
 
-    // Graceful shutdown on Ctrl+C: set the shutting_down flag so new prompts
-    // are rejected, then wait up to 30 s for active streams to finish.
+    // Ctrl+C: set the shutting_down flag so new prompts are rejected, then
+    // abort in-flight streams and exit immediately.
     let shutting_down = app_state.shutting_down.clone();
     let sessions = app_state.sessions.clone();
-    let shutdown_timeout = std::time::Duration::from_secs(30);
 
     let server = crate::grpc::serve(app_state, grpc_host, grpc_port);
 
@@ -775,24 +725,12 @@ async fn async_main(
     tokio::select! {
         result = server => result?,
         _ = tokio::signal::ctrl_c() => {
-            tracing::info!("SIGINT received — aborting active streams, shutting down (max 30s; press Ctrl-C again to force)");
+            tracing::info!("SIGINT received — aborting active streams, exiting immediately");
             shutting_down.store(true, std::sync::atomic::Ordering::SeqCst);
 
-            // Actively interrupt in-flight runs. Without this, a long LLM
-            // stream keeps running and the wait loop below only exits via the
-            // 30 s timeout — making Ctrl-C look like a hang.
+            // Interrupt in-flight runs so the process exits promptly instead
+            // of waiting for a long LLM stream to finish on its own.
             abort_all_sessions(&sessions);
-
-            // Wait for active streams to settle — but a second Ctrl-C forces
-            // an immediate exit. Users reasonably expect "keep mashing Ctrl-C"
-            // to kill a process whose graceful shutdown is dragging on.
-            tokio::select! {
-                _ = wait_for_streams_to_settle(&sessions, shutdown_timeout) => {}
-                _ = tokio::signal::ctrl_c() => {
-                    tracing::warn!("Second SIGINT — forcing immediate exit");
-                    std::process::exit(1);
-                }
-            }
         }
         _ = profile_rx => {
             // profile timer handled inside the future
@@ -886,98 +824,5 @@ mod tests {
         }));
         assert!(panic.is_err());
         assert_eq!(*panic_steps.borrow(), ["startup", "run", "exit"]);
-    }
-
-    fn sessions_with(streaming: bool) -> SessionsMap {
-        let cwd = std::env::temp_dir().to_string_lossy().to_string();
-        let session = crate::rpc::ServerSession::new(
-            "s1".to_string(),
-            Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
-                Arc::new(crate::test_support::EmptyProvider),
-                "mock",
-            ))),
-            Arc::new(Manager::new(std::env::temp_dir().join(format!(
-                "futureos-cli-test-{}",
-                crate::utils::generate_id()
-            )))),
-            &cwd,
-            Arc::new(crate::rpc::SseBroadcaster::new()),
-            crate::rpc::ApprovalGate::default(),
-            Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
-        );
-        session
-            .is_streaming
-            .store(streaming, std::sync::atomic::Ordering::Relaxed);
-        let mut map = std::collections::HashMap::new();
-        map.insert(
-            "s1".to_string(),
-            Arc::new(parking_lot::RwLock::new(session)),
-        );
-        Arc::new(parking_lot::RwLock::new(map))
-    }
-
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn drain_waits_until_streams_finish_then_aborts() {
-        let sessions = sessions_with(true);
-        let flag = sessions
-            .read()
-            .values()
-            .next()
-            .unwrap()
-            .read()
-            .is_streaming
-            .clone();
-        // The stream finishes after one poll interval.
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-            flag.store(false, std::sync::atomic::Ordering::Relaxed);
-        });
-        wait_for_streams_to_settle(&sessions, std::time::Duration::from_secs(30)).await;
-        abort_all_sessions(&sessions);
-    }
-
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn drain_times_out_with_active_streams() {
-        // The warn! arguments evaluate only when a subscriber enables the
-        // callsite.
-        let _sink = tracing::subscriber::set_default(
-            tracing_subscriber::fmt()
-                .with_writer(std::io::sink)
-                .with_ansi(false)
-                .finish(),
-        );
-        let sessions = sessions_with(true);
-        wait_for_streams_to_settle(&sessions, std::time::Duration::from_millis(700)).await;
-        // Still streaming — the deadline forced the exit.
-        assert!(sessions
-            .read()
-            .values()
-            .next()
-            .unwrap()
-            .read()
-            .is_streaming
-            .load(std::sync::atomic::Ordering::Relaxed));
-    }
-
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn drain_exits_immediately_when_stream_is_cancellation_stuck() {
-        let sessions = sessions_with(true);
-        let session = sessions.read().values().next().unwrap().clone();
-        // Drive the real state machine: begin a run, then mark it stuck the
-        // way the 30 s cancellation-ack timer would. is_streaming stays true.
-        let lease = {
-            let s = session.read();
-            s.runtime.begin(None, None).unwrap()
-        };
-        assert!(session.read().runtime.mark_stuck(&lease, "test"));
-        assert!(session
-            .read()
-            .is_streaming
-            .load(std::sync::atomic::Ordering::Relaxed));
-
-        let start = tokio::time::Instant::now();
-        wait_for_streams_to_settle(&sessions, std::time::Duration::from_secs(30)).await;
-        // Returns on the first poll, not after the 30 s timeout.
-        assert_eq!(start.elapsed(), std::time::Duration::ZERO);
     }
 }
