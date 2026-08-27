@@ -75,6 +75,31 @@ pub struct Cost {
     pub cache_write: f64,
 }
 
+impl Cost {
+    /// Estimate the cost (in yuan) of a request's token usage. Prices are per
+    /// 1M tokens. `prompt_tokens` already includes the cached subset, so the
+    /// non-cached remainder is billed at the input rate and the cached tokens
+    /// at their own (usually cheaper or zero) rate — billing both would
+    /// double-count cached input.
+    pub fn estimate(
+        &self,
+        prompt_tokens: i64,
+        completion_tokens: i64,
+        cache_read_tokens: i64,
+        cache_write_tokens: i64,
+    ) -> f64 {
+        let prompt = prompt_tokens.max(0) as f64;
+        let completion = completion_tokens.max(0) as f64;
+        let cache_read = cache_read_tokens.max(0) as f64;
+        let cache_write = cache_write_tokens.max(0) as f64;
+        let uncached_input = (prompt - cache_read - cache_write).max(0.0);
+        (uncached_input / 1_000_000.0) * self.input
+            + (completion / 1_000_000.0) * self.output
+            + (cache_read / 1_000_000.0) * self.cache_read
+            + (cache_write / 1_000_000.0) * self.cache_write
+    }
+}
+
 /// Catalog summary of one built-in provider: how many models it has and its
 /// catalog base URL (no `models.json` overrides applied — clients merge those
 /// themselves, and need the raw catalog URL to detect placeholder URLs), plus
@@ -1060,6 +1085,49 @@ mod tests {
     use super::{Cost, Model, ProviderOverride, Registry};
     use serde_json::json;
     use std::collections::HashMap;
+
+    #[test]
+    fn cost_estimate_bills_uncached_input_and_output_separately() {
+        let cost = Cost {
+            input: 4.5,
+            output: 13.5,
+            cache_read: 0.0,
+            cache_write: 0.0,
+        };
+        // 1M prompt + 1M completion, no cache.
+        let est = cost.estimate(1_000_000, 1_000_000, 0, 0);
+        assert!((est - (4.5 + 13.5)).abs() < 1e-9, "{est}");
+    }
+
+    #[test]
+    fn cost_estimate_does_not_double_count_cached_input() {
+        let cost = Cost {
+            input: 4.5,
+            output: 13.5,
+            cache_read: 1.0,
+            cache_write: 0.0,
+        };
+        // 1M prompt tokens, of which 900k were cache reads. Cached input is
+        // billed at the cache_read rate, not the input rate.
+        let est = cost.estimate(1_000_000, 0, 900_000, 0);
+        let expected = (100_000.0 / 1_000_000.0) * 4.5 + (900_000.0 / 1_000_000.0) * 1.0;
+        assert!((est - expected).abs() < 1e-9, "{est} != {expected}");
+    }
+
+    #[test]
+    fn cost_estimate_clamps_negative_and_zeroes() {
+        let cost = Cost {
+            input: 4.5,
+            output: 13.5,
+            cache_read: 1.0,
+            cache_write: 0.0,
+        };
+        // Cache tokens exceeding prompt must not produce a negative uncached
+        // remainder, and negative inputs clamp to zero.
+        assert_eq!(cost.estimate(0, 0, 0, 0), 0.0);
+        assert!(cost.estimate(-5, -5, 0, 0) >= 0.0);
+        assert!(cost.estimate(10, 0, 100, 0) >= 0.0);
+    }
 
     #[test]
     fn derives_max_completion_tokens_field_from_supported_parameters() {
