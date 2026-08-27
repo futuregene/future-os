@@ -65,6 +65,7 @@ fn todo_update_event_applies_field_edits() {
             resume_when: None,
             blocks: None,
             acceptance: None,
+            owner: None,
             ts: now_epoch(),
         })
         .unwrap();
@@ -102,6 +103,7 @@ fn todo_update_status_done_is_rejected_by_apply() {
             resume_when: None,
             blocks: None,
             acceptance: None,
+            owner: None,
             ts: now_epoch(),
         })
         .unwrap();

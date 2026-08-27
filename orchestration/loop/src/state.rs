@@ -69,6 +69,15 @@ pub enum TaskClass {
     /// on another lane) that gates dependent todos until resolved.
     #[serde(rename = "blocker")]
     Blocker,
+    /// Orchestration bookkeeping (goal parent / summary / final-validation
+    /// todos): NOT agent work. Never enters the worker `run` frontier — the
+    /// orchestrator completes it directly. Keeping it a distinct class (rather
+    /// than an `Advancement` with an owner) makes the frontier / attention /
+    /// status projections treat it as coordination, and prevents a worker's
+    /// `run` from auto-claiming the goal's own summary todo once its lease
+    /// lapses (the "worker steals the orchestrator's todo" failure mode).
+    #[serde(rename = "coordination")]
+    Coordination,
 }
 
 /// Lifecycle status — reference values open/done/blocked/deferred, plus our
@@ -144,6 +153,16 @@ pub struct Todo {
     pub no_follow_up: bool,
     /// Completion evidence (LoopX: recorded on the todo at complete time).
     pub evidence: Option<String>,
+    /// Expected owner (LoopX: assignment) — the agent id this todo is *for*.
+    /// Orthogonal to the claim/lease below: `owner` is a durable assignment
+    /// ("who should do this"), while `claimed_by`/`lease_expires_at` is the
+    /// live lock ("who is doing it right now"). An `owner`-scoped todo is only
+    /// runnable by that agent even after its lease lapses (a lease expiry
+    /// releases the lock, never the assignment); `None` = shared pool
+    /// (first-claim-wins, the pre-existing behavior). Absent on old ledgers →
+    /// deserializes as `None`.
+    #[serde(default)]
+    pub owner: Option<String>,
     /// Claim/lease (reference task-lease): which agent lane owns this slice and
     /// when the lease expires. Expired leases return the todo to the frontier.
     pub claimed_by: Option<String>,
@@ -266,6 +285,23 @@ impl Todo {
         t.blocking(blocks)
     }
 
+    /// Orchestration bookkeeping todo (goal parent / summary / final
+    /// validation): never enters the worker run frontier (see `TaskClass::
+    /// Coordination`). The orchestrator completes it directly with
+    /// `todo complete`.
+    pub fn coordination(id: &str, text: &str) -> Self {
+        Self::new(id, text, TaskClass::Coordination)
+    }
+
+    /// Declare the expected owner (LoopX assignment — "this todo is for
+    /// agent X"). `owner`-scoped todos are only runnable by that agent; the
+    /// scope survives lease expiry (lease releases the lock, not the
+    /// assignment). See `Todo::owner`.
+    pub fn owned_by(mut self, agent_id: &str) -> Self {
+        self.owner = Some(agent_id.to_string());
+        self
+    }
+
     fn new(id: &str, text: &str, class: TaskClass) -> Self {
         let now = now_epoch();
         let role = match class {
@@ -296,6 +332,7 @@ impl Todo {
             successor_ids: vec![],
             no_follow_up: false,
             evidence: None,
+            owner: None,
             claimed_by: None,
             lease_expires_at: None,
             holder_pid: None,
@@ -1094,6 +1131,10 @@ impl Goal {
             (t.class == TaskClass::Advancement
                 && (t.status == TodoStatus::Open || t.is_due_deferred(now_sys)))
                 && !t.claimed_by_other(agent_id, now)
+                // Owner scope: an `owner`-scoped todo is only runnable by its
+                // owner (the scope survives lease expiry — see `Todo::owner`).
+                // `None` owner = shared pool (first-claim-wins).
+                && (t.owner.is_none() || t.owner.as_deref() == agent_id)
                 && !self.is_blocked(t)
         })
     }

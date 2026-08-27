@@ -195,6 +195,10 @@ pub enum Event {
         /// clears it, absent leaves it untouched. See `Todo::acceptance`.
         #[serde(default)]
         acceptance: Option<String>,
+        /// Expected owner (`--owner X`); `Some("")` clears the assignment,
+        /// absent leaves it untouched. See `Todo::owner`.
+        #[serde(default)]
+        owner: Option<String>,
         ts: u64,
     },
     /// Stop automation while retaining state (the reference: goal cancel).
@@ -1489,12 +1493,16 @@ fn apply(goal: &mut Goal, event: Event) {
             resume_when,
             blocks,
             acceptance,
+            owner,
             ts,
             ..
         } => {
             if let Some(t) = goal.todo_mut(&todo_id) {
                 if let Some(x) = text {
                     t.text = x;
+                }
+                if let Some(o) = owner {
+                    t.owner = if o.trim().is_empty() { None } else { Some(o) };
                 }
                 if let Some(x) = evidence {
                     t.evidence = Some(x);
