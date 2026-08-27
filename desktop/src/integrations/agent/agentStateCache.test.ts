@@ -29,8 +29,10 @@ let providerConfigListener: Listener | null = null;
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: (name: string, handler: Listener) => {
-    if (name === "agent-event") agentEventListener = handler;
-    if (name === "provider-config-changed") providerConfigListener = handler;
+    if (name === "agent-event")
+      agentEventListener = handler;
+    if (name === "provider-config-changed")
+      providerConfigListener = handler;
     return Promise.resolve(() => {});
   },
 }));
@@ -282,7 +284,7 @@ describe("agentStateCache event listener", () => {
     await getAgentState("t-cwd");
     invokeMock.mockResolvedValue(undefined);
     const cwdEvents: Event[] = [];
-    window.addEventListener("future:cwd-changed", (e) => cwdEvents.push(e));
+    window.addEventListener("future:cwd-changed", e => cwdEvents.push(e));
     emit({ _eventType: "cwd_changed", sessionId: "s1", cwd: "/new" });
     await flushAsync();
     expect(invokeMock).toHaveBeenCalledWith("reconcile_thread_workspace", {
@@ -296,9 +298,8 @@ describe("agentStateCache event listener", () => {
   it("toasts when the workspace reconcile fails", async () => {
     invokeMock.mockRejectedValue(new Error("no access"));
     const toasts: CustomEvent[] = [];
-    window.addEventListener("futureos:toast", (e) =>
-      toasts.push(e as CustomEvent),
-    );
+    window.addEventListener("futureos:toast", e =>
+      toasts.push(e as CustomEvent));
     emit({ _eventType: "cwd_changed", sessionId: "s1", cwd: "/bad" });
     await flushAsync();
     await flushAsync();
@@ -320,9 +321,8 @@ describe("agentStateCache event listener", () => {
 
   it("forwards content events as window CustomEvents", () => {
     const received: CustomEvent[] = [];
-    window.addEventListener("future:agent-event", (e) =>
-      received.push(e as CustomEvent),
-    );
+    window.addEventListener("future:agent-event", e =>
+      received.push(e as CustomEvent));
     emit({
       _eventType: "user_message",
       sessionId: "s1",
