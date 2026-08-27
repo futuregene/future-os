@@ -111,10 +111,31 @@ elsewhere and are never touched by reclamation of this directory.
 ## Loop control plane — project-local, not under `~/.future/`
 
 The `future-loop` state is **project-local**: run it from the project
-directory and goals live under `<cwd>/.future/loop/` (`registry.json`,
-`goals/<id>/events.jsonl`, `goals/<id>/ACTIVE_GOAL_STATE.md`, `runs/`).
-`FUTURE_LOOP_ROOT` overrides the root for special setups; `~/.future/loop/`
-is not used — see [loop-control-plane.md](loop-control-plane.md).
+directory and everything lives under `<cwd>/.future/loop/`
+(`FUTURE_LOOP_ROOT` overrides the root for special setups; `~/.future/loop/`
+is not used). See [loop-control-plane.md](loop-control-plane.md).
+
+```text
+<cwd>/.future/loop/
+├── registry.json                  # goal registry (one entry per goal)
+├── goals/<goal_id>/
+│   ├── events.jsonl               # event-sourced ledger (the authoritative state)
+│   ├── runs.jsonl                 # authoritative spend/run ledger
+│   ├── next_action.txt            # kernel should-run decision snapshot
+│   ├── schema.json                # event-store schema version stamp
+│   ├── ACTIVE_GOAL_STATE.md       # human-readable active-state projection
+│   ├── status-cache.json          # status projection cache
+│   ├── read_diagnostics.json      # ledger-read diagnostics (unknown event kinds)
+│   ├── scheduler-state/           # scheduler state (backed up with the goal)
+│   └── runs/                      # run-history (compaction/retention, LoopX-style)
+│       └── index.jsonl            # append-only run index
+├── runs/
+│   └── <run_id>.live.jsonl        # live in-flight worker run logs
+├── inbox/
+│   └── *.json                     # operator inbox (liveness alerts, …)
+└── backups/
+    └── <ts>-<goal_id>/            # per-goal backup (ledger + scheduler-state + registry entry)
+```
 
 ## `~/.future/bin/` — CLI links
 
