@@ -97,7 +97,7 @@ impl Engine {
             api_key: api_key.to_string(),
             config,
             tools: vec![],
-            session: crate::session::Session::new(&cwd, model, ""),
+            session: crate::session::Session::new(&cwd, model),
             session_manager: Arc::new(Manager::default_for(&cwd)),
             settings: Arc::new(Settings::default()),
             agent_loop,

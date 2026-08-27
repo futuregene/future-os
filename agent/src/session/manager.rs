@@ -623,7 +623,6 @@ impl Manager {
             version: crate::session::CURRENT_SESSION_VERSION,
             cwd,
             model,
-            base_url: String::new(),
             name,
             parent_session_id,
             leaf_id: String::new(),
@@ -702,7 +701,7 @@ mod tests {
                 .as_nanos()
         ));
         let manager = Manager::new(dir.clone());
-        let mut session = Session::new("/tmp/test", "gpt-4o", "");
+        let mut session = Session::new("/tmp/test", "gpt-4o");
         // Add session_info entry (model/thinking_level are in content JSON)
         session.entries.push(SessionEntry::session_info(
             serde_json::json!({"session_name": "test", "cwd": "/tmp/test", "model": "gpt-4o", "thinking_level": "high"}),
@@ -743,7 +742,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let mut session = Session::new("/tmp/test", "claude", "");
+        let mut session = Session::new("/tmp/test", "claude");
         session.entries.push(agent_message_to_entry(&message));
         manager.save(&session).unwrap();
 
@@ -788,7 +787,7 @@ mod tests {
                 .as_nanos()
         ));
         let manager = Manager::new(dir.clone());
-        let mut session = Session::new("/tmp/test", "gpt-4o", "");
+        let mut session = Session::new("/tmp/test", "gpt-4o");
         session
             .entries
             .push(SessionEntry::new_user("user", serde_json::json!("hello")));
@@ -858,7 +857,7 @@ mod tests {
                 .as_nanos()
         ));
         let manager = Manager::new(dir.clone());
-        let mut session = Session::new("/tmp/test", "gpt-4o", "");
+        let mut session = Session::new("/tmp/test", "gpt-4o");
         session
             .entries
             .push(SessionEntry::new_user("user", serde_json::json!("hello")));
@@ -912,7 +911,7 @@ mod tests {
                 .as_nanos()
         ));
         let manager = Manager::new(dir.clone());
-        let mut session = Session::new("/tmp/test", "gpt-4o", "");
+        let mut session = Session::new("/tmp/test", "gpt-4o");
         session
             .entries
             .push(SessionEntry::new_user("user", serde_json::json!("hello")));
@@ -962,7 +961,7 @@ mod tests {
                 .as_nanos()
         ));
         let manager = Manager::new(dir.clone());
-        let mut session = Session::new("/tmp/test", "gpt-4o", "");
+        let mut session = Session::new("/tmp/test", "gpt-4o");
         session.entries.push(SessionEntry::session_info(
             serde_json::json!({"model": "gpt-4o"}),
             "gpt-4o".to_string(),
@@ -1336,7 +1335,7 @@ mod tests {
                 .as_nanos()
         ));
         let manager = Manager::new(dir.clone());
-        let session = Session::new("/tmp/test", "model", "");
+        let session = Session::new("/tmp/test", "model");
         manager.save(&session).unwrap();
         let run_data_path = manager.run_data_path(&session.id);
         std::fs::create_dir_all(&run_data_path).unwrap();
@@ -1368,7 +1367,7 @@ mod tests {
                 .as_nanos()
         ));
         let manager = Manager::new(dir.clone());
-        let mut session = Session::new("/tmp/test", "gpt-4o", "");
+        let mut session = Session::new("/tmp/test", "gpt-4o");
         session
             .entries
             .push(SessionEntry::new_user("user", serde_json::json!("hello")));

@@ -353,6 +353,9 @@ fn list_models_sorts_and_includes_builtin_providers() {
     let auth_path = home.auth_path();
     std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
     std::fs::write(&auth_path, serde_json::to_string_pretty(&auth).unwrap()).unwrap();
+    // This test writes behind the Agent command boundary, so explicitly mimic
+    // the atomic Registry swap that a real provider mutation performs.
+    *state.model_registry.write() = crate::models::Registry::new();
 
     let mut cmd = make_cmd("list_models");
     cmd.include_builtin_providers = true;

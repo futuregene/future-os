@@ -957,17 +957,6 @@ pub trait LLMProvider: Send + Sync {
         request: crate::llm::schema::ModelRequest,
     ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>>;
 
-    /// Refresh only the API key at runtime, after an out-of-band credential
-    /// change (FutureGene login/logout, custom-provider key edits). This leaves
-    /// the base_url untouched — a login/logout changes the key, not the model's
-    /// endpoint.
-    fn set_api_key(&self, _api_key: &str) {}
-
-    /// Refresh the provider endpoint in the same shared runtime client. Run
-    /// snapshots clone the provider Arc, so this also keeps already-accepted
-    /// queued work aligned with a committed provider edit.
-    fn set_base_url(&self, _base_url: &str) {}
-
     /// Update thinking level and budget at runtime (after set_thinking_level / cycle_thinking_level).
     fn update_thinking(&self, _level: &str, _budget: i32) {}
 }
@@ -1979,7 +1968,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn provider_default_key_and_thinking_setters_are_noops() {
+    async fn provider_default_thinking_setter_is_a_noop() {
         struct MinimalProvider;
         #[async_trait::async_trait]
         impl LLMProvider for MinimalProvider {
@@ -1994,8 +1983,6 @@ mod tests {
             }
         }
         let provider = MinimalProvider;
-        provider.set_api_key("ignored");
-        provider.set_base_url("https://x.test");
         provider.update_thinking("high", 1234);
         // The canonical model stream implementation is callable too.
         let mut stream = provider

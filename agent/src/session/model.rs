@@ -13,8 +13,6 @@ pub struct Session {
     pub version: i32,
     pub cwd: String,
     pub model: String,
-    #[serde(rename = "base_url")]
-    pub base_url: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
     #[serde(
@@ -55,14 +53,13 @@ pub struct SessionSummary {
 }
 
 impl Session {
-    pub fn new(cwd: &str, model: &str, base_url: &str) -> Self {
+    pub fn new(cwd: &str, model: &str) -> Self {
         let now = Local::now();
         Self {
             id: generate_id(),
             version: CURRENT_SESSION_VERSION,
             cwd: cwd.to_string(),
             model: model.to_string(),
-            base_url: base_url.to_string(),
             name: String::new(),
             parent_session_id: String::new(),
             leaf_id: String::new(),
@@ -89,7 +86,6 @@ impl Session {
             version: CURRENT_SESSION_VERSION,
             cwd,
             model,
-            base_url: String::new(),
             name,
             parent_session_id,
             leaf_id: String::new(),
@@ -105,14 +101,6 @@ impl Session {
 
     pub fn set_session_name(&mut self, name: &str) {
         self.name = name.trim().to_string();
-    }
-
-    pub fn get_base_url(&self) -> &str {
-        &self.base_url
-    }
-
-    pub fn set_base_url(&mut self, url: &str) {
-        self.base_url = url.to_string();
     }
 
     pub fn get_session_info(&self) -> Option<&serde_json::Value> {
@@ -133,28 +121,19 @@ mod tests {
 
     #[test]
     fn session_new_fields() {
-        let s = Session::new("/tmp/test", "gpt-4o", "https://api.openai.com");
+        let s = Session::new("/tmp/test", "gpt-4o");
         assert_eq!(s.cwd, "/tmp/test");
         assert_eq!(s.model, "gpt-4o");
-        assert_eq!(s.base_url, "https://api.openai.com");
         assert!(s.entries.is_empty());
         assert!(s.parent_session_id.is_empty());
     }
 
     #[test]
     fn session_name_get_set() {
-        let mut s = Session::new("/tmp", "model", "");
+        let mut s = Session::new("/tmp", "model");
         assert_eq!(s.get_session_name(), "");
         s.set_session_name("My Chat");
         assert_eq!(s.get_session_name(), "My Chat");
-    }
-
-    #[test]
-    fn session_base_url_get_set() {
-        let mut s = Session::new("/tmp", "model", "https://old.com");
-        assert_eq!(s.get_base_url(), "https://old.com");
-        s.set_base_url("https://new.com");
-        assert_eq!(s.get_base_url(), "https://new.com");
     }
 
     #[test]
@@ -178,7 +157,7 @@ mod tests {
 
     #[test]
     fn get_session_info_extracts_from_entries() {
-        let mut session = Session::new("/tmp/test", "gpt-4o", "");
+        let mut session = Session::new("/tmp/test", "gpt-4o");
         session.entries.push(SessionEntry::session_info(
             serde_json::json!({"model": "gpt-4o", "thinking_level": "high"}),
             "gpt-4o".to_string(),
@@ -193,7 +172,18 @@ mod tests {
         assert_eq!(info["thinking_level"], "high");
 
         // Session without session_info entry
-        let empty = Session::new("/tmp/test", "gpt-4o", "");
+        let empty = Session::new("/tmp/test", "gpt-4o");
         assert!(empty.get_session_info().is_none());
+    }
+
+    #[test]
+    fn legacy_base_url_is_readable_but_never_re_persisted() {
+        let session = Session::new("/tmp/test", "openai/gpt-4o");
+        let mut value = serde_json::to_value(&session).unwrap();
+        value["base_url"] = serde_json::json!("https://stale.example/v1");
+
+        let loaded: Session = serde_json::from_value(value).unwrap();
+        let persisted = serde_json::to_value(loaded).unwrap();
+        assert!(persisted.get("base_url").is_none());
     }
 }

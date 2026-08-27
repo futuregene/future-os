@@ -46,8 +46,18 @@ fn llm_timeout_secs() -> u64 {
 
 pub struct Client {
     http: HttpClient,
-    target: RwLock<schema::ResolvedModelTarget>,
+    /// Static targets are used by standalone/test clients. Session clients set
+    /// this to `None`: they retain only a provider/model identity plus
+    /// session-local generation choices, never a copied provider/model config.
+    target: RwLock<Option<schema::ResolvedModelTarget>>,
+    generation: RwLock<schema::GenerationConfig>,
+    live_model: Option<LiveModelSource>,
     adapters: AdapterRegistry,
+}
+
+struct LiveModelSource {
+    canonical_model: String,
+    registry: std::sync::Arc<parking_lot::RwLock<crate::models::Registry>>,
 }
 
 impl Client {
@@ -68,36 +78,102 @@ impl Client {
             .unwrap_or_else(|_| HttpClient::new());
         Self {
             http,
-            target: RwLock::new(target),
+            generation: RwLock::new(target.generation.clone()),
+            target: RwLock::new(Some(target)),
+            live_model: None,
             adapters,
         }
     }
 
+    /// Build a session client that owns no provider or model configuration.
+    /// Every `stream_model` call re-resolves the canonical reference from the
+    /// Agent's authoritative Registry snapshot. Even an unresolved historical
+    /// identity gets this client, so it can never fall back to a stale template
+    /// provider while waiting for a configured replacement.
+    pub fn from_live_model(
+        canonical_model: String,
+        registry: std::sync::Arc<parking_lot::RwLock<crate::models::Registry>>,
+    ) -> Self {
+        let http = HttpClient::builder()
+            .timeout(std::time::Duration::from_secs(llm_timeout_secs()))
+            .build()
+            .unwrap_or_else(|_| HttpClient::new());
+        Self {
+            http,
+            target: RwLock::new(None),
+            generation: RwLock::new(schema::GenerationConfig::default()),
+            live_model: Some(LiveModelSource {
+                canonical_model,
+                registry,
+            }),
+            adapters: AdapterRegistry::default(),
+        }
+    }
+
+    fn target_for_request(&self) -> Result<schema::ResolvedModelTarget> {
+        let Some(source) = &self.live_model else {
+            let mut target = self
+                .target
+                .read()
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("static model target is unavailable"))?;
+            target.generation = self.generation.read().clone();
+            return Ok(target);
+        };
+
+        // One Registry read produces one coherent provider/model snapshot. A
+        // concurrent config commit swaps the whole Registry before publishing
+        // its revision, so this request sees either the complete old revision
+        // or the complete new one, never mixed key/base-url/model metadata.
+        let (_resolved_identity, model, api_key) = source
+            .registry
+            .read()
+            .resolve_request_target(&source.canonical_model)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "model `{}` is no longer available and no configured replacement exists",
+                    source.canonical_model
+                )
+            })?;
+        let generation = self.generation.read().clone();
+        let mut target = schema::ResolvedModelTarget::from_model(
+            &model,
+            api_key,
+            generation.temperature,
+            Some(crate::models::effective_max_tokens(&model)),
+        )?;
+        target.generation.thinking_level = generation.thinking_level;
+        target.generation.thinking_budget = generation.thinking_budget;
+        Ok(target)
+    }
+
     pub fn with_thinking_level(self, level: &str) -> Self {
-        self.target.write().generation.thinking_level = level.to_string();
+        self.generation.write().thinking_level = level.to_string();
         self
     }
 
     pub fn with_thinking_budget(self, budget: i32) -> Self {
-        self.target.write().generation.thinking_budget = budget;
+        self.generation.write().thinking_budget = budget;
         self
     }
 
     pub fn with_thinking_level_map(self, map: HashMap<String, String>) -> Self {
-        self.target.write().capabilities.reasoning.levels = map
-            .iter()
-            .map(|(key, value)| (key.clone(), serde_json::Value::String(value.clone())))
-            .collect();
+        if let Some(target) = self.target.write().as_mut() {
+            target.capabilities.reasoning.levels = map
+                .iter()
+                .map(|(key, value)| (key.clone(), serde_json::Value::String(value.clone())))
+                .collect();
+        }
         self
     }
 
     pub fn with_temperature(self, temperature: f32) -> Self {
-        self.target.write().generation.temperature = Some(temperature);
+        self.generation.write().temperature = Some(temperature);
         self
     }
 
     pub fn with_max_tokens(self, max_tokens: i32) -> Self {
-        self.target.write().generation.max_output_tokens = Some(max_tokens);
+        self.generation.write().max_output_tokens = Some(max_tokens);
         self
     }
 }
@@ -106,9 +182,54 @@ impl Client {
 impl crate::types::LLMProvider for Client {
     async fn stream_model(
         &self,
-        request: schema::ModelRequest,
+        mut request: schema::ModelRequest,
     ) -> Result<ReceiverStream<schema::ModelStreamEvent>> {
-        let target = self.target.read().clone();
+        let target = self.target_for_request()?;
+        // The session stores a canonical provider/model reference, while the
+        // upstream request always uses the latest resolved provider model id.
+        request.model = target.model_id.clone();
+        // Modality changes are also request-time provider state. Never mutate
+        // the durable conversation when a model temporarily loses image input;
+        // adapt only this outbound projection.
+        if target.capabilities.supports_image_input {
+            for message in &mut request.messages {
+                let already_has_image = message
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, crate::types::ContentBlock::Image { .. }));
+                if already_has_image {
+                    continue;
+                }
+                let image_paths = message
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("attachments"))
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|attachment| {
+                        attachment.get("kind").and_then(serde_json::Value::as_str) == Some("image")
+                    })
+                    .filter_map(|attachment| {
+                        attachment
+                            .get("path")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                    })
+                    .collect::<Vec<_>>();
+                for path in image_paths {
+                    if let Some(url) = crate::utils::image_data_url_for_model(&path) {
+                        message.content.push(crate::types::ContentBlock::image(url));
+                    }
+                }
+            }
+        } else {
+            for message in &mut request.messages {
+                message
+                    .content
+                    .retain(|block| !matches!(block, crate::types::ContentBlock::Image { .. }));
+            }
+        }
         let adapter = self.adapters.get(target.protocol.protocol())?;
         let body = adapter.build_body(&target, &request)?;
         let url = format!(
@@ -275,18 +396,10 @@ impl crate::types::LLMProvider for Client {
         Ok(ReceiverStream::new(rx))
     }
 
-    fn set_api_key(&self, api_key: &str) {
-        self.target.write().route.api_key = api_key.to_string();
-    }
-
-    fn set_base_url(&self, base_url: &str) {
-        self.target.write().route.base_url = base_url.to_string();
-    }
-
     fn update_thinking(&self, level: &str, budget: i32) {
-        let mut target = self.target.write();
-        target.generation.thinking_level = level.to_string();
-        target.generation.thinking_budget = budget;
+        let mut generation = self.generation.write();
+        generation.thinking_level = level.to_string();
+        generation.thinking_budget = budget;
     }
 }
 
@@ -353,7 +466,7 @@ mod tests {
             Some(0.7),
             Some(4096),
         ));
-        let target = client.target.read();
+        let target = client.target_for_request().unwrap();
         assert_eq!(target.route.base_url, "https://api.openai.com");
         assert_eq!(target.route.api_key, "sk-test");
         assert_eq!(target.generation.temperature, Some(0.7));
@@ -374,7 +487,7 @@ mod tests {
             .with_thinking_level_map(levels)
             .with_temperature(0.3)
             .with_max_tokens(2048);
-        let target = client.target.read();
+        let target = client.target_for_request().unwrap();
         assert_eq!(target.generation.thinking_level, "medium");
         assert_eq!(target.generation.thinking_budget, 8000);
         assert_eq!(target.generation.temperature, Some(0.3));
@@ -386,16 +499,154 @@ mod tests {
     }
 
     #[test]
-    fn runtime_setters_update_the_resolved_target() {
+    fn runtime_thinking_setter_updates_generation_controls() {
         let client = Client::from_target(chat_target("https://api.test", "old-key", None, None));
-        crate::types::LLMProvider::set_api_key(&client, "new-key");
-        crate::types::LLMProvider::set_base_url(&client, "https://new.test");
         crate::types::LLMProvider::update_thinking(&client, "high", 16000);
-        let target = client.target.read();
-        assert_eq!(target.route.api_key, "new-key");
-        assert_eq!(target.route.base_url, "https://new.test");
+        let target = client.target_for_request().unwrap();
+        assert_eq!(target.route.api_key, "old-key");
+        assert_eq!(target.route.base_url, "https://api.test");
         assert_eq!(target.generation.thinking_level, "high");
         assert_eq!(target.generation.thinking_budget, 16000);
+    }
+
+    #[test]
+    fn live_client_resolves_the_latest_complete_provider_model_snapshot_per_request() {
+        fn model(base_url: &str, context_window: i32, max_tokens: i32) -> crate::models::Model {
+            crate::models::Model {
+                id: "m".into(),
+                name: "M".into(),
+                provider: "provider-a".into(),
+                api: "chat".into(),
+                base_url: base_url.into(),
+                input: vec!["text".into()],
+                output: vec!["text".into()],
+                context_window,
+                max_tokens,
+                ..Default::default()
+            }
+        }
+
+        let first_model = model("https://old.example", 8_000, 1_000);
+        let first_registry = crate::models::Registry::from_models_and_auth(
+            vec![first_model.clone()],
+            r#"{"provider-a":{"type":"api_key","key":"old-key","base_url":"https://old-auth.example"}}"#,
+        );
+        let registry = std::sync::Arc::new(parking_lot::RwLock::new(first_registry));
+        let client = Client::from_live_model("provider-a/m".into(), registry.clone());
+        assert!(
+            client.target.read().is_none(),
+            "session client caches no target"
+        );
+
+        let first = client.target_for_request().unwrap();
+        assert_eq!(first.route.api_key, "old-key");
+        assert_eq!(first.route.base_url, "https://old-auth.example");
+        assert_eq!(first.capabilities.context_window, 8_000);
+        assert_eq!(first.generation.max_output_tokens, Some(1_000));
+
+        let mut changed = model("https://new.example", 32_000, 4_000);
+        changed.input.push("image".into());
+        *registry.write() = crate::models::Registry::from_models_and_auth(
+            vec![changed],
+            r#"{"provider-a":{"type":"api_key","key":"new-key","base_url":"https://new-auth.example"}}"#,
+        );
+
+        let latest = client.target_for_request().unwrap();
+        assert_eq!(latest.route.api_key, "new-key");
+        assert_eq!(latest.route.base_url, "https://new-auth.example");
+        assert_eq!(latest.capabilities.context_window, 32_000);
+        assert!(latest.capabilities.supports_image_input);
+        assert_eq!(latest.generation.max_output_tokens, Some(4_000));
+    }
+
+    #[test]
+    fn live_client_never_borrows_another_providers_key() {
+        let model = crate::models::Model {
+            id: "m".into(),
+            name: "M".into(),
+            provider: "deepseek".into(),
+            api: "chat".into(),
+            base_url: "https://api.deepseek.com".into(),
+            input: vec!["text".into()],
+            output: vec!["text".into()],
+            context_window: 8_000,
+            max_tokens: 1_000,
+            ..Default::default()
+        };
+        let registry = std::sync::Arc::new(parking_lot::RwLock::new(
+            crate::models::Registry::from_models_and_auth(
+                vec![model.clone()],
+                r#"{"future":{"type":"api_key","key":"future-key"}}"#,
+            ),
+        ));
+        let client = Client::from_live_model("deepseek/m".into(), registry);
+        let error = client.target_for_request().unwrap_err();
+        assert!(error.to_string().contains("no longer available"));
+        assert!(!error.to_string().contains("future-key"));
+    }
+
+    #[test]
+    fn live_client_replaces_a_removed_historical_model_at_request_time() {
+        let old = crate::models::Model {
+            id: "old".into(),
+            name: "Old".into(),
+            provider: "provider-a".into(),
+            api: "chat".into(),
+            base_url: "https://api.example".into(),
+            input: vec!["text".into()],
+            output: vec!["text".into()],
+            context_window: 8_000,
+            max_tokens: 1_000,
+            ..Default::default()
+        };
+        let registry = std::sync::Arc::new(parking_lot::RwLock::new(
+            crate::models::Registry::from_models_and_auth(
+                vec![old.clone()],
+                r#"{"provider-a":{"type":"api_key","key":"old-key"}}"#,
+            ),
+        ));
+        let client = Client::from_live_model("provider-a/old".into(), registry.clone());
+
+        let mut replacement = old;
+        replacement.id = "new".into();
+        replacement.name = "New".into();
+        replacement.context_window = 64_000;
+        *registry.write() = crate::models::Registry::from_models_and_auth(
+            vec![replacement],
+            r#"{"provider-a":{"type":"api_key","key":"new-key"}}"#,
+        );
+
+        let target = client.target_for_request().unwrap();
+        assert_eq!(target.model_id, "new");
+        assert_eq!(target.route.api_key, "new-key");
+        assert_eq!(target.capabilities.context_window, 64_000);
+    }
+
+    #[test]
+    fn future_platform_api_root_does_not_override_the_model_v1_route() {
+        let model = crate::models::Model {
+            id: "deepseek-v4-pro".into(),
+            name: "DeepSeek V4 Pro".into(),
+            provider: "future".into(),
+            api: "openai-completions".into(),
+            base_url: "https://test.future-os.cn/api/v1".into(),
+            input: vec!["text".into()],
+            output: vec!["text".into()],
+            context_window: 128_000,
+            max_tokens: 16_384,
+            ..Default::default()
+        };
+        let registry = std::sync::Arc::new(parking_lot::RwLock::new(
+            crate::models::Registry::from_models_and_auth(
+                vec![model],
+                r#"{"future":{"type":"api_key","key":"future-key","base_url":"https://test.future-os.cn/api"}}"#,
+            ),
+        ));
+        let client = Client::from_live_model("future/deepseek-v4-pro".into(), registry);
+
+        let target = client.target_for_request().unwrap();
+        assert_eq!(target.route.base_url, "https://test.future-os.cn/api/v1");
+        assert_eq!(target.route.api_key, "future-key");
     }
 
     #[test]

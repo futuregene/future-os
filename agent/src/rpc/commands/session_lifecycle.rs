@@ -368,10 +368,10 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
     // which overrides this below.
     let default_model = crate::models::get_default_model_with(&state.model_registry.read())
         .unwrap_or_else(|| inherit_model.clone());
-    // Apply via set_model: it sets the canonical model AND rebuilds the
-    // loop's provider client for that model's endpoint/key/compat.  A bare
-    // `loop_.model = bare_id` leaves the provider on the template's startup
-    // model, which breaks whenever the current default differs.
+    // Apply via set_model: it records the canonical identity and installs an
+    // identity-only client that resolves the authoritative provider/model
+    // snapshot for each request. A bare `loop_.model = bare_id` would retain
+    // the template's static startup client.
     if let Err(e) = new_sess.set_model(&default_model.clone()) {
         tracing::warn!("[new_session] could not sync model to fresh loop: {e}");
     }
@@ -452,10 +452,10 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
         } else {
             disk_model.clone()
         };
-        let supports_images = crate::models::model_accepts_images_with(
-            &state.model_registry.read(),
-            &effective_model,
-        );
+        let supports_images = state
+            .model_registry
+            .read()
+            .request_model_accepts_images(&effective_model);
         let mut msgs = new_sess.messages.write();
         *msgs = crate::session::entries_to_agent_messages(&entries, supports_images);
         if !disk_model.is_empty() {
@@ -857,8 +857,10 @@ pub(crate) fn cmd_fork(
         state.model_registry.clone(),
         state.queue_budget.clone(),
     );
-    let supports_images =
-        crate::models::model_accepts_images_with(&state.model_registry.read(), &forked.model);
+    let supports_images = state
+        .model_registry
+        .read()
+        .request_model_accepts_images(&forked.model);
     let msgs = crate::session::entries_to_agent_messages(&forked.entries, supports_images);
     *new_sess.messages.write() = msgs;
     if !forked.model.is_empty() {
@@ -961,8 +963,10 @@ pub(crate) fn cmd_clone(
         state.model_registry.clone(),
         state.queue_budget.clone(),
     );
-    let supports_images =
-        crate::models::model_accepts_images_with(&state.model_registry.read(), &forked.model);
+    let supports_images = state
+        .model_registry
+        .read()
+        .request_model_accepts_images(&forked.model);
     let msgs = crate::session::entries_to_agent_messages(&forked.entries, supports_images);
     *new_sess.messages.write() = msgs;
     if !forked.model.is_empty() {

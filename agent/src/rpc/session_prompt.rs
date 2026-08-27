@@ -157,11 +157,12 @@ impl ServerSession {
         client_request_id: &str,
         busy_policy: crate::runtime::BusyPolicy,
     ) -> Result<crate::runtime::RunAck> {
-        // auth.json is authoritative. Refresh immediately before freezing the
-        // run snapshot so a UI/catalog view and the actual request can never
-        // disagree about which key is in use. Failure rejects admission rather
-        // than silently running with stale credentials.
-        self.reload_credentials()?;
+        // Provider and model configuration is deliberately NOT copied into the
+        // session or scheduled payload. The accepted run freezes user/session
+        // choices, while every actual LLM request resolves the selected
+        // provider/model reference from the Agent's latest authoritative
+        // Registry snapshot (key, base URL, protocol, headers, modalities,
+        // context window, and token limits).
         if self.deleting {
             return Err(crate::runtime::RunQueueError::Deleting.into());
         }
@@ -497,8 +498,10 @@ impl ServerSession {
         // Whether the active model accepts image input (catalog modalities).
         // Uses the cached registry from ServerSession to avoid ~15% CPU overhead
         // from re-deserialising the full model catalog on every prompt.
-        let model_supports_images =
-            crate::models::model_accepts_images_with(&self.model_registry.read(), &run_model);
+        let model_supports_images = self
+            .model_registry
+            .read()
+            .request_model_accepts_images(&run_model);
         // Images are read + (down)encoded to base64 here, on the agent, from the
         // local path the GUI sent — the base64 never crosses the wire.
         let mut user_message = build_user_message_with_model_context(

@@ -164,18 +164,34 @@ impl AppState {
         if new_sess.switch_session(session_id).is_err() {
             return None;
         }
-        // If the session file had no model saved, fall back to the default
-        // — via set_model, which also rebuilds the loop's provider client.
-        // A bare `new_sess.model = ...` would leave the loop pointing at the
-        // template's startup model/endpoint.
-        if new_sess.model.is_empty() {
-            let default_model = crate::models::get_default_model_with(&self.model_registry.read())
-                .unwrap_or_else(|| self.loop_template.model.clone());
-            // Match form: the plain if-block's closing brace collected a
-            // phantom zero-count gap region even with both edges hot.
-            match default_model.is_empty() {
-                true => (),
-                false => {
+        // Cold history is reconciled on hydration as well as during a live
+        // provider-config commit. A removed persisted model must not survive
+        // merely because this session was not resident when the catalog
+        // changed. `set_model` appends the authoritative session_info without
+        // rewriting any historical messages.
+        let model_needs_replacement = new_sess.model.is_empty()
+            || !self
+                .model_registry
+                .read()
+                .is_model_available(&new_sess.model);
+        if model_needs_replacement {
+            let default_model = self
+                .model_registry
+                .read()
+                .replacement_model(&new_sess.model);
+            match default_model {
+                None => {
+                    // Even with no usable provider, replace the template's
+                    // static client with an identity-only live client. The next
+                    // request must fail cleanly instead of reusing a startup key.
+                    let unresolved = new_sess.model.clone();
+                    let _ = new_sess.set_model(&unresolved).inspect_err(|e| {
+                        tracing::warn!(
+                            "[session] could not install unresolved live model identity: {e}"
+                        );
+                    });
+                }
+                Some(default_model) => {
                     // set_model persists via update_session_info, which fails
                     // for legacy session files lacking a session_info entry —
                     // log and defer to an explicit /model instead of failing
@@ -237,24 +253,25 @@ impl AppState {
         id
     }
 
-    /// Refresh the in-memory API key of every live session from auth.json.
-    /// Invoked by the `reload_auth` command and, since audit item 2, inline by
-    /// the config-write commands (`set_auth` / `upsert_provider` /
-    /// `delete_provider`) after the agent writes its own auth.json/models.json
-    /// — FutureGene login/logout, custom-provider key edits — so no running
-    /// session keeps using a stale key. Active runs own independent snapshots;
-    /// the short shared control-plane lock is waited out rather than skipped.
+    /// Reconcile live sessions after the Agent atomically replaces its
+    /// authoritative provider/model Registry.
     ///
-    /// Sessions that were created before any credentials existed (model is empty)
-    /// get a default model resolved and applied, so the user can prompt immediately
-    /// after login without switching threads.
-    pub fn reload_all_credentials(&self) {
+    /// Sessions own only a canonical `provider/model` reference. They never own
+    /// credentials, base URLs, protocol settings, modalities, context windows,
+    /// or token limits; the LLM request path resolves all of those from the
+    /// latest Registry snapshot. Consequently provider edits require no
+    /// per-session credential refresh. This pass exists only to replace an empty
+    /// or removed model reference and persist that new selection.
+    pub fn reconcile_provider_references(&self) {
         let sessions = self.sessions.read().values().cloned().collect::<Vec<_>>();
         for sess in &sessions {
             let model_needs_reselection = {
                 let session = sess.read();
                 session.model.is_empty()
-                    || self.model_registry.read().resolve(&session.model).is_none()
+                    || !self
+                        .model_registry
+                        .read()
+                        .is_model_available(&session.model)
             };
             if model_needs_reselection {
                 // Session created before login — resolve and apply default model.
@@ -275,12 +292,22 @@ impl AppState {
                         }
                     }
                     let still_needs_reselection = session.model.is_empty()
-                        || self.model_registry.read().resolve(&session.model).is_none();
+                        || !self
+                            .model_registry
+                            .read()
+                            .is_model_available(&session.model);
                     if still_needs_reselection {
                         let registry = self.model_registry.read();
-                        let default_model =
-                            crate::models::get_default_model_with(&registry).unwrap_or_default();
+                        let default_model = registry.replacement_model(&session.model);
                         drop(registry);
+                        let Some(default_model) = default_model else {
+                            tracing::warn!(
+                                session_id = %session.session_id,
+                                model = %session.model,
+                                "provider update left no configured replacement model"
+                            );
+                            continue;
+                        };
                         loop {
                             match session.set_model(&default_model) {
                                 Ok(()) => break,
@@ -306,41 +333,12 @@ impl AppState {
                                 }
                             }
                         }
-                        if default_model.is_empty() {
-                            reload_credentials_wait(&session);
-                        }
                         session.broadcaster.broadcast(SseEvent::new(
                             "model_changed",
                             serde_json::json!({"model": session.model}),
                         ));
-                    } else {
-                        // Model was set concurrently — just refresh credentials
-                        reload_credentials_wait(&session);
                     }
                 }
-            } else {
-                reload_credentials_wait(&sess.read());
-            }
-        }
-    }
-}
-
-/// Provider config commits are synchronization barriers: unlike an ordinary
-/// prompt (which reports a transient busy error), they wait until every live
-/// session has installed the authoritative credential revision.
-fn reload_credentials_wait(session: &ServerSession) {
-    loop {
-        match session.reload_credentials() {
-            Ok(()) => return,
-            Err(error) if error.to_string().contains("configuration is busy") => {
-                std::thread::yield_now();
-            }
-            Err(error) => {
-                tracing::error!(
-                    session_id = %session.session_id,
-                    "failed to refresh live session credentials: {error:#}"
-                );
-                return;
             }
         }
     }
@@ -355,7 +353,7 @@ static GET_SESSION_PRE_INSERT_HOOK: parking_lot::Mutex<
     Option<(String, Box<dyn Fn(&AppState) + Send>)>,
 > = parking_lot::Mutex::new(None);
 
-/// Test-only hook fired by `reload_all_credentials` inside the write lock,
+/// Test-only hook fired by `reconcile_provider_references` inside the write lock,
 /// before the model-emptiness re-check, so tests can deterministically win
 /// the TOCTOU race and exercise the "model was set concurrently" arm. The
 /// hook receives the already-held write guard (never re-locks) and only
@@ -366,10 +364,10 @@ static RELOAD_RACE_HOOK: parking_lot::Mutex<
     Option<(String, Box<dyn Fn(&mut ServerSession) + Send>)>,
 > = parking_lot::Mutex::new(None);
 
-/// Serializes the reload-credentials tests: they mutate the process-global
+/// Serializes provider-reconciliation tests: they mutate the process-global
 /// model registry and RELOAD_RACE_HOOK, which races when the suite runs the
 /// tests in parallel (observed: repeated CI failures of
-/// reload_all_credentials_reselects_invalid_model_installed_mid_check).
+/// reconcile_provider_references_reselects_invalid_model_installed_mid_check).
 #[cfg(test)]
 static TEST_RELOAD_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
@@ -877,6 +875,20 @@ mod tests {
                 .finish(),
         );
         let (_dir, state) = bare_app_state();
+        let model = crate::models::Model {
+            id: "replacement".to_string(),
+            name: "Replacement".to_string(),
+            provider: "provider-a".to_string(),
+            api: "chat".to_string(),
+            base_url: "https://api.example".to_string(),
+            input: vec!["text".to_string()],
+            output: vec!["text".to_string()],
+            ..Default::default()
+        };
+        *state.model_registry.write() = crate::models::Registry::from_models_and_auth(
+            vec![model],
+            r#"{"provider-a":{"type":"api_key","key":"key"}}"#,
+        );
         // A persisted session with no model info anywhere → the hydrate path
         // applies the registry/loop default model.
         let snapshot = crate::session::Session::snapshot(
@@ -928,7 +940,7 @@ mod tests {
     }
 
     #[test]
-    fn reload_all_credentials_waits_for_write_locked_session() {
+    fn provider_reconcile_waits_only_when_a_model_reference_needs_replacement() {
         let _reload_lock = TEST_RELOAD_LOCK.lock();
 
         let (_dir, state) = bare_app_state();
@@ -948,13 +960,14 @@ mod tests {
         state.create_session(session);
         let state = std::sync::Arc::new(state);
         let session = state.get_session("locked").unwrap();
-        // A held read guard temporarily prevents reconciliation, but the
-        // refresh must wait rather than acknowledge with stale session state.
+        // A model-less session requires a persisted default selection, so the
+        // model-reconciliation pass waits for its session write lock. Ordinary
+        // key/base-url/metadata changes never visit valid sessions at all.
         let guard = session.read();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let reload_state = state.clone();
         let worker = std::thread::spawn(move || {
-            reload_state.reload_all_credentials();
+            reload_state.reconcile_provider_references();
             done_tx.send(()).unwrap();
         });
         assert!(done_rx
@@ -1067,7 +1080,7 @@ mod tests {
     }
 
     #[test]
-    fn reload_all_credentials_reselects_invalid_model_installed_mid_check() {
+    fn reconcile_provider_references_reselects_invalid_model_installed_mid_check() {
         let _reload_lock = TEST_RELOAD_LOCK.lock();
 
         // Self-contained credentials: reload rebuilds the registry from the
@@ -1108,7 +1121,7 @@ mod tests {
                 sess.model = "concurrent-model".to_string();
             }),
         ));
-        state.reload_all_credentials();
+        state.reconcile_provider_references();
         assert!(RELOAD_RACE_HOOK.lock().is_none());
         let session = state.get_session("modeless").unwrap();
         let selected = session.read().model.clone();
@@ -1218,6 +1231,24 @@ mod tests {
     #[test]
     fn get_state_reports_active_run_and_estimates_cost() {
         let (_dir, state) = bare_app_state();
+        let priced_model = crate::models::Model {
+            id: "deepseek-chat".to_string(),
+            name: "DeepSeek Chat".to_string(),
+            provider: "deepseek".to_string(),
+            api: "chat".to_string(),
+            base_url: "https://api.deepseek.com".to_string(),
+            input: vec!["text".to_string()],
+            output: vec!["text".to_string()],
+            cost: crate::models::Cost {
+                input: 1.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        *state.model_registry.write() = crate::models::Registry::from_models_and_auth(
+            vec![priced_model],
+            r#"{"deepseek":{"type":"api_key","key":"key"}}"#,
+        );
         let snapshot = crate::session::Session::snapshot(
             "s-run".to_string(),
             "/tmp".to_string(),
@@ -1315,7 +1346,7 @@ mod tests {
     }
 
     #[test]
-    fn reload_all_credentials_applies_default_to_model_less_sessions() {
+    fn reconcile_provider_references_applies_default_to_model_less_sessions() {
         let _reload_lock = TEST_RELOAD_LOCK.lock();
 
         let _home = crate::test_support::TestHome::new();
@@ -1344,11 +1375,11 @@ mod tests {
         );
         state.create_session(session);
 
-        state.reload_all_credentials();
+        state.reconcile_provider_references();
         let session = state.get_session("bare").unwrap();
         assert!(
             !session.read().model.is_empty(),
-            "model-less session got the credentialled default"
+            "model-less session got the authoritative default model identity"
         );
     }
 

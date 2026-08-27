@@ -145,7 +145,6 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
         version: CURRENT_SESSION_VERSION,
         cwd: parent.cwd.clone(),
         model: parent_model.clone(),
-        base_url: parent.base_url.clone(),
         name: fork_name,
         parent_session_id: parent.id.clone(),
         leaf_id: String::new(),
@@ -190,7 +189,7 @@ mod tests {
 
     #[test]
     fn fork_session_bad_entry_id_clones_all() {
-        let mut parent = Session::new("/tmp", "model", "");
+        let mut parent = Session::new("/tmp", "model");
         parent
             .entries
             .push(SessionEntry::new_user("user", serde_json::json!("hello")));
@@ -201,7 +200,7 @@ mod tests {
 
     #[test]
     fn fork_session_preserves_model() {
-        let mut parent = Session::new("/tmp", "my-model", "");
+        let mut parent = Session::new("/tmp", "my-model");
         parent
             .entries
             .push(SessionEntry::new_user("user", serde_json::json!("hello")));
@@ -211,7 +210,7 @@ mod tests {
 
     #[test]
     fn fork_session_generates_new_ids() {
-        let mut parent = Session::new("/tmp", "model", "");
+        let mut parent = Session::new("/tmp", "model");
         parent
             .entries
             .push(SessionEntry::new_user("user", serde_json::json!("hello")));
@@ -228,7 +227,7 @@ mod tests {
 
     #[test]
     fn fork_session_name_suffix() {
-        let mut parent = Session::new("/tmp", "model", "");
+        let mut parent = Session::new("/tmp", "model");
         parent.set_session_name("Original Chat");
         parent
             .entries
@@ -308,7 +307,7 @@ mod tests {
 
     #[test]
     fn fork_session_copies_entries_up_to_fork_point() {
-        let mut parent = Session::new("/tmp/test", "test-model", "");
+        let mut parent = Session::new("/tmp/test", "test-model");
         let u1 = make_entry("u1", ENTRY_TYPE_USER, "user", "hello");
         let a1 = make_entry("a1", ENTRY_TYPE_ASSISTANT, "assistant", "hi there");
         let u2 = make_entry("u2", ENTRY_TYPE_USER, "user", "help me");
@@ -328,7 +327,7 @@ mod tests {
     fn entries_to_messages_roundtrip_preserves_history_count() {
         // Simulate: a forked session with history is created, but
         // messages is empty → first prompt save would truncate disk.
-        let mut parent = Session::new("/tmp/test", "test-model", "");
+        let mut parent = Session::new("/tmp/test", "test-model");
         let u1 = make_entry("u1", ENTRY_TYPE_USER, "user", "hello");
         let a1 = make_entry("a1", ENTRY_TYPE_ASSISTANT, "assistant", "hi");
         let a1_id = a1.id.clone();
@@ -384,7 +383,7 @@ mod tests {
 
     #[test]
     fn fork_remaps_v2_checkpoint_range_to_child_entry_ids() {
-        let mut parent = Session::new("/tmp/test", "test-model", "");
+        let mut parent = Session::new("/tmp/test", "test-model");
         let first = make_entry("u1", ENTRY_TYPE_USER, "user", "old");
         let cutoff = make_entry("a1", ENTRY_TYPE_ASSISTANT, "assistant", "answer");
         let checkpoint = ContextCheckpoint {
@@ -420,7 +419,7 @@ mod tests {
 
     #[test]
     fn fork_keeps_compaction_entry_with_non_object_content() {
-        let mut parent = Session::new("/tmp/test", "m", "");
+        let mut parent = Session::new("/tmp/test", "m");
         let user = make_entry("u1", ENTRY_TYPE_USER, "user", "hi");
         let cp = make_entry("cp", ENTRY_TYPE_COMPACTION, "system", "not-an-object");
         let a1 = make_entry("a1", ENTRY_TYPE_ASSISTANT, "assistant", "answer");
@@ -439,7 +438,7 @@ mod tests {
 
     #[test]
     fn fork_keeps_compaction_entry_with_legacy_schema_version() {
-        let mut parent = Session::new("/tmp/test", "m", "");
+        let mut parent = Session::new("/tmp/test", "m");
         let user = make_entry("u1", ENTRY_TYPE_USER, "user", "hi");
         let mut cp = make_entry("cp", ENTRY_TYPE_COMPACTION, "system", "x");
         cp.content = Some(serde_json::json!({ "schema_version": 1 }));
@@ -459,7 +458,7 @@ mod tests {
 
     #[test]
     fn fork_drops_v2_compaction_missing_range_key() {
-        let mut parent = Session::new("/tmp/test", "m", "");
+        let mut parent = Session::new("/tmp/test", "m");
         let user = make_entry("u1", ENTRY_TYPE_USER, "user", "hi");
         let mut cp = make_entry("cp", ENTRY_TYPE_COMPACTION, "system", "x");
         cp.content = Some(serde_json::json!({ "schema_version": 2, "cutoff_entry_id": "u1" }));
@@ -479,7 +478,7 @@ mod tests {
 
     #[test]
     fn fork_drops_v2_compaction_referencing_out_of_fork_id() {
-        let mut parent = Session::new("/tmp/test", "m", "");
+        let mut parent = Session::new("/tmp/test", "m");
         let user = make_entry("u1", ENTRY_TYPE_USER, "user", "hi");
         let mut cp = make_entry("cp", ENTRY_TYPE_COMPACTION, "system", "x");
         cp.content = Some(serde_json::json!({
