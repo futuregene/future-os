@@ -9667,10 +9667,8 @@ mod todo_verify_hint_tests {
             .insert("worker-b".to_string(), "sess-b-orphan".to_string());
 
         let sessions = super::bound_worker_sessions(&goal, &runs, "g1");
-        let by_agent: std::collections::HashMap<&str, &super::WorkerSession> = sessions
-            .iter()
-            .map(|s| (s.agent_id.as_str(), s))
-            .collect();
+        let by_agent: std::collections::HashMap<&str, &super::WorkerSession> =
+            sessions.iter().map(|s| (s.agent_id.as_str(), s)).collect();
 
         // Orphaned binding surfaces even without a run header.
         assert_eq!(
