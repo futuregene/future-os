@@ -7,8 +7,8 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 use super::client::{
-    connect_agent, get_session_entries_command, get_state_command, list_session_ids_command,
-    list_sessions_command, map_rpc_error, set_session_name_command, RpcResponseExt,
+    connect_agent, get_state_command, list_session_ids_command, list_sessions_command,
+    map_rpc_error, set_session_name_command, RpcResponseExt,
 };
 use crate::store;
 
@@ -112,27 +112,19 @@ pub(crate) async fn list_agent_session_ids(
     Ok(ids)
 }
 
-/// Fetch the full entry list for a session. Returns empty on any failure.
-async fn fetch_session_entries(session_id: &str) -> Vec<serde_json::Value> {
-    let mut client = match connect_agent().await {
-        Ok(c) => c,
-        Err(_) => return vec![],
-    };
-    let resp = match client
-        .execute_command(get_session_entries_command(session_id.to_string()))
-        .await
-    {
-        Ok(r) => r.into_inner(),
-        Err(_) => return vec![],
-    };
-    if !resp.success {
-        return vec![];
-    }
-    future_rpc::decode::decode_session_entries(&resp)
+/// Fetch the full entry list for a session. An unreadable journal is a real
+/// import failure, not an empty conversation.
+async fn fetch_session_entries(
+    session_id: &str,
+) -> Result<Vec<serde_json::Value>, crate::AppError> {
+    let data = super::get_session_entries(session_id.to_string()).await?;
+    Ok(data
+        .get("entries")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|entry| serde_json::to_value(entry).ok())
-        .collect()
+        .collect())
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -379,6 +371,9 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
         return Ok(0);
     }
 
+    // Validate/read the history before creating any local rows. A corrupt
+    // journal must not leave behind a thread that looks like an empty session.
+    let entries = fetch_session_entries(&summary.id).await?;
     let title = best_title;
     let (mode, workspace_id, workspace_path, workspace_name) = thread_mode(summary, &title);
 
@@ -422,13 +417,9 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
         });
     }
 
-    // Fetch entries to count assistant replies and synthesize run events.
-    let entries = fetch_session_entries(&summary.id).await;
-    let assistant_count = entries
-        .iter()
-        .filter(|e| e.get("role").and_then(|r| r.as_str()) == Some("assistant"))
-        .count();
-    let run_count = assistant_count.max(1);
+    // Count real exchanges and synthesize run events from the fetched history.
+    let entry_groups = super::session::group_session_entries(&entries);
+    let run_count = entry_groups.len().max(1);
 
     let mut run_ids: Vec<String> = Vec::with_capacity(run_count);
     for _ in 0..run_count {
@@ -438,7 +429,7 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
 
     // Write synthetic run events from the imported session's tool calls
     // so the right panel (Runs tab) is populated immediately.
-    super::session::synthesize_run_events_from_entries(&entries, &run_ids);
+    super::session::synthesize_run_events_from_entries(&entries, &entry_groups, &run_ids);
 
     Ok(run_count)
 }
@@ -711,19 +702,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_session_entries_returns_empty_on_failures() {
+    async fn fetch_session_entries_reports_failures() {
         let mock = super::super::test_support::mock_agent();
 
         mock.push(
             "get_session_entries",
             super::super::test_support::Reply::Reject("no".into()),
         );
-        assert!(fetch_session_entries("s").await.is_empty());
+        assert!(fetch_session_entries("s").await.is_err());
         mock.push(
             "get_session_entries",
             super::super::test_support::Reply::Data("not json".into()),
         );
-        assert!(fetch_session_entries("s").await.is_empty());
+        assert!(fetch_session_entries("s").await.is_err());
     }
 
     #[tokio::test]
@@ -741,7 +732,9 @@ mod tests {
             }]}),
         );
 
-        let entries = fetch_session_entries("typed-session").await;
+        let entries = fetch_session_entries("typed-session")
+            .await
+            .expect("entries");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["content"], "hello");
     }
@@ -824,7 +817,7 @@ mod tests {
         let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock addr");
         std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
         assert!(list_agent_sessions().await.is_empty());
-        assert!(fetch_session_entries("s").await.is_empty());
+        assert!(fetch_session_entries("s").await.is_err());
         std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
     }
 
@@ -835,7 +828,7 @@ mod tests {
             "get_session_entries",
             super::super::test_support::Reply::Status(tonic::Code::Internal, "down"),
         );
-        assert!(fetch_session_entries("s").await.is_empty());
+        assert!(fetch_session_entries("s").await.is_err());
     }
 
     #[test]
@@ -1072,11 +1065,14 @@ mod tests {
         let s = summary("sess-heal-down", &workspace.path);
         assert_eq!(import_one(&s).await.expect("heal"), 0);
 
-        // A brand-new chat import also spawns a title-sync task; its connect
-        // fails under the same unreachable endpoint.
+        // A brand-new import validates history first; an unreachable agent is
+        // reported without leaving a partial empty thread behind.
         _mock.push_data("get_session_entries", serde_json::json!({"entries": []}));
         let s2 = summary("sess-new-down", "");
-        import_one(&s2).await.expect("new");
+        assert!(import_one(&s2).await.is_err());
+        assert!(crate::store::find_thread_by_agent_session("sess-new-down")
+            .expect("find")
+            .is_none());
 
         settle_spawns().await;
         std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
@@ -1126,13 +1122,13 @@ mod tests {
         );
         let s = summary("sess-new", "");
         let runs = import_one(&s).await.expect("import");
-        assert_eq!(runs, 2, "one run per assistant reply");
+        assert_eq!(runs, 1, "consecutive assistants belong to one exchange");
         settle_spawns().await;
         let thread = crate::store::find_thread_by_agent_session("sess-new")
             .expect("find")
             .expect("some");
         assert_eq!(thread.mode, "chat");
-        assert_eq!(crate::store::list_runs(&thread.id).expect("runs").len(), 2);
+        assert_eq!(crate::store::list_runs(&thread.id).expect("runs").len(), 1);
     }
 
     #[tokio::test]

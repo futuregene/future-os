@@ -71,9 +71,11 @@ function deferred<T = unknown>(): {
 
 function fakeEngine(): SyncEngine {
   return {
-    mutate: jest.fn((_sessionId: string, apply: (timeline: ReturnType<typeof emptyTimeline>) => unknown) => {
-      apply(emptyTimeline());
-    }),
+    mutate: jest.fn(
+      (_sessionId: string, apply: (timeline: ReturnType<typeof emptyTimeline>) => unknown) => {
+        apply(emptyTimeline());
+      },
+    ),
   } as unknown as SyncEngine;
 }
 
@@ -179,8 +181,10 @@ describe("usePromptOutbox recovery", () => {
 
   it("automatically reconciles a durable continuation after reconnect", async () => {
     await savePendingContinuation({
-      version: 1,
+      version: 2,
       commandId: "continue-1",
+      pairId: credentials.pairId,
+      expectedDesktopId: credentials.expectedDesktopId,
       sessionId: "session-2",
       sourceRunId: "failed-run",
       createdAt: 2,
@@ -530,7 +534,12 @@ describe("usePromptOutbox continueRun", () => {
       await h.result.continueRun("session-1", "run-1");
     });
     expect(requestRetry).toHaveBeenCalledWith(
-      { id: expect.stringMatching(/^continue_/), type: "continue_run", sessionId: "session-1", runId: "run-1" },
+      {
+        id: expect.stringMatching(/^continue_/),
+        type: "continue_run",
+        sessionId: "session-1",
+        runId: "run-1",
+      },
       "session-1",
     );
     await expect(loadPendingContinuation()).resolves.toBeNull();
@@ -571,8 +580,10 @@ describe("usePromptOutbox continueRun", () => {
 
   it("clears a stale continuation that targets a different run", async () => {
     await savePendingContinuation({
-      version: 1,
+      version: 2,
       commandId: "continue-old",
+      pairId: credentials.pairId,
+      expectedDesktopId: credentials.expectedDesktopId,
       sessionId: "other-session",
       sourceRunId: "other-run",
       createdAt: 2,
@@ -595,6 +606,28 @@ describe("usePromptOutbox continueRun", () => {
     });
     const h = await mountContinue(requestRetry);
     await expect(h.result.continueRun("session-1", "run-1")).rejects.toThrow("boom");
+    await expect(loadPendingContinuation()).resolves.toBeNull();
+  });
+
+  it("discards a continuation from a different pairing without sending it", async () => {
+    await savePendingContinuation({
+      version: 2,
+      commandId: "continue-foreign",
+      pairId: "another-pair",
+      expectedDesktopId: "another-desktop",
+      sessionId: "session-2",
+      sourceRunId: "run-2",
+      createdAt: 2,
+    });
+    const requestRetry = jest.fn(async () => ({ data: ack() }));
+    const h = await mountContinue(requestRetry);
+    await act(async () => {
+      await h.result.continueRun("session-1", "run-1");
+    });
+    expect(requestRetry).not.toHaveBeenCalledWith(
+      expect.objectContaining({ id: "continue-foreign" }),
+      expect.anything(),
+    );
     await expect(loadPendingContinuation()).resolves.toBeNull();
   });
 });
@@ -684,8 +717,10 @@ describe("usePromptOutbox recovery error handling", () => {
 
   it("clears and records a non-transient continuation recovery failure", async () => {
     await savePendingContinuation({
-      version: 1,
+      version: 2,
       commandId: "continue-err",
+      pairId: credentials.pairId,
+      expectedDesktopId: credentials.expectedDesktopId,
       sessionId: "session-2",
       sourceRunId: "failed-run",
       createdAt: 2,

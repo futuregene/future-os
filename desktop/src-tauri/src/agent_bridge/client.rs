@@ -251,8 +251,12 @@ pub fn list_streaming_sessions_command() -> RpcCommand {
     base_command("list_streaming_sessions", String::new())
 }
 
-pub fn get_session_entries_command(session_id: String) -> RpcCommand {
-    base_command("get_session_entries", session_id)
+pub fn get_session_entries_page_command(session_id: String, offset: i64, limit: i64) -> RpcCommand {
+    RpcCommand {
+        offset: Some(offset),
+        limit: Some(limit),
+        ..base_command("get_session_entries", session_id)
+    }
 }
 
 pub fn new_session_command(
@@ -640,10 +644,10 @@ mod tests {
             list_streaming_sessions_command().r#type,
             "list_streaming_sessions"
         );
-        assert_eq!(
-            get_session_entries_command("sess".to_string()).r#type,
-            "get_session_entries"
-        );
+        let command = get_session_entries_page_command("sess".to_string(), 25, 50);
+        assert_eq!(command.r#type, "get_session_entries");
+        assert_eq!(command.offset, Some(25));
+        assert_eq!(command.limit, Some(50));
     }
 
     #[test]

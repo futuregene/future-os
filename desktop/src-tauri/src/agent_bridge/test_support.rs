@@ -38,6 +38,48 @@ pub(crate) enum Reply {
     Status(tonic::Code, &'static str),
 }
 
+/// Production-shaped JSON source for a typed-only `get_state` response.
+pub(crate) fn get_state_payload(session_id: &str, is_streaming: bool) -> serde_json::Value {
+    serde_json::json!({
+        "agentInstanceId": "agent-test",
+        "model": "future/test",
+        "imageSupport": false,
+        "thinkingLevel": "medium",
+        "isStreaming": is_streaming,
+        "isCompacting": false,
+        "sessionFile": "",
+        "sessionId": session_id,
+        "sessionName": "Typed Session",
+        "explicitSession": true,
+        "autoCompactionEnabled": true,
+        "queryCount": 1,
+        "version": "test",
+        "cwd": "/tmp",
+        "skills": [],
+        "contextFiles": [],
+        "extensions": [],
+        "contextWindow": 1000,
+        "contextTokens": 10,
+        "contextPercent": 1.0,
+        "tokensIn": 1,
+        "tokensOut": 2,
+        "tokensCacheR": 0,
+        "tokensCacheW": 0,
+        "totalCost": 0.0,
+        "permissionLevel": "default",
+        "parentSessionId": null,
+        "createdBy": "desktop",
+        "sourceMeta": null,
+        "activeRun": null,
+        "queuedRuns": [],
+        "recentTerminalAcks": [],
+        "queuedCount": 0,
+        "interruptedRun": null,
+        "requestedRun": null,
+        "pendingApprovals": []
+    })
+}
+
 /// One scripted `stream_events` outcome.
 pub(crate) enum StreamScript {
     /// The attach itself fails with this status.

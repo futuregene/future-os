@@ -21,16 +21,16 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (cmd: string, args?: unknown) => invokeMock(cmd, args),
 }));
 
-type Listener = (event: { payload: Record<string, unknown> | undefined }) => void;
+type Listener = (event: {
+  payload: Record<string, unknown> | undefined;
+}) => void;
 let agentEventListener: Listener | null = null;
 let providerConfigListener: Listener | null = null;
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: (name: string, handler: Listener) => {
-    if (name === "agent-event")
-      agentEventListener = handler;
-    if (name === "provider-config-changed")
-      providerConfigListener = handler;
+    if (name === "agent-event") agentEventListener = handler;
+    if (name === "provider-config-changed") providerConfigListener = handler;
     return Promise.resolve(() => {});
   },
 }));
@@ -43,7 +43,7 @@ function statePayload(overrides: Record<string, unknown> = {}) {
   return {
     model: "m1",
     thinkingLevel: "high",
-    session_name: "Session",
+    sessionName: "Session",
     sessionId: "s1",
     cwd: "/w",
     parentSessionId: null,
@@ -89,9 +89,11 @@ describe("agentStateCache fetch/cache", () => {
   });
 
   it("fetches and parses session state including activeRun variants", async () => {
-    invokeMock.mockResolvedValue(statePayload({
-      activeRun: { runId: "r1", state: "running", epoch: 2, lastEventIdx: 7 },
-    }));
+    invokeMock.mockResolvedValue(
+      statePayload({
+        activeRun: { runId: "r1", state: "running", epoch: 2, lastEventIdx: 7 },
+      }),
+    );
     const state = await getAgentState("t-fetch");
     expect(state).toMatchObject({
       model: "m1",
@@ -106,14 +108,23 @@ describe("agentStateCache fetch/cache", () => {
     expect((await getAgentState("t-run-str")).activeRun).toBeNull();
     invokeMock.mockResolvedValue(statePayload({ activeRun: { runId: 1 } }));
     expect((await getAgentState("t-run-bad")).activeRun).toBeNull();
-    invokeMock.mockResolvedValue(statePayload({ activeRun: { runId: "r", state: "queued" } }));
-    expect((await getAgentState("t-run-min")).activeRun).toMatchObject({ epoch: 0, lastEventIdx: -1 });
+    invokeMock.mockResolvedValue(
+      statePayload({ activeRun: { runId: "r", state: "queued" } }),
+    );
+    expect((await getAgentState("t-run-min")).activeRun).toMatchObject({
+      epoch: 0,
+      lastEventIdx: -1,
+    });
   });
 
   it("parses missing fields as null", async () => {
     invokeMock.mockResolvedValue({});
     const state = await getAgentState("t-empty");
-    expect(state).toMatchObject({ model: null, thinkingLevel: null, sessionName: null });
+    expect(state).toMatchObject({
+      model: null,
+      thinkingLevel: null,
+      sessionName: null,
+    });
   });
 
   it("serves fresh entries from cache and dedupes in-flight requests", async () => {
@@ -130,9 +141,12 @@ describe("agentStateCache fetch/cache", () => {
 
     // In-flight dedupe.
     let resolveInvoke!: (v: unknown) => void;
-    invokeMock.mockImplementation(() => new Promise((resolve) => {
-      resolveInvoke = resolve;
-    }));
+    invokeMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveInvoke = resolve;
+        }),
+    );
     const a = getAgentState("t-flight", { force: true });
     const b = getAgentState("t-flight", { force: true });
     resolveInvoke(statePayload());
@@ -148,7 +162,10 @@ describe("agentStateCache fetch/cache", () => {
     invokeMock.mockResolvedValue(statePayload());
     await getAgentState("t-patch");
     updateCachedAgentState("t-patch", { model: "m2" });
-    expect(getCachedAgentState("t-patch")).toMatchObject({ model: "m2", thinkingLevel: "high" });
+    expect(getCachedAgentState("t-patch")).toMatchObject({
+      model: "m2",
+      thinkingLevel: "high",
+    });
 
     updateCachedAgentState("t-fresh", { model: "m3" } as never);
     expect(getCachedAgentState("t-fresh")).toMatchObject({ model: "m3" });
@@ -176,16 +193,21 @@ describe("agentStateCache fetch/cache", () => {
 
   it("keeps the optimistic update when a slower fetch resolves behind it", async () => {
     let resolveInvoke!: (v: unknown) => void;
-    invokeMock.mockImplementation(() => new Promise((resolve) => {
-      resolveInvoke = resolve;
-    }));
+    invokeMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveInvoke = resolve;
+        }),
+    );
     const pending = getAgentState("t-race");
     // The user changes the model while the fetch is in flight.
     updateCachedAgentState("t-race", { model: "m-optimistic" } as never);
     resolveInvoke(statePayload({ model: "m-stale" }));
     const state = await pending;
     expect(state.model).toBe("m-optimistic");
-    expect(getCachedAgentState("t-race")).toMatchObject({ model: "m-optimistic" });
+    expect(getCachedAgentState("t-race")).toMatchObject({
+      model: "m-optimistic",
+    });
   });
 
   it("prunes past the 100-entry cap", () => {
@@ -228,11 +250,23 @@ describe("agentStateCache event listener", () => {
     emit({ _eventType: "model_changed", sessionId: "s1", model: "m-new" });
     expect(getCachedAgentState("t-set")).toMatchObject({ model: "m-new" });
 
-    emit({ _eventType: "thinking_level_changed", sessionId: "s1", level: "low" });
-    expect(getCachedAgentState("t-set")).toMatchObject({ thinkingLevel: "low" });
+    emit({
+      _eventType: "thinking_level_changed",
+      sessionId: "s1",
+      level: "low",
+    });
+    expect(getCachedAgentState("t-set")).toMatchObject({
+      thinkingLevel: "low",
+    });
 
-    emit({ _eventType: "session_name_changed", sessionId: "s1", name: "Renamed" });
-    expect(getCachedAgentState("t-set")).toMatchObject({ sessionName: "Renamed" });
+    emit({
+      _eventType: "session_name_changed",
+      sessionId: "s1",
+      name: "Renamed",
+    });
+    expect(getCachedAgentState("t-set")).toMatchObject({
+      sessionName: "Renamed",
+    });
 
     // Non-string values leave the entry unchanged.
     emit({ _eventType: "model_changed", sessionId: "s1", model: 42 });
@@ -248,10 +282,13 @@ describe("agentStateCache event listener", () => {
     await getAgentState("t-cwd");
     invokeMock.mockResolvedValue(undefined);
     const cwdEvents: Event[] = [];
-    window.addEventListener("future:cwd-changed", e => cwdEvents.push(e));
+    window.addEventListener("future:cwd-changed", (e) => cwdEvents.push(e));
     emit({ _eventType: "cwd_changed", sessionId: "s1", cwd: "/new" });
     await flushAsync();
-    expect(invokeMock).toHaveBeenCalledWith("reconcile_thread_workspace", { sessionId: "s1", cwd: "/new" });
+    expect(invokeMock).toHaveBeenCalledWith("reconcile_thread_workspace", {
+      sessionId: "s1",
+      cwd: "/new",
+    });
     expect(cwdEvents).toHaveLength(1);
     expect(getCachedAgentState("t-cwd")).toMatchObject({ cwd: "/new" });
   });
@@ -259,7 +296,9 @@ describe("agentStateCache event listener", () => {
   it("toasts when the workspace reconcile fails", async () => {
     invokeMock.mockRejectedValue(new Error("no access"));
     const toasts: CustomEvent[] = [];
-    window.addEventListener("futureos:toast", e => toasts.push(e as CustomEvent));
+    window.addEventListener("futureos:toast", (e) =>
+      toasts.push(e as CustomEvent),
+    );
     emit({ _eventType: "cwd_changed", sessionId: "s1", cwd: "/bad" });
     await flushAsync();
     await flushAsync();
@@ -274,13 +313,22 @@ describe("agentStateCache event listener", () => {
     emit({ _eventType: "config_reloaded", sessionId: "s1" });
     await flushAsync();
     await flushAsync();
-    expect(getCachedAgentState("t-conf")).toMatchObject({ model: "m-reloaded" });
+    expect(getCachedAgentState("t-conf")).toMatchObject({
+      model: "m-reloaded",
+    });
   });
 
   it("forwards content events as window CustomEvents", () => {
     const received: CustomEvent[] = [];
-    window.addEventListener("future:agent-event", e => received.push(e as CustomEvent));
-    emit({ _eventType: "user_message", sessionId: "s1", threadId: "t1", text: "hi" });
+    window.addEventListener("future:agent-event", (e) =>
+      received.push(e as CustomEvent),
+    );
+    emit({
+      _eventType: "user_message",
+      sessionId: "s1",
+      threadId: "t1",
+      text: "hi",
+    });
     emit({
       _eventType: "compaction_started",
       sessionId: "s1",
@@ -304,7 +352,10 @@ describe("agentStateCache event listener", () => {
       error: "provider unavailable",
     });
     expect(received).toHaveLength(4);
-    expect(received[0]?.detail).toMatchObject({ threadId: "t1", eventType: "user_message" });
+    expect(received[0]?.detail).toMatchObject({
+      threadId: "t1",
+      eventType: "user_message",
+    });
     expect(received[1]?.detail).toMatchObject({
       threadId: "t1",
       eventType: "compaction_started",

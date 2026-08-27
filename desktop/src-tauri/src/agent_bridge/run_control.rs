@@ -157,10 +157,9 @@ pub(crate) async fn wait_for_agent_idle(session_id: &str) {
             .await
         {
             Ok(response) => {
-                let data = response.into_inner().data;
-                let streaming = serde_json::from_str::<serde_json::Value>(&data)
-                    .ok()
-                    .and_then(|value| value.get("isStreaming").and_then(|s| s.as_bool()))
+                let response = response.into_inner();
+                let streaming = future_rpc::decode::decode_get_state(&response)
+                    .map(|state| state.is_streaming)
                     .unwrap_or(false);
                 if !streaming {
                     return;
@@ -181,7 +180,7 @@ fn is_agent_unavailable_error(error: &crate::AppError) -> bool {
 mod tests {
     use super::super::replica::AGENT_REPLICAS;
     use super::super::test_support::{
-        mock_agent, seed_run, seed_thread, seed_workspace, Reply, TestHome,
+        get_state_payload, mock_agent, seed_run, seed_thread, seed_workspace, Reply, TestHome,
     };
     use super::*;
 
@@ -421,9 +420,9 @@ mod tests {
         assert_eq!(mock.requests_of("get_state").len(), 1);
 
         // Streaming twice, then idle: polls until the agent confirms quiet.
-        mock.push_data("get_state", serde_json::json!({"isStreaming": true}));
-        mock.push_data("get_state", serde_json::json!({"isStreaming": true}));
-        mock.push_data("get_state", serde_json::json!({"isStreaming": false}));
+        mock.push_typed_data("get_state", get_state_payload("sess-1", true));
+        mock.push_typed_data("get_state", get_state_payload("sess-1", true));
+        mock.push_typed_data("get_state", get_state_payload("sess-1", false));
         wait_for_agent_idle("sess-1").await;
         assert_eq!(mock.requests_of("get_state").len(), 4);
 

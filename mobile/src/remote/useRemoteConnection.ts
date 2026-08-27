@@ -7,6 +7,7 @@ import type { ConnectionState } from "./connectionState";
 import { classifyError } from "./connectionState";
 import { attemptPendingRevoke, claimPairingCode, serverRevoke } from "./pairing";
 import { clearPendingPrompt, loadPendingPrompt } from "./pendingPromptStorage";
+import { discardPendingContinuation } from "./pendingContinuationStorage";
 import {
   INITIAL_PRESENCE_STATE,
   isDesktopOnline,
@@ -132,6 +133,7 @@ export function useRemoteConnection({
             void clientRef.current?.close("Unpair");
             clientRef.current = null;
             void clearCredentials();
+            void discardPendingContinuation();
             setCredentials(null);
             setPresence(null);
             resetCatalog();
@@ -405,6 +407,7 @@ export function useRemoteConnection({
     await clearCredentials();
     const pendingPrompt = await loadPendingPrompt();
     if (pendingPrompt) await clearPendingPrompt(pendingPrompt.commandId);
+    await discardPendingContinuation();
     setCredentials(null);
     setPresence(null);
     resetCatalog();

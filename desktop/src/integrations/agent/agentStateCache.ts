@@ -20,7 +20,12 @@ export interface AgentSessionState {
   activeRun?: {
     runId: string;
     epoch: number;
-    state: "starting" | "running" | "cancelling" | "cancellation_stuck" | "finalizing";
+    state:
+      | "starting"
+      | "running"
+      | "cancelling"
+      | "cancellation_stuck"
+      | "finalizing";
     lastEventIdx: number;
   } | null;
 }
@@ -53,8 +58,7 @@ const versions = new Map<string, number>();
 const listeners = new Set<() => void>();
 
 function notify() {
-  for (const listener of listeners)
-    listener();
+  for (const listener of listeners) listener();
 }
 
 // Module-scoped so the reference stays stable across renders — otherwise
@@ -85,20 +89,30 @@ export async function getAgentState(
   }
 
   const pending = inFlight.get(threadId);
-  if (pending)
-    return pending;
+  if (pending) return pending;
 
   const requestVersion = versions.get(threadId) ?? 0;
-  const request = invokeCommand<Record<string, unknown>>("get_thread_agent_state", { threadId })
+  const request = invokeCommand<Record<string, unknown>>(
+    "get_thread_agent_state",
+    { threadId },
+  )
     .then((raw) => {
       const state: AgentSessionState = {
         model: typeof raw.model === "string" ? raw.model : null,
-        thinkingLevel: typeof raw.thinkingLevel === "string" ? raw.thinkingLevel : null,
-        sessionName: typeof raw.session_name === "string" ? raw.session_name : null,
+        thinkingLevel:
+          typeof raw.thinkingLevel === "string" ? raw.thinkingLevel : null,
+        sessionName:
+          typeof raw.sessionName === "string"
+            ? raw.sessionName
+            : typeof raw.session_name === "string"
+              ? raw.session_name
+              : null,
         sessionId: typeof raw.sessionId === "string" ? raw.sessionId : null,
         cwd: typeof raw.cwd === "string" ? raw.cwd : null,
-        parentSessionId: typeof raw.parentSessionId === "string" ? raw.parentSessionId : null,
-        isStreaming: typeof raw.isStreaming === "boolean" ? raw.isStreaming : undefined,
+        parentSessionId:
+          typeof raw.parentSessionId === "string" ? raw.parentSessionId : null,
+        isStreaming:
+          typeof raw.isStreaming === "boolean" ? raw.isStreaming : undefined,
         activeRun: parseActiveRun(raw.activeRun),
       };
       if ((versions.get(threadId) ?? 0) === requestVersion) {
@@ -110,16 +124,14 @@ export async function getAgentState(
       return cache.get(threadId)?.state ?? state;
     })
     .finally(() => {
-      if (inFlight.get(threadId) === request)
-        inFlight.delete(threadId);
+      if (inFlight.get(threadId) === request) inFlight.delete(threadId);
     });
   inFlight.set(threadId, request);
   return request;
 }
 
 function parseActiveRun(value: unknown): AgentSessionState["activeRun"] {
-  if (!value || typeof value !== "object")
-    return null;
+  if (!value || typeof value !== "object") return null;
   const run = value as Record<string, unknown>;
   if (typeof run.runId !== "string" || typeof run.state !== "string")
     return null;
@@ -136,12 +148,17 @@ function parseActiveRun(value: unknown): AgentSessionState["activeRun"] {
  * state object (rather than mutating in place) so useSyncExternalStore's
  * Object.is snapshot comparison detects the change and re-renders subscribers.
  */
-export function updateCachedAgentState(threadId: string, patch: Partial<AgentSessionState>) {
+export function updateCachedAgentState(
+  threadId: string,
+  patch: Partial<AgentSessionState>,
+) {
   versions.set(threadId, (versions.get(threadId) ?? 0) + 1);
   inFlight.delete(threadId);
   const cached = cache.get(threadId);
   cache.set(threadId, {
-    state: cached ? { ...cached.state, ...patch } : (patch as AgentSessionState),
+    state: cached
+      ? { ...cached.state, ...patch }
+      : (patch as AgentSessionState),
     // Always use the current time — an optimistic update from the user's
     // explicit action must not inherit a stale fetchedAt that would make
     // getCachedAgentState treat it as expired immediately.
@@ -159,9 +176,10 @@ export function updateCachedAgentState(threadId: string, patch: Partial<AgentSes
  * Freshness is the writer's job — getAgentState still refetches once an entry
  * is older than CACHE_TTL_MS.
  */
-export function getCachedAgentState(threadId: string | undefined | null): AgentSessionState | undefined {
-  if (!threadId)
-    return undefined;
+export function getCachedAgentState(
+  threadId: string | undefined | null,
+): AgentSessionState | undefined {
+  if (!threadId) return undefined;
   return cache.get(threadId)?.state;
 }
 
@@ -169,8 +187,7 @@ export function getCachedAgentState(threadId: string | undefined | null): AgentS
 export function invalidateAgentState(threadId: string) {
   versions.set(threadId, (versions.get(threadId) ?? 0) + 1);
   inFlight.delete(threadId);
-  if (cache.delete(threadId))
-    notify();
+  if (cache.delete(threadId)) notify();
 }
 
 function touchCache(threadId: string, entry: CacheEntry) {
@@ -190,8 +207,7 @@ function pruneCache() {
 
 /** Pre-fetch agent state for a thread in the background. */
 export function prefetchAgentState(threadId: string | undefined | null) {
-  if (!threadId)
-    return;
+  if (!threadId) return;
   // Fire-and-forget: the agent may be offline or the thread may have no session
   // yet, so swallow the rejection here — awaiting callers still see it.
   void getAgentState(threadId).catch(() => {});
@@ -206,8 +222,7 @@ export function prefetchAgentState(threadId: string | undefined | null) {
  * available to synchronous readers until the fresh one lands.
  */
 export function revalidateAgentState(threadId: string | undefined | null) {
-  if (!threadId)
-    return;
+  if (!threadId) return;
   void getAgentState(threadId, { force: true }).catch(() => {});
 }
 
@@ -218,7 +233,9 @@ export function revalidateAgentState(threadId: string | undefined | null) {
  * Returns the same object reference until the entry changes, keeping
  * useSyncExternalStore's snapshot stable.
  */
-export function useCachedAgentState(threadId: string | undefined | null): AgentSessionState | undefined {
+export function useCachedAgentState(
+  threadId: string | undefined | null,
+): AgentSessionState | undefined {
   return useSyncExternalStore(subscribe, () => getCachedAgentState(threadId));
 }
 
@@ -231,8 +248,7 @@ let eventListenerInstalled = false;
  * latency as the TUI — no polling, no synthetic run delay.
  */
 export function installAgentEventListener() {
-  if (eventListenerInstalled)
-    return;
+  if (eventListenerInstalled) return;
   eventListenerInstalled = true;
 
   void listen<Record<string, unknown>>("provider-config-changed", (event) => {
@@ -248,14 +264,12 @@ export function installAgentEventListener() {
 
   void listen<Record<string, unknown>>("agent-event", (event) => {
     const p = event.payload;
-    if (!p)
-      return;
+    if (!p) return;
 
     const threadId = typeof p.threadId === "string" ? p.threadId : null;
     const sessionId = typeof p.sessionId === "string" ? p.sessionId : null;
     const eventType = typeof p._eventType === "string" ? p._eventType : null;
-    if (!sessionId || !eventType)
-      return;
+    if (!sessionId || !eventType) return;
 
     switch (eventType) {
       // ── Settings-change events: update cache ──
@@ -281,11 +295,12 @@ export function installAgentEventListener() {
       case "compaction_started":
       case "compaction_committed":
       case "compaction_failed":
-        if (!threadId)
-          return;
-        window.dispatchEvent(new CustomEvent("future:agent-event", {
-          detail: { threadId, sessionId, eventType, payload: p },
-        }));
+        if (!threadId) return;
+        window.dispatchEvent(
+          new CustomEvent("future:agent-event", {
+            detail: { threadId, sessionId, eventType, payload: p },
+          }),
+        );
         break;
     }
   });
@@ -305,20 +320,23 @@ function applySettingsEvent(
     invokeCommand("reconcile_thread_workspace", {
       sessionId,
       cwd: p.cwd,
-    }).then(() => {
-      window.dispatchEvent(new CustomEvent("future:cwd-changed"));
-    }).catch((error: unknown) => {
-      emitFutureEvent("toast", {
-        message: i18n.t("agent:thread.workspaceAccessError", { message: String(error) }),
-        tone: "error",
+    })
+      .then(() => {
+        window.dispatchEvent(new CustomEvent("future:cwd-changed"));
+      })
+      .catch((error: unknown) => {
+        emitFutureEvent("toast", {
+          message: i18n.t("agent:thread.workspaceAccessError", {
+            message: String(error),
+          }),
+          tone: "error",
+        });
       });
-    });
   }
 
   const revalidate: string[] = [];
   for (const [threadId, entry] of cache) {
-    if (entry.state.sessionId !== sessionId)
-      continue;
+    if (entry.state.sessionId !== sessionId) continue;
 
     if (eventType === "config_reloaded") {
       // The agent rebuilt this session's settings: drop the snapshot and
@@ -385,8 +403,7 @@ export async function listStreamingThreadIds(): Promise<string[]> {
   try {
     const raw = await invokeCommand<string[]>("list_streaming_thread_ids");
     return Array.isArray(raw) ? raw : [];
-  }
-  catch {
+  } catch {
     // Agent unreachable: report "nothing streaming" — the next tick retries.
     return [];
   }

@@ -1,8 +1,10 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 export interface PendingContinuation {
-  version: 1;
+  version: 2;
   commandId: string;
+  pairId: string;
+  expectedDesktopId: string;
   sessionId: string;
   sourceRunId: string;
   createdAt: number;
@@ -16,9 +18,13 @@ export async function loadPendingContinuation(): Promise<PendingContinuation | n
     if (!raw) return null;
     const value = JSON.parse(raw) as Partial<PendingContinuation>;
     if (
-      value.version !== 1 ||
+      value.version !== 2 ||
       typeof value.commandId !== "string" ||
       !value.commandId ||
+      typeof value.pairId !== "string" ||
+      !value.pairId ||
+      typeof value.expectedDesktopId !== "string" ||
+      !value.expectedDesktopId ||
       typeof value.sessionId !== "string" ||
       !value.sessionId ||
       typeof value.sourceRunId !== "string" ||
@@ -41,4 +47,9 @@ export async function savePendingContinuation(continuation: PendingContinuation)
 export async function clearPendingContinuation(commandId: string): Promise<void> {
   const current = await loadPendingContinuation();
   if (current?.commandId === commandId) await AsyncStorage.removeItem(KEY);
+}
+
+/** Drop any continuation, including legacy/malformed records that cannot be decoded safely. */
+export async function discardPendingContinuation(): Promise<void> {
+  await AsyncStorage.removeItem(KEY);
 }

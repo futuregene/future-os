@@ -4,6 +4,7 @@ import * as Network from "expo-network";
 import { AppState } from "react-native";
 import type { ConnectionState } from "../connectionState";
 import { attemptPendingRevoke, claimPairingCode, serverRevoke } from "../pairing";
+import { discardPendingContinuation } from "../pendingContinuationStorage";
 import { clearPendingPrompt, loadPendingPrompt } from "../pendingPromptStorage";
 import {
   clearCredentials,
@@ -44,6 +45,11 @@ jest.mock("../pendingPromptStorage", () => ({
   __esModule: true,
   clearPendingPrompt: jest.fn(async () => {}),
   loadPendingPrompt: jest.fn(async () => null),
+}));
+
+jest.mock("../pendingContinuationStorage", () => ({
+  __esModule: true,
+  discardPendingContinuation: jest.fn(async () => {}),
 }));
 
 jest.mock("../client", () => {
@@ -332,6 +338,7 @@ describe("useRemoteConnection", () => {
       const c = client();
       act(() => c.callbacks.onPresence({ ...presence, unpaired: true }));
       expect(clearCredentials).toHaveBeenCalled();
+      expect(discardPendingContinuation).toHaveBeenCalled();
       expect(options.resetCatalog).toHaveBeenCalled();
       expect(options.resetConversation).toHaveBeenCalled();
       expect(options.resetTimeline).toHaveBeenCalled();

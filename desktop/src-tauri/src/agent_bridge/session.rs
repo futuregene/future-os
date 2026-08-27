@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use tonic::transport::Channel;
 
 use super::client::{
-    fork_command, get_session_entries_command, get_state_command, new_session_command,
-    set_cwd_command, set_permission_level_command, set_sandbox_policy_command, RpcResponseExt,
+    fork_command, get_state_command, new_session_command, set_cwd_command,
+    set_permission_level_command, set_sandbox_policy_command, RpcResponseExt,
 };
 use crate::{agent_proto::FutureAgentClient, store};
 
@@ -186,18 +186,13 @@ pub async fn fork_agent_session(
 
     // ── find the fork point ────────────────────────────────────────────
 
-    let response = client
-        .execute_command(get_session_entries_command(session_id.clone()))
-        .await
-        .map_err(|error| format!("Unable to list session entries: {error}"))?
-        .into_inner()
-        .ok_or_rpc_error("Future Agent rejected the session-entries request.")?;
-
-    let entries: Vec<serde_json::Value> = future_rpc::decode::response_data(&response)
-        .get("entries")
-        .cloned()
-        .and_then(|v| serde_json::from_value(v).ok())
-        .unwrap_or_default();
+    let entries: Vec<serde_json::Value> =
+        super::fetch_all_session_entries_with_client(&mut client, &session_id)
+            .await
+            .map_err(|error| format!("Unable to list session entries: {error}"))?
+            .into_iter()
+            .filter_map(|entry| serde_json::to_value(entry).ok())
+            .collect();
 
     let is_user = |e: &serde_json::Value| e.get("role").and_then(|r| r.as_str()) == Some("user");
 
@@ -262,19 +257,13 @@ pub async fn fork_agent_session(
 
     // ── read forked entries for metadata ───────────────────────────────
 
-    let entries_response = client
-        .execute_command(get_session_entries_command(new_session_id.clone()))
-        .await
-        .map_err(|error| format!("Unable to list fork session entries: {error}"))?
-        .into_inner()
-        .ok_or_rpc_error("Future Agent rejected the fork-session entries request.")?;
-
     let fork_entries: Vec<serde_json::Value> =
-        serde_json::from_str::<serde_json::Value>(&entries_response.data)
-            .ok()
-            .and_then(|v| v.get("entries").cloned())
-            .and_then(|v| serde_json::from_value(v).ok())
-            .unwrap_or_default();
+        super::fetch_all_session_entries_with_client(&mut client, &new_session_id)
+            .await
+            .map_err(|error| format!("Unable to list fork session entries: {error}"))?
+            .into_iter()
+            .filter_map(|entry| serde_json::to_value(entry).ok())
+            .collect();
 
     // The agent's fork_session writes metadata into a session_info entry
     // (role = "system"); find it — get_session_entries now includes it.
@@ -295,16 +284,26 @@ pub async fn fork_agent_session(
         };
         format!("{parent_title} (fork)")
     });
-    let session_model = session_info
-        .and_then(|e| e.get("model"))
-        .and_then(|m| m.as_str())
-        .unwrap_or("")
-        .to_string();
+    // Session-entry payloads intentionally contain conversation data only;
+    // the selected model lives in the forked session's state. Read it from
+    // the canonical typed response so a payload-only agent does not create
+    // model-less historical runs after a fork.
+    let session_model = match client
+        .execute_command(get_state_command(new_session_id.clone()))
+        .await
+    {
+        Ok(response) => future_rpc::decode::response_data(&response.into_inner())
+            .get("model")
+            .and_then(|model| model.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        Err(error) => {
+            eprintln!("FutureOS: fork get_state failed: {error}");
+            String::new()
+        }
+    };
 
-    let assistant_count = fork_entries
-        .iter()
-        .filter(|e| e.get("role").and_then(|r| r.as_str()) == Some("assistant"))
-        .count();
+    let entry_groups = group_session_entries(&fork_entries);
 
     // ── create workspace + thread ──────────────────────────────────────
 
@@ -335,7 +334,7 @@ pub async fn fork_agent_session(
     }
 
     let (provider, model_id) = split_model(&session_model);
-    let run_count = assistant_count.max(1);
+    let run_count = entry_groups.len().max(1);
     let mut run_ids: Vec<String> = Vec::with_capacity(run_count);
     for _ in 0..run_count {
         let run = store::create_run(store::CreateRunInput {
@@ -356,7 +355,7 @@ pub async fn fork_agent_session(
 
     // Write synthetic run events so the right panel (Runs tab) shows tool calls
     // from the forked history immediately — no live stream exists for these runs.
-    synthesize_run_events_from_entries(&fork_entries, &run_ids);
+    synthesize_run_events_from_entries(&fork_entries, &entry_groups, &run_ids);
 
     Ok(new_thread.id)
 }
@@ -368,101 +367,140 @@ pub async fn fork_agent_session(
 /// forked history to serve it). Panel state is in-memory, so it lasts for
 /// this process lifetime.
 ///
-/// The Nth assistant entry maps to the Nth run_id. Tool result entries
-/// (role = "tool") are matched by `tool_call_id`.
+/// Entries are grouped by canonical `meta.run_id`, with a positional
+/// user-to-next-user fallback for legacy journals. Tool result entries are
+/// matched by `tool_call_id` inside their group.
 pub(super) fn synthesize_run_events_from_entries(
     entries: &[serde_json::Value],
+    groups: &[Vec<usize>],
     run_ids: &[String],
 ) {
-    // Index tool result entries by tool_call_id.
-    let tool_results: HashMap<&str, &serde_json::Value> = entries
-        .iter()
-        .filter(|e| e.get("role").and_then(|r| r.as_str()) == Some("tool"))
-        .filter_map(|e| {
-            let id = e.get("tool_call_id").and_then(|v| v.as_str())?;
-            if id.is_empty() {
-                None
-            } else {
-                Some((id, e))
-            }
-        })
-        .collect();
+    for (group, run_id) in groups.iter().zip(run_ids) {
+        let tool_results: HashMap<&str, &serde_json::Value> = group
+            .iter()
+            .filter_map(|index| entries.get(*index))
+            .filter(|entry| entry.get("role").and_then(|role| role.as_str()) == Some("tool"))
+            .filter_map(|entry| {
+                let id = entry.get("tool_call_id").and_then(|value| value.as_str())?;
+                (!id.is_empty()).then_some((id, entry))
+            })
+            .collect();
+        let mut seq: i64 = 0;
 
-    let mut run_idx: usize = 0;
-    let mut seq: i64 = 0;
-
-    for entry in entries {
-        if entry.get("role").and_then(|r| r.as_str()) != Some("assistant") {
-            continue;
-        }
-        if run_idx >= run_ids.len() {
-            break;
-        }
-        let run_id = &run_ids[run_idx];
-        run_idx += 1;
-
-        let Some(tool_calls) = entry.get("tool_calls").and_then(|v| v.as_array()) else {
-            continue;
-        };
-
-        for tc in tool_calls {
-            let tc_id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            if tc_id.is_empty() {
+        for entry in group.iter().filter_map(|index| entries.get(*index)) {
+            if entry.get("role").and_then(|role| role.as_str()) != Some("assistant") {
                 continue;
             }
-            let name = tc
-                .get("function")
-                .and_then(|f| f.get("name"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let args = tc
-                .get("function")
-                .and_then(|f| f.get("arguments"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let Some(tool_calls) = entry.get("tool_calls").and_then(|value| value.as_array())
+            else {
+                continue;
+            };
 
-            let start_payload = serde_json::json!({
-                "tool_id": tc_id,
-                "tool_name": name,
-                "tool_args": args,
-            });
-            // Imported history is represented by the Agent transcript. Keep
-            // only the GUI's derived tool projection; never recreate a GUI
-            // raw-event JSONL from it.
-            super::persist::persist_run_event(
-                Some(run_id),
-                "tool_start",
-                &start_payload.to_string(),
-                seq,
-            );
-            seq += 1;
+            for tc in tool_calls {
+                let tc_id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                if tc_id.is_empty() {
+                    continue;
+                }
+                let name = tc
+                    .get("function")
+                    .and_then(|f| f.get("name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let args = tc
+                    .get("function")
+                    .and_then(|f| f.get("arguments"))
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
 
-            // tool_end from the matching result entry, if one exists.
-            if let Some(result) = tool_results.get(tc_id) {
-                let content = result.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                let is_error = content.starts_with("Error:");
-                let end_payload = if is_error {
-                    serde_json::json!({
-                        "tool_id": tc_id,
-                        "text": content,
-                        "error": content,
-                    })
-                } else {
-                    serde_json::json!({
-                        "tool_id": tc_id,
-                        "text": content,
-                    })
-                };
+                let start_payload = serde_json::json!({
+                    "tool_id": tc_id,
+                    "tool_name": name,
+                    "tool_args": args,
+                });
+                // Imported history is represented by the Agent transcript. Keep
+                // only the GUI's derived tool projection; never recreate a GUI
+                // raw-event JSONL from it.
                 super::persist::persist_run_event(
                     Some(run_id),
-                    "tool_end",
-                    &end_payload.to_string(),
+                    "tool_start",
+                    &start_payload.to_string(),
                     seq,
                 );
                 seq += 1;
+
+                // tool_end from the matching result entry, if one exists.
+                if let Some(result) = tool_results.get(tc_id) {
+                    let content = result.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                    let is_error = result
+                        .get("tool_result_is_error")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or_else(|| content.starts_with("Error:"));
+                    let end_payload = if is_error {
+                        serde_json::json!({
+                            "tool_id": tc_id,
+                            "text": content,
+                            "error": content,
+                        })
+                    } else {
+                        serde_json::json!({
+                            "tool_id": tc_id,
+                            "text": content,
+                        })
+                    };
+                    super::persist::persist_run_event(
+                        Some(run_id),
+                        "tool_end",
+                        &end_payload.to_string(),
+                        seq,
+                    );
+                    seq += 1;
+                }
             }
         }
     }
+}
+
+/// Group display entries into real agent runs. Canonical run IDs win; entries
+/// from older journals are grouped into user-led exchanges.
+pub(super) fn group_session_entries(entries: &[serde_json::Value]) -> Vec<Vec<usize>> {
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut canonical: HashMap<String, usize> = HashMap::new();
+    let mut current: Option<usize> = None;
+
+    for (entry_index, entry) in entries.iter().enumerate() {
+        let role = entry
+            .get("role")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        if !matches!(role, "user" | "assistant" | "tool") {
+            continue;
+        }
+        if let Some(run_id) = entry
+            .pointer("/meta/run_id")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+        {
+            let group_index = *canonical.entry(run_id.to_string()).or_insert_with(|| {
+                groups.push(Vec::new());
+                groups.len() - 1
+            });
+            groups[group_index].push(entry_index);
+            current = Some(group_index);
+            continue;
+        }
+
+        let group_index = match (role, current) {
+            ("user", _) | (_, None) => {
+                groups.push(Vec::new());
+                let index = groups.len() - 1;
+                current = Some(index);
+                index
+            }
+            (_, Some(index)) => index,
+        };
+        groups[group_index].push(entry_index);
+    }
+    groups
 }
 
 pub(super) fn split_model(model: &str) -> (Option<String>, Option<String>) {
@@ -479,8 +517,8 @@ pub(super) fn split_model(model: &str) -> (Option<String>, Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::super::test_support::{
-        break_home, mock_agent, restore_home, seed_run, seed_thread, seed_workspace, Reply,
-        TestHome,
+        break_home, get_state_payload, mock_agent, restore_home, seed_run, seed_thread,
+        seed_workspace, Reply, TestHome,
     };
     use super::*;
 
@@ -777,6 +815,20 @@ mod tests {
     // ── fork_agent_session ──────────────────────────────────────────────
 
     fn entries_payload(entries: serde_json::Value) -> serde_json::Value {
+        let mut entries = entries.as_array().cloned().unwrap_or_default();
+        for entry in &mut entries {
+            if let Some(object) = entry.as_object_mut() {
+                object
+                    .entry("name")
+                    .or_insert_with(|| serde_json::json!(""));
+                object
+                    .entry("tool_args")
+                    .or_insert_with(|| serde_json::json!(""));
+                object
+                    .entry("timestamp")
+                    .or_insert_with(|| serde_json::json!("2026-08-27T00:00:00Z"));
+            }
+        }
         serde_json::json!({"entries": entries})
     }
 
@@ -792,12 +844,12 @@ mod tests {
 
     fn forked_entries() -> serde_json::Value {
         serde_json::json!([
-            {"id": "f0", "role": "system", "content": {"session_name": "Forked Chat"}, "model": "future/k3"},
-            {"id": "f1", "role": "user", "content": "first question"},
-            {"id": "f2", "role": "assistant", "content": "first answer", "tool_calls": [
+            {"id": "f0", "role": "system", "content": {"session_name": "Forked Chat"}, "name": "", "tool_args": "", "timestamp": "2026-08-27T00:00:00Z", "model": "future/k3"},
+            {"id": "f1", "role": "user", "content": "first question", "name": "", "tool_args": "", "timestamp": "2026-08-27T00:00:01Z"},
+            {"id": "f2", "role": "assistant", "content": "first answer", "name": "", "tool_args": "", "timestamp": "2026-08-27T00:00:02Z", "tool_calls": [
                 {"id": "tc-1", "function": {"name": "shell", "arguments": "{\"command\":\"ls\"}"}}
             ]},
-            {"id": "f3", "role": "tool", "tool_call_id": "tc-1", "content": "file.txt"}
+            {"id": "f3", "role": "tool", "content": "file.txt", "name": "", "tool_args": "", "timestamp": "2026-08-27T00:00:03Z", "tool_call_id": "tc-1", "tool_result_is_error": false}
         ])
     }
 
@@ -813,7 +865,10 @@ mod tests {
             entries_payload(conversation_entries()),
         );
         mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork"}));
-        mock.push_data("get_session_entries", entries_payload(forked_entries()));
+        mock.push_typed_data("get_session_entries", entries_payload(forked_entries()));
+        let mut fork_state = get_state_payload("sess-fork", false);
+        fork_state["model"] = serde_json::json!("future/k3");
+        mock.push_state_for_session("sess-fork", Reply::TypedData(fork_state));
         mock.push("set_cwd", Reply::Data("{}".to_string()));
 
         let new_thread_id = fork_agent_session(&thread.id, "ignored", 1)
@@ -946,7 +1001,7 @@ mod tests {
         let error = fork_agent_session(&thread.id, "x", 0)
             .await
             .expect_err("entries reject");
-        assert_eq!(error.to_string(), "bad");
+        assert_eq!(error.to_string(), "Unable to list session entries: bad");
 
         // No matching user message.
         mock.push_data(
@@ -1024,7 +1079,10 @@ mod tests {
         let error = fork_agent_session(&thread.id, "x", 0)
             .await
             .expect_err("fork entries reject");
-        assert_eq!(error.to_string(), "bad");
+        assert_eq!(
+            error.to_string(),
+            "Unable to list fork session entries: bad"
+        );
     }
 
     #[tokio::test]
@@ -1169,7 +1227,7 @@ mod tests {
 
         let entries = serde_json::json!([
             {"role": "assistant", "tool_calls": [
-                {"id": "tc-1", "function": {"name": "shell", "arguments": "{\"command\":\"ls\"}"}},
+                {"id": "tc-1", "function": {"name": "shell", "arguments": {"command": "ls"}}},
                 {"id": "", "function": {"name": "write", "arguments": "{}"}},
                 {"id": "tc-2"},
                 {"id": "tc-err", "function": {"name": "read", "arguments": "{}"}}
@@ -1183,6 +1241,7 @@ mod tests {
         ]);
         synthesize_run_events_from_entries(
             &entries.as_array().expect("array").to_vec(),
+            &[vec![0, 1, 2, 3], vec![4, 5, 6]],
             &[run_a.id.clone(), run_b.id.clone()],
         );
 
@@ -1200,6 +1259,39 @@ mod tests {
                 .expect("input")
                 .is_none(),
             "each assistant binds its own run"
+        );
+    }
+
+    #[test]
+    fn groups_multiple_assistant_entries_into_their_canonical_run() {
+        let entries = serde_json::json!([
+            {"role": "system", "content": {}},
+            {"role": "user", "meta": {"run_id": "r1"}},
+            {"role": "assistant", "meta": {"run_id": "r1"}},
+            {"role": "assistant", "meta": {"run_id": "r1"}},
+            {"role": "tool", "meta": {"run_id": "r1"}},
+            {"role": "user", "meta": {"run_id": "r2"}},
+            {"role": "assistant", "meta": {"run_id": "r2"}}
+        ]);
+        assert_eq!(
+            group_session_entries(entries.as_array().expect("entries")),
+            vec![vec![1, 2, 3, 4], vec![5, 6]]
+        );
+    }
+
+    #[test]
+    fn groups_legacy_entries_by_user_exchange() {
+        let entries = serde_json::json!([
+            {"role": "user"},
+            {"role": "assistant"},
+            {"role": "assistant"},
+            {"role": "tool"},
+            {"role": "user"},
+            {"role": "assistant"}
+        ]);
+        assert_eq!(
+            group_session_entries(entries.as_array().expect("entries")),
+            vec![vec![0, 1, 2, 3], vec![4, 5]]
         );
     }
 }

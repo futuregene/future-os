@@ -1,5 +1,6 @@
 import {
   clearPendingContinuation,
+  discardPendingContinuation,
   loadPendingContinuation,
   savePendingContinuation,
   type PendingContinuation,
@@ -18,8 +19,10 @@ jest.mock("@react-native-async-storage/async-storage", () => ({
 }));
 
 const pending: PendingContinuation = {
-  version: 1,
+  version: 2,
   commandId: "continue-1",
+  pairId: "pair-1",
+  expectedDesktopId: "desktop-1",
   sessionId: "session-1",
   sourceRunId: "run-1",
   createdAt: 123,
@@ -36,6 +39,22 @@ describe("pending continuation storage", () => {
   it("ignores malformed records", async () => {
     mockData.set("futureos.remote.pending-continuation.v1", JSON.stringify({ version: 1 }));
     await expect(loadPendingContinuation()).resolves.toBeNull();
+  });
+
+  it("does not recover legacy records without a pairing identity", async () => {
+    mockData.set(
+      "futureos.remote.pending-continuation.v1",
+      JSON.stringify({
+        version: 1,
+        commandId: "legacy",
+        sessionId: "session-1",
+        sourceRunId: "run-1",
+        createdAt: 1,
+      }),
+    );
+    await expect(loadPendingContinuation()).resolves.toBeNull();
+    await discardPendingContinuation();
+    expect(mockData.has("futureos.remote.pending-continuation.v1")).toBe(false);
   });
 
   it("ignores corrupt JSON", async () => {

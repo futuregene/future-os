@@ -143,6 +143,10 @@ function toSessionEntries(entries: HistoryEntry[]): SessionEntry[] {
       ...(entry.checkpoint ? { checkpoint: entry.checkpoint } : {}),
       ...(entry.thinking != null ? { thinking: entry.thinking } : {}),
       ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+      ...(entry.tool_call_id != null ? { tool_call_id: entry.tool_call_id } : {}),
+      ...(entry.tool_result_is_error != null
+        ? { tool_result_is_error: entry.tool_result_is_error }
+        : {}),
       ...(entry.meta
         ? {
             meta: {
@@ -160,6 +164,8 @@ function toSessionEntries(entries: HistoryEntry[]): SessionEntry[] {
       ...(entry.timestamp ? { timestamp: entry.timestamp } : {}),
       ...(entry.output_tokens != null ? { output_tokens: entry.output_tokens } : {}),
       ...(entry.duration_ms != null ? { duration_ms: entry.duration_ms } : {}),
+      ...(entry.input_tokens != null ? { input_tokens: entry.input_tokens } : {}),
+      ...(entry.cache_read_tokens != null ? { cache_read_tokens: entry.cache_read_tokens } : {}),
     };
   });
 }

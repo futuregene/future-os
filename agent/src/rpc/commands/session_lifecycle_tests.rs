@@ -535,7 +535,13 @@ fn get_session_entries_renders_roles_and_run_stats() {
         vec![],
     );
     assistant.thinking = "deep thought".to_string();
-    let tool = crate::session::SessionEntry::new_tool("call-1", "tool output");
+    let mut tool = crate::session::SessionEntry::new_tool("call-1", "tool output");
+    tool.content = Some(serde_json::json!([{
+        "type": "tool_result",
+        "tool_call_id": "call-1",
+        "content": "tool output",
+        "is_error": false
+    }]));
     let terminal = crate::session::SessionEntry::run_terminal(
         "run-1",
         crate::session::RUN_STATE_COMPLETED,
@@ -574,6 +580,36 @@ fn get_session_entries_renders_roles_and_run_stats() {
     assert_eq!(assistant_entry["duration_ms"], 1500);
     let tool_entry = &entries[3];
     assert_eq!(tool_entry["content"], "tool output");
+    assert_eq!(tool_entry["tool_call_id"], "call-1");
+    assert_eq!(tool_entry["tool_result_is_error"], false);
+}
+
+#[test]
+fn get_session_entries_reports_a_corrupt_persisted_history() {
+    let state = make_app_state();
+    save_via(
+        &state,
+        "default",
+        "mock",
+        vec![crate::session::SessionEntry::new_user(
+            "user",
+            serde_json::json!("question"),
+        )],
+    );
+    let path = state.session_manager.session_path("default");
+    let raw = std::fs::read_to_string(&path).expect("read session");
+    let first = raw.lines().next().expect("session row");
+    std::fs::write(&path, format!("{first}\n{{not-json}}\n{first}\n")).expect("corrupt middle row");
+
+    let response = parse_response(&handle_command_internal(
+        &state,
+        make_cmd("get_session_entries"),
+    ));
+    assert_eq!(response["success"], false);
+    assert_eq!(response["error_code"], "session_history_unreadable");
+    assert!(response["error"]
+        .as_str()
+        .is_some_and(|error| error.contains("Unable to load session history")));
 }
 
 #[test]

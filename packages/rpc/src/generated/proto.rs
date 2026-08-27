@@ -1116,6 +1116,13 @@ pub struct SessionEntry {
     /// Structured v2/legacy checkpoint payload serialized as JSON.
     #[prost(string, optional, tag = "16")]
     pub checkpoint: ::core::option::Option<::prost::alloc::string::String>,
+    /// Correlates a persisted tool result with its originating tool call.
+    #[prost(string, optional, tag = "17")]
+    pub tool_call_id: ::core::option::Option<::prost::alloc::string::String>,
+    /// Authoritative tool-result status. Absent for legacy entries that did not
+    /// persist an explicit status.
+    #[prost(bool, optional, tag = "18")]
+    pub tool_result_is_error: ::core::option::Option<bool>,
 }
 /// One event as replayed by get_events_since. Field names mirror the
 /// StreamEvent envelope.

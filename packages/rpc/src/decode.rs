@@ -6,7 +6,7 @@
 //! payload is absent (an untyped command, or a pre-typed-RPC agent).
 
 use crate::payloads::{
-    EventsSincePayload, GetStatePayload, ProjectionPayload, ReplayEventPayload,
+    EventsSincePayload, GetStatePayload, ProjectionPayload, ReplayEventPayload, SessionEntriesPage,
     SessionEntryPayload, SessionSummaryPayload,
 };
 use crate::proto;
@@ -132,24 +132,43 @@ pub fn decode_list_sessions(resp: &proto::RpcResponse) -> Option<Vec<SessionSumm
 
 /// get_session_entries rows, decoded from the typed wire form when present.
 pub fn decode_session_entries(resp: &proto::RpcResponse) -> Option<Vec<SessionEntryPayload>> {
+    decode_session_entries_page(resp).map(|page| page.entries)
+}
+
+/// A complete `get_session_entries` page, including continuation metadata.
+pub fn decode_session_entries_page(resp: &proto::RpcResponse) -> Option<SessionEntriesPage> {
     if let Some(Kind::GetSessionEntries(response)) =
         resp.payload.as_ref().and_then(|p| p.kind.as_ref())
     {
-        return Some(
-            response
+        return Some(SessionEntriesPage {
+            entries: response
                 .entries
                 .iter()
                 .map(session_entry_from_proto)
                 .collect(),
-        );
+            has_more: response.has_more,
+            next_offset: response.next_offset,
+        });
     }
     fallback_value(resp).and_then(|value| {
-        let rows = value.get("entries")?.as_array()?.clone();
-        let mut out = Vec::with_capacity(rows.len());
+        let rows = value.get("entries")?.as_array()?;
+        let mut entries = Vec::with_capacity(rows.len());
         for row in rows {
-            out.push(serde_json::from_value(row).ok()?);
+            entries.push(serde_json::from_value(row.clone()).ok()?);
         }
-        Some(out)
+        Some(SessionEntriesPage {
+            entries,
+            has_more: value
+                .get("hasMore")
+                .or_else(|| value.get("has_more"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            next_offset: value
+                .get("nextOffset")
+                .or_else(|| value.get("next_offset"))
+                .and_then(Value::as_i64)
+                .unwrap_or_default(),
+        })
     })
 }
 
@@ -463,6 +482,8 @@ pub(crate) fn session_entry_from_proto(entry: &proto::SessionEntry) -> SessionEn
         input_tokens: entry.input_tokens,
         cache_read_tokens: entry.cache_read_tokens,
         checkpoint: entry.checkpoint.as_ref().map(|raw| inflate_json_value(raw)),
+        tool_call_id: entry.tool_call_id.clone(),
+        tool_result_is_error: entry.tool_result_is_error,
     }
 }
 
@@ -1020,13 +1041,21 @@ mod tests {
                 tool_calls: Some("[]".to_string()),
                 output_tokens: Some(9),
                 duration_ms: Some(11),
+                tool_call_id: Some("call-1".to_string()),
+                tool_result_is_error: Some(true),
                 ..Default::default()
             }],
-            ..Default::default()
+            has_more: true,
+            next_offset: 7,
         }));
+        let page = decode_session_entries_page(&resp).unwrap();
+        assert!(page.has_more);
+        assert_eq!(page.next_offset, 7);
         let entries = decode_session_entries(&resp).unwrap();
         assert_eq!(entries[0].content, json!({"schema": 1}));
         assert_eq!(entries[0].meta, Some(json!({"m": 2})));
+        assert_eq!(entries[0].tool_call_id.as_deref(), Some("call-1"));
+        assert_eq!(entries[0].tool_result_is_error, Some(true));
         assert_eq!(entries[0].output_tokens, Some(9));
         assert_eq!(entries[0].duration_ms, Some(11));
 

@@ -693,6 +693,10 @@ async fn handle_command(
                     return;
                 }
             }
+            if let Err(error) = validate_continue_source(&cmd.session_id, &cmd.run_id) {
+                reply(client, &msg, false, Value::Null, Some(&error.to_string())).await;
+                return;
+            }
             // Resume a failed run: synthesize a continue prompt from the run's
             // recent terminal events and push it through the normal prompt
             // pipeline (model/thinking default to the session's current values).
@@ -1189,6 +1193,37 @@ fn build_continue_prompt(run_id: &str) -> String {
     lines.join("\n")
 }
 
+/// A continuation is not a free-form prompt alias: it may only resume the
+/// failed run that belongs to the addressed session. This keeps a stale mobile
+/// outbox entry (including one from a previous pairing) from creating or
+/// steering an unrelated conversation.
+fn validate_continue_source(session_id: &str, run_id: &str) -> Result<(), crate::AppError> {
+    if session_id.trim().is_empty() || run_id.trim().is_empty() {
+        return Err("A continuation requires a session and source run."
+            .to_string()
+            .into());
+    }
+    let run = crate::store::get_run(run_id)?
+        .ok_or_else(|| "The source run no longer exists.".to_string())?;
+    if run.status != "failed" {
+        return Err("Only a failed run can be continued.".to_string().into());
+    }
+    let thread = crate::store::get_thread(&run.thread_id)?
+        .ok_or_else(|| "The source run's conversation no longer exists.".to_string())?;
+    let run_session_id = thread
+        .agent_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&thread.id);
+    if run_session_id != session_id {
+        return Err("The source run does not belong to this session."
+            .to_string()
+            .into());
+    }
+    Ok(())
+}
+
 fn remote_prompt_receipt(command_id: &str) -> Result<Option<Value>, crate::AppError> {
     let Some(run) = crate::store::find_run_by_trigger_message_id(command_id)? else {
         return Ok(None);
@@ -1422,7 +1457,7 @@ fn paginate_messages(messages: Vec<Value>, offset: usize, limit: usize) -> Value
 /// client uses to fetch the remainder.
 fn paginate_items(mut items: Vec<Value>, offset: usize, limit: usize, key: &str) -> Value {
     for item in items.iter_mut() {
-        truncate_message_content(item, MESSAGE_CONTENT_CAP_BYTES);
+        cap_remote_item(item, MESSAGE_CONTENT_CAP_BYTES);
     }
     let total = items.len();
     let start = offset.min(total);
@@ -1485,6 +1520,8 @@ fn truncate_message_content(message: &mut Value, cap: usize) {
         .map(|bytes| bytes.len() > cap)
         .unwrap_or(false);
     if !oversized {
+        // Other fields may still be oversized; the caller's final item cap
+        // handles those after this content-specific pass.
         return;
     }
     // Replay events carry their payload in `data` (a JSON string), not
@@ -1541,6 +1578,81 @@ fn truncate_message_content(message: &mut Value, cap: usize) {
         }
         _ => {}
     }
+}
+
+/// Bound the complete serialized item, including structured tool arguments and
+/// metadata that are outside `content`.
+fn cap_remote_item(item: &mut Value, cap: usize) {
+    truncate_message_content(item, cap.saturating_sub(16 * 1024));
+    if serialized_len(item) <= cap {
+        return;
+    }
+
+    if let Some(tool_calls) = item.get_mut("tool_calls").and_then(Value::as_array_mut) {
+        for call in tool_calls {
+            let Some(arguments) = call.pointer_mut("/function/arguments") else {
+                continue;
+            };
+            let bytes = serialized_len(arguments);
+            if bytes > 8 * 1024 {
+                *arguments = json!({
+                    "_truncated": true,
+                    "bytes": bytes,
+                    "note": "tool arguments exceeded the relay item limit",
+                });
+            }
+        }
+    }
+    if serialized_len(item) <= cap {
+        return;
+    }
+
+    if let Some(object) = item.as_object_mut() {
+        if let Some(meta) = object.get("meta") {
+            let run_id = meta.get("run_id").cloned();
+            let original_bytes = serialized_len(meta);
+            object.insert(
+                "meta".to_string(),
+                json!({
+                    "run_id": run_id,
+                    "_truncated": true,
+                    "bytes": original_bytes,
+                }),
+            );
+        }
+    }
+    if serialized_len(item) <= cap {
+        return;
+    }
+
+    let original_bytes = serialized_len(item);
+    let mut replacement = serde_json::Map::new();
+    if let Some(object) = item.as_object() {
+        for key in [
+            "id",
+            "role",
+            "entry_type",
+            "type",
+            "run_id",
+            "idx",
+            "timestamp",
+        ] {
+            if let Some(value) = object.get(key) {
+                replacement.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+    replacement.insert("_truncated".to_string(), Value::Bool(true));
+    replacement.insert("originalBytes".to_string(), Value::from(original_bytes));
+    replacement.insert(
+        "content".to_string(),
+        Value::String("[…远程条目过大，已截断；完整内容见本机会话…]".to_string()),
+    );
+    *item = Value::Object(replacement);
+}
+
+fn serialized_len(value: &Value) -> usize {
+    serde_json::to_vec(value).map_or(0, |bytes| bytes.len())
 }
 
 /// Return a byte index at a char boundary, not exceeding `max_bytes`, and
@@ -1602,8 +1714,13 @@ async fn publish_reply_payload(
     let Some(reply_subject) = msg.reply.clone() else {
         return;
     };
-    let _ = client.publish(reply_subject, payload.into()).await;
-    let _ = client.flush().await;
+    if let Err(error) = client.publish(reply_subject, payload.into()).await {
+        eprintln!("FutureOS: failed to publish remote command reply: {error}");
+        return;
+    }
+    if let Err(error) = client.flush().await {
+        eprintln!("FutureOS: failed to flush remote command reply: {error}");
+    }
 }
 
 #[cfg(test)]
@@ -1722,6 +1839,31 @@ mod tests {
         assert!(content.len() <= MESSAGE_CONTENT_CAP_BYTES + 128);
         let size = serde_json::to_vec(&page).map(|b| b.len()).unwrap();
         assert!(size < 1024 * 1024, "page too large: {size}");
+    }
+
+    #[test]
+    fn paginate_caps_structured_tool_arguments_and_metadata() {
+        let entries = vec![json!({
+            "id": "a1",
+            "role": "assistant",
+            "content": "done",
+            "tool_calls": [{
+                "id": "tc-1",
+                "function": {
+                    "name": "write",
+                    "arguments": {"path": "/tmp/x", "content": "x".repeat(700_000)},
+                }
+            }],
+            "meta": {"run_id": "r1", "blob": "y".repeat(700_000)},
+        })];
+        let page = paginate_items(entries, 0, 100, "entries");
+        let size = serde_json::to_vec(&page).expect("serialize page").len();
+        assert!(size < 1024 * 1024, "page too large: {size}");
+        assert_eq!(
+            page.pointer("/entries/0/tool_calls/0/function/arguments/_truncated"),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(page.pointer("/entries/0/meta/run_id"), Some(&json!("r1")));
     }
 
     #[test]
@@ -3075,8 +3217,23 @@ mod bridge_tests {
             agent_session_id: Some(session.clone()),
         })
         .unwrap();
-        // An active run on the session → the busy guard fires before anything
-        // is persisted or spawned.
+        let source = crate::store::create_run(crate::store::CreateRunInput {
+            id: Some("run-failed-source".to_string()),
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .unwrap();
+        crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
+            run_id: source.id.clone(),
+            status: "failed".to_string(),
+            error_message: Some("boom".to_string()),
+            error_type: Some("model_failed".to_string()),
+        })
+        .unwrap();
+        // A separate active run on the session → the busy guard fires before
+        // anything is persisted or spawned.
         crate::store::create_run(crate::store::CreateRunInput {
             id: Some("run-active".to_string()),
             thread_id: thread.id.clone(),
@@ -3087,10 +3244,82 @@ mod bridge_tests {
         .unwrap();
 
         let reply = bridge
-            .call(json!({ "id": unique("cmd"), "type": "continue_run", "sessionId": session, "runId": "run-active" }))
+            .call(json!({ "id": unique("cmd"), "type": "continue_run", "sessionId": session, "runId": source.id }))
             .await;
         assert_eq!(reply["success"], json!(false));
         assert!(reply["error"].as_str().unwrap().contains("still running"));
+
+        bridge.stop();
+    }
+
+    #[tokio::test]
+    async fn continue_run_rejects_missing_wrong_session_and_nonfailed_sources() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-continue-source-guards").await;
+        let session = unique("sess");
+        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some("Guarded continuation".to_string()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some(session.clone()),
+        })
+        .unwrap();
+        let completed = crate::store::create_run(crate::store::CreateRunInput {
+            id: Some(unique("run-completed")),
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .unwrap();
+        crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
+            run_id: completed.id.clone(),
+            status: "completed".to_string(),
+            error_message: None,
+            error_type: None,
+        })
+        .unwrap();
+
+        let missing = bridge
+            .call(json!({ "id": unique("cmd"), "type": "continue_run", "sessionId": session, "runId": "missing-run" }))
+            .await;
+        assert_eq!(missing["success"], json!(false));
+        assert!(missing["error"]
+            .as_str()
+            .unwrap()
+            .contains("no longer exists"));
+
+        let nonfailed = bridge
+            .call(json!({ "id": unique("cmd"), "type": "continue_run", "sessionId": session, "runId": completed.id }))
+            .await;
+        assert_eq!(nonfailed["success"], json!(false));
+        assert!(nonfailed["error"].as_str().unwrap().contains("failed run"));
+
+        let failed = crate::store::create_run(crate::store::CreateRunInput {
+            id: Some(unique("run-failed")),
+            thread_id: thread.id,
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .unwrap();
+        crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
+            run_id: failed.id.clone(),
+            status: "failed".to_string(),
+            error_message: Some("boom".to_string()),
+            error_type: Some("model_failed".to_string()),
+        })
+        .unwrap();
+        let wrong_session = bridge
+            .call(json!({ "id": unique("cmd"), "type": "continue_run", "sessionId": "another-session", "runId": failed.id }))
+            .await;
+        assert_eq!(wrong_session["success"], json!(false));
+        assert!(wrong_session["error"]
+            .as_str()
+            .unwrap()
+            .contains("does not belong"));
 
         bridge.stop();
     }
