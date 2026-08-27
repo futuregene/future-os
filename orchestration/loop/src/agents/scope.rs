@@ -114,6 +114,21 @@ pub fn identity_scoped_frontier(
         if !is_agent_work(todo) || !is_frontier_active(todo) {
             continue;
         }
+        // Owner scope is checked BEFORE the lease claim: an `owner`-scoped
+        // todo is reserved for its owning agent and is OUTSIDE every other
+        // agent's frontier, even while unclaimed (no lease yet). The old code
+        // only consulted `claimed_by`, so an unclaimed owner-scoped todo
+        // surfaced in EVERY agent's "visible" list and inflated the unclaimed
+        // count (a goal of ten `--owner solver-*` todos showed all ten to
+        // every worker).
+        match todo.owner.as_deref() {
+            Some(o) if o != agent_id => {
+                // Reserved for another agent — OUTSIDE this frontier.
+                other_claimed.push(todo.id.clone());
+                continue;
+            }
+            _ => {}
+        }
         match todo.claimed_by.as_deref() {
             None => {
                 visible_agent.push(todo.id.clone());
@@ -210,6 +225,29 @@ mod tests {
         assert!(b.contains("t3"));
         assert!(!b.contains("t1"), "B must never see A's claimed todo");
         assert_eq!(b.other_agent_claimed_ids, vec!["t1"]);
+    }
+
+    #[test]
+    fn owner_scoped_todo_visible_only_to_its_owner() {
+        // Regression: scope only consulted `claimed_by`, so an unclaimed
+        // `--owner solver-b` todo surfaced in EVERY agent's visible list and
+        // inflated the unclaimed count. Owner-scoped todos must be visible
+        // only to their owner, and counted as other-agent work elsewhere.
+        let mut owned = Todo::advancement("t-owned", "reserved for B");
+        owned.owner = Some("agent-b".into());
+        let goal = goal_with(vec![owned]);
+
+        let a = identity_scoped_frontier(&goal, "agent-a", &[]);
+        assert!(
+            !a.contains("t-owned"),
+            "A must not see B's owner-scoped todo"
+        );
+        assert_eq!(a.other_agent_claimed_ids, vec!["t-owned"]);
+        assert_eq!(a.unclaimed_advancement_count, 0);
+
+        let b = identity_scoped_frontier(&goal, "agent-b", &[]);
+        assert!(b.contains("t-owned"), "B sees its own owner-scoped todo");
+        assert_eq!(b.unclaimed_advancement_count, 1);
     }
 
     #[test]
