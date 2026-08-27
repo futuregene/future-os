@@ -45,13 +45,34 @@ fn refresh_next_action(store: &Store, goal_id: &str) -> Result<()> {
     let goal = store
         .replay(goal_id)?
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
-    let next = goal
-        .runnable_advancement()
-        .next()
-        .map(|t| t.text.clone())
-        .unwrap_or_else(|| "all todos complete; no further action".to_string());
-    store.set_next_action(goal_id, &next)?;
+    store.set_next_action(goal_id, &next_action_text(&goal))?;
     Ok(())
+}
+
+/// The goal-level Next Action line, owner-aware. The naive
+/// `runnable_advancement()` frontier is the shared pool (agent_id=None) and
+/// drops every owner-scoped todo, so an all-owner-scoped goal read as
+/// "all todos complete; no further action" while work was still waiting on
+/// its owners. This picks the first shared-pool runnable todo when one
+/// exists; otherwise, if only owner-scoped todos remain, it says so
+/// explicitly instead of claiming completion.
+fn next_action_text(goal: &Goal) -> String {
+    let (claimable, owner_scoped) = goal.pending_advancement_owner_aware();
+    if let Some(t) = claimable.first() {
+        return t.text.clone();
+    }
+    if !owner_scoped.is_empty() {
+        let owners: std::collections::BTreeSet<&str> = owner_scoped
+            .iter()
+            .filter_map(|t| t.owner.as_deref())
+            .collect();
+        return format!(
+            "{} owner-scoped todo(s) await their owning agent(s): {}",
+            owner_scoped.len(),
+            owners.into_iter().collect::<Vec<_>>().join(", ")
+        );
+    }
+    "all todos complete; no further action".to_string()
 }
 
 /// Project-local state root: `<cwd>/.future/loop/` (run future-loop from the
@@ -428,7 +449,7 @@ fn build_cli_registry() -> CommandRegistry {
         ops,
         "run",
         "drive one bounded gRPC turn (requires --agent-id; auto-registers)",
-        "run --goal G --agent-id A [--model M] [--thinking-level L] [--max-turns N] [--lease-secs N] [--force-workspace]",
+        "run --goal G --agent-id A [--model M] [--thinking-level L] [--max-turns N] [--max-turn-secs N] [--max-incomplete-retries N] [--lease-secs N] [--force-workspace] [--session-policy auto|fresh|resume] [--resume-session ID] [--anonymous]",
     );
 
     let work_items = r.group(
@@ -4416,11 +4437,7 @@ async fn run_turns(
         // model when the follow-up(s) joined the frontier.
         g = run_followthrough_and_refresh(store, goal_id, g)?;
         // Sync Next Action to the frontier (avoid projection gap).
-        let next_text = g
-            .runnable_advancement()
-            .next()
-            .map(|t| t.text.clone())
-            .unwrap_or_else(|| "all todos complete; no further action".to_string());
+        let next_text = next_action_text(&g);
         store.set_next_action(goal_id, &next_text)?;
         println!("   ✔ writeback ok — next action synced");
     }
@@ -7690,6 +7707,46 @@ mod coverage_tests {
             truncation: None,
             validation: None,
         }
+    }
+
+    #[test]
+    fn next_action_text_shows_shared_pool_todo_first() {
+        let mut g = Goal::new("g", "o", "/tmp");
+        g.add(Todo::advancement("T1", "shared work"));
+        assert_eq!(next_action_text(&g), "shared work");
+    }
+
+    #[test]
+    fn next_action_text_names_owners_when_only_owner_scoped_remain() {
+        // Regression: an all-owner-scoped goal read as
+        // "all todos complete; no further action" because the shared-pool
+        // frontier (agent_id=None) dropped every owner-scoped todo. The next
+        // line must surface the owners instead of claiming completion.
+        let mut g = Goal::new("g", "o", "/tmp");
+        let mut a = Todo::advancement("T1", "owned A");
+        a.owner = Some("solver-a".to_string());
+        let mut b = Todo::advancement("T2", "owned B");
+        b.owner = Some("solver-b".to_string());
+        g.add(a);
+        g.add(b);
+        let next = next_action_text(&g);
+        assert!(
+            next.contains("owner-scoped") && next.contains("solver-a") && next.contains("solver-b"),
+            "next line must name pending owners, got: {next}"
+        );
+        assert!(
+            !next.contains("all todos complete"),
+            "must not claim completion: {next}"
+        );
+    }
+
+    #[test]
+    fn next_action_text_reports_complete_only_when_nothing_pending() {
+        let g = Goal::new("g", "o", "/tmp");
+        assert_eq!(
+            next_action_text(&g),
+            "all todos complete; no further action"
+        );
     }
 
     fn all_events(todo_id: &str) -> Vec<Event> {
