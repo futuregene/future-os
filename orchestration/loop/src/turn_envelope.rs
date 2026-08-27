@@ -11,10 +11,110 @@
 
 use crate::contract::ShouldRunPacket;
 use crate::decision::truncate;
-use crate::state::{Goal, RunRecord, Todo, TodoStatus};
+use crate::state::{FailureKind, Goal, RunRecord, Todo, TodoStatus};
 
 /// Envelope schema version (reference `TURN_ENVELOPE_SCHEMA_VERSION`).
 pub const TURN_ENVELOPE_SCHEMA_VERSION: &str = "future_loop_turn_envelope_v0";
+
+/// How many recent semantic events surface in the goal-memory block.
+const GOAL_MEMORY_SEMANTIC_EVENTS: usize = 5;
+/// Cap the failure-cause text so a runaway error never bloats the prompt.
+const GOAL_MEMORY_ERROR_CHARS: usize = 200;
+
+/// Compose the goal-memory block fed to the orchestrating agent every turn.
+///
+/// This closes the gap between what the kernel *collects* (failure
+/// classification, semantic history) and what the agent *actually sees*:
+///
+/// 1. the current todo's failure context — how many prior attempts failed and
+///    WHY (classified: infra-recoverable vs verify-gate vs hard error), so the
+///    agent knows whether to retry, fix the `--verify` gate, or supersede;
+/// 2. the goal's recent semantic history — the last few turn outcomes, so a
+///    long-run goal's agent stops re-deriving context it already established.
+///
+/// The kernel still never decides for the agent: it only surfaces
+/// observations (ARCHITECTURE-SIMPLIFICATION). Returns an empty string when
+/// there is nothing to surface.
+pub fn compose_goal_memory(goal: &Goal, todo: &Todo) -> String {
+    let mut blocks: Vec<String> = vec![];
+
+    // 1. Current todo failure context (most relevant to THIS turn).
+    let failures: Vec<&RunRecord> = goal
+        .history
+        .iter()
+        .filter(|r| r.todo_id == todo.id && run_failed(r))
+        .collect();
+    if !failures.is_empty() {
+        let last = failures.last().unwrap();
+        let mut line = format!(
+            "prior attempts on this todo: {} failed; last = {}",
+            failures.len(),
+            failure_label(last)
+        );
+        if let Some(err) = &last.error {
+            line.push_str(&format!(": {}", truncate(err, GOAL_MEMORY_ERROR_CHARS)));
+        } else if let Some(v) = &last.validation {
+            if !v.ok {
+                line.push_str(&format!(
+                    ": verify gate {} rejected (exit {})",
+                    v.validator_kind,
+                    v.exit_code.unwrap_or(-1)
+                ));
+            }
+        }
+        if let Some(cmd) = &todo.validator {
+            line.push_str(&format!("; --verify {cmd} must exit 0 to complete"));
+        }
+        blocks.push(line);
+    }
+
+    // 2. Recent semantic history (goal-level, newest at the bottom).
+    if !goal.semantic_history.is_empty() {
+        let mut lines: Vec<String> = goal
+            .semantic_history
+            .iter()
+            .rev()
+            .take(GOAL_MEMORY_SEMANTIC_EVENTS)
+            .map(|e| match &e.todo_id {
+                Some(id) => format!("- {} [{}] {}", e.kind, id, e.summary),
+                None => format!("- {} {}", e.kind, e.summary),
+            })
+            .collect();
+        lines.reverse();
+        blocks.push(format!("recent goal history:\n{}", lines.join("\n")));
+    }
+
+    if blocks.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    out.push_str("\nPrior activity:\n");
+    for b in blocks {
+        out.push_str(&b);
+        out.push('\n');
+    }
+    out
+}
+
+/// A turn counts as failed when its writeback classification is not
+/// `None`; legacy records without a classification fall back to
+/// `terminal_state != "completed"`.
+fn run_failed(r: &RunRecord) -> bool {
+    match r.failure_kind {
+        Some(FailureKind::None) => false,
+        Some(_) => true,
+        None => r.terminal_state != "completed",
+    }
+}
+
+/// Human-readable failure label for the last attempt (writeback classification
+/// first, then a legacy fallback).
+fn failure_label(r: &RunRecord) -> String {
+    match r.failure_kind {
+        Some(kind) => kind.label().to_string(),
+        None => format!("legacy `{}` (unclassified)", r.terminal_state),
+    }
+}
 
 /// Compose the per-turn packet: todo + resolved gate decisions + prior
 /// evidence (+ decision summary when available).
@@ -87,6 +187,9 @@ pub fn compose_turn_envelope(
             truncate(&p.evidence, 1_200)
         ));
     }
+
+    // Goal memory: prior failures on this todo + recent semantic history.
+    out.push_str(&compose_goal_memory(goal, todo));
 
     // Completion contract footer (LoopX: completion must declare closure intent).
     out.push_str("\n\nComplete the todo and report what you did and observed.");
@@ -169,5 +272,111 @@ mod tests {
             msg.contains("arbitration:"),
             "scheduler arbitration recorded"
         );
+    }
+
+    fn run_rec(
+        todo_id: &str,
+        terminal_state: &str,
+        failure_kind: FailureKind,
+        error: Option<&str>,
+        validation: Option<crate::state::TaskValidation>,
+    ) -> RunRecord {
+        RunRecord {
+            turn: 1,
+            todo_id: todo_id.to_string(),
+            run_id: format!("run-{todo_id}"),
+            terminal_state: terminal_state.to_string(),
+            error: error.map(str::to_string),
+            tokens_in_delta: 0,
+            tokens_out_delta: 0,
+            cost_delta: 0.0,
+            tools: vec![],
+            evidence: String::new(),
+            recorded_at: 0,
+            spend_source: Some("run".to_string()),
+            validation,
+            failure_kind: Some(failure_kind),
+            truncation: None,
+        }
+    }
+
+    #[test]
+    fn goal_memory_surfaces_prior_failures_with_classification() {
+        let mut g = Goal::new("g1", "o", "/tmp");
+        g.add(Todo::advancement("T1", "Work"));
+        g.history.push(run_rec(
+            "T1",
+            "error",
+            FailureKind::HardError,
+            Some("validator exited 1"),
+            None,
+        ));
+        let msg = compose_turn_message(&g, g.todo("T1").unwrap(), None);
+        assert!(msg.contains("Prior activity:"), "envelope: {msg}");
+        assert!(
+            msg.contains("prior attempts on this todo: 1 failed"),
+            "envelope: {msg}"
+        );
+        assert!(msg.contains("hard error"), "envelope: {msg}");
+        assert!(msg.contains("validator exited 1"), "envelope: {msg}");
+    }
+
+    #[test]
+    fn goal_memory_surfaces_verify_gate_rejection() {
+        let mut g = Goal::new("g1", "o", "/tmp");
+        g.add(Todo::advancement("T1", "Work"));
+        g.todo_mut("T1").unwrap().validator = Some("sh -c test".to_string());
+        g.history.push(run_rec(
+            "T1",
+            "completed",
+            FailureKind::ScienceVerifyFailed,
+            None,
+            Some(crate::state::task_validation_receipt(
+                crate::state::ValidationStatus::Failed,
+                "sh -c test",
+                "failed",
+                None,
+                Some(1),
+            )),
+        ));
+        let msg = compose_turn_message(&g, g.todo("T1").unwrap(), None);
+        assert!(
+            msg.contains("verify-gate rejected the output"),
+            "envelope: {msg}"
+        );
+        assert!(
+            msg.contains("verify gate sh -c test rejected"),
+            "envelope: {msg}"
+        );
+        assert!(
+            msg.contains("--verify sh -c test must exit 0 to complete"),
+            "envelope: {msg}"
+        );
+    }
+
+    #[test]
+    fn goal_memory_surfaces_semantic_history() {
+        let mut g = Goal::new("g1", "o", "/tmp");
+        g.add(Todo::advancement("T1", "Work"));
+        g.record_semantic_event("todo_completed", Some("T0"), "finished the setup", 1);
+        g.record_semantic_event("run_landed", Some("T1"), "started T1", 2);
+        let msg = compose_turn_message(&g, g.todo("T1").unwrap(), None);
+        assert!(msg.contains("recent goal history:"), "envelope: {msg}");
+        assert!(
+            msg.contains("todo_completed [T0] finished the setup"),
+            "envelope: {msg}"
+        );
+        assert!(
+            msg.contains("run_landed [T1] started T1"),
+            "envelope: {msg}"
+        );
+    }
+
+    #[test]
+    fn goal_memory_empty_when_nothing_to_surface() {
+        let mut g = Goal::new("g1", "o", "/tmp");
+        g.add(Todo::advancement("T1", "Work"));
+        let msg = compose_turn_message(&g, g.todo("T1").unwrap(), None);
+        assert!(!msg.contains("Prior activity:"), "envelope: {msg}");
     }
 }

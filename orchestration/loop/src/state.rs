@@ -635,6 +635,21 @@ pub enum FailureKind {
     HardError,
 }
 
+impl FailureKind {
+    /// Human-readable label for the turn envelope: tells the orchestrating
+    /// agent WHAT kind of failure the last attempt was (so it knows whether
+    /// to retry, fix the validator, or supersede) without the kernel making
+    /// that decision for it.
+    pub fn label(&self) -> &'static str {
+        match self {
+            FailureKind::None => "succeeded",
+            FailureKind::InfraRecoverable => "infra-recoverable (retry is safe)",
+            FailureKind::ScienceVerifyFailed => "verify-gate rejected the output",
+            FailureKind::HardError => "hard error (no recoverable infra cause)",
+        }
+    }
+}
+
 /// An acceptance condition not yet satisfied by evidence. Terminal closure
 /// requires every gap satisfied — "open_count == 0" alone is never done.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
