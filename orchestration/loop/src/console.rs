@@ -6494,15 +6494,11 @@ fn run_followthrough_check(
     let overdue = dov::overdue_deliveries(&goal, current_turn, threshold);
     let mut created = Vec::new();
     for od in overdue {
-        let followup_id = gen_id("todo");
-        let mut todo = Todo::advancement(&followup_id, &dov::followthrough_todo_text(&od));
-        todo.note = Some(format!(
-            "auto-created by outcome_followthrough (source {}, turn {current_turn}, threshold {threshold})",
-            od.todo_id
-        ));
+        let followup = followthrough_todo(&od, current_turn, threshold);
+        let followup_id = followup.id.clone();
         store.append(Event::TodoAdded {
             goal_id: goal_id.to_string(),
-            todo,
+            todo: followup,
             ts: now_epoch(),
         })?;
         store.append(Event::FollowthroughCreated {
@@ -6515,6 +6511,28 @@ fn run_followthrough_check(
         created.push(followup_id);
     }
     Ok(created)
+}
+
+/// Build the follow-through todo for one overdue delivery. It is
+/// orchestration bookkeeping (the operator must resolve the source delivery
+/// via `delivery record`), NOT worker work — so it is `Coordination` class
+/// and never enters the shared worker frontier. Deriving it as
+/// `Advancement` would (a) let an idle worker claim it and (b) make its own
+/// completion record a new unverified delivery, which then derives its own
+/// follow-through 3 turns later — an unbounded cascade.
+fn followthrough_todo(
+    od: &crate::work_items::delivery_outcome::OverdueDelivery,
+    current_turn: u32,
+    threshold: u32,
+) -> Todo {
+    use crate::work_items::delivery_outcome as dov;
+    let followup_id = gen_id("todo");
+    let mut todo = Todo::coordination(&followup_id, &dov::followthrough_todo_text(od));
+    todo.note = Some(format!(
+        "auto-created by outcome_followthrough (source {}, turn {current_turn}, threshold {threshold})",
+        od.todo_id
+    ));
+    todo
 }
 /// `loopx registry [--format json|--json] [--include-experimental]` — inspect
 /// the CLI registry (groups + commands) — the aggregated help surface.
@@ -9446,6 +9464,21 @@ mod residual_branch_tests {
             next.todos.iter().any(|t| t.text.contains("Follow-through")),
             "a follow-through todo joined the frontier"
         );
+    }
+
+    // ── follow-through todo class: coordination, never shared-pool work ─────
+    #[test]
+    fn followthrough_todo_is_coordination_not_advancement() {
+        let od = crate::work_items::delivery_outcome::OverdueDelivery {
+            todo_id: "t1".into(),
+            delivered_turn: 1,
+            turns_overdue: 3,
+            todo_text: "ship".into(),
+        };
+        let t = followthrough_todo(&od, 4, 3);
+        assert_eq!(t.class, crate::state::TaskClass::Coordination);
+        assert!(t.owner.is_none());
+        assert!(t.text.contains("Follow-through"));
     }
 
     #[cfg(unix)]
