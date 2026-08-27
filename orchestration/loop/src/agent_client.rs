@@ -155,6 +155,16 @@ impl AgentClient {
                 .unwrap_or("unknown error");
             return Err(anyhow!("Command '{cmd_type}' failed [{code}]: {msg}"));
         }
+        // Typed-first decode: the agent retired command-response dual-write, so
+        // typed commands (e.g. `prompt`) carry their payload in the typed
+        // `payload` oneof with an EMPTY `data` string. Reading `data` directly
+        // returned Null for every typed command, which surfaced downstream as
+        // "prompt response missing run_id: null". Decode the typed payload first;
+        // keep the strict JSON parse for untyped commands so a malformed `data`
+        // string still surfaces as an error instead of silently becoming Null.
+        if response.payload.is_some() {
+            return Ok(future_rpc::decode::response_data(&response));
+        }
         if response.data.is_empty() {
             return Ok(Value::Null);
         }

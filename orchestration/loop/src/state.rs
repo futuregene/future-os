@@ -885,6 +885,14 @@ pub struct Goal {
     /// decides whether to resume it or start fresh. Written at run exit.
     #[serde(default)]
     pub session_retention: Option<SessionRetention>,
+    /// Durable agent-id → session-id bindings, folded from `WorkerSessionBound`
+    /// (latest wins). This is the authoritative map `worker stop` / `worker list`
+    /// use to locate a worker's backing agent session — written BEFORE the first
+    /// prompt of a run, so it survives a prompt/parse failure that leaves the
+    /// turn orphaned (a case the `.live.jsonl` run_header scan cannot see,
+    /// because the header is only written AFTER the prompt ack returns a run_id).
+    #[serde(default)]
+    pub worker_sessions: std::collections::BTreeMap<String, String>,
     /// The supervising (orchestrator) agent session id, registered via
     /// `supervisor register`. Workers enqueue reports to this session when
     /// they need the supervisor's intervention (completion / failure / a user
@@ -1031,6 +1039,7 @@ impl Goal {
             semantic_history: vec![],
             replan_rule_set: None,
             session_retention: None,
+            worker_sessions: std::collections::BTreeMap::new(),
             supervisor_session_id: None,
             pending_steer: None,
         }

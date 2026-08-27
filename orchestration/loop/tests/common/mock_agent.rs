@@ -61,6 +61,10 @@ pub struct MockState {
     pub attach_after_idx: Vec<i64>,
     /// Per-command raw `data` payload override (valid JSON or not).
     pub raw: HashMap<String, String>,
+    /// Per-command typed `payload` override (typed-RPC contract). When set for
+    /// a command the mock answers with an EMPTY `data` string and this payload,
+    /// mirroring the agent's retired dual-write behavior.
+    pub typed_payloads: HashMap<String, future_rpc::proto::ResponsePayload>,
     pub models_payload: Option<String>,
     /// Command types seen, in order (for assertions).
     pub recorded: Vec<String>,
@@ -184,6 +188,11 @@ impl FutureAgent for MockAgent {
             // delete_session / abort): empty data → Value::Null path.
             _ => String::new(),
         };
+        if let Some(payload) = st.typed_payloads.get(&cmd.r#type).cloned() {
+            let mut resp = response(&cmd, true, String::new(), String::new());
+            resp.get_mut().payload = Some(payload);
+            return Ok(resp);
+        }
         Ok(response(&cmd, true, data, String::new()))
     }
 
