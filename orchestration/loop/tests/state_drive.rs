@@ -192,6 +192,70 @@ fn goal_query_and_mutation_arms() {
     assert_eq!(anon, vec!["t3".to_string()]);
 }
 
+#[test]
+fn owner_scope_limits_the_frontier_and_survives_lease_expiry() {
+    let now = now_for_test();
+    // A coordination todo is NOT advancement — it never enters the runnable
+    // advancement frontier regardless of owner.
+    let mut g = Goal::new("g", "obj", "/tmp");
+    g.add(Todo::coordination("summary", "final validation"));
+    g.add(Todo::advancement("shared", "shared work"));
+    g.add(Todo::advancement("alice-work", "for alice").owned_by("alice"));
+    let mut expired = Todo::advancement("expired", "leased then lapsed");
+    // Simulate a claim that has since lapsed: claimed_by is stale but the
+    // lease expiry is in the past.
+    expired.claim("alice", 1, now.saturating_sub(2));
+    g.add(expired);
+
+    // Alice sees shared + her owned todo + the lapsed-lease todo (lease
+    // lapsed, owner is None so it's back in the shared pool).
+    let alice: Vec<_> = g
+        .runnable_advancement_for(Some("alice"))
+        .map(|t| t.id.clone())
+        .collect();
+    assert!(alice.contains(&"shared".to_string()));
+    assert!(alice.contains(&"alice-work".to_string()));
+    assert!(alice.contains(&"expired".to_string()));
+    assert!(
+        !alice.contains(&"summary".to_string()),
+        "coordination never runnable"
+    );
+
+    // Bob does NOT see alice's owner-scoped todo, even though it has no live
+    // lease — the owner assignment survives the absence of a lease.
+    let bob: Vec<_> = g
+        .runnable_advancement_for(Some("bob"))
+        .map(|t| t.id.clone())
+        .collect();
+    assert!(bob.contains(&"shared".to_string()));
+    assert!(
+        !bob.contains(&"alice-work".to_string()),
+        "owner scope must hold"
+    );
+    assert!(
+        bob.contains(&"expired".to_string()),
+        "no-owner lapsed lease returns to pool"
+    );
+}
+
+#[test]
+fn owner_scope_blocks_other_agents_even_with_a_live_lease_elsewhere() {
+    // The owner filter is independent of the lease filter: a todo owned by
+    // alice is invisible to bob whether or not someone holds a live lease.
+    let now = now_for_test();
+    let mut g = Goal::new("g", "obj", "/tmp");
+    let mut owned = Todo::advancement("owned", "for alice").owned_by("alice");
+    owned.claim("alice", 3600, now);
+    g.add(owned);
+
+    // Alice (owner + lease holder) sees it.
+    assert_eq!(g.runnable_advancement_for(Some("alice")).count(), 1);
+    // Bob sees nothing: owner scope hides it even though the lease is alice's.
+    assert_eq!(g.runnable_advancement_for(Some("bob")).count(), 0);
+    // Anonymous (no agent id) only sees shared-pool (owner None) todos.
+    assert_eq!(g.runnable_advancement().count(), 0);
+}
+
 fn now_for_test() -> u64 {
     future_loop::state::now_epoch()
 }

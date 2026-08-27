@@ -742,6 +742,7 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     let mut verify: Option<String> = None;
     let mut max_validation_attempts: Option<u32> = None;
     let mut acceptance: Option<String> = None;
+    let mut owner: Option<String> = None;
     reject_unknown_flags(
         args,
         &[
@@ -760,6 +761,7 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
             "--monitor-policy",
             "--monitor-target",
             "--note",
+            "--owner",
             "--priority",
             "--required-write-scope",
             "--resume-when",
@@ -791,6 +793,8 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
             acceptance = Some(v);
         } else if k == "--max-validation-attempts" {
             max_validation_attempts = v.parse().ok();
+        } else if k == "--owner" {
+            owner = Some(v);
         } else if k == "--goal" {
             goal_id = Some(v);
         } else if k == "--role" {
@@ -833,12 +837,13 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
         ("agent", "advancement")
             | ("agent", "monitor")
             | ("agent", "blocker")
+            | ("agent", "coordination")
             | (_, "user_gate")
             | ("user", "user_action")
     );
     if !valid_combo {
         bail!(
-            "unknown --role/--class combo `{role}`/`{class}` (agent: advancement|monitor|blocker; user_gate: any role; user: user_action)"
+            "unknown --role/--class combo `{role}`/`{class}` (agent: advancement|monitor|blocker|coordination; user_gate: any role; user: user_action)"
         );
     }
     if let Some(p) = &priority {
@@ -877,8 +882,14 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
             let b: Vec<&str> = blocks.iter().map(|s| s.as_str()).collect();
             Todo::blocker(&id, &text, &b)
         }
+        ("agent", "coordination") => Todo::coordination(&id, &text),
         _ => Todo::advancement(&id, &text),
     };
+    // Owner assignment: `--owner X` declares this todo is for agent X (see
+    // `Todo::owner`). Optional — absent = shared pool.
+    if let Some(aid) = &owner {
+        todo = todo.owned_by(aid);
+    }
     // Apply --blocks for every task class (previously only user_gate/blocker
     // attached them; advancement/monitor silently dropped the dependency chain).
     if !blocks.is_empty() {
@@ -2700,6 +2711,7 @@ fn status_label(t: &Todo) -> &'static str {
             TaskClass::UserAction => "action",
             TaskClass::Monitor => "monitor",
             TaskClass::Blocker => "blocker",
+            TaskClass::Coordination => "coord",
         }
     }
 }
@@ -7467,6 +7479,7 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
     let mut resume_when = None;
     let mut blocks: Option<Vec<String>> = None;
     let mut acceptance: Option<String> = None;
+    let mut owner: Option<String> = None;
     reject_unknown_flags(
         args,
         &[
@@ -7475,6 +7488,7 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
             "--evidence",
             "--goal",
             "--note",
+            "--owner",
             "--priority",
             "--resume-when",
             "--status",
@@ -7514,6 +7528,8 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
             });
         } else if k == "--acceptance" {
             acceptance = Some(v);
+        } else if k == "--owner" {
+            owner = Some(v);
         }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
@@ -7573,6 +7589,7 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
         resume_when: resume_when_parsed,
         blocks: blocks.clone(),
         acceptance: acceptance.clone(),
+        owner: owner.clone(),
         ts: crate::state::now_epoch(),
     })?;
     refresh_next_action(store, &goal_id)?;
@@ -7646,6 +7663,7 @@ mod coverage_tests {
                 resume_when: None,
                 blocks: None,
                 acceptance: None,
+                owner: None,
                 ts: 1,
             },
             Event::GoalCancelled {
@@ -7960,6 +7978,7 @@ mod coverage_tests {
             (TaskClass::UserAction, "action"),
             (TaskClass::Monitor, "monitor"),
             (TaskClass::Blocker, "blocker"),
+            (TaskClass::Coordination, "coord"),
         ] {
             let mut t = Todo::advancement("t", "x");
             t.class = class;

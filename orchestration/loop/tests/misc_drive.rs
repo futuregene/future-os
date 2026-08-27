@@ -582,6 +582,7 @@ fn store_projection_gap_and_guard_arms() {
                 resume_when: None,
                 blocks: None,
                 acceptance: None,
+                owner: None,
                 ts: now_epoch(),
             })
             .unwrap();

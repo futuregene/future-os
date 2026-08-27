@@ -43,6 +43,7 @@ pub fn future_loop_task_class(c: TaskClass) -> &'static str {
         TaskClass::UserAction => "user_action",
         TaskClass::Monitor => "continuous_monitor",
         TaskClass::Blocker => "blocker",
+        TaskClass::Coordination => "coordination",
     }
 }
 

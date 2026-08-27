@@ -169,6 +169,28 @@ fn todo_add_class_matrix() {
         "--monitor-policy",
         "exists",
     ]);
+    // Coordination class: orchestration bookkeeping, never agent work.
+    cli_ok(&[
+        "todo",
+        "add",
+        "--goal",
+        &gid,
+        "--class",
+        "coordination",
+        "--text",
+        "final validation",
+    ]);
+    // Owner assignment on a shared advancement todo.
+    cli_ok(&[
+        "todo",
+        "add",
+        "--goal",
+        &gid,
+        "--owner",
+        "worker-a",
+        "--text",
+        "worker-a only",
+    ]);
     // Unknown class is rejected fail-closed (was: silently fell back to
     // advancement and polluted the ledger).
     assert!(cli_err(&[
@@ -191,6 +213,17 @@ fn todo_add_class_matrix() {
     assert!(m.resume_when.is_some(), "cadence sets the first due time");
     assert_eq!(m.monitor_target.as_deref(), Some("file:x"));
     assert_eq!(m.monitor_policy.as_deref(), Some("exists"));
+    let coord = g
+        .todos
+        .iter()
+        .find(|t| t.text == "final validation")
+        .unwrap();
+    assert!(
+        coord.class == future_loop::state::TaskClass::Coordination,
+        "coordination class must be preserved"
+    );
+    let owned = g.todos.iter().find(|t| t.text == "worker-a only").unwrap();
+    assert_eq!(owned.owner.as_deref(), Some("worker-a"));
     assert_eq!(m.monitor_cadence.as_deref(), Some("15m"));
 }
 
@@ -881,6 +914,8 @@ fn todo_archive_supersede_update() {
         "45",
         "--blocks",
         "x,y",
+        "--owner",
+        "worker-a",
     ]);
     {
         let store = open_store(&cr);
@@ -891,10 +926,28 @@ fn todo_archive_supersede_update() {
         assert_eq!(t.note.as_deref(), Some("n"));
         assert_eq!(t.priority, future_loop::state::Priority::P0);
         assert_eq!(t.blocked_by_gate.as_deref(), Some("x,y"));
+        assert_eq!(t.owner.as_deref(), Some("worker-a"));
         assert!(
             t.resume_when.is_some(),
             "numeric resume-when sets a real deadline"
         );
+    }
+    // Clear owner assignment via empty --owner.
+    cli_ok(&[
+        "todo",
+        "update",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &u,
+        "--owner",
+        "",
+    ]);
+    {
+        let store = open_store(&cr);
+        let g = store.replay(&gid).unwrap().unwrap();
+        let t = g.todos.iter().find(|t| t.id == u).unwrap();
+        assert_eq!(t.owner, None, "empty --owner clears the assignment");
     }
     // Clear blocks, textual resume-when, unknown status ignored.
     cli_ok(&[
