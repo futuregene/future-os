@@ -197,6 +197,34 @@ fn command_error_paths() {
 }
 
 #[test]
+fn prompt_decodes_typed_payload_when_data_is_empty() {
+    // The agent retired command-response dual-write: a typed `prompt` ack
+    // arrives with an EMPTY `data` string and its run_id inside the typed
+    // `payload` oneof. The client must decode the typed payload first, not
+    // read `data` (which would yield Null → "missing run_id: null").
+    rt().block_on(async {
+        use future_rpc::proto::{response_payload, PromptAck, ResponsePayload};
+        let typed = ResponsePayload {
+            kind: Some(response_payload::Kind::Prompt(PromptAck {
+                run_id: "typed-run-1".to_string(),
+                run_epoch: 0,
+                accepted_state: "running".to_string(),
+                run_sequence: None,
+                queue_position: None,
+            })),
+        };
+        let st = MockState {
+            typed_payloads: [("prompt".to_string(), typed)].into_iter().collect(),
+            ..Default::default()
+        };
+        let (addr, _) = spawn_mock(st).await;
+        let mut client = AgentClient::connect(&addr).await.unwrap();
+        let run_id = client.prompt("s", "do work", "req-1").await.unwrap();
+        assert_eq!(run_id, "typed-run-1");
+    });
+}
+
+#[test]
 fn list_streaming_sessions_parses_ids_and_defaults_empty() {
     rt().block_on(async {
         let (addr, shared) = spawn_mock(MockState::default()).await;
