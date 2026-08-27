@@ -12,20 +12,27 @@ FutureOS 的所有用户状态都存放在 `~/.future/` 下（Windows 为
 │   ├── auth.json              # 凭据，按模型 id 或 provider 键控
 │   ├── sessions/              # 扁平 JSONL 会话存储（每个会话一个文件）
 │   ├── skills/                # 已安装的用户技能（APP_SKILLS_DIR）
+│   ├── browser/               # CLI 浏览器工具状态（config.json、profile/、artifacts/）
+│   ├── images/                # CLI 图片工具输出目录
 │   └── logs/agent.log         # agent 日志（启用日志时）
+├── agent-app/                 # 遗留凭据目录（auth.json），向后兼容读取
 ├── channels/
-│   └── config.json            # 飞书 / 钉钉桥配置（见 channels-config.zh-CN.md）
+│   ├── config.json            # 飞书 / 钉钉桥配置（见 channels-config.zh-CN.md）
+│   └── feishu/                # 飞书桥数据（会话文件、接收的文件）
 ├── tui/                       # 终端界面（future-tui）
 │   ├── settings.json          # defaultModel、defaultThinkingLevel 等（见 tui.zh-CN.md）
 │   ├── keybindings.json       # 可选按键绑定覆盖
 │   ├── debug.log              # 调试重绘日志（仅 PI_DEBUG_REDRAW=1）
-│   └── write.log              # 原始屏幕写入日志（仅 PI_TUI_WRITE_LOG=1）
+│   ├── write.log              # 原始屏幕写入日志（仅 PI_TUI_WRITE_LOG=1）
+│   └── crash.log              # 崩溃时的 panic 回溯
 ├── app/                       # 桌面 GUI（FutureOS App）
 │   ├── app.db                 # SQLite 数据库（会话线程、run、审批等）
 │   ├── images/                # 每线程图片树（thumb/ + origin/）
-│   └── review/                # 每个 workspace 的影子 git 评审仓库
+│   ├── review/                # 每个 workspace 的影子 git 评审仓库
+│   └── run_events/            # 每个 run 的事件日志（JSONL）
 ├── workspaces/
 │   └── chat/                  # 每线程聊天工作区（agent 会话 / 线程 id）
+├── remote_pairing.json        # 桌面远程桥身份（nkey_seed + user_jwt）
 └── bin/                       # CLI / agent 链接：`future`、`future-agent`（见下）
 ```
 
@@ -44,20 +51,30 @@ FutureOS 的所有用户状态都存放在 `~/.future/` 下（Windows 为
 - `skills/` — 两个技能发现目录之一（`APP_SKILLS_DIR`）；另一个是
   `~/.agents/skills/`（`AGENTS_SKILLS_DIR`）。技能是含 `SKILL.md` +
   YAML frontmatter 的普通目录。
+- `browser/` — CLI 浏览器工具状态（`config.json`、Chromium 的 `profile/`、
+  截图的 `artifacts/`）。遵循 `FUTURE_HOME`。
+- `images/` — CLI 图片生成/编辑工具（`future tools call image …`）的输出目录。
 - `logs/agent.log` — 启用日志时写入。
+
+## `~/.future/agent-app/` — 遗留凭据目录
+
+agent 解析 `auth.json` 时会先读 `~/.future/agent-app/auth.json`，再读
+`~/.future/agent/auth.json`（向后兼容旧版 GUI 写入的凭据）；GUI 的文件访问
+守卫把 `agent/` 与 `agent-app/` 都视为凭据位置。新的写入都落到 `~/.future/agent/`。
 
 ## `~/.future/channels/` — 渠道桥
 
 归 `future-channel`（飞书 / 钉钉桥）所有。`config.json` 包含 `agent`、
 `feishu`、`dingtalk` 三个块——完整 schema 与默认值见
 [channels-config.zh-CN.md](channels-config.zh-CN.md)。若文件不存在，桥会
-写入默认模板并退出，提示编辑后重启。
+写入默认模板并退出，提示编辑后重启。`feishu/` 是飞书桥的数据目录（会话文件
+与接收的文件/图片）。
 
 ## `~/.future/tui/` — 终端界面
 
 归 `future-tui` 所有。`settings.json` 持久化客户端侧设置（`defaultModel`、
 `defaultThinkingLevel`、`defaultPermissionLevel`、`enabledModelIds`）；
-可选的按键绑定覆盖放在 `keybindings.json`；`debug.log` 在设置 `PI_DEBUG_REDRAW=1` 时写入调试重绘日志，设置 `PI_TUI_WRITE_LOG=1` 时 `write.log` 记录原始屏幕写入。
+可选的按键绑定覆盖放在 `keybindings.json`；`debug.log` 在设置 `PI_DEBUG_REDRAW=1` 时写入调试重绘日志，设置 `PI_TUI_WRITE_LOG=1` 时 `write.log` 记录原始屏幕写入；`crash.log` 在 TUI 崩溃时接收 panic 回溯。
 见 [tui.zh-CN.md](tui.zh-CN.md)。
 
 ## `~/.future/app/` — 桌面 GUI
@@ -70,6 +87,10 @@ FutureOS 的所有用户状态都存放在 `~/.future/` 下（Windows 为
   可能清理缓存目录。
 - `review/` — 评审功能使用的影子 git 仓库，每个 workspace 的 run 共享一个
   `<workspace_id>` 子目录。
+- `run_events/` — 每个 run 的事件日志（JSONL），派生自 agent 的 JSONL 会话。
+
+桌面远程桥把配对身份（`nkey_seed` + `user_jwt` + NATS 地址）保存在
+`~/.future/remote_pairing.json`（位于 `~/.future` 根，而非 `app/` 下）。
 
 ## `~/.future/workspaces/chat/` — 聊天工作区
 
