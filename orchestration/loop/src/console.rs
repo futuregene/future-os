@@ -3634,6 +3634,21 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         }
         None => client.new_session(&goal0.cwd, &session_title).await?,
     };
+    // Bind agent-id → session-id in the ledger BEFORE any prompt. This is the
+    // authoritative mapping `worker stop`/`worker list` use to locate this
+    // worker's backing agent session — recorded first so a prompt/parse
+    // failure (or a client kill) that leaves the turn orphaned can still be
+    // discovered and aborted (the `.live.jsonl` run_header is only written
+    // AFTER a prompt ack returns a run_id, so it cannot see such orphans).
+    // Anonymous runs (no --agent-id) have no stable id to bind.
+    if let Some(aid) = agent_id.as_deref() {
+        store.append(Event::WorkerSessionBound {
+            goal_id: goal_id.clone(),
+            agent_id: aid.to_string(),
+            session_id: session_id.clone(),
+            ts: crate::state::now_epoch(),
+        })?;
+    }
     if let Some(m) = model {
         client.set_model(&session_id, &m).await?;
     }
@@ -5560,6 +5575,45 @@ fn scan_worker_sessions(runs_dir: &std::path::Path, goal_id: &str) -> Vec<Worker
     out
 }
 
+/// Merge the authoritative agent→session bindings from the goal ledger
+/// (`WorkerSessionBound`, folded into `Goal.worker_sessions`) with the
+/// `.live.jsonl` run-header scan (which carries run_id/todo_id/wall_ts
+/// metadata). The ledger binding wins for `session_id` because it is written
+/// BEFORE the first prompt, so it also covers orphans the header scan cannot
+/// see (a prompt/parse failure or a client kill before the run_header is
+/// written). For old ledgers with no bindings, the scan alone is the fallback.
+fn bound_worker_sessions(
+    goal: &crate::state::Goal,
+    runs_dir: &std::path::Path,
+    goal_id: &str,
+) -> Vec<WorkerSession> {
+    let scanned = scan_worker_sessions(runs_dir, goal_id);
+    let mut out: Vec<WorkerSession> = Vec::new();
+    let mut bound_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (agent_id, session_id) in &goal.worker_sessions {
+        bound_ids.insert(agent_id.clone());
+        let meta = scanned.iter().find(|s| &s.agent_id == agent_id);
+        out.push(WorkerSession {
+            agent_id: agent_id.clone(),
+            session_id: session_id.clone(),
+            run_id: meta.map(|s| s.run_id.clone()).unwrap_or_default(),
+            todo_id: meta.map(|s| s.todo_id.clone()).unwrap_or_default(),
+            wall_ts: meta.map(|s| s.wall_ts).unwrap_or(0),
+            streaming: false,
+        });
+    }
+    // Agents the header scan knows about but that have no ledger binding yet
+    // (old ledgers, or a run that wrote a header before this build introduced
+    // the binding) still surface via the scan.
+    for s in scanned {
+        if !bound_ids.contains(&s.agent_id) {
+            out.push(s);
+        }
+    }
+    out.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
+    out
+}
+
 /// `future loop worker list --goal G [--format json]` — the registered workers
 /// of a goal, each mapped to its current backing agent session and whether the
 /// agent is streaming it right now (an in-flight run). This is the loop's
@@ -5590,7 +5644,7 @@ async fn cmd_worker_list(store: &Store, args: &[String]) -> Result<()> {
         .replay(&goal_id)?
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
     let runs_dir = std::path::PathBuf::from(store.root_path()).join("runs");
-    let mut sessions = scan_worker_sessions(&runs_dir, &goal_id);
+    let mut sessions = bound_worker_sessions(&goal, &runs_dir, &goal_id);
 
     // Cross-reference the agent's live streaming set so we can report which
     // workers actually have an in-flight run right now.
@@ -5691,11 +5745,14 @@ async fn cmd_worker_stop(store: &mut Store, args: &[String]) -> Result<()> {
     if !all && agent_id.is_none() {
         bail!("specify --agent-id A (one worker) or --all (every worker)");
     }
-    let _goal = store
+    let goal = store
         .replay(&goal_id)?
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
     let runs_dir = std::path::PathBuf::from(store.root_path()).join("runs");
-    let sessions = scan_worker_sessions(&runs_dir, &goal_id);
+    // Authoritative agent→session bindings (ledger) merged with the run-header
+    // scan, so a worker whose turn is orphaned (prompt failed before the
+    // run_header was written) is still discovered and aborted.
+    let sessions = bound_worker_sessions(&goal, &runs_dir, &goal_id);
 
     // Select targets: the named agent, or every worker with a live session.
     let targets: Vec<WorkerSession> = match agent_id.as_deref() {
@@ -7280,6 +7337,13 @@ fn describe_event(event: &crate::store::Event) -> String {
                 agent_id.as_deref().unwrap_or("broadcast")
             );
         }
+        Event::WorkerSessionBound {
+            agent_id,
+            session_id,
+            ..
+        } => {
+            return format!("worker_session_bound agent={agent_id} session={session_id}");
+        }
     };
     kind.to_string()
 }
@@ -7912,6 +7976,12 @@ mod coverage_tests {
             Event::WorkerStopped {
                 goal_id: "g".into(),
                 agent_id: Some("a".into()),
+                ts: 1,
+            },
+            Event::WorkerSessionBound {
+                goal_id: "g".into(),
+                agent_id: "a".into(),
+                session_id: "sess-a".into(),
                 ts: 1,
             },
         ]
@@ -9568,6 +9638,90 @@ mod todo_verify_hint_tests {
         assert!(
             sessions.is_empty(),
             "all bad files must be skipped: {sessions:?}"
+        );
+    }
+
+    #[test]
+    fn bound_worker_sessions_surfaces_orphaned_bindings_and_prefers_ledger_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let runs = dir.path().join("runs");
+        std::fs::create_dir_all(&runs).unwrap();
+
+        let header = |sid: &str, agent: &str, run_id: &str, todo_id: &str| {
+            format!(
+                "{{\"type\":\"run_header\",\"wall_ts\":1,\"run_id\":\"{run_id}\",\"session_id\":\"{sid}\",\"agent_id\":\"{agent}\",\"todo_id\":\"{todo_id}\",\"goal_id\":\"g1\"}}\n"
+            )
+        };
+        // worker-a has a scanned header (older session) AND a newer ledger binding.
+        std::fs::write(
+            runs.join("a.live.jsonl"),
+            header("sess-a-old", "worker-a", "r-a", "todo-a"),
+        )
+        .unwrap();
+        // worker-b has ONLY a ledger binding — no .live.jsonl (orphaned turn).
+
+        let mut goal = crate::state::Goal::new("g1", "obj", "/tmp");
+        goal.worker_sessions
+            .insert("worker-a".to_string(), "sess-a-new".to_string());
+        goal.worker_sessions
+            .insert("worker-b".to_string(), "sess-b-orphan".to_string());
+
+        let sessions = super::bound_worker_sessions(&goal, &runs, "g1");
+        let by_agent: std::collections::HashMap<&str, &super::WorkerSession> = sessions
+            .iter()
+            .map(|s| (s.agent_id.as_str(), s))
+            .collect();
+
+        // Orphaned binding surfaces even without a run header.
+        assert_eq!(
+            by_agent.get("worker-b").map(|s| s.session_id.as_str()),
+            Some("sess-b-orphan"),
+            "an orphaned turn (binding with no run header) must be discoverable"
+        );
+        // Ledger binding wins over the scanned (stale) session id, but the
+        // scanned run_id/todo_id metadata is still carried over.
+        let a = by_agent.get("worker-a").unwrap();
+        assert_eq!(a.session_id, "sess-a-new");
+        assert_eq!(a.run_id, "r-a");
+        assert_eq!(a.todo_id, "todo-a");
+        assert_eq!(sessions.len(), 2);
+    }
+
+    #[test]
+    fn worker_session_bound_event_folds_latest_session() {
+        use crate::store::Event;
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = crate::store::Store::open(dir.path().to_str().unwrap()).unwrap();
+        let mut goal = crate::state::Goal::new("g1", "obj", "/tmp");
+        goal.registered_agents = vec!["w1".to_string()];
+        store.register(&goal).unwrap();
+        store
+            .append(Event::GoalStarted {
+                goal_id: "g1".to_string(),
+                ts: 1,
+            })
+            .unwrap();
+        store
+            .append(Event::WorkerSessionBound {
+                goal_id: "g1".to_string(),
+                agent_id: "w1".to_string(),
+                session_id: "sess-1".to_string(),
+                ts: 1,
+            })
+            .unwrap();
+        store
+            .append(Event::WorkerSessionBound {
+                goal_id: "g1".to_string(),
+                agent_id: "w1".to_string(),
+                session_id: "sess-2".to_string(),
+                ts: 2,
+            })
+            .unwrap();
+        let goal = store.replay("g1").unwrap().unwrap();
+        assert_eq!(
+            goal.worker_sessions.get("w1").map(String::as_str),
+            Some("sess-2"),
+            "latest binding must win"
         );
     }
 }

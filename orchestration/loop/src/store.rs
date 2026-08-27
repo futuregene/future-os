@@ -257,6 +257,18 @@ pub enum Event {
         workspaces: Vec<String>,
         ts: u64,
     },
+    /// Bind a worker's agent session to its agent-id BEFORE the run starts
+    /// prompting. This is the authoritative agent→session mapping for
+    /// `worker stop`/`worker list`, recorded before the first `prompt` so a
+    /// prompt/parse failure (or a client SIGKILL) cannot orphan the turn
+    /// beyond reach — the `.live.jsonl` run_header, written only after a
+    /// prompt ack returns a run_id, cannot see such orphans.
+    WorkerSessionBound {
+        goal_id: String,
+        agent_id: String,
+        session_id: String,
+        ts: u64,
+    },
     /// P0-1: advisory write-lock record — an agent with declared workspaces
     /// claimed a todo and now occupies its workspace set. `forced` marks a
     /// claim that overrode a live workspace conflict via `--force`.
@@ -611,7 +623,8 @@ impl Event {
             | Event::ReplanRuleSetUpdated { goal_id, .. }
             | Event::SupervisorRegistered { goal_id, .. }
             | Event::WorkerSteered { goal_id, .. }
-            | Event::WorkerStopped { goal_id, .. } => goal_id,
+            | Event::WorkerStopped { goal_id, .. }
+            | Event::WorkerSessionBound { goal_id, .. } => goal_id,
         }
     }
 }
@@ -1657,6 +1670,16 @@ fn apply(goal: &mut Goal, event: Event) {
                 capabilities,
                 workspaces,
             });
+        }
+        Event::WorkerSessionBound {
+            agent_id,
+            session_id,
+            ..
+        } => {
+            // Latest binding wins; a worker that restarts and re-binds to a
+            // fresh session overwrites its stale mapping so `worker stop`/
+            // `worker list` never abort a dead session id.
+            goal.worker_sessions.insert(agent_id, session_id);
         }
         // P0-1: advisory write-lock records are projection-only — occupancy
         // is derived from profiles + live leases; the event is the audit
