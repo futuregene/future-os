@@ -114,36 +114,23 @@ async fn agent_events(
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
         .unwrap_or_else(|| run.thread_id.clone());
-    let agent_json =
-        agent_bridge::get_events_since(sid, run_id.to_string(), since_sequence).await?;
-    let Some(events) = agent_json.get("events").and_then(|v| v.as_array()) else {
-        return Ok(Vec::new());
-    };
-    let records: Vec<store::RunEventRecord> = events
-        .iter()
+    let replay =
+        agent_bridge::get_events_since_payload(sid, run_id.to_string(), since_sequence).await?;
+    let records: Vec<store::RunEventRecord> = replay
+        .events
+        .into_iter()
         .enumerate()
         .map(|(i, e)| store::RunEventRecord {
-            id: e
-                .get("eventId")
-                .and_then(|v| v.as_str())
-                .filter(|id| !id.is_empty())
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("agent_{run_id}_{i}")),
+            id: if e.event_id.is_empty() {
+                format!("agent_{run_id}_{i}")
+            } else {
+                e.event_id
+            },
             run_id: run_id.to_string(),
-            event_type: e
-                .get("type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-            payload: e
-                .get("data")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-            sequence: e.get("idx").and_then(|v| v.as_i64()).unwrap_or(i as i64),
-            created_at: e
-                .get("timestamp")
-                .and_then(|value| value.as_str())
-                .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+            event_type: e.event_type,
+            payload: (!e.data.is_empty()).then_some(e.data),
+            sequence: e.idx,
+            created_at: chrono::DateTime::parse_from_rfc3339(&e.timestamp)
                 .map(|value| value.timestamp_millis())
                 .unwrap_or(0),
         })

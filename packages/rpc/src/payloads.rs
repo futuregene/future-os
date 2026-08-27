@@ -162,30 +162,43 @@ pub struct SessionEntryPayload {
 
 /// One replayed event (get_events_since; proto `ReplayEvent`). Keys mirror
 /// the StreamEvent envelope.
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReplayEventPayload {
     #[serde(rename = "type")]
+    #[serde(default)]
     pub event_type: String,
+    #[serde(default)]
     pub data: String,
+    #[serde(default)]
     pub run_id: String,
+    #[serde(default)]
     pub idx: i64,
+    #[serde(default)]
     pub session_id: String,
+    #[serde(default)]
     pub epoch: i64,
+    #[serde(default)]
     pub event_id: String,
+    #[serde(default)]
     pub timestamp: String,
+    #[serde(default)]
     pub session_idx: i64,
+    #[serde(default)]
     pub run_sequence: i64,
 }
 
 /// get_events_since payload (proto `EventsSince`).
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EventsSincePayload {
+    #[serde(default)]
     pub run_id: String,
+    #[serde(default)]
     pub events: Vec<ReplayEventPayload>,
+    #[serde(default)]
     pub truncated: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub projection: Option<ProjectionPayload>,
     /// True when the page was cut short (request `max_events` / server size
     /// budget) and more events follow. Absent on the wire when false so
@@ -199,11 +212,14 @@ fn is_false(value: &bool) -> bool {
 }
 
 /// A compressed projection snapshot (proto `ProjectionSnapshot`).
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectionPayload {
+    #[serde(default)]
     pub run_id: String,
+    #[serde(default)]
     pub cursor: i64,
+    #[serde(default)]
     pub events: Vec<ReplayEventPayload>,
 }
 

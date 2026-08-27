@@ -111,6 +111,40 @@ describe("upsertStreamingPreview", () => {
     expect(listRunEventsSince).toHaveBeenLastCalledWith("r-up3", 0);
   });
 
+  it("renders reasoning-only deltas immediately and appends answer text on the next push", async () => {
+    listRunEventsSince.mockResolvedValue(runEvents("r-stream", [
+      ["thinking_start", {}],
+      ["thinking_delta", { text: "live reasoning" }],
+    ]));
+    const { setMessages, state } = collect([userMessage("u1")]);
+
+    await upsertStreamingPreview("r-stream", 1000, setMessages);
+    let bubble = state().find(m => m.id === "stream_r-stream");
+    expect(bubble).toMatchObject({
+      content: "",
+      status: "streaming",
+      thinkingActive: true,
+      segments: [{ kind: "thinking", text: "live reasoning" }],
+    });
+
+    listRunEventsSince.mockResolvedValue(runEvents("r-stream", [
+      ["thinking_end", {}],
+      ["text_chunk", { text: "live answer" }],
+    ], 2));
+    await upsertStreamingPreview("r-stream", 1000, setMessages);
+
+    bubble = state().find(m => m.id === "stream_r-stream");
+    expect(bubble).toMatchObject({
+      content: "live answer",
+      thinkingActive: false,
+      segments: [
+        { kind: "thinking", text: "live reasoning" },
+        { kind: "text", text: "live answer" },
+      ],
+    });
+    expect(listRunEventsSince).toHaveBeenLastCalledWith("r-stream", 1);
+  });
+
   it("rebuilds from the full log when the event sequence regresses", async () => {
     listRunEventsSince.mockResolvedValue(textEvents("r-up4", "one"));
     const { setMessages } = collect([userMessage("u1")]);

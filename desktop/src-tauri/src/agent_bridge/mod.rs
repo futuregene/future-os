@@ -165,41 +165,33 @@ const EVENTS_PAGE_SIZE: i64 = 50_000;
 /// paging from `next`, `None` when the tail is complete. Terminates on a
 /// malformed has_more page (no advancing idx) instead of re-requesting the
 /// same cursor forever.
-fn next_events_cursor(page: &serde_json::Value, cursor: i64) -> Option<i64> {
-    let has_more = page
-        .get("hasMore")
-        .and_then(|value| value.as_bool())
-        .unwrap_or(false);
-    if !has_more {
+fn next_events_cursor(page: &future_rpc::payloads::EventsSincePayload, cursor: i64) -> Option<i64> {
+    if !page.has_more {
         return None;
     }
-    let last_idx = page
-        .get("events")
-        .and_then(|value| value.as_array())
-        .and_then(|events| events.last())
-        .and_then(|event| event.get("idx"))
-        .and_then(|value| value.as_i64());
-    last_idx.filter(|idx| *idx > cursor)
+    page.events
+        .last()
+        .map(|event| event.idx)
+        .filter(|idx| *idx > cursor)
 }
 
 /// Fetch the agent's buffered events for a session's current run (P1c backfill).
 /// `since_idx = -1` returns the requested run's retained prefix. A stale or
 /// unknown `run_id` is an explicit error and never realigns to another run.
-/// Returns the parsed `data`
-/// JSON — shape `{ runId, events: [{ type, data, runId, idx }] }`. Lets a phone /
-/// web client that joined an in-flight run mid-stream reconstruct the prefix it
-/// missed, keyed by the same `runId`/`idx` the live events carry (so it dedupes).
+/// Returns the canonical typed replay payload. Typed protobuf and legacy JSON
+/// responses are normalized once in `future-rpc`; callers never inspect raw
+/// response JSON or oneof fields themselves.
 ///
 /// Paged under the hood (`max_events`): the returned envelope holds the
 /// complete tail regardless of journal size.
-pub async fn get_events_since(
+pub async fn get_events_since_payload(
     session_id: String,
     run_id: String,
     since_idx: i64,
-) -> Result<serde_json::Value, crate::AppError> {
+) -> Result<future_rpc::payloads::EventsSincePayload, crate::AppError> {
     let mut client = connect_agent().await?;
     let mut cursor = since_idx;
-    let mut merged: Option<serde_json::Value> = None;
+    let mut merged: Option<future_rpc::payloads::EventsSincePayload> = None;
     loop {
         let command = crate::agent_proto::RpcCommand {
             run_id: run_id.clone(),
@@ -229,23 +221,34 @@ pub async fn get_events_since(
             })?
             .into_inner()
             .ok_or_rpc_error("get_events_since returned an error")?;
-        let page = if response.data.is_empty() {
-            serde_json::json!({ "events": [] })
-        } else {
-            future_rpc::decode::response_data(&response)
-        };
+        let mut page = future_rpc::decode::decode_events_since(&response).unwrap_or_else(|| {
+            future_rpc::payloads::EventsSincePayload {
+                run_id: run_id.clone(),
+                events: Vec::new(),
+                truncated: false,
+                projection: None,
+                has_more: false,
+            }
+        });
+        if !page.run_id.is_empty() && page.run_id != run_id {
+            return Err(format!(
+                "get_events_since returned run {}, expected {run_id}",
+                page.run_id
+            )
+            .into());
+        }
+        if page.run_id.is_empty() {
+            page.run_id.clone_from(&run_id);
+        }
         let next = next_events_cursor(&page, cursor);
         match &mut merged {
             None => merged = Some(page),
             Some(total) => {
-                if let (Some(total_events), Some(page_events)) = (
-                    total
-                        .get_mut("events")
-                        .and_then(|value| value.as_array_mut()),
-                    page.get("events").and_then(|value| value.as_array()),
-                ) {
-                    total_events.extend(page_events.iter().cloned());
+                total.truncated |= page.truncated;
+                if total.projection.is_none() {
+                    total.projection = page.projection.take();
                 }
+                total.events.append(&mut page.events);
             }
         }
         match next {
@@ -253,12 +256,28 @@ pub async fn get_events_since(
             None => break,
         }
     }
-    let mut result = merged.unwrap_or_else(|| serde_json::json!({ "events": [] }));
+    let mut result = merged.unwrap_or(future_rpc::payloads::EventsSincePayload {
+        run_id,
+        events: Vec::new(),
+        truncated: false,
+        projection: None,
+        has_more: false,
+    });
     // The merged envelope describes the complete tail, not one page.
-    if let Some(object) = result.as_object_mut() {
-        object.remove("hasMore");
-    }
+    result.has_more = false;
     Ok(result)
+}
+
+/// JSON compatibility wrapper for remote/web consumers. Native Desktop code
+/// uses [`get_events_since_payload`] directly and therefore stays strongly
+/// typed across the RPC boundary.
+pub async fn get_events_since(
+    session_id: String,
+    run_id: String,
+    since_idx: i64,
+) -> Result<serde_json::Value, crate::AppError> {
+    serde_json::to_value(get_events_since_payload(session_id, run_id, since_idx).await?)
+        .map_err(|error| format!("Could not serialize get_events_since response: {error}").into())
 }
 
 /// Fetch a session's full message history from the agent (LLM Message shape:
@@ -1546,20 +1565,25 @@ mod watchdog_tests {
 #[cfg(test)]
 mod events_paging_tests {
     use super::next_events_cursor;
+    use future_rpc::payloads::EventsSincePayload;
     use serde_json::json;
+
+    fn replay_page(value: serde_json::Value) -> EventsSincePayload {
+        serde_json::from_value(value).expect("replay page")
+    }
 
     #[test]
     fn stops_when_the_page_reports_no_tail() {
         // hasMore absent (legacy server) or false ends the loop.
-        let page = json!({"events": [{"idx": 3}]});
+        let page = replay_page(json!({"events": [{"idx": 3}]}));
         assert_eq!(next_events_cursor(&page, -1), None);
-        let page = json!({"events": [{"idx": 3}], "hasMore": false});
+        let page = replay_page(json!({"events": [{"idx": 3}], "hasMore": false}));
         assert_eq!(next_events_cursor(&page, -1), None);
     }
 
     #[test]
     fn advances_to_the_last_event_idx_while_has_more() {
-        let page = json!({"events": [{"idx": 3}, {"idx": 7}], "hasMore": true});
+        let page = replay_page(json!({"events": [{"idx": 3}, {"idx": 7}], "hasMore": true}));
         assert_eq!(next_events_cursor(&page, -1), Some(7));
         assert_eq!(next_events_cursor(&page, 7), None); // idx must advance
     }
@@ -1568,13 +1592,19 @@ mod events_paging_tests {
     fn malformed_has_more_pages_terminate_instead_of_looping() {
         // No events, no idx, or a non-advancing idx would re-request the same
         // cursor forever — the loop must bail.
-        assert_eq!(next_events_cursor(&json!({"hasMore": true}), -1), None);
         assert_eq!(
-            next_events_cursor(&json!({"events": [], "hasMore": true}), -1),
+            next_events_cursor(&replay_page(json!({"hasMore": true})), -1),
             None
         );
         assert_eq!(
-            next_events_cursor(&json!({"events": [{"idx": 5}], "hasMore": true}), 5),
+            next_events_cursor(&replay_page(json!({"events": [], "hasMore": true})), -1),
+            None
+        );
+        assert_eq!(
+            next_events_cursor(
+                &replay_page(json!({"events": [{"idx": 5}], "hasMore": true})),
+                5,
+            ),
             None
         );
     }
@@ -1991,6 +2021,66 @@ mod bridge_tests {
     }
 
     #[tokio::test]
+    async fn events_since_payload_decodes_typed_pages_without_json_reparse() {
+        let mock = mock_agent();
+        mock.push_typed_data(
+            "get_events_since",
+            serde_json::json!({
+                "runId": "run-typed",
+                "events": [
+                    {
+                        "type": "thinking_delta",
+                        "data": "{\"text\":\"reason\"}",
+                        "runId": "run-typed",
+                        "idx": 0
+                    },
+                    {
+                        "type": "text_chunk",
+                        "data": "{\"text\":\"answer\"}",
+                        "runId": "run-typed",
+                        "idx": 1
+                    }
+                ],
+                "truncated": false,
+                "hasMore": false
+            }),
+        );
+
+        let replay =
+            get_events_since_payload("session-typed".to_string(), "run-typed".to_string(), -1)
+                .await
+                .expect("typed replay");
+
+        assert_eq!(replay.run_id, "run-typed");
+        assert_eq!(replay.events.len(), 2);
+        assert_eq!(replay.events[0].event_type, "thinking_delta");
+        assert_eq!(replay.events[0].data, r#"{"text":"reason"}"#);
+        assert_eq!(replay.events[1].event_type, "text_chunk");
+        assert_eq!(replay.events[1].data, r#"{"text":"answer"}"#);
+        assert!(!replay.has_more);
+    }
+
+    #[tokio::test]
+    async fn events_since_payload_rejects_cross_run_response() {
+        let mock = mock_agent();
+        mock.push_typed_data(
+            "get_events_since",
+            serde_json::json!({
+                "runId": "wrong-run",
+                "events": [],
+                "truncated": false
+            }),
+        );
+
+        let error =
+            get_events_since_payload("session-typed".to_string(), "expected-run".to_string(), -1)
+                .await
+                .expect_err("cross-run replay must fail");
+        assert!(error.to_string().contains("wrong-run"), "{error}");
+        assert!(error.to_string().contains("expected-run"), "{error}");
+    }
+
+    #[tokio::test]
     async fn events_since_empty_and_terminating_pages() {
         let mock = mock_agent();
 
@@ -1999,7 +2089,10 @@ mod bridge_tests {
         let merged = get_events_since("s".to_string(), "r".to_string(), 0)
             .await
             .expect("empty");
-        assert_eq!(merged, serde_json::json!({"events": []}));
+        assert_eq!(
+            merged,
+            serde_json::json!({"runId": "r", "events": [], "truncated": false})
+        );
 
         // A hasMore page whose idx does not advance terminates the loop.
         mock.push_data(

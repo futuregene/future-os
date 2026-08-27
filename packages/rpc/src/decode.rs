@@ -159,7 +159,91 @@ pub fn decode_events_since(resp: &proto::RpcResponse) -> Option<EventsSincePaylo
     {
         return Some(events_since_from_proto(events));
     }
-    fallback_value(resp).and_then(|value| serde_json::from_value(value).ok())
+    fallback_value(resp).and_then(events_since_from_value)
+}
+
+/// Decode the released JSON replay envelope without making one malformed row
+/// poison the whole page. Older clients treated every field independently and
+/// supplied safe defaults; keep that compatibility at the protocol boundary
+/// while all native callers consume one typed shape.
+fn events_since_from_value(value: Value) -> Option<EventsSincePayload> {
+    let object = value.as_object()?;
+    let events = object.get("events")?.as_array()?;
+    Some(EventsSincePayload {
+        run_id: object
+            .get("runId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        events: events
+            .iter()
+            .enumerate()
+            .map(|(index, event)| replay_event_from_value(event, index as i64))
+            .collect(),
+        truncated: object
+            .get("truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        projection: object.get("projection").and_then(projection_from_value),
+        has_more: object
+            .get("hasMore")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    })
+}
+
+fn projection_from_value(value: &Value) -> Option<ProjectionPayload> {
+    let object = value.as_object()?;
+    let events = object.get("events")?.as_array()?;
+    Some(ProjectionPayload {
+        run_id: object
+            .get("runId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        cursor: object.get("cursor").and_then(Value::as_i64).unwrap_or(-1),
+        events: events
+            .iter()
+            .enumerate()
+            .map(|(index, event)| replay_event_from_value(event, index as i64))
+            .collect(),
+    })
+}
+
+fn replay_event_from_value(value: &Value, fallback_idx: i64) -> ReplayEventPayload {
+    let field = |name: &str| value.get(name);
+    ReplayEventPayload {
+        event_type: field("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        data: field("data")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        run_id: field("runId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        idx: field("idx").and_then(Value::as_i64).unwrap_or(fallback_idx),
+        session_id: field("sessionId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        epoch: field("epoch").and_then(Value::as_i64).unwrap_or_default(),
+        event_id: field("eventId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        timestamp: field("timestamp")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        session_idx: field("sessionIdx").and_then(Value::as_i64).unwrap_or(-1),
+        run_sequence: field("runSequence")
+            .and_then(Value::as_i64)
+            .unwrap_or_default(),
+    }
 }
 
 fn fallback_value(resp: &proto::RpcResponse) -> Option<Value> {
@@ -407,7 +491,11 @@ fn projection_from_proto(projection: &proto::ProjectionSnapshot) -> ProjectionPa
 fn replay_event_from_proto(event: &proto::ReplayEvent) -> ReplayEventPayload {
     ReplayEventPayload {
         event_type: event.r#type.clone(),
-        data: event.data.clone(),
+        // A typed replay event may omit the legacy `data` string. Reconstruct
+        // it from the typed payload so downstream JSON consumers still receive
+        // text/thinking deltas; preserve byte-identical legacy data when it is
+        // present.
+        data: replay_event_data_json(event),
         run_id: event.run_id.clone(),
         idx: event.idx,
         session_id: event.session_id.clone(),
@@ -959,11 +1047,25 @@ mod tests {
             run_id: "r1".to_string(),
             events: vec![proto::ReplayEvent {
                 r#type: "text_chunk".to_string(),
-                data: "{}".to_string(),
+                payload: typed_text_chunk("streamed answer"),
                 ..Default::default()
             }],
             truncated: true,
-            projection: None,
+            projection: Some(proto::ProjectionSnapshot {
+                run_id: "r1".to_string(),
+                cursor: 9,
+                events: vec![proto::ReplayEvent {
+                    r#type: "thinking_delta".to_string(),
+                    payload: Some(proto::EventPayload {
+                        kind: Some(proto::event_payload::Kind::ThinkingDelta(
+                            proto::ThinkingDelta {
+                                text: "streamed thought".to_string(),
+                            },
+                        )),
+                    }),
+                    ..Default::default()
+                }],
+            }),
             has_more: true,
         }));
         let payload = decode_events_since(&resp).unwrap();
@@ -971,9 +1073,31 @@ mod tests {
         assert!(payload.truncated);
         assert!(payload.has_more);
         assert_eq!(payload.events.len(), 1);
+        assert_eq!(payload.events[0].data, r#"{"text":"streamed answer"}"#);
+        assert_eq!(
+            payload.projection.unwrap().events[0].data,
+            r#"{"text":"streamed thought"}"#,
+        );
 
         let resp = resp_with_data(r#"{"runId":"r2","events":[],"truncated":false}"#);
         assert_eq!(decode_events_since(&resp).unwrap().run_id, "r2");
+
+        // Released JSON agents are decoded row-by-row: malformed optional
+        // fields retain the event and receive the same safe defaults Desktop
+        // historically applied after parsing the raw envelope.
+        let resp = resp_with_data(
+            r#"{"events":[
+                {"type":"text_chunk","data":"{\"text\":\"legacy\"}","idx":7},
+                {"type":null,"data":123,"idx":null}
+            ]}"#,
+        );
+        let legacy = decode_events_since(&resp).unwrap();
+        assert_eq!(legacy.events.len(), 2);
+        assert_eq!(legacy.events[0].idx, 7);
+        assert_eq!(legacy.events[0].data, r#"{"text":"legacy"}"#);
+        assert_eq!(legacy.events[1].event_type, "");
+        assert_eq!(legacy.events[1].data, "");
+        assert_eq!(legacy.events[1].idx, 1);
 
         // No typed payload and no data → None.
         assert!(decode_events_since(&proto::RpcResponse::default()).is_none());
