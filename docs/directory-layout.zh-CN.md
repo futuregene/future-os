@@ -100,11 +100,32 @@ GUI 的每线程聊天工作区，每个子目录以 agent 会话 id（已知时
 
 ## loop 控制面 — 项目本地，不在 `~/.future/` 下
 
-`future-loop` 的状态是**项目本地**的：在项目目录运行它，目标状态存放在
-`<cwd>/.future/loop/` 下（`registry.json`、`goals/<id>/events.jsonl`、
-`goals/<id>/ACTIVE_GOAL_STATE.md`、`runs/`）。`FUTURE_LOOP_ROOT` 可为特殊
-场景覆盖状态根；`~/.future/loop/` 不会被使用——见
+`future-loop` 的状态是**项目本地**的：在项目目录运行它，全部状态存放在
+`<cwd>/.future/loop/` 下（`FUTURE_LOOP_ROOT` 可为特殊场景覆盖状态根；
+`~/.future/loop/` 不会被使用）。见
 [loop-control-plane.zh-CN.md](loop-control-plane.zh-CN.md)。
+
+```text
+<cwd>/.future/loop/
+├── registry.json                  # 目标注册表（每个目标一条）
+├── goals/<goal_id>/
+│   ├── events.jsonl               # 事件源账本（权威状态）
+│   ├── runs.jsonl                 # 权威花费/运行账本
+│   ├── next_action.txt            # 内核 should-run 决策快照
+│   ├── schema.json                # 事件 store schema 版本戳
+│   ├── ACTIVE_GOAL_STATE.md       # 人可读的活跃状态投影
+│   ├── status-cache.json          # status 投影缓存
+│   ├── read_diagnostics.json      # 账本读取诊断（未知事件类型）
+│   ├── scheduler-state/           # 调度器状态（随目标一起备份）
+│   └── runs/                      # run-history（compaction/retention，LoopX 风格）
+│       └── index.jsonl            # 追加式 run 索引
+├── runs/
+│   └── <run_id>.live.jsonl        # live 进行中 worker run 日志
+├── inbox/
+│   └── *.json                     # operator inbox（活性告警等）
+└── backups/
+    └── <ts>-<goal_id>/            # 每目标备份（账本 + scheduler-state + 注册表项）
+```
 
 ## `~/.future/bin/` — CLI 链接
 
