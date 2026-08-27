@@ -14,6 +14,8 @@ export function GeneralPage({
   onToggleShowThinking,
   autoUpgradeSkills,
   onToggleAutoUpgradeSkills,
+  bellOnComplete,
+  onToggleBellOnComplete,
 }: {
   approvalTier: ApprovalTier;
   onChangeApprovalTier: (value: ApprovalTier) => void;
@@ -21,6 +23,8 @@ export function GeneralPage({
   onToggleShowThinking: (value: boolean) => void;
   autoUpgradeSkills: boolean;
   onToggleAutoUpgradeSkills: (value: boolean) => void;
+  bellOnComplete: boolean;
+  onToggleBellOnComplete: (value: boolean) => void;
 }) {
   const { t } = useTranslation("settings");
   const sandboxAvailability = useSandboxAvailability();
@@ -81,6 +85,12 @@ export function GeneralPage({
           description={t("autoUpgradeSkills.description")}
         >
           <Switch checked={autoUpgradeSkills} label={t("autoUpgradeSkills.title")} onChange={onToggleAutoUpgradeSkills} />
+        </SettingsRow>
+        <SettingsRow
+          title={t("bellOnComplete.title")}
+          description={t("bellOnComplete.description")}
+        >
+          <Switch checked={bellOnComplete} label={t("bellOnComplete.title")} onChange={onToggleBellOnComplete} />
         </SettingsRow>
       </SettingsList>
     </SettingsSection>

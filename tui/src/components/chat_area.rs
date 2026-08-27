@@ -364,6 +364,15 @@ impl ChatArea {
         self.rerender_message(index);
     }
 
+    /// True when this chat owns a message bound to `run_id` — i.e. the run
+    /// was submitted by this client (foreign runs from other clients on the
+    /// same session never get a `bind_user_run`).
+    pub fn has_run(&self, run_id: &str) -> bool {
+        self.messages
+            .iter()
+            .any(|m| m.run_id.as_deref() == Some(run_id))
+    }
+
     pub fn update_queue_position(&mut self, run_id: &str, queue_position: u32) {
         let Some(index) = self
             .messages

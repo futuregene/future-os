@@ -23,6 +23,10 @@
     "title": "自动升级技能",
     "description": "每次打开 App 时静默将已安装技能升级到最新版本"
   },
+  "bellOnComplete": {
+    "title": "完成提示音",
+    "description": "智能体任务完成时播放提示音并吸引窗口注意力"
+  },
   "remote": {
     "autoConnect": {
       "title": "打开软件后自动连接手机",

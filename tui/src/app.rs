@@ -277,9 +277,15 @@ pub struct TuiSettings {
     pub default_thinking_level: Option<String>,
     pub default_permission_level: Option<String>,
     pub enabled_model_ids: Option<Vec<String>>,
+    /// Terminal bell (BEL) when a run of ours completes or errors. On by default.
+    pub bell_on_complete: Option<bool>,
 }
 
 impl TuiSettings {
+    /// `bellOnComplete` with the default of `true` when absent.
+    pub fn bell_enabled(&self) -> bool {
+        self.bell_on_complete.unwrap_or(true)
+    }
     fn to_json(&self) -> Value {
         // Key order mirrors the TS object literal + late `enabledModelIds`
         // assignment (JSON.stringify preserves insertion order).
@@ -298,6 +304,9 @@ impl TuiSettings {
                 "enabledModelIds".into(),
                 Value::Array(ids.iter().map(|s| Value::String(s.clone())).collect()),
             );
+        }
+        if let Some(bell) = self.bell_on_complete {
+            obj.insert("bellOnComplete".into(), Value::Bool(bell));
         }
         Value::Object(obj)
     }
@@ -322,6 +331,7 @@ impl TuiSettings {
                     .map(String::from)
                     .collect()
             }),
+            bell_on_complete: v.get("bellOnComplete").and_then(Value::as_bool),
         }
     }
 }
@@ -1660,6 +1670,23 @@ impl<T: TerminalIo> App<T> {
             "agent_end" => {
                 if let Some(run_id) = &event.run_id {
                     self.chat.update_run_state(run_id, RunState::Terminal);
+                }
+                // Terminal bell when one of OUR runs finishes cleanly (or
+                // errors out) — the BEL byte goes straight to the terminal
+                // emulator, so it also reaches a user who unfocused the
+                // window. Foreign runs (another client on the same session)
+                // never get a `bind_user_run`, so `has_run` gates them out.
+                let state = event.data.get("state").and_then(Value::as_str);
+                let is_our_run = event
+                    .run_id
+                    .as_deref()
+                    .map(|id| self.chat.has_run(id))
+                    .unwrap_or(false);
+                if self.tui_settings.bell_enabled()
+                    && is_our_run
+                    && matches!(state, Some("completed") | Some("error"))
+                {
+                    self.terminal.write("\x07");
                 }
                 self.state.streaming = self.client.has_running_run();
                 self.state.active_tool_count = 0;
@@ -4759,6 +4786,7 @@ mod tests {
             default_thinking_level: Some("high".into()),
             default_permission_level: None,
             enabled_model_ids: Some(vec!["a".into(), "b".into()]),
+            bell_on_complete: None,
         };
         let json = serde_json::to_string(&settings.to_json()).unwrap();
         let parsed: Value = serde_json::from_str(&json).unwrap();
@@ -4778,6 +4806,7 @@ mod tests {
             default_thinking_level: None,
             default_permission_level: None,
             enabled_model_ids: Some(vec!["x".into()]),
+            bell_on_complete: None,
         };
         let json = serde_json::to_string_pretty(&settings.to_json()).unwrap();
         let model_pos = json.find("defaultModel").unwrap();
@@ -4887,6 +4916,114 @@ mod tests {
             app.chat.last_message().unwrap().run_state,
             Some(RunState::Superseded)
         );
+    }
+
+    // ─── Done bell (agent_end terminal BEL) ────────────────────────────
+
+    fn bind_our_run(app: &mut App<FakeTerminal>, run_id: &str) {
+        app.chat
+            .add_message(ChatMessage::new("m1".into(), ChatRole::User, "hello"));
+        app.chat
+            .bind_user_run("m1", run_id, RunState::Running, None);
+    }
+
+    #[tokio::test]
+    async fn bell_rings_when_our_run_completes() {
+        let (mut app, _rx) = make_app(100, 30);
+        bind_our_run(&mut app, "run-1");
+        app.handle_agent_event(&make_event_with_run(
+            "agent_end",
+            r#"{"state":"completed"}"#,
+            "run-1",
+        ));
+        assert!(
+            terminal_writes(&app).contains('\x07'),
+            "a clean completion of our run must ring the terminal bell, wrote: {:?}",
+            terminal_writes(&app)
+        );
+    }
+
+    #[tokio::test]
+    async fn bell_rings_when_our_run_errors() {
+        let (mut app, _rx) = make_app(100, 30);
+        bind_our_run(&mut app, "run-1");
+        app.handle_agent_event(&make_event_with_run(
+            "agent_end",
+            r#"{"state":"error"}"#,
+            "run-1",
+        ));
+        assert!(
+            terminal_writes(&app).contains('\x07'),
+            "an errored run needs the user's attention too"
+        );
+    }
+
+    #[tokio::test]
+    async fn bell_stays_silent_for_foreign_run() {
+        let (mut app, _rx) = make_app(100, 30);
+        bind_our_run(&mut app, "run-1");
+        // A completed run this client never submitted (another TUI on the
+        // same session) must not ring our bell.
+        app.handle_agent_event(&make_event_with_run(
+            "agent_end",
+            r#"{"state":"completed"}"#,
+            "run-foreign",
+        ));
+        assert!(
+            !terminal_writes(&app).contains('\x07'),
+            "foreign runs must not ring the bell"
+        );
+    }
+
+    #[tokio::test]
+    async fn bell_stays_silent_for_cancelled_and_incomplete_runs() {
+        let (mut app, _rx) = make_app(100, 30);
+        bind_our_run(&mut app, "run-1");
+        app.handle_agent_event(&make_event_with_run(
+            "agent_end",
+            r#"{"state":"cancelled"}"#,
+            "run-1",
+        ));
+        app.handle_agent_event(&make_event_with_run(
+            "agent_end",
+            r#"{"state":"incomplete"}"#,
+            "run-1",
+        ));
+        assert!(
+            !terminal_writes(&app).contains('\x07'),
+            "user-initiated cancels and incomplete streams must not ring"
+        );
+    }
+
+    #[tokio::test]
+    async fn bell_respects_bell_on_complete_setting() {
+        let (mut app, _rx) = make_app(100, 30);
+        bind_our_run(&mut app, "run-1");
+        app.tui_settings.bell_on_complete = Some(false);
+        app.handle_agent_event(&make_event_with_run(
+            "agent_end",
+            r#"{"state":"completed"}"#,
+            "run-1",
+        ));
+        assert!(
+            !terminal_writes(&app).contains('\x07'),
+            "bellOnComplete=false must silence the bell"
+        );
+    }
+
+    #[test]
+    fn tui_settings_bell_on_complete_roundtrip() {
+        // Absent → default on.
+        let v: Value = json_parse(r#"{}"#);
+        assert!(TuiSettings::from_json(&v).bell_enabled());
+        // Explicit false → off.
+        let v: Value = json_parse(r#"{"bellOnComplete":false}"#);
+        assert!(!TuiSettings::from_json(&v).bell_enabled());
+        // Explicit true → on, and serializes back to bellOnComplete.
+        let v: Value = json_parse(r#"{"bellOnComplete":true}"#);
+        let settings = TuiSettings::from_json(&v);
+        assert!(settings.bell_enabled());
+        assert_eq!(settings.to_json()["bellOnComplete"], Value::Bool(true));
     }
 
     #[tokio::test]

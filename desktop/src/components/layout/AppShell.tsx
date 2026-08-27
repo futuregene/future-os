@@ -29,6 +29,7 @@ import { ActivityRail } from "./ActivityRail";
 import { AppShellDialogs } from "./AppShellDialogs";
 import { ContextPanel } from "./ContextPanel";
 import { useAgentConnection } from "./hooks/useAgentConnection";
+import { useAgentDoneBell } from "./hooks/useAgentDoneBell";
 import { useApprovals } from "./hooks/useApprovals";
 import { useAppSettings } from "./hooks/useAppSettings";
 import { useAutoUpgradeSkills } from "./hooks/useAutoUpgradeSkills";
@@ -77,6 +78,7 @@ export function AppShell() {
 
   const { appSettings, changeSettings } = useAppSettings();
   useAutoUpgradeSkills(appSettings.autoUpgradeSkills);
+  useAgentDoneBell(appSettings.bellOnComplete);
   const { hasUpdate, cachedStatus, markSeen: markUpdateSeen } = useUpdateChecker();
   // Drives the onboarding gate below. Kept with the other top-level hooks so
   // the early returns further down stay after every hook call (rules of hooks).
