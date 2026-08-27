@@ -364,6 +364,15 @@ impl ChatArea {
         self.rerender_message(index);
     }
 
+    /// Current lifecycle state tracked for `run_id` (None when the run is
+    /// unknown to this chat).
+    pub fn run_state(&self, run_id: &str) -> Option<RunState> {
+        self.messages
+            .iter()
+            .find(|m| m.run_id.as_deref() == Some(run_id))
+            .and_then(|m| m.run_state)
+    }
+
     /// True when this chat owns a message bound to `run_id` — i.e. the run
     /// was submitted by this client (foreign runs from other clients on the
     /// same session never get a `bind_user_run`).
