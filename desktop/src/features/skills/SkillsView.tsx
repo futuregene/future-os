@@ -160,11 +160,15 @@ export function SkillsView({
   // open view reflects them.
   useEffect(() => onFutureEvent("skills-changed", () => void refresh()), [refresh]);
 
+  // Install/uninstall actions broadcast "skills-changed": the left rail
+  // re-reads its badge from it, and this view reloads via its own listener
+  // above (same pattern as the silent auto-upgrade). No explicit refresh here
+  // — the listener already covers it.
   const runAction = useCallback(async (id: string, action: () => Promise<unknown>) => {
     setBusy(current => ({ ...current, [id]: true }));
     try {
       await action();
-      await refresh();
+      emitFutureEvent("skills-changed", undefined);
     }
     catch (error) {
       // Every caller is `void runAction(...)`, so a rejected install/uninstall
@@ -174,10 +178,12 @@ export function SkillsView({
     finally {
       setBusy(current => ({ ...current, [id]: false }));
     }
-  }, [refresh, t]);
+  }, [t]);
 
   // Manual "Upgrade all": overwrite-install every upgradable skill sequentially,
-  // marking each busy, then refresh once. User-initiated, so failures toast.
+  // marking each busy, then broadcast "skills-changed" once (the listener above
+  // reloads this view; the left rail refreshes its badge). User-initiated, so
+  // failures toast.
   const upgradeAll = useCallback(async () => {
     if (skillUpgrades.length === 0)
       return;
@@ -186,7 +192,7 @@ export function SkillsView({
     try {
       for (const { id, version } of skillUpgrades)
         await installSkill(id, version);
-      await refresh();
+      emitFutureEvent("skills-changed", undefined);
     }
     catch (error) {
       emitFutureEvent("toast", { message: t("actionFailed", { message: errorMessage(error) }), tone: "error" });
@@ -194,7 +200,7 @@ export function SkillsView({
     finally {
       setBusy(current => ({ ...current, ...Object.fromEntries(ids.map(id => [id, false])) }));
     }
-  }, [skillUpgrades, refresh, t]);
+  }, [skillUpgrades, t]);
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-surface">
