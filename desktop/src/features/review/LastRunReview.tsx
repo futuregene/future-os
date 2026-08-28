@@ -4,10 +4,11 @@ import { AlertTriangle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { DiffView } from "../../components/ui/DiffView";
 import { EmptyState } from "../../components/ui/EmptyState";
-import { storedTimeToIso } from "../../integrations/storage/threadStore";
-import { formatTime } from "../../lib/date";
+import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
 import { formatBytes } from "../../lib/format";
+import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
 import { CollapsibleFileDiff, ExpandCollapseAll } from "./CollapsibleFileDiff";
+import { ReviewStats } from "./GitChangesReview";
 import { useExpandableFiles } from "./useExpandableFiles";
 
 export function LastRunReview({
@@ -28,7 +29,8 @@ export function LastRunReview({
   const { i18n, t } = useTranslation("review");
   // Files default collapsed; open state is keyed by file-change id.
   const files = review?.files ?? [];
-  const { allOpen, isOpen, toggle, toggleAll } = useExpandableFiles(files, file => file.id);
+  const { hasOpen, isOpen, toggle, toggleAll } = useExpandableFiles(files, file => file.id);
+  const fileScrollbar = useFloatingScrollbar();
 
   if (changePreview === "unsupported_too_large")
     return <EmptyState title={t("lastRun.tooLargeTitle")} detail={t("lastRun.tooLargeDetail")} />;
@@ -44,34 +46,37 @@ export function LastRunReview({
 
   const { changeset } = review;
   return (
-    <div className="space-y-3">
-      <RunReviewBanners review={review} retrying={retrying} onRetry={onRetry} />
-      <section className="rounded-md border border-line-soft bg-surface p-3">
-        <div className="text-sm font-semibold text-ink">{t("lastRunHeading")}</div>
-        <div className="mt-1 text-xs text-ink-muted">
-          {formatTime(storedTimeToIso(changeset.createdAt), i18n.language)}
-          {" · "}
-          {t("lastRun.filesChanged", { count: changeset.filesChanged })}
-          {" "}
-          <span className="text-success">{`+${changeset.additions}`}</span>
-          {" "}
-          <span className="text-danger">{`-${changeset.deletions}`}</span>
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="shrink-0 space-y-3 px-4 py-2">
+        <RunReviewBanners review={review} retrying={retrying} onRetry={onRetry} />
+        <div className="flex items-center justify-between gap-2">
+          <ReviewStats
+            additions={changeset.additions}
+            deletions={changeset.deletions}
+            filesChanged={changeset.filesChanged}
+            numberFormat={new Intl.NumberFormat(i18n.language)}
+          />
+          {files.length > 0 ? <ExpandCollapseAll hasOpen={hasOpen} onToggle={toggleAll} /> : null}
         </div>
-      </section>
-      {files.length > 0
-        ? <ExpandCollapseAll allOpen={allOpen} onToggle={toggleAll} />
-        : null}
-      <div className="space-y-2">
-        {files.length === 0
-          ? <EmptyState title={t("lastRun.noFilesTitle")} detail={t("lastRun.noFilesDetail")} />
-          : files.map(file => (
-              <ChangesetFileChange
-                file={file}
-                key={file.id}
-                open={isOpen(file)}
-                onToggle={() => toggle(file)}
-              />
-            ))}
+      </div>
+      <div className="group relative min-h-0 flex-1 border-t border-line-soft">
+        <div
+          className="floating-scrollbar h-full overflow-x-hidden overflow-y-auto"
+          onScroll={fileScrollbar.handleScroll}
+          ref={fileScrollbar.scrollRef}
+        >
+          {files.length === 0
+            ? <EmptyState title={t("lastRun.noFilesTitle")} detail={t("lastRun.noFilesDetail")} />
+            : files.map(file => (
+                <ChangesetFileChange
+                  file={file}
+                  key={file.id}
+                  open={isOpen(file)}
+                  onToggle={() => toggle(file)}
+                />
+              ))}
+        </div>
+        <FloatingScrollbar scrollbar={fileScrollbar.scrollbar} onPointerDown={fileScrollbar.handleThumbPointerDown} />
       </div>
     </div>
   );

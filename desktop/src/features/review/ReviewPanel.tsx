@@ -5,24 +5,34 @@ import { getLastRunReview, retryRunReview } from "../../integrations/storage/thr
 import { errorMessage } from "../../lib/errors";
 import { onFutureEvent } from "../../lib/futureEvents";
 import { useAsyncResource } from "../../lib/useAsyncResource";
-import { ReviewHeader, WorkingTreeReview } from "./GitChangesReview";
+import { WorkingTreeReview } from "./GitChangesReview";
 import { LastRunReview } from "./LastRunReview";
 
-type ReviewView = "git_changes" | "last_run";
+type ReviewView = "branch" | "uncommitted" | "last_run";
 
 export function ReviewPanel({
   changePreview = "ready",
-  review,
+  branchReview,
   threadId,
+  uncommittedReview,
+  isGitWorkspace,
 }: {
+  branchReview: GitReview | null;
   changePreview?: "ready" | "unsupported_too_large";
-  review: GitReview | null;
+  isGitWorkspace: boolean | null;
   threadId: string;
+  uncommittedReview: GitReview | null;
 }) {
   const { t } = useTranslation("review");
-  const reviewKind = review === null ? "loading" : review.isGitWorkspace ? "git" : "non_git";
+  const review = uncommittedReview ?? branchReview;
+  // Capabilities arrive on the lightweight, non-diff context refresh. Use that
+  // stable fact while the two expensive git diffs load, rather than briefly
+  // rendering this as the non-git last-run-only view.
+  const reviewKind = isGitWorkspace === null
+    ? review === null ? "loading" : review.isGitWorkspace ? "git" : "non_git"
+    : isGitWorkspace ? "git" : "non_git";
   const isGit = reviewKind === "git";
-  const [activeView, setActiveView] = useState<ReviewView>("git_changes");
+  const [activeView, setActiveView] = useState<ReviewView>("branch");
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
 
@@ -38,11 +48,11 @@ export function ReviewPanel({
   const runReview = runResource.data;
   const { reload } = runResource;
 
-  // Default each workspace review to the current branch against HEAD. A non-git
-  // workspace only has the last-run view.
+  // Git workspaces open on the committed branch delta; non-git workspaces only
+  // have the last-run view.
   useEffect(() => {
     if (reviewKind === "git")
-      setActiveView("git_changes");
+      setActiveView("branch");
     else if (reviewKind === "non_git")
       setActiveView("last_run");
   }, [threadId, reviewKind]);
@@ -85,29 +95,25 @@ export function ReviewPanel({
   // Non-git Workspace: just the last-run view under a static heading (§3.2).
   if (!isGit) {
     return (
-      <div className="space-y-3">
-        <div className="border-b border-line-soft pb-3 text-xs font-medium text-ink-muted">{t("lastRunHeading")}</div>
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="shrink-0 px-4 pb-3 text-xs font-medium text-ink-muted">{t("lastRunHeading")}</div>
         {lastRun}
       </div>
     );
   }
 
-  const reviewData = review!;
+  const reviewData = activeView === "branch" ? branchReview : uncommittedReview;
 
   return (
-    <div className="space-y-3">
-      <div className="grid grid-cols-2 gap-1 rounded-md bg-surface p-1">
-        <ViewTab active={activeView === "git_changes"} label={t("tab.gitChanges")} onClick={() => setActiveView("git_changes")} />
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="mx-4 grid shrink-0 grid-cols-3 gap-1 rounded-md border border-line-soft bg-surface p-1">
+        <ViewTab active={activeView === "branch"} label={t("tab.branch")} onClick={() => setActiveView("branch")} />
+        <ViewTab active={activeView === "uncommitted"} label={t("tab.uncommitted")} onClick={() => setActiveView("uncommitted")} />
         <ViewTab active={activeView === "last_run"} label={t("tab.lastRun")} onClick={() => setActiveView("last_run")} />
       </div>
       {activeView === "last_run"
         ? lastRun
-        : (
-            <>
-              <ReviewHeader review={reviewData} />
-              <WorkingTreeReview files={reviewData.files} />
-            </>
-          )}
+        : reviewData ? <WorkingTreeReview review={reviewData} showBranch={activeView === "branch"} /> : null}
     </div>
   );
 }

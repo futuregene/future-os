@@ -1,7 +1,7 @@
 import type { GitReview, LastRunReviewData, WorkspaceReviewCapabilities } from "./types";
 import { invokeCommand } from "../tauri/invoke";
 
-export type ReviewBase = "custom" | "head" | "merge-base" | "upstream";
+export type ReviewBase = "branch" | "custom" | "head" | "merge-base" | "upstream";
 
 export async function getWorkspaceReviewCapabilities(workspaceId: string) {
   return invokeCommand<WorkspaceReviewCapabilities>("get_workspace_review_capabilities", {

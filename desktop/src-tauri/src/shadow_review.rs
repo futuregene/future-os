@@ -14,6 +14,6 @@ mod snapshot;
 pub use diff::{materialize, MaterializedDiff};
 pub use last_run::{build_last_run_review, LastRunReviewData};
 pub use maintenance::{enforce_retention, run_startup_maintenance};
-pub use policy::{evaluate_volume, Limits, VolumeRedline, VolumeVerdict};
+pub use policy::{evaluate_volume, is_sensitive, Limits, VolumeRedline, VolumeVerdict};
 pub use repository::{with_workspace_lock, ShadowRepo};
 pub use snapshot::{capture, record_failure};

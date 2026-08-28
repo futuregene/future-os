@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ChevronDown, ChevronRight, FileDiff } from "lucide-react";
+import { ChevronDown, ChevronRight, ChevronsDown, ChevronsUp, FileDiff } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 /**
@@ -28,9 +28,9 @@ export function CollapsibleFileDiff({
   children: ReactNode;
 }) {
   return (
-    <section className="overflow-hidden rounded-md border border-line-soft bg-surface">
+    <section className={open ? "border-b border-line-soft bg-surface" : "bg-surface"}>
       <button
-        className="flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left"
+        className="group sticky top-0 z-10 flex w-full items-center justify-between gap-2 border-b border-line-soft bg-surface px-2.5 py-1.5 text-left"
         onClick={onToggle}
         type="button"
       >
@@ -48,10 +48,12 @@ export function CollapsibleFileDiff({
                 </>
               )
             : null}
-          {open ? <ChevronDown className="size-3.5 text-ink-muted" /> : <ChevronRight className="size-3.5 text-ink-muted" />}
+          {open
+            ? <ChevronDown className="size-3.5 text-ink-muted opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100" />
+            : <ChevronRight className="size-3.5 text-ink-muted opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100" />}
         </span>
       </button>
-      {open ? <div className="border-t border-line-soft">{children}</div> : null}
+      {open ? <div>{children}</div> : null}
     </section>
   );
 }
@@ -60,13 +62,18 @@ export function CollapsibleFileDiff({
  * "Expand all / Collapse all" toggle shown above a file-diff list. Shared by the
  * working-tree (git) and last-run (shadow) review views.
  */
-export function ExpandCollapseAll({ allOpen, onToggle }: { allOpen: boolean; onToggle: () => void }) {
+export function ExpandCollapseAll({ hasOpen, onToggle }: { hasOpen: boolean; onToggle: () => void }) {
   const { t } = useTranslation("review");
+  const label = hasOpen ? t("collapseAll") : t("expandAll");
   return (
-    <div className="flex items-center justify-end">
-      <button className="text-xs text-ink-muted transition-colors hover:text-ink" onClick={onToggle} type="button">
-        {allOpen ? t("collapseAll") : t("expandAll")}
-      </button>
-    </div>
+    <button
+      aria-label={label}
+      className="shrink-0 rounded p-1 text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink"
+      onClick={onToggle}
+      title={label}
+      type="button"
+    >
+      {hasOpen ? <ChevronsUp className="size-4" /> : <ChevronsDown className="size-4" />}
+    </button>
   );
 }

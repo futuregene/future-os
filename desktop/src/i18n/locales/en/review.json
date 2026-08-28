@@ -1,8 +1,9 @@
 {
-  "lastRunHeading": "Last run changes",
+  "lastRunHeading": "Last run",
   "tab": {
-    "gitChanges": "Current branch",
-    "lastRun": "Last run changes"
+    "branch": "Branch",
+    "uncommitted": "Uncommitted",
+    "lastRun": "Last run"
   },
   "workingTree": {
     "emptyTitle": "No uncommitted changes in the working tree",
@@ -61,6 +62,7 @@
     "customPlaceholder": "Commit, tag, or branch"
   },
   "git": {
-    "noTextDiff": "No textual diff available."
+    "noTextDiff": "No textual diff available.",
+    "diffOmitted": "Diff content is too large; the file and statistics are retained."
   }
 }
