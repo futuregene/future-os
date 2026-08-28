@@ -35,8 +35,11 @@ interface RunsPanelProps {
 interface ToolEntry {
   tool: StoredToolCall;
   run: StoredRun;
-  // Exactly one row per active run carries the terminate control — its latest
-  // command — so a multi-command run isn't cluttered with duplicate stop buttons.
+  // Exactly one row per active run carries the terminate control — its newest
+  // still-running command — so a multi-command run isn't cluttered with
+  // duplicate stop buttons, and a completed command never shows one (its run
+  // may still be generating its reply, but interrupting that is the composer's
+  // stop button, not a per-command row).
   terminable: boolean;
 }
 
@@ -227,8 +230,7 @@ function ToolRow({
     = (isShell ? toolCommand(tool.input) : toolTarget(tool.input))
       ?? toolCommand(tool.input)
       ?? toolTarget(tool.input)
-      ?? tool.input
-      ?? toolLabel(tool);
+      ?? fallbackPrimary(tool.input, toolLabel(tool));
   // Shell rows show the command verbatim; file rows (write/edit) get the
   // workspace-relative path, absolute kept for files outside the workspace.
   const primary = isShell
@@ -239,7 +241,7 @@ function ToolRow({
   // real failure, so treat it as failed rather than a perpetual "running".
   const status
     = tool.status === "running" && !isActiveRun(run) ? "failed" : tool.status;
-  const running = status === "running" || terminable;
+  const running = status === "running";
   const meta = [toolLabel(tool), toolStatusLabel(status)]
     .filter(Boolean)
     .join(" · ");
@@ -289,7 +291,10 @@ function ToolRow({
           <div className="flex items-start gap-2">
             <div
               className={cn(
-                "min-w-0 flex-1 wrap-break-word text-xs font-normal leading-5 text-ink",
+                // min-h-5 (one leading-5 line) reserves the target line's
+                // height while a streaming tool call has no parseable target
+                // yet, so the row doesn't jump when the target appears.
+                "min-h-5 min-w-0 flex-1 wrap-break-word text-xs font-normal leading-5 text-ink",
                 isShell ? "whitespace-pre-wrap" : "truncate font-mono",
               )}
               title={rawPrimary}
@@ -365,6 +370,22 @@ function displayName(tool: StoredToolCall) {
   return tool.name.trim().toLowerCase();
 }
 
+/**
+ * The raw input is shown only when it is plain text (legacy records carry the
+ * command as a bare string). A JSON-object input that yielded no field — above
+ * all a still-streaming partial — renders as a blank line instead of a raw
+ * JSON blob, so the row swaps in the parsed target later without noise.
+ */
+function fallbackPrimary(
+  input: string | null | undefined,
+  label: string,
+): string {
+  if (input === null || input === undefined)
+    return label;
+  const first = input.trimStart().charAt(0);
+  return first === "{" || first === "[" ? "" : input;
+}
+
 function isActiveRun(run: StoredRun) {
   return (
     run.status === "queued"
@@ -400,12 +421,20 @@ function buildToolEntries(
       continue;
     }
 
-    const latestId = [...tools].sort(compareToolTimeDesc)[0]?.id;
+    // The terminate control rides the run's newest still-running command. A
+    // completed tool never carries it — otherwise a finished command shows a
+    // "completed" label next to a stop button while the run merely generates
+    // its reply. (filter() copies, so the sort can't reorder the caller's
+    // array.)
+    const runningTools = tools
+      .filter(tool => tool.status === "running")
+      .sort(compareToolTimeDesc);
+    const latestRunningId = runningTools[0]?.id;
     for (const tool of tools) {
       const entry: ToolEntry = {
         tool,
         run,
-        terminable: runActive && tool.id === latestId,
+        terminable: runActive && tool.id === latestRunningId,
       };
       (runActive ? active : finished).push(entry);
     }
