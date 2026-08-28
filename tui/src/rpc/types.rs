@@ -117,12 +117,22 @@ pub struct RpcSessionState {
     pub requested_run: Option<RunTerminalState>,
 }
 
-/// `RecentTerminalAck` — wire keys are snake_case (the TS type hard-codes
-/// `run_id` / `run_sequence` / `client_request_id`).
+/// `RecentTerminalAck` — camelCase wire keys on the wire today: the #384
+/// typed-RPC decoder (`decode.rs`) emits `runId` / `runSequence` /
+/// `clientRequestId` (`TerminalAck` in `packages/rpc`). The snake_case
+/// aliases keep pre-#384 agents working — their JSON `data` string carried
+/// `run_id` / `run_sequence` / `client_request_id` (as the TS type
+/// hard-coded). Without the camelCase rename every `get_state` after the
+/// session's first terminal ack failed to parse, freezing the footer at its
+/// last good value.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RecentTerminalAck {
+    #[serde(alias = "run_id")]
     pub run_id: String,
+    #[serde(alias = "run_sequence")]
     pub run_sequence: i64,
+    #[serde(alias = "client_request_id")]
     pub client_request_id: String,
     /// "terminal" | "cancelled" | "failed".
     pub state: String,
@@ -304,9 +314,10 @@ mod tests {
     }
 
     #[test]
-    fn get_state_parses_camel_case_with_snake_terminal_acks() {
-        // Mirrors the real agent payload: camelCase sub-objects, snake_case
-        // TerminalAck keys (the TS type hard-codes both).
+    fn get_state_parses_real_payload_with_camel_case_terminal_acks() {
+        // Mirrors the real agent payload after #384 typed-RPC: camelCase
+        // everywhere, including TerminalAck keys (decode.rs emits runId /
+        // runSequence / clientRequestId).
         let json = r#"{
             "model": "deepseek-v4-pro",
             "thinkingLevel": "high",
@@ -317,7 +328,7 @@ mod tests {
             "queryCount": 3,
             "activeRun": {"runId": "r1", "epoch": 2, "state": "running", "lastEventIdx": 10},
             "queuedRuns": [{"runId": "r2", "runSequence": 3, "clientRequestId": "c", "state": "queued", "queuePosition": 1, "acceptedAt": "2026-08-07T00:00:00Z", "displayText": "hi"}],
-            "recentTerminalAcks": [{"run_id": "r0", "run_sequence": 1, "client_request_id": "x", "state": "terminal", "reason": "superseded"}]
+            "recentTerminalAcks": [{"runId": "r0", "runSequence": 1, "clientRequestId": "x", "state": "terminal", "reason": "superseded"}]
         }"#;
         let state: RpcSessionState = serde_json::from_str(json).expect("parse");
         assert_eq!(state.model.as_deref(), Some("deepseek-v4-pro"));
@@ -335,6 +346,156 @@ mod tests {
         assert_eq!(state.recent_terminal_acks.len(), 1);
         assert_eq!(state.recent_terminal_acks[0].run_id, "r0");
         assert_eq!(state.recent_terminal_acks[0].reason, "superseded");
+    }
+
+    #[test]
+    fn get_state_accepts_legacy_snake_case_terminal_acks() {
+        // Pre-#384 agents sent the JSON `data` string with snake_case ack
+        // keys; the aliases must keep those decodable too.
+        let json = r#"{
+            "thinkingLevel": "high",
+            "recentTerminalAcks": [{"run_id": "r0", "run_sequence": 1, "client_request_id": "x", "state": "terminal", "reason": "superseded"}]
+        }"#;
+        let state: RpcSessionState = serde_json::from_str(json).expect("parse");
+        assert_eq!(state.recent_terminal_acks.len(), 1);
+        assert_eq!(state.recent_terminal_acks[0].run_id, "r0");
+        assert_eq!(state.recent_terminal_acks[0].run_sequence, 1);
+        assert_eq!(state.recent_terminal_acks[0].client_request_id, "x");
+    }
+
+    // ─── Wire-contract tests ────────────────────────────────────────────
+    //
+    // Every typed payload the TUI consumes is pinned to the decoder's REAL
+    // output shape here. The wire JSON is built by serializing
+    // `future_rpc::payloads` / `payloads_ext` structs — the very types
+    // `decode::response_data` produces — instead of a hand-written mock
+    // string. A hand-written mock is exactly what let the
+    // camelCase/snake_case drift through: the mock asserted a shape the real
+    // decoder never emitted. If a future refactor changes the decoder's
+    // casing or field set, these structs change and this test fails loudly
+    // (rather than freezing the footer silently).
+
+    #[test]
+    fn get_state_wire_round_trip_parses_into_client_state() {
+        use future_rpc::payloads::{
+            GetStatePayload, QueuedRunState, RunStateSnapshot, TerminalAck,
+        };
+        let payload = GetStatePayload {
+            agent_instance_id: "agent_x".into(),
+            model: "future/deepseek-v4-flash".into(),
+            image_support: false,
+            thinking_level: "high".into(),
+            is_streaming: true,
+            is_compacting: false,
+            session_file: None,
+            session_id: Some("s1".into()),
+            session_name: Some("hi".into()),
+            explicit_session: true,
+            auto_compaction_enabled: true,
+            query_count: 3,
+            version: "0.0.2".into(),
+            cwd: "/tmp".into(),
+            skills: vec![],
+            context_files: vec![],
+            extensions: None,
+            context_window: 1_000_000,
+            context_tokens: 42_000,
+            context_percent: 4.2,
+            tokens_in: 123_456,
+            tokens_out: 789,
+            tokens_cache_r: 100_000,
+            tokens_cache_w: 0,
+            total_cost: 0.1234,
+            permission_level: "all".into(),
+            parent_session_id: None,
+            created_by: "tui".into(),
+            source_meta: serde_json::Value::Null,
+            active_run: Some(RunStateSnapshot {
+                run_id: "run_1".into(),
+                epoch: Some(3),
+                run_sequence: Some(3),
+                state: "running".into(),
+                last_event_idx: Some(99),
+            }),
+            queued_runs: vec![QueuedRunState {
+                run_id: "run_2".into(),
+                run_sequence: 4,
+                client_request_id: "c2".into(),
+                state: "queued".into(),
+                queue_position: 1,
+                accepted_at: "2026-08-07T00:00:00Z".into(),
+                display_text: "hi".into(),
+            }],
+            recent_terminal_acks: vec![TerminalAck {
+                run_id: "run_0".into(),
+                run_sequence: 1,
+                client_request_id: "c0".into(),
+                state: "terminal".into(),
+                reason: "superseded".into(),
+            }],
+            queued_count: 1,
+            interrupted_run: None,
+            requested_run: None,
+            pending_approvals: vec![],
+        };
+        // `decode::response_data` returns exactly this serialization.
+        let wire = serde_json::to_value(&payload).expect("serialize decoder output");
+        let state: RpcSessionState =
+            serde_json::from_value(wire).expect("TUI must parse the decoder's get_state output");
+        assert_eq!(state.total_cost, Some(0.1234));
+        assert_eq!(state.tokens_in, Some(123_456));
+        assert_eq!(state.recent_terminal_acks.len(), 1);
+        assert_eq!(state.recent_terminal_acks[0].run_id, "run_0");
+        assert_eq!(state.recent_terminal_acks[0].run_sequence, 1);
+        assert_eq!(state.recent_terminal_acks[0].reason, "superseded");
+        assert_eq!(state.active_run.as_ref().map(|a| a.epoch), Some(3));
+        assert_eq!(
+            state.active_run.as_ref().map(|a| a.last_event_idx),
+            Some(99)
+        );
+        assert_eq!(state.queued_runs[0].display_text, "hi");
+        assert_eq!(state.queued_runs[0].queue_position, 1);
+    }
+
+    #[test]
+    fn prompt_ack_wire_round_trip_parses_into_client_run_ack() {
+        use future_rpc::payloads_ext::{RunAcceptedState, RunAck as WireAck};
+        let wire = serde_json::to_value(WireAck {
+            run_id: "run_1".into(),
+            run_epoch: 3,
+            accepted_state: RunAcceptedState::Running,
+            run_sequence: Some(3),
+            queue_position: None,
+        })
+        .expect("serialize");
+        let ack: RunAck = serde_json::from_value(wire).expect("TUI must parse prompt ack");
+        assert_eq!(ack.run_id, "run_1");
+        assert_eq!(ack.run_epoch, 3);
+        assert_eq!(ack.accepted_state, "running");
+        assert_eq!(ack.run_sequence, Some(3));
+        assert_eq!(ack.queue_position, None);
+    }
+
+    #[test]
+    fn list_sessions_wire_round_trip_parses_into_client_summary() {
+        use future_rpc::payloads::SessionSummaryPayload;
+        let wire = serde_json::to_value(SessionSummaryPayload {
+            id: "s1".into(),
+            session_name: Some("hi".into()),
+            model: "future/deepseek-v4-flash".into(),
+            cwd: "/tmp".into(),
+            updated_at: "2026-08-07T00:00:00Z".into(),
+            parent_session_id: String::new(),
+            first_message: None,
+            query_count: 3,
+            is_streaming: true,
+        })
+        .expect("serialize");
+        let summary: SessionSummary =
+            serde_json::from_value(wire).expect("TUI must parse list_sessions rows");
+        assert_eq!(summary.id, "s1");
+        assert_eq!(summary.session_name.as_deref(), Some("hi"));
+        assert_eq!(summary.is_streaming, Some(true));
     }
 
     #[test]
