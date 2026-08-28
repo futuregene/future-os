@@ -100,6 +100,10 @@ pub struct OpenAiChatConfig {
 pub struct OpenAiResponsesConfig {
     pub store: bool,
     pub include_encrypted_reasoning: bool,
+    pub supports_reasoning_summary: bool,
+    pub reasoning_context: Option<String>,
+    pub reasoning_mode: Option<String>,
+    pub prompt_cache_options: Option<Value>,
 }
 
 impl Default for OpenAiResponsesConfig {
@@ -107,6 +111,10 @@ impl Default for OpenAiResponsesConfig {
         Self {
             store: false,
             include_encrypted_reasoning: true,
+            supports_reasoning_summary: true,
+            reasoning_context: None,
+            reasoning_mode: None,
+            prompt_cache_options: None,
         }
     }
 }
@@ -297,7 +305,7 @@ impl ResolvedModelTarget {
                 ProtocolConfig::OpenAiChat(parse_chat_config(model)?)
             }
             ApiProtocol::OpenAiResponses => {
-                ProtocolConfig::OpenAiResponses(OpenAiResponsesConfig::default())
+                ProtocolConfig::OpenAiResponses(parse_responses_config(model)?)
             }
             ApiProtocol::AnthropicMessages => {
                 ProtocolConfig::AnthropicMessages(parse_anthropic_config(model)?)
@@ -371,6 +379,69 @@ impl ResolvedModelTarget {
             },
         }
     }
+}
+
+fn parse_responses_config(model: &crate::models::Model) -> Result<OpenAiResponsesConfig> {
+    let optional_string = |key: &str| -> Result<Option<String>> {
+        match model.compat.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(value)) => Ok(Some(value.clone())),
+            Some(_) => bail!(
+                "provider `{}` model `{}` compat.{key} must be a string",
+                model.provider,
+                model.id
+            ),
+        }
+    };
+    let optional_boolean = |key: &str| -> Result<Option<bool>> {
+        match model.compat.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::Bool(value)) => Ok(Some(*value)),
+            Some(_) => bail!(
+                "provider `{}` model `{}` compat.{key} must be a boolean",
+                model.provider,
+                model.id
+            ),
+        }
+    };
+
+    let reasoning_context = optional_string("responsesReasoningContext")?;
+    if let Some(value) = reasoning_context.as_deref() {
+        if !matches!(value, "auto" | "current_turn" | "all_turns") {
+            bail!(
+                "provider `{}` model `{}` has unsupported compat.responsesReasoningContext `{value}`",
+                model.provider,
+                model.id
+            );
+        }
+    }
+    let reasoning_mode = optional_string("responsesReasoningMode")?;
+    if let Some(value) = reasoning_mode.as_deref() {
+        if !matches!(value, "standard" | "pro") {
+            bail!(
+                "provider `{}` model `{}` has unsupported compat.responsesReasoningMode `{value}`",
+                model.provider,
+                model.id
+            );
+        }
+    }
+    let prompt_cache_options = match model.compat.get("responsesPromptCacheOptions") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(value)) => Some(Value::Object(value.clone())),
+        Some(_) => bail!(
+            "provider `{}` model `{}` compat.responsesPromptCacheOptions must be an object",
+            model.provider,
+            model.id
+        ),
+    };
+
+    Ok(OpenAiResponsesConfig {
+        supports_reasoning_summary: optional_boolean("supportsReasoningSummary")?.unwrap_or(true),
+        reasoning_context,
+        reasoning_mode,
+        prompt_cache_options,
+        ..Default::default()
+    })
 }
 
 fn parse_anthropic_config(model: &crate::models::Model) -> Result<AnthropicMessagesConfig> {
@@ -505,6 +576,7 @@ pub fn string_level_map(values: &HashMap<String, Value>) -> HashMap<String, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn expect_chat(protocol: ProtocolConfig) -> OpenAiChatConfig {
         match protocol {
@@ -517,6 +589,13 @@ mod tests {
         match protocol {
             ProtocolConfig::AnthropicMessages(config) => config,
             other => panic!("Anthropic protocol expected, got {other:?}"),
+        }
+    }
+
+    fn expect_responses(protocol: ProtocolConfig) -> OpenAiResponsesConfig {
+        match protocol {
+            ProtocolConfig::OpenAiResponses(config) => config,
+            other => panic!("Responses protocol expected, got {other:?}"),
         }
     }
 
@@ -580,6 +659,39 @@ mod tests {
             target.protocol,
             ProtocolConfig::OpenAiResponses(_)
         ));
+    }
+
+    #[test]
+    fn responses_config_reads_latest_optional_capabilities() {
+        let mut model = crate::models::Model {
+            id: "gpt-5.6-sol".into(),
+            provider: "openai".into(),
+            api: "openai-responses".into(),
+            ..Default::default()
+        };
+        model
+            .compat
+            .insert("responsesReasoningContext".into(), json!("all_turns"));
+        model
+            .compat
+            .insert("responsesReasoningMode".into(), json!("pro"));
+        model.compat.insert(
+            "responsesPromptCacheOptions".into(),
+            json!({"mode": "explicit", "ttl": "30m"}),
+        );
+        model
+            .compat
+            .insert("supportsReasoningSummary".into(), json!(false));
+
+        let target = ResolvedModelTarget::from_model(&model, "key".into(), None, None).unwrap();
+        let config = expect_responses(target.protocol);
+        assert_eq!(config.reasoning_context.as_deref(), Some("all_turns"));
+        assert_eq!(config.reasoning_mode.as_deref(), Some("pro"));
+        assert_eq!(
+            config.prompt_cache_options,
+            Some(json!({"mode": "explicit", "ttl": "30m"}))
+        );
+        assert!(!config.supports_reasoning_summary);
     }
 
     #[test]

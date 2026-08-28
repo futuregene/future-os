@@ -3,7 +3,14 @@ import type {
   StoredToolCall,
   StoredToolOutput,
 } from "../../integrations/storage/threadStore";
-import { ArrowLeft, RotateCcw, Search, StepForward, Terminal, Wrench } from "lucide-react";
+import {
+  ArrowLeft,
+  RotateCcw,
+  Search,
+  StepForward,
+  Terminal,
+  Wrench,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "../../components/ui/Badge";
@@ -19,9 +26,19 @@ import { formatDuration, formatTime } from "../../lib/date";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { isRecord } from "../../lib/objects";
 import { useAsyncResource } from "../../lib/useAsyncResource";
-import { formatRunStatus, runTone, shortId, toolStatusLabel } from "./runDisplayFormatters";
+import {
+  formatRunStatus,
+  runTone,
+  shortId,
+  toolStatusLabel,
+} from "./runDisplayFormatters";
 import { RunError } from "./RunError";
-import { numberOrStringField, parseJsonish, recordOf, stringField } from "./toolInput";
+import {
+  numberOrStringField,
+  parseJsonish,
+  recordOf,
+  stringField,
+} from "./toolInput";
 
 interface RunInspectPanelProps {
   run: StoredRun;
@@ -36,23 +53,38 @@ interface RunDetails {
   outputsByTool: Record<string, StoredToolOutput[]>;
 }
 
-export function RunInspectPanel({ compact = false, onBack, run, tools }: RunInspectPanelProps) {
+export function RunInspectPanel({
+  compact = false,
+  onBack,
+  run,
+  tools,
+}: RunInspectPanelProps) {
   const { i18n, t } = useTranslation("runs");
   const [query, setQuery] = useState("");
   const sortedTools = useMemo(
-    () => [...tools].sort((left, right) => (left.startedAt ?? left.createdAt) - (right.startedAt ?? right.createdAt)),
+    () =>
+      [...tools].sort(
+        (left, right) =>
+          (left.startedAt ?? left.createdAt)
+          - (right.startedAt ?? right.createdAt),
+      ),
     [tools],
   );
   const { data: details, error } = useAsyncResource<RunDetails>(
     async () => {
-      const outputEntries = await Promise.all(sortedTools.map(async (tool) => {
-        try {
-          return [tool.id, await listToolOutputs(tool.runId, tool.id)] as const;
-        }
-        catch {
-          return [tool.id, [] as StoredToolOutput[]] as const;
-        }
-      }));
+      const outputEntries = await Promise.all(
+        sortedTools.map(async (tool) => {
+          try {
+            return [
+              tool.id,
+              await listToolOutputs(tool.runId, tool.id),
+            ] as const;
+          }
+          catch {
+            return [tool.id, [] as StoredToolOutput[]] as const;
+          }
+        }),
+      );
       return { outputsByTool: Object.fromEntries(outputEntries) };
     },
     [sortedTools],
@@ -60,27 +92,49 @@ export function RunInspectPanel({ compact = false, onBack, run, tools }: RunInsp
   );
   const outputsByTool = details.outputsByTool;
   const filteredTools = useMemo(
-    () => sortedTools.filter(tool => eventMatchesQuery(toolSearchText(tool, outputsByTool[tool.id] ?? []), query)),
+    () =>
+      sortedTools.filter(tool =>
+        eventMatchesQuery(
+          toolSearchText(tool, outputsByTool[tool.id] ?? []),
+          query,
+        ),
+      ),
     [outputsByTool, query, sortedTools],
   );
   const primaryTool = sortedTools[0];
 
   return (
-    <div className={cn(compact ? "flex h-full min-h-0 flex-col gap-1" : "space-y-3")}>
+    <div
+      className={cn(
+        compact ? "flex h-full min-h-0 flex-col gap-1" : "space-y-3",
+      )}
+    >
       {compact
         ? (
             <div className="flex h-8 shrink-0 items-center justify-between gap-2">
               {primaryTool
                 ? (
-                    <Badge tone={primaryTool.status === "completed" ? "success" : primaryTool.status === "failed" ? "danger" : "neutral"}>
+                    <Badge
+                      tone={
+                        primaryTool.status === "completed"
+                          ? "success"
+                          : primaryTool.status === "failed"
+                            ? "danger"
+                            : "neutral"
+                      }
+                    >
                       {toolStatusLabel(primaryTool.status)}
                     </Badge>
                   )
-                : <span />}
+                : (
+                    <span />
+                  )}
               <BackButton compact onBack={onBack} />
             </div>
           )
-        : <BackButton onBack={onBack} />}
+        : (
+            <BackButton onBack={onBack} />
+          )}
 
       {compact
         ? (
@@ -94,32 +148,54 @@ export function RunInspectPanel({ compact = false, onBack, run, tools }: RunInsp
                     tool={primaryTool}
                   />
                 )
-              : <div className="rounded-md border border-dashed border-line-soft p-3 text-sm text-ink-muted">{t("runInspect.noToolCalls")}</div>
+              : (
+                  <div className="rounded-md border border-dashed border-line-soft p-3 text-sm text-ink-muted">
+                    {t("runInspect.noToolCalls")}
+                  </div>
+                )
           )
         : (
             <>
               <section className="rounded-md border border-line-soft bg-surface p-3">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <h3 className="truncate text-sm font-semibold text-ink">{shortId(run.id)}</h3>
+                    <h3 className="truncate text-sm font-semibold text-ink">
+                      {shortId(run.id)}
+                    </h3>
                     <div className="mt-1 text-xs text-ink-muted">
-                      {run.startedAt ? formatTime(storedTimeToIso(run.startedAt), i18n.language) : formatTime(storedTimeToIso(run.createdAt), i18n.language)}
-                      {run.endedAt ? ` - ${formatTime(storedTimeToIso(run.endedAt), i18n.language)}` : ""}
+                      {run.startedAt
+                        ? formatTime(storedTimeToIso(run.startedAt), i18n.language)
+                        : formatTime(storedTimeToIso(run.createdAt), i18n.language)}
+                      {run.endedAt
+                        ? ` - ${formatTime(storedTimeToIso(run.endedAt), i18n.language)}`
+                        : ""}
                     </div>
                   </div>
-                  <Badge tone={runTone(run.status)}>{formatRunStatus(run.status)}</Badge>
+                  <Badge tone={runTone(run.status)}>
+                    {formatRunStatus(run.status)}
+                  </Badge>
                 </div>
                 <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
                   <div>
                     <dt className="text-ink-muted">{t("runInspect.model")}</dt>
-                    <dd className="mt-0.5 truncate text-ink-soft">{run.modelId ?? "-"}</dd>
+                    <dd className="mt-0.5 truncate text-ink-soft">
+                      {run.modelId ?? "-"}
+                    </dd>
                   </div>
                   <div>
                     <dt className="text-ink-muted">{t("runInspect.tools")}</dt>
                     <dd className="mt-0.5 text-ink-soft">{sortedTools.length}</dd>
                   </div>
                 </dl>
-                {run.errorMessage ? <RunError errorMessage={run.errorMessage} errorType={run.errorType} variant="banner" /> : null}
+                {run.errorMessage
+                  ? (
+                      <RunError
+                        errorMessage={run.errorMessage}
+                        errorType={run.errorType}
+                        variant="banner"
+                      />
+                    )
+                  : null}
                 {canRecoverRun(run)
                   ? (
                       <div className="mt-3 flex flex-wrap gap-2">
@@ -162,16 +238,30 @@ export function RunInspectPanel({ compact = false, onBack, run, tools }: RunInsp
                   <Wrench className="size-3.5" />
                   {t("runInspect.toolCalls")}
                 </div>
-                {error ? <div className="rounded-md border border-danger-line bg-danger-soft p-2 text-xs leading-5 text-danger">{error}</div> : null}
+                {error
+                  ? (
+                      <div className="rounded-md border border-danger-line bg-danger-soft p-2 text-xs leading-5 text-danger">
+                        {error}
+                      </div>
+                    )
+                  : null}
                 {filteredTools.length === 0
-                  ? <div className="rounded-md border border-dashed border-line-soft p-3 text-sm text-ink-muted">{sortedTools.length === 0 ? t("runInspect.noToolCalls") : t("runInspect.noMatchingToolCalls")}</div>
-                  : filteredTools.map(tool => (
-                      <ToolCallDetail
-                        key={tool.id}
-                        outputs={outputsByTool[tool.id] ?? []}
-                        tool={tool}
-                      />
-                    ))}
+                  ? (
+                      <div className="rounded-md border border-dashed border-line-soft p-3 text-sm text-ink-muted">
+                        {sortedTools.length === 0
+                          ? t("runInspect.noToolCalls")
+                          : t("runInspect.noMatchingToolCalls")}
+                      </div>
+                    )
+                  : (
+                      filteredTools.map(tool => (
+                        <ToolCallDetail
+                          key={tool.id}
+                          outputs={outputsByTool[tool.id] ?? []}
+                          tool={tool}
+                        />
+                      ))
+                    )}
               </section>
             </>
           )}
@@ -179,7 +269,13 @@ export function RunInspectPanel({ compact = false, onBack, run, tools }: RunInsp
   );
 }
 
-function BackButton({ compact = false, onBack }: { compact?: boolean; onBack: () => void }) {
+function BackButton({
+  compact = false,
+  onBack,
+}: {
+  compact?: boolean;
+  onBack: () => void;
+}) {
   const { t } = useTranslation("runs");
   return (
     <Button
@@ -217,7 +313,11 @@ function canRecoverRun(run: StoredRun) {
 }
 
 function dispatchRunRecovery(run: StoredRun, action: "continue" | "retry") {
-  emitFutureEvent("recover-run", { action, runId: run.id, triggerMessageId: run.triggerMessageId });
+  emitFutureEvent("recover-run", {
+    action,
+    runId: run.id,
+    triggerMessageId: run.triggerMessageId,
+  });
 }
 
 function ToolCallDetail({
@@ -235,25 +335,43 @@ function ToolCallDetail({
 }) {
   const { t } = useTranslation("runs");
   const details = toolDetails(tool, outputs);
-  const inputText = details.command ?? details.path ?? tool.input ?? t("runInspect.noInput");
+  const inputText
+    = details.command ?? details.path ?? tool.input ?? t("runInspect.noInput");
   const rawOutputs = outputs.filter(output => !isStructuredOutput(output));
   // For write/edit the interesting artifact is what was written, not the
   // "Written to …" acknowledgement — show the content and drop the output.
-  const isFileEdit = displayToolName(tool) === "write" || displayToolName(tool) === "edit";
+  const isFileEdit
+    = displayToolName(tool) === "write" || displayToolName(tool) === "edit";
   const writtenText = isFileEdit ? writtenContent(recordOf(tool.input)) : null;
 
   return (
-    <div className={fill ? "flex min-h-0 flex-col" : "rounded-md border border-line-soft bg-surface p-3"}>
+    <div
+      className={
+        fill
+          ? "flex min-h-0 flex-col"
+          : "rounded-md border border-line-soft bg-surface p-3"
+      }
+    >
       {showHeader
         ? (
             <div className="flex shrink-0 items-center justify-between gap-2">
               <div className="flex min-w-0 items-center gap-1.5">
                 <Terminal className="size-4 shrink-0 text-ink-muted" />
-                <span className="truncate text-xs font-medium text-ink">{tool.name || t("runInspect.toolFallback")}</span>
+                <span className="truncate text-xs font-medium text-ink">
+                  {tool.name || t("runInspect.toolFallback")}
+                </span>
               </div>
               {showStatus
                 ? (
-                    <Badge tone={tool.status === "completed" ? "success" : tool.status === "failed" ? "danger" : "neutral"}>
+                    <Badge
+                      tone={
+                        tool.status === "completed"
+                          ? "success"
+                          : tool.status === "failed"
+                            ? "danger"
+                            : "neutral"
+                      }
+                    >
                       {toolStatusLabel(tool.status)}
                     </Badge>
                   )
@@ -261,28 +379,55 @@ function ToolCallDetail({
             </div>
           )
         : null}
-      <ToolDetailFields details={details} noTopMargin={!showHeader} tool={tool} />
+      <ToolDetailFields
+        details={details}
+        noTopMargin={!showHeader}
+        tool={tool}
+      />
       <div className="mt-2 shrink-0">
         <div className="mb-1 text-[11px] font-medium text-ink-muted">
-          {details.command ? t("runInspect.command") : details.path ? t("runInspect.target") : t("runInspect.input")}
+          {details.command
+            ? t("runInspect.command")
+            : details.path
+              ? t("runInspect.target")
+              : t("runInspect.input")}
         </div>
         <CopyablePre maxHeightClassName="max-h-40" text={inputText} />
       </div>
       {isFileEdit
-        ? (writtenText
-            ? (
-                <div className={cn("mt-2", fill ? "flex min-h-0 flex-col" : "shrink-0")}>
-                  <div className="mb-1 shrink-0 text-[11px] font-medium text-ink-muted">{t("runInspect.content")}</div>
-                  <CopyablePre fill={fill} maxHeightClassName="max-h-96" text={writtenText} />
-                </div>
-              )
-            : null)
+        ? (
+            writtenText
+              ? (
+                  <div
+                    className={cn("mt-2", fill ? "flex min-h-0 flex-col" : "shrink-0")}
+                  >
+                    <div className="mb-1 shrink-0 text-[11px] font-medium text-ink-muted">
+                      {t("runInspect.content")}
+                    </div>
+                    <CopyablePre
+                      fill={fill}
+                      maxHeightClassName="max-h-96"
+                      text={writtenText}
+                    />
+                  </div>
+                )
+              : null
+          )
         : (
             <>
               {details.stdout
                 ? (
-                    <div className={cn("mt-2", fill && rawOutputs.length === 0 ? "flex min-h-0 flex-col" : "shrink-0")}>
-                      <div className="mb-1 shrink-0 text-[11px] font-medium text-ink-muted">stdout</div>
+                    <div
+                      className={cn(
+                        "mt-2",
+                        fill && rawOutputs.length === 0
+                          ? "flex min-h-0 flex-col"
+                          : "shrink-0",
+                      )}
+                    >
+                      <div className="mb-1 shrink-0 text-[11px] font-medium text-ink-muted">
+                        stdout
+                      </div>
                       <CopyablePre
                         fill={fill && rawOutputs.length === 0}
                         maxHeightClassName="max-h-40"
@@ -294,16 +439,27 @@ function ToolCallDetail({
               {details.stderr
                 ? (
                     <div className="mt-2 shrink-0">
-                      <div className="mb-1 text-[11px] font-medium text-danger">stderr</div>
-                      <CopyablePre maxHeightClassName="max-h-40" text={details.stderr} />
+                      <div className="mb-1 text-[11px] font-medium text-danger">
+                        stderr
+                      </div>
+                      <CopyablePre
+                        maxHeightClassName="max-h-40"
+                        text={details.stderr}
+                      />
                     </div>
                   )
                 : null}
               {rawOutputs.length > 0
                 ? (
-                    <div className={cn("mt-2 space-y-2", fill && "flex min-h-0 flex-col")}>
+                    <div
+                      className={cn("mt-2 space-y-2", fill && "flex min-h-0 flex-col")}
+                    >
                       {rawOutputs.map(output => (
-                        <ToolOutputPreview fill={fill} key={output.id} output={output} />
+                        <ToolOutputPreview
+                          fill={fill}
+                          key={output.id}
+                          output={output}
+                        />
                       ))}
                     </div>
                   )
@@ -336,8 +492,20 @@ function ToolDetailFields({
   const { i18n, t } = useTranslation("runs");
   const fields = [
     ["kind", t("runInspect.field.kind"), tool.kind],
-    ["started", t("runInspect.field.started"), tool.startedAt ? formatTime(storedTimeToIso(tool.startedAt), i18n.language) : null],
-    ["ended", t("runInspect.field.ended"), tool.endedAt ? formatTime(storedTimeToIso(tool.endedAt), i18n.language) : null],
+    [
+      "started",
+      t("runInspect.field.started"),
+      tool.startedAt
+        ? formatTime(storedTimeToIso(tool.startedAt), i18n.language)
+        : null,
+    ],
+    [
+      "ended",
+      t("runInspect.field.ended"),
+      tool.endedAt
+        ? formatTime(storedTimeToIso(tool.endedAt), i18n.language)
+        : null,
+    ],
     ["duration", t("runInspect.field.duration"), details.duration],
     ["cwd", t("runInspect.field.cwd"), details.cwd],
     ["exit", t("runInspect.field.exit"), details.exitStatus],
@@ -348,18 +516,36 @@ function ToolDetailFields({
     return null;
 
   return (
-    <dl className={cn("grid shrink-0 grid-cols-2 gap-2 rounded-md bg-surface-subtle p-2 text-[11px]", !noTopMargin && "mt-2")}>
+    <dl
+      className={cn(
+        "grid shrink-0 grid-cols-2 gap-2 rounded-md border border-line-soft bg-surface/50 p-2 text-[11px]",
+        !noTopMargin && "mt-2",
+      )}
+    >
       {fields.map(([key, label, value]) => (
-        <div className={key === "cwd" || key === "path" ? "col-span-2 min-w-0" : "min-w-0"} key={key}>
+        <div
+          className={
+            key === "cwd" || key === "path" ? "col-span-2 min-w-0" : "min-w-0"
+          }
+          key={key}
+        >
           <dt className="text-ink-muted">{label}</dt>
-          <dd className="mt-0.5 truncate text-ink-soft" title={value}>{value}</dd>
+          <dd className="mt-0.5 truncate text-ink-soft" title={value}>
+            {value}
+          </dd>
         </div>
       ))}
     </dl>
   );
 }
 
-function ToolOutputPreview({ fill = false, output }: { fill?: boolean; output: StoredToolOutput }) {
+function ToolOutputPreview({
+  fill = false,
+  output,
+}: {
+  fill?: boolean;
+  output: StoredToolOutput;
+}) {
   const { t } = useTranslation("runs");
   const [expanded, setExpanded] = useState(false);
   const text = output.content ?? output.kind;
@@ -368,7 +554,9 @@ function ToolOutputPreview({ fill = false, output }: { fill?: boolean; output: S
   return (
     <div className={cn(fill && "flex min-h-0 flex-col")}>
       <div className="mb-1 flex shrink-0 items-center justify-between gap-2">
-        <span className="truncate text-[11px] font-medium text-ink-muted">{outputKindLabel(output.kind, t)}</span>
+        <span className="truncate text-[11px] font-medium text-ink-muted">
+          {outputKindLabel(output.kind, t)}
+        </span>
         {!fill && long
           ? (
               <button
@@ -399,14 +587,25 @@ function displayToolName(tool: StoredToolCall) {
  * for edit (single `newText`/`newString`, or every hunk of an `edits[]` batch).
  */
 function writtenContent(input: Record<string, unknown> | null): string | null {
-  const direct = stringField(input, ["content", "newText", "newString", "new_string", "newContent", "new_content"]);
+  const direct = stringField(input, [
+    "content",
+    "newText",
+    "newString",
+    "new_string",
+    "newContent",
+    "new_content",
+  ]);
   if (direct)
     return direct;
 
   const edits = input?.edits;
   if (Array.isArray(edits)) {
     const parts = edits
-      .map(edit => (isRecord(edit) ? stringField(edit, ["newText", "newString", "new_string"]) : null))
+      .map(edit =>
+        isRecord(edit)
+          ? stringField(edit, ["newText", "newString", "new_string"])
+          : null,
+      )
       .filter((part): part is string => Boolean(part));
     if (parts.length > 0)
       return parts.join("\n\n");
@@ -423,21 +622,71 @@ function outputKindLabel(kind: string, t: (key: string) => string) {
   return kind;
 }
 
-function toolDetails(tool: StoredToolCall, outputs: StoredToolOutput[]): ToolDetails {
+function toolDetails(
+  tool: StoredToolCall,
+  outputs: StoredToolOutput[],
+): ToolDetails {
   const input = recordOf(tool.input);
-  const outputObjects = outputs.map(output => toolOutputObject(output)).filter(isRecord);
+  const outputObjects = outputs
+    .map(output => toolOutputObject(output))
+    .filter(isRecord);
   const firstOutput = firstRecord(outputObjects);
-  const durationMs = tool.startedAt && tool.endedAt ? tool.endedAt - tool.startedAt : null;
+  const durationMs
+    = tool.startedAt && tool.endedAt ? tool.endedAt - tool.startedAt : null;
 
   return {
-    command: stringField(input, ["command", "cmd", "shellCommand", "shell_command"]),
-    cwd: stringField(input, ["cwd", "workingDirectory", "working_directory", "workdir"])
-      ?? stringField(firstOutput, ["cwd", "workingDirectory", "working_directory", "workdir"]),
-    duration: durationMs !== null ? formatDuration(durationMs, { subSecond: true }) : durationField(firstOutput),
-    exitStatus: numberOrStringField(firstOutput, ["exitStatus", "exit_status", "exitCode", "exit_code", "statusCode", "status_code"]),
-    path: stringField(input, ["path", "filePath", "file_path", "targetPath", "target_path", "target"]),
-    stderr: stringField(firstOutput, ["stderr", "standardError", "standard_error", "error"]),
-    stdout: stringField(firstOutput, ["stdout", "standardOutput", "standard_output", "text", "result"]),
+    command: stringField(input, [
+      "command",
+      "cmd",
+      "shellCommand",
+      "shell_command",
+    ]),
+    cwd:
+      stringField(input, [
+        "cwd",
+        "workingDirectory",
+        "working_directory",
+        "workdir",
+      ])
+      ?? stringField(firstOutput, [
+        "cwd",
+        "workingDirectory",
+        "working_directory",
+        "workdir",
+      ]),
+    duration:
+      durationMs !== null
+        ? formatDuration(durationMs, { subSecond: true })
+        : durationField(firstOutput),
+    exitStatus: numberOrStringField(firstOutput, [
+      "exitStatus",
+      "exit_status",
+      "exitCode",
+      "exit_code",
+      "statusCode",
+      "status_code",
+    ]),
+    path: stringField(input, [
+      "path",
+      "filePath",
+      "file_path",
+      "targetPath",
+      "target_path",
+      "target",
+    ]),
+    stderr: stringField(firstOutput, [
+      "stderr",
+      "standardError",
+      "standard_error",
+      "error",
+    ]),
+    stdout: stringField(firstOutput, [
+      "stdout",
+      "standardOutput",
+      "standard_output",
+      "text",
+      "result",
+    ]),
   };
 }
 
@@ -450,8 +699,22 @@ function isStructuredOutput(output: StoredToolOutput) {
   if (!isRecord(value))
     return false;
   return Boolean(
-    stringField(value, ["stdout", "standardOutput", "standard_output", "stderr", "standardError", "standard_error"])
-    || numberOrStringField(value, ["exitStatus", "exit_status", "exitCode", "exit_code", "statusCode", "status_code"]),
+    stringField(value, [
+      "stdout",
+      "standardOutput",
+      "standard_output",
+      "stderr",
+      "standardError",
+      "standard_error",
+    ])
+    || numberOrStringField(value, [
+      "exitStatus",
+      "exit_status",
+      "exitCode",
+      "exit_code",
+      "statusCode",
+      "status_code",
+    ]),
   );
 }
 
@@ -460,9 +723,17 @@ function firstRecord(values: unknown[]) {
 }
 
 function durationField(value: Record<string, unknown> | null) {
-  const raw = numberOrStringField(value, ["durationMs", "duration_ms", "elapsedMs", "elapsed_ms", "duration"]);
+  const raw = numberOrStringField(value, [
+    "durationMs",
+    "duration_ms",
+    "elapsedMs",
+    "elapsed_ms",
+    "duration",
+  ]);
   if (!raw)
     return null;
   const numeric = Number(raw);
-  return Number.isFinite(numeric) ? formatDuration(numeric, { subSecond: true }) : raw;
+  return Number.isFinite(numeric)
+    ? formatDuration(numeric, { subSecond: true })
+    : raw;
 }

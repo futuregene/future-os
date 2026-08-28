@@ -31,10 +31,11 @@ export function CopyablePre({
         onCopy={() => void copy(text)}
         variant="floating"
       />
-      <pre className={cn(
-        fill ? "min-h-0" : maxHeightClassName,
-        "overflow-auto whitespace-pre-wrap wrap-break-word rounded-md bg-surface-subtle p-2 pr-9 text-[11px] leading-4 text-ink-soft",
-      )}
+      <pre
+        className={cn(
+          fill ? "min-h-0" : maxHeightClassName,
+          "overflow-auto whitespace-pre-wrap wrap-break-word rounded-md border border-line-soft bg-surface/50 p-2 pr-9 text-[11px] leading-4 text-ink-soft",
+        )}
       >
         <code>{text}</code>
       </pre>

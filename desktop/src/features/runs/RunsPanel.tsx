@@ -1,6 +1,15 @@
 import type { RunsContextScope } from "../../components/layout/hooks/useContextData";
-import type { StoredRun, StoredToolCall } from "../../integrations/storage/threadStore";
-import { Archive, ChevronRight, CircleStop, Pencil, TerminalSquare } from "lucide-react";
+import type {
+  StoredRun,
+  StoredToolCall,
+} from "../../integrations/storage/threadStore";
+import {
+  Archive,
+  ChevronRight,
+  CircleStop,
+  Pencil,
+  TerminalSquare,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
@@ -31,31 +40,56 @@ interface ToolEntry {
   terminable: boolean;
 }
 
-export function RunsPanel({ onArchiveFinished, onInspectTool, onTerminateRun, runs, scope, toolsByRun }: RunsPanelProps) {
+export function RunsPanel({
+  onArchiveFinished,
+  onInspectTool,
+  onTerminateRun,
+  runs,
+  scope,
+  toolsByRun,
+}: RunsPanelProps) {
   const { t } = useTranslation("runs");
   const [confirmRunId, setConfirmRunId] = useState<string | null>(null);
   const [busyRunId, setBusyRunId] = useState<string | null>(null);
-  const [actionErrors, setActionErrors] = useState<Record<string, string | undefined>>({});
+  const [actionErrors, setActionErrors] = useState<
+    Record<string, string | undefined>
+  >({});
   const [archiving, setArchiving] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
   const listScrollbar = useFloatingScrollbar();
 
-  const allEntries = useMemo(() => buildToolEntries(runs, toolsByRun), [runs, toolsByRun]);
-  const entries = useMemo(() => allEntries.filter(entry => !entry.run.archivedAt), [allEntries]);
-  const { runningCount, finishedCount } = useMemo(() => countEntries(entries), [entries]);
+  const allEntries = useMemo(
+    () => buildToolEntries(runs, toolsByRun),
+    [runs, toolsByRun],
+  );
+  const entries = useMemo(
+    () => allEntries.filter(entry => !entry.run.archivedAt),
+    [allEntries],
+  );
+  const { runningCount, finishedCount } = useMemo(
+    () => countEntries(entries),
+    [entries],
+  );
 
   if (entries.length === 0) {
-    const hasArchivedPrograms = allEntries.some(entry => entry.run.archivedAt);
+    const hasArchivedPrograms = allEntries.some(
+      entry => entry.run.archivedAt,
+    );
     return (
       <div className="flex h-full min-h-0 flex-col">
-        <div className="group relative min-h-0 flex-1 border-t border-line-soft">
+        <div className="group relative min-h-0 flex-1 border-t border-line-soft/70">
           <div
-            className="floating-scrollbar h-full overflow-x-hidden overflow-y-auto"
+            className="floating-scrollbar h-full overflow-x-hidden overflow-y-auto bg-surface/50"
             onScroll={listScrollbar.handleScroll}
             ref={listScrollbar.scrollRef}
           >
             <EmptyState
-              detail={t(hasArchivedPrograms ? "runsPanel.emptyDetailArchived" : "runsPanel.emptyDetailNeverRun")}
+              className="m-4"
+              detail={t(
+                hasArchivedPrograms
+                  ? "runsPanel.emptyDetailArchived"
+                  : "runsPanel.emptyDetailNeverRun",
+              )}
               title={t("runsPanel.emptyTitle")}
             />
           </div>
@@ -109,7 +143,10 @@ export function RunsPanel({ onArchiveFinished, onInspectTool, onTerminateRun, ru
       <div className="shrink-0 px-4 py-1.5">
         <div className="flex items-center justify-between gap-3">
           <div className="text-xs text-ink-muted">
-            {t("runsPanel.runningFinished", { running: runningCount, finished: finishedCount })}
+            {t("runsPanel.runningFinished", {
+              running: runningCount,
+              finished: finishedCount,
+            })}
           </div>
           <Button
             disabled={archiving || finishedCount === 0}
@@ -122,12 +159,16 @@ export function RunsPanel({ onArchiveFinished, onInspectTool, onTerminateRun, ru
           </Button>
         </div>
         {archiveError
-          ? <div className="mt-2 line-clamp-3 text-xs leading-5 text-danger">{archiveError}</div>
+          ? (
+              <div className="mt-2 line-clamp-3 text-xs leading-5 text-danger">
+                {archiveError}
+              </div>
+            )
           : null}
       </div>
-      <div className="group relative min-h-0 flex-1 border-t border-line-soft">
+      <div className="group relative min-h-0 flex-1 border-t border-line-soft/70">
         <div
-          className="floating-scrollbar h-full overflow-x-hidden overflow-y-auto"
+          className="floating-scrollbar h-full overflow-x-hidden overflow-y-auto bg-surface/50"
           onScroll={listScrollbar.handleScroll}
           ref={listScrollbar.scrollRef}
         >
@@ -182,20 +223,26 @@ function ToolRow({
   const { run, terminable, tool } = entry;
   const name = displayName(tool);
   const isShell = name === "shell";
-  const rawPrimary = (isShell ? toolCommand(tool.input) : toolTarget(tool.input))
-    ?? toolCommand(tool.input)
-    ?? toolTarget(tool.input)
-    ?? tool.input
-    ?? toolLabel(tool);
+  const rawPrimary
+    = (isShell ? toolCommand(tool.input) : toolTarget(tool.input))
+      ?? toolCommand(tool.input)
+      ?? toolTarget(tool.input)
+      ?? tool.input
+      ?? toolLabel(tool);
   // Shell rows show the command verbatim; file rows (write/edit) get the
   // workspace-relative path, absolute kept for files outside the workspace.
-  const primary = isShell ? rawPrimary : relativizeWorkspacePath(rawPrimary, workspacePath);
+  const primary = isShell
+    ? rawPrimary
+    : relativizeWorkspacePath(rawPrimary, workspacePath);
   // Show the tool's own status, never the run's. A tool still marked "running"
   // after its run has ended was interrupted — we can't tell a user abort from a
   // real failure, so treat it as failed rather than a perpetual "running".
-  const status = tool.status === "running" && !isActiveRun(run) ? "failed" : tool.status;
+  const status
+    = tool.status === "running" && !isActiveRun(run) ? "failed" : tool.status;
   const running = status === "running" || terminable;
-  const meta = [toolLabel(tool), toolStatusLabel(status)].filter(Boolean).join(" · ");
+  const meta = [toolLabel(tool), toolStatusLabel(status)]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
     <div
@@ -221,8 +268,22 @@ function ToolRow({
             aligned with the command's first line when that command wraps. */}
         <span className="flex h-5 shrink-0 items-center">
           {isShell
-            ? <TerminalSquare className={cn("size-4", running ? "text-accent" : "text-ink-muted")} />
-            : <Pencil className={cn("size-4", running ? "text-accent" : "text-ink-muted")} />}
+            ? (
+                <TerminalSquare
+                  className={cn(
+                    "size-4",
+                    running ? "text-accent" : "text-ink-muted",
+                  )}
+                />
+              )
+            : (
+                <Pencil
+                  className={cn(
+                    "size-4",
+                    running ? "text-accent" : "text-ink-muted",
+                  )}
+                />
+              )}
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex items-start gap-2">
@@ -236,11 +297,13 @@ function ToolRow({
               {primary}
             </div>
           </div>
-          <div className="mt-2 text-xs font-medium text-ink-muted">
-            {meta}
-          </div>
+          <div className="mt-2 text-xs font-medium text-ink-muted">{meta}</div>
           {actionError
-            ? <div className="mt-2 line-clamp-3 text-xs leading-5 text-danger">{actionError}</div>
+            ? (
+                <div className="mt-2 line-clamp-3 text-xs leading-5 text-danger">
+                  {actionError}
+                </div>
+              )
             : null}
           {terminable
             ? (
@@ -248,8 +311,15 @@ function ToolRow({
                   {confirming
                     ? (
                         <div className="flex items-center gap-2">
-                          <span className="text-xs text-ink-muted">{t("runsPanel.confirmTerminate")}</span>
-                          <Button disabled={busy} onClick={onCancelConfirm} size="xs" variant="ghost">
+                          <span className="text-xs text-ink-muted">
+                            {t("runsPanel.confirmTerminate")}
+                          </span>
+                          <Button
+                            disabled={busy}
+                            onClick={onCancelConfirm}
+                            size="xs"
+                            variant="ghost"
+                          >
                             {t("runsPanel.cancel")}
                           </Button>
                           <Button
@@ -296,11 +366,17 @@ function displayName(tool: StoredToolCall) {
 }
 
 function isActiveRun(run: StoredRun) {
-  return run.status === "queued" || run.status === "running" || run.status === "waiting_approval";
+  return (
+    run.status === "queued"
+    || run.status === "running"
+    || run.status === "waiting_approval"
+  );
 }
 
 function compareToolTimeDesc(left: StoredToolCall, right: StoredToolCall) {
-  return (right.startedAt ?? right.createdAt) - (left.startedAt ?? left.createdAt);
+  return (
+    (right.startedAt ?? right.createdAt) - (left.startedAt ?? left.createdAt)
+  );
 }
 
 /**
@@ -308,7 +384,10 @@ function compareToolTimeDesc(left: StoredToolCall, right: StoredToolCall) {
  * active runs' tools first, then finished ones — so each command is its own row
  * instead of collapsing a run into a single card.
  */
-function buildToolEntries(runs: StoredRun[], toolsByRun: Record<string, StoredToolCall[]>): ToolEntry[] {
+function buildToolEntries(
+  runs: StoredRun[],
+  toolsByRun: Record<string, StoredToolCall[]>,
+): ToolEntry[] {
   const active: ToolEntry[] = [];
   const finished: ToolEntry[] = [];
   for (const run of runs) {
@@ -323,7 +402,11 @@ function buildToolEntries(runs: StoredRun[], toolsByRun: Record<string, StoredTo
 
     const latestId = [...tools].sort(compareToolTimeDesc)[0]?.id;
     for (const tool of tools) {
-      const entry: ToolEntry = { tool, run, terminable: runActive && tool.id === latestId };
+      const entry: ToolEntry = {
+        tool,
+        run,
+        terminable: runActive && tool.id === latestId,
+      };
       (runActive ? active : finished).push(entry);
     }
   }
@@ -343,8 +426,7 @@ function countEntries(entries: ToolEntry[]) {
   for (const entry of entries) {
     if (entry.tool.status === "running" && isActiveRun(entry.run))
       runningCount += 1;
-    else
-      finishedCount += 1;
+    else finishedCount += 1;
   }
   return { finishedCount, runningCount };
 }

@@ -1,5 +1,10 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
-import type { StoredRun, StoredThread, StoredToolCall, StoredWorkspace } from "../../integrations/storage/threadStore";
+import type {
+  StoredRun,
+  StoredThread,
+  StoredToolCall,
+  StoredWorkspace,
+} from "../../integrations/storage/threadStore";
 import type { ContextTab } from "./hooks/useContextData";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -86,7 +91,9 @@ export function ContextPanel({
   onToggleExpanded,
 }: ContextPanelProps) {
   const { t } = useTranslation("layout");
-  const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
+  const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(
+    null,
+  );
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
   // Guards the once-per-open default-tab seed: armed (false) while the panel is
@@ -96,8 +103,11 @@ export function ContextPanel({
   const activeThreadId = activeThread?.id ?? null;
   const activeThreadMode = activeThread?.mode ?? null;
   const activeWorkspaceId = activeThread?.workspaceId ?? null;
-  const workspaceScopeReady = activeThreadId === null || activeWorkspace?.id === activeWorkspaceId;
-  const activeWorkspacePath = workspaceScopeReady ? activeWorkspace?.path ?? null : null;
+  const workspaceScopeReady
+    = activeThreadId === null || activeWorkspace?.id === activeWorkspaceId;
+  const activeWorkspacePath = workspaceScopeReady
+    ? (activeWorkspace?.path ?? null)
+    : null;
 
   const {
     runs,
@@ -121,21 +131,31 @@ export function ContextPanel({
   // Workspace-mode threads (git or not) show Review (§14.6); chat keeps Artifacts.
   // Tab choice is driven by capabilities (cheap), not the whole-tree git diff (C3).
   const isWorkspaceThread = activeThreadMode === "workspace";
-  const workspaceKindPending = activeThreadId !== null && isWorkspaceThread && reviewCapabilities === null;
-  const tabs = workspaceKindPending ? pendingTabs : isWorkspaceThread ? gitTabs : fileTabs;
+  const workspaceKindPending
+    = activeThreadId !== null && isWorkspaceThread && reviewCapabilities === null;
+  const tabs = workspaceKindPending
+    ? pendingTabs
+    : isWorkspaceThread
+      ? gitTabs
+      : fileTabs;
   const changePreview = reviewCapabilities?.changePreview ?? "ready";
-  const hasContextData = runs.length > 0
-    || artifacts.length > 0
-    || (gitReviews.branch?.files.length ?? 0) > 0
-    || (gitReviews.uncommitted?.files.length ?? 0) > 0;
-  const showInitialLoading = loading && (!hasContextData || workspaceKindPending);
+  const hasContextData
+    = runs.length > 0
+      || artifacts.length > 0
+      || (gitReviews.branch?.files.length ?? 0) > 0
+      || (gitReviews.uncommitted?.files.length ?? 0) > 0;
+  const showInitialLoading
+    = loading && (!hasContextData || workspaceKindPending);
   const selectedArtifact = selectedArtifactId
-    ? artifacts.find(artifact => artifact.id === selectedArtifactId) ?? null
+    ? (artifacts.find(artifact => artifact.id === selectedArtifactId) ?? null)
     : null;
   // The Runs panel drills into a single tool call; find it (and its owning run)
   // across the per-run tool map so the inspector reuses the run detail view.
   const selectedTool = selectedToolId
-    ? Object.entries(toolsByRun).reduce<{ run: StoredRun; tool: StoredToolCall } | null>((found, [runId, tools]) => {
+    ? Object.entries(toolsByRun).reduce<{
+      run: StoredRun;
+      tool: StoredToolCall;
+    } | null>((found, [runId, tools]) => {
         if (found)
           return found;
         const tool = tools.find(entry => entry.id === selectedToolId);
@@ -164,32 +184,41 @@ export function ContextPanel({
     await refreshContext();
   }
 
-  const handleSelectRun = useCallback((runId: string) => {
-    setSelectedRunId(runId);
-    setSelectedToolId(null);
-    setSelectedArtifactId(null);
-    if (activeTab !== "runs") {
-      onTabChange("runs");
-    }
-  }, [activeTab, onTabChange]);
+  const handleSelectRun = useCallback(
+    (runId: string) => {
+      setSelectedRunId(runId);
+      setSelectedToolId(null);
+      setSelectedArtifactId(null);
+      if (activeTab !== "runs") {
+        onTabChange("runs");
+      }
+    },
+    [activeTab, onTabChange],
+  );
 
-  const handleSelectTool = useCallback((toolId: string) => {
-    setSelectedToolId(toolId);
-    setSelectedRunId(null);
-    setSelectedArtifactId(null);
-    if (activeTab !== "runs") {
-      onTabChange("runs");
-    }
-  }, [activeTab, onTabChange]);
+  const handleSelectTool = useCallback(
+    (toolId: string) => {
+      setSelectedToolId(toolId);
+      setSelectedRunId(null);
+      setSelectedArtifactId(null);
+      if (activeTab !== "runs") {
+        onTabChange("runs");
+      }
+    },
+    [activeTab, onTabChange],
+  );
 
-  const handleSelectArtifact = useCallback((artifactId: string) => {
-    setSelectedArtifactId(artifactId);
-    setSelectedRunId(null);
-    if (activeTab !== "artifacts") {
-      onTabChange("artifacts");
-    }
-    setSelectedToolId(null);
-  }, [activeTab, onTabChange]);
+  const handleSelectArtifact = useCallback(
+    (artifactId: string) => {
+      setSelectedArtifactId(artifactId);
+      setSelectedRunId(null);
+      if (activeTab !== "artifacts") {
+        onTabChange("artifacts");
+      }
+      setSelectedToolId(null);
+    },
+    [activeTab, onTabChange],
+  );
 
   useEffect(() => {
     setSelectedArtifactId(null);
@@ -206,8 +235,13 @@ export function ContextPanel({
       seededForOpenRef.current = false; // Re-arm for the next open.
       return;
     }
-    if (activeThreadId === null || workspaceKindPending || seededForOpenRef.current)
+    if (
+      activeThreadId === null
+      || workspaceKindPending
+      || seededForOpenRef.current
+    ) {
       return;
+    }
     seededForOpenRef.current = true;
     // If a tool / run inspection just opened the panel it already picked the
     // runs tab — leave that choice alone.
@@ -216,7 +250,15 @@ export function ContextPanel({
     const preferred: ContextTab = "files";
     if (activeTab !== preferred)
       onTabChange(preferred);
-  }, [expanded, activeThreadId, workspaceKindPending, activeTab, onTabChange, selectedToolId, selectedRunId]);
+  }, [
+    expanded,
+    activeThreadId,
+    workspaceKindPending,
+    activeTab,
+    onTabChange,
+    selectedToolId,
+    selectedRunId,
+  ]);
 
   useEffect(() => {
     const unsubscribers = [
@@ -250,7 +292,14 @@ export function ContextPanel({
       }),
     ];
     return () => unsubscribers.forEach(unsubscribe => unsubscribe());
-  }, [expanded, handleSelectArtifact, handleSelectRun, handleSelectTool, onTabChange, onToggleExpanded]);
+  }, [
+    expanded,
+    handleSelectArtifact,
+    handleSelectRun,
+    handleSelectTool,
+    onTabChange,
+    onToggleExpanded,
+  ]);
 
   if (!expanded) {
     return (
@@ -268,7 +317,7 @@ export function ContextPanel({
 
   return (
     <aside
-      className="relative flex shrink-0 flex-col border-l border-line-soft bg-surface"
+      className="relative flex shrink-0 flex-col border-l border-line-soft bg-surface-panel"
       style={{ width }}
     >
       {/* Divider: drag to resize the center/right split. Sits astride the left
@@ -297,7 +346,9 @@ export function ContextPanel({
         onMouseDown={startWindowDrag}
       >
         <div className="inline-block max-w-full">
-          <label className="sr-only" htmlFor="context-panel-view">{t("contextPanel.panelView")}</label>
+          <label className="sr-only" htmlFor="context-panel-view">
+            {t("contextPanel.panelView")}
+          </label>
           <Select
             className="w-fit min-w-24 max-w-full py-0 font-normal hover:border-line"
             id="context-panel-view"
@@ -307,7 +358,9 @@ export function ContextPanel({
             wrapperClassName="max-w-full"
           >
             {tabs.map(tab => (
-              <option key={tab.value} value={tab.value}>{t(tab.labelKey)}</option>
+              <option key={tab.value} value={tab.value}>
+                {t(tab.labelKey)}
+              </option>
             ))}
           </Select>
         </div>
@@ -317,40 +370,59 @@ export function ContextPanel({
           onClick={onToggleExpanded}
         />
       </header>
-      <div className={activeTab === "files"
-        ? "min-h-0 flex-1 overflow-hidden"
-        : activeTab === "runs"
-          ? "min-h-0 flex-1 overflow-hidden"
-          : activeTab === "review"
-            ? "min-h-0 flex-1 overflow-hidden pt-2"
-            : "min-h-0 flex-1 overflow-auto px-4 pb-4 pt-2"}
+      <div
+        className={
+          activeTab === "files"
+            ? "min-h-0 flex-1 overflow-hidden"
+            : activeTab === "runs"
+              ? "min-h-0 flex-1 overflow-hidden"
+              : activeTab === "review"
+                ? "min-h-0 flex-1 overflow-hidden pt-2"
+                : "min-h-0 flex-1 overflow-auto px-4 pb-4 pt-2"
+        }
       >
-        {showInitialLoading ? <div className="py-4 text-sm text-ink-muted">{t("contextPanel.loading")}</div> : null}
-        {!showInitialLoading && !activeThread ? <EmptyState title={t("contextPanel.noThreadSelected")} /> : null}
+        {showInitialLoading
+          ? (
+              <div className="py-4 text-sm text-ink-muted">
+                {t("contextPanel.loading")}
+              </div>
+            )
+          : null}
+        {!showInitialLoading && !activeThread
+          ? (
+              <EmptyState title={t("contextPanel.noThreadSelected")} />
+            )
+          : null}
         {!showInitialLoading && activeThread && activeTab === "runs"
-          ? selectedTool
-            ? (
-                <div className="h-full overflow-auto px-4 pb-4">
-                  <RunInspectPanel
-                    compact
-                    run={selectedTool.run}
-                    tools={[selectedTool.tool]}
-                    onBack={() => setSelectedToolId(null)}
-                  />
-                </div>
-              )
-            : selectedToolId
-              ? <div className="px-4 py-4 text-sm text-ink-muted">{t("contextPanel.loading")}</div>
-              : (
-                  <RunsPanel
-                    runs={runs}
-                    toolsByRun={toolsByRun}
-                    scope={runsScope}
-                    onArchiveFinished={handleArchiveFinishedRuns}
-                    onInspectTool={handleSelectTool}
-                    onTerminateRun={handleTerminateRun}
-                  />
-                )
+          ? (
+              selectedTool
+                ? (
+                    <div className="h-full overflow-auto px-4 pb-4">
+                      <RunInspectPanel
+                        compact
+                        run={selectedTool.run}
+                        tools={[selectedTool.tool]}
+                        onBack={() => setSelectedToolId(null)}
+                      />
+                    </div>
+                  )
+                : selectedToolId
+                  ? (
+                      <div className="px-4 py-4 text-sm text-ink-muted">
+                        {t("contextPanel.loading")}
+                      </div>
+                    )
+                  : (
+                      <RunsPanel
+                        runs={runs}
+                        toolsByRun={toolsByRun}
+                        scope={runsScope}
+                        onArchiveFinished={handleArchiveFinishedRuns}
+                        onInspectTool={handleSelectTool}
+                        onTerminateRun={handleTerminateRun}
+                      />
+                    )
+            )
           : null}
         {!showInitialLoading && activeThread && activeTab === "review"
           ? (
@@ -368,26 +440,33 @@ export function ContextPanel({
             disabled `@`-reference renderer. Kept wired so restoring the tab is a
             one-line change. */}
         {!showInitialLoading && activeThread && activeTab === "artifacts"
-          ? selectedArtifact
-            ? (
-                <ArtifactDetailPanel
-                  artifact={selectedArtifact}
-                  onBack={() => setSelectedArtifactId(null)}
-                  onChanged={refreshContext}
-                />
-              )
-            : (
-                <ArtifactsPanel
-                  artifacts={artifacts}
-                  onChanged={refreshContext}
-                  onSelectArtifact={handleSelectArtifact}
-                  threadId={activeThread.id}
-                  workspacePath={activeWorkspace?.path ?? null}
-                />
-              )
+          ? (
+              selectedArtifact
+                ? (
+                    <ArtifactDetailPanel
+                      artifact={selectedArtifact}
+                      onBack={() => setSelectedArtifactId(null)}
+                      onChanged={refreshContext}
+                    />
+                  )
+                : (
+                    <ArtifactsPanel
+                      artifacts={artifacts}
+                      onChanged={refreshContext}
+                      onSelectArtifact={handleSelectArtifact}
+                      threadId={activeThread.id}
+                      workspacePath={activeWorkspace?.path ?? null}
+                    />
+                  )
+            )
           : null}
         {!showInitialLoading && activeThread && activeTab === "files"
-          ? <FileTreePanel isWorkspace={isWorkspaceThread} rootPath={activeWorkspace?.path ?? null} />
+          ? (
+              <FileTreePanel
+                isWorkspace={isWorkspaceThread}
+                rootPath={activeWorkspace?.path ?? null}
+              />
+            )
           : null}
       </div>
     </aside>

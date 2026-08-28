@@ -29,7 +29,13 @@ import { useFileTree } from "./useFileTree";
  * default; a real workspace shows the button and reveals dotfiles by default
  * (users work with `.gitignore`, `.env`, etc. there).
  */
-export function FileTreePanel({ rootPath, isWorkspace }: { rootPath: string | null; isWorkspace: boolean }) {
+export function FileTreePanel({
+  rootPath,
+  isWorkspace,
+}: {
+  rootPath: string | null;
+  isWorkspace: boolean;
+}) {
   const { t } = useTranslation("filetree");
   const [showHidden, setShowHidden] = useState(isWorkspace);
   // Re-apply the mode's default when the thread (root) changes — a manual toggle
@@ -72,38 +78,56 @@ export function FileTreePanel({ rootPath, isWorkspace }: { rootPath: string | nu
       void openPath(rootPath).catch(() => {});
   }, [rootPath]);
 
-  const openEntry = useCallback(async (entry: DirEntry) => {
-    try {
-      await openPath(entry.path);
-    }
-    catch {
-      emitFutureEvent("toast", { message: t("openFailed"), tone: "error" });
-    }
-  }, [t]);
+  const openEntry = useCallback(
+    async (entry: DirEntry) => {
+      try {
+        await openPath(entry.path);
+      }
+      catch {
+        emitFutureEvent("toast", { message: t("openFailed"), tone: "error" });
+      }
+    },
+    [t],
+  );
 
-  const handleOpenFile = useCallback((entry: DirEntry) => {
-    if (entry.isDir)
-      return;
-    if (previewKindForPath(entry.path)) {
-      setPreviewTarget(entry);
-    }
-    else {
-      void openEntry(entry);
-    }
-  }, [openEntry]);
+  const handleOpenFile = useCallback(
+    (entry: DirEntry) => {
+      if (entry.isDir)
+        return;
+      if (previewKindForPath(entry.path)) {
+        setPreviewTarget(entry);
+      }
+      else {
+        void openEntry(entry);
+      }
+    },
+    [openEntry],
+  );
 
   // Attach a file as an `@`-mention pill in the active composer. The pill wants
   // a workspace-relative, POSIX-separated path (the same form the mention picker
   // produces); the tree holds absolute paths, so relativize against the root.
-  const attachEntry = useCallback((entry: DirEntry) => {
-    const relative = relativizeWorkspacePath(entry.path, rootPath).replace(/\\/g, "/");
-    emitFutureEvent("attach-file-to-context", { path: relative, name: entry.name });
-  }, [rootPath]);
+  const attachEntry = useCallback(
+    (entry: DirEntry) => {
+      const relative = relativizeWorkspacePath(entry.path, rootPath).replace(
+        /\\/g,
+        "/",
+      );
+      emitFutureEvent("attach-file-to-context", {
+        path: relative,
+        name: entry.name,
+      });
+    },
+    [rootPath],
+  );
 
-  const handleContextMenu = useCallback((entry: DirEntry, event: ReactMouseEvent<HTMLElement>) => {
-    setMenuTarget(entry);
-    menu.open(event);
-  }, [menu]);
+  const handleContextMenu = useCallback(
+    (entry: DirEntry, event: ReactMouseEvent<HTMLElement>) => {
+      setMenuTarget(entry);
+      menu.open(event);
+    },
+    [menu],
+  );
 
   const menuItems: LinkMenuItem[] = menuTarget
     ? menuTarget.isDir
@@ -111,9 +135,18 @@ export function FileTreePanel({ rootPath, isWorkspace }: { rootPath: string | nu
       : [
           { label: t("menu.attach"), onSelect: () => attachEntry(menuTarget) },
           ...(previewKindForPath(menuTarget.path)
-            ? [{ label: t("menu.preview"), onSelect: () => setPreviewTarget(menuTarget) }]
+            ? [
+                {
+                  label: t("menu.preview"),
+                  onSelect: () => setPreviewTarget(menuTarget),
+                },
+              ]
             : []),
-          { divider: true, label: t("menu.open"), onSelect: () => void openEntry(menuTarget) },
+          {
+            divider: true,
+            label: t("menu.open"),
+            onSelect: () => void openEntry(menuTarget),
+          },
         ]
     : [];
 
@@ -128,10 +161,12 @@ export function FileTreePanel({ rootPath, isWorkspace }: { rootPath: string | nu
   }, [tree]);
 
   const rootEntries = tree.rootEntries;
-  const previewKind = previewTarget ? previewKindForPath(previewTarget.path) : null;
+  const previewKind = previewTarget
+    ? previewKindForPath(previewTarget.path)
+    : null;
   // While the shared cursor-anchored menu is open, keep its target row's `...`
   // trigger visible instead of fading out with hover.
-  const activeMenuPath = menu.position ? menuTarget?.path ?? null : null;
+  const activeMenuPath = menu.position ? (menuTarget?.path ?? null) : null;
 
   // Anti-flicker (mirrors ContextPanel's delayed spinner): while the root has no
   // entries yet, hold the "loading" line back for a beat. A cache-warm switch
@@ -172,7 +207,11 @@ export function FileTreePanel({ rootPath, isWorkspace }: { rootPath: string | nu
           </Button>
           <Button
             disabled={refreshing || !rootPath}
-            leftIcon={<RefreshCw className={`size-3.5${refreshing ? " animate-spin" : ""}`} />}
+            leftIcon={(
+              <RefreshCw
+                className={`size-3.5${refreshing ? " animate-spin" : ""}`}
+              />
+            )}
             onClick={() => void handleRefresh()}
             size="sm"
             variant="toolbar"
@@ -184,20 +223,34 @@ export function FileTreePanel({ rootPath, isWorkspace }: { rootPath: string | nu
 
       {/* Every state stays mounted in one edge-to-edge scroll region so the
           boundary and scrollbar do not jump while the tree loads. */}
-      <div className="group relative min-h-0 flex-1 border-t border-line-soft">
+      <div className="group relative min-h-0 flex-1 border-t border-line-soft/70">
         <div
-          className="floating-scrollbar h-full overflow-x-hidden overflow-y-auto bg-surface"
+          className="floating-scrollbar h-full overflow-x-hidden overflow-y-auto bg-surface/50"
           onScroll={listScrollbar.handleScroll}
           ref={listScrollbar.scrollRef}
         >
           {rootEntries === null
-            ? tree.rootErrored
-              ? <div className="flex h-full items-center justify-center text-sm text-ink-muted">{t("loadFailed")}</div>
-              : showLoading
-                ? <div className="flex h-full items-center justify-center text-sm text-ink-muted">{t("loading")}</div>
-                : null
+            ? (
+                tree.rootErrored
+                  ? (
+                      <div className="flex h-full items-center justify-center text-sm text-ink-muted">
+                        {t("loadFailed")}
+                      </div>
+                    )
+                  : showLoading
+                    ? (
+                        <div className="flex h-full items-center justify-center text-sm text-ink-muted">
+                          {t("loading")}
+                        </div>
+                      )
+                    : null
+              )
             : rootEntries.length === 0
-              ? <div className="flex h-full items-center justify-center text-sm text-ink-muted">{t("empty")}</div>
+              ? (
+                  <div className="flex h-full items-center justify-center text-sm text-ink-muted">
+                    {t("empty")}
+                  </div>
+                )
               : (
                   <ul>
                     {rootEntries.map(entry => (
