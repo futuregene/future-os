@@ -380,6 +380,13 @@ pub(super) fn derive_thinking_compat(
         );
     }
 
+    // Models that advertise tool_stream support (e.g. GLM series) must send
+    // `tool_stream: true` so tool calls stream incrementally instead of only
+    // at the end of a long generation (which can exceed the 45s timeout).
+    if has("tool_stream") {
+        compat.insert("toolStream".into(), serde_json::json!(true));
+    }
+
     (compat, tlm)
 }
 
@@ -833,6 +840,23 @@ mod tests {
         let params: Vec<String> = vec![];
         let (compat, _) = derive_thinking_compat(&params, None);
         assert!(!compat.contains_key("maxTokensField"));
+    }
+
+    #[test]
+    fn tool_stream_param_sets_compat_flag() {
+        let params: Vec<String> = vec!["tool_stream".to_string(), "temperature".to_string()];
+        let (compat, _) = derive_thinking_compat(&params, Some("GLM"));
+        assert_eq!(
+            compat.get("toolStream").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn no_tool_stream_param_leaves_compat_absent() {
+        let params: Vec<String> = vec!["temperature".to_string()];
+        let (compat, _) = derive_thinking_compat(&params, Some("GLM"));
+        assert!(!compat.contains_key("toolStream"));
     }
 
     // ─── platform_url_from_auth (shared URL contract) ─────────────────────
