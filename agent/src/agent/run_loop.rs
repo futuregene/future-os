@@ -7,6 +7,156 @@ use tokio_stream::StreamExt;
 
 use super::{Loop, RunEvent, C_GREEN, C_MAGENTA, C_RESET, DEFAULT_MAX_TURNS};
 
+#[derive(Debug, Default)]
+struct AccumulatedReasoningBlock {
+    id: String,
+    text: String,
+    provider_metadata: crate::types::ProviderMetadata,
+}
+
+#[derive(Debug, Default)]
+struct AccumulatedTextBlock {
+    id: String,
+    text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AssistantBlockOrder {
+    Reasoning(String),
+    Text(String),
+    Tool(usize),
+}
+
+fn record_assistant_block(order: &mut Vec<AssistantBlockOrder>, block: AssistantBlockOrder) {
+    if !order.contains(&block) {
+        order.push(block);
+    }
+}
+
+fn reasoning_block_mut<'a>(
+    blocks: &'a mut Vec<AccumulatedReasoningBlock>,
+    id: &str,
+) -> &'a mut AccumulatedReasoningBlock {
+    if let Some(index) = blocks.iter().position(|block| block.id == id) {
+        return &mut blocks[index];
+    }
+    blocks.push(AccumulatedReasoningBlock {
+        id: id.to_string(),
+        ..Default::default()
+    });
+    blocks
+        .last_mut()
+        .expect("reasoning block was just inserted")
+}
+
+fn text_block_mut<'a>(
+    blocks: &'a mut Vec<AccumulatedTextBlock>,
+    id: &str,
+) -> &'a mut AccumulatedTextBlock {
+    if let Some(index) = blocks.iter().position(|block| block.id == id) {
+        return &mut blocks[index];
+    }
+    blocks.push(AccumulatedTextBlock {
+        id: id.to_string(),
+        ..Default::default()
+    });
+    blocks.last_mut().expect("text block was just inserted")
+}
+
+fn assemble_assistant_content(
+    order: &[AssistantBlockOrder],
+    reasoning_blocks: &[AccumulatedReasoningBlock],
+    text_blocks: &[AccumulatedTextBlock],
+    tool_calls: &[AgentToolCall],
+) -> Vec<ContentBlock> {
+    let mut content = Vec::new();
+    let mut emitted_reasoning = vec![false; reasoning_blocks.len()];
+    let mut emitted_text = vec![false; text_blocks.len()];
+    let mut emitted_tools = vec![false; tool_calls.len()];
+
+    for block in order {
+        match block {
+            AssistantBlockOrder::Reasoning(id) => {
+                if let Some((index, reasoning)) = reasoning_blocks
+                    .iter()
+                    .enumerate()
+                    .find(|(_, reasoning)| reasoning.id == *id)
+                {
+                    emitted_reasoning[index] = true;
+                    if !reasoning.text.is_empty() || !reasoning.provider_metadata.is_empty() {
+                        content.push(ContentBlock::reasoning(
+                            &reasoning.text,
+                            reasoning.provider_metadata.clone(),
+                        ));
+                    }
+                }
+            }
+            AssistantBlockOrder::Text(id) => {
+                if let Some((index, text)) = text_blocks
+                    .iter()
+                    .enumerate()
+                    .find(|(_, text)| text.id == *id)
+                {
+                    emitted_text[index] = true;
+                    if !text.text.is_empty() {
+                        content.push(ContentBlock::text(&text.text));
+                    }
+                }
+            }
+            AssistantBlockOrder::Tool(index) => {
+                if let Some(tool) = tool_calls.get(*index) {
+                    emitted_tools[*index] = true;
+                    content.push(ContentBlock::tool_call(
+                        tool.id.clone(),
+                        tool.name.clone(),
+                        tool.args.clone(),
+                        tool.provider_metadata.clone(),
+                    ));
+                }
+            }
+        }
+    }
+
+    // Compatibility events may omit starts or ids. Keep their content even
+    // when there was not enough wire identity to place it precisely.
+    for (index, reasoning) in reasoning_blocks.iter().enumerate() {
+        if !emitted_reasoning[index]
+            && (!reasoning.text.is_empty() || !reasoning.provider_metadata.is_empty())
+        {
+            content.push(ContentBlock::reasoning(
+                &reasoning.text,
+                reasoning.provider_metadata.clone(),
+            ));
+        }
+    }
+    for (index, text) in text_blocks.iter().enumerate() {
+        if !emitted_text[index] && !text.text.is_empty() {
+            content.push(ContentBlock::text(&text.text));
+        }
+    }
+    for (index, tool) in tool_calls.iter().enumerate() {
+        if !emitted_tools[index] {
+            content.push(ContentBlock::tool_call(
+                tool.id.clone(),
+                tool.name.clone(),
+                tool.args.clone(),
+                tool.provider_metadata.clone(),
+            ));
+        }
+    }
+    content
+}
+
+fn push_finalized_tool_call(
+    tool_calls: &mut Vec<AgentToolCall>,
+    order: &mut Vec<AssistantBlockOrder>,
+    tool_call: AgentToolCall,
+) {
+    let index = tool_calls.len();
+    tool_calls.push(finalize_agent_tool_call(tool_call));
+    record_assistant_block(order, AssistantBlockOrder::Tool(index));
+}
+
 /// Per-event idle windows (stream, complete-tool-call) by thinking budget.
 /// High-reasoning models legitimately pause tens of seconds between token
 /// bursts (e.g. while generating tool-call argument JSON after thinking), so
@@ -458,8 +608,9 @@ impl Loop {
 
             // Process stream events
             let mut assistant_text = String::new();
-            let mut reasoning_text = String::new();
-            let mut reasoning_provider_metadata = crate::types::ProviderMetadata::new();
+            let mut reasoning_blocks: Vec<AccumulatedReasoningBlock> = Vec::new();
+            let mut text_blocks: Vec<AccumulatedTextBlock> = Vec::new();
+            let mut assistant_block_order: Vec<AssistantBlockOrder> = Vec::new();
             let mut agent_tool_calls: Vec<AgentToolCall> = vec![];
             let mut total_usage: Option<crate::types::Usage> = None;
             let mut current_tool_calls: Vec<Option<AgentToolCall>> = vec![];
@@ -551,27 +702,49 @@ impl Loop {
                 }
 
                 match model_event {
-                    ModelStreamEvent::ReasoningStart { .. } => {
+                    ModelStreamEvent::ReasoningStart { id } => {
+                        reasoning_block_mut(&mut reasoning_blocks, &id);
+                        record_assistant_block(
+                            &mut assistant_block_order,
+                            AssistantBlockOrder::Reasoning(id),
+                        );
                         if self.verbose {
                             crate::eprint_log!("\n{}[thinking]{} ", C_MAGENTA, C_RESET);
                         }
                     }
-                    ModelStreamEvent::ReasoningDelta { text, .. } => {
-                        reasoning_text.push_str(&text);
+                    ModelStreamEvent::ReasoningDelta { id, text } => {
+                        reasoning_block_mut(&mut reasoning_blocks, &id)
+                            .text
+                            .push_str(&text);
+                        record_assistant_block(
+                            &mut assistant_block_order,
+                            AssistantBlockOrder::Reasoning(id),
+                        );
                         if self.verbose {
                             crate::eprint_log!("{}", text);
                         }
                     }
                     ModelStreamEvent::ReasoningEnd {
-                        provider_metadata, ..
+                        id,
+                        provider_metadata,
                     } => {
-                        reasoning_provider_metadata = provider_metadata;
+                        reasoning_block_mut(&mut reasoning_blocks, &id).provider_metadata =
+                            provider_metadata;
+                        record_assistant_block(
+                            &mut assistant_block_order,
+                            AssistantBlockOrder::Reasoning(id),
+                        );
                         if self.verbose {
                             crate::eprintln_log!(); // blank line after thinking
                         }
                     }
-                    ModelStreamEvent::TextDelta { text, .. } => {
+                    ModelStreamEvent::TextDelta { id, text } => {
                         assistant_text.push_str(&text);
+                        text_block_mut(&mut text_blocks, &id).text.push_str(&text);
+                        record_assistant_block(
+                            &mut assistant_block_order,
+                            AssistantBlockOrder::Text(id),
+                        );
                         if self.verbose && !output_started {
                             output_started = true;
                             crate::eprint_log!("\n{}[output]{} ", C_GREEN, C_RESET);
@@ -581,8 +754,19 @@ impl Loop {
                         }
                         on_text(text);
                     }
-                    ModelStreamEvent::TextStart { .. } => {}
-                    ModelStreamEvent::TextEnd { .. } => {
+                    ModelStreamEvent::TextStart { id } => {
+                        text_block_mut(&mut text_blocks, &id);
+                        record_assistant_block(
+                            &mut assistant_block_order,
+                            AssistantBlockOrder::Text(id),
+                        );
+                    }
+                    ModelStreamEvent::TextEnd { id } => {
+                        text_block_mut(&mut text_blocks, &id);
+                        record_assistant_block(
+                            &mut assistant_block_order,
+                            AssistantBlockOrder::Text(id),
+                        );
                         if self.verbose {
                             crate::eprintln_log!(); // blank line after output
                         }
@@ -614,7 +798,11 @@ impl Loop {
 
                         // Finalize any existing tool call at this index (different id)
                         if let Some(tc) = current_tool_calls[index].take() {
-                            agent_tool_calls.push(finalize_agent_tool_call(tc));
+                            push_finalized_tool_call(
+                                &mut agent_tool_calls,
+                                &mut assistant_block_order,
+                                tc,
+                            );
                         }
 
                         current_tool_calls[index] = Some(AgentToolCall {
@@ -694,7 +882,11 @@ impl Loop {
                             slot.provider_metadata = provider_metadata;
                         }
                         if let Some(tc) = current_tool_calls[index].take() {
-                            agent_tool_calls.push(finalize_agent_tool_call(tc));
+                            push_finalized_tool_call(
+                                &mut agent_tool_calls,
+                                &mut assistant_block_order,
+                                tc,
+                            );
                         }
                     }
                     ModelStreamEvent::Usage(usage) => {
@@ -722,7 +914,11 @@ impl Loop {
                         }
                         for tc_opt in current_tool_calls.iter_mut() {
                             if let Some(tc) = tc_opt.take() {
-                                agent_tool_calls.push(finalize_agent_tool_call(tc));
+                                push_finalized_tool_call(
+                                    &mut agent_tool_calls,
+                                    &mut assistant_block_order,
+                                    tc,
+                                );
                             }
                         }
                     }
@@ -748,7 +944,7 @@ impl Loop {
 
             for tc_opt in current_tool_calls.iter_mut() {
                 if let Some(tc) = tc_opt.take() {
-                    agent_tool_calls.push(finalize_agent_tool_call(tc));
+                    push_finalized_tool_call(&mut agent_tool_calls, &mut assistant_block_order, tc);
                 }
             }
 
@@ -761,35 +957,19 @@ impl Loop {
             // tool_calls must be followed by tool messages").
             let build_partial_assistant =
                 |messages: &mut Vec<AgentMessage>,
-                 assistant_text: &str,
-                 reasoning_text: &str,
-                 reasoning_provider_metadata: &crate::types::ProviderMetadata,
+                 assistant_block_order: &[AssistantBlockOrder],
+                 reasoning_blocks: &[AccumulatedReasoningBlock],
+                 text_blocks: &[AccumulatedTextBlock],
                  tool_calls: &[AgentToolCall]| {
                     let first_new_message = messages.len();
                     let msg = AgentMessage {
                         role: "assistant".to_string(),
-                        content: {
-                            let mut content = Vec::new();
-                            if !reasoning_text.is_empty() || !reasoning_provider_metadata.is_empty()
-                            {
-                                content.push(ContentBlock::reasoning(
-                                    reasoning_text,
-                                    reasoning_provider_metadata.clone(),
-                                ));
-                            }
-                            if !assistant_text.is_empty() {
-                                content.push(ContentBlock::text(assistant_text));
-                            }
-                            for tc in tool_calls {
-                                content.push(ContentBlock::tool_call(
-                                    tc.id.clone(),
-                                    tc.name.clone(),
-                                    tc.args.clone(),
-                                    tc.provider_metadata.clone(),
-                                ));
-                            }
-                            content
-                        },
+                        content: assemble_assistant_content(
+                            assistant_block_order,
+                            reasoning_blocks,
+                            text_blocks,
+                            tool_calls,
+                        ),
                         ..Default::default()
                     };
                     // Don't push an empty assistant — the LLM API rejects
@@ -838,9 +1018,9 @@ impl Loop {
             if stream_error.is_some() || interrupted_after_stream {
                 build_partial_assistant(
                     &mut messages,
-                    &assistant_text,
-                    &reasoning_text,
-                    &reasoning_provider_metadata,
+                    &assistant_block_order,
+                    &reasoning_blocks,
+                    &text_blocks,
                     &agent_tool_calls,
                 );
                 if model_stream_failed {
@@ -868,27 +1048,12 @@ impl Loop {
             // Build assistant message
             let assistant_msg = AgentMessage {
                 role: "assistant".to_string(),
-                content: {
-                    let mut content = Vec::new();
-                    if !reasoning_text.is_empty() || !reasoning_provider_metadata.is_empty() {
-                        content.push(ContentBlock::reasoning(
-                            &reasoning_text,
-                            reasoning_provider_metadata.clone(),
-                        ));
-                    }
-                    if !assistant_text.is_empty() {
-                        content.push(ContentBlock::text(&assistant_text));
-                    }
-                    for tc in &agent_tool_calls {
-                        content.push(ContentBlock::tool_call(
-                            tc.id.clone(),
-                            tc.name.clone(),
-                            tc.args.clone(),
-                            tc.provider_metadata.clone(),
-                        ));
-                    }
-                    content
-                },
+                content: assemble_assistant_content(
+                    &assistant_block_order,
+                    &reasoning_blocks,
+                    &text_blocks,
+                    &agent_tool_calls,
+                ),
                 ..Default::default()
             };
 
@@ -1749,6 +1914,121 @@ mod tests {
             15
         );
         drop(provider);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_preserves_multiple_reasoning_blocks_and_their_metadata() {
+        let mut first_metadata = crate::types::ProviderMetadata::new();
+        first_metadata.insert(
+            "anthropic".into(),
+            serde_json::json!({"redacted_data": "opaque-1"}),
+        );
+        let mut second_metadata = crate::types::ProviderMetadata::new();
+        second_metadata.insert(
+            "anthropic".into(),
+            serde_json::json!({"redacted_data": "opaque-2"}),
+        );
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![
+            ModelStreamEvent::ReasoningStart { id: "r-1".into() },
+            ModelStreamEvent::ReasoningEnd {
+                id: "r-1".into(),
+                provider_metadata: first_metadata,
+            },
+            ModelStreamEvent::TextStart { id: "t-1".into() },
+            ModelStreamEvent::TextDelta {
+                id: "t-1".into(),
+                text: "middle".into(),
+            },
+            ModelStreamEvent::TextEnd { id: "t-1".into() },
+            ModelStreamEvent::ReasoningStart { id: "r-2".into() },
+            ModelStreamEvent::ReasoningEnd {
+                id: "r-2".into(),
+                provider_metadata: second_metadata,
+            },
+            ev_stop(),
+        ])]);
+        let loop_ = Loop::new(provider, "mock");
+        let (_, messages) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+
+        let reasoning: Vec<_> = messages[1]
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Reasoning {
+                    provider_metadata, ..
+                } => Some(provider_metadata),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reasoning.len(), 2);
+        assert_eq!(reasoning[0]["anthropic"]["redacted_data"], "opaque-1");
+        assert_eq!(reasoning[1]["anthropic"]["redacted_data"], "opaque-2");
+        assert!(matches!(
+            messages[1].content[0],
+            ContentBlock::Reasoning { .. }
+        ));
+        assert!(matches!(messages[1].content[1], ContentBlock::Text { .. }));
+        assert!(matches!(
+            messages[1].content[2],
+            ContentBlock::Reasoning { .. }
+        ));
+    }
+
+    #[test]
+    fn assistant_content_keeps_interleaved_reasoning_and_tool_order() {
+        let reasoning = vec![
+            AccumulatedReasoningBlock {
+                id: "r-1".into(),
+                text: "first".into(),
+                ..Default::default()
+            },
+            AccumulatedReasoningBlock {
+                id: "r-2".into(),
+                text: "second".into(),
+                ..Default::default()
+            },
+        ];
+        let tools = vec![
+            AgentToolCall {
+                id: "tool-1".into(),
+                name: "first_tool".into(),
+                args: serde_json::json!({}),
+                provider_metadata: Default::default(),
+            },
+            AgentToolCall {
+                id: "tool-2".into(),
+                name: "second_tool".into(),
+                args: serde_json::json!({}),
+                provider_metadata: Default::default(),
+            },
+        ];
+        let order = vec![
+            AssistantBlockOrder::Reasoning("r-1".into()),
+            AssistantBlockOrder::Tool(0),
+            AssistantBlockOrder::Reasoning("r-2".into()),
+            AssistantBlockOrder::Tool(1),
+        ];
+
+        let content = assemble_assistant_content(&order, &reasoning, &[], &tools);
+        assert!(matches!(content[0], ContentBlock::Reasoning { .. }));
+        assert!(matches!(
+            &content[1],
+            ContentBlock::ToolCall { id, .. } if id == "tool-1"
+        ));
+        assert!(matches!(content[2], ContentBlock::Reasoning { .. }));
+        assert!(matches!(
+            &content[3],
+            ContentBlock::ToolCall { id, .. } if id == "tool-2"
+        ));
     }
 
     #[tokio::test(flavor = "current_thread")]

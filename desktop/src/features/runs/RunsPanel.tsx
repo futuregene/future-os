@@ -35,8 +35,11 @@ interface RunsPanelProps {
 interface ToolEntry {
   tool: StoredToolCall;
   run: StoredRun;
-  // Exactly one row per active run carries the terminate control — its latest
-  // command — so a multi-command run isn't cluttered with duplicate stop buttons.
+  // A running command of an active run carries the terminate control. The
+  // model can launch several tools at once within one run; each still-running
+  // row gets its own button, all pointing at the same run-level abort. A
+  // completed command never shows one (interrupting the reply phase is the
+  // composer's stop button).
   terminable: boolean;
 }
 
@@ -227,8 +230,7 @@ function ToolRow({
     = (isShell ? toolCommand(tool.input) : toolTarget(tool.input))
       ?? toolCommand(tool.input)
       ?? toolTarget(tool.input)
-      ?? tool.input
-      ?? toolLabel(tool);
+      ?? fallbackPrimary(tool.input, toolLabel(tool));
   // Shell rows show the command verbatim; file rows (write/edit) get the
   // workspace-relative path, absolute kept for files outside the workspace.
   const primary = isShell
@@ -239,7 +241,7 @@ function ToolRow({
   // real failure, so treat it as failed rather than a perpetual "running".
   const status
     = tool.status === "running" && !isActiveRun(run) ? "failed" : tool.status;
-  const running = status === "running" || terminable;
+  const running = status === "running";
   const meta = [toolLabel(tool), toolStatusLabel(status)]
     .filter(Boolean)
     .join(" · ");
@@ -289,7 +291,10 @@ function ToolRow({
           <div className="flex items-start gap-2">
             <div
               className={cn(
-                "min-w-0 flex-1 wrap-break-word text-xs font-normal leading-5 text-ink",
+                // min-h-5 (one leading-5 line) reserves the target line's
+                // height while a streaming tool call has no parseable target
+                // yet, so the row doesn't jump when the target appears.
+                "min-h-5 min-w-0 flex-1 wrap-break-word text-xs font-normal leading-5 text-ink",
                 isShell ? "whitespace-pre-wrap" : "truncate font-mono",
               )}
               title={rawPrimary}
@@ -297,52 +302,62 @@ function ToolRow({
               {primary}
             </div>
           </div>
-          <div className="mt-2 text-xs font-medium text-ink-muted">{meta}</div>
+          {/* Status line is a fixed-height row (min-h-5 == leading-5) so the
+              row doesn't jump whether or not the terminate control is present.
+              The terminate button sits inline at the line's right edge. */}
+          <div className="mt-2 flex min-h-5 items-center justify-between gap-2">
+            <span className="min-w-0 truncate text-xs font-medium text-ink-muted">
+              {meta}
+            </span>
+            {terminable
+              ? (
+                  <span className="flex shrink-0 items-center gap-1">
+                    {confirming
+                      ? (
+                          <>
+                            <span className="text-xs text-ink-muted">
+                              {t("runsPanel.confirmTerminate")}
+                            </span>
+                            <Button
+                              className="h-5 gap-1 px-1.5"
+                              disabled={busy}
+                              onClick={onCancelConfirm}
+                              size="xs"
+                              variant="ghost"
+                            >
+                              {t("runsPanel.cancel")}
+                            </Button>
+                            <Button
+                              className="h-5 gap-1 px-1.5"
+                              disabled={busy}
+                              leftIcon={<CircleStop className="size-3" />}
+                              onClick={onTerminate}
+                              size="xs"
+                              variant="danger"
+                            >
+                              {busy ? t("runsPanel.stopping") : t("runsPanel.terminate")}
+                            </Button>
+                          </>
+                        )
+                      : (
+                          <Button
+                            className="h-5 gap-1 px-1.5"
+                            leftIcon={<CircleStop className="size-3" />}
+                            onClick={onRequestTerminate}
+                            size="xs"
+                            variant="danger-soft"
+                          >
+                            {t("runsPanel.terminate")}
+                          </Button>
+                        )}
+                  </span>
+                )
+              : null}
+          </div>
           {actionError
             ? (
                 <div className="mt-2 line-clamp-3 text-xs leading-5 text-danger">
                   {actionError}
-                </div>
-              )
-            : null}
-          {terminable
-            ? (
-                <div className="mt-3 flex justify-end">
-                  {confirming
-                    ? (
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs text-ink-muted">
-                            {t("runsPanel.confirmTerminate")}
-                          </span>
-                          <Button
-                            disabled={busy}
-                            onClick={onCancelConfirm}
-                            size="xs"
-                            variant="ghost"
-                          >
-                            {t("runsPanel.cancel")}
-                          </Button>
-                          <Button
-                            disabled={busy}
-                            leftIcon={<CircleStop className="size-3.5" />}
-                            onClick={onTerminate}
-                            size="xs"
-                            variant="danger"
-                          >
-                            {busy ? t("runsPanel.stopping") : t("runsPanel.terminate")}
-                          </Button>
-                        </div>
-                      )
-                    : (
-                        <Button
-                          leftIcon={<CircleStop className="size-3.5" />}
-                          onClick={onRequestTerminate}
-                          size="xs"
-                          variant="danger-soft"
-                        >
-                          {t("runsPanel.terminate")}
-                        </Button>
-                      )}
                 </div>
               )
             : null}
@@ -363,6 +378,22 @@ function ToolRow({
 
 function displayName(tool: StoredToolCall) {
   return tool.name.trim().toLowerCase();
+}
+
+/**
+ * The raw input is shown only when it is plain text (legacy records carry the
+ * command as a bare string). A JSON-object input that yielded no field — above
+ * all a still-streaming partial — renders as a blank line instead of a raw
+ * JSON blob, so the row swaps in the parsed target later without noise.
+ */
+function fallbackPrimary(
+  input: string | null | undefined,
+  label: string,
+): string {
+  if (input === null || input === undefined)
+    return label;
+  const first = input.trimStart().charAt(0);
+  return first === "{" || first === "[" ? "" : input;
 }
 
 function isActiveRun(run: StoredRun) {
@@ -400,12 +431,16 @@ function buildToolEntries(
       continue;
     }
 
-    const latestId = [...tools].sort(compareToolTimeDesc)[0]?.id;
+    // The terminate control rides every still-running command of an active run
+    // (parallel tool calls each get one; the button aborts the whole run). A
+    // completed tool never carries it — otherwise a finished command shows a
+    // "completed" label next to a stop button while the run merely generates
+    // its reply.
     for (const tool of tools) {
       const entry: ToolEntry = {
         tool,
         run,
-        terminable: runActive && tool.id === latestId,
+        terminable: runActive && tool.status === "running",
       };
       (runActive ? active : finished).push(entry);
     }

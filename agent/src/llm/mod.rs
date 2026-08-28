@@ -17,12 +17,12 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::info;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 1800;
-const STREAM_IDLE_TIMEOUT_SECS: u64 = 45;
+const STREAM_IDLE_TIMEOUT_SECS: u64 = 120;
 const UPSTREAM_DISCONNECTED: &str = "[UPSTREAM_DISCONNECTED]";
 const MODEL_RESPONSE_ERROR: &str = "[MODEL_RESPONSE_ERROR]";
 
 /// Stream-read idle timeout. Tests override it (a stalled-mock test cannot
-/// wait 45 s of real time) via FUTURE_TEST_STREAM_IDLE_SECS.
+/// wait 120 s of real time) via FUTURE_TEST_STREAM_IDLE_SECS.
 fn stream_idle_timeout_secs() -> u64 {
     #[cfg(test)]
     if let Some(secs) = std::env::var("FUTURE_TEST_STREAM_IDLE_SECS")
