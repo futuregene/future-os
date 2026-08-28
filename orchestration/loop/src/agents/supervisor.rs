@@ -14,7 +14,7 @@
 use crate::store::{Event, Store};
 
 pub const SUPERVISOR_RECEIPT_SCHEMA_VERSION: &str = "supervisor_host_receipt_v1";
-pub const SUPERVISOR_EVENT_PROJECTION_SCHEMA_VERSION: &str = "supervisor_event_projection_v0";
+pub const SUPERVISOR_EVENT_PROJECTION_SCHEMA_VERSION: &str = "supervisor_event_projection_v1";
 
 /// Supervisor decision kinds (reference supervisor decisions).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,6 +232,7 @@ pub fn build_supervisor_event_projection(
     // (the event kind is fixed by the arm that pushed it).
     let mut proposals: Vec<(String, String, String, String, u64)> = vec![];
     let mut receipts: Vec<(&str, &str)> = vec![];
+    let mut progress: Vec<(String, String, String, u64)> = vec![];
     for stored in &events {
         match &stored.event {
             Event::SupervisorProposed {
@@ -255,6 +256,18 @@ pub fn build_supervisor_event_projection(
                 outcome,
                 ..
             } if g == goal_id => receipts.push((decision_id.as_str(), outcome.as_str())),
+            // Worker mid-run progress notes — advisory, projection-only (see
+            // `report` command). Collected for the supervisor's idle-loop
+            // consumption; never a push.
+            Event::ProgressReported {
+                goal_id: g,
+                agent_id,
+                todo_id,
+                message,
+                ts,
+            } if g == goal_id => {
+                progress.push((agent_id.clone(), todo_id.clone(), message.clone(), *ts))
+            }
             _ => {}
         }
     }
@@ -281,6 +294,17 @@ pub fn build_supervisor_event_projection(
             receipt_count: decision_receipts.len() as u32,
         });
     }
+    let progress_items: Vec<serde_json::Value> = progress
+        .into_iter()
+        .map(|(agent_id, todo_id, message, ts)| {
+            serde_json::json!({
+                "agent_id": agent_id,
+                "todo_id": todo_id,
+                "message": message,
+                "ts": ts,
+            })
+        })
+        .collect();
     Ok(serde_json::json!({
         "ok": true,
         "schema_version": SUPERVISOR_EVENT_PROJECTION_SCHEMA_VERSION,
@@ -288,6 +312,8 @@ pub fn build_supervisor_event_projection(
         "proposal_count": rows.len(),
         "receipt_count": receipt_count,
         "items": rows,
+        "progress_count": progress_items.len(),
+        "progress": progress_items,
         "boundary": {
             "proposal_is_execution_evidence": false,
             "executed_requires_capability_matched_receipt": true,
@@ -354,6 +380,53 @@ mod tests {
         assert_eq!(projection["items"][0]["execution_status"], "executed");
         assert_eq!(projection["items"][0]["kind"], "execute");
         assert_eq!(projection["items"][0]["target_agent_id"], "agent-b");
+    }
+
+    #[test]
+    fn progress_reports_surface_in_projection() {
+        let root = tmp_root("progress");
+        let mut store = Store::open(&root).unwrap();
+        open_goal(&mut store, "g1");
+        store
+            .append(Event::ProgressReported {
+                goal_id: "g1".into(),
+                agent_id: "agent-b".into(),
+                todo_id: "todo-1".into(),
+                message: "submitted attempt 34444, waiting on score".into(),
+                ts: 100,
+            })
+            .unwrap();
+        // A report for another goal must not leak into this projection.
+        let goal2 = crate::state::Goal::new("g2", "obj2", "/tmp");
+        store.register(&goal2).unwrap();
+        store
+            .append(Event::GoalStarted {
+                goal_id: "g2".into(),
+                ts: goal2.created_at,
+            })
+            .unwrap();
+        store
+            .append(Event::ProgressReported {
+                goal_id: "g2".into(),
+                agent_id: "agent-c".into(),
+                todo_id: "".into(),
+                message: "other goal".into(),
+                ts: 101,
+            })
+            .unwrap();
+        let projection = build_supervisor_event_projection(&store, "g1").unwrap();
+        assert_eq!(projection["proposal_count"], 0);
+        assert_eq!(projection["progress_count"], 1);
+        assert_eq!(projection["progress"][0]["agent_id"], "agent-b");
+        assert_eq!(projection["progress"][0]["todo_id"], "todo-1");
+        assert_eq!(
+            projection["progress"][0]["message"],
+            "submitted attempt 34444, waiting on score"
+        );
+        assert_eq!(projection["progress"][0]["ts"], 100);
+        // Projection-only: replay must not mutate the goal kanban.
+        let goal = store.replay("g1").unwrap().unwrap();
+        assert!(goal.todos.is_empty());
     }
 
     #[test]

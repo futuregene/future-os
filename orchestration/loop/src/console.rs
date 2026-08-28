@@ -169,6 +169,7 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         "scope" => cmd_scope(&store, &args[1..]),
         "lane" => cmd_lane(&store, &args[1..]),
         "supervisor" => cmd_supervisor(&mut store, &args[1..]),
+        "report" => cmd_report(&mut store, &args[1..]),
         "worker" => cmd_worker(&mut store, &args[1..]).await,
         "task-graph" => cmd_task_graph(&store, &args[1..]),
         "attention" => cmd_attention(&store, &args[1..]),
@@ -223,6 +224,7 @@ const JOURNEY_ASSIGNMENTS: &[(&str, Journey)] = &[
     ("scope", Journey::Driver),
     ("lane", Journey::Driver),
     ("supervisor", Journey::Driver),
+    ("report", Journey::Driver),
     ("worker", Journey::Driver),
     // Setup & automation — one-time configuration
     ("models", Journey::Setup),
@@ -339,6 +341,12 @@ fn build_cli_registry() -> CommandRegistry {
         "supervisor",
         "supervisor register|steer|proposal/receipt events (G-16)",
         "supervisor register|steer|propose|receipt|events --goal G ...",
+    );
+    r.command(
+        agent,
+        "report",
+        "worker mid-run progress note (ledger event, projection-side consumption — never a push)",
+        "report --goal G --agent-id A [--todo-id T] --message \"...\"",
     );
     r.command(
         agent,
@@ -6157,6 +6165,54 @@ fn cmd_supervisor(store: &mut Store, args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// `report --goal G --agent-id A [--todo-id T] --message "..."` — a worker's
+/// best-effort mid-run progress note, appended to the goal ledger as
+/// `ProgressReported`. Deliberately the opposite of the push channel:
+/// no gate, no status transition, no supervisor notification — the event is
+/// projection-only (consumed via `supervisor events --goal G` or a ledger
+/// tail), so a busy worker can narrate milestones (submitted attempt,
+/// waiting on score) without spamming the supervisor session. Idempotency is
+/// the content-derived event id: an identical report within the same second
+/// is a no-op; distinct moments always append (each is a separate milestone).
+/// The message is free text, truncated to a sane bound for ledger hygiene.
+fn cmd_report(store: &mut Store, args: &[String]) -> Result<()> {
+    reject_unknown_flags(args, &["--agent-id", "--goal", "--message", "--todo-id"])?;
+    let mut goal_id = None;
+    let mut agent_id = None;
+    let mut todo_id = None;
+    let mut message = None;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        } else if k == "--todo-id" {
+            todo_id = Some(v);
+        } else if k == "--message" {
+            message = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let message = message.ok_or_else(|| anyhow::anyhow!("--message required"))?;
+    // The goal must exist — a report to a phantom goal is a typo, not an
+    // append into a ledger that would never be read.
+    store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let message = crate::decision::truncate(&message, 500);
+    let agent_id = crate::decision::truncate(&agent_id.unwrap_or_default(), 128);
+    let todo_id = crate::decision::truncate(&todo_id.unwrap_or_default(), 128);
+    store.append(Event::ProgressReported {
+        goal_id: goal_id.clone(),
+        agent_id,
+        todo_id,
+        message,
+        ts: now_epoch(),
+    })?;
+    println!("progress reported to goal {goal_id}");
+    Ok(())
+}
+
 // ── task-graph (G-14) ──────────────────────────────────────────────────────
 
 /// `loopx task-graph --goal G` — the todo dependency graph with topological
@@ -7378,6 +7434,16 @@ fn describe_event(event: &crate::store::Event) -> String {
             ..
         } => {
             return format!("worker_session_bound agent={agent_id} session={session_id}");
+        }
+        Event::ProgressReported {
+            agent_id,
+            todo_id,
+            message,
+            ..
+        } => {
+            return format!(
+                "progress_reported agent={agent_id} todo={todo_id} message=\"{message}\""
+            );
         }
     };
     kind.to_string()
@@ -8991,6 +9057,126 @@ mod workspace_guard_cli_tests {
                 Event::AgentRegistered { workspaces, .. } if workspaces.is_empty()
             ),
             "wrong variant or non-empty workspaces: {event:?}"
+        );
+    }
+
+    #[test]
+    fn report_appends_progress_event_and_rejects_phantom_goal() {
+        let mut store = tmp_store("report");
+        open_goal(&mut store, "g1", &["t1"]);
+
+        // Happy path: appends ProgressReported; replay kanban untouched.
+        cmd_report(
+            &mut store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--agent-id".to_string(),
+                "worker-a".to_string(),
+                "--todo-id".to_string(),
+                "t1".to_string(),
+                "--message".to_string(),
+                "submitted attempt 34444, waiting on score".to_string(),
+            ],
+        )
+        .unwrap();
+        let events = store.events("g1").unwrap();
+        let reported: Vec<&Event> = events
+            .iter()
+            .filter_map(|se| match &se.event {
+                e @ Event::ProgressReported { .. } => Some(e),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reported.len(), 1);
+        if let Event::ProgressReported {
+            agent_id,
+            todo_id,
+            message,
+            ..
+        } = reported[0]
+        {
+            assert_eq!(agent_id, "worker-a");
+            assert_eq!(todo_id, "t1");
+            assert_eq!(message, "submitted attempt 34444, waiting on score");
+        }
+        // Projection-only: the todo kanban is not mutated by a report.
+        let goal = store.replay("g1").unwrap().unwrap();
+        assert_eq!(goal.todos.len(), 1);
+        assert_eq!(goal.todos[0].status, crate::state::TodoStatus::Open);
+
+        // Missing --message → hard error.
+        let err = cmd_report(
+            &mut store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--agent-id".to_string(),
+                "worker-a".to_string(),
+            ],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("--message required"));
+
+        // Phantom goal → hard error (a report to a nonexistent goal is a typo).
+        let err = cmd_report(
+            &mut store,
+            &[
+                "--goal".to_string(),
+                "nope".to_string(),
+                "--agent-id".to_string(),
+                "worker-a".to_string(),
+                "--message".to_string(),
+                "hello".to_string(),
+            ],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not found"));
+
+        // Unknown flag → hard error (CLI strictness).
+        let err = cmd_report(
+            &mut store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--bogus".to_string(),
+                "x".to_string(),
+            ],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("unknown flag"));
+    }
+
+    #[test]
+    fn report_message_is_bounded_for_ledger_hygiene() {
+        let mut store = tmp_store("report-trunc");
+        open_goal(&mut store, "g1", &[]);
+        let long = "x".repeat(5000);
+        cmd_report(
+            &mut store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--agent-id".to_string(),
+                "worker-a".to_string(),
+                "--message".to_string(),
+                long.clone(),
+            ],
+        )
+        .unwrap();
+        let events = store.events("g1").unwrap();
+        let reported = events
+            .iter()
+            .find_map(|se| match &se.event {
+                Event::ProgressReported { message, .. } => Some(message.clone()),
+                _ => None,
+            })
+            .unwrap();
+        // truncate caps at 500 chars + an ellipsis marker.
+        assert!(reported.len() <= 503, "message must be bounded");
+        assert!(
+            reported.starts_with(&"x".repeat(500)),
+            "message must keep the first 500 chars"
         );
     }
 
