@@ -398,10 +398,7 @@ pub fn write_tool() -> AgentTool {
         "Write content to a file, creating or overwriting. Prefer this for ordinary user-requested file saves.",
         write_schema(),
         write_handler,
-        vec![
-            "When asked to create, save, or overwrite a normal file, prefer this write tool.",
-            "Emit the `path` field first, before `content`, so the target file is known while the content streams.",
-        ],
+        vec!["When asked to create, save, or overwrite a normal file, prefer this write tool."],
     )
 }
 
@@ -471,10 +468,7 @@ pub fn edit_tool() -> AgentTool {
         "Edit a file using exact text replacement. Supports multi-edit via edits array.",
         edit_schema(),
         edit_handler,
-        vec![
-            "Include enough context for unique matching",
-            "Emit the `path` field first, before `oldText`/`newText`/`edits`, so the target file is known while the edit streams.",
-        ],
+        vec!["Include enough context for unique matching"],
     )
 }
 
