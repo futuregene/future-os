@@ -397,6 +397,26 @@ pub enum Event {
         seq: u32,
         ts: u64,
     },
+    /// A worker's best-effort mid-run progress note (`future loop report`).
+    /// Deliberately NOT a state transition: no gate, no supervisor
+    /// notification, and the kernel never acts on it. Projection-only —
+    /// `apply` ignores it, so it never touches the kanban; consumption is the
+    /// supervisor's `supervisor events` projection (or a ledger tail). The
+    /// message is free text bounded by the caller (see `cmd_report`);
+    /// agent_id/todo_id are advisory (may be empty) and not validated against
+    /// claims. Idempotency follows the standard content-derived event id: an
+    /// identical re-report within the same second is a no-op, while distinct
+    /// moments (different `ts`) always append — each report is a separate
+    /// milestone, not a retry of the same one.
+    ProgressReported {
+        goal_id: String,
+        #[serde(default)]
+        agent_id: String,
+        #[serde(default)]
+        todo_id: String,
+        message: String,
+        ts: u64,
+    },
     /// P0-2②: outcome_followthrough fired — a delivered-but-unverified work
     /// item aged past the turn threshold, so a follow-up todo was
     /// auto-created (the followup itself is the TodoAdded event; this event
@@ -608,6 +628,7 @@ impl Event {
             | Event::TodoReleased { goal_id, .. }
             | Event::TodoExpired { goal_id, .. }
             | Event::DeliveryOutcomeRecorded { goal_id, .. }
+            | Event::ProgressReported { goal_id, .. }
             | Event::FollowthroughCreated { goal_id, .. }
             | Event::DecisionSummaryRecorded { goal_id, .. }
             | Event::HeartbeatReceiptRecorded { goal_id, .. }
@@ -1955,6 +1976,9 @@ fn apply(goal: &mut Goal, event: Event) {
         // Projection-only: the run client tails the raw ledger for it; replay
         // deliberately ignores it (a stale stop must not kill future runs).
         Event::WorkerStopped { .. } => {}
+        // Projection-only: a progress note is a statement, not a claim — it
+        // never touches the kanban. Consumption is the supervisor projection.
+        Event::ProgressReported { .. } => {}
     }
 }
 
