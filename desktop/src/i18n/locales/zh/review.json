@@ -1,8 +1,9 @@
 {
-  "lastRunHeading": "上一轮变更",
+  "lastRunHeading": "上一轮",
   "tab": {
-    "gitChanges": "当前分支",
-    "lastRun": "上一轮变更"
+    "branch": "分支",
+    "uncommitted": "未提交",
+    "lastRun": "上一轮"
   },
   "workingTree": {
     "emptyTitle": "工作区没有未提交的更改",
@@ -60,6 +61,7 @@
     "customPlaceholder": "Commit, tag, or branch"
   },
   "git": {
-    "noTextDiff": "No textual diff available."
+    "noTextDiff": "没有可显示的文本 diff。",
+    "diffOmitted": "Diff 内容过大，已保留文件和统计信息。"
   }
 }

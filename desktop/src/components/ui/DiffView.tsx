@@ -1,48 +1,73 @@
 /**
- * Renders a unified git diff string as colored, line-numbered rows (old/new
- * line numbers, add/delete/context/meta tinting).
+ * Renders a unified git diff string as colored, single-gutter rows. Long code
+ * lines remain intact and are viewed through horizontal scrolling.
  */
 export function DiffView({ diff }: { diff: string }) {
   const rows = diffRows(diff);
+  // Mirror Codex's render guardrails: on large diffs, retain the plain-text
+  // diff but let the browser defer layout/paint for off-screen rows.
+  const deferOffscreenRows = diff.length > 512 * 1024 || rows.length > 10_000 || rows.some(row => row.line.length > 4 * 1024);
 
   return (
-    <div className="max-h-[70vh] overflow-auto bg-surface font-mono text-xs leading-5">
-      {rows.map(row => (
-        <DiffLine
-          key={row.key}
-          kind={row.kind}
-          line={row.line}
-          newLineNumber={row.newLineNumber}
-          oldLineNumber={row.oldLineNumber}
-        />
-      ))}
+    <div className="flex min-w-0 bg-surface font-mono text-xs leading-5">
+      <div className="shrink-0">
+        {rows.map(row => (
+          <DiffGutter key={row.key} kind={row.kind} lineNumber={displayLineNumber(row.kind, row.oldLineNumber, row.newLineNumber)} />
+        ))}
+      </div>
+      <div className="min-w-0 flex-1 overflow-x-auto overflow-y-hidden">
+        <div className="min-w-full w-max">
+          {rows.map(row => (
+            <DiffContent
+              deferOffscreen={deferOffscreenRows}
+              key={row.key}
+              kind={row.kind}
+              line={row.line}
+            />
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
 
-function DiffLine({
+function DiffGutter({
+  kind,
+  lineNumber,
+}: {
+  kind: string;
+  lineNumber: number | "";
+}) {
+  return (
+    <span className={diffGutterClass(kind)}>{lineNumber}</span>
+  );
+}
+
+function DiffContent({
   kind,
   line,
-  newLineNumber,
-  oldLineNumber,
+  deferOffscreen,
 }: {
   kind: string;
   line: string;
-  newLineNumber?: number;
-  oldLineNumber?: number;
+  deferOffscreen: boolean;
 }) {
   const content = line.length === 0 ? " " : line;
 
   return (
-    <div className={diffLineClass(kind)}>
-      <span className="w-16 shrink-0 select-none border-r border-line-soft px-1.5 text-right text-ink-muted">
-        {oldLineNumber ?? ""}
-        <span className="inline-block w-2" />
-        {newLineNumber ?? ""}
-      </span>
-      <code className="min-w-0 flex-1 whitespace-pre-wrap wrap-break-word px-3">{content}</code>
-    </div>
+    <code
+      className={diffContentClass(kind)}
+      style={deferOffscreen ? { containIntrinsicSize: "20px", contentVisibility: "auto" } : undefined}
+    >
+      {content}
+    </code>
   );
+}
+
+function displayLineNumber(kind: string, oldLineNumber?: number, newLineNumber?: number) {
+  if (kind === "delete")
+    return oldLineNumber ?? "";
+  return newLineNumber ?? "";
 }
 
 function diffRows(diff: string) {
@@ -124,16 +149,30 @@ function diffLineKind(line: string, hasHunk: boolean) {
   return "context";
 }
 
-function diffLineClass(kind: string) {
-  const base = "flex min-w-0 border-l-2";
+function diffGutterClass(kind: string) {
+  const base = "block h-5 w-10 select-none border-r border-line-soft border-l-2 px-1.5 text-right text-ink-muted";
   switch (kind) {
     case "add":
-      return `${base} border-diff-add-line bg-diff-add text-success`;
+      return `${base} border-l-diff-add-line bg-diff-add text-success`;
     case "delete":
-      return `${base} border-diff-remove-line bg-diff-remove text-danger`;
+      return `${base} border-l-diff-remove-line bg-diff-remove text-danger`;
     case "meta":
       return `${base} border-transparent bg-surface-subtle text-ink-muted`;
     default:
       return `${base} border-transparent text-ink-soft`;
+  }
+}
+
+function diffContentClass(kind: string) {
+  const base = "block h-5 min-w-full w-max whitespace-pre px-3";
+  switch (kind) {
+    case "add":
+      return `${base} bg-diff-add text-success`;
+    case "delete":
+      return `${base} bg-diff-remove text-danger`;
+    case "meta":
+      return `${base} bg-surface-subtle text-ink-muted`;
+    default:
+      return `${base} text-ink-soft`;
   }
 }

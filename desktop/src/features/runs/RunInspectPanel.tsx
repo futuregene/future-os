@@ -66,15 +66,21 @@ export function RunInspectPanel({ compact = false, onBack, run, tools }: RunInsp
   const primaryTool = sortedTools[0];
 
   return (
-    <div className={cn(compact ? "flex h-full min-h-0 flex-col gap-3" : "space-y-3")}>
-      <button
-        className="inline-flex h-8 shrink-0 items-center gap-1.5 self-start rounded-md px-1.5 text-xs font-medium text-ink-soft transition-colors hover:bg-surface hover:text-ink"
-        onClick={onBack}
-        type="button"
-      >
-        <ArrowLeft className="size-3.5" />
-        {t("runInspect.back")}
-      </button>
+    <div className={cn(compact ? "flex h-full min-h-0 flex-col gap-1" : "space-y-3")}>
+      {compact
+        ? (
+            <div className="flex h-8 shrink-0 items-center justify-between gap-2">
+              {primaryTool
+                ? (
+                    <Badge tone={primaryTool.status === "completed" ? "success" : primaryTool.status === "failed" ? "danger" : "neutral"}>
+                      {toolStatusLabel(primaryTool.status)}
+                    </Badge>
+                  )
+                : <span />}
+              <BackButton compact onBack={onBack} />
+            </div>
+          )
+        : <BackButton onBack={onBack} />}
 
       {compact
         ? (
@@ -83,6 +89,8 @@ export function RunInspectPanel({ compact = false, onBack, run, tools }: RunInsp
                   <ToolCallDetail
                     fill
                     outputs={outputsByTool[primaryTool.id] ?? []}
+                    showHeader={false}
+                    showStatus={false}
                     tool={primaryTool}
                   />
                 )
@@ -171,6 +179,21 @@ export function RunInspectPanel({ compact = false, onBack, run, tools }: RunInsp
   );
 }
 
+function BackButton({ compact = false, onBack }: { compact?: boolean; onBack: () => void }) {
+  const { t } = useTranslation("runs");
+  return (
+    <Button
+      className={cn("shrink-0 self-start", compact && "h-6 px-2")}
+      leftIcon={<ArrowLeft className="size-3.5" />}
+      onClick={onBack}
+      size={compact ? "xs" : "sm"}
+      variant="toolbar"
+    >
+      {t("runInspect.back")}
+    </Button>
+  );
+}
+
 function toolSearchText(tool: StoredToolCall, outputs: StoredToolOutput[]) {
   return [
     tool.name,
@@ -200,10 +223,14 @@ function dispatchRunRecovery(run: StoredRun, action: "continue" | "retry") {
 function ToolCallDetail({
   fill = false,
   outputs,
+  showHeader = true,
+  showStatus = true,
   tool,
 }: {
   fill?: boolean;
   outputs: StoredToolOutput[];
+  showHeader?: boolean;
+  showStatus?: boolean;
   tool: StoredToolCall;
 }) {
   const { t } = useTranslation("runs");
@@ -216,17 +243,25 @@ function ToolCallDetail({
   const writtenText = isFileEdit ? writtenContent(recordOf(tool.input)) : null;
 
   return (
-    <div className={cn("rounded-md border border-line-soft bg-surface p-3", fill && "flex min-h-0 flex-col")}>
-      <div className="flex shrink-0 items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-1.5">
-          <Terminal className="size-4 shrink-0 text-ink-muted" />
-          <span className="truncate text-xs font-medium text-ink">{tool.name || t("runInspect.toolFallback")}</span>
-        </div>
-        <Badge tone={tool.status === "completed" ? "success" : tool.status === "failed" ? "danger" : "neutral"}>
-          {toolStatusLabel(tool.status)}
-        </Badge>
-      </div>
-      <ToolDetailFields details={details} tool={tool} />
+    <div className={fill ? "flex min-h-0 flex-col" : "rounded-md border border-line-soft bg-surface p-3"}>
+      {showHeader
+        ? (
+            <div className="flex shrink-0 items-center justify-between gap-2">
+              <div className="flex min-w-0 items-center gap-1.5">
+                <Terminal className="size-4 shrink-0 text-ink-muted" />
+                <span className="truncate text-xs font-medium text-ink">{tool.name || t("runInspect.toolFallback")}</span>
+              </div>
+              {showStatus
+                ? (
+                    <Badge tone={tool.status === "completed" ? "success" : tool.status === "failed" ? "danger" : "neutral"}>
+                      {toolStatusLabel(tool.status)}
+                    </Badge>
+                  )
+                : null}
+            </div>
+          )
+        : null}
+      <ToolDetailFields details={details} noTopMargin={!showHeader} tool={tool} />
       <div className="mt-2 shrink-0">
         <div className="mb-1 text-[11px] font-medium text-ink-muted">
           {details.command ? t("runInspect.command") : details.path ? t("runInspect.target") : t("runInspect.input")}
@@ -291,9 +326,11 @@ interface ToolDetails {
 
 function ToolDetailFields({
   details,
+  noTopMargin = false,
   tool,
 }: {
   details: ToolDetails;
+  noTopMargin?: boolean;
   tool: StoredToolCall;
 }) {
   const { i18n, t } = useTranslation("runs");
@@ -311,7 +348,7 @@ function ToolDetailFields({
     return null;
 
   return (
-    <dl className="mt-2 grid shrink-0 grid-cols-2 gap-2 rounded-md bg-surface-subtle p-2 text-[11px]">
+    <dl className={cn("grid shrink-0 grid-cols-2 gap-2 rounded-md bg-surface-subtle p-2 text-[11px]", !noTopMargin && "mt-2")}>
       {fields.map(([key, label, value]) => (
         <div className={key === "cwd" || key === "path" ? "col-span-2 min-w-0" : "min-w-0"} key={key}>
           <dt className="text-ink-muted">{label}</dt>

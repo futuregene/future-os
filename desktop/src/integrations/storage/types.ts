@@ -204,6 +204,9 @@ export interface GitReviewFile {
   additions: number;
   deletions: number;
   diff: string;
+  binary: boolean;
+  diffTruncated: boolean;
+  omissionReason?: string | null;
 }
 
 export interface ThreadCleanupSummary {
