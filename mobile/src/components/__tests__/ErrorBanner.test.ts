@@ -27,7 +27,10 @@ describe("friendlyRunError", () => {
     ["API request failed (HTTP 429). Too many requests.", "failure.rateLimited"],
     ["API request failed (HTTP 503).", "failure.serverError"],
     ["[CTX_LIMIT] context too large", "failure.contextLimit"],
-    ["Unable to connect to Future Agent", "failure.connect"],
+    ["Unable to connect to Future Agent", "failure.agentInterrupted"],
+    ["error decoding response body", "failure.upstreamDisconnected"],
+    ["[MODEL_RESPONSE_ERROR] invalid provider stream", "failure.modelResponseError"],
+    ["[AGENT_INTERRUPTED] run ended", "failure.agentInterrupted"],
   ])("maps %s to %s", (message, expected) => {
     expect(friendlyRunError(message, t)).toBe(expected);
   });

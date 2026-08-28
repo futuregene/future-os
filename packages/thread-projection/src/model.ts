@@ -101,6 +101,14 @@ export interface AgentMessage {
   /** The reply was interrupted by the user (its run was cancelled mid-stream). */
   stopped?: boolean;
   /**
+   * User-facing explanation shown after a partial/stopped reply. Kept separate
+   * from `content`/`segments` so a terminal failure cannot be hidden when the
+   * reply already has streamed text, reasoning, or tool activity.
+   */
+  terminationNotice?: string;
+  /** Short failure state rendered in the status divider above the guidance. */
+  terminationTitle?: string;
+  /**
    * The stream ended before the model finished (`agent_end` reason
    * "incomplete"): the text is a truncated prefix, not a finished answer, and
    * must not render as a clean completion.

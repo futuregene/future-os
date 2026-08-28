@@ -170,6 +170,7 @@ pub(super) async fn replace_projection_off_thread(
 pub(super) struct AgentResponse {
     pub content: String,
     pub complete: bool,
+    pub termination_kind: Option<String>,
 }
 
 pub(super) async fn collect_agent_response(
@@ -188,7 +189,7 @@ pub(super) async fn collect_agent_response(
     let mut last_idx: i64 = -1;
     let mut reconnect_attempt = 0_u32;
 
-    let clean_end = 'attach: loop {
+    let (clean_end, termination_kind) = 'attach: loop {
         let attach_result = async {
             let mut client = connect_agent()
                 .await
@@ -311,14 +312,17 @@ pub(super) async fn collect_agent_response(
                         &mut waiting_for_approval,
                     )? {
                         FoldOutcome::Continue => {}
-                        FoldOutcome::Terminal { clean } => {
-                            snapshot_terminal = Some(clean);
+                        FoldOutcome::Terminal {
+                            clean,
+                            termination_kind,
+                        } => {
+                            snapshot_terminal = Some((clean, termination_kind));
                         }
                     }
                 }
                 last_idx = event.snapshot_cursor;
-                if let Some(clean) = snapshot_terminal {
-                    break 'attach clean;
+                if let Some(terminal) = snapshot_terminal {
+                    break 'attach terminal;
                 }
                 continue;
             }
@@ -364,8 +368,11 @@ pub(super) async fn collect_agent_response(
                 &mut waiting_for_approval,
             )? {
                 FoldOutcome::Continue => {}
-                FoldOutcome::Terminal { clean } => {
-                    break 'attach clean;
+                FoldOutcome::Terminal {
+                    clean,
+                    termination_kind,
+                } => {
+                    break 'attach (clean, termination_kind);
                 }
             }
         };
@@ -381,6 +388,7 @@ pub(super) async fn collect_agent_response(
     Ok(AgentResponse {
         content,
         complete: clean_end,
+        termination_kind,
     })
 }
 
@@ -390,7 +398,10 @@ fn reconnect_delay(attempt: u32) -> Duration {
 
 enum FoldOutcome {
     Continue,
-    Terminal { clean: bool },
+    Terminal {
+        clean: bool,
+        termination_kind: Option<String>,
+    },
 }
 
 fn fold_response_event(
@@ -414,6 +425,7 @@ fn fold_response_event(
         "agent_end" => {
             return Ok(FoldOutcome::Terminal {
                 clean: !agent_end_incomplete(data),
+                termination_kind: agent_end_termination_kind(data),
             });
         }
         "error" => {
@@ -439,6 +451,23 @@ pub(super) fn agent_end_incomplete(data: &str) -> bool {
                 .map(str::to_string)
         })
         .is_some_and(|reason| reason == "incomplete")
+}
+
+fn agent_end_termination_kind(data: &str) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(data).ok()?;
+    if value.get("reason").and_then(|reason| reason.as_str()) != Some("incomplete") {
+        return None;
+    }
+    let detected_by = value
+        .get("truncation")
+        .and_then(|truncation| truncation.get("detected_by"))
+        .and_then(|reason| reason.as_str())
+        .unwrap_or_default();
+    let kind = match detected_by {
+        "upstream_disconnected" | "idle_timeout" | "eof_no_terminal" => "upstream_disconnected",
+        _ => "model_response_error",
+    };
+    Some(kind.to_string())
 }
 
 fn event_text(data: &str) -> Option<String> {
@@ -510,7 +539,27 @@ mod tests {
                 &mut waiting
             )
             .unwrap(),
-            FoldOutcome::Terminal { clean: true }
+            FoldOutcome::Terminal { clean: true, .. }
+        ));
+    }
+
+    #[test]
+    fn incomplete_agent_end_preserves_the_user_facing_failure_kind() {
+        let mut content = String::new();
+        let mut waiting = false;
+        let outcome = fold_response_event(
+            "agent_end",
+            r#"{"reason":"incomplete","truncation":{"detected_by":"upstream_disconnected"}}"#,
+            &mut content,
+            &mut waiting,
+        )
+        .unwrap();
+        assert!(matches!(
+            outcome,
+            FoldOutcome::Terminal {
+                clean: false,
+                termination_kind: Some(kind)
+            } if kind == "upstream_disconnected"
         ));
     }
 

@@ -210,6 +210,7 @@ export function timelineFromEntries(entries: HistoryEntry[]): TimelineState {
         ? {
             ...item,
             ...(outcome.status === "failed" ? { failed: true } : {}),
+            ...(outcome.status === "failed" && outcome.error ? { error: outcome.error } : {}),
             ...(outcome.status === "cancelled" ? { stopped: true } : {}),
             ...(item.durationMs == null && outcome.durationMs != null
               ? { durationMs: outcome.durationMs }

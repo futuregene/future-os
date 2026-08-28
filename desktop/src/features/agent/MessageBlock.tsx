@@ -217,6 +217,22 @@ function MessageBlockImpl({
             : !isUser && !segments
                 ? <AgentActivityList items={message.activityItems} workspacePath={workspacePath} />
                 : null}
+          {!isUser && message.terminationNotice
+            ? (
+                <div className="mt-4">
+                  <StatusDivider
+                    label={message.stopped ? t("thread.responseStopped") : (message.terminationTitle ?? t("thread.responseIncomplete"))}
+                  />
+                  {isLast === true && !message.stopped
+                    ? (
+                        <p className={cn("mt-2 text-sm leading-6", message.stopped ? "text-ink-muted" : "text-ink-soft")}>
+                          {message.terminationNotice}
+                        </p>
+                      )
+                    : null}
+                </div>
+              )
+            : null}
           {canRecover
             ? (
                 <div className="mt-3 flex flex-wrap gap-2">
@@ -288,22 +304,6 @@ function MessageBlockImpl({
           {streaming && !isUser && !showThinking && message.thinkingActive
             ? <span className="select-none text-xs text-ink-muted">{t("message.thinking")}</span>
             : null}
-          {!isUser && message.stopped
-            ? (
-                <span
-                  // Reveal on hover like the copy button / MessageMeta — a settled
-                  // row stays clean until hovered. `will-change-[opacity]` keeps the
-                  // fade on the compositor (WKWebView drops in-flow repaints; see
-                  // CopyButton above for the full story).
-                  className={cn(
-                    "select-none text-xs text-ink-muted will-change-[opacity] transition-opacity duration-200",
-                    hovered ? "opacity-100" : "opacity-0",
-                  )}
-                >
-                  {t("message.stopped")}
-                </span>
-              )
-            : null}
         </div>
       </div>
     </article>
@@ -342,12 +342,27 @@ function UserMessageText({ content }: { content: string }) {
   );
 }
 
-/**
- * Inline divider marking where the agent auto-compacted the conversation
- * (history summarized to fit the context window). A hairline rule with a small
- * muted label — the only surfacing of compaction in the UI, since the agent
- * otherwise continues silently. Shows the pre-compaction token count when known.
- */
+function StatusDivider({ label, failed = false, pulsing = false, title }: {
+  label: string;
+  failed?: boolean;
+  pulsing?: boolean;
+  title?: string;
+}) {
+  return (
+    <div
+      aria-label={label}
+      className={cn("flex select-none items-center gap-3 py-1", pulsing && "animate-pulse")}
+      role={failed ? "alert" : "status"}
+      title={title}
+    >
+      <span className={cn("h-px flex-1", failed ? "bg-danger/40" : "bg-line")} />
+      <span className={cn("whitespace-nowrap text-xs", failed ? "text-danger" : "text-ink-muted")}>{label}</span>
+      <span className={cn("h-px flex-1", failed ? "bg-danger/40" : "bg-line")} />
+    </div>
+  );
+}
+
+/** Inline divider marking where the agent auto-compacted the conversation. */
 function CompactionDivider({
   tokensBefore,
   status = "completed",
@@ -373,18 +388,7 @@ function CompactionDivider({
             })
           : t("message.compacted");
   const failed = status === "failed";
-  return (
-    <div
-      aria-label={label}
-      className={`flex select-none items-center gap-3 py-1 ${status === "running" ? "animate-pulse" : ""}`}
-      role={failed ? "alert" : "status"}
-      title={error}
-    >
-      <span className={`h-px flex-1 ${failed ? "bg-danger/40" : "bg-line"}`} />
-      <span className={`whitespace-nowrap text-xs ${failed ? "text-danger" : "text-ink-muted"}`}>{label}</span>
-      <span className={`h-px flex-1 ${failed ? "bg-danger/40" : "bg-line"}`} />
-    </div>
-  );
+  return <StatusDivider failed={failed} label={label} pulsing={status === "running"} title={error} />;
 }
 
 /**

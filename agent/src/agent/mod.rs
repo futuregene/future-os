@@ -36,9 +36,9 @@ pub struct StreamTruncation {
     pub output_len: usize,
     /// Tool calls the model had emitted (executed or not) before cut-off.
     pub tool_calls_so_far: usize,
-    /// `idle_timeout` = the stream went silent for a whole idle window;
-    /// `finish_incomplete` = the provider sent an explicit incomplete finish;
-    /// `eof_no_terminal` = the stream closed without any terminal event.
+    /// Stable reason code such as `upstream_disconnected`,
+    /// `model_response_error`, `finish_incomplete`, `finish_length`,
+    /// `idle_timeout`, or `eof_no_terminal`.
     pub detected_by: String,
 }
 

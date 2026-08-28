@@ -15,6 +15,19 @@ export function buildAgentFailureContent(message: string) {
   return friendlyAgentError(message);
 }
 
+/** Short state for the divider; the accompanying content contains only the next step. */
+export function buildAgentFailureTitle(message: string) {
+  const { key, params } = classifyAgentError(message);
+  const titleKey = `${key}Title`;
+  const title = i18n.t(titleKey, params);
+  return title === titleKey ? i18n.t("agent:failure.runTitle") : title;
+}
+
+/** Explain an explicit user stop without presenting it as a failure. */
+export function userStoppedNotice(): string {
+  return i18n.t("agent:failure.userStopped");
+}
+
 export async function updateRunStatusSafe(
   runId: string,
   status: "completed" | "failed",

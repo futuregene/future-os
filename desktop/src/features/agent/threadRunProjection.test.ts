@@ -1,7 +1,16 @@
 import type { AgentMessage } from "@future-os/thread-projection";
 import type { StoredRun, StoredRunEvent } from "../../integrations/storage/threadStore";
 import { describe, expect, it } from "vitest";
-import { applyRecoveredEvents, applyRunMetadata, deriveRenderFields, mergeStreamingPreview, patchMessage, recoverFailedRuns, runDurationMs, streamingBubbleBase } from "./threadRunProjection";
+import {
+  applyRecoveredEvents,
+  applyRunMetadata,
+  deriveRenderFields,
+  mergeStreamingPreview,
+  patchMessage,
+  recoverFailedRuns,
+  runDurationMs,
+  streamingBubbleBase,
+} from "./threadRunProjection";
 
 function message(id: string, patch: Partial<AgentMessage> = {}): AgentMessage {
   return {
@@ -30,33 +39,34 @@ function applyPatch(
   ...args: Parameters<typeof patchMessage> extends [unknown, ...infer Rest] ? Rest : never
 ): AgentMessage[] {
   let next = state;
-  patchMessage((action) => {
-    next = typeof action === "function" ? action(next) : action;
-  }, ...args);
+  patchMessage(
+    (action) => {
+      next = typeof action === "function" ? action(next) : action;
+    },
+    ...args,
+  );
   return next;
 }
 
 describe("patchMessage", () => {
   it("patches only the matching message and leaves others untouched", () => {
-    const state = applyPatch(
-      [message("a", { content: "one" }), message("b", { content: "two" })],
-      "b",
-      { content: "patched" },
-    );
+    const state = applyPatch([message("a", { content: "one" }), message("b", { content: "two" })], "b", {
+      content: "patched",
+    });
     expect(state.map(m => m.content)).toEqual(["one", "patched"]);
   });
 
   it("supports a functional patch derived from the current message", () => {
-    const state = applyPatch(
-      [message("a", { content: "x", outputTokens: 5 })],
-      "a",
-      prev => ({ outputTokens: (prev.outputTokens ?? 0) + 1 }),
-    );
+    const state = applyPatch([message("a", { content: "x", outputTokens: 5 })], "a", prev => ({
+      outputTokens: (prev.outputTokens ?? 0) + 1,
+    }));
     expect(state[0]?.outputTokens).toBe(6);
   });
 
   it("is a no-op when no id matches", () => {
-    const state = applyPatch([message("a", { content: "x" })], "missing", { content: "y" });
+    const state = applyPatch([message("a", { content: "x" })], "missing", {
+      content: "y",
+    });
     expect(state[0]?.content).toBe("x");
   });
 });
@@ -83,7 +93,12 @@ describe("runDurationMs", () => {
 });
 
 function user(id: string, patch: Partial<AgentMessage> = {}): AgentMessage {
-  return message(id, { role: "user", authorKey: "author.you", status: "complete", ...patch });
+  return message(id, {
+    role: "user",
+    authorKey: "author.you",
+    status: "complete",
+    ...patch,
+  });
 }
 
 function assistant(id: string, patch: Partial<AgentMessage> = {}): AgentMessage {
@@ -103,76 +118,130 @@ function run(id: string, patch: Partial<StoredRun> = {}): StoredRun {
 
 describe("applyRunMetadata", () => {
   it("uses canonical run ids instead of positional or timestamp alignment", () => {
-    const result = applyRunMetadata([
-      user("u1"),
-      assistant("a1", { runId: "r-old", createdAt: "2030-01-01T00:00:00.000Z" }),
-      user("u2"),
-      assistant("a2", { runId: "r-new", createdAt: "2020-01-01T00:00:00.000Z" }),
-    ], [
-      run("r-new", { status: "failed", modelId: "new-model" }),
-      run("r-old", { status: "completed", modelId: "old-model" }),
-    ]);
+    const result = applyRunMetadata(
+      [
+        user("u1"),
+        assistant("a1", {
+          runId: "r-old",
+          createdAt: "2030-01-01T00:00:00.000Z",
+        }),
+        user("u2"),
+        assistant("a2", {
+          runId: "r-new",
+          createdAt: "2020-01-01T00:00:00.000Z",
+        }),
+      ],
+      [
+        run("r-new", { status: "failed", modelId: "new-model" }),
+        run("r-old", { status: "completed", modelId: "old-model" }),
+      ],
+    );
 
-    expect(result[1]).toMatchObject({ id: "a1", runId: "r-old", status: "complete", modelId: "old-model" });
-    expect(result[3]).toMatchObject({ id: "a2", runId: "r-new", status: "failed", modelId: "new-model" });
+    expect(result[1]).toMatchObject({
+      id: "a1",
+      runId: "r-old",
+      status: "complete",
+      modelId: "old-model",
+    });
+    expect(result[3]).toMatchObject({
+      id: "a2",
+      runId: "r-new",
+      status: "failed",
+      modelId: "new-model",
+    });
   });
 
   it("marks the most recent exchange failed when its run failed", () => {
-    const messages = [
-      user("u1"),
-      assistant("a1"),
-      user("u2"),
-      assistant("a2"),
-    ];
+    const messages = [user("u1"), assistant("a1"), user("u2"), assistant("a2")];
     // Newest run first (created_at DESC): a2 ↔ r2 (failed), a1 ↔ r1.
     const result = applyRunMetadata(messages, [
       run("r2", { status: "failed", modelId: "m-2" }),
       run("r1", { status: "completed", modelId: "m-1" }),
     ]);
-    expect(result[3]).toMatchObject({ id: "a2", runId: "r2", status: "failed", modelId: "m-2", stopped: false });
-    expect(result[1]).toMatchObject({ id: "a1", runId: "r1", status: "complete", modelId: "m-1", stopped: false });
+    expect(result[3]).toMatchObject({
+      id: "a2",
+      runId: "r2",
+      status: "failed",
+      modelId: "m-2",
+      stopped: false,
+    });
+    expect(result[1]).toMatchObject({
+      id: "a1",
+      runId: "r1",
+      status: "complete",
+      modelId: "m-1",
+      stopped: false,
+    });
   });
 
   it("marks a cancelled run's exchange as stopped without failing it", () => {
     const result = applyRunMetadata([user("u1"), assistant("a1")], [run("r1", { status: "cancelled" })]);
-    expect(result[1]).toMatchObject({ id: "a1", runId: "r1", status: "complete", stopped: true });
+    expect(result[1]).toMatchObject({
+      id: "a1",
+      runId: "r1",
+      status: "complete",
+      stopped: true,
+    });
+    expect(result[1]?.terminationNotice).toContain("stopped this response manually");
+  });
+
+  it("restores the classified failure notice beside a persisted partial reply", () => {
+    const result = applyRunMetadata(
+      [user("u1"), assistant("a1", { content: "partial" })],
+      [
+        run("r1", {
+          status: "failed",
+          errorMessage: "error decoding response body",
+        }),
+      ],
+    );
+    expect(result[1]?.content).toBe("partial");
+    expect(result[1]?.terminationTitle).toContain("Model service connection interrupted");
+    expect(result[1]?.terminationNotice).toContain("Please wait");
   });
 
   it("aligns from the newest end and ignores extra older runs", () => {
     // One exchange, two runs: only the newest run pairs with the exchange.
-    const result = applyRunMetadata([user("u1"), assistant("a1")], [
-      run("r-new", { status: "failed" }),
-      run("r-old", { status: "completed" }),
-    ]);
-    expect(result[1]).toMatchObject({ id: "a1", runId: "r-new", status: "failed" });
+    const result = applyRunMetadata(
+      [user("u1"), assistant("a1")],
+      [run("r-new", { status: "failed" }), run("r-old", { status: "completed" })],
+    );
+    expect(result[1]).toMatchObject({
+      id: "a1",
+      runId: "r-new",
+      status: "failed",
+    });
   });
 
   it("leaves older exchanges untouched when there are fewer runs than exchanges", () => {
-    const result = applyRunMetadata([
-      user("u1"),
-      assistant("a1"),
-      user("u2"),
-      assistant("a2"),
-    ], [run("r2", { status: "failed" })]);
+    const result = applyRunMetadata(
+      [user("u1"), assistant("a1"), user("u2"), assistant("a2")],
+      [run("r2", { status: "failed" })],
+    );
     // Newest exchange pairs with the only run; the older exchange keeps its defaults.
-    expect(result[3]).toMatchObject({ id: "a2", runId: "r2", status: "failed" });
+    expect(result[3]).toMatchObject({
+      id: "a2",
+      runId: "r2",
+      status: "failed",
+    });
     expect(result[1]?.runId).toBeUndefined();
     expect(result[1]?.status).toBe("complete");
   });
 
   it("does not consume a run slot for a compaction divider", () => {
-    const divider = assistant("div", { content: "", segments: [{ id: "s", kind: "compaction" }] });
-    const result = applyRunMetadata([
-      user("u1"),
-      assistant("a1"),
-      divider,
-      user("u2"),
-      assistant("a2"),
-    ], [
-      run("r2", { status: "failed" }),
-      run("r1", { status: "completed" }),
-    ]);
-    expect(result[4]).toMatchObject({ id: "a2", runId: "r2", status: "failed" });
+    const divider = assistant("div", {
+      content: "",
+      segments: [{ id: "s", kind: "compaction" }],
+    });
+    const result = applyRunMetadata(
+      [user("u1"), assistant("a1"), divider, user("u2"), assistant("a2")],
+      [run("r2", { status: "failed" }), run("r1", { status: "completed" })],
+    );
+    expect(result[4]).toMatchObject({
+      id: "a2",
+      runId: "r2",
+      status: "failed",
+    });
     expect(result[1]).toMatchObject({ id: "a1", runId: "r1" });
     // The divider stays a plain complete marker with no run attached.
     expect(result[2]?.runId).toBeUndefined();
@@ -188,7 +257,13 @@ describe("applyRunMetadata", () => {
         // session-derived exchanges do) so window matching can pair them.
         assistant("a1", { content: "", createdAt: "2026-07-01T10:00:01.000Z" }),
       ],
-      [run("r1", { status: "cancelled", startedAt: stopMs - 6000, endedAt: stopMs })],
+      [
+        run("r1", {
+          status: "cancelled",
+          startedAt: stopMs - 6000,
+          endedAt: stopMs,
+        }),
+      ],
     );
     expect(result[1]?.createdAt).toBe(new Date(stopMs).toISOString());
     expect(result[1]?.stopped).toBe(true);
@@ -199,64 +274,93 @@ describe("applyRunMetadata", () => {
     // projected history ends with u2. Positional newest-first pairing would
     // stamp r2 onto a1 — the previous, successful exchange — and mislabel it as
     // failed. Window matching excludes the orphan instead.
-    const result = applyRunMetadata([
-      user("u1", { createdAt: "2026-07-01T10:00:00.000Z" }),
-      assistant("a1", { content: "answer", createdAt: "2026-07-01T10:00:05.000Z" }),
-      user("u2", { createdAt: "2026-07-01T10:05:00.000Z" }),
-    ], [
-      run("r2", {
-        status: "failed",
-        startedAt: Date.parse("2026-07-01T10:05:00.000Z"),
-        endedAt: Date.parse("2026-07-01T10:05:02.000Z"),
-      }),
-      run("r1", {
-        status: "completed",
-        startedAt: Date.parse("2026-07-01T10:00:00.000Z"),
-        endedAt: Date.parse("2026-07-01T10:00:06.000Z"),
-      }),
-    ]);
-    expect(result[1]).toMatchObject({ id: "a1", runId: "r1", status: "complete" });
+    const result = applyRunMetadata(
+      [
+        user("u1", { createdAt: "2026-07-01T10:00:00.000Z" }),
+        assistant("a1", {
+          content: "answer",
+          createdAt: "2026-07-01T10:00:05.000Z",
+        }),
+        user("u2", { createdAt: "2026-07-01T10:05:00.000Z" }),
+      ],
+      [
+        run("r2", {
+          status: "failed",
+          startedAt: Date.parse("2026-07-01T10:05:00.000Z"),
+          endedAt: Date.parse("2026-07-01T10:05:02.000Z"),
+        }),
+        run("r1", {
+          status: "completed",
+          startedAt: Date.parse("2026-07-01T10:00:00.000Z"),
+          endedAt: Date.parse("2026-07-01T10:00:06.000Z"),
+        }),
+      ],
+    );
+    expect(result[1]).toMatchObject({
+      id: "a1",
+      runId: "r1",
+      status: "complete",
+    });
   });
 
   it("keeps later exchanges aligned when a middle run left no assistant entry", () => {
     // Exchange 2's run failed without an entry; exchange 3 succeeded afterwards.
-    const result = applyRunMetadata([
-      user("u1", { createdAt: "2026-07-01T10:00:00.000Z" }),
-      assistant("a1", { content: "one", createdAt: "2026-07-01T10:00:05.000Z" }),
-      user("u2", { createdAt: "2026-07-01T10:05:00.000Z" }),
-      user("u3", { createdAt: "2026-07-01T10:10:00.000Z" }),
-      assistant("a3", { content: "three", createdAt: "2026-07-01T10:10:05.000Z" }),
-    ], [
-      run("r3", {
-        status: "completed",
-        startedAt: Date.parse("2026-07-01T10:10:00.000Z"),
-        endedAt: Date.parse("2026-07-01T10:10:06.000Z"),
-      }),
-      run("r2", {
-        status: "failed",
-        startedAt: Date.parse("2026-07-01T10:05:00.000Z"),
-        endedAt: Date.parse("2026-07-01T10:05:02.000Z"),
-      }),
-      run("r1", {
-        status: "completed",
-        startedAt: Date.parse("2026-07-01T10:00:00.000Z"),
-        endedAt: Date.parse("2026-07-01T10:00:06.000Z"),
-      }),
-    ]);
-    expect(result[4]).toMatchObject({ id: "a3", runId: "r3", status: "complete" });
-    expect(result[1]).toMatchObject({ id: "a1", runId: "r1", status: "complete" });
+    const result = applyRunMetadata(
+      [
+        user("u1", { createdAt: "2026-07-01T10:00:00.000Z" }),
+        assistant("a1", {
+          content: "one",
+          createdAt: "2026-07-01T10:00:05.000Z",
+        }),
+        user("u2", { createdAt: "2026-07-01T10:05:00.000Z" }),
+        user("u3", { createdAt: "2026-07-01T10:10:00.000Z" }),
+        assistant("a3", {
+          content: "three",
+          createdAt: "2026-07-01T10:10:05.000Z",
+        }),
+      ],
+      [
+        run("r3", {
+          status: "completed",
+          startedAt: Date.parse("2026-07-01T10:10:00.000Z"),
+          endedAt: Date.parse("2026-07-01T10:10:06.000Z"),
+        }),
+        run("r2", {
+          status: "failed",
+          startedAt: Date.parse("2026-07-01T10:05:00.000Z"),
+          endedAt: Date.parse("2026-07-01T10:05:02.000Z"),
+        }),
+        run("r1", {
+          status: "completed",
+          startedAt: Date.parse("2026-07-01T10:00:00.000Z"),
+          endedAt: Date.parse("2026-07-01T10:00:06.000Z"),
+        }),
+      ],
+    );
+    expect(result[4]).toMatchObject({
+      id: "a3",
+      runId: "r3",
+      status: "complete",
+    });
+    expect(result[1]).toMatchObject({
+      id: "a1",
+      runId: "r1",
+      status: "complete",
+    });
   });
 
   it("falls back to positional pairing when no run window matches any exchange (legacy timestamps)", () => {
-    const result = applyRunMetadata([
-      user("u1"),
-      assistant("a1"),
-    ], [
-      run("r1", { status: "failed", startedAt: 1000, endedAt: 2000 }),
-    ]);
+    const result = applyRunMetadata(
+      [user("u1"), assistant("a1")],
+      [run("r1", { status: "failed", startedAt: 1000, endedAt: 2000 })],
+    );
     // a1's 2026 timestamp is outside r1's window, but with no window matches at
     // all the positional fallback must still stamp the run.
-    expect(result[1]).toMatchObject({ id: "a1", runId: "r1", status: "failed" });
+    expect(result[1]).toMatchObject({
+      id: "a1",
+      runId: "r1",
+      status: "failed",
+    });
   });
 
   it("keeps a completed exchange's own reply time rather than restamping it", () => {
@@ -280,15 +384,18 @@ describe("applyRunMetadata", () => {
     // newest settled run onto the partial entry misaligns every pairing and
     // defeats streamingBubbleBase's dedup (the frozen partial renders next to
     // the growing live bubble).
-    const result = applyRunMetadata([
-      user("u1"),
-      assistant("a1", { content: "first answer" }),
-      user("u2"),
-      assistant("a2-partial", { content: "ABC" }),
-    ], [
-      run("r2", { status: "running", createdAt: 2 }),
-      run("r1", { status: "completed", createdAt: 1, modelId: "m-1" }),
-    ]);
+    const result = applyRunMetadata(
+      [
+        user("u1"),
+        assistant("a1", { content: "first answer" }),
+        user("u2"),
+        assistant("a2-partial", { content: "ABC" }),
+      ],
+      [
+        run("r2", { status: "running", createdAt: 2 }),
+        run("r1", { status: "completed", createdAt: 1, modelId: "m-1" }),
+      ],
+    );
     // The in-flight exchange keeps no runId — the streaming bubble owns it.
     expect(result[3]?.runId).toBeUndefined();
     // The settled run pairs with its real owner.
@@ -303,15 +410,18 @@ describe("applyRunMetadata", () => {
     // the user sees a frozen "complete" partial (the core acceptance scenario:
     // "switch to a running conversation and it keeps growing"). applyRunMetadata
     // must strip the stamp so the entry re-enters in-flight handling.
-    const result = applyRunMetadata([
-      user("u1"),
-      assistant("a1", { content: "first answer" }),
-      user("u2"),
-      assistant("a2-partial", { content: "ABC", runId: "r2" }),
-    ], [
-      run("r2", { status: "running", createdAt: 2 }),
-      run("r1", { status: "completed", createdAt: 1, modelId: "m-1" }),
-    ]);
+    const result = applyRunMetadata(
+      [
+        user("u1"),
+        assistant("a1", { content: "first answer" }),
+        user("u2"),
+        assistant("a2-partial", { content: "ABC", runId: "r2" }),
+      ],
+      [
+        run("r2", { status: "running", createdAt: 2 }),
+        run("r1", { status: "completed", createdAt: 1, modelId: "m-1" }),
+      ],
+    );
     // The active run's partial loses its stamp — the streaming bubble owns it.
     expect(result[3]?.runId).toBeUndefined();
     // The settled run still binds its real owner exactly.
@@ -328,14 +438,10 @@ describe("applyRunMetadata", () => {
     // Exchanges == settled runs here: the active run's first LLM call hasn't
     // completed, so its exchange has no entry on disk and the newest assistant
     // exchange belongs to the last settled run.
-    const result = applyRunMetadata([
-      user("u1"),
-      assistant("a1", { content: "answer" }),
-      user("u2"),
-    ], [
-      run("r2", { status: "running", createdAt: 2 }),
-      run("r1", { status: "completed", createdAt: 1 }),
-    ]);
+    const result = applyRunMetadata(
+      [user("u1"), assistant("a1", { content: "answer" }), user("u2")],
+      [run("r2", { status: "running", createdAt: 2 }), run("r1", { status: "completed", createdAt: 1 })],
+    );
     expect(result[1]).toMatchObject({ id: "a1", runId: "r1" });
   });
 
@@ -359,14 +465,24 @@ describe("recoverFailedRuns", () => {
   };
 
   it("appends a failure bubble for a run that failed before any assistant entry", () => {
-    const result = recoverFailedRuns([
-      user("u1", { createdAt: "2026-07-01T10:00:00.000Z" }),
-      assistant("a1", { content: "answer", createdAt: "2026-07-01T10:00:05.000Z" }),
-      user("u2", { createdAt: "2026-07-01T10:05:00.000Z" }),
-    ], [
-      run("r2", { status: "failed", errorMessage: "API request failed (HTTP 402). insufficient credit", ...r2Window }),
-      run("r1", { status: "completed", ...r1Window }),
-    ]);
+    const result = recoverFailedRuns(
+      [
+        user("u1", { createdAt: "2026-07-01T10:00:00.000Z" }),
+        assistant("a1", {
+          content: "answer",
+          createdAt: "2026-07-01T10:00:05.000Z",
+        }),
+        user("u2", { createdAt: "2026-07-01T10:05:00.000Z" }),
+      ],
+      [
+        run("r2", {
+          status: "failed",
+          errorMessage: "API request failed (HTTP 402). insufficient credit",
+          ...r2Window,
+        }),
+        run("r1", { status: "completed", ...r1Window }),
+      ],
+    );
     expect(result).toHaveLength(4);
     const bubble = result[3]!;
     expect(bubble).toMatchObject({
@@ -376,25 +492,37 @@ describe("recoverFailedRuns", () => {
       status: "failed",
       createdAt: new Date(r2Window.endedAt).toISOString(),
     });
-    expect(bubble.content.trim()).not.toBe("");
+    expect(bubble.content).toBe("");
+    expect(bubble.terminationNotice?.trim()).not.toBe("");
   });
 
   it("inserts the bubble at its chronological position when a later exchange succeeded", () => {
-    const result = recoverFailedRuns([
-      user("u1", { createdAt: "2026-07-01T10:00:00.000Z" }),
-      assistant("a1", { content: "one", createdAt: "2026-07-01T10:00:05.000Z", runId: "r1" }),
-      user("u2", { createdAt: "2026-07-01T10:05:00.000Z" }),
-      user("u3", { createdAt: "2026-07-01T10:10:00.000Z" }),
-      assistant("a3", { content: "three", createdAt: "2026-07-01T10:10:05.000Z", runId: "r3" }),
-    ], [
-      run("r3", {
-        status: "completed",
-        startedAt: Date.parse("2026-07-01T10:10:00.000Z"),
-        endedAt: Date.parse("2026-07-01T10:10:06.000Z"),
-      }),
-      run("r2", { status: "failed", errorMessage: "boom", ...r2Window }),
-      run("r1", { status: "completed", ...r1Window }),
-    ]);
+    const result = recoverFailedRuns(
+      [
+        user("u1", { createdAt: "2026-07-01T10:00:00.000Z" }),
+        assistant("a1", {
+          content: "one",
+          createdAt: "2026-07-01T10:00:05.000Z",
+          runId: "r1",
+        }),
+        user("u2", { createdAt: "2026-07-01T10:05:00.000Z" }),
+        user("u3", { createdAt: "2026-07-01T10:10:00.000Z" }),
+        assistant("a3", {
+          content: "three",
+          createdAt: "2026-07-01T10:10:05.000Z",
+          runId: "r3",
+        }),
+      ],
+      [
+        run("r3", {
+          status: "completed",
+          startedAt: Date.parse("2026-07-01T10:10:00.000Z"),
+          endedAt: Date.parse("2026-07-01T10:10:06.000Z"),
+        }),
+        run("r2", { status: "failed", errorMessage: "boom", ...r2Window }),
+        run("r1", { status: "completed", ...r1Window }),
+      ],
+    );
     expect(result.map(m => m.id)).toEqual(["u1", "a1", "u2", "failed_r2", "u3", "a3"]);
   });
 
@@ -402,11 +530,16 @@ describe("recoverFailedRuns", () => {
     // The "prompt acknowledgement omitted run_id" case: the run failed before
     // the agent saved anything — the user's message is the only exchange inside the
     // run's window, so the trust guard must not require an assistant reply.
-    const result = recoverFailedRuns([
-      user("u1", { createdAt: "2026-07-01T10:00:00.000Z" }),
-    ], [
-      run("r1", { status: "failed", errorMessage: "Future Agent prompt acknowledgement omitted run_id.", ...r1Window }),
-    ]);
+    const result = recoverFailedRuns(
+      [user("u1", { createdAt: "2026-07-01T10:00:00.000Z" })],
+      [
+        run("r1", {
+          status: "failed",
+          errorMessage: "Future Agent prompt acknowledgement omitted run_id.",
+          ...r1Window,
+        }),
+      ],
+    );
     expect(result).toHaveLength(2);
     expect(result[1]).toMatchObject({
       id: "failed_r1",
@@ -414,25 +547,27 @@ describe("recoverFailedRuns", () => {
       runId: "r1",
       status: "failed",
     });
-    expect(result[1]!.content.trim()).not.toBe("");
+    expect(result[1]!.content).toBe("");
+    expect(result[1]!.terminationNotice?.trim()).not.toBe("");
   });
 
   it("leaves messages unchanged when the failed run already owns a projected exchange", () => {
     const messages = [
       user("u1", { createdAt: "2026-07-01T10:00:00.000Z" }),
-      assistant("a1", { content: "partial", createdAt: "2026-07-01T10:00:05.000Z", runId: "r1", status: "failed" }),
+      assistant("a1", {
+        content: "partial",
+        createdAt: "2026-07-01T10:00:05.000Z",
+        runId: "r1",
+        status: "failed",
+      }),
     ];
-    const result = recoverFailedRuns(messages, [
-      run("r1", { status: "failed", errorMessage: "boom", ...r1Window }),
-    ]);
+    const result = recoverFailedRuns(messages, [run("r1", { status: "failed", errorMessage: "boom", ...r1Window })]);
     expect(result).toBe(messages);
   });
 
   it("ignores failed runs without a usable start time (legacy rows)", () => {
     const messages = [user("u1"), assistant("a1", { content: "answer" })];
-    const result = recoverFailedRuns(messages, [
-      run("r1", { status: "failed", errorMessage: "boom" }),
-    ]);
+    const result = recoverFailedRuns(messages, [run("r1", { status: "failed", errorMessage: "boom" })]);
     expect(result).toBe(messages);
   });
 
@@ -451,25 +586,20 @@ describe("recoverFailedRuns", () => {
     // meaningless and bubbles would land at the wrong end of history.
     const messages = [
       user("u1", { createdAt: "2026-07-20T09:00:00.000Z" }),
-      assistant("a1", { content: "answer", createdAt: "2026-07-20T09:00:01.000Z" }),
+      assistant("a1", {
+        content: "answer",
+        createdAt: "2026-07-20T09:00:01.000Z",
+      }),
     ];
-    const result = recoverFailedRuns(messages, [
-      run("r1", { status: "failed", errorMessage: "boom", ...r1Window }),
-    ]);
+    const result = recoverFailedRuns(messages, [run("r1", { status: "failed", errorMessage: "boom", ...r1Window })]);
     expect(result).toBe(messages);
   });
 });
 
 describe("applyRecoveredEvents", () => {
   it("fills an empty aborted exchange with the streamed partial text", () => {
-    const messages = [
-      user("u1"),
-      assistant("a1", { content: "", runId: "r1", stopped: true }),
-    ];
-    const result = applyRecoveredEvents(
-      messages,
-      new Map([["r1", events([["text_chunk", { text: "half a poem" }]])]]),
-    );
+    const messages = [user("u1"), assistant("a1", { content: "", runId: "r1", stopped: true })];
+    const result = applyRecoveredEvents(messages, new Map([["r1", events([["text_chunk", { text: "half a poem" }]])]]));
     expect(result[1]?.content).toBe("half a poem");
     expect(result[1]?.segments).toBeDefined();
     // Recovery doesn't touch the stopped marker the run metadata set.
@@ -514,10 +644,7 @@ describe("applyRecoveredEvents", () => {
 
 describe("deriveRenderFields", () => {
   it("prefers event-derived content and segments when the events carried text", () => {
-    const result = deriveRenderFields(
-      events([["text_chunk", { text: "Hello" }]]),
-      "fallback",
-    );
+    const result = deriveRenderFields(events([["text_chunk", { text: "Hello" }]]), "fallback");
     expect(result.content).toBe("Hello");
     expect(result.segments).toBeDefined();
   });
@@ -572,7 +699,9 @@ describe("streamingBubbleBase", () => {
   });
 
   it("returns null when another exchange's persisted reply already covers the live text", () => {
-    const earlier = assistant("a1", { content: "Hello world, how are you today?" });
+    const earlier = assistant("a1", {
+      content: "Hello world, how are you today?",
+    });
     const current = [user("u1"), earlier, user("u2")];
     // u2's exchange has no persisted entry; u1's reply happens to contain the head.
     expect(streamingBubbleBase(current, RUN, BUBBLE, "Hello world, how")).toBeNull();
@@ -584,7 +713,10 @@ describe("streamingBubbleBase", () => {
     // text ("continue" / "yes" / deterministic output) must NOT kill the new
     // bubble — that prefix match was the mis-kill. The runId guard at the top
     // already covers the settled-reload race for canonical data.
-    const earlier = assistant("a1", { runId: "r-prev", content: "Hello world, how are you today?" });
+    const earlier = assistant("a1", {
+      runId: "r-prev",
+      content: "Hello world, how are you today?",
+    });
     const current = [user("u1"), earlier, user("u2")];
     const base = streamingBubbleBase(current, RUN, BUBBLE, "Hello world, how");
     expect(base).not.toBeNull();
@@ -610,7 +742,10 @@ describe("streamingBubbleBase", () => {
     // Defense in depth: a runId that is NOT the active run's (e.g. a stale
     // misaligned stamp) must not shield the in-flight exchange's mid-run snapshot
     // from the dedup — the bubble replaces it either way.
-    const persisted = assistant("a-partial", { content: "ABC", runId: "r-old-settled" });
+    const persisted = assistant("a-partial", {
+      content: "ABC",
+      runId: "r-old-settled",
+    });
     const current = [user("u1"), assistant("a1", { content: "earlier reply" }), user("u2"), persisted];
     const base = streamingBubbleBase(current, RUN, BUBBLE, "ABC");
     expect(base?.some(m => m.id === "a-partial")).toBe(false);
@@ -625,7 +760,16 @@ describe("streamingBubbleBase", () => {
       content: "",
       segments: [
         { id: "s1", kind: "thinking", text: "Let me think…" },
-        { id: "s2", kind: "activity", item: { id: "t1", kind: "read", status: "completed", target: "/a.ts" } },
+        {
+          id: "s2",
+          kind: "activity",
+          item: {
+            id: "t1",
+            kind: "read",
+            status: "completed",
+            target: "/a.ts",
+          },
+        },
       ],
     });
     const current = [user("u1"), assistant("a1", { content: "earlier reply" }), user("u2"), persisted];
@@ -637,7 +781,10 @@ describe("streamingBubbleBase", () => {
   it("keeps a compaction divider sitting at the head of the in-flight exchange", () => {
     // A divider is a marker, not a reply snapshot — the bubble must be
     // appended AFTER it, never replace it.
-    const divider = assistant("div", { content: "", segments: [{ id: "s", kind: "compaction" }] });
+    const divider = assistant("div", {
+      content: "",
+      segments: [{ id: "s", kind: "compaction" }],
+    });
     const current = [user("u1"), divider];
     const base = streamingBubbleBase(current, RUN, BUBBLE, "live text");
     expect(base?.some(m => m.id === "div")).toBe(true);
@@ -646,7 +793,10 @@ describe("streamingBubbleBase", () => {
 
 describe("mergeStreamingPreview", () => {
   it("replaces a persisted mid-run snapshot when switching back to an active thread", () => {
-    const previous = assistant("a1", { content: "earlier reply", runId: "r-old" });
+    const previous = assistant("a1", {
+      content: "earlier reply",
+      runId: "r-old",
+    });
     const partial = assistant("a-partial", {
       content: "好的，根据李白《静夜思》诗意来创作——",
     });
@@ -656,15 +806,12 @@ describe("mergeStreamingPreview", () => {
       status: "streaming",
     });
 
-    const result = mergeStreamingPreview([
-      user("u1"),
-      previous,
-      user("u2"),
-      partial,
-    ], preview);
+    const result = mergeStreamingPreview([user("u1"), previous, user("u2"), partial], preview);
 
     expect(result.map(message => message.id)).toEqual(["u1", "a1", "u2", "stream_r1"]);
-    expect(result.filter(message => message.role === "assistant" && message.content === preview.content)).toHaveLength(1);
+    expect(
+      result.filter(message => message.role === "assistant" && message.content === preview.content),
+    ).toHaveLength(1);
   });
 
   it("does not resurrect a preview after the run's persisted reply has settled", () => {

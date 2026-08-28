@@ -7,7 +7,6 @@ import { Button } from "../../../components/ui/Button";
 import { storedTimeToIso } from "../../../integrations/storage/threadStore";
 import { formatTime } from "../../../lib/date";
 import { emitFutureEvent } from "../../../lib/futureEvents";
-import { friendlyAgentError } from "../../agent/agentMessageFormatters";
 import { formatRunStatus, runTone, shortId } from "../../runs/runDisplayFormatters";
 
 export function RunEmbed({
@@ -45,7 +44,7 @@ export function RunEmbed({
             </div>
           </div>
           {run.errorMessage
-            ? <p className="mt-2 rounded-md bg-danger-soft p-2 text-xs leading-5 text-danger">{friendlyAgentError(run.errorMessage)}</p>
+            ? <p className="mt-2 rounded-md bg-danger-soft p-2 text-xs leading-5 text-danger">{run.errorMessage}</p>
             : null}
           <Button
             className="mt-3"

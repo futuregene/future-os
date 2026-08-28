@@ -295,9 +295,8 @@ export type TimelineItem =
       segments?: TimelineSegment[];
       /** The owning run failed. A handled tool error alone is not recoverable. */
       failed?: boolean;
-      /** Raw agent error of a failed run with no visible content — rendered as
-       *  the friendly failure bubble (desktop parity: failure text is the
-       *  assistant content, not a separate banner). */
+      /** Raw agent error of a failed run — classified into the independent
+       *  status note rendered after any partial assistant content. */
       error?: string;
       /** The user cancelled this run (agent_end state "cancelled"). */
       stopped?: boolean;

@@ -11,8 +11,10 @@ import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import {
   buildAgentFailureContent,
+  buildAgentFailureTitle,
   matchesSettledRun,
   updateRunStatusSafe,
+  userStoppedNotice,
 } from "./agentMessageFormatters";
 import { buildReferenceContext } from "./buildReferencePrompt";
 import { attachmentInputs } from "./messageContent";
@@ -225,6 +227,7 @@ export async function runSendPipeline(
               createdAt: storedTimeToIso(storedAssistantMessage.createdAt),
               outputTokens: abortedRender.outputTokens,
               stopped: true,
+              terminationNotice: userStoppedNotice(),
             });
             onThreadActivity();
           }
@@ -240,6 +243,7 @@ export async function runSendPipeline(
             status: "complete",
             thinkingActive: false,
             stopped: true,
+            terminationNotice: userStoppedNotice(),
           });
           onThreadActivity();
         }
@@ -256,7 +260,11 @@ export async function runSendPipeline(
     // lost) but finalize the run and bubble as failed rather than silently
     // presenting a cut-off reply as complete.
     if (!reply.complete) {
-      const interruptedMessage = i18n.t("agent:thread.responseInterrupted");
+      const interruptedMessage = reply.terminationKind === "upstream_disconnected"
+        ? "[UPSTREAM_DISCONNECTED] model response stream ended before completion"
+        : "[MODEL_RESPONSE_ERROR] response ended before a clean terminal";
+      const interruptedNotice = buildAgentFailureContent(interruptedMessage);
+      const interruptedTitle = buildAgentFailureTitle(interruptedMessage);
       if (!settledElsewhere) {
         await updateRunStatusSafe(run.id, "failed", interruptedMessage);
       }
@@ -265,7 +273,7 @@ export async function runSendPipeline(
       }
       const storedAssistantMessage = clientMessageRecord(
         run.id,
-        reply.content.trim() || buildAgentFailureContent(interruptedMessage),
+        reply.content,
         "failed",
       );
       const partialRender = deriveRenderFields(
@@ -281,6 +289,8 @@ export async function runSendPipeline(
           status: storedAssistantMessage.status,
           createdAt: storedTimeToIso(storedAssistantMessage.createdAt),
           outputTokens: partialRender.outputTokens,
+          terminationNotice: interruptedNotice,
+          terminationTitle: interruptedTitle,
         });
         onThreadActivity();
       }
@@ -335,14 +345,16 @@ export async function runSendPipeline(
         await refreshRecentRun(thread.id, thread.workspaceId);
       }
     }
-    const storedAssistantMessage = run
-      ? clientMessageRecord(run.id, buildAgentFailureContent(message), "failed")
-      : null;
+    const failureContent = buildAgentFailureContent(message);
+    const failureTitle = buildAgentFailureTitle(message);
+    const storedAssistantMessage = run ? clientMessageRecord(run.id, "", "failed") : null;
     if (isCurrentSend()) {
       patchMessage(setMessages, pendingId, previous => ({
         id: storedAssistantMessage?.id ?? previous.id,
         runId: storedAssistantMessage?.runId ?? previous.runId,
-        content: storedAssistantMessage?.content ?? buildAgentFailureContent(message),
+        content: previous.content,
+        terminationNotice: failureContent,
+        terminationTitle: failureTitle,
         status: storedAssistantMessage?.status ?? "failed",
         createdAt: storedAssistantMessage
           ? storedTimeToIso(storedAssistantMessage.createdAt)
