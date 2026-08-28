@@ -377,7 +377,9 @@ mod tests {
 
     #[test]
     fn get_state_wire_round_trip_parses_into_client_state() {
-        use future_rpc::payloads::{GetStatePayload, QueuedRunState, RunStateSnapshot, TerminalAck};
+        use future_rpc::payloads::{
+            GetStatePayload, QueuedRunState, RunStateSnapshot, TerminalAck,
+        };
         let payload = GetStatePayload {
             agent_instance_id: "agent_x".into(),
             model: "future/deepseek-v4-flash".into(),
@@ -447,14 +449,17 @@ mod tests {
         assert_eq!(state.recent_terminal_acks[0].run_sequence, 1);
         assert_eq!(state.recent_terminal_acks[0].reason, "superseded");
         assert_eq!(state.active_run.as_ref().map(|a| a.epoch), Some(3));
-        assert_eq!(state.active_run.as_ref().map(|a| a.last_event_idx), Some(99));
+        assert_eq!(
+            state.active_run.as_ref().map(|a| a.last_event_idx),
+            Some(99)
+        );
         assert_eq!(state.queued_runs[0].display_text, "hi");
         assert_eq!(state.queued_runs[0].queue_position, 1);
     }
 
     #[test]
     fn prompt_ack_wire_round_trip_parses_into_client_run_ack() {
-        use future_rpc::payloads_ext::{RunAck as WireAck, RunAcceptedState};
+        use future_rpc::payloads_ext::{RunAcceptedState, RunAck as WireAck};
         let wire = serde_json::to_value(WireAck {
             run_id: "run_1".into(),
             run_epoch: 3,
