@@ -1,3 +1,9 @@
 [submodule "skills"]
 	path = skills
 	url = https://github.com/futuregene/future-skills.git
+[submodule "tests/provider-protocol/fixtures/rig"]
+	path = tests/provider-protocol/fixtures/rig
+	url = https://github.com/0xPlaygrounds/rig.git
+[submodule "tests/provider-protocol/fixtures/rust-genai"]
+	path = tests/provider-protocol/fixtures/rust-genai
+	url = https://github.com/jeremychone/rust-genai.git

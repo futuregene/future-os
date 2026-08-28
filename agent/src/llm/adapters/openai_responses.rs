@@ -28,7 +28,10 @@ struct ResponseTextState {
 
 #[derive(Debug, Default)]
 struct ResponseReasoningState {
+    /// Stable stream-local identity used only to assemble one output slot.
     id: String,
+    /// Provider identity from the wire. Synthetic assembly ids must never be replayed.
+    provider_id: Option<String>,
     summary_parts: BTreeMap<usize, String>,
     content_parts: BTreeMap<usize, String>,
     emitted_summary_parts: BTreeSet<usize>,
@@ -192,10 +195,7 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
                         });
                     }
                     "reasoning" => {
-                        let id = item
-                            .get("id")
-                            .and_then(Value::as_str)
-                            .unwrap_or("reasoning");
+                        let id = item.get("id").and_then(Value::as_str).unwrap_or("");
                         open_reasoning(state, index, id, &mut events);
                     }
                     _ => {}
@@ -256,10 +256,7 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
                     .get("output_index")
                     .and_then(Value::as_u64)
                     .unwrap_or(0) as usize;
-                let id = event
-                    .get("item_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("reasoning");
+                let id = event.get("item_id").and_then(Value::as_str).unwrap_or("");
                 open_reasoning(state, index, id, &mut events);
                 let summary_index = event
                     .get("summary_index")
@@ -274,10 +271,7 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
                     .get("output_index")
                     .and_then(Value::as_u64)
                     .unwrap_or(0) as usize;
-                let id = event
-                    .get("item_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("reasoning");
+                let id = event.get("item_id").and_then(Value::as_str).unwrap_or("");
                 let summary_index = event
                     .get("summary_index")
                     .and_then(Value::as_u64)
@@ -298,10 +292,7 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
                     .get("output_index")
                     .and_then(Value::as_u64)
                     .unwrap_or(0) as usize;
-                let id = event
-                    .get("item_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("reasoning");
+                let id = event.get("item_id").and_then(Value::as_str).unwrap_or("");
                 let summary_index = event
                     .get("summary_index")
                     .and_then(Value::as_u64)
@@ -319,10 +310,7 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
                     .get("output_index")
                     .and_then(Value::as_u64)
                     .unwrap_or(0) as usize;
-                let id = event
-                    .get("item_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("reasoning");
+                let id = event.get("item_id").and_then(Value::as_str).unwrap_or("");
                 let summary_index = event
                     .get("summary_index")
                     .and_then(Value::as_u64)
@@ -336,10 +324,7 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
                     .get("output_index")
                     .and_then(Value::as_u64)
                     .unwrap_or(0) as usize;
-                let id = event
-                    .get("item_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("reasoning");
+                let id = event.get("item_id").and_then(Value::as_str).unwrap_or("");
                 let content_index = event
                     .get("content_index")
                     .and_then(Value::as_u64)
@@ -353,10 +338,7 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
                     .get("output_index")
                     .and_then(Value::as_u64)
                     .unwrap_or(0) as usize;
-                let id = event
-                    .get("item_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("reasoning");
+                let id = event.get("item_id").and_then(Value::as_str).unwrap_or("");
                 let content_index = event
                     .get("content_index")
                     .and_then(Value::as_u64)
@@ -491,7 +473,8 @@ fn lower_message(message: &crate::types::AgentMessage, input: &mut Vec<Value>) -
                 let openai = provider_metadata.get("openai").and_then(Value::as_object);
                 let id = openai
                     .and_then(|value| value.get("id"))
-                    .and_then(Value::as_str);
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty());
                 let encrypted = openai
                     .and_then(|value| value.get("encrypted_content"))
                     .and_then(Value::as_str);
@@ -503,11 +486,10 @@ fn lower_message(message: &crate::types::AgentMessage, input: &mut Vec<Value>) -
                     .and_then(|value| value.get("content"))
                     .filter(|value| value.is_array())
                     .cloned();
-                if id.is_some()
-                    || encrypted.is_some()
-                    || exact_summary.is_some()
-                    || exact_content.is_some()
-                {
+                // A Responses reasoning input item is provider-owned state.
+                // Keep id-less reasoning for the UI/history, but do not send it
+                // back as though the provider had issued a durable item id.
+                if id.is_some() {
                     flush_message_content(&message.role, &mut pending_content, input);
                     let mut item = Map::new();
                     item.insert("type".into(), json!("reasoning"));
@@ -668,12 +650,25 @@ fn open_reasoning(
     id: &str,
     events: &mut Vec<ModelStreamEvent>,
 ) {
-    if let Entry::Vacant(entry) = state.reasoning_open.entry(index) {
-        entry.insert(ResponseReasoningState {
-            id: id.to_string(),
-            ..Default::default()
-        });
-        events.push(ModelStreamEvent::ReasoningStart { id: id.to_string() });
+    match state.reasoning_open.entry(index) {
+        Entry::Vacant(entry) => {
+            let assembly_id = if id.is_empty() {
+                format!("reasoning-{index}")
+            } else {
+                id.to_string()
+            };
+            entry.insert(ResponseReasoningState {
+                id: assembly_id.clone(),
+                provider_id: (!id.is_empty()).then(|| id.to_string()),
+                ..Default::default()
+            });
+            events.push(ModelStreamEvent::ReasoningStart { id: assembly_id });
+        }
+        Entry::Occupied(mut entry) => {
+            if entry.get().provider_id.is_none() && !id.is_empty() {
+                entry.get_mut().provider_id = Some(id.to_string());
+            }
+        }
     }
 }
 
@@ -878,10 +873,7 @@ fn reconcile_reasoning_item(
     item: &Value,
     events: &mut Vec<ModelStreamEvent>,
 ) {
-    let id = item
-        .get("id")
-        .and_then(Value::as_str)
-        .unwrap_or("reasoning");
+    let id = item.get("id").and_then(Value::as_str).unwrap_or("");
     open_reasoning(state, index, id, events);
     if let Some(summary) = item.get("summary").and_then(Value::as_array) {
         for (summary_index, part) in summary.iter().enumerate() {
@@ -937,9 +929,9 @@ fn openai_reasoning_metadata(
     encrypted_content: Option<&str>,
 ) -> ProviderMetadata {
     let mut value = Map::new();
-    if !reasoning.id.is_empty() {
-        value.insert("id".into(), json!(reasoning.id));
-        value.insert("item_id".into(), json!(reasoning.id));
+    if let Some(provider_id) = &reasoning.provider_id {
+        value.insert("id".into(), json!(provider_id));
+        value.insert("item_id".into(), json!(provider_id));
     }
     if let Some(encrypted_content) = encrypted_content {
         value.insert("encrypted_content".into(), json!(encrypted_content));
@@ -1160,6 +1152,107 @@ mod tests {
             input[0]["content"],
             json!([{"type": "reasoning_text", "text": "raw"}])
         );
+    }
+
+    #[test]
+    fn idless_reasoning_uses_a_synthetic_stream_id_but_is_not_replayed() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = ResponsesState::default();
+        let added = adapter
+            .decode_frame(
+                &frame(
+                    "response.output_item.added",
+                    json!({
+                        "type": "response.output_item.added",
+                        "output_index": 2,
+                        "item": {"type": "reasoning"}
+                    }),
+                ),
+                &mut state,
+            )
+            .unwrap();
+        assert!(matches!(
+            &added[0],
+            ModelStreamEvent::ReasoningStart { id } if id == "reasoning-2"
+        ));
+
+        let done = adapter
+            .decode_frame(
+                &frame(
+                    "response.output_item.done",
+                    json!({
+                        "type": "response.output_item.done",
+                        "output_index": 2,
+                        "item": {
+                            "type": "reasoning",
+                            "summary": [],
+                            "encrypted_content": "cipher"
+                        }
+                    }),
+                ),
+                &mut state,
+            )
+            .unwrap();
+        let ModelStreamEvent::ReasoningEnd {
+            id,
+            provider_metadata,
+        } = &done[0]
+        else {
+            panic!("expected reasoning end")
+        };
+        assert_eq!(id, "reasoning-2");
+        assert!(provider_metadata["openai"].get("id").is_none());
+        assert!(provider_metadata["openai"].get("item_id").is_none());
+
+        let message = crate::types::AgentMessage {
+            role: "assistant".into(),
+            content: vec![ContentBlock::reasoning("", provider_metadata.clone())],
+            ..Default::default()
+        };
+        let mut input = Vec::new();
+        lower_message(&message, &mut input).unwrap();
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn late_wire_reasoning_id_is_persisted_without_changing_the_assembly_id() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = ResponsesState::default();
+        adapter
+            .decode_frame(
+                &frame(
+                    "response.output_item.added",
+                    json!({
+                        "type": "response.output_item.added",
+                        "output_index": 1,
+                        "item": {"type": "reasoning"}
+                    }),
+                ),
+                &mut state,
+            )
+            .unwrap();
+        let done = adapter
+            .decode_frame(
+                &frame(
+                    "response.output_item.done",
+                    json!({
+                        "type": "response.output_item.done",
+                        "output_index": 1,
+                        "item": {"type": "reasoning", "id": "rs_wire", "summary": []}
+                    }),
+                ),
+                &mut state,
+            )
+            .unwrap();
+        let ModelStreamEvent::ReasoningEnd {
+            id,
+            provider_metadata,
+        } = &done[0]
+        else {
+            panic!("expected reasoning end")
+        };
+        assert_eq!(id, "reasoning-1");
+        assert_eq!(provider_metadata["openai"]["id"], "rs_wire");
     }
 
     #[test]
