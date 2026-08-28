@@ -10,7 +10,7 @@ export interface FloatingScrollbarState {
 }
 
 /** Gap between the thumb and the track edges. */
-const INSET = 4;
+const INSET = 1;
 /** Smallest thumb so it stays grabbable on long content. */
 const MIN_THUMB = 36;
 /** How long the thumb lingers after the last scroll. */

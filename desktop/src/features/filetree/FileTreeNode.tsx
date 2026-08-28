@@ -9,7 +9,9 @@ import { fileKind } from "../../lib/fileType";
 
 /** Left indent per tree depth, in px. Depth 0 = root's direct children. */
 const INDENT_STEP = 12;
-const BASE_INDENT = 4;
+// Match the Review file-header inset (`px-2.5` = 10px), while each nested
+// level advances from that shared edge.
+const BASE_INDENT = 10;
 
 export interface FileTreeNodeProps {
   entry: DirEntry;
@@ -61,7 +63,7 @@ export function FileTreeNode({ entry, depth, tree, activePath, onContextMenu, on
           can sit inside without nesting buttons; the leading part stays the
           click/expand target. */}
       <div
-        className="group flex w-full items-center rounded-md pr-1 text-sm text-ink transition-colors hover:bg-surface-subtle"
+        className="group/file-row flex w-full items-center pr-2.5 text-sm text-ink transition-colors hover:bg-surface-subtle"
         style={{ paddingLeft: BASE_INDENT + depth * INDENT_STEP }}
       >
         <button
@@ -88,7 +90,7 @@ export function FileTreeNode({ entry, depth, tree, activePath, onContextMenu, on
               <button
                 aria-label={t("actions", { name: entry.name })}
                 className={cn(
-                  "inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted opacity-0 transition-colors hover:bg-surface hover:text-ink-soft group-hover:opacity-100",
+                  "inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted opacity-0 transition-colors hover:bg-surface hover:text-ink-soft group-hover/file-row:opacity-100",
                   menuActive && "opacity-100",
                 )}
                 onClick={(event) => {

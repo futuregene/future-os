@@ -6,7 +6,10 @@ use std::{
     process::Command,
 };
 
+use crate::shadow_review::{is_sensitive, Limits};
 use crate::store;
+
+const MAX_TOTAL_GIT_DIFF_BYTES: usize = 10 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,6 +33,9 @@ pub struct GitReviewFile {
     additions: i64,
     deletions: i64,
     diff: String,
+    binary: bool,
+    diff_truncated: bool,
+    omission_reason: Option<String>,
 }
 
 /// Cache of the last computed review per (workspace, base, custom_base), keyed
@@ -109,8 +115,12 @@ pub fn get_git_review(
     );
 
     let status_by_path = git_status_by_path(&workspace_path);
+    // Both Git views include the current index and working tree. Their only
+    // distinction is the base: the primary branch for Branch, or HEAD for
+    // Uncommitted.
     let mut files = tracked_diff_files(&workspace_path, &status_by_path, &diff_base.reference);
     append_untracked_files(&workspace_path, &mut files, &status_by_path);
+    apply_total_diff_budget(&mut files);
     files.sort_by(|left, right| left.path.cmp(&right.path));
 
     let additions = files.iter().map(|file| file.additions).sum();
@@ -274,10 +284,26 @@ fn tracked_diff_files(
     .unwrap_or_default();
     let diff_by_path = crate::git_diff_parse::split_unified_patch_by_path(&diff);
 
+    let limits = Limits::default();
     crate::git_diff_parse::parse_numstat(&numstat)
         .into_iter()
         .map(|row| {
             let normalized_path = crate::git_diff_parse::normalize_numstat_path(&row.path);
+            let patch = diff_by_path
+                .get(&normalized_path)
+                .cloned()
+                .unwrap_or_default();
+            let too_large = patch.len() > limits.max_diff_bytes
+                || patch.lines().count() > limits.max_diff_lines;
+            let omission_reason = if is_sensitive(&normalized_path) {
+                Some("sensitive".to_string())
+            } else if row.binary {
+                Some("binary".to_string())
+            } else if too_large {
+                Some("too_large".to_string())
+            } else {
+                None
+            };
             GitReviewFile {
                 status: status_by_path
                     .get(&normalized_path)
@@ -285,14 +311,37 @@ fn tracked_diff_files(
                     .unwrap_or_else(|| "modified".to_string()),
                 additions: row.additions,
                 deletions: row.deletions,
-                diff: diff_by_path
-                    .get(&normalized_path)
-                    .cloned()
-                    .unwrap_or_default(),
+                diff: if omission_reason.is_none() {
+                    patch
+                } else {
+                    String::new()
+                },
                 path: normalized_path,
+                binary: row.binary,
+                diff_truncated: matches!(
+                    omission_reason.as_deref(),
+                    Some("too_large") | Some("total_limit")
+                ),
+                omission_reason,
             }
         })
         .collect()
+}
+
+fn apply_total_diff_budget(files: &mut [GitReviewFile]) {
+    let mut total = 0usize;
+    for file in files {
+        if file.omission_reason.is_some() {
+            continue;
+        }
+        if total.saturating_add(file.diff.len()) > MAX_TOTAL_GIT_DIFF_BYTES {
+            file.diff.clear();
+            file.diff_truncated = true;
+            file.omission_reason = Some("total_limit".to_string());
+            continue;
+        }
+        total += file.diff.len();
+    }
 }
 
 struct DiffBase {
@@ -307,6 +356,7 @@ fn resolve_diff_base(
     upstream: Option<&str>,
 ) -> DiffBase {
     match base.unwrap_or("head") {
+        "branch" => primary_branch_diff_base(workspace_path),
         "upstream" => upstream
             .filter(|value| !value.trim().is_empty())
             .map(|reference| DiffBase {
@@ -347,6 +397,37 @@ fn resolve_diff_base(
     }
 }
 
+fn primary_branch_diff_base(workspace_path: &Path) -> DiffBase {
+    // Prefer the repository's declared default branch, then the conventional
+    // local names. `HEAD` is a safe empty fallback for repositories where no
+    // primary branch can be resolved yet.
+    let remote_default = git_output(
+        workspace_path,
+        ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+    )
+    .ok()
+    .map(|value| value.trim().to_string())
+    .filter(|reference| !reference.is_empty());
+    let candidates = remote_default
+        .into_iter()
+        .chain(["main".to_string(), "master".to_string()]);
+
+    for reference in candidates {
+        if git_output(
+            workspace_path,
+            ["rev-parse", "--verify", &format!("{reference}^{{commit}}")],
+        )
+        .is_ok()
+        {
+            return DiffBase {
+                label: reference.clone(),
+                reference,
+            };
+        }
+    }
+    head_diff_base()
+}
+
 fn head_diff_base() -> DiffBase {
     DiffBase {
         label: "HEAD".to_string(),
@@ -371,8 +452,22 @@ fn append_untracked_files(
             continue;
         }
         let full_path = workspace_path.join(path);
-        let content = fs::read_to_string(&full_path).unwrap_or_default();
+        let bytes = fs::read(&full_path).unwrap_or_default();
+        let text = String::from_utf8(bytes).ok();
+        let binary = text.is_none();
+        let content = text.as_deref().unwrap_or_default();
         let additions = content.lines().count() as i64;
+        let omission_reason = if is_sensitive(path) {
+            Some("sensitive".to_string())
+        } else if binary {
+            Some("binary".to_string())
+        } else if content.len() > Limits::default().max_diff_bytes
+            || content.lines().count() > Limits::default().max_diff_lines
+        {
+            Some("too_large".to_string())
+        } else {
+            None
+        };
         files.push(GitReviewFile {
             path: path.to_string(),
             status: status_by_path
@@ -381,7 +476,14 @@ fn append_untracked_files(
                 .unwrap_or_else(|| "untracked".to_string()),
             additions,
             deletions: 0,
-            diff: pseudo_added_file_diff(path, &content),
+            diff: if omission_reason.is_none() {
+                pseudo_added_file_diff(path, content)
+            } else {
+                String::new()
+            },
+            binary,
+            diff_truncated: matches!(omission_reason.as_deref(), Some("too_large")),
+            omission_reason,
         });
     }
 }
@@ -633,6 +735,55 @@ mod tests {
     }
 
     #[test]
+    fn untracked_sensitive_and_binary_files_do_not_expose_text() {
+        let dir = git_repo("untracked-omissions");
+        std::fs::write(dir.join(".env"), "API_KEY=secret\n").unwrap();
+        std::fs::write(dir.join("image.bin"), [0_u8, 159, 146, 150]).unwrap();
+        let status = git_status_by_path(&dir);
+        let mut files = Vec::new();
+        append_untracked_files(&dir, &mut files, &status);
+
+        let sensitive = files.iter().find(|file| file.path == ".env").unwrap();
+        assert_eq!(sensitive.omission_reason.as_deref(), Some("sensitive"));
+        assert!(sensitive.diff.is_empty());
+        let binary = files.iter().find(|file| file.path == "image.bin").unwrap();
+        assert!(binary.binary);
+        assert_eq!(binary.omission_reason.as_deref(), Some("binary"));
+        assert!(binary.diff.is_empty());
+    }
+
+    #[test]
+    fn review_budget_keeps_file_rows_when_later_diffs_are_omitted() {
+        let mut files = vec![
+            GitReviewFile {
+                path: "first.txt".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                diff: "a".repeat(MAX_TOTAL_GIT_DIFF_BYTES),
+                binary: false,
+                diff_truncated: false,
+                omission_reason: None,
+            },
+            GitReviewFile {
+                path: "later.txt".to_string(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+                diff: "b".to_string(),
+                binary: false,
+                diff_truncated: false,
+                omission_reason: None,
+            },
+        ];
+
+        apply_total_diff_budget(&mut files);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[1].omission_reason.as_deref(), Some("total_limit"));
+        assert!(files[1].diff.is_empty());
+    }
+
+    #[test]
     fn resolve_diff_base_covers_all_branches() {
         let dir = git_repo("base");
         let head = head_diff_base();
@@ -728,6 +879,22 @@ mod tests {
     }
 
     #[test]
+    fn branch_diff_base_uses_primary_branch() {
+        let dir = git_repo("branch-diff");
+        run_git(&dir, &["switch", "-qc", "feature"]);
+        std::fs::write(dir.join("a.txt"), "committed feature change\n").unwrap();
+        run_git(&dir, &["add", "a.txt"]);
+        run_git(&dir, &["commit", "-qm", "feature"]);
+        std::fs::write(dir.join("a.txt"), "uncommitted working-tree change\n").unwrap();
+
+        let primary = primary_branch_diff_base(&dir);
+        assert_eq!(primary.reference, "main");
+        let files = tracked_diff_files(&dir, &git_status_by_path(&dir), &primary.reference);
+        assert_eq!(files.len(), 1);
+        assert!(files[0].diff.contains("uncommitted working-tree change"));
+    }
+
+    #[test]
     fn append_untracked_skips_known_paths() {
         let dir = git_repo("skip-known");
         std::fs::write(dir.join("x.txt"), "hello\n").unwrap();
@@ -740,6 +907,9 @@ mod tests {
             additions: 1,
             deletions: 0,
             diff: String::new(),
+            binary: false,
+            diff_truncated: false,
+            omission_reason: None,
         }];
         append_untracked_files(&dir, &mut files, &by_path);
         assert_eq!(files.len(), 1, "known path must not be appended twice");

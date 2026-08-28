@@ -19,7 +19,7 @@ export function FloatingScrollbar({
   return (
     <div
       className={cn(
-        "group/sb absolute right-0 top-0 z-20 flex w-3 touch-none justify-center",
+        "group/sb absolute right-px top-0 z-20 flex w-2 touch-none justify-end",
         scrollbar.height > 0 ? "pointer-events-auto cursor-grab active:cursor-grabbing" : "pointer-events-none",
       )}
       style={{ height: `${scrollbar.height}px`, transform: `translateY(${scrollbar.top}px)` }}

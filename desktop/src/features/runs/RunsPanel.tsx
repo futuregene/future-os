@@ -5,9 +5,11 @@ import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
 import i18n from "../../i18n";
 import { cn } from "../../lib/cn";
 import { errorMessage } from "../../lib/errors";
+import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
 import { relativizeWorkspacePath } from "../../lib/workspacePath";
 import { toolStatusLabel } from "./runDisplayFormatters";
 import { toolCommand, toolTarget } from "./toolInput";
@@ -36,6 +38,7 @@ export function RunsPanel({ onArchiveFinished, onInspectTool, onTerminateRun, ru
   const [actionErrors, setActionErrors] = useState<Record<string, string | undefined>>({});
   const [archiving, setArchiving] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
+  const listScrollbar = useFloatingScrollbar();
 
   const allEntries = useMemo(() => buildToolEntries(runs, toolsByRun), [runs, toolsByRun]);
   const entries = useMemo(() => allEntries.filter(entry => !entry.run.archivedAt), [allEntries]);
@@ -44,10 +47,24 @@ export function RunsPanel({ onArchiveFinished, onInspectTool, onTerminateRun, ru
   if (entries.length === 0) {
     const hasArchivedPrograms = allEntries.some(entry => entry.run.archivedAt);
     return (
-      <EmptyState
-        detail={t(hasArchivedPrograms ? "runsPanel.emptyDetailArchived" : "runsPanel.emptyDetailNeverRun")}
-        title={t("runsPanel.emptyTitle")}
-      />
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="group relative min-h-0 flex-1 border-t border-line-soft">
+          <div
+            className="floating-scrollbar h-full overflow-x-hidden overflow-y-auto"
+            onScroll={listScrollbar.handleScroll}
+            ref={listScrollbar.scrollRef}
+          >
+            <EmptyState
+              detail={t(hasArchivedPrograms ? "runsPanel.emptyDetailArchived" : "runsPanel.emptyDetailNeverRun")}
+              title={t("runsPanel.emptyTitle")}
+            />
+          </div>
+          <FloatingScrollbar
+            onPointerDown={listScrollbar.handleThumbPointerDown}
+            scrollbar={listScrollbar.scrollbar}
+          />
+        </div>
+      </div>
     );
   }
 
@@ -88,39 +105,53 @@ export function RunsPanel({ onArchiveFinished, onInspectTool, onTerminateRun, ru
   }
 
   return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between gap-3">
-        <div className="text-xs text-ink-muted">
-          {t("runsPanel.runningFinished", { running: runningCount, finished: finishedCount })}
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="shrink-0 px-4 py-1.5">
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-xs text-ink-muted">
+            {t("runsPanel.runningFinished", { running: runningCount, finished: finishedCount })}
+          </div>
+          <Button
+            disabled={archiving || finishedCount === 0}
+            leftIcon={<Archive className="size-3.5" />}
+            onClick={() => void archiveFinished()}
+            size="sm"
+            variant="toolbar"
+          >
+            {t("runsPanel.archiveFinished")}
+          </Button>
         </div>
-        <Button
-          disabled={archiving || finishedCount === 0}
-          leftIcon={<Archive className="size-3.5" />}
-          onClick={() => void archiveFinished()}
-          size="xs"
-          variant="toolbar"
-        >
-          {t("runsPanel.archiveFinished")}
-        </Button>
+        {archiveError
+          ? <div className="mt-2 line-clamp-3 text-xs leading-5 text-danger">{archiveError}</div>
+          : null}
       </div>
-      {archiveError
-        ? <div className="line-clamp-3 text-xs leading-5 text-danger">{archiveError}</div>
-        : null}
-      <div className="space-y-2">
-        {entries.map(entry => (
-          <ToolRow
-            busy={busyRunId === entry.run.id}
-            confirming={confirmRunId === entry.run.id}
-            key={entry.tool.id}
-            entry={entry}
-            workspacePath={scope?.workspacePath}
-            actionError={actionErrors[entry.run.id]}
-            onCancelConfirm={() => setConfirmRunId(null)}
-            onInspect={() => onInspectTool(entry.tool.id)}
-            onRequestTerminate={() => setConfirmRunId(entry.run.id)}
-            onTerminate={() => void terminate(entry.run)}
-          />
-        ))}
+      <div className="group relative min-h-0 flex-1 border-t border-line-soft">
+        <div
+          className="floating-scrollbar h-full overflow-x-hidden overflow-y-auto"
+          onScroll={listScrollbar.handleScroll}
+          ref={listScrollbar.scrollRef}
+        >
+          <div>
+            {entries.map(entry => (
+              <ToolRow
+                busy={busyRunId === entry.run.id}
+                confirming={confirmRunId === entry.run.id}
+                key={entry.tool.id}
+                entry={entry}
+                workspacePath={scope?.workspacePath}
+                actionError={actionErrors[entry.run.id]}
+                onCancelConfirm={() => setConfirmRunId(null)}
+                onInspect={() => onInspectTool(entry.tool.id)}
+                onRequestTerminate={() => setConfirmRunId(entry.run.id)}
+                onTerminate={() => void terminate(entry.run)}
+              />
+            ))}
+          </div>
+        </div>
+        <FloatingScrollbar
+          onPointerDown={listScrollbar.handleThumbPointerDown}
+          scrollbar={listScrollbar.scrollbar}
+        />
       </div>
     </div>
   );
@@ -167,18 +198,34 @@ function ToolRow({
   const meta = [toolLabel(tool), toolStatusLabel(status)].filter(Boolean).join(" · ");
 
   return (
-    <div className="rounded-md border border-line-soft bg-surface p-3">
-      <div className="flex items-start gap-2.5">
-        {/* Icon + chevron sit in a first-line-tall (h-5 == leading-5) box and
-            center within it, so both stay level with the text's first line
-            whether the command wraps to one line or many. */}
+    <div
+      className="group/run-row relative cursor-pointer border-b border-line-soft px-4 py-3 transition-colors hover:bg-surface-subtle focus-visible:bg-surface-subtle focus-visible:outline-none"
+      onClick={(event) => {
+        if ((event.target as HTMLElement).closest("button"))
+          return;
+        onInspect();
+      }}
+      onKeyDown={(event) => {
+        if ((event.target as HTMLElement).closest("button"))
+          return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onInspect();
+        }
+      }}
+      role="button"
+      tabIndex={0}
+    >
+      <div className="flex items-start gap-2.5 pr-7">
+        {/* Icon sits in a first-line-tall (h-5 == leading-5) box, so it remains
+            aligned with the command's first line when that command wraps. */}
         <span className="flex h-5 shrink-0 items-center">
           {isShell
             ? <TerminalSquare className={cn("size-4", running ? "text-accent" : "text-ink-muted")} />
             : <Pencil className={cn("size-4", running ? "text-accent" : "text-ink-muted")} />}
         </span>
         <div className="min-w-0 flex-1">
-          <div className="flex items-start justify-between gap-2">
+          <div className="flex items-start gap-2">
             <div
               className={cn(
                 "min-w-0 flex-1 wrap-break-word text-xs font-normal leading-5 text-ink",
@@ -188,17 +235,6 @@ function ToolRow({
             >
               {primary}
             </div>
-            <span className="flex h-5 shrink-0 items-center">
-              <button
-                aria-label={t("runsPanel.inspectTool")}
-                className="-my-1 inline-flex size-7 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink"
-                onClick={onInspect}
-                title={t("runsPanel.inspectTool")}
-                type="button"
-              >
-                <ChevronRight className="size-4" />
-              </button>
-            </span>
           </div>
           <div className="mt-2 text-xs font-medium text-ink-muted">
             {meta}
@@ -242,6 +278,15 @@ function ToolRow({
             : null}
         </div>
       </div>
+      <button
+        aria-label={t("runsPanel.inspectTool")}
+        className="absolute right-4 top-1/2 inline-flex size-7 -translate-y-1/2 items-center justify-center text-ink-muted opacity-0 group-hover/run-row:opacity-100 group-focus-within/run-row:opacity-100"
+        onClick={onInspect}
+        title={t("runsPanel.inspectTool")}
+        type="button"
+      >
+        <ChevronRight className="size-3.5" />
+      </button>
     </div>
   );
 }

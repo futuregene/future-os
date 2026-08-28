@@ -5,8 +5,10 @@ import { FolderOpen, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
+import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
 import { openPath } from "../../integrations/storage/files";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
+import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
 import { relativizeWorkspacePath } from "../../lib/workspacePath";
 import { FilePreviewOverlay } from "../filepreview/FilePreviewOverlay";
 import { previewKindForPath } from "../filepreview/previewKind";
@@ -37,6 +39,7 @@ export function FileTreePanel({ rootPath, isWorkspace }: { rootPath: string | nu
   }, [rootPath, isWorkspace]);
   const tree = useFileTree(rootPath, showHidden);
   const menu = useLinkContextMenu();
+  const listScrollbar = useFloatingScrollbar();
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Auto-refresh when the agent completes a write/edit/shell tool so newly
@@ -147,8 +150,8 @@ export function FileTreePanel({ rootPath, isWorkspace }: { rootPath: string | nu
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="mb-2 flex flex-wrap items-center gap-2">
-        <label className="mr-auto flex cursor-pointer items-center gap-1.5 text-xs text-ink-soft">
+      <div className="flex shrink-0 items-center justify-between gap-2 px-4 py-1.5">
+        <label className="flex min-w-0 cursor-pointer items-center gap-1.5 text-xs text-ink-soft">
           <input
             checked={showHidden}
             className="size-3.5 accent-accent"
@@ -157,53 +160,64 @@ export function FileTreePanel({ rootPath, isWorkspace }: { rootPath: string | nu
           />
           {t("showHidden")}
         </label>
-        <Button
-          disabled={!rootPath}
-          leftIcon={<FolderOpen className="size-3.5" />}
-          onClick={openWorkspace}
-          size="sm"
-          variant="toolbar"
-        >
-          {t("openWorkspace")}
-        </Button>
-        <Button
-          disabled={refreshing || !rootPath}
-          leftIcon={<RefreshCw className={`size-3.5${refreshing ? " animate-spin" : ""}`} />}
-          onClick={() => void handleRefresh()}
-          size="sm"
-          variant="toolbar"
-        >
-          {t("refresh")}
-        </Button>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button
+            disabled={!rootPath}
+            leftIcon={<FolderOpen className="size-3.5" />}
+            onClick={openWorkspace}
+            size="sm"
+            variant="toolbar"
+          >
+            {t("openWorkspace")}
+          </Button>
+          <Button
+            disabled={refreshing || !rootPath}
+            leftIcon={<RefreshCw className={`size-3.5${refreshing ? " animate-spin" : ""}`} />}
+            onClick={() => void handleRefresh()}
+            size="sm"
+            variant="toolbar"
+          >
+            {t("refresh")}
+          </Button>
+        </div>
       </div>
 
-      {/* The white list box is always mounted so it never flickers in/out — every
-          state (loading, error, empty, tree) renders inside it, centered when
-          there's no list. */}
-      <div className="min-h-0 flex-1 overflow-auto rounded-md border border-line-soft bg-surface p-1">
-        {rootEntries === null
-          ? tree.rootErrored
-            ? <div className="flex h-full items-center justify-center text-sm text-ink-muted">{t("loadFailed")}</div>
-            : showLoading
-              ? <div className="flex h-full items-center justify-center text-sm text-ink-muted">{t("loading")}</div>
-              : null
-          : rootEntries.length === 0
-            ? <div className="flex h-full items-center justify-center text-sm text-ink-muted">{t("empty")}</div>
-            : (
-                <ul>
-                  {rootEntries.map(entry => (
-                    <FileTreeNode
-                      activePath={activeMenuPath}
-                      depth={0}
-                      entry={entry}
-                      key={entry.path}
-                      onContextMenu={handleContextMenu}
-                      onOpenFile={handleOpenFile}
-                      tree={tree}
-                    />
-                  ))}
-                </ul>
-              )}
+      {/* Every state stays mounted in one edge-to-edge scroll region so the
+          boundary and scrollbar do not jump while the tree loads. */}
+      <div className="group relative min-h-0 flex-1 border-t border-line-soft">
+        <div
+          className="floating-scrollbar h-full overflow-x-hidden overflow-y-auto bg-surface"
+          onScroll={listScrollbar.handleScroll}
+          ref={listScrollbar.scrollRef}
+        >
+          {rootEntries === null
+            ? tree.rootErrored
+              ? <div className="flex h-full items-center justify-center text-sm text-ink-muted">{t("loadFailed")}</div>
+              : showLoading
+                ? <div className="flex h-full items-center justify-center text-sm text-ink-muted">{t("loading")}</div>
+                : null
+            : rootEntries.length === 0
+              ? <div className="flex h-full items-center justify-center text-sm text-ink-muted">{t("empty")}</div>
+              : (
+                  <ul>
+                    {rootEntries.map(entry => (
+                      <FileTreeNode
+                        activePath={activeMenuPath}
+                        depth={0}
+                        entry={entry}
+                        key={entry.path}
+                        onContextMenu={handleContextMenu}
+                        onOpenFile={handleOpenFile}
+                        tree={tree}
+                      />
+                    ))}
+                  </ul>
+                )}
+        </div>
+        <FloatingScrollbar
+          onPointerDown={listScrollbar.handleThumbPointerDown}
+          scrollbar={listScrollbar.scrollbar}
+        />
       </div>
 
       <LinkContextMenu controller={menu} items={menuItems} />

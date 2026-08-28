@@ -104,7 +104,7 @@ export function ContextPanel({
     runsScope,
     toolsByRun,
     artifacts,
-    gitReview,
+    gitReviews,
     reviewCapabilities,
     loading,
     refreshContext,
@@ -126,7 +126,8 @@ export function ContextPanel({
   const changePreview = reviewCapabilities?.changePreview ?? "ready";
   const hasContextData = runs.length > 0
     || artifacts.length > 0
-    || (gitReview?.files.length ?? 0) > 0;
+    || (gitReviews.branch?.files.length ?? 0) > 0
+    || (gitReviews.uncommitted?.files.length ?? 0) > 0;
   const showInitialLoading = loading && (!hasContextData || workspaceKindPending);
   const selectedArtifact = selectedArtifactId
     ? artifacts.find(artifact => artifact.id === selectedArtifactId) ?? null
@@ -267,7 +268,7 @@ export function ContextPanel({
 
   return (
     <aside
-      className="relative flex shrink-0 flex-col border-l border-line-soft bg-surface-subtle"
+      className="relative flex shrink-0 flex-col border-l border-line-soft bg-surface"
       style={{ width }}
     >
       {/* Divider: drag to resize the center/right split. Sits astride the left
@@ -316,21 +317,30 @@ export function ContextPanel({
           onClick={onToggleExpanded}
         />
       </header>
-      <div className="min-h-0 flex-1 overflow-auto px-4 pb-4 pt-2">
+      <div className={activeTab === "files"
+        ? "min-h-0 flex-1 overflow-hidden"
+        : activeTab === "runs"
+          ? "min-h-0 flex-1 overflow-hidden"
+          : activeTab === "review"
+            ? "min-h-0 flex-1 overflow-hidden pt-2"
+            : "min-h-0 flex-1 overflow-auto px-4 pb-4 pt-2"}
+      >
         {showInitialLoading ? <div className="py-4 text-sm text-ink-muted">{t("contextPanel.loading")}</div> : null}
         {!showInitialLoading && !activeThread ? <EmptyState title={t("contextPanel.noThreadSelected")} /> : null}
         {!showInitialLoading && activeThread && activeTab === "runs"
           ? selectedTool
             ? (
-                <RunInspectPanel
-                  compact
-                  run={selectedTool.run}
-                  tools={[selectedTool.tool]}
-                  onBack={() => setSelectedToolId(null)}
-                />
+                <div className="h-full overflow-auto px-4 pb-4">
+                  <RunInspectPanel
+                    compact
+                    run={selectedTool.run}
+                    tools={[selectedTool.tool]}
+                    onBack={() => setSelectedToolId(null)}
+                  />
+                </div>
               )
             : selectedToolId
-              ? <div className="py-4 text-sm text-ink-muted">{t("contextPanel.loading")}</div>
+              ? <div className="px-4 py-4 text-sm text-ink-muted">{t("contextPanel.loading")}</div>
               : (
                   <RunsPanel
                     runs={runs}
@@ -346,7 +356,9 @@ export function ContextPanel({
           ? (
               <ReviewPanel
                 changePreview={changePreview}
-                review={gitReview}
+                branchReview={gitReviews.branch}
+                isGitWorkspace={reviewCapabilities?.isGitWorkspace ?? null}
+                uncommittedReview={gitReviews.uncommitted}
                 threadId={activeThread.id}
               />
             )

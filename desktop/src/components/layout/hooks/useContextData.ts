@@ -44,6 +44,13 @@ interface RunsContextSnapshot {
   toolsByRun: Record<string, StoredToolCall[]>;
 }
 
+export interface GitReviewTabs {
+  branch: GitReview | null;
+  uncommitted: GitReview | null;
+}
+
+const EMPTY_GIT_REVIEWS: GitReviewTabs = { branch: null, uncommitted: null };
+
 const EMPTY_RUNS_SNAPSHOT: RunsContextSnapshot = { scope: null, runs: [], toolsByRun: {} };
 
 /**
@@ -67,7 +74,7 @@ export function useContextData({
   // thread switch from rendering stale rows through a newer workspace path.
   const [runsSnapshot, setRunsSnapshot] = useState<RunsContextSnapshot>(EMPTY_RUNS_SNAPSHOT);
   const [artifacts, setArtifacts] = useState<StoredArtifact[]>([]);
-  const [gitReview, setGitReview] = useState<GitReview | null>(null);
+  const [gitReviews, setGitReviews] = useState<GitReviewTabs>(EMPTY_GIT_REVIEWS);
   const [reviewCapabilities, setReviewCapabilities] = useState<WorkspaceReviewCapabilities | null>(null);
   const [loading, setLoading] = useState(false);
   const refreshGenerationRef = useRef(0);
@@ -80,7 +87,7 @@ export function useContextData({
     if (!activeThreadId) {
       setRunsSnapshot(EMPTY_RUNS_SNAPSHOT);
       setArtifacts([]);
-      setGitReview(null);
+      setGitReviews(EMPTY_GIT_REVIEWS);
       setLoading(false);
       return;
     }
@@ -110,15 +117,15 @@ export function useContextData({
           return;
       }
 
-      const [nextRuns, nextGitReview, nextCapabilities] = await Promise.all([
+      const [nextRuns, nextGitReviews, nextCapabilities] = await Promise.all([
         listRuns(activeThreadId),
         // C3: only run the whole-tree git diff while the Review tab is showing it.
         activeWorkspaceId && activeTab === "review"
-          ? getGitReview({
-              base: "head",
-              workspaceId: activeWorkspaceId,
-            })
-          : Promise.resolve(null),
+          ? Promise.all([
+              getGitReview({ base: "branch", workspaceId: activeWorkspaceId }),
+              getGitReview({ base: "head", workspaceId: activeWorkspaceId }),
+            ]).then(([branch, uncommitted]) => ({ branch, uncommitted }))
+          : Promise.resolve(EMPTY_GIT_REVIEWS),
         activeWorkspaceId && activeThreadMode === "workspace"
           ? getWorkspaceReviewCapabilities(activeWorkspaceId)
           : Promise.resolve(null),
@@ -141,14 +148,14 @@ export function useContextData({
         toolsByRun: Object.fromEntries(toolEntries),
       });
       setArtifacts(nextArtifacts);
-      setGitReview(nextGitReview);
+      setGitReviews(nextGitReviews);
       setReviewCapabilities(nextCapabilities);
     }
     catch {
       if (isCurrentRefresh()) {
         setRunsSnapshot(EMPTY_RUNS_SNAPSHOT);
         setArtifacts([]);
-        setGitReview(null);
+        setGitReviews(EMPTY_GIT_REVIEWS);
       }
     }
   }, [activeTab, activeThreadId, activeThreadMode, activeWorkspaceId, activeWorkspacePath, workspaceScopeReady]);
@@ -181,7 +188,7 @@ export function useContextData({
       spinnerShownAt = performance.now();
       setRunsSnapshot(EMPTY_RUNS_SNAPSHOT);
       setArtifacts([]);
-      setGitReview(null);
+      setGitReviews(EMPTY_GIT_REVIEWS);
       setLoading(true);
     }, LOADING_SPINNER_DELAY_MS);
 
@@ -238,7 +245,7 @@ export function useContextData({
     runsScope: runsSnapshot.scope,
     toolsByRun: runsSnapshot.toolsByRun,
     artifacts,
-    gitReview,
+    gitReviews,
     reviewCapabilities,
     loading,
     refreshContext,
