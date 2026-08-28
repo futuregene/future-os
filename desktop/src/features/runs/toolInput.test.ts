@@ -30,6 +30,31 @@ describe("toolInput", () => {
     expect(toolTarget(null)).toBeNull();
   });
 
+  it("toolCommand reads a field from a still-streaming partial JSON object", () => {
+    // The value's closing quote has arrived, the rest of the object hasn't.
+    expect(toolCommand("{\"command\": \"cd /tmp && ls\"")).toBe("cd /tmp && ls");
+    // Whitespace variants between key, colon, and value.
+    expect(toolCommand("{\"command\":\"grep -n x\"")).toBe("grep -n x");
+    // Value quote not closed yet — nothing safe to surface.
+    expect(toolCommand("{\"command\": \"cd /tmp")).toBeNull();
+    // A blank extracted value is skipped, not surfaced.
+    expect(toolCommand("{\"command\": \"\"")).toBeNull();
+  });
+
+  it("toolTarget reads a field from a partial JSON object", () => {
+    expect(toolTarget("{\"file_path\": \"src/a.ts\"")).toBe("src/a.ts");
+    // Respects the key set: a partial command is not a target.
+    expect(toolTarget("{\"command\": \"ls\"")).toBeNull();
+    // Escaped content inside the closed quote is decoded.
+    expect(toolTarget("{\"path\": \"a\\\"b.ts\"")).toBe("a\"b.ts");
+  });
+
+  it("partial extraction also unwraps a double-encoded partial payload", () => {
+    // Outer JSON string is complete; the inner object it wraps is partial.
+    const partialDouble = JSON.stringify("{\"file_path\": \"src/a.ts\"");
+    expect(toolTarget(partialDouble)).toBe("src/a.ts");
+  });
+
   it("recordOf narrows objects and rejects arrays / scalars", () => {
     expect(recordOf("{\"a\":1}")).toEqual({ a: 1 });
     expect(recordOf("[1,2,3]")).toBeNull();
