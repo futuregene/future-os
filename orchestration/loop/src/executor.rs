@@ -52,6 +52,11 @@ pub const DEFAULT_MAX_INCOMPLETE_RETRIES: u32 = 3;
 /// Whether a turn's error is a recoverable rate-limit (HTTP 429 / overloaded).
 /// These are NOT science failures — they are throttle events — so the loop
 /// must back off, not count them toward a repair budget or replan.
+///
+/// NOTE: this is deliberately narrow (429-only) because the caller uses it
+/// for two things: failure classification AND the 45s cool-down sleep before
+/// relaunch. Classification of all infra causes (rate-limit OR upstream
+/// transport) goes through `is_infra_recoverable_error`.
 pub fn is_rate_limit_error(error: Option<&str>) -> bool {
     match error {
         None => false,
@@ -63,6 +68,47 @@ pub fn is_rate_limit_error(error: Option<&str>) -> bool {
                 || lower.contains("overloaded")
         }
     }
+}
+
+/// Whether a turn's error is an upstream transport failure — the provider or
+/// the network cut the response mid-stream. reqwest folds every body-read
+/// failure (connection reset, premature EOF, content decoding) into the one
+/// opaque message `error decoding response body` (`Kind::Decode`); the agent
+/// surfaces its own idle / disconnect verdicts as `[UPSTREAM_DISCONNECTED] …`.
+/// None of these are plan problems, so they must not count toward the repair
+/// budget or page the supervisor — same policy as HTTP 429.
+pub fn is_transport_error(error: Option<&str>) -> bool {
+    // Lower-cased marker substrings. Deliberately conservative: science
+    // failure messages (validator output, proof/derivation errors) never
+    // contain these, and the agent's own verdicts are exact strings.
+    const MARKERS: &[&str] = &[
+        "decoding response body",
+        "upstream_disconnected",
+        "upstream disconnected",
+        "stream was idle",
+        "connection reset",
+        "connection closed",
+        "unexpected eof",
+        "error reading a body",
+        "broken pipe",
+        "reset by peer",
+        "event stream gap",
+    ];
+    match error {
+        None => false,
+        Some(e) => {
+            let lower = e.to_lowercase();
+            MARKERS.iter().any(|marker| lower.contains(marker))
+        }
+    }
+}
+
+/// Whether a turn's error is infrastructure-recoverable: a throttle event
+/// (HTTP 429 / overloaded) or an upstream transport failure. Neither is a
+/// science failure — the loop backs off / lets the orchestrator relaunch,
+/// and must never burn the repair budget or replan for them.
+pub fn is_infra_recoverable_error(error: Option<&str>) -> bool {
+    is_rate_limit_error(error) || is_transport_error(error)
 }
 
 /// Classify a turn's failure into the writeback ledger (A). Backward-compat:
@@ -77,7 +123,7 @@ pub fn classify_failure(record: &crate::state::RunRecord) -> crate::state::Failu
         }
     }
     if record.terminal_state == "error" {
-        return if is_rate_limit_error(record.error.as_deref()) {
+        return if is_infra_recoverable_error(record.error.as_deref()) {
             FailureKind::InfraRecoverable
         } else {
             FailureKind::HardError
@@ -431,6 +477,52 @@ mod validator_tests {
     }
 
     #[test]
+    fn transport_error_detection() {
+        use super::is_transport_error;
+        // reqwest folds every mid-stream body failure into this one message.
+        assert!(is_transport_error(Some("error decoding response body")));
+        // The agent's disconnect verdicts (post-#424 prefix included).
+        assert!(is_transport_error(Some(
+            "[UPSTREAM_DISCONNECTED] error decoding response body"
+        )));
+        assert!(is_transport_error(Some(
+            "[UPSTREAM_DISCONNECTED] model response stream was idle for 45 seconds"
+        )));
+        // Transport-level body failures.
+        assert!(is_transport_error(Some("connection reset by peer")));
+        assert!(is_transport_error(Some("unexpected eof")));
+        assert!(is_transport_error(Some("error reading a body")));
+        assert!(is_transport_error(Some("broken pipe")));
+        // Case-insensitive.
+        assert!(is_transport_error(Some("ERROR DECODING RESPONSE BODY")));
+        // Science failures and unrelated messages must NOT match.
+        assert!(!is_transport_error(Some("validator exited 1")));
+        assert!(!is_transport_error(Some("timeout")));
+        assert!(!is_transport_error(Some(
+            "[CTX_LIMIT] Request exceeds the model context limit"
+        )));
+        assert!(!is_transport_error(None));
+    }
+
+    #[test]
+    fn infra_recoverable_error_detection() {
+        use super::is_infra_recoverable_error;
+        // Throttle events.
+        assert!(is_infra_recoverable_error(Some("Rate limited (HTTP 429)")));
+        assert!(is_infra_recoverable_error(Some("server overloaded")));
+        // Upstream transport failures.
+        assert!(is_infra_recoverable_error(Some(
+            "error decoding response body"
+        )));
+        assert!(is_infra_recoverable_error(Some(
+            "[UPSTREAM_DISCONNECTED] model response stream was idle"
+        )));
+        // Science failures stay hard.
+        assert!(!is_infra_recoverable_error(Some("validator exited 1")));
+        assert!(!is_infra_recoverable_error(None));
+    }
+
+    #[test]
     fn classify_failure_covers_all_terminal_branches() {
         use super::classify_failure;
         use crate::state::{FailureKind, RunRecord, TaskValidation, ValidationStatus};
@@ -479,7 +571,21 @@ mod validator_tests {
             classify_failure(&rec("error", Some("Rate limited (HTTP 429)"), None)),
             FailureKind::InfraRecoverable
         );
-        // error + non-rate-limit → hard error.
+        // error + upstream transport failure (provider cut the stream) →
+        // infra-recoverable, same policy as 429.
+        assert_eq!(
+            classify_failure(&rec("error", Some("error decoding response body"), None)),
+            FailureKind::InfraRecoverable
+        );
+        assert_eq!(
+            classify_failure(&rec(
+                "error",
+                Some("[UPSTREAM_DISCONNECTED] model response stream was idle for 45 seconds"),
+                None
+            ),),
+            FailureKind::InfraRecoverable
+        );
+        // error + non-infra → hard error.
         assert_eq!(
             classify_failure(&rec("error", Some("validator exited 1"), None)),
             FailureKind::HardError
