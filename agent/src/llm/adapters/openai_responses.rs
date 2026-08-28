@@ -7,7 +7,7 @@ use crate::types::{ContentBlock, ProviderMetadata, Usage};
 use anyhow::{anyhow, bail, Result};
 use serde_json::{json, Map, Value};
 use std::any::Any;
-use std::collections::{btree_map::Entry, BTreeMap};
+use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
 
 pub struct OpenAiResponsesAdapter;
 
@@ -20,10 +20,26 @@ struct ResponseToolState {
 }
 
 #[derive(Debug, Default)]
+struct ResponseTextState {
+    id: String,
+    text: String,
+    open: bool,
+}
+
+#[derive(Debug, Default)]
+struct ResponseReasoningState {
+    id: String,
+    summary_parts: BTreeMap<usize, String>,
+    content_parts: BTreeMap<usize, String>,
+    emitted_summary_parts: BTreeSet<usize>,
+}
+
+#[derive(Debug, Default)]
 struct ResponsesState {
-    text_open: BTreeMap<usize, String>,
-    reasoning_open: BTreeMap<usize, String>,
+    texts: BTreeMap<usize, ResponseTextState>,
+    reasoning_open: BTreeMap<usize, ResponseReasoningState>,
     tools: BTreeMap<usize, ResponseToolState>,
+    finished_output_items: BTreeSet<usize>,
     finished: bool,
 }
 
@@ -84,16 +100,39 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
         if let Some(max_tokens) = target.generation.max_output_tokens {
             body["max_output_tokens"] = json!(max_tokens);
         }
+        if let Some(prompt_cache_options) = &config.prompt_cache_options {
+            body["prompt_cache_options"] = prompt_cache_options.clone();
+        }
         let level = target.generation.thinking_level.as_str();
-        if target.capabilities.reasoning.supported && !level.is_empty() && level != "off" {
-            let mapped = target
-                .capabilities
-                .reasoning
-                .levels
-                .get(level)
-                .and_then(Value::as_str)
-                .unwrap_or(level);
-            body["reasoning"] = json!({"effort": mapped, "summary": "auto"});
+        let has_responses_reasoning_config =
+            config.reasoning_context.is_some() || config.reasoning_mode.is_some();
+        if target.capabilities.reasoning.supported
+            && level != "off"
+            && (!level.is_empty() || has_responses_reasoning_config)
+        {
+            let mut reasoning = Map::new();
+            if !level.is_empty() {
+                let mapped = target
+                    .capabilities
+                    .reasoning
+                    .levels
+                    .get(level)
+                    .and_then(Value::as_str)
+                    .unwrap_or(level);
+                reasoning.insert("effort".into(), json!(mapped));
+            }
+            if config.supports_reasoning_summary {
+                reasoning.insert("summary".into(), json!("auto"));
+            }
+            if let Some(context) = &config.reasoning_context {
+                reasoning.insert("context".into(), json!(context));
+            }
+            if let Some(mode) = &config.reasoning_mode {
+                reasoning.insert("mode".into(), json!(mode));
+            }
+            if !reasoning.is_empty() {
+                body["reasoning"] = Value::Object(reasoning);
+            }
         }
         Ok(body)
     }
@@ -157,8 +196,7 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
                             .get("id")
                             .and_then(Value::as_str)
                             .unwrap_or("reasoning");
-                        state.reasoning_open.insert(index, id.to_string());
-                        events.push(ModelStreamEvent::ReasoningStart { id: id.to_string() });
+                        open_reasoning(state, index, id, &mut events);
                     }
                     _ => {}
                 }
@@ -172,15 +210,8 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
                     .get("item_id")
                     .and_then(Value::as_str)
                     .unwrap_or("text");
-                if let Entry::Vacant(entry) = state.text_open.entry(index) {
-                    entry.insert(id.to_string());
-                    events.push(ModelStreamEvent::TextStart { id: id.to_string() });
-                }
                 if let Some(delta) = event.get("delta").and_then(Value::as_str) {
-                    events.push(ModelStreamEvent::TextDelta {
-                        id: id.to_string(),
-                        text: delta.to_string(),
-                    });
+                    append_text_delta(state, index, id, delta, &mut events);
                 }
             }
             "response.output_text.done" => {
@@ -188,9 +219,12 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
                     .get("output_index")
                     .and_then(Value::as_u64)
                     .unwrap_or(0) as usize;
-                if let Some(id) = state.text_open.remove(&index) {
-                    events.push(ModelStreamEvent::TextEnd { id });
-                }
+                let id = event
+                    .get("item_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("text");
+                let text = event.get("text").and_then(Value::as_str);
+                reconcile_text(state, index, id, text, true, &mut events);
             }
             "response.refusal.delta" => {
                 let index = event
@@ -201,15 +235,8 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
                     .get("item_id")
                     .and_then(Value::as_str)
                     .unwrap_or("refusal");
-                if let Entry::Vacant(entry) = state.text_open.entry(index) {
-                    entry.insert(id.to_string());
-                    events.push(ModelStreamEvent::TextStart { id: id.to_string() });
-                }
                 if let Some(delta) = event.get("delta").and_then(Value::as_str) {
-                    events.push(ModelStreamEvent::TextDelta {
-                        id: id.to_string(),
-                        text: delta.to_string(),
-                    });
+                    append_text_delta(state, index, id, delta, &mut events);
                 }
             }
             "response.refusal.done" => {
@@ -217,11 +244,14 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
                     .get("output_index")
                     .and_then(Value::as_u64)
                     .unwrap_or(0) as usize;
-                if let Some(id) = state.text_open.remove(&index) {
-                    events.push(ModelStreamEvent::TextEnd { id });
-                }
+                let id = event
+                    .get("item_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("refusal");
+                let text = event.get("refusal").and_then(Value::as_str);
+                reconcile_text(state, index, id, text, true, &mut events);
             }
-            "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
+            "response.reasoning_summary_part.added" => {
                 let index = event
                     .get("output_index")
                     .and_then(Value::as_u64)
@@ -230,15 +260,109 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
                     .get("item_id")
                     .and_then(Value::as_str)
                     .unwrap_or("reasoning");
-                if let Entry::Vacant(entry) = state.reasoning_open.entry(index) {
-                    entry.insert(id.to_string());
-                    events.push(ModelStreamEvent::ReasoningStart { id: id.to_string() });
+                open_reasoning(state, index, id, &mut events);
+                let summary_index = event
+                    .get("summary_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
+                if let Some(reasoning) = state.reasoning_open.get_mut(&index) {
+                    reasoning.summary_parts.entry(summary_index).or_default();
                 }
+            }
+            "response.reasoning_summary_text.delta" => {
+                let index = event
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
+                let id = event
+                    .get("item_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("reasoning");
+                let summary_index = event
+                    .get("summary_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
                 if let Some(delta) = event.get("delta").and_then(Value::as_str) {
-                    events.push(ModelStreamEvent::ReasoningDelta {
-                        id: id.to_string(),
-                        text: delta.to_string(),
-                    });
+                    append_reasoning_summary_delta(
+                        state,
+                        index,
+                        id,
+                        summary_index,
+                        delta,
+                        &mut events,
+                    );
+                }
+            }
+            "response.reasoning_summary_part.done" => {
+                let index = event
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
+                let id = event
+                    .get("item_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("reasoning");
+                let summary_index = event
+                    .get("summary_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
+                if let Some(text) = event
+                    .get("part")
+                    .and_then(|part| part.get("text"))
+                    .and_then(Value::as_str)
+                {
+                    reconcile_reasoning_summary(state, index, id, summary_index, text, &mut events);
+                }
+            }
+            "response.reasoning_summary_text.done" => {
+                let index = event
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
+                let id = event
+                    .get("item_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("reasoning");
+                let summary_index = event
+                    .get("summary_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
+                if let Some(text) = event.get("text").and_then(Value::as_str) {
+                    reconcile_reasoning_summary(state, index, id, summary_index, text, &mut events);
+                }
+            }
+            "response.reasoning_text.delta" => {
+                let index = event
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
+                let id = event
+                    .get("item_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("reasoning");
+                let content_index = event
+                    .get("content_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
+                if let Some(delta) = event.get("delta").and_then(Value::as_str) {
+                    append_reasoning_content(state, index, id, content_index, delta, &mut events);
+                }
+            }
+            "response.reasoning_text.done" => {
+                let index = event
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
+                let id = event
+                    .get("item_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("reasoning");
+                let content_index = event
+                    .get("content_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
+                if let Some(text) = event.get("text").and_then(Value::as_str) {
+                    reconcile_reasoning_content(state, index, id, content_index, text, &mut events);
                 }
             }
             "response.function_call_arguments.delta" => {
@@ -263,59 +387,12 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
                     .and_then(Value::as_u64)
                     .unwrap_or(0) as usize;
                 let item = event.get("item").unwrap_or(&Value::Null);
-                match item.get("type").and_then(Value::as_str).unwrap_or("") {
-                    "function_call" => {
-                        let tool =
-                            state
-                                .tools
-                                .remove(&index)
-                                .unwrap_or_else(|| ResponseToolState {
-                                    item_id: item
-                                        .get("id")
-                                        .and_then(Value::as_str)
-                                        .unwrap_or("")
-                                        .into(),
-                                    call_id: item
-                                        .get("call_id")
-                                        .and_then(Value::as_str)
-                                        .unwrap_or("")
-                                        .into(),
-                                    name: item
-                                        .get("name")
-                                        .and_then(Value::as_str)
-                                        .unwrap_or("")
-                                        .into(),
-                                    arguments: String::new(),
-                                });
-                        let arguments = item
-                            .get("arguments")
-                            .cloned()
-                            .unwrap_or_else(|| Value::String(tool.arguments.clone()));
-                        events.push(ModelStreamEvent::ToolInputEnd {
-                            index,
-                            id: tool.call_id,
-                            name: tool.name,
-                            arguments: parse_json_arguments(&arguments),
-                            provider_metadata: openai_item_metadata(&tool.item_id, None),
-                        });
-                    }
-                    "reasoning" => {
-                        let id = item
-                            .get("id")
-                            .and_then(Value::as_str)
-                            .unwrap_or("reasoning");
-                        state.reasoning_open.remove(&index);
-                        let encrypted = item.get("encrypted_content").and_then(Value::as_str);
-                        events.push(ModelStreamEvent::ReasoningEnd {
-                            id: id.to_string(),
-                            provider_metadata: openai_item_metadata(id, encrypted),
-                        });
-                    }
-                    _ => {}
-                }
+                reconcile_output_item(state, index, item, &mut events);
+                state.finished_output_items.insert(index);
             }
             "response.completed" => {
                 let response = event.get("response").unwrap_or(&Value::Null);
+                reconcile_response_output(state, response, &mut events);
                 let usage = response
                     .get("usage")
                     .filter(|value| !value.is_null())
@@ -344,6 +421,7 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
             }
             "response.incomplete" => {
                 let response = event.get("response").unwrap_or(&Value::Null);
+                reconcile_response_output(state, response, &mut events);
                 let reason = incomplete_reason(response);
                 events.extend(close_open(state));
                 events.push(ModelStreamEvent::Finish {
@@ -417,7 +495,19 @@ fn lower_message(message: &crate::types::AgentMessage, input: &mut Vec<Value>) -
                 let encrypted = openai
                     .and_then(|value| value.get("encrypted_content"))
                     .and_then(Value::as_str);
-                if id.is_some() || encrypted.is_some() {
+                let exact_summary = openai
+                    .and_then(|value| value.get("summary"))
+                    .filter(|value| value.is_array())
+                    .cloned();
+                let exact_content = openai
+                    .and_then(|value| value.get("content"))
+                    .filter(|value| value.is_array())
+                    .cloned();
+                if id.is_some()
+                    || encrypted.is_some()
+                    || exact_summary.is_some()
+                    || exact_content.is_some()
+                {
                     flush_message_content(&message.role, &mut pending_content, input);
                     let mut item = Map::new();
                     item.insert("type".into(), json!("reasoning"));
@@ -427,11 +517,18 @@ fn lower_message(message: &crate::types::AgentMessage, input: &mut Vec<Value>) -
                     if let Some(encrypted) = encrypted {
                         item.insert("encrypted_content".into(), json!(encrypted));
                     }
-                    if !text.is_empty() {
-                        item.insert(
-                            "summary".into(),
-                            json!([{"type": "summary_text", "text": text}]),
-                        );
+                    item.insert(
+                        "summary".into(),
+                        exact_summary.unwrap_or_else(|| {
+                            if text.is_empty() {
+                                Value::Array(Vec::new())
+                            } else {
+                                json!([{"type": "summary_text", "text": text}])
+                            }
+                        }),
+                    );
+                    if let Some(content) = exact_content {
+                        item.insert("content".into(), content);
                     }
                     input.push(Value::Object(item));
                 }
@@ -487,6 +584,335 @@ fn flush_message_content(role: &str, content: &mut Vec<Value>, input: &mut Vec<V
     }));
 }
 
+fn open_text(
+    state: &mut ResponsesState,
+    index: usize,
+    id: &str,
+    events: &mut Vec<ModelStreamEvent>,
+) {
+    let text = state.texts.entry(index).or_default();
+    if text.id.is_empty() {
+        text.id = id.to_string();
+    }
+    if !text.open {
+        text.open = true;
+        events.push(ModelStreamEvent::TextStart {
+            id: text.id.clone(),
+        });
+    }
+}
+
+fn append_text_delta(
+    state: &mut ResponsesState,
+    index: usize,
+    id: &str,
+    delta: &str,
+    events: &mut Vec<ModelStreamEvent>,
+) {
+    if delta.is_empty() {
+        return;
+    }
+    open_text(state, index, id, events);
+    let text = state.texts.get_mut(&index).expect("text state is open");
+    text.text.push_str(delta);
+    events.push(ModelStreamEvent::TextDelta {
+        id: text.id.clone(),
+        text: delta.to_string(),
+    });
+}
+
+fn reconcile_text(
+    state: &mut ResponsesState,
+    index: usize,
+    id: &str,
+    complete: Option<&str>,
+    close: bool,
+    events: &mut Vec<ModelStreamEvent>,
+) {
+    if let Some(complete) = complete {
+        let suffix = state
+            .texts
+            .get(&index)
+            .and_then(|text| complete.strip_prefix(&text.text))
+            .unwrap_or_else(|| {
+                if state
+                    .texts
+                    .get(&index)
+                    .is_none_or(|text| text.text.is_empty())
+                {
+                    complete
+                } else {
+                    ""
+                }
+            });
+        append_text_delta(state, index, id, suffix, events);
+        if let Some(text) = state.texts.get_mut(&index) {
+            text.text = complete.to_string();
+        }
+    }
+    if close {
+        if let Some(text) = state.texts.get_mut(&index) {
+            if text.open {
+                text.open = false;
+                events.push(ModelStreamEvent::TextEnd {
+                    id: text.id.clone(),
+                });
+            }
+        }
+    }
+}
+
+fn open_reasoning(
+    state: &mut ResponsesState,
+    index: usize,
+    id: &str,
+    events: &mut Vec<ModelStreamEvent>,
+) {
+    if let Entry::Vacant(entry) = state.reasoning_open.entry(index) {
+        entry.insert(ResponseReasoningState {
+            id: id.to_string(),
+            ..Default::default()
+        });
+        events.push(ModelStreamEvent::ReasoningStart { id: id.to_string() });
+    }
+}
+
+fn append_reasoning_summary_delta(
+    state: &mut ResponsesState,
+    index: usize,
+    id: &str,
+    summary_index: usize,
+    delta: &str,
+    events: &mut Vec<ModelStreamEvent>,
+) {
+    if delta.is_empty() {
+        return;
+    }
+    open_reasoning(state, index, id, events);
+    let reasoning = state
+        .reasoning_open
+        .get_mut(&index)
+        .expect("reasoning state is open");
+    let first_delta_for_part = reasoning.emitted_summary_parts.insert(summary_index);
+    if first_delta_for_part
+        && summary_index > 0
+        && reasoning
+            .summary_parts
+            .iter()
+            .any(|(part_index, text)| *part_index < summary_index && !text.is_empty())
+    {
+        events.push(ModelStreamEvent::ReasoningDelta {
+            id: reasoning.id.clone(),
+            text: "\n\n".to_string(),
+        });
+    }
+    reasoning
+        .summary_parts
+        .entry(summary_index)
+        .or_default()
+        .push_str(delta);
+    events.push(ModelStreamEvent::ReasoningDelta {
+        id: reasoning.id.clone(),
+        text: delta.to_string(),
+    });
+}
+
+fn reconcile_reasoning_summary(
+    state: &mut ResponsesState,
+    index: usize,
+    id: &str,
+    summary_index: usize,
+    complete: &str,
+    events: &mut Vec<ModelStreamEvent>,
+) {
+    open_reasoning(state, index, id, events);
+    let suffix = state
+        .reasoning_open
+        .get(&index)
+        .and_then(|reasoning| reasoning.summary_parts.get(&summary_index))
+        .and_then(|current| complete.strip_prefix(current))
+        .unwrap_or_else(|| {
+            if state
+                .reasoning_open
+                .get(&index)
+                .and_then(|reasoning| reasoning.summary_parts.get(&summary_index))
+                .is_none_or(String::is_empty)
+            {
+                complete
+            } else {
+                ""
+            }
+        });
+    append_reasoning_summary_delta(state, index, id, summary_index, suffix, events);
+    if let Some(reasoning) = state.reasoning_open.get_mut(&index) {
+        reasoning
+            .summary_parts
+            .insert(summary_index, complete.to_string());
+    }
+}
+
+fn append_reasoning_content(
+    state: &mut ResponsesState,
+    index: usize,
+    id: &str,
+    content_index: usize,
+    delta: &str,
+    events: &mut Vec<ModelStreamEvent>,
+) {
+    open_reasoning(state, index, id, events);
+    state
+        .reasoning_open
+        .get_mut(&index)
+        .expect("reasoning state is open")
+        .content_parts
+        .entry(content_index)
+        .or_default()
+        .push_str(delta);
+}
+
+fn reconcile_reasoning_content(
+    state: &mut ResponsesState,
+    index: usize,
+    id: &str,
+    content_index: usize,
+    complete: &str,
+    events: &mut Vec<ModelStreamEvent>,
+) {
+    open_reasoning(state, index, id, events);
+    if let Some(reasoning) = state.reasoning_open.get_mut(&index) {
+        reasoning
+            .content_parts
+            .insert(content_index, complete.to_string());
+    }
+}
+
+fn reconcile_response_output(
+    state: &mut ResponsesState,
+    response: &Value,
+    events: &mut Vec<ModelStreamEvent>,
+) {
+    let Some(output) = response.get("output").and_then(Value::as_array) else {
+        return;
+    };
+    for (index, item) in output.iter().enumerate() {
+        if !state.finished_output_items.contains(&index) {
+            reconcile_output_item(state, index, item, events);
+            state.finished_output_items.insert(index);
+        }
+    }
+}
+
+fn reconcile_output_item(
+    state: &mut ResponsesState,
+    index: usize,
+    item: &Value,
+    events: &mut Vec<ModelStreamEvent>,
+) {
+    match item.get("type").and_then(Value::as_str).unwrap_or("") {
+        "message" => {
+            let id = item.get("id").and_then(Value::as_str).unwrap_or("text");
+            let complete = item
+                .get("content")
+                .and_then(Value::as_array)
+                .map(|content| {
+                    content
+                        .iter()
+                        .filter_map(|part| match part.get("type").and_then(Value::as_str) {
+                            Some("output_text") => part.get("text").and_then(Value::as_str),
+                            Some("refusal") => part.get("refusal").and_then(Value::as_str),
+                            _ => None,
+                        })
+                        .collect::<String>()
+                });
+            reconcile_text(state, index, id, complete.as_deref(), true, events);
+        }
+        "refusal" => {
+            let id = item.get("id").and_then(Value::as_str).unwrap_or("refusal");
+            reconcile_text(
+                state,
+                index,
+                id,
+                item.get("refusal").and_then(Value::as_str),
+                true,
+                events,
+            );
+        }
+        "function_call" => {
+            let tool = state
+                .tools
+                .remove(&index)
+                .unwrap_or_else(|| ResponseToolState {
+                    item_id: item.get("id").and_then(Value::as_str).unwrap_or("").into(),
+                    call_id: item
+                        .get("call_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .into(),
+                    name: item
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .into(),
+                    arguments: String::new(),
+                });
+            let arguments = item
+                .get("arguments")
+                .cloned()
+                .unwrap_or_else(|| Value::String(tool.arguments.clone()));
+            events.push(ModelStreamEvent::ToolInputEnd {
+                index,
+                id: tool.call_id,
+                name: tool.name,
+                arguments: parse_json_arguments(&arguments),
+                provider_metadata: openai_item_metadata(&tool.item_id, None),
+            });
+        }
+        "reasoning" => reconcile_reasoning_item(state, index, item, events),
+        _ => {}
+    }
+}
+
+fn reconcile_reasoning_item(
+    state: &mut ResponsesState,
+    index: usize,
+    item: &Value,
+    events: &mut Vec<ModelStreamEvent>,
+) {
+    let id = item
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("reasoning");
+    open_reasoning(state, index, id, events);
+    if let Some(summary) = item.get("summary").and_then(Value::as_array) {
+        for (summary_index, part) in summary.iter().enumerate() {
+            if let Some(text) = part.get("text").and_then(Value::as_str) {
+                reconcile_reasoning_summary(state, index, id, summary_index, text, events);
+            }
+        }
+    }
+    if let Some(content) = item.get("content").and_then(Value::as_array) {
+        for (content_index, part) in content.iter().enumerate() {
+            if let Some(text) = part.get("text").and_then(Value::as_str) {
+                reconcile_reasoning_content(state, index, id, content_index, text, events);
+            }
+        }
+    }
+    let reasoning = state
+        .reasoning_open
+        .remove(&index)
+        .unwrap_or_else(|| ResponseReasoningState {
+            id: id.to_string(),
+            ..Default::default()
+        });
+    events.push(ModelStreamEvent::ReasoningEnd {
+        id: reasoning.id.clone(),
+        provider_metadata: openai_reasoning_metadata(
+            &reasoning,
+            item.get("encrypted_content").and_then(Value::as_str),
+        ),
+    });
+}
+
 fn arguments_string(value: &Value) -> String {
     match value {
         Value::String(value) => value.clone(),
@@ -502,6 +928,43 @@ fn openai_item_metadata(id: &str, encrypted_content: Option<&str>) -> ProviderMe
     }
     if let Some(encrypted_content) = encrypted_content {
         value.insert("encrypted_content".into(), json!(encrypted_content));
+    }
+    namespaced_metadata("openai", Value::Object(value))
+}
+
+fn openai_reasoning_metadata(
+    reasoning: &ResponseReasoningState,
+    encrypted_content: Option<&str>,
+) -> ProviderMetadata {
+    let mut value = Map::new();
+    if !reasoning.id.is_empty() {
+        value.insert("id".into(), json!(reasoning.id));
+        value.insert("item_id".into(), json!(reasoning.id));
+    }
+    if let Some(encrypted_content) = encrypted_content {
+        value.insert("encrypted_content".into(), json!(encrypted_content));
+    }
+    value.insert(
+        "summary".into(),
+        Value::Array(
+            reasoning
+                .summary_parts
+                .values()
+                .map(|text| json!({"type": "summary_text", "text": text}))
+                .collect(),
+        ),
+    );
+    if !reasoning.content_parts.is_empty() {
+        value.insert(
+            "content".into(),
+            Value::Array(
+                reasoning
+                    .content_parts
+                    .values()
+                    .map(|text| json!({"type": "reasoning_text", "text": text}))
+                    .collect(),
+            ),
+        );
     }
     namespaced_metadata("openai", Value::Object(value))
 }
@@ -590,13 +1053,15 @@ fn response_error_message(response: &Value) -> String {
 
 fn close_open(state: &mut ResponsesState) -> Vec<ModelStreamEvent> {
     let mut events = Vec::new();
-    for (_, id) in std::mem::take(&mut state.text_open) {
-        events.push(ModelStreamEvent::TextEnd { id });
+    for (_, text) in std::mem::take(&mut state.texts) {
+        if text.open {
+            events.push(ModelStreamEvent::TextEnd { id: text.id });
+        }
     }
-    for (_, id) in std::mem::take(&mut state.reasoning_open) {
+    for (_, reasoning) in std::mem::take(&mut state.reasoning_open) {
         events.push(ModelStreamEvent::ReasoningEnd {
-            id,
-            provider_metadata: ProviderMetadata::new(),
+            id: reasoning.id.clone(),
+            provider_metadata: openai_reasoning_metadata(&reasoning, None),
         });
     }
     for (index, tool) in std::mem::take(&mut state.tools) {
@@ -639,6 +1104,62 @@ mod tests {
         lower_message(&message, &mut input).unwrap();
         assert_eq!(input[0]["type"], "reasoning");
         assert_eq!(input[0]["encrypted_content"], "cipher");
+        assert_eq!(
+            input[0]["summary"],
+            json!([{"type": "summary_text", "text": "summary"}])
+        );
+    }
+
+    #[test]
+    fn stateless_reasoning_without_summary_replays_an_empty_summary() {
+        let mut metadata = ProviderMetadata::new();
+        metadata.insert(
+            "openai".into(),
+            json!({"id": "rs_1", "encrypted_content": "cipher"}),
+        );
+        let message = crate::types::AgentMessage {
+            role: "assistant".into(),
+            content: vec![ContentBlock::reasoning("", metadata)],
+            ..Default::default()
+        };
+        let mut input = Vec::new();
+        lower_message(&message, &mut input).unwrap();
+        assert_eq!(input[0]["summary"], json!([]));
+    }
+
+    #[test]
+    fn stateless_reasoning_replays_exact_summary_and_content_parts() {
+        let mut metadata = ProviderMetadata::new();
+        metadata.insert(
+            "openai".into(),
+            json!({
+                "id": "rs_1",
+                "encrypted_content": "cipher",
+                "summary": [
+                    {"type": "summary_text", "text": "step one"},
+                    {"type": "summary_text", "text": "step two"}
+                ],
+                "content": [{"type": "reasoning_text", "text": "raw"}]
+            }),
+        );
+        let message = crate::types::AgentMessage {
+            role: "assistant".into(),
+            content: vec![ContentBlock::reasoning("flattened", metadata)],
+            ..Default::default()
+        };
+        let mut input = Vec::new();
+        lower_message(&message, &mut input).unwrap();
+        assert_eq!(
+            input[0]["summary"],
+            json!([
+                {"type": "summary_text", "text": "step one"},
+                {"type": "summary_text", "text": "step two"}
+            ])
+        );
+        assert_eq!(
+            input[0]["content"],
+            json!([{"type": "reasoning_text", "text": "raw"}])
+        );
     }
 
     #[test]
@@ -974,9 +1495,13 @@ mod tests {
 
     #[test]
     fn build_body_serializes_tools_temperature_and_reasoning() {
-        let mut target = target(ProtocolConfig::OpenAiResponses(
-            OpenAiResponsesConfig::default(),
-        ));
+        let responses_config = OpenAiResponsesConfig {
+            reasoning_context: Some("all_turns".into()),
+            reasoning_mode: Some("pro".into()),
+            prompt_cache_options: Some(json!({"mode": "explicit", "ttl": "30m"})),
+            ..Default::default()
+        };
+        let mut target = target(ProtocolConfig::OpenAiResponses(responses_config));
         target.capabilities.reasoning.supported = true;
         target.generation.temperature = Some(0.5);
         target.generation.max_output_tokens = Some(123);
@@ -1003,7 +1528,16 @@ mod tests {
         assert_eq!(body["max_output_tokens"], 123);
         assert_eq!(
             body["reasoning"],
-            json!({"effort": "high", "summary": "auto"})
+            json!({
+                "effort": "high",
+                "summary": "auto",
+                "context": "all_turns",
+                "mode": "pro"
+            })
+        );
+        assert_eq!(
+            body["prompt_cache_options"],
+            json!({"mode": "explicit", "ttl": "30m"})
         );
         assert_eq!(body["input"][0]["role"], "developer");
     }
@@ -1169,33 +1703,145 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_text_delta_emits_reasoning_events() {
+    fn reasoning_summary_delta_emits_visible_reasoning() {
         let adapter = OpenAiResponsesAdapter;
-        for ty in [
-            "response.reasoning_summary_text.delta",
-            "response.reasoning_text.delta",
-        ] {
-            let mut state = adapter.new_stream_state();
-            let events = adapter
-                .decode_frame(
-                    &frame(
-                        ty,
-                        json!({
-                            "type": ty,
-                            "output_index": 0,
-                            "item_id": "rs_0",
-                            "delta": "think"
-                        }),
-                    ),
-                    state.as_mut(),
-                )
-                .unwrap();
-            assert!(matches!(
-                events.as_slice(),
-                [ModelStreamEvent::ReasoningStart { id }, ModelStreamEvent::ReasoningDelta { text, .. }]
-                    if id == "rs_0" && text == "think"
-            ));
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(
+                    "response.reasoning_summary_text.delta",
+                    json!({
+                        "type": "response.reasoning_summary_text.delta",
+                        "output_index": 0,
+                        "item_id": "rs_0",
+                        "summary_index": 0,
+                        "delta": "think"
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [ModelStreamEvent::ReasoningStart { id }, ModelStreamEvent::ReasoningDelta { text, .. }]
+                if id == "rs_0" && text == "think"
+        ));
+    }
+
+    #[test]
+    fn raw_reasoning_is_preserved_but_not_rendered_as_summary() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(
+                    "response.reasoning_text.delta",
+                    json!({
+                        "type": "response.reasoning_text.delta",
+                        "output_index": 0,
+                        "item_id": "rs_0",
+                        "content_index": 0,
+                        "delta": "raw"
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [ModelStreamEvent::ReasoningStart { id }] if id == "rs_0"
+        ));
+        let events = adapter.finish_stream(state.as_mut()).unwrap();
+        assert!(matches!(
+            events.first(),
+            Some(ModelStreamEvent::ReasoningEnd { provider_metadata, .. })
+                if provider_metadata["openai"]["content"]
+                    == json!([{"type": "reasoning_text", "text": "raw"}])
+        ));
+    }
+
+    #[test]
+    fn reasoning_summary_part_done_preserves_a_summary_without_deltas() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(
+                    "response.reasoning_summary_part.done",
+                    json!({
+                        "type": "response.reasoning_summary_part.done",
+                        "output_index": 0,
+                        "item_id": "rs_0",
+                        "part": {"type": "summary_text", "text": "finished summary"}
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [ModelStreamEvent::ReasoningStart { id }, ModelStreamEvent::ReasoningDelta { text, .. }]
+                if id == "rs_0" && text == "finished summary"
+        ));
+    }
+
+    #[test]
+    fn reasoning_summary_done_preserves_multiple_indexed_parts() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = adapter.new_stream_state();
+        let mut events = Vec::new();
+        for (summary_index, text) in [(0, "step one"), (1, "step two")] {
+            events.extend(
+                adapter
+                    .decode_frame(
+                        &frame(
+                            "response.reasoning_summary_text.done",
+                            json!({
+                                "type": "response.reasoning_summary_text.done",
+                                "output_index": 0,
+                                "item_id": "rs_0",
+                                "summary_index": summary_index,
+                                "text": text
+                            }),
+                        ),
+                        state.as_mut(),
+                    )
+                    .unwrap(),
+            );
         }
+        assert!(events.iter().any(|event| {
+            matches!(event, ModelStreamEvent::ReasoningDelta { text, .. } if text == "step two")
+        }));
+        let events = adapter
+            .decode_frame(
+                &frame(
+                    "response.output_item.done",
+                    json!({
+                        "type": "response.output_item.done",
+                        "output_index": 0,
+                        "item": {
+                            "type": "reasoning",
+                            "id": "rs_0",
+                            "summary": [
+                                {"type": "summary_text", "text": "step one"},
+                                {"type": "summary_text", "text": "step two"}
+                            ],
+                            "encrypted_content": "cipher"
+                        }
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [ModelStreamEvent::ReasoningEnd { provider_metadata, .. }]
+                if provider_metadata["openai"]["summary"]
+                    == json!([
+                        {"type": "summary_text", "text": "step one"},
+                        {"type": "summary_text", "text": "step two"}
+                    ])
+        ));
     }
 
     #[test]
@@ -1256,9 +1902,74 @@ mod tests {
             .unwrap();
         assert!(matches!(
             events.as_slice(),
-            [ModelStreamEvent::ReasoningEnd { id, provider_metadata }]
+            [ModelStreamEvent::ReasoningStart { id: start_id }, ModelStreamEvent::ReasoningEnd { id, provider_metadata }]
                 if id == "rs_1"
+                    && start_id == "rs_1"
                     && provider_metadata["openai"]["encrypted_content"] == "cipher"
+        ));
+    }
+
+    #[test]
+    fn output_item_done_recovers_message_without_deltas() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(
+                    "response.output_item.done",
+                    json!({
+                        "type": "response.output_item.done",
+                        "output_index": 0,
+                        "item": {
+                            "type": "message",
+                            "id": "msg_1",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "complete"}]
+                        }
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [ModelStreamEvent::TextStart { id }, ModelStreamEvent::TextDelta { text, .. }, ModelStreamEvent::TextEnd { .. }]
+                if id == "msg_1" && text == "complete"
+        ));
+    }
+
+    #[test]
+    fn response_completed_recovers_output_without_item_done() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(
+                    "response.completed",
+                    json!({
+                        "type": "response.completed",
+                        "response": {
+                            "status": "completed",
+                            "output": [{
+                                "type": "message",
+                                "id": "msg_1",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "complete"}]
+                            }]
+                        }
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [
+                ModelStreamEvent::TextStart { id },
+                ModelStreamEvent::TextDelta { text, .. },
+                ModelStreamEvent::TextEnd { .. },
+                ModelStreamEvent::Finish { reason: FinishReason::Stop, .. }
+            ] if id == "msg_1" && text == "complete"
         ));
     }
 
@@ -1273,7 +1984,7 @@ mod tests {
                     json!({
                         "type": "response.output_item.done",
                         "output_index": 0,
-                        "item": {"type": "message"}
+                        "item": {"type": "future_unknown"}
                     }),
                 ),
                 state.as_mut(),

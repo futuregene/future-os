@@ -1,5 +1,8 @@
 import type { TFunction } from "i18next";
-import type { LastRunReviewData, StoredReviewFileChange } from "../../integrations/storage/types";
+import type {
+  LastRunReviewData,
+  StoredReviewFileChange,
+} from "../../integrations/storage/types";
 import { AlertTriangle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { DiffView } from "../../components/ui/DiffView";
@@ -29,26 +32,57 @@ export function LastRunReview({
   const { i18n, t } = useTranslation("review");
   // Files default collapsed; open state is keyed by file-change id.
   const files = review?.files ?? [];
-  const { hasOpen, isOpen, toggle, toggleAll } = useExpandableFiles(files, file => file.id);
+  const { hasOpen, isOpen, toggle, toggleAll } = useExpandableFiles(
+    files,
+    file => file.id,
+  );
   const fileScrollbar = useFloatingScrollbar();
 
-  if (changePreview === "unsupported_too_large")
-    return <EmptyState title={t("lastRun.tooLargeTitle")} detail={t("lastRun.tooLargeDetail")} />;
+  if (changePreview === "unsupported_too_large") {
+    return (
+      <EmptyState
+        className="m-4"
+        title={t("lastRun.tooLargeTitle")}
+        detail={t("lastRun.tooLargeDetail")}
+      />
+    );
+  }
 
-  if (loading && !review)
-    return <div className="rounded-md border border-line-soft bg-surface p-3 text-sm text-ink-muted">{t("lastRun.loading")}</div>;
+  if (loading && !review) {
+    return (
+      <div className="rounded-md border border-line-soft bg-surface p-3 text-sm text-ink-muted">
+        {t("lastRun.loading")}
+      </div>
+    );
+  }
 
-  if (error)
-    return <div className="rounded-md border border-danger-line bg-danger-soft p-3 text-sm text-danger">{error}</div>;
+  if (error) {
+    return (
+      <div className="rounded-md border border-danger-line bg-danger-soft p-3 text-sm text-danger">
+        {error}
+      </div>
+    );
+  }
 
-  if (!review)
-    return <EmptyState title={t("lastRun.noReviewTitle")} detail={t("lastRun.noReviewDetail")} />;
+  if (!review) {
+    return (
+      <EmptyState
+        className="m-4"
+        title={t("lastRun.noReviewTitle")}
+        detail={t("lastRun.noReviewDetail")}
+      />
+    );
+  }
 
   const { changeset } = review;
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="shrink-0 space-y-3 px-4 py-2">
-        <RunReviewBanners review={review} retrying={retrying} onRetry={onRetry} />
+        <RunReviewBanners
+          review={review}
+          retrying={retrying}
+          onRetry={onRetry}
+        />
         <div className="flex items-center justify-between gap-2">
           <ReviewStats
             additions={changeset.additions}
@@ -56,27 +90,42 @@ export function LastRunReview({
             filesChanged={changeset.filesChanged}
             numberFormat={new Intl.NumberFormat(i18n.language)}
           />
-          {files.length > 0 ? <ExpandCollapseAll hasOpen={hasOpen} onToggle={toggleAll} /> : null}
+          {files.length > 0
+            ? (
+                <ExpandCollapseAll hasOpen={hasOpen} onToggle={toggleAll} />
+              )
+            : null}
         </div>
       </div>
-      <div className="group relative min-h-0 flex-1 border-t border-line-soft">
+      <div className="group relative min-h-0 flex-1 border-t border-line-soft/70">
         <div
-          className="floating-scrollbar h-full overflow-x-hidden overflow-y-auto"
+          className="floating-scrollbar h-full overflow-x-hidden overflow-y-auto bg-surface/50"
           onScroll={fileScrollbar.handleScroll}
           ref={fileScrollbar.scrollRef}
         >
           {files.length === 0
-            ? <EmptyState title={t("lastRun.noFilesTitle")} detail={t("lastRun.noFilesDetail")} />
-            : files.map(file => (
-                <ChangesetFileChange
-                  file={file}
-                  key={file.id}
-                  open={isOpen(file)}
-                  onToggle={() => toggle(file)}
+            ? (
+                <EmptyState
+                  className="m-4"
+                  title={t("lastRun.noFilesTitle")}
+                  detail={t("lastRun.noFilesDetail")}
                 />
-              ))}
+              )
+            : (
+                files.map(file => (
+                  <ChangesetFileChange
+                    file={file}
+                    key={file.id}
+                    open={isOpen(file)}
+                    onToggle={() => toggle(file)}
+                  />
+                ))
+              )}
         </div>
-        <FloatingScrollbar scrollbar={fileScrollbar.scrollbar} onPointerDown={fileScrollbar.handleThumbPointerDown} />
+        <FloatingScrollbar
+          scrollbar={fileScrollbar.scrollbar}
+          onPointerDown={fileScrollbar.handleThumbPointerDown}
+        />
       </div>
     </div>
   );
@@ -99,8 +148,13 @@ function RunReviewBanners({
     banners.push({ key: "recovered", text: t("banner.recovered") });
   if (review.snapshotStatus === "partial")
     banners.push({ key: "partial", text: t("banner.partial") });
-  if (review.snapshotStatus === "incomplete")
-    banners.push({ key: "incomplete", text: t("banner.incomplete"), retry: true });
+  if (review.snapshotStatus === "incomplete") {
+    banners.push({
+      key: "incomplete",
+      text: t("banner.incomplete"),
+      retry: true,
+    });
+  }
   if (review.snapshotStatus === "unavailable")
     banners.push({ key: "unavailable", text: t("banner.unavailable") });
 
@@ -164,14 +218,30 @@ function ChangesetFileChange({
       onToggle={onToggle}
     >
       {file.omissionReason === "sensitive"
-        ? <div className="px-3 py-3 text-xs text-warning">{t("file.sensitiveContent")}</div>
+        ? (
+            <div className="px-3 py-3 text-xs text-warning">
+              {t("file.sensitiveContent")}
+            </div>
+          )
         : file.binary
-          ? <BinaryFileDetail file={file} />
+          ? (
+              <BinaryFileDetail file={file} />
+            )
           : file.diff
-            ? <DiffView diff={file.diff} />
-            : <div className="px-3 py-3 text-xs text-ink-muted">{t("file.noTextDiff")}</div>}
+            ? (
+                <DiffView diff={file.diff} />
+              )
+            : (
+                <div className="px-3 py-3 text-xs text-ink-muted">
+                  {t("file.noTextDiff")}
+                </div>
+              )}
       {file.diffTruncated
-        ? <div className="px-3 py-2 text-xs text-warning">{t("file.diffTruncated")}</div>
+        ? (
+            <div className="px-3 py-2 text-xs text-warning">
+              {t("file.diffTruncated")}
+            </div>
+          )
         : null}
     </CollapsibleFileDiff>
   );

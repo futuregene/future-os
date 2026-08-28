@@ -1,7 +1,13 @@
-import type { GitReview, LastRunReviewData } from "../../integrations/storage/types";
+import type {
+  GitReview,
+  LastRunReviewData,
+} from "../../integrations/storage/types";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { getLastRunReview, retryRunReview } from "../../integrations/storage/threadStore";
+import {
+  getLastRunReview,
+  retryRunReview,
+} from "../../integrations/storage/threadStore";
 import { errorMessage } from "../../lib/errors";
 import { onFutureEvent } from "../../lib/futureEvents";
 import { useAsyncResource } from "../../lib/useAsyncResource";
@@ -28,9 +34,16 @@ export function ReviewPanel({
   // Capabilities arrive on the lightweight, non-diff context refresh. Use that
   // stable fact while the two expensive git diffs load, rather than briefly
   // rendering this as the non-git last-run-only view.
-  const reviewKind = isGitWorkspace === null
-    ? review === null ? "loading" : review.isGitWorkspace ? "git" : "non_git"
-    : isGitWorkspace ? "git" : "non_git";
+  const reviewKind
+    = isGitWorkspace === null
+      ? review === null
+        ? "loading"
+        : review.isGitWorkspace
+          ? "git"
+          : "non_git"
+      : isGitWorkspace
+        ? "git"
+        : "non_git";
   const isGit = reviewKind === "git";
   const [activeView, setActiveView] = useState<ReviewView>("branch");
   const [retrying, setRetrying] = useState(false);
@@ -39,9 +52,10 @@ export function ReviewPanel({
   // Cancellation-safe per-thread load: a slow getLastRunReview for a previous
   // thread can no longer land under the thread we've since switched to.
   const runResource = useAsyncResource<LastRunReviewData | null>(
-    () => changePreview === "unsupported_too_large"
-      ? Promise.resolve(null)
-      : getLastRunReview(threadId),
+    () =>
+      changePreview === "unsupported_too_large"
+        ? Promise.resolve(null)
+        : getLastRunReview(threadId),
     [threadId, changePreview],
     null,
   );
@@ -58,10 +72,14 @@ export function ReviewPanel({
   }, [threadId, reviewKind]);
 
   // Refresh when a Run on this thread finishes (its changeset just landed).
-  useEffect(() => onFutureEvent("review-updated", (detail) => {
-    if (detail.threadId === threadId)
-      reload();
-  }), [threadId, reload]);
+  useEffect(
+    () =>
+      onFutureEvent("review-updated", (detail) => {
+        if (detail.threadId === threadId)
+          reload();
+      }),
+    [threadId, reload],
+  );
 
   async function handleRetry() {
     const runId = runReview?.run?.id ?? runReview?.changeset.runId;
@@ -96,7 +114,9 @@ export function ReviewPanel({
   if (!isGit) {
     return (
       <div className="flex h-full min-h-0 flex-col">
-        <div className="shrink-0 px-4 pb-3 text-xs font-medium text-ink-muted">{t("lastRunHeading")}</div>
+        <div className="shrink-0 px-4 pb-3 text-xs font-medium text-ink-muted">
+          {t("lastRunHeading")}
+        </div>
         {lastRun}
       </div>
     );
@@ -106,24 +126,55 @@ export function ReviewPanel({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="mx-4 grid shrink-0 grid-cols-3 gap-1 rounded-md border border-line-soft bg-surface p-1">
-        <ViewTab active={activeView === "branch"} label={t("tab.branch")} onClick={() => setActiveView("branch")} />
-        <ViewTab active={activeView === "uncommitted"} label={t("tab.uncommitted")} onClick={() => setActiveView("uncommitted")} />
-        <ViewTab active={activeView === "last_run"} label={t("tab.lastRun")} onClick={() => setActiveView("last_run")} />
+      <div className="mx-4 grid shrink-0 grid-cols-3 gap-1 rounded-md border border-line-soft bg-transparent p-1">
+        <ViewTab
+          active={activeView === "branch"}
+          label={t("tab.branch")}
+          onClick={() => setActiveView("branch")}
+        />
+        <ViewTab
+          active={activeView === "uncommitted"}
+          label={t("tab.uncommitted")}
+          onClick={() => setActiveView("uncommitted")}
+        />
+        <ViewTab
+          active={activeView === "last_run"}
+          label={t("tab.lastRun")}
+          onClick={() => setActiveView("last_run")}
+        />
       </div>
       {activeView === "last_run"
-        ? lastRun
-        : reviewData ? <WorkingTreeReview review={reviewData} showBranch={activeView === "branch"} /> : null}
+        ? (
+            lastRun
+          )
+        : reviewData
+          ? (
+              <WorkingTreeReview
+                review={reviewData}
+                showBranch={activeView === "branch"}
+              />
+            )
+          : null}
     </div>
   );
 }
 
-function ViewTab({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
+function ViewTab({
+  active,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+}) {
   return (
     <button
-      className={active
-        ? "h-8 rounded bg-surface-subtle text-sm font-medium text-ink"
-        : "h-8 rounded text-sm font-medium text-ink-muted transition-colors hover:text-ink"}
+      className={
+        active
+          ? "h-8 rounded bg-accent-soft/70 text-sm font-medium text-accent"
+          : "h-8 rounded text-sm font-medium text-ink-muted transition-colors hover:text-ink"
+      }
       onClick={onClick}
       type="button"
     >

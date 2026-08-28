@@ -1,5 +1,11 @@
 import type { ReactNode } from "react";
-import { ChevronDown, ChevronRight, ChevronsDown, ChevronsUp, FileDiff } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  ChevronsDown,
+  ChevronsUp,
+  FileDiff,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 /**
@@ -28,15 +34,21 @@ export function CollapsibleFileDiff({
   children: ReactNode;
 }) {
   return (
-    <section className={open ? "border-b border-line-soft bg-surface" : "bg-surface"}>
+    <section
+      className={
+        open ? "border-b border-line-soft bg-surface/30" : "bg-transparent"
+      }
+    >
       <button
-        className="group sticky top-0 z-10 flex w-full items-center justify-between gap-2 border-b border-line-soft bg-surface px-2.5 py-1.5 text-left"
+        className="group sticky top-0 z-10 flex w-full items-center justify-between gap-2 border-b border-line-soft bg-surface/50 px-2.5 py-1.5 text-left"
         onClick={onToggle}
         type="button"
       >
         <span className="flex min-w-0 items-center gap-1.5">
           <FileDiff className="size-3.5 shrink-0 text-ink-soft" />
-          <span className="min-w-0 truncate text-left text-xs font-medium text-ink-soft [direction:rtl]">{title}</span>
+          <span className="min-w-0 truncate text-left text-xs font-medium text-ink-soft [direction:rtl]">
+            {title}
+          </span>
         </span>
         <span className="flex shrink-0 items-center gap-1.5 text-xs">
           {headerExtras}
@@ -49,8 +61,12 @@ export function CollapsibleFileDiff({
               )
             : null}
           {open
-            ? <ChevronDown className="size-3.5 text-ink-muted opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100" />
-            : <ChevronRight className="size-3.5 text-ink-muted opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100" />}
+            ? (
+                <ChevronDown className="size-3.5 text-ink-muted opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100" />
+              )
+            : (
+                <ChevronRight className="size-3.5 text-ink-muted opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100" />
+              )}
         </span>
       </button>
       {open ? <div>{children}</div> : null}
@@ -62,7 +78,13 @@ export function CollapsibleFileDiff({
  * "Expand all / Collapse all" toggle shown above a file-diff list. Shared by the
  * working-tree (git) and last-run (shadow) review views.
  */
-export function ExpandCollapseAll({ hasOpen, onToggle }: { hasOpen: boolean; onToggle: () => void }) {
+export function ExpandCollapseAll({
+  hasOpen,
+  onToggle,
+}: {
+  hasOpen: boolean;
+  onToggle: () => void;
+}) {
   const { t } = useTranslation("review");
   const label = hasOpen ? t("collapseAll") : t("expandAll");
   return (
@@ -73,7 +95,13 @@ export function ExpandCollapseAll({ hasOpen, onToggle }: { hasOpen: boolean; onT
       title={label}
       type="button"
     >
-      {hasOpen ? <ChevronsUp className="size-4" /> : <ChevronsDown className="size-4" />}
+      {hasOpen
+        ? (
+            <ChevronsUp className="size-4" />
+          )
+        : (
+            <ChevronsDown className="size-4" />
+          )}
     </button>
   );
 }
