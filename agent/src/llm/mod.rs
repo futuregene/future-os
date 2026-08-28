@@ -18,6 +18,8 @@ use tracing::info;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 1800;
 const STREAM_IDLE_TIMEOUT_SECS: u64 = 45;
+const UPSTREAM_DISCONNECTED: &str = "[UPSTREAM_DISCONNECTED]";
+const MODEL_RESPONSE_ERROR: &str = "[MODEL_RESPONSE_ERROR]";
 
 /// Stream-read idle timeout. Tests override it (a stalled-mock test cannot
 /// wait 45 s of real time) via FUTURE_TEST_STREAM_IDLE_SECS.
@@ -308,13 +310,23 @@ impl crate::types::LLMProvider for Client {
                     Ok(Some(Err(error))) => {
                         let _ = tx
                             .send(schema::ModelStreamEvent::Error {
-                                message: error.to_string(),
+                                message: format!("{UPSTREAM_DISCONNECTED} {error:#}"),
                             })
                             .await;
                         return;
                     }
                     Ok(None) => break,
-                    Err(_) => break,
+                    Err(_) => {
+                        let _ = tx
+                            .send(schema::ModelStreamEvent::Error {
+                                message: format!(
+                                    "{UPSTREAM_DISCONNECTED} model response stream was idle for {} seconds",
+                                    stream_idle_timeout_secs()
+                                ),
+                            })
+                            .await;
+                        return;
+                    }
                 };
                 if tx.is_closed() {
                     return;
@@ -324,7 +336,7 @@ impl crate::types::LLMProvider for Client {
                     Err(error) => {
                         let _ = tx
                             .send(schema::ModelStreamEvent::Error {
-                                message: error.to_string(),
+                                message: format!("{MODEL_RESPONSE_ERROR} {error:#}"),
                             })
                             .await;
                         return;
@@ -336,7 +348,9 @@ impl crate::types::LLMProvider for Client {
                         Err(error) => {
                             let _ = tx
                                 .send(schema::ModelStreamEvent::Error {
-                                    message: format!("invalid provider stream event: {error}"),
+                                    message: format!(
+                                        "{MODEL_RESPONSE_ERROR} invalid provider stream event: {error:#}"
+                                    ),
                                 })
                                 .await;
                             return;
@@ -358,19 +372,39 @@ impl crate::types::LLMProvider for Client {
                 }
             }
 
-            if let Ok(frames) = decoder.finish() {
-                for frame in frames {
-                    if let Ok(events) = adapter.decode_frame(&frame, state.as_mut()) {
-                        for event in events {
-                            terminal |= matches!(
-                                event,
-                                schema::ModelStreamEvent::Finish { .. }
-                                    | schema::ModelStreamEvent::Error { .. }
-                            );
-                            if tx.send(event).await.is_err() {
-                                return;
-                            }
-                        }
+            let frames = match decoder.finish() {
+                Ok(frames) => frames,
+                Err(error) => {
+                    let _ = tx
+                        .send(schema::ModelStreamEvent::Error {
+                            message: format!("{MODEL_RESPONSE_ERROR} {error:#}"),
+                        })
+                        .await;
+                    return;
+                }
+            };
+            for frame in frames {
+                let events = match adapter.decode_frame(&frame, state.as_mut()) {
+                    Ok(events) => events,
+                    Err(error) => {
+                        let _ = tx
+                            .send(schema::ModelStreamEvent::Error {
+                                message: format!(
+                                    "{MODEL_RESPONSE_ERROR} invalid provider stream event: {error:#}"
+                                ),
+                            })
+                            .await;
+                        return;
+                    }
+                };
+                for event in events {
+                    terminal |= matches!(
+                        event,
+                        schema::ModelStreamEvent::Finish { .. }
+                            | schema::ModelStreamEvent::Error { .. }
+                    );
+                    if tx.send(event).await.is_err() {
+                        return;
                     }
                 }
             }
@@ -386,7 +420,7 @@ impl crate::types::LLMProvider for Client {
                     Err(error) => {
                         let _ = tx
                             .send(schema::ModelStreamEvent::Error {
-                                message: error.to_string(),
+                                message: format!("{MODEL_RESPONSE_ERROR} {error:#}"),
                             })
                             .await;
                     }
@@ -932,13 +966,14 @@ mod tests {
         assert!(matches!(
             events.as_slice(),
             [schema::ModelStreamEvent::Error { message }]
-                if message.starts_with("invalid provider stream event:")
+                if message.starts_with(MODEL_RESPONSE_ERROR)
+                    && message.contains("invalid provider stream event:")
         ));
     }
 
     #[allow(clippy::await_holding_lock)]
     #[tokio::test(flavor = "current_thread")]
-    async fn stream_model_idle_timeout_finishes_as_incomplete() {
+    async fn stream_model_idle_timeout_reports_upstream_disconnect() {
         let _env = IDLE_TIMEOUT_ENV_LOCK
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
@@ -986,10 +1021,8 @@ mod tests {
         )));
         assert!(matches!(
             events.last(),
-            Some(schema::ModelStreamEvent::Finish {
-                reason: schema::FinishReason::Incomplete,
-                ..
-            })
+            Some(schema::ModelStreamEvent::Error { message })
+                if message.starts_with(UPSTREAM_DISCONNECTED)
         ));
     }
 
@@ -1191,9 +1224,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_model_ignores_invalid_json_in_buffered_tail() {
-        // Invalid JSON flushed by `decoder.finish()` fails `decode_frame`, which
-        // is silently skipped before `finish_stream` emits an incomplete finish.
+    async fn stream_model_reports_invalid_json_in_buffered_tail() {
+        // Invalid JSON flushed by `decoder.finish()` is a malformed model
+        // response, not a clean incomplete finish.
         let server = mock_server(|_| (200, "text/event-stream", "data: {not json}".into()));
         let client = Client::from_target(chat_target(&server.base_url, "secret", None, None));
         let events: Vec<_> = client
@@ -1204,17 +1237,15 @@ mod tests {
             .await;
         assert!(matches!(
             events.as_slice(),
-            [schema::ModelStreamEvent::Finish {
-                reason: schema::FinishReason::Incomplete,
-                ..
-            }]
+            [schema::ModelStreamEvent::Error { message }]
+                if message.starts_with(MODEL_RESPONSE_ERROR)
         ));
     }
 
     #[tokio::test]
-    async fn stream_model_ignores_invalid_utf8_in_buffered_tail() {
-        // Invalid UTF-8 flushed by `decoder.finish()` makes `finish()` itself
-        // fail; the stream still terminates as incomplete.
+    async fn stream_model_reports_invalid_utf8_in_buffered_tail() {
+        // Invalid UTF-8 flushed by `decoder.finish()` is a malformed model
+        // response, not a clean incomplete finish.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
@@ -1250,10 +1281,8 @@ mod tests {
             .await;
         assert!(matches!(
             events.as_slice(),
-            [schema::ModelStreamEvent::Finish {
-                reason: schema::FinishReason::Incomplete,
-                ..
-            }]
+            [schema::ModelStreamEvent::Error { message }]
+                if message.starts_with(MODEL_RESPONSE_ERROR)
         ));
     }
 

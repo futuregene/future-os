@@ -106,6 +106,8 @@ export const resources = {
         backToLatest: "Back to latest",
         runStopped: "Stopped",
         responseInterrupted: "The response was interrupted before it finished.",
+        responseIncomplete: "Response not completed",
+        responseStopped: "You stopped this response",
         retry: "Retry",
         continue: "Continue",
         compacting: "Compacting context…",
@@ -119,19 +121,29 @@ export const resources = {
       failure: {
         connect:
           "Couldn't connect to the FutureOS background service.\n\nPlease quit FutureOS completely, reopen it, and try again.",
-        run: "Run failed: {{message}}",
+        run: "Please try again later.",
+        runTitle: "Model service error",
         unknown: "The run failed. Please try again later.",
         insufficientCredit:
           "Insufficient account balance, so this run could not finish. Please top up at https://future-os.cn/platform/#recharge and try again — if you are on a team account, ask your admin to recharge.",
-        auth: "Model authentication failed: the API key is invalid or expired. Check your model provider settings and try again.",
+        auth: "Check your model provider settings and try again.",
+        authTitle: "Model service authentication failed",
+        serverErrorTitle: "Model service is temporarily unavailable",
         rateLimited:
           "Too many requests — the model service is rate limiting. Please wait a moment and try again.",
-        serverError:
-          "The model service is temporarily unavailable (HTTP {{status}}). Please try again later.",
+        serverError: "Please try again later.",
         contextLimit:
           "The conversation exceeds the model's context length limit. Start a new conversation or compact the current context, then try again.",
         network:
           "Network error — the model service is unreachable. Check your connection and try again.",
+        upstreamDisconnected: "Please wait, then click Continue to resume or try again.",
+        upstreamDisconnectedTitle: "Model service connection interrupted; this response could not finish",
+        modelResponseError: "Switch models, then click Continue to resume or try again.",
+        modelResponseErrorTitle: "Model response error; this response could not finish",
+        agentInterrupted: "Restart the app, then click Continue to resume.",
+        agentInterruptedTitle: "Background service interrupted; this response could not finish",
+        userStopped:
+          "You stopped this response manually. The content generated so far has been kept.",
       },
       approval: {
         title: "Approval required",
@@ -360,6 +372,8 @@ export const resources = {
         backToLatest: "回到最新",
         runStopped: "已停止",
         responseInterrupted: "回复在完成前被中断。",
+        responseIncomplete: "本次回复未完成",
+        responseStopped: "你已停止本次回复",
         retry: "重试",
         continue: "继续",
         compacting: "正在压缩上下文…",
@@ -372,15 +386,25 @@ export const resources = {
       },
       failure: {
         connect: "无法连接 FutureOS 后台服务。\n\n请完全退出 FutureOS 后重新打开，然后再试一次。",
-        run: "运行失败：{{message}}",
+        run: "请稍后重试。",
+        runTitle: "模型服务异常",
         unknown: "运行失败，请稍后重试。",
         insufficientCredit:
           "账户余额不足，本次对话未能完成。请前往 https://future-os.cn/platform/#recharge 充值后重试；如果您使用的是团队账户，请联系管理员充值。",
-        auth: "模型服务验证失败：密钥无效或已过期。请检查模型提供商配置后重试。",
+        auth: "请检查模型提供商配置后重试。",
+        authTitle: "模型服务验证失败",
+        serverErrorTitle: "模型服务暂时不可用",
         rateLimited: "请求过于频繁，模型服务已触发限流。请稍等片刻后重试。",
-        serverError: "模型服务暂时不可用（HTTP {{status}}）。请稍后重试。",
-        contextLimit: "对话内容超出模型的上下文长度限制。建议开启新对话，或压缩当前上下文后重试。",
+        serverError: "请稍后重试。",
+        contextLimit: "系统未能通过自动压缩恢复本次回复。请新建对话后重试。",
         network: "网络连接异常，无法访问模型服务。请检查网络连接后重试。",
+        upstreamDisconnected: "请稍后点击“继续”接着处理，或重试。",
+        upstreamDisconnectedTitle: "模型服务连接中断，本次回复未能完成",
+        modelResponseError: "请更换模型后点击“继续”接着处理，或重试。",
+        modelResponseErrorTitle: "模型响应异常，本次回复未能完成",
+        agentInterrupted: "请重启软件，然后点击“继续”接着处理。",
+        agentInterruptedTitle: "后台服务异常中断，本次回复未能完成",
+        userStopped: "你已手工停止本次回复，已生成的内容已保留。",
       },
       approval: {
         title: "需要审批",

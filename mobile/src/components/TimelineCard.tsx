@@ -22,7 +22,7 @@ import {
   approvalPaths,
   parseAction,
 } from "@future-os/thread-projection";
-import { friendlyRunError } from "./errorMessage";
+import { friendlyRunError, friendlyRunErrorTitle } from "./errorMessage";
 import { MarkdownText } from "./MarkdownText";
 import { splitUserTextSegments } from "./userTextSegments";
 import type {
@@ -385,12 +385,16 @@ function CompactionDivider({
                 formattedCount: new Intl.NumberFormat(i18n.language).format(tokensBefore),
               })
             : t("chat.compacted");
-  const color = status === "failed" ? colors.danger : colors.inkMuted;
-  const lineColor = status === "failed" ? colors.dangerLine : colors.line;
+  return <StatusDivider failed={status === "failed"} label={label} />;
+}
+
+function StatusDivider({ label, failed = false }: { label: string; failed?: boolean }) {
+  const color = failed ? colors.danger : colors.inkMuted;
+  const lineColor = failed ? colors.dangerLine : colors.line;
   return (
     <View
       accessibilityLabel={label}
-      accessibilityRole={status === "failed" ? "alert" : "text"}
+      accessibilityRole={failed ? "alert" : "text"}
       style={styles.compactionDivider}
     >
       <View style={[styles.compactionLine, { backgroundColor: lineColor }]} />
@@ -614,14 +618,14 @@ export function TimelineCard({
       // copy footer, mirroring the desktop's MessageBlock special case.
       const dividerOnly =
         !item.streaming && item.segments?.length === 1 && item.segments[0]?.kind === "compaction";
-      // A failed run with no visible content renders the friendly failure text
-      // as the bubble body (desktop parity: the failure text IS the assistant
-      // content) — the copy button copies what the user reads.
-      const hasVisibleContent =
-        (item.segments != null && item.segments.length > 0) || item.text.trim().length > 0;
-      const failureText =
-        !hasVisibleContent && item.failed ? friendlyRunError(item.error, t) : null;
-      const copyableText = failureText ?? item.text;
+      const terminationNotice = item.stopped
+        ? t("failure.userStopped")
+        : item.failed
+          ? friendlyRunError(item.error, t)
+          : item.truncated
+            ? t("failure.modelResponseError")
+            : null;
+      const copyableText = item.text;
       return (
         <View style={styles.assistantMessage}>
           {item.segments && item.segments.length > 0 ? (
@@ -637,10 +641,21 @@ export function TimelineCard({
             </View>
           ) : item.text.trim().length > 0 ? (
             <MarkdownText text={item.text} onOpenFile={onOpenFile} />
-          ) : failureText ? (
-            <Text selectable style={styles.failureText}>
-              {failureText}
-            </Text>
+          ) : null}
+          {terminationNotice ? (
+            <View style={styles.terminationNotice}>
+              <StatusDivider
+                label={item.stopped ? t("chat.responseStopped") : friendlyRunErrorTitle(item.error, t)}
+              />
+              {isLatestAssistant && !item.stopped ? (
+                <Text
+                  selectable
+                  style={[styles.terminationNoticeText, item.stopped && styles.stoppedNoticeText]}
+                >
+                  {terminationNotice}
+                </Text>
+              ) : null}
+            </View>
           ) : null}
           {/* Desktop parity: the retry/continue row sits right below the bubble
               content, above the copy/stats footer. */}
@@ -667,29 +682,25 @@ export function TimelineCard({
             <RunIndicator startedAt={item.startedAt} />
           ) : (
             <View style={styles.messageFooter}>
-              {item.stopped ? (
-                <Text style={styles.stoppedMarker}>{t("chat.runStopped")}</Text>
+              {copyableText.trim() ? (
+                <Pressable
+                  accessibilityLabel={t("chat.copyResponse")}
+                  accessibilityRole="button"
+                  hitSlop={8}
+                  onPress={() => {
+                    Clipboard.setStringAsync(copyableText)
+                      .then(() => copy())
+                      .catch(() => {});
+                  }}
+                  style={styles.copyButton}
+                >
+                  {copied ? (
+                    <Check color={colors.accent} size={15} />
+                  ) : (
+                    <Copy color={colors.inkMuted} size={15} />
+                  )}
+                </Pressable>
               ) : null}
-              {item.truncated ? (
-                <Text style={styles.truncatedMarker}>{t("chat.responseInterrupted")}</Text>
-              ) : null}
-              <Pressable
-                accessibilityLabel={t("chat.copyResponse")}
-                accessibilityRole="button"
-                hitSlop={8}
-                onPress={() => {
-                  Clipboard.setStringAsync(copyableText)
-                    .then(() => copy())
-                    .catch(() => {});
-                }}
-                style={styles.copyButton}
-              >
-                {copied ? (
-                  <Check color={colors.accent} size={15} />
-                ) : (
-                  <Copy color={colors.inkMuted} size={15} />
-                )}
-              </Pressable>
               {footerStats.length > 0 && <Text style={styles.messageDuration}>{footerStats}</Text>}
             </View>
           )}
@@ -778,15 +789,17 @@ const styles = StyleSheet.create({
   userText: { color: colors.surface },
   userMention: { color: colors.surface, fontWeight: "600" },
   userLink: { color: colors.surface, fontWeight: "600", textDecorationLine: "underline" },
-  failureText: { color: colors.ink, fontSize: 17, lineHeight: 26 },
+  terminationNotice: {
+    marginTop: spacing.md,
+  },
+  terminationNoticeText: { color: colors.inkSoft, fontSize: 14, lineHeight: 24, marginTop: spacing.sm },
+  stoppedNoticeText: { color: colors.inkMuted },
   messageFooter: {
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.md,
     marginTop: spacing.sm,
   },
-  stoppedMarker: { color: colors.inkMuted, fontSize: 12, fontStyle: "italic" },
-  truncatedMarker: { color: colors.warning, fontSize: 12 },
   segmentList: { gap: spacing.sm, marginTop: spacing.xs },
   inlineThinking: {
     borderLeftWidth: 2,

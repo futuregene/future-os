@@ -28,7 +28,10 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 vi.mock("./threadAttachments", () => ({
   finalizeTemporaryAttachmentSources: vi.fn(async () => {}),
-  persistImageAttachments: vi.fn(async () => ({ attachments: [], temporarySources: [] })),
+  persistImageAttachments: vi.fn(async () => ({
+    attachments: [],
+    temporarySources: [],
+  })),
 }));
 vi.mock("./buildReferencePrompt", () => ({
   buildReferenceContext: vi.fn(async () => ""),
@@ -119,12 +122,17 @@ describe("runSendPipeline terminal-status handling", () => {
     vi.mocked(buildReferenceContext).mockResolvedValue("Referenced FutureOS objects:\n1. file:utils/a.py");
     const setMessages = vi.fn<(value: SetStateAction<AgentMessage[]>) => void>();
 
-    await runSendPipeline(makeDeps(setMessages), { content: "what is a.py?", attachments: [] });
+    await runSendPipeline(makeDeps(setMessages), {
+      content: "what is a.py?",
+      attachments: [],
+    });
 
-    expect(sendPromptToFutureAgent).toHaveBeenCalledWith(expect.objectContaining({
-      message: "what is a.py?",
-      modelContext: "Referenced FutureOS objects:\n1. file:utils/a.py",
-    }));
+    expect(sendPromptToFutureAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: "what is a.py?",
+        modelContext: "Referenced FutureOS objects:\n1. file:utils/a.py",
+      }),
+    );
     const user = foldMessages(setMessages).find(message => message.role === "user");
     expect(user?.content).toBe("what is a.py?");
   });
@@ -137,11 +145,16 @@ describe("runSendPipeline terminal-status handling", () => {
     vi.mocked(getRun).mockResolvedValue(storedRun({ status: "completed", endedAt: 2_000 }));
     const setMessages = vi.fn<(value: SetStateAction<AgentMessage[]>) => void>();
 
-    await runSendPipeline(makeDeps(setMessages), { content: "hello", attachments: [] });
+    await runSendPipeline(makeDeps(setMessages), {
+      content: "hello",
+      attachments: [],
+    });
 
     expect(updateRunStatus).not.toHaveBeenCalled();
     expect(finalizeTemporaryAttachmentSources).toHaveBeenCalledWith([]);
-    const assistant = foldMessages(setMessages).filter(m => m.role === "assistant").pop();
+    const assistant = foldMessages(setMessages)
+      .filter(m => m.role === "assistant")
+      .pop();
     expect(assistant?.status).toBe("complete");
     expect(assistant?.content).toBe("final answer");
   });
@@ -150,12 +163,15 @@ describe("runSendPipeline terminal-status handling", () => {
     vi.mocked(getRun).mockResolvedValue(storedRun());
     const setMessages = vi.fn<(value: SetStateAction<AgentMessage[]>) => void>();
 
-    await runSendPipeline(makeDeps(setMessages), { content: "hello", attachments: [] });
+    await runSendPipeline(makeDeps(setMessages), {
+      content: "hello",
+      attachments: [],
+    });
 
-    expect(updateRunStatus).toHaveBeenCalledWith(
-      expect.objectContaining({ runId: "run-1", status: "completed" }),
-    );
-    const assistant = foldMessages(setMessages).filter(m => m.role === "assistant").pop();
+    expect(updateRunStatus).toHaveBeenCalledWith(expect.objectContaining({ runId: "run-1", status: "completed" }));
+    const assistant = foldMessages(setMessages)
+      .filter(m => m.role === "assistant")
+      .pop();
     expect(assistant?.status).toBe("complete");
     expect(assistant?.content).toBe("final answer");
   });
@@ -164,9 +180,7 @@ describe("runSendPipeline terminal-status handling", () => {
     // Backend settles `failed` for a stream that closed before `agent_end`;
     // the pipeline sees the terminal row and must not rewrite it, but still
     // leaves the view in a settled (non-streaming) state.
-    vi.mocked(getRun).mockResolvedValue(
-      storedRun({ status: "failed", errorType: "unknown", endedAt: 2_000 }),
-    );
+    vi.mocked(getRun).mockResolvedValue(storedRun({ status: "failed", errorType: "unknown", endedAt: 2_000 }));
     vi.mocked(sendPromptToFutureAgent).mockResolvedValue({
       content: "partial answer",
       complete: false,
@@ -175,11 +189,18 @@ describe("runSendPipeline terminal-status handling", () => {
     });
     const setMessages = vi.fn<(value: SetStateAction<AgentMessage[]>) => void>();
 
-    await runSendPipeline(makeDeps(setMessages), { content: "hello", attachments: [] });
+    await runSendPipeline(makeDeps(setMessages), {
+      content: "hello",
+      attachments: [],
+    });
 
     expect(updateRunStatus).not.toHaveBeenCalled();
-    const assistant = foldMessages(setMessages).filter(m => m.role === "assistant").pop();
+    const assistant = foldMessages(setMessages)
+      .filter(m => m.role === "assistant")
+      .pop();
     expect(assistant?.status).toBe("failed");
+    expect(assistant?.terminationTitle).toContain("Model response error");
+    expect(assistant?.terminationNotice).toContain("Switch models");
   });
 
   it("keeps the cancelled early return: stopped bubble, no fall-through render", async () => {
@@ -195,8 +216,11 @@ describe("runSendPipeline terminal-status handling", () => {
     // Early return: exactly one run read (the settle check), no second
     // loadCurrentRun from the completion path.
     expect(getRun).toHaveBeenCalledTimes(1);
-    const assistant = foldMessages(setMessages).filter(m => m.role === "assistant").pop();
+    const assistant = foldMessages(setMessages)
+      .filter(m => m.role === "assistant")
+      .pop();
     expect(assistant?.stopped).toBe(true);
+    expect(assistant?.terminationNotice).toContain("stopped this response manually");
     expect(assistant?.content).toBe("final answer");
     // Pipeline start + the cancelled finalization; a fall-through into the
     // completion render would add a third.
@@ -221,7 +245,10 @@ describe("runSendPipeline stream/failure edges", () => {
       sessionRecreated: true,
     });
     const setMessages = vi.fn();
-    await runSendPipeline(makeDeps(setMessages), { content: "hello", attachments: [] });
+    await runSendPipeline(makeDeps(setMessages), {
+      content: "hello",
+      attachments: [],
+    });
     expect(emitFutureEvent).toHaveBeenCalledWith("toast", expect.objectContaining({ tone: "info" }));
   });
 
@@ -234,10 +261,11 @@ describe("runSendPipeline stream/failure edges", () => {
       sessionRecreated: false,
     });
     const setMessages = vi.fn();
-    await runSendPipeline(makeDeps(setMessages), { content: "hello", attachments: [] });
-    expect(updateRunStatus).toHaveBeenCalledWith(
-      expect.objectContaining({ runId: "run-1", status: "failed" }),
-    );
+    await runSendPipeline(makeDeps(setMessages), {
+      content: "hello",
+      attachments: [],
+    });
+    expect(updateRunStatus).toHaveBeenCalledWith(expect.objectContaining({ runId: "run-1", status: "failed" }));
   });
 
   it("finalizes the bubble in place when cancelled before any text landed", async () => {
@@ -251,9 +279,12 @@ describe("runSendPipeline stream/failure edges", () => {
     const setMessages = vi.fn();
     const deps = makeDeps(setMessages);
     await runSendPipeline(deps, { content: "hello", attachments: [] });
-    const assistant = foldMessages(setMessages).filter(m => m.role === "assistant").pop();
+    const assistant = foldMessages(setMessages)
+      .filter(m => m.role === "assistant")
+      .pop();
     expect(assistant?.stopped).toBe(true);
     expect(assistant?.thinkingActive).toBe(false);
+    expect(assistant?.terminationNotice).toContain("stopped this response manually");
     expect(deps.onThreadActivity).toHaveBeenCalled();
   });
 
@@ -261,21 +292,29 @@ describe("runSendPipeline stream/failure edges", () => {
     vi.mocked(getRun).mockResolvedValue(storedRun());
     vi.mocked(sendPromptToFutureAgent).mockRejectedValue(new Error("transport down"));
     const setMessages = vi.fn();
-    await runSendPipeline(makeDeps(setMessages), { content: "hello", attachments: [] });
+    await runSendPipeline(makeDeps(setMessages), {
+      content: "hello",
+      attachments: [],
+    });
     expect(finalizeTemporaryAttachmentSources).not.toHaveBeenCalled();
-    expect(updateRunStatus).toHaveBeenCalledWith(
-      expect.objectContaining({ runId: "run-1", status: "failed" }),
-    );
-    const assistant = foldMessages(setMessages).filter(m => m.role === "assistant").pop();
+    expect(updateRunStatus).toHaveBeenCalledWith(expect.objectContaining({ runId: "run-1", status: "failed" }));
+    const assistant = foldMessages(setMessages)
+      .filter(m => m.role === "assistant")
+      .pop();
     expect(assistant?.status).toBe("failed");
-    expect(assistant?.content).toContain("transport down");
+    expect(assistant?.content).toBe("");
+    expect(assistant?.terminationTitle).toContain("Model service error");
+    expect(assistant?.terminationNotice).toContain("Please try again later");
   });
 
   it("skips the status write in the failure path when the run already settled", async () => {
     vi.mocked(getRun).mockResolvedValue(storedRun({ status: "failed", endedAt: 2_000 }));
     vi.mocked(sendPromptToFutureAgent).mockRejectedValue(new Error("late failure"));
     const setMessages = vi.fn();
-    await runSendPipeline(makeDeps(setMessages), { content: "hello", attachments: [] });
+    await runSendPipeline(makeDeps(setMessages), {
+      content: "hello",
+      attachments: [],
+    });
     expect(updateRunStatus).not.toHaveBeenCalled();
   });
 
@@ -283,10 +322,11 @@ describe("runSendPipeline stream/failure edges", () => {
     vi.mocked(getRun).mockResolvedValue(null);
     vi.mocked(sendPromptToFutureAgent).mockRejectedValue(new Error("gone"));
     const setMessages = vi.fn();
-    await runSendPipeline(makeDeps(setMessages), { content: "hello", attachments: [] });
-    expect(updateRunStatus).toHaveBeenCalledWith(
-      expect.objectContaining({ runId: "run-1", status: "failed" }),
-    );
+    await runSendPipeline(makeDeps(setMessages), {
+      content: "hello",
+      attachments: [],
+    });
+    expect(updateRunStatus).toHaveBeenCalledWith(expect.objectContaining({ runId: "run-1", status: "failed" }));
   });
 
   it("pushes stream updates into the pending bubble while the run streams", async () => {
@@ -296,24 +336,39 @@ describe("runSendPipeline stream/failure edges", () => {
       handler = args[1] as typeof handler;
       return () => {};
     });
-    let resolveReply!: (value: { content: string; complete: boolean; sessionId: string; sessionRecreated: boolean }) => void;
+    let resolveReply!: (value: {
+      content: string;
+      complete: boolean;
+      sessionId: string;
+      sessionRecreated: boolean;
+    }) => void;
     vi.mocked(sendPromptToFutureAgent).mockImplementation(
-      () => new Promise((resolve) => {
-        resolveReply = resolve;
-      }),
+      () =>
+        new Promise((resolve) => {
+          resolveReply = resolve;
+        }),
     );
     vi.mocked(getRun).mockResolvedValue(storedRun({ status: "completed", endedAt: 2_000 }));
     vi.mocked(listRunEvents).mockResolvedValue([]);
     const setMessages = vi.fn();
-    const send = runSendPipeline(makeDeps(setMessages), { content: "hello", attachments: [] });
+    const send = runSendPipeline(makeDeps(setMessages), {
+      content: "hello",
+      attachments: [],
+    });
     await vi.waitFor(() => {
       expect(handler).not.toBeNull();
     });
     // Matching run: resetProjection variant + plain variant.
-    handler!({ payload: { updates: [{ runId: "run-1", resetProjection: true }] } });
-    handler!({ payload: { updates: [{ runId: "run-1", resetProjection: false }] } });
+    handler!({
+      payload: { updates: [{ runId: "run-1", resetProjection: true }] },
+    });
+    handler!({
+      payload: { updates: [{ runId: "run-1", resetProjection: false }] },
+    });
     // A different run's event is ignored.
-    handler!({ payload: { updates: [{ runId: "run-other", resetProjection: true }] } });
+    handler!({
+      payload: { updates: [{ runId: "run-other", resetProjection: true }] },
+    });
     const { listRunEventsSince } = await import("../../integrations/storage/threadStore");
     await vi.waitFor(() => {
       // One leading read plus one trailing read: burst notifications never run
@@ -337,11 +392,17 @@ describe("runSendPipeline stream/failure edges", () => {
       return () => {};
     });
 
-    let resolveReply!: (value: { content: string; complete: boolean; sessionId: string; sessionRecreated: boolean }) => void;
+    let resolveReply!: (value: {
+      content: string;
+      complete: boolean;
+      sessionId: string;
+      sessionRecreated: boolean;
+    }) => void;
     vi.mocked(sendPromptToFutureAgent).mockImplementation(
-      () => new Promise((resolve) => {
-        resolveReply = resolve;
-      }),
+      () =>
+        new Promise((resolve) => {
+          resolveReply = resolve;
+        }),
     );
     vi.mocked(getRun).mockResolvedValue(storedRun({ status: "completed", endedAt: 2_000 }));
     vi.mocked(listRunEvents).mockResolvedValue([]);
@@ -363,13 +424,18 @@ describe("runSendPipeline stream/failure edges", () => {
     });
 
     const setMessages = vi.fn();
-    const send = runSendPipeline(makeDeps(setMessages), { content: "hello", attachments: [] });
+    const send = runSendPipeline(makeDeps(setMessages), {
+      content: "hello",
+      attachments: [],
+    });
     await vi.waitFor(() => {
       expect(handler).not.toBeNull();
     });
 
     // First event starts the streaming loop (iteration 1, awaiting update #1).
-    handler!({ payload: { updates: [{ runId: "run-1", resetProjection: false }] } });
+    handler!({
+      payload: { updates: [{ runId: "run-1", resetProjection: false }] },
+    });
     await vi.waitFor(() => {
       expect(calls).toBe(1);
     });
@@ -378,7 +444,9 @@ describe("runSendPipeline stream/failure edges", () => {
     // await continuation (which exits the loop) but BEFORE its `.finally` — the
     // exact race the guard on the re-queue line exists to recover from.
     firstCallPromise.then(() => {
-      handler!({ payload: { updates: [{ runId: "run-1", resetProjection: false }] } });
+      handler!({
+        payload: { updates: [{ runId: "run-1", resetProjection: false }] },
+      });
     });
     resolveFirst();
 

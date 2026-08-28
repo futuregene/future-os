@@ -70,8 +70,8 @@ export function classifyAgentError(raw: string): FriendlyAgentError {
   // model API rejecting the request (quota / tenant permission) — are run
   // failures, not connectivity problems, and mislabeling them as "connection failure" sends
   // users to debug the wrong thing.
-  if (message.includes("Unable to connect to Future Agent"))
-    return { key: "agent:failure.connect", params: { message } };
+  if (/\[AGENT_INTERRUPTED\]|Unable to (?:connect to|send prompt to) Future Agent|Future Agent (?:event stream|response timed out|run ended|run no longer active|rejected the prompt)|prompt acknowledgement omitted|Session persistence failed/i.test(message))
+    return { key: "agent:failure.agentInterrupted" };
   if (message.includes("[CTX_LIMIT]"))
     return { key: "agent:failure.contextLimit" };
 
@@ -93,6 +93,10 @@ export function classifyAgentError(raw: string): FriendlyAgentError {
     return { key: "agent:failure.rateLimited" };
   if (status?.startsWith("5"))
     return { key: "agent:failure.serverError", params: { status } };
+  if (/\[UPSTREAM_DISCONNECTED\]|error decoding response body|error reading a body|unexpected eof|connection reset by peer/i.test(message))
+    return { key: "agent:failure.upstreamDisconnected" };
+  if (/\[MODEL_RESPONSE_ERROR\]|invalid provider stream|invalid provider response|response ended before a clean terminal|stream was truncated/i.test(message))
+    return { key: "agent:failure.modelResponseError" };
   if (/timed out|timeout|etimedout|econnreset|econnrefused|enotfound|network error|fetch failed/i.test(message))
     return { key: "agent:failure.network" };
   return { key: "agent:failure.run", params: { message: agentErrorDetail(message) } };

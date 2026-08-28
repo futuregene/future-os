@@ -128,6 +128,8 @@ pub struct AgentPromptResponse {
     /// content is a truncated prefix (stream closed mid-reply) and the caller
     /// should finalize the run as failed rather than completed.
     pub complete: bool,
+    /// Stable user-facing failure category when `complete` is false.
+    pub termination_kind: Option<String>,
     /// The agent session id (newly-created or existing). The frontend persists
     /// this on the thread so subsequent prompts reuse the same session.
     pub session_id: String,
@@ -630,11 +632,14 @@ pub async fn agent_prompt_with_model_context(
         Ok(response) if response.complete => {
             mark_run_completed_if_active(request.run_id.as_deref());
         }
-        Ok(_) => {
-            mark_run_failed_if_active(
-                request.run_id.as_deref(),
-                "Future Agent response ended before a clean terminal.",
-            );
+        Ok(response) => {
+            let error = match response.termination_kind.as_deref() {
+                Some("upstream_disconnected") => {
+                    "[UPSTREAM_DISCONNECTED] model response stream ended before completion"
+                }
+                _ => "[MODEL_RESPONSE_ERROR] response ended before a clean terminal",
+            };
+            mark_run_failed_if_active(request.run_id.as_deref(), error);
         }
         Err(error) => mark_run_failed_if_active(request.run_id.as_deref(), &error.to_string()),
     }
@@ -829,6 +834,7 @@ async fn agent_prompt_inner(
             Ok(AgentPromptResponse {
                 content: response.content,
                 complete: response.complete,
+                termination_kind: response.termination_kind,
                 session_id,
                 session_recreated: ensured.recreated,
             })

@@ -32,6 +32,8 @@ interface AgentPromptResponse {
   content: string;
   /** False when the agent stream ended before a clean `agent_end`. */
   complete?: boolean;
+  /** Stable failure category when `complete` is false. */
+  terminationKind?: "upstream_disconnected" | "model_response_error";
   /** The agent session id — persisted on the thread for subsequent prompts. */
   sessionId?: string;
   /**
@@ -81,6 +83,7 @@ export async function sendPromptToFutureAgent({
   return {
     content: response.content,
     complete: response.complete !== false,
+    ...(response.terminationKind ? { terminationKind: response.terminationKind } : {}),
     sessionId: response.sessionId,
     sessionRecreated: response.sessionRecreated === true,
   };
