@@ -1260,12 +1260,17 @@ describe("run failure parity with the desktop", () => {
         content: "partial",
         meta: { run_id: "run-1" },
         run_status: "failed",
+        run_error: "error decoding response body",
       },
     ]);
     const assistants = timeline.items.filter(
       item => item.kind === "message" && item.role === "assistant",
     );
     expect(assistants).toHaveLength(1);
-    expect(assistants[0]).toMatchObject({ failed: true, text: "partial" });
+    expect(assistants[0]).toMatchObject({
+      failed: true,
+      text: "partial",
+      error: "error decoding response body",
+    });
   });
 });

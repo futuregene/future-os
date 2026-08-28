@@ -4,7 +4,7 @@ import type { StoredRun, StoredRunEvent } from "../../integrations/storage/threa
 import { buildAssistantRunProjection, createRunProjector, matchesSettledRun } from "@future-os/thread-projection";
 import { getRun, listRunEvents, listRunEventsBulk, listRunEventsSince, storedTimeToIso } from "../../integrations/storage/threadStore";
 import { emitFutureEvent } from "../../lib/futureEvents";
-import { buildAgentFailureContent } from "./agentMessageFormatters";
+import { buildAgentFailureContent, buildAgentFailureTitle, userStoppedNotice } from "./agentMessageFormatters";
 
 /** Apply a patch to the single message with `id`, leaving the rest untouched. */
 export function patchMessage(
@@ -500,11 +500,22 @@ function applyRunToMessage(message: AgentMessage, run: StoredRun): AgentMessage 
   // content keeps its own recorded reply time.
   const isEmpty = !message.content.trim() && !message.segments?.length;
   const stopTime = isEmpty ? runEndedIso(run) : null;
+  const stopped = run.status === "cancelled";
+  const terminationNotice = stopped
+    ? userStoppedNotice()
+    : run.status === "failed"
+      ? buildAgentFailureContent(run.errorMessage ?? "")
+      : undefined;
+  const terminationTitle = run.status === "failed"
+    ? buildAgentFailureTitle(run.errorMessage ?? "")
+    : undefined;
   return {
     ...message,
     runId: run.id,
     modelId: run.modelId ?? message.modelId,
-    stopped: run.status === "cancelled",
+    stopped,
+    terminationNotice,
+    terminationTitle,
     status: run.status === "failed" ? "failed" : (message.status ?? "complete"),
     durationMs: message.durationMs ?? runDurationMs(run),
     createdAt: stopTime ?? message.createdAt,
@@ -693,7 +704,9 @@ export function recoverFailedRuns(messages: AgentMessage[], runs: StoredRun[]): 
       id: `failed_${run.id}`,
       role: "assistant",
       authorKey: "author.researchCopilot",
-      content: buildAgentFailureContent(run.errorMessage ?? ""),
+      content: "",
+      terminationNotice: buildAgentFailureContent(run.errorMessage ?? ""),
+      terminationTitle: buildAgentFailureTitle(run.errorMessage ?? ""),
       status: "failed",
       runId: run.id,
       modelId: run.modelId ?? undefined,

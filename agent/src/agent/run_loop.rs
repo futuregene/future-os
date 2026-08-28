@@ -466,6 +466,7 @@ impl Loop {
             let mut output_started = false;
             let mut was_outputting = false;
             let mut stream_error = None;
+            let mut model_stream_failed = false;
             // Set when the LLM layer signals the stream was cut off (idle
             // timeout or premature EOF without a finish_reason / `[DONE]`).
             // The accumulated text is a prefix, not a finished answer.
@@ -701,9 +702,20 @@ impl Loop {
                     }
                     ModelStreamEvent::Finish { reason, usage } => {
                         saw_terminal_event = true;
-                        if matches!(reason, FinishReason::Incomplete | FinishReason::Length) {
+                        if matches!(
+                            &reason,
+                            FinishReason::Incomplete
+                                | FinishReason::Length
+                                | FinishReason::ContentFilter
+                                | FinishReason::Error
+                        ) {
                             stream_truncated = true;
-                            truncation_detected_by.get_or_insert("finish_incomplete");
+                            truncation_detected_by.get_or_insert(match &reason {
+                                FinishReason::Length => "finish_length",
+                                FinishReason::ContentFilter => "finish_content_filter",
+                                FinishReason::Error => "finish_error",
+                                _ => "finish_incomplete",
+                            });
                         }
                         if let Some(ref usage) = usage {
                             self.process_usage_event(usage, &mut total_usage);
@@ -716,6 +728,19 @@ impl Loop {
                     }
                     ModelStreamEvent::Error { message } => {
                         saw_terminal_event = true;
+                        model_stream_failed = true;
+                        // A model-stream error always leaves the accumulated
+                        // response as a prefix. Preserve both that fact and a
+                        // stable category so clients can show actionable copy
+                        // without matching reqwest/provider wording.
+                        stream_truncated = true;
+                        truncation_detected_by.get_or_insert(
+                            if message.contains("[UPSTREAM_DISCONNECTED]") {
+                                "upstream_disconnected"
+                            } else {
+                                "model_response_error"
+                            },
+                        );
                         stream_error = Some(anyhow!(message));
                     }
                 }
@@ -818,6 +843,18 @@ impl Loop {
                     &reasoning_provider_metadata,
                     &agent_tool_calls,
                 );
+                if model_stream_failed {
+                    self.stream_incomplete
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    *self.stream_truncation.lock() = Some(crate::agent::StreamTruncation {
+                        turns_so_far: turn as i32,
+                        output_len: assistant_text.len(),
+                        tool_calls_so_far: agent_tool_calls.len(),
+                        detected_by: truncation_detected_by
+                            .unwrap_or("model_response_error")
+                            .to_string(),
+                    });
+                }
                 return Ok((String::new(), messages));
             }
 
@@ -1942,6 +1979,17 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[1].text(), "partial");
         assert!(!saved.lock().is_empty(), "partial reply persisted");
+        assert!(loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(
+            loop_
+                .stream_truncation
+                .lock()
+                .clone()
+                .map(|truncation| truncation.detected_by),
+            Some("model_response_error".to_string())
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2030,6 +2078,47 @@ mod tests {
         assert!(loop_
             .stream_incomplete
             .load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(
+            loop_
+                .stream_truncation
+                .lock()
+                .clone()
+                .map(|truncation| truncation.detected_by),
+            Some("finish_length".to_string())
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_marks_content_filter_as_model_response_error() {
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![
+            ev_text("partial"),
+            ModelStreamEvent::Finish {
+                reason: FinishReason::ContentFilter,
+                usage: None,
+            },
+        ])]);
+        let loop_ = Loop::new(provider, "mock");
+        let _ = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(
+            loop_
+                .stream_truncation
+                .lock()
+                .clone()
+                .map(|truncation| truncation.detected_by),
+            Some("finish_content_filter".to_string())
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

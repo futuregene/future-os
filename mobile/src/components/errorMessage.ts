@@ -12,6 +12,13 @@ export function friendlyRunError(message: string | undefined, t: TranslateError)
   return t(key.replace(/^agent:/, ""), params);
 }
 
+export function friendlyRunErrorTitle(message: string | undefined, t: TranslateError): string {
+  const { key, params } = classifyAgentError(message ?? "");
+  const titleKey = `${key.replace(/^agent:/, "")}Title`;
+  const title = t(titleKey, params);
+  return title === titleKey ? t("failure.runTitle") : title;
+}
+
 /** Convert backend/transport detail into a stable, actionable user message. */
 export function friendlyError(message: string, t: TranslateError): string {
   const trimmed = message.trim();

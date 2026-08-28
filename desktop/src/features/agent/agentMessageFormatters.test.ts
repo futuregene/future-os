@@ -40,9 +40,23 @@ describe("classifyAgentError", () => {
     expect(classifyAgentError("fetch failed").key).toBe("agent:failure.network");
   });
 
-  it("keeps the genuine gRPC connection failure as a connect error", () => {
+  it("maps upstream response-body disconnects separately from local network setup failures", () => {
+    expect(classifyAgentError("[UPSTREAM_DISCONNECTED] body stream reset").key)
+      .toBe("agent:failure.upstreamDisconnected");
+    expect(classifyAgentError("error decoding response body").key)
+      .toBe("agent:failure.upstreamDisconnected");
+  });
+
+  it("maps malformed or incomplete model responses to model guidance", () => {
+    expect(classifyAgentError("[MODEL_RESPONSE_ERROR] malformed frame").key)
+      .toBe("agent:failure.modelResponseError");
+    expect(classifyAgentError("invalid provider stream event: bad json").key)
+      .toBe("agent:failure.modelResponseError");
+  });
+
+  it("maps a genuine Agent connection failure to the restart guidance", () => {
     const raw = "Unable to connect to Future Agent at 127.0.0.1:50051";
-    expect(classifyAgentError(raw)).toEqual({ key: "agent:failure.connect", params: { message: raw } });
+    expect(classifyAgentError(raw)).toEqual({ key: "agent:failure.agentInterrupted" });
   });
 
   it("falls back to the generic run failure with a cleaned detail for unknown errors", () => {
