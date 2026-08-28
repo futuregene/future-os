@@ -35,11 +35,11 @@ interface RunsPanelProps {
 interface ToolEntry {
   tool: StoredToolCall;
   run: StoredRun;
-  // Exactly one row per active run carries the terminate control — its newest
-  // still-running command — so a multi-command run isn't cluttered with
-  // duplicate stop buttons, and a completed command never shows one (its run
-  // may still be generating its reply, but interrupting that is the composer's
-  // stop button, not a per-command row).
+  // A running command of an active run carries the terminate control. The
+  // model can launch several tools at once within one run; each still-running
+  // row gets its own button, all pointing at the same run-level abort. A
+  // completed command never shows one (interrupting the reply phase is the
+  // composer's stop button).
   terminable: boolean;
 }
 
@@ -302,52 +302,62 @@ function ToolRow({
               {primary}
             </div>
           </div>
-          <div className="mt-2 text-xs font-medium text-ink-muted">{meta}</div>
+          {/* Status line is a fixed-height row (min-h-5 == leading-5) so the
+              row doesn't jump whether or not the terminate control is present.
+              The terminate button sits inline at the line's right edge. */}
+          <div className="mt-2 flex min-h-5 items-center justify-between gap-2">
+            <span className="min-w-0 truncate text-xs font-medium text-ink-muted">
+              {meta}
+            </span>
+            {terminable
+              ? (
+                  <span className="flex shrink-0 items-center gap-1">
+                    {confirming
+                      ? (
+                          <>
+                            <span className="text-xs text-ink-muted">
+                              {t("runsPanel.confirmTerminate")}
+                            </span>
+                            <Button
+                              className="h-5 gap-1 px-1.5"
+                              disabled={busy}
+                              onClick={onCancelConfirm}
+                              size="xs"
+                              variant="ghost"
+                            >
+                              {t("runsPanel.cancel")}
+                            </Button>
+                            <Button
+                              className="h-5 gap-1 px-1.5"
+                              disabled={busy}
+                              leftIcon={<CircleStop className="size-3" />}
+                              onClick={onTerminate}
+                              size="xs"
+                              variant="danger"
+                            >
+                              {busy ? t("runsPanel.stopping") : t("runsPanel.terminate")}
+                            </Button>
+                          </>
+                        )
+                      : (
+                          <Button
+                            className="h-5 gap-1 px-1.5"
+                            leftIcon={<CircleStop className="size-3" />}
+                            onClick={onRequestTerminate}
+                            size="xs"
+                            variant="danger-soft"
+                          >
+                            {t("runsPanel.terminate")}
+                          </Button>
+                        )}
+                  </span>
+                )
+              : null}
+          </div>
           {actionError
             ? (
                 <div className="mt-2 line-clamp-3 text-xs leading-5 text-danger">
                   {actionError}
-                </div>
-              )
-            : null}
-          {terminable
-            ? (
-                <div className="mt-3 flex justify-end">
-                  {confirming
-                    ? (
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs text-ink-muted">
-                            {t("runsPanel.confirmTerminate")}
-                          </span>
-                          <Button
-                            disabled={busy}
-                            onClick={onCancelConfirm}
-                            size="xs"
-                            variant="ghost"
-                          >
-                            {t("runsPanel.cancel")}
-                          </Button>
-                          <Button
-                            disabled={busy}
-                            leftIcon={<CircleStop className="size-3.5" />}
-                            onClick={onTerminate}
-                            size="xs"
-                            variant="danger"
-                          >
-                            {busy ? t("runsPanel.stopping") : t("runsPanel.terminate")}
-                          </Button>
-                        </div>
-                      )
-                    : (
-                        <Button
-                          leftIcon={<CircleStop className="size-3.5" />}
-                          onClick={onRequestTerminate}
-                          size="xs"
-                          variant="danger-soft"
-                        >
-                          {t("runsPanel.terminate")}
-                        </Button>
-                      )}
                 </div>
               )
             : null}
@@ -421,20 +431,16 @@ function buildToolEntries(
       continue;
     }
 
-    // The terminate control rides the run's newest still-running command. A
+    // The terminate control rides every still-running command of an active run
+    // (parallel tool calls each get one; the button aborts the whole run). A
     // completed tool never carries it — otherwise a finished command shows a
     // "completed" label next to a stop button while the run merely generates
-    // its reply. (filter() copies, so the sort can't reorder the caller's
-    // array.)
-    const runningTools = tools
-      .filter(tool => tool.status === "running")
-      .sort(compareToolTimeDesc);
-    const latestRunningId = runningTools[0]?.id;
+    // its reply.
     for (const tool of tools) {
       const entry: ToolEntry = {
         tool,
         run,
-        terminable: runActive && tool.id === latestRunningId,
+        terminable: runActive && tool.status === "running",
       };
       (runActive ? active : finished).push(entry);
     }
