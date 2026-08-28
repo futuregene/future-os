@@ -117,12 +117,22 @@ pub struct RpcSessionState {
     pub requested_run: Option<RunTerminalState>,
 }
 
-/// `RecentTerminalAck` — wire keys are snake_case (the TS type hard-codes
-/// `run_id` / `run_sequence` / `client_request_id`).
+/// `RecentTerminalAck` — camelCase wire keys on the wire today: the #384
+/// typed-RPC decoder (`decode.rs`) emits `runId` / `runSequence` /
+/// `clientRequestId` (`TerminalAck` in `packages/rpc`). The snake_case
+/// aliases keep pre-#384 agents working — their JSON `data` string carried
+/// `run_id` / `run_sequence` / `client_request_id` (as the TS type
+/// hard-coded). Without the camelCase rename every `get_state` after the
+/// session's first terminal ack failed to parse, freezing the footer at its
+/// last good value.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RecentTerminalAck {
+    #[serde(alias = "run_id")]
     pub run_id: String,
+    #[serde(alias = "run_sequence")]
     pub run_sequence: i64,
+    #[serde(alias = "client_request_id")]
     pub client_request_id: String,
     /// "terminal" | "cancelled" | "failed".
     pub state: String,
@@ -304,9 +314,10 @@ mod tests {
     }
 
     #[test]
-    fn get_state_parses_camel_case_with_snake_terminal_acks() {
-        // Mirrors the real agent payload: camelCase sub-objects, snake_case
-        // TerminalAck keys (the TS type hard-codes both).
+    fn get_state_parses_real_payload_with_camel_case_terminal_acks() {
+        // Mirrors the real agent payload after #384 typed-RPC: camelCase
+        // everywhere, including TerminalAck keys (decode.rs emits runId /
+        // runSequence / clientRequestId).
         let json = r#"{
             "model": "deepseek-v4-pro",
             "thinkingLevel": "high",
@@ -317,7 +328,7 @@ mod tests {
             "queryCount": 3,
             "activeRun": {"runId": "r1", "epoch": 2, "state": "running", "lastEventIdx": 10},
             "queuedRuns": [{"runId": "r2", "runSequence": 3, "clientRequestId": "c", "state": "queued", "queuePosition": 1, "acceptedAt": "2026-08-07T00:00:00Z", "displayText": "hi"}],
-            "recentTerminalAcks": [{"run_id": "r0", "run_sequence": 1, "client_request_id": "x", "state": "terminal", "reason": "superseded"}]
+            "recentTerminalAcks": [{"runId": "r0", "runSequence": 1, "clientRequestId": "x", "state": "terminal", "reason": "superseded"}]
         }"#;
         let state: RpcSessionState = serde_json::from_str(json).expect("parse");
         assert_eq!(state.model.as_deref(), Some("deepseek-v4-pro"));
@@ -335,6 +346,21 @@ mod tests {
         assert_eq!(state.recent_terminal_acks.len(), 1);
         assert_eq!(state.recent_terminal_acks[0].run_id, "r0");
         assert_eq!(state.recent_terminal_acks[0].reason, "superseded");
+    }
+
+    #[test]
+    fn get_state_accepts_legacy_snake_case_terminal_acks() {
+        // Pre-#384 agents sent the JSON `data` string with snake_case ack
+        // keys; the aliases must keep those decodable too.
+        let json = r#"{
+            "thinkingLevel": "high",
+            "recentTerminalAcks": [{"run_id": "r0", "run_sequence": 1, "client_request_id": "x", "state": "terminal", "reason": "superseded"}]
+        }"#;
+        let state: RpcSessionState = serde_json::from_str(json).expect("parse");
+        assert_eq!(state.recent_terminal_acks.len(), 1);
+        assert_eq!(state.recent_terminal_acks[0].run_id, "r0");
+        assert_eq!(state.recent_terminal_acks[0].run_sequence, 1);
+        assert_eq!(state.recent_terminal_acks[0].client_request_id, "x");
     }
 
     #[test]
