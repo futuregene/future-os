@@ -382,7 +382,8 @@ pub(super) fn derive_thinking_compat(
 
     // Models that advertise tool_stream support (e.g. GLM series) must send
     // `tool_stream: true` so tool calls stream incrementally instead of only
-    // at the end of a long generation (which can exceed the 45s timeout).
+    // at the end of a long generation (which can exceed the stream-idle
+    // timeout in llm/mod.rs).
     if has("tool_stream") {
         compat.insert("toolStream".into(), serde_json::json!(true));
     }

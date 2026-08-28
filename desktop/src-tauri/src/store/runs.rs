@@ -833,6 +833,39 @@ fn apply_tool_event(state: &mut ToolProjectionState, event: &RunEventRecord) {
                 });
             }
         }
+        "tool_delta" | "toolcall_delta" => {
+            // Tool arguments stream in fragments after the (empty-args)
+            // input-phase `tool_start`; fold them so the Runs panel can show
+            // the command/target while the model is still emitting the call.
+            // The execution-phase `tool_start` later replaces the accumulated
+            // text with the complete args.
+            let Some((tool_id, text, snapshot)) =
+                parse_tool_delta_payload(event.payload.as_deref())
+            else {
+                return;
+            };
+            let idx = match tool_id {
+                // The id is authoritative: a delta naming an id we haven't
+                // folded means its start never arrived (journal gap) — drop it
+                // rather than misattribute the fragments to another call.
+                Some(id) => index_by_id.get(&id).copied(),
+                // Index-only streams (some providers omit the id on every
+                // fragment): attribute to the newest still-running call — arg
+                // fragments only flow while their call is open, and a
+                // misattributed stream self-corrects when the execution
+                // `tool_start` lands with complete args.
+                None => tools.iter().rposition(|tool| tool.status == "running"),
+            };
+            let Some(idx) = idx else {
+                return;
+            };
+            let input = tools[idx].input.get_or_insert_with(String::new);
+            if snapshot {
+                // Full current state, not an incremental fragment.
+                input.clear();
+            }
+            input.push_str(&text);
+        }
         "tool_end" | "tool_result" => {
             let idx = event_tool_id(event)
                 .as_deref()
@@ -860,6 +893,34 @@ fn event_tool_id(event: &RunEventRecord) -> Option<String> {
             .filter(|s| !s.is_empty())
             .map(str::to_string)
     })
+}
+
+/// (`tool_id`, fragment text, snapshot) from a `tool_delta` payload. The id is
+/// absent for providers that stream index-only; `snapshot == true` means the
+/// text carries the provider's full current argument state, not a fragment.
+fn parse_tool_delta_payload(payload: Option<&str>) -> Option<(Option<String>, String, bool)> {
+    let payload = payload?;
+    let v: serde_json::Value = serde_json::from_str(payload).ok()?;
+    let text = v
+        .get("text")
+        .or_else(|| v.get("delta"))
+        .or_else(|| v.get("content"))
+        .and_then(|s| s.as_str())
+        .unwrap_or("");
+    if text.is_empty() {
+        return None;
+    }
+    let tool_id = ["tool_id", "toolID", "tool_call_id"].iter().find_map(|k| {
+        v.get(*k)
+            .and_then(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    });
+    let snapshot = v
+        .get("snapshot")
+        .and_then(|flag| flag.as_bool())
+        .unwrap_or(false);
+    Some((tool_id, text.to_string(), snapshot))
 }
 
 fn parse_tool_start_payload(payload: Option<&str>) -> (String, String, Option<String>) {
@@ -1418,6 +1479,147 @@ mod tests {
         // create an entry — it returns the empty list.
         let uncached = format!("test_uncached_{}", std::process::id());
         assert!(advance_tool_projection(&uncached, &[]).is_empty());
+    }
+
+    #[test]
+    fn tool_projection_accumulates_streaming_arg_deltas() {
+        let run_id = format!("test_arg_deltas_{}", std::process::id());
+        let tools = advance_tool_projection(
+            &run_id,
+            &[
+                // Input-phase start: native streams announce the call before
+                // any argument text has arrived.
+                tool_event(
+                    &run_id,
+                    "tool_start",
+                    r#"{"tool_id":"t1","tool_name":"edit","tool_args":""}"#,
+                    0,
+                ),
+                tool_event(
+                    &run_id,
+                    "tool_delta",
+                    r#"{"tool_id":"t1","text":"{\"file_path\": \"/a"}"#,
+                    1,
+                ),
+                tool_event(
+                    &run_id,
+                    "toolcall_delta",
+                    r#"{"tool_id":"t1","text":".ts\"}"}"#,
+                    2,
+                ),
+                // Execution-phase start replaces the accumulated partial with
+                // the complete args.
+                tool_event(
+                    &run_id,
+                    "tool_start",
+                    r#"{"tool_id":"t1","tool_name":"edit","tool_args":{"file_path":"/a.ts","old":"x"}}"#,
+                    3,
+                ),
+            ],
+        );
+
+        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            tools[0].input.as_deref(),
+            Some(r#"{"file_path":"/a.ts","old":"x"}"#)
+        );
+
+        let mut cache = TOOL_PROJECTION_CACHE.lock().unwrap_or_else(unpoison);
+        cache.remove(&run_id);
+    }
+
+    #[test]
+    fn tool_projection_keeps_partial_input_until_execution_start() {
+        let run_id = format!("test_partial_args_{}", std::process::id());
+        let tools = advance_tool_projection(
+            &run_id,
+            &[
+                tool_event(
+                    &run_id,
+                    "tool_start",
+                    r#"{"tool_id":"t1","tool_name":"write","tool_args":""}"#,
+                    0,
+                ),
+                tool_event(
+                    &run_id,
+                    "tool_delta",
+                    r#"{"tool_id":"t1","text":"{\"path\": \"/tmp/out.md\""}"#,
+                    1,
+                ),
+            ],
+        );
+
+        // No execution start yet: the folded partial args stay as the input so
+        // the Runs panel can surface the target while the model still streams.
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].input.as_deref(), Some(r#"{"path": "/tmp/out.md""#));
+
+        let mut cache = TOOL_PROJECTION_CACHE.lock().unwrap_or_else(unpoison);
+        cache.remove(&run_id);
+    }
+
+    #[test]
+    fn tool_projection_snapshot_delta_replaces_and_idless_delta_targets_newest_running() {
+        let run_id = format!("test_delta_attrs_{}", std::process::id());
+        let tools = advance_tool_projection(
+            &run_id,
+            &[
+                tool_event(
+                    &run_id,
+                    "tool_start",
+                    r#"{"tool_id":"t1","tool_name":"shell","tool_args":"{\"command\":\"echo one\"}"}"#,
+                    0,
+                ),
+                tool_event(
+                    &run_id,
+                    "tool_start",
+                    r#"{"tool_id":"t2","tool_name":"read","tool_args":""}"#,
+                    1,
+                ),
+                // No tool_id: attributed to the newest still-running call (t2).
+                tool_event(&run_id, "tool_delta", r#"{"text":"{\"path\": \"/b"}"#, 2),
+                tool_event(&run_id, "tool_delta", r#"{"text":".ts\"}"}"#, 3),
+                // Snapshot delta replaces the accumulated text wholesale.
+                tool_event(
+                    &run_id,
+                    "tool_delta",
+                    r#"{"tool_id":"t2","text":"{\"path\": \"/c.ts\"}","snapshot":true}"#,
+                    4,
+                ),
+            ],
+        );
+
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0].input.as_deref(), Some(r#"{"command":"echo one"}"#));
+        assert_eq!(tools[1].input.as_deref(), Some(r#"{"path": "/c.ts"}"#));
+
+        let mut cache = TOOL_PROJECTION_CACHE.lock().unwrap_or_else(unpoison);
+        cache.remove(&run_id);
+    }
+
+    #[test]
+    fn tool_projection_ignores_delta_without_a_running_call() {
+        let run_id = format!("test_orphan_delta_{}", std::process::id());
+        let tools = advance_tool_projection(
+            &run_id,
+            &[
+                tool_event(
+                    &run_id,
+                    "tool_start",
+                    r#"{"tool_id":"t1","tool_name":"read","tool_args":"{\"path\":\"/a.ts\"}"}"#,
+                    0,
+                ),
+                tool_event(&run_id, "tool_end", r#"{"tool_id":"t1","text":"ok"}"#, 1),
+                // Delta for an unknown call after the only one ended: dropped.
+                tool_event(&run_id, "tool_delta", r#"{"tool_id":"t9","text":"{}"}"#, 2),
+            ],
+        );
+
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].input.as_deref(), Some(r#"{"path":"/a.ts"}"#));
+
+        let mut cache = TOOL_PROJECTION_CACHE.lock().unwrap_or_else(unpoison);
+        cache.remove(&run_id);
     }
 
     #[test]

@@ -1,0 +1,33 @@
+[package]
+name = "future-provider-protocol-tests"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Keep this manual harness outside the FutureOS workspace and therefore out of CI.
+[workspace]
+
+[dependencies]
+anyhow = "1"
+future-agent = { path = "../../agent" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread"] }
+tokio-stream = "0.1"
+
+[[bin]]
+name = "rig-cassette"
+path = "src/bin/rig_cassette.rs"
+
+[[bin]]
+name = "rig-structure"
+path = "src/bin/rig_structure.rs"
+
+[[bin]]
+name = "rust-genai-yakbak"
+path = "src/bin/rust_genai_yakbak.rs"
+
+[[bin]]
+name = "anthropic-protocol"
+path = "src/bin/anthropic_protocol.rs"

@@ -39,10 +39,17 @@ pub(super) fn persist_run_event(
     // artifact-path extraction both draw from it), and feeding it here keeps it
     // warm in real time instead of waiting for a journal-tail poll. Journal-tail
     // pollers and fork/import synthesis advance the same cache; the projection's
-    // sequence guard makes the overlap idempotent.
+    // sequence guard makes the overlap idempotent. Deltas only reach this fold
+    // via projection snapshots (reattach replay) — the live path keeps
+    // token-heavy events on the cheap notification path in stream.rs.
     if matches!(
         event_type,
-        "tool_start" | "toolcall_start" | "tool_end" | "tool_result"
+        "tool_start"
+            | "toolcall_start"
+            | "tool_delta"
+            | "toolcall_delta"
+            | "tool_end"
+            | "tool_result"
     ) {
         let record = store::RunEventRecord {
             id: store::create_id("event"),

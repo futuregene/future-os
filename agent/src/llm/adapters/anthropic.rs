@@ -90,7 +90,9 @@ impl ProtocolAdapter for AnthropicMessagesAdapter {
         }
         let thinking_enabled = target.generation.thinking_budget >= MIN_THINKING_BUDGET_TOKENS;
         if thinking_enabled && config.thinking_mode == AnthropicThinkingMode::Adaptive {
-            body["thinking"] = json!({"type": "adaptive"});
+            // Several current Claude models omit visible thinking by default.
+            // FutureOS exposes thinking in the UI, so request the summary explicitly.
+            body["thinking"] = json!({"type": "adaptive", "display": "summarized"});
             body["output_config"] = json!({
                 "effort": anthropic_effort(&target.generation.thinking_level),
             });
@@ -363,6 +365,7 @@ fn lower_messages(request: &ModelRequest) -> Result<Vec<Value>> {
     let mut messages: Vec<Value> = Vec::new();
     for message in &request.messages {
         let mut user = Vec::new();
+        let mut user_tool_results = Vec::new();
         let mut assistant = Vec::new();
         for block in message.model_content() {
             match block {
@@ -420,7 +423,7 @@ fn lower_messages(request: &ModelRequest) -> Result<Vec<Value>> {
                     tool_call_id,
                     content,
                     is_error,
-                } => user.push(json!({
+                } => user_tool_results.push(json!({
                     "type": "tool_result",
                     "tool_use_id": tool_call_id,
                     "content": content,
@@ -431,6 +434,10 @@ fn lower_messages(request: &ModelRequest) -> Result<Vec<Value>> {
         if !assistant.is_empty() {
             push_message(&mut messages, "assistant", assistant);
         }
+        // Anthropic requires tool_result blocks to precede any text or other
+        // content in the user message that answers a tool-use turn.
+        user_tool_results.extend(user);
+        let user = user_tool_results;
         if !user.is_empty() {
             push_message(&mut messages, "user", user);
         }
@@ -461,20 +468,39 @@ fn anthropic_reasoning_metadata(signature: &str, redacted_data: Option<&str>) ->
 }
 
 fn update_usage(usage: &mut Usage, value: &Value) {
+    let previous_cache_read = usage.cache_read_tokens.unwrap_or(0);
+    let previous_cache_write = usage.cache_write_tokens.unwrap_or(0);
+    let cache_read = value.get("cache_read_input_tokens").and_then(Value::as_i64);
+    let cache_write = value
+        .get("cache_creation_input_tokens")
+        .and_then(Value::as_i64);
     if let Some(input) = value.get("input_tokens").and_then(Value::as_i64) {
-        usage.prompt_tokens = input;
+        usage.prompt_tokens = input
+            + cache_read.unwrap_or(previous_cache_read)
+            + cache_write.unwrap_or(previous_cache_write);
+    } else if cache_read.is_some() || cache_write.is_some() {
+        let uncached_input = usage
+            .prompt_tokens
+            .saturating_sub(previous_cache_read + previous_cache_write);
+        usage.prompt_tokens = uncached_input
+            + cache_read.unwrap_or(previous_cache_read)
+            + cache_write.unwrap_or(previous_cache_write);
     }
     if let Some(output) = value.get("output_tokens").and_then(Value::as_i64) {
         usage.completion_tokens = output;
     }
-    if let Some(cache_read) = value.get("cache_read_input_tokens").and_then(Value::as_i64) {
+    if let Some(cache_read) = cache_read {
         usage.cache_read_tokens = Some(cache_read);
     }
-    if let Some(cache_write) = value
-        .get("cache_creation_input_tokens")
+    if let Some(cache_write) = cache_write {
+        usage.cache_write_tokens = Some(cache_write);
+    }
+    if let Some(reasoning) = value
+        .get("output_tokens_details")
+        .and_then(|details| details.get("thinking_tokens"))
         .and_then(Value::as_i64)
     {
-        usage.cache_write_tokens = Some(cache_write);
+        usage.reasoning_tokens = Some(reasoning);
     }
     usage.total_tokens = usage.prompt_tokens + usage.completion_tokens;
 }
@@ -572,6 +598,7 @@ mod tests {
             .build_body(&adaptive_target("xhigh"), &empty_request())
             .unwrap();
         assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["thinking"]["display"], "summarized");
         assert_eq!(body["output_config"]["effort"], "max");
         assert!(body["thinking"].get("budget_tokens").is_none());
     }
@@ -694,9 +721,9 @@ mod tests {
         assert_eq!(events.len(), 1);
         let (reason, usage) = expect_finish_usage(&events[0]);
         assert_eq!(reason, &FinishReason::Stop);
-        assert_eq!(usage.prompt_tokens, 1102);
+        assert_eq!(usage.prompt_tokens, 3918);
         assert_eq!(usage.completion_tokens, 205);
-        assert_eq!(usage.total_tokens, 1307);
+        assert_eq!(usage.total_tokens, 4123);
         assert_eq!(usage.cache_read_tokens, Some(2816));
     }
 
@@ -1218,6 +1245,26 @@ mod tests {
     }
 
     #[test]
+    fn lower_messages_puts_tool_results_before_user_text() {
+        let request = ModelRequest {
+            model: "claude".into(),
+            system_prompt: String::new(),
+            messages: vec![crate::types::AgentMessage {
+                role: "user".into(),
+                content: vec![
+                    ContentBlock::text("extra context"),
+                    ContentBlock::tool_result("tool_1", "result", false),
+                ],
+                ..Default::default()
+            }],
+            tools: Vec::new(),
+        };
+        let messages = lower_messages(&request).unwrap();
+        assert_eq!(messages[0]["content"][0]["type"], "tool_result");
+        assert_eq!(messages[0]["content"][1]["type"], "text");
+    }
+
+    #[test]
     fn update_usage_records_cache_creation_tokens() {
         let mut usage = Usage::default();
         update_usage(
@@ -1226,14 +1273,16 @@ mod tests {
                 "input_tokens": 10,
                 "output_tokens": 5,
                 "cache_read_input_tokens": 3,
-                "cache_creation_input_tokens": 4
+                "cache_creation_input_tokens": 4,
+                "output_tokens_details": {"thinking_tokens": 2}
             }),
         );
-        assert_eq!(usage.prompt_tokens, 10);
+        assert_eq!(usage.prompt_tokens, 17);
         assert_eq!(usage.completion_tokens, 5);
         assert_eq!(usage.cache_read_tokens, Some(3));
         assert_eq!(usage.cache_write_tokens, Some(4));
-        assert_eq!(usage.total_tokens, 15);
+        assert_eq!(usage.reasoning_tokens, Some(2));
+        assert_eq!(usage.total_tokens, 22);
     }
 
     #[test]
