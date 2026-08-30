@@ -313,11 +313,12 @@ pub async fn execute_turn(
     let client_request_id = format!("turn-{}-{}", turn, todo.id);
 
     let before = client.session_totals(session_id).await?;
-    let run_id = match client.prompt(session_id, &message, &client_request_id).await {
+    let run_id = match client
+        .prompt(session_id, &message, &client_request_id)
+        .await
+    {
         Ok(run_id) => run_id,
-        Err(error)
-            if error.to_string().contains("duplicate_request_conflict") =>
-        {
+        Err(error) if error.to_string().contains("duplicate_request_conflict") => {
             let retry_id = format!(
                 "{client_request_id}-r{}",
                 &uuid::Uuid::new_v4().simple().to_string()[..8]
