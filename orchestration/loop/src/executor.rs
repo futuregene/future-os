@@ -4,7 +4,7 @@
 //! pure transport (build the packet, prompt, observe the event stream,
 //! account spend) — all loop policy lives in `decision.rs` / `state.rs`.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::agent_client::{AgentClient, RunSummary, TurnProgressTracker};
 use crate::decision::{compose_goal_boundary, compose_turn_envelope, compose_turn_message};
@@ -301,12 +301,39 @@ pub async fn execute_turn(
         None => format!("session: {session_id}\n{message}"),
     };
     // Idempotency key owned by the orchestrator — retry must not double-execute.
+    // The key is derived from (turn, todo). A worker stopped/restarted within the
+    // SAME turn keeps the key, which is correct for enqueue dedup. But an
+    // aborted turn (worker stop / transport abort) leaves the key registered in
+    // the agent's RunQueue with a DIFFERENT payload digest than the re-entrant
+    // prompt (the rebuilt envelope differs), so a plain re-send returns
+    // duplicate_request_conflict and the run dies at launch. Detect that error
+    // and retry once with a suffixed key: the new key is a genuinely new request
+    // (different payload), so dedup protection is preserved while the launch
+    // survives.
     let client_request_id = format!("turn-{}-{}", turn, todo.id);
 
     let before = client.session_totals(session_id).await?;
-    let run_id = client
-        .prompt(session_id, &message, &client_request_id)
-        .await?;
+    let run_id = match client.prompt(session_id, &message, &client_request_id).await {
+        Ok(run_id) => run_id,
+        Err(error)
+            if error.to_string().contains("duplicate_request_conflict") =>
+        {
+            let retry_id = format!(
+                "{client_request_id}-r{}",
+                &uuid::Uuid::new_v4().simple().to_string()[..8]
+            );
+            client
+                .prompt(session_id, &message, &retry_id)
+                .await
+                .with_context(|| {
+                    format!(
+                        "prompt retry with suffixed client_request_id after \
+                         duplicate_request_conflict (original key: {client_request_id})"
+                    )
+                })?
+        }
+        Err(error) => return Err(error),
+    };
     let live_path = runs_dir.map(|d| d.join(format!("{run_id}.live.jsonl")));
     // Write a run-header line FIRST so the read-only dashboard can associate
     // this live run with its worker/todo and expose real-time token/cost.
