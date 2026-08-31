@@ -702,6 +702,26 @@ fn get_session_entries_paginates_only_when_offset_is_explicit() {
     assert_eq!(first["data"]["entries"].as_array().unwrap().len(), 2);
     assert_eq!(first["data"]["hasMore"], true);
     assert_eq!(first["data"]["nextOffset"], 2);
+    let version = state
+        .session_manager
+        .session_file_version("default")
+        .expect("session version");
+    let first_projection = state
+        .session_manager
+        .cached_display_entries("default", &version)
+        .expect("first page caches the stable projection");
+
+    let mut second_cmd = make_cmd("get_session_entries");
+    second_cmd.offset = Some(2);
+    second_cmd.limit = Some(2);
+    let second = parse_response(&handle_command_internal(&state, second_cmd));
+    assert_eq!(second["data"]["entries"].as_array().unwrap().len(), 2);
+    assert_eq!(second["data"]["nextOffset"], 4);
+    let second_projection = state
+        .session_manager
+        .cached_display_entries("default", &version)
+        .expect("second page reuses the stable projection");
+    assert!(Arc::ptr_eq(&first_projection, &second_projection));
 
     let legacy = parse_response(&handle_command_internal(
         &state,
@@ -709,6 +729,20 @@ fn get_session_entries_paginates_only_when_offset_is_explicit() {
     ));
     assert_eq!(legacy["data"]["entries"].as_array().unwrap().len(), 5);
     assert!(legacy["data"].get("hasMore").is_none());
+
+    save_via(
+        &state,
+        "default",
+        "mock",
+        vec![crate::session::SessionEntry::new_user(
+            "user",
+            serde_json::json!("replacement"),
+        )],
+    );
+    assert!(state
+        .session_manager
+        .cached_display_entries("default", &version)
+        .is_none());
 }
 
 // ── coverage batch 1: fork / clone ──────────────────────────────────────

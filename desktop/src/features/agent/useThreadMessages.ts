@@ -1,12 +1,13 @@
 import type { AgentMessage } from "@future-os/thread-projection";
 import type { StoredRun } from "../../integrations/storage/threadStore";
 import { entriesToMessages, matchesSettledRun } from "@future-os/thread-projection";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import i18n from "../../i18n";
 import { getLatestRun, getRun, getSessionEntries, listRuns } from "../../integrations/storage/threadStore";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent } from "../../lib/futureEvents";
+import { getThreadMessageSnapshot, setThreadMessageSnapshot } from "./threadMessageCache";
 import { applyRunMetadata, buildStreamingPreview, mergeStreamingPreview, recoverAbortedTurns, recoverFailedRuns } from "./threadRunProjection";
 
 interface UseThreadMessagesInput {
@@ -40,7 +41,17 @@ const LOADING_INDICATOR_MIN_MS = 200;
  */
 export function useThreadMessages({ threadId, workspaceId, workspacePath, agentSessionId }: UseThreadMessagesInput) {
   const normalizedAgentSessionId = agentSessionId?.trim() || null;
-  const [messages, setMessages] = useState<AgentMessage[]>([]);
+  // AgentThread is keyed by thread id and therefore remounts on every switch.
+  // Seed the new instance from a small process-local LRU, then revalidate from
+  // the authoritative Agent journal in the background. This preserves the
+  // isolation benefit of keyed instances without flashing a loading placeholder
+  // every time the user revisits a conversation.
+  const [initialSnapshot] = useState(() => (
+    threadId ? getThreadMessageSnapshot(threadId, normalizedAgentSessionId) : null
+  ));
+  const hasWarmSnapshotRef = useRef(initialSnapshot !== null);
+  const cacheEligibleRef = useRef(initialSnapshot !== null);
+  const [messages, setMessages] = useState<AgentMessage[]>(initialSnapshot ?? []);
   // Truthful data-loading state: gates pendingPrompt delivery (useAgentThreadState)
   // and must flip the instant a load starts/ends. The UI reads the debounced
   // `loadingIndicator` below instead, so this can stay honest without flashing.
@@ -53,6 +64,13 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
   const [loadingIndicator, setLoadingIndicator] = useState(false);
   const indicatorShownAtRef = useRef<number | null>(null);
   const [recentRun, setRecentRun] = useState<StoredRun | null>(null);
+
+  // Keep the latest committed immutable message array warm for a future keyed
+  // remount. Failed cold loads are deliberately not cached as conversation data.
+  useLayoutEffect(() => {
+    if (threadId && cacheEligibleRef.current)
+      setThreadMessageSnapshot(threadId, normalizedAgentSessionId, messages);
+  }, [messages, normalizedAgentSessionId, threadId]);
 
   // ── Generation counter for message writes ────────────────────────────
   // Within this one thread, a quiet reload (direct replacement) can be in
@@ -197,17 +215,23 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
       if (cancelled)
         return;
       if (result.status === "failed") {
-        setMessages([
-          {
-            id: "store_error",
-            role: "assistant",
-            authorKey: "author.system",
-            content: i18n.t("agent:thread.messagesLoadFailed", { message: result.error }),
-            createdAt: new Date().toISOString(),
-          },
-        ]);
+        // A warm snapshot is more useful than replacing the conversation with
+        // a transient refresh error. Cold loads still surface the error.
+        if (!hasWarmSnapshotRef.current) {
+          setMessages([
+            {
+              id: "store_error",
+              role: "assistant",
+              authorKey: "author.system",
+              content: i18n.t("agent:thread.messagesLoadFailed", { message: result.error }),
+              createdAt: new Date().toISOString(),
+            },
+          ]);
+        }
       }
       else {
+        hasWarmSnapshotRef.current = true;
+        cacheEligibleRef.current = true;
         setMessages(result.status === "loaded" ? result.messages : []);
       }
       setLoadingThread(false);
@@ -228,7 +252,16 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
   // for at least LOADING_INDICATOR_MIN_MS so it can't flash off immediately.
   useEffect(() => {
     if (loadingThread) {
+      // A cached conversation stays visible while its authoritative journal is
+      // revalidated; the truthful loadingThread flag still gates sending.
+      if (hasWarmSnapshotRef.current) {
+        indicatorShownAtRef.current = null;
+        setLoadingIndicator(false);
+        return;
+      }
       const showTimer = setTimeout(() => {
+        if (hasWarmSnapshotRef.current)
+          return;
         indicatorShownAtRef.current = performance.now();
         setLoadingIndicator(true);
       }, LOADING_INDICATOR_DELAY_MS);

@@ -121,6 +121,10 @@ export function AgentThread({
   const { handleScroll, scrollToLatest, showJumpToLatest } = useStickyAutoScroll({
     scrollRef,
     contentKey: messages,
+    // The delayed loading placeholder temporarily unmounts MessageList. Wait
+    // until the real content is mounted, then the layout effect lands at the
+    // actual bottom before paint.
+    followEnabled: !loadingIndicator,
     onScroll: handleScrollbarVisibility,
     onContentSettled: () => updateFloatingScrollbar(false),
   });
@@ -141,17 +145,6 @@ export function AgentThread({
     userExchangeCount: PAGE_USER_EXCHANGES,
     onScroll: handleScroll,
   });
-
-  // When loading completes (initial load or thread switch), scroll to the
-  // latest message.  useStickyAutoScroll's useLayoutEffect fires on contentKey
-  // (messages) changes, but during loading the MessageList isn't in the DOM yet
-  // — so that scroll is a no-op.  This catches the transition.
-  useEffect(() => {
-    if (!loadingThread) {
-      // Wait one tick for the MessageList to render.
-      requestAnimationFrame(() => scrollToLatest());
-    }
-  }, [loadingThread, scrollToLatest]);
 
   // A run is in flight while its assistant bubble is still streaming; the agent
   // rejects a concurrent prompt, so the composer is disabled until it settles.
