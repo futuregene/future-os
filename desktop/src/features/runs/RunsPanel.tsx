@@ -10,7 +10,7 @@ import {
   Pencil,
   TerminalSquare,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
@@ -22,6 +22,9 @@ import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
 import { relativizeWorkspacePath } from "../../lib/workspacePath";
 import { toolStatusLabel } from "./runDisplayFormatters";
 import { toolCommand, toolTarget } from "./toolInput";
+
+const RUNS_PAGE_SIZE = 40;
+const LOAD_MORE_THRESHOLD_PX = 240;
 
 interface RunsPanelProps {
   runs: StoredRun[];
@@ -59,6 +62,7 @@ export function RunsPanel({
   >({});
   const [archiving, setArchiving] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
+  const [renderWindow, setRenderWindow] = useState({ count: RUNS_PAGE_SIZE, scopeKey: "" });
   const listScrollbar = useFloatingScrollbar();
 
   const allEntries = useMemo(
@@ -73,6 +77,29 @@ export function RunsPanel({
     () => countEntries(entries),
     [entries],
   );
+  const scopeKey = scope?.threadId ?? "";
+  const visibleCount = renderWindow.scopeKey === scopeKey
+    ? renderWindow.count
+    : RUNS_PAGE_SIZE;
+  const visibleEntries = entries.slice(0, visibleCount);
+  const loadNextPage = useCallback(() => {
+    setRenderWindow((current) => {
+      const count = current.scopeKey === scopeKey ? current.count : RUNS_PAGE_SIZE;
+      const nextCount = Math.min(entries.length, count + RUNS_PAGE_SIZE);
+      if (current.scopeKey === scopeKey && current.count === nextCount)
+        return current;
+      return { count: nextCount, scopeKey };
+    });
+  }, [entries.length, scopeKey]);
+  const handleListScroll = useCallback(() => {
+    listScrollbar.handleScroll();
+    const container = listScrollbar.scrollRef.current;
+    if (!container || visibleCount >= entries.length)
+      return;
+    const remaining = container.scrollHeight - container.clientHeight - container.scrollTop;
+    if (remaining <= LOAD_MORE_THRESHOLD_PX)
+      loadNextPage();
+  }, [entries.length, listScrollbar, loadNextPage, visibleCount]);
 
   if (entries.length === 0) {
     const hasArchivedPrograms = allEntries.some(
@@ -172,11 +199,12 @@ export function RunsPanel({
       <div className="group relative min-h-0 flex-1 border-t border-line-soft/70">
         <div
           className="floating-scrollbar h-full overflow-x-hidden overflow-y-auto bg-surface/50"
-          onScroll={listScrollbar.handleScroll}
+          data-runs-scroll="true"
+          onScroll={handleListScroll}
           ref={listScrollbar.scrollRef}
         >
           <div>
-            {entries.map(entry => (
+            {visibleEntries.map(entry => (
               <ToolRow
                 busy={busyRunId === entry.run.id}
                 confirming={confirmRunId === entry.run.id}
@@ -295,7 +323,9 @@ function ToolRow({
                 // height while a streaming tool call has no parseable target
                 // yet, so the row doesn't jump when the target appears.
                 "min-h-5 min-w-0 flex-1 wrap-break-word text-xs font-normal leading-5 text-ink",
-                isShell ? "whitespace-pre-wrap" : "truncate font-mono",
+                isShell
+                  ? "line-clamp-10 whitespace-pre-wrap"
+                  : "whitespace-pre-wrap font-mono",
               )}
               title={rawPrimary}
             >

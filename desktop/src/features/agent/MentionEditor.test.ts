@@ -1,6 +1,35 @@
+// @vitest-environment jsdom
+
 import type { ContextToolOption, SkillMentionOption } from "./MentionEditor";
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
 import { describe, expect, it } from "vitest";
+import { MentionEditor } from "./MentionEditor";
 import { buildSlashMenuGroups, hasMixedSlashResults } from "./slashMenu";
+
+(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
+
+describe("mention editor", () => {
+  it("disables native writing corrections", () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    act(() => {
+      root.render(createElement(MentionEditor, {
+        onSubmit: () => {},
+        placeholder: "Message",
+      }));
+    });
+
+    const editor = container.querySelector("[role=\"textbox\"]")!;
+    expect(editor.getAttribute("autocapitalize")).toBe("none");
+    expect(editor.getAttribute("autocorrect")).toBe("off");
+    expect(editor.getAttribute("spellcheck")).toBe("false");
+
+    act(() => root.unmount());
+    container.remove();
+  });
+});
 
 const compact: ContextToolOption = {
   id: "compact",

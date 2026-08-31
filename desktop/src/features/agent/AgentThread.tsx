@@ -19,6 +19,7 @@ import { buildContinuePrompt, loadRunResumeSummary, previousUserForRun } from ".
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
 import { ThreadHeader } from "./ThreadHeader";
+import { ThreadSearch } from "./ThreadSearch";
 import { useAgentThreadState } from "./useAgentThreadState";
 import { useMessagePaging } from "./useMessagePaging";
 import { useStickyAutoScroll } from "./useStickyAutoScroll";
@@ -105,6 +106,7 @@ export function AgentThread({
   // whole visible window (and re-subscribing the recover-run effect).
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
+  const searchRootRef = useRef<HTMLDivElement>(null);
 
   const {
     scrollRef,
@@ -136,6 +138,7 @@ export function AgentThread({
   // one scroll event reaches both.
   const {
     visibleMessages,
+    canLoadOlder,
     showLoadOlderHint,
     handleScroll: handlePagingScroll,
     loadOlder,
@@ -276,6 +279,16 @@ export function AgentThread({
         onToggleLeftPanel={onToggleLeftPanel}
       />
       <div className="group relative min-h-0 flex-1 overflow-hidden">
+        {thread
+          ? (
+              <ThreadSearch
+                canLoadOlder={canLoadOlder}
+                contentKey={visibleMessages}
+                onLoadOlder={loadOlder}
+                rootRef={searchRootRef}
+              />
+            )
+          : null}
         {showLoadOlderHint
           ? (
               <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center px-8 pt-5">
@@ -301,7 +314,7 @@ export function AgentThread({
           data-chat-scroll="true"
           onScroll={handlePagingScroll}
         >
-          <div className="mx-auto w-full max-w-4xl">
+          <div ref={searchRootRef} className="mx-auto w-full max-w-4xl">
             {loadingIndicator
               ? (
                   <div className="py-8 text-sm text-ink-soft">{t("thread.loading")}</div>
