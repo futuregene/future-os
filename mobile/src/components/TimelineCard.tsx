@@ -645,7 +645,9 @@ export function TimelineCard({
           {terminationNotice ? (
             <View style={styles.terminationNotice}>
               <StatusDivider
-                label={item.stopped ? t("chat.responseStopped") : friendlyRunErrorTitle(item.error, t)}
+                label={
+                  item.stopped ? t("chat.responseStopped") : friendlyRunErrorTitle(item.error, t)
+                }
               />
               {isLatestAssistant && !item.stopped ? (
                 <Text
@@ -792,7 +794,12 @@ const styles = StyleSheet.create({
   terminationNotice: {
     marginTop: spacing.md,
   },
-  terminationNoticeText: { color: colors.inkSoft, fontSize: 14, lineHeight: 24, marginTop: spacing.sm },
+  terminationNoticeText: {
+    color: colors.inkSoft,
+    fontSize: 14,
+    lineHeight: 24,
+    marginTop: spacing.sm,
+  },
   stoppedNoticeText: { color: colors.inkMuted },
   messageFooter: {
     flexDirection: "row",

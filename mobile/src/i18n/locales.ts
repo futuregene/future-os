@@ -137,7 +137,8 @@ export const resources = {
         network:
           "Network error — the model service is unreachable. Check your connection and try again.",
         upstreamDisconnected: "Please wait, then click Continue to resume or try again.",
-        upstreamDisconnectedTitle: "Model service connection interrupted; this response could not finish",
+        upstreamDisconnectedTitle:
+          "Model service connection interrupted; this response could not finish",
         modelResponseError: "Switch models, then click Continue to resume or try again.",
         modelResponseErrorTitle: "Model response error; this response could not finish",
         agentInterrupted: "Restart the app, then click Continue to resume.",

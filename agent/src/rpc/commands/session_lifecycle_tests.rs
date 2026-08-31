@@ -590,10 +590,7 @@ fn get_session_entries_renders_roles_and_run_stats() {
 #[test]
 fn get_session_entries_projects_replyless_failure_onto_canonical_user_entry() {
     let state = make_app_state();
-    let mut user = crate::session::SessionEntry::new_user(
-        "user",
-        serde_json::json!("question"),
-    );
+    let mut user = crate::session::SessionEntry::new_user("user", serde_json::json!("question"));
     user.meta = Some(serde_json::json!({"run_id": "run-failed"}));
     let terminal = crate::session::SessionEntry::run_terminal(
         "run-failed",

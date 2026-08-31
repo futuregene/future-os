@@ -542,10 +542,8 @@ pub(crate) fn cmd_get_session_entries(
             // Canonical terminal outcomes keyed by the run id persisted on the
             // originating user entry. Unlike the assistant-only stats binding,
             // this survives failures before the first assistant entry exists.
-            let mut run_outcomes: std::collections::HashMap<
-                String,
-                (String, Option<String>, i64),
-            > = std::collections::HashMap::new();
+            let mut run_outcomes: std::collections::HashMap<String, (String, Option<String>, i64)> =
+                std::collections::HashMap::new();
             // Per-run usage deltas from the cumulative session_info snapshots
             // (tokens_in / tokens_cache_r): the snapshot written just before a
             // run_terminal marker is the post-run state, and the one captured at
@@ -573,7 +571,10 @@ pub(crate) fn cmd_get_session_entries(
                     if let Some(content) = marker.content.as_ref() {
                         if let Some(run_id) = content.get("run_id").and_then(|v| v.as_str()) {
                             let state = match content.get("state").and_then(|v| v.as_str()) {
-                                Some(crate::session::RUN_STATE_ERROR | crate::session::RUN_STATE_INCOMPLETE) => "failed",
+                                Some(
+                                    crate::session::RUN_STATE_ERROR
+                                    | crate::session::RUN_STATE_INCOMPLETE,
+                                ) => "failed",
                                 Some(state) => state,
                                 None => "failed",
                             };
@@ -586,10 +587,8 @@ pub(crate) fn cmd_get_session_entries(
                                 .get("run_duration_ms")
                                 .and_then(|v| v.as_i64())
                                 .unwrap_or(0);
-                            run_outcomes.insert(
-                                run_id.to_string(),
-                                (state.to_string(), error, duration),
-                            );
+                            run_outcomes
+                                .insert(run_id.to_string(), (state.to_string(), error, duration));
                         }
                     }
                     if let (Some(aid), Some(content)) =
