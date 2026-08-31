@@ -523,13 +523,14 @@ fn get_session_entries_renders_roles_and_run_stats() {
         "mock".to_string(),
         "low".to_string(),
     );
-    let user = crate::session::SessionEntry::new_user(
+    let mut user = crate::session::SessionEntry::new_user(
         "user",
         serde_json::json!([
             {"type": "text", "text": "question"},
             {"type": "text", "text": "attachment paths"},
         ]),
     );
+    user.meta = Some(serde_json::json!({"run_id": "run-1"}));
     let mut assistant = crate::session::SessionEntry::new_assistant(
         serde_json::json!([{"type": "text", "text": "answer"}]),
         vec![],
@@ -573,6 +574,8 @@ fn get_session_entries_renders_roles_and_run_stats() {
     assert_eq!(info["content"]["session_name"], "fresh");
     let user_entry = &entries[1];
     assert_eq!(user_entry["content"], "question");
+    assert_eq!(user_entry["run_status"], "completed");
+    assert_eq!(user_entry["run_duration_ms"], 1500);
     let assistant_entry = &entries[2];
     assert_eq!(assistant_entry["content"], "answer");
     assert_eq!(assistant_entry["thinking"], "deep thought");
@@ -582,6 +585,31 @@ fn get_session_entries_renders_roles_and_run_stats() {
     assert_eq!(tool_entry["content"], "tool output");
     assert_eq!(tool_entry["tool_call_id"], "call-1");
     assert_eq!(tool_entry["tool_result_is_error"], false);
+}
+
+#[test]
+fn get_session_entries_projects_replyless_failure_onto_canonical_user_entry() {
+    let state = make_app_state();
+    let mut user = crate::session::SessionEntry::new_user("user", serde_json::json!("question"));
+    user.meta = Some(serde_json::json!({"run_id": "run-failed"}));
+    let terminal = crate::session::SessionEntry::run_terminal(
+        "run-failed",
+        crate::session::RUN_STATE_ERROR,
+        0,
+        25,
+        Some("authentication failed"),
+    );
+    save_via(&state, "default", "mock", vec![user, terminal]);
+
+    let resp = parse_response(&handle_command_internal(
+        &state,
+        make_cmd("get_session_entries"),
+    ));
+    let entry = &resp["data"]["entries"][0];
+    assert_eq!(entry["meta"]["run_id"], "run-failed");
+    assert_eq!(entry["run_status"], "failed");
+    assert_eq!(entry["run_error"], "authentication failed");
+    assert_eq!(entry["run_duration_ms"], 25);
 }
 
 #[test]

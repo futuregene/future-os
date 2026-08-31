@@ -8,7 +8,7 @@ import { invokeCommand } from "../../integrations/tauri/invoke";
 import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { getThreadMessageSnapshot, setThreadMessageSnapshot } from "./threadMessageCache";
-import { applyRunMetadata, buildStreamingPreview, mergeStreamingPreview, recoverAbortedTurns, recoverFailedRuns } from "./threadRunProjection";
+import { applyJournalRunOutcomes, applyRunMetadata, buildStreamingPreview, mergeStreamingPreview, recoverAbortedTurns, recoverFailedRuns } from "./threadRunProjection";
 
 interface UseThreadMessagesInput {
   threadId: string | null;
@@ -154,7 +154,7 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
       const entries = result?.entries ?? [];
       if (!entries.length)
         return { status: "empty" };
-      const messages = entriesToMessages(entries as unknown as import("@future-os/thread-projection").SessionEntry[]);
+      const messages = applyJournalRunOutcomes(entriesToMessages(entries as unknown as import("@future-os/thread-projection").SessionEntry[]));
       if (!messages.length)
         return { status: "empty" };
       // Agent JSONL doesn't record a run's GUI-side outcome (failed/cancelled/

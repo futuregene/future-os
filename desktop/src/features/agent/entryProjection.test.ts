@@ -1,5 +1,5 @@
 import type { SessionEntry } from "@future-os/thread-projection";
-import { entriesToMessages } from "@future-os/thread-projection";
+import { entriesToMessages, entriesToTurns } from "@future-os/thread-projection";
 import { describe, expect, it } from "vitest";
 
 describe("entriesToMessages", () => {
@@ -48,6 +48,76 @@ describe("entriesToMessages", () => {
     expect(messages[0]?.role).toBe("user");
     expect(messages[0]?.content).toBe("写一首长诗");
     expect(messages[0]?.createdAt).toBe(userTs);
+  });
+
+  it("places a reply-less failure on its canonical user turn", () => {
+    const messages = entriesToMessages([
+      {
+        id: "u1",
+        role: "user",
+        content: "first",
+        meta: { run_id: "run-failed" },
+        run_status: "failed",
+        run_error: "authentication failed",
+        run_duration_ms: 120,
+      },
+      {
+        id: "u2",
+        role: "user",
+        content: "second",
+        meta: { run_id: "run-ok" },
+        run_status: "completed",
+      },
+      {
+        id: "a2",
+        role: "assistant",
+        content: "done",
+        meta: { run_id: "run-ok" },
+        run_status: "completed",
+      },
+    ]);
+
+    expect(messages.map(message => message.id)).toEqual([
+      "m_u1",
+      "failed_run-failed",
+      "m_u2",
+      "m_a2",
+    ]);
+    expect(messages[1]).toMatchObject({
+      role: "assistant",
+      runId: "run-failed",
+      status: "failed",
+      runError: "authentication failed",
+      durationMs: 120,
+    });
+    expect(messages[3]?.runId).toBe("run-ok");
+  });
+
+  it("fails closed when user and assistant canonical run ids conflict", () => {
+    const nodes = entriesToTurns([
+      {
+        id: "u1",
+        role: "user",
+        content: "hello",
+        meta: { run_id: "run-user" },
+        run_status: "failed",
+        run_error: "must not attach",
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "reply",
+        meta: { run_id: "run-assistant" },
+      },
+    ]);
+
+    expect(nodes).toHaveLength(1);
+    const turn = nodes[0]?.kind === "turn" ? nodes[0].turn : undefined;
+    expect(turn?.identitySource).toBe("conflict");
+    expect(turn?.runId).toBeUndefined();
+    expect(turn?.outcome).toBeUndefined();
+    expect(turn?.assistant?.runId).toBeUndefined();
+    expect(turn?.assistant?.status).toBe("complete");
   });
 
   it("projects output tokens and duration from the final assistant entry", () => {

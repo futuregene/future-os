@@ -60,9 +60,11 @@ function model(id: string, provider?: string, extra: Partial<RemoteModel> = {}):
 function fakeEngine(): SyncEngine {
   return {
     reconcile: jest.fn(),
-    mutate: jest.fn((_sessionId: string, apply: (tl: ReturnType<typeof emptyTimeline>) => unknown) => {
-      apply(emptyTimeline());
-    }),
+    mutate: jest.fn(
+      (_sessionId: string, apply: (tl: ReturnType<typeof emptyTimeline>) => unknown) => {
+        apply(emptyTimeline());
+      },
+    ),
   } as unknown as SyncEngine;
 }
 
@@ -221,9 +223,7 @@ describe("selectSession", () => {
     await act(async () => {
       await current(h).selectSession("s1");
     });
-    const updater = h.setUnreadSessions.mock.calls[0][0] as (
-      previous: Set<string>,
-    ) => Set<string>;
+    const updater = h.setUnreadSessions.mock.calls[0][0] as (previous: Set<string>) => Set<string>;
     expect(updater(new Set(["s1", "s2"]))).toEqual(new Set(["s2"]));
     const untouched = new Set(["s2"]);
     expect(updater(untouched)).toBe(untouched);

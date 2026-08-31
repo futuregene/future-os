@@ -162,6 +162,12 @@ pub struct SessionEntryPayload {
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_result_is_error: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_duration_ms: Option<i64>,
 }
 
 /// One page returned by `get_session_entries`.
@@ -334,6 +340,9 @@ mod tests {
             checkpoint: None,
             tool_call_id: None,
             tool_result_is_error: None,
+            run_status: None,
+            run_error: None,
+            run_duration_ms: None,
         };
         let value = serde_json::to_value(&payload).unwrap();
         assert_eq!(value["content"], json!("hi"));

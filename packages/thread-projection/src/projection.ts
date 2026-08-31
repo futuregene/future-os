@@ -32,6 +32,8 @@ function attachmentsFromMeta(
 
 interface ExchangeAcc {
   userMessage?: AgentMessage;
+  /** Canonical identity persisted on the user entry that opened this turn. */
+  userRunId?: string;
   segments: MessageSegment[];
   finalText: string;
   /** Timestamp of the assistant reply (last assistant entry of the exchange wins). */
@@ -45,6 +47,7 @@ interface ExchangeAcc {
   durationMs?: number;
   /** Set only from an assistant entry finalized by the Agent. */
   runId?: string;
+  outcome?: SessionRunOutcome;
   /**
    * Tool activities awaiting their result entry, in call order. A `tool` result
    * entry updates the oldest one's status (the agent executes and appends
@@ -52,6 +55,25 @@ interface ExchangeAcc {
    */
   pendingTools: AgentActivityItem[];
 }
+
+export interface SessionRunOutcome {
+  status: "completed" | "failed" | "cancelled" | "incomplete" | string;
+  error?: string;
+  durationMs?: number;
+}
+
+export interface SessionTurn {
+  key: string;
+  user: AgentMessage;
+  assistant?: AgentMessage;
+  runId?: string;
+  outcome?: SessionRunOutcome;
+  identitySource: "canonical" | "legacy" | "conflict";
+}
+
+export type SessionProjectionNode =
+  | { kind: "turn"; turn: SessionTurn }
+  | { kind: "standalone"; message: AgentMessage };
 
 /**
  * Whether a tool result's content marks a failure: the agent prefixes a tool
@@ -192,6 +214,19 @@ function userMessageFromEntry(entry: SessionEntry, now: string): AgentMessage {
   };
 }
 
+function foldRunOutcome(acc: ExchangeAcc, entry: SessionEntry) {
+  const runId = entry.meta?.run_id;
+  if (!runId || !entry.run_status) return;
+  if (acc.userRunId && runId !== acc.userRunId) return;
+  acc.outcome = {
+    status: entry.run_status,
+    ...(entry.run_error?.trim() ? { error: entry.run_error } : {}),
+    ...(typeof entry.run_duration_ms === "number" && entry.run_duration_ms >= 0
+      ? { durationMs: entry.run_duration_ms }
+      : {}),
+  };
+}
+
 /** Fold one assistant entry into an exchange's accumulator. */
 function foldAssistantEntry(acc: ExchangeAcc, entry: SessionEntry) {
   const key = entryKey(entry);
@@ -278,10 +313,9 @@ function foldToolEntry(acc: ExchangeAcc | null, entry: SessionEntry) {
   }
 }
 
-/** Emit a completed exchange as 1 user message + (when non-empty) 1 assistant. */
-function flushAcc(messages: AgentMessage[], acc: ExchangeAcc) {
-  if (!acc.userMessage) return;
-  messages.push(acc.userMessage);
+/** Finalize one user-led exchange without losing a reply-less terminal run. */
+function turnFromAcc(acc: ExchangeAcc): SessionTurn | null {
+  if (!acc.userMessage) return null;
   const textSegments = acc.segments.filter((s) => s.kind === "text") as {
     kind: "text";
     id: string;
@@ -295,20 +329,32 @@ function flushAcc(messages: AgentMessage[], acc: ExchangeAcc) {
   // yet (the agent is still streaming). An empty completed bubble would steal
   // the runId in applyRunMetadata and block upsertStreamingPreview from
   // inserting the live preview when the user returns to this thread.
+  const canonicalConflict = !!acc.userRunId && !!acc.runId && acc.userRunId !== acc.runId;
+  const turnRunId = canonicalConflict ? undefined : (acc.userRunId ?? acc.runId);
+  const outcome = canonicalConflict ? undefined : acc.outcome;
+  const terminalWithoutReply = outcome?.status === "failed" || outcome?.status === "cancelled";
   const hasContent =
     acc.finalText ||
     textSegments.length > 0 ||
     segments.length > 0 ||
     acc.outputTokens !== undefined ||
-    acc.durationMs !== undefined;
+    acc.durationMs !== undefined ||
+    terminalWithoutReply;
+  let assistant: AgentMessage | undefined;
   if (hasContent) {
-    messages.push({
-      id: acc.assistantEntryId ? `m_${acc.assistantEntryId}` : segId(),
+    const stopped = outcome?.status === "cancelled";
+    const failed = outcome?.status === "failed";
+    assistant = {
+      id: acc.assistantEntryId
+        ? `m_${acc.assistantEntryId}`
+        : turnRunId
+          ? `${failed ? "failed" : "stopped"}_${turnRunId}`
+          : segId(),
       role: "assistant",
       authorKey: "author.researchCopilot",
       content: acc.finalText || textSegments.map((s) => s.text).join("\n"),
       segments: segments.length > 0 ? segments : undefined,
-      status: "complete",
+      status: failed ? "failed" : "complete",
       // An aborted exchange has no assistant entry, so no recorded reply time —
       // fall back to the user message's time (a real timestamp) rather than
       // `now`, which would re-stamp the reply "just now" on every reload.
@@ -316,10 +362,28 @@ function flushAcc(messages: AgentMessage[], acc: ExchangeAcc) {
       outputTokens: acc.outputTokens,
       inputTokens: acc.inputTokens,
       cacheReadTokens: acc.cacheReadTokens,
-      durationMs: acc.durationMs,
-      runId: acc.runId,
-    });
+      durationMs: acc.durationMs ?? outcome?.durationMs,
+      runId: canonicalConflict
+        ? undefined
+        : acc.runId ?? (outcome ? turnRunId : undefined),
+      ...(stopped ? { stopped: true } : {}),
+      ...(outcome?.error
+        ? { runError: outcome.error }
+        : {}),
+    };
   }
+  return {
+    key: acc.userMessage.id,
+    user: acc.userMessage,
+    ...(assistant ? { assistant } : {}),
+    ...(turnRunId ? { runId: turnRunId } : {}),
+    ...(outcome ? { outcome } : {}),
+    identitySource: canonicalConflict
+      ? "conflict"
+      : turnRunId
+        ? "canonical"
+        : "legacy",
+  };
 }
 
 /**
@@ -330,34 +394,56 @@ function flushAcc(messages: AgentMessage[], acc: ExchangeAcc) {
  * Grouping is positional: a user entry always opens a new exchange (each run
  * has exactly one user message, so journal order is conversation order).
  */
-export function entriesToMessages(entries: SessionEntry[]): AgentMessage[] {
-  const messages: AgentMessage[] = [];
+export function entriesToTurns(entries: SessionEntry[]): SessionProjectionNode[] {
+  const nodes: SessionProjectionNode[] = [];
   const now = new Date().toISOString();
+
+  const flush = (acc: ExchangeAcc) => {
+    const turn = turnFromAcc(acc);
+    if (turn) nodes.push({ kind: "turn", turn });
+  };
 
   let acc: ExchangeAcc | null = null;
   for (const entry of entries) {
     if (isCompactionDivider(entry)) {
       if (acc) {
-        flushAcc(messages, acc);
+        flush(acc);
         acc = null;
       }
-      messages.push(dividerMessage(entry, now));
+      nodes.push({ kind: "standalone", message: dividerMessage(entry, now) });
       continue;
     }
     if (entry.role === "user") {
       if (acc) {
-        flushAcc(messages, acc);
+        flush(acc);
         acc = null;
       }
       acc = newExchangeAcc();
       acc.userMessage = userMessageFromEntry(entry, now);
+      if (typeof entry.meta?.run_id === "string" && entry.meta.run_id)
+        acc.userRunId = entry.meta.run_id;
+      foldRunOutcome(acc, entry);
     } else if (entry.role === "assistant") {
       if (!acc) acc = newExchangeAcc();
       foldAssistantEntry(acc, entry);
+      foldRunOutcome(acc, entry);
     } else if (entry.role === "tool") {
       foldToolEntry(acc, entry);
+      if (acc) foldRunOutcome(acc, entry);
     }
   }
-  if (acc) flushAcc(messages, acc);
-  return messages;
+  if (acc) flush(acc);
+  return nodes;
+}
+
+export function turnsToMessages(nodes: SessionProjectionNode[]): AgentMessage[] {
+  return nodes.flatMap(node =>
+    node.kind === "standalone"
+      ? [node.message]
+      : [node.turn.user, ...(node.turn.assistant ? [node.turn.assistant] : [])],
+  );
+}
+
+export function entriesToMessages(entries: SessionEntry[]): AgentMessage[] {
+  return turnsToMessages(entriesToTurns(entries));
 }

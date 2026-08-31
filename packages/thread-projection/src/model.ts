@@ -108,6 +108,8 @@ export interface AgentMessage {
   terminationNotice?: string;
   /** Short failure state rendered in the status divider above the guidance. */
   terminationTitle?: string;
+  /** Raw terminal run diagnostic, separate from localized presentation copy. */
+  runError?: string;
   /**
    * The stream ended before the model finished (`agent_end` reason
    * "incomplete"): the text is a truncated prefix, not a finished answer, and

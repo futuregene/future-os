@@ -1123,6 +1123,17 @@ pub struct SessionEntry {
     /// persist an explicit status.
     #[prost(bool, optional, tag = "18")]
     pub tool_result_is_error: ::core::option::Option<bool>,
+    /// Terminal state of the run identified by meta.run_id. Derived from the
+    /// Agent journal's run_terminal marker; absent while active and on old agents.
+    #[prost(string, optional, tag = "19")]
+    pub run_status: ::core::option::Option<::prost::alloc::string::String>,
+    /// Raw terminal error for a failed run. Kept separate from display copy so
+    /// each client can localize the user-facing explanation.
+    #[prost(string, optional, tag = "20")]
+    pub run_error: ::core::option::Option<::prost::alloc::string::String>,
+    /// Terminal run duration even when the run produced no assistant entry.
+    #[prost(int64, optional, tag = "21")]
+    pub run_duration_ms: ::core::option::Option<i64>,
 }
 /// One event as replayed by get_events_since. Field names mirror the
 /// StreamEvent envelope.

@@ -539,6 +539,11 @@ pub(crate) fn cmd_get_session_entries(
             let mut last_assistant_id: Option<String> = None;
             let mut run_stats: std::collections::HashMap<String, (i64, i64, i64, i64)> =
                 std::collections::HashMap::new();
+            // Canonical terminal outcomes keyed by the run id persisted on the
+            // originating user entry. Unlike the assistant-only stats binding,
+            // this survives failures before the first assistant entry exists.
+            let mut run_outcomes: std::collections::HashMap<String, (String, Option<String>, i64)> =
+                std::collections::HashMap::new();
             // Per-run usage deltas from the cumulative session_info snapshots
             // (tokens_in / tokens_cache_r): the snapshot written just before a
             // run_terminal marker is the post-run state, and the one captured at
@@ -563,6 +568,29 @@ pub(crate) fn cmd_get_session_entries(
                         );
                     }
                 } else if marker.entry_type == crate::session::ENTRY_TYPE_RUN_TERMINAL {
+                    if let Some(content) = marker.content.as_ref() {
+                        if let Some(run_id) = content.get("run_id").and_then(|v| v.as_str()) {
+                            let state = match content.get("state").and_then(|v| v.as_str()) {
+                                Some(
+                                    crate::session::RUN_STATE_ERROR
+                                    | crate::session::RUN_STATE_INCOMPLETE,
+                                ) => "failed",
+                                Some(state) => state,
+                                None => "failed",
+                            };
+                            let error = content
+                                .get("error")
+                                .and_then(|v| v.as_str())
+                                .filter(|value| !value.trim().is_empty())
+                                .map(str::to_owned);
+                            let duration = content
+                                .get("run_duration_ms")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0);
+                            run_outcomes
+                                .insert(run_id.to_string(), (state.to_string(), error, duration));
+                        }
+                    }
                     if let (Some(aid), Some(content)) =
                         (last_assistant_id.as_deref(), marker.content.as_ref())
                     {
@@ -676,6 +704,9 @@ pub(crate) fn cmd_get_session_entries(
                         checkpoint: None,
                         tool_call_id: None,
                         tool_result_is_error: None,
+                        run_status: None,
+                        run_error: None,
+                        run_duration_ms: None,
                     };
                     if e.entry_type == crate::session::ENTRY_TYPE_COMPACTION {
                         payload.content = serde_json::Value::String(String::new());
@@ -691,6 +722,17 @@ pub(crate) fn cmd_get_session_entries(
                     // chips after reload — the JSONL is the only message source.
                     if let Some(ref meta) = e.meta {
                         payload.meta = Some(meta.clone());
+                        if let Some((status, error, duration)) = meta
+                            .get("run_id")
+                            .and_then(|value| value.as_str())
+                            .and_then(|run_id| run_outcomes.get(run_id))
+                        {
+                            payload.run_status = Some(status.clone());
+                            payload.run_error = error.clone();
+                            if *duration > 0 {
+                                payload.run_duration_ms = Some(*duration);
+                            }
+                        }
                     }
                     if !e.tool_calls.is_empty() {
                         payload.tool_calls = serde_json::to_value(&e.tool_calls).ok();
