@@ -761,7 +761,7 @@ export function ActivityRail({
                     >
                       <span className="relative inline-flex shrink-0">
                         <Settings className="size-4" />
-                        {hasUpdate ? <span className="absolute -right-1 -top-1 size-2 rounded-full bg-danger" /> : null}
+                        {hasUpdate ? <span className="absolute -right-1 -top-1 size-2 rounded-full bg-accent" /> : null}
                       </span>
                       <span className="truncate">{t("activityRail.settings")}</span>
                     </button>
@@ -772,7 +772,7 @@ export function ActivityRail({
                 icon={(
                   <span className="relative inline-flex">
                     <Settings className="size-4" />
-                    {hasUpdate ? <span className="absolute -right-1 -top-1 size-2 rounded-full bg-danger" /> : null}
+                    {hasUpdate ? <span className="absolute -right-1 -top-1 size-2 rounded-full bg-accent" /> : null}
                   </span>
                 )}
                 label={t("activityRail.settings")}

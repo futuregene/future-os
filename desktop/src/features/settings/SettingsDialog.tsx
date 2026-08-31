@@ -142,7 +142,7 @@ export function SettingsDialog({
                       >
                         <span className="relative inline-flex shrink-0">
                           <Icon className="size-4" />
-                          {showDot ? <span className="absolute -right-1 -top-1 size-2 rounded-full bg-danger" /> : null}
+                          {showDot ? <span className="absolute -right-1 -top-1 size-2 rounded-full bg-accent" /> : null}
                         </span>
                         <span className="truncate">{t(item.labelKey)}</span>
                       </button>
