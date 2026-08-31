@@ -547,7 +547,10 @@ export function MentionEditor({
         role="textbox"
         aria-multiline="true"
         aria-label={placeholder}
+        autoCapitalize="none"
+        autoCorrect="off"
         contentEditable={!disabled}
+        spellCheck={false}
         suppressContentEditableWarning
         className={cn(
           "max-h-[40vh] min-h-14 w-full overflow-y-auto whitespace-pre-wrap break-words px-2 py-1 text-sm leading-5 text-ink outline-none",

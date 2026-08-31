@@ -57,32 +57,23 @@ function AgentActivitySingleLine({ item, workspacePath, runId }: { item: AgentAc
 
   return (
     <div
-      className={cn(
-        "flex min-w-0 items-center gap-2 text-[13px] leading-6 text-ink-muted",
-        runId && "cursor-pointer hover:text-ink",
-      )}
-      onClick={runId ? handleToggle : undefined}
-      title={runId ? i18n.t("agent:activity.inspectRun") : undefined}
-      role={runId ? "button" : undefined}
+      className="flex min-w-0 items-center gap-2 text-[13px] leading-6 text-ink-muted"
     >
-      {displayTarget
+      {renderActivityIcon(item.kind, running, failed)}
+      {runId
         ? (
             <button
               type="button"
-              className="pointer-events-none flex shrink-0 cursor-pointer items-center gap-2"
+              className="flex shrink-0 cursor-pointer items-center gap-2 hover:text-ink"
               aria-expanded={open}
+              title={i18n.t("agent:activity.inspectRun")}
+              onClick={handleToggle}
             >
-              {renderActivityIcon(item.kind, running, failed)}
               <span>{label}</span>
               <Chevron className="-ml-2 size-3 shrink-0" />
             </button>
           )
-        : (
-            <>
-              {renderActivityIcon(item.kind, running, failed)}
-              <span className="shrink-0">{label}</span>
-            </>
-          )}
+        : <span className="shrink-0">{label}</span>}
       {displayTarget && open
         ? (
             <span
@@ -118,41 +109,52 @@ function AgentActivityGroupLine({ item, workspacePath, runId }: { item: AgentAct
   return (
     <div
       className="flex min-w-0 flex-col gap-1 text-[13px] leading-6 text-ink-muted"
-      role={runId ? "button" : undefined}
-      title={runId ? i18n.t("agent:activity.inspectRun") : undefined}
-      onClick={runId ? () => setOpen(v => !v) : undefined}
     >
-      <button
-        type="button"
-        className="pointer-events-none flex min-w-0 cursor-pointer items-center gap-2 text-left"
-        aria-expanded={open}
-      >
+      <div className="flex min-w-0 items-center gap-2">
         {renderActivityIcon(item.kind, false)}
-        <span className="shrink-0">{label}</span>
-        <Chevron className="-ml-1 size-3 shrink-0" />
-      </button>
+        {runId
+          ? (
+              <button
+                type="button"
+                className="flex min-w-0 cursor-pointer items-center gap-2 text-left hover:text-ink"
+                aria-expanded={open}
+                title={i18n.t("agent:activity.inspectRun")}
+                onClick={() => setOpen(v => !v)}
+              >
+                <span className="shrink-0">{label}</span>
+                <Chevron className="-ml-1 size-3 shrink-0" />
+              </button>
+            )
+          : <span className="shrink-0">{label}</span>}
+      </div>
       {open
         ? (
             <div className="flex flex-col gap-1 pl-6">
               {children.map(child => (
                 <div
-                  className="flex min-w-0 cursor-pointer items-center gap-2 hover:text-ink"
+                  className="flex min-w-0 items-center gap-2"
                   key={child.id}
-                  role="button"
-                  title={i18n.t("agent:activity.inspectRun")}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (runId)
-                      emitFutureEvent("inspect-tool", { runId, toolId: child.id });
-                  }}
                 >
                   {renderActivityIcon(child.kind, false)}
-                  <span
-                    className="min-w-0 select-text truncate font-mono"
-                    title={child.detail ?? child.target}
-                  >
-                    {child.target ? relativizeTarget(child.kind, child.target, workspacePath) : ""}
-                  </span>
+                  {runId
+                    ? (
+                        <button
+                          type="button"
+                          className="min-w-0 cursor-pointer truncate text-left font-mono hover:text-ink"
+                          title={i18n.t("agent:activity.inspectRun")}
+                          onClick={() => emitFutureEvent("inspect-tool", { runId, toolId: child.id })}
+                        >
+                          {child.target ? relativizeTarget(child.kind, child.target, workspacePath) : ""}
+                        </button>
+                      )
+                    : (
+                        <span
+                          className="min-w-0 select-text truncate font-mono"
+                          title={child.detail ?? child.target}
+                        >
+                          {child.target ? relativizeTarget(child.kind, child.target, workspacePath) : ""}
+                        </span>
+                      )}
                 </div>
               ))}
             </div>
