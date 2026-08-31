@@ -1040,6 +1040,14 @@ message SessionEntry {
   // Authoritative tool-result status. Absent for legacy entries that did not
   // persist an explicit status.
   optional bool tool_result_is_error = 18;
+  // Terminal state of the run identified by meta.run_id. Derived from the
+  // Agent journal's run_terminal marker; absent while active and on old agents.
+  optional string run_status = 19;
+  // Raw terminal error for a failed run. Kept separate from display copy so
+  // each client can localize the user-facing explanation.
+  optional string run_error = 20;
+  // Terminal run duration even when the run produced no assistant entry.
+  optional int64 run_duration_ms = 21;
 }
 
 // One event as replayed by get_events_since. Field names mirror the

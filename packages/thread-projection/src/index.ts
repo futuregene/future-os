@@ -21,7 +21,8 @@ export {
   isSoftExit,
   nonZeroExitCode,
 } from "./liveApply";
-export { entriesToMessages } from "./projection";
+export { entriesToMessages, entriesToTurns, turnsToMessages } from "./projection";
+export type { SessionProjectionNode, SessionRunOutcome, SessionTurn } from "./projection";
 export {
   asToolKind,
   COLLAPSIBLE_KINDS,

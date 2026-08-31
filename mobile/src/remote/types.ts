@@ -190,14 +190,13 @@ export interface HistoryEntry {
   input_tokens?: number;
   /** Cache-read subset of input tokens. */
   cache_read_tokens?: number;
-  /** Desktop-store run outcome, added by the remote bridge for recovery parity. */
+  /** Terminal run outcome from the Agent journal (bridge fallback on old Agents). */
   run_status?: "completed" | "failed" | "cancelled" | string;
-  /** Raw run error for `run_status: "failed"` — the bridge pairs it with the
-   *  status so a reloaded timeline can rebuild the desktop's failure bubble. */
+  /** Raw run error for `run_status: "failed"`. */
   run_error?: string;
-  /** Authoritative elapsed run time from the desktop store. This remains
-   * separate from `duration_ms`, which belongs to a persisted assistant entry
-   * and is absent when a run fails before producing one. */
+  /** Terminal elapsed run time. This remains separate from `duration_ms`,
+   * which belongs to a persisted assistant entry and is absent when a run
+   * fails before producing one. */
   run_duration_ms?: number;
   /** RFC3339 entry time; preserved across re-saves so history keeps real times. */
   timestamp?: string;

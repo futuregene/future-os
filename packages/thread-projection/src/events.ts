@@ -66,4 +66,10 @@ export interface SessionEntry {
     algorithm_version?: string;
     summary?: unknown;
   };
+  /** Terminal outcome of meta.run_id, derived from the Agent run journal. */
+  run_status?: "completed" | "failed" | "cancelled" | "incomplete" | string;
+  /** Raw failure diagnostic; clients own localized display copy. */
+  run_error?: string;
+  /** Terminal duration, including reply-less runs. */
+  run_duration_ms?: number;
 }

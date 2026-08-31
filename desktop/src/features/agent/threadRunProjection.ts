@@ -493,6 +493,19 @@ export function applyRunMetadata(messages: AgentMessage[], runs: StoredRun[]): A
   return patched;
 }
 
+/** Turn a journal diagnostic into desktop-localized failure presentation. */
+export function applyJournalRunOutcomes(messages: AgentMessage[]): AgentMessage[] {
+  return messages.map(message =>
+    message.status === "failed" && message.runError && !message.terminationNotice
+      ? {
+          ...message,
+          terminationTitle: buildAgentFailureTitle(message.runError),
+          terminationNotice: buildAgentFailureContent(message.runError),
+        }
+      : message,
+  );
+}
+
 function applyRunToMessage(message: AgentMessage, run: StoredRun): AgentMessage {
   // An aborted exchange projects with no content and no reply time (the agent
   // saved no assistant entry). Stamp it with the run's end time — the actual

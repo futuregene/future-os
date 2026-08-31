@@ -301,6 +301,9 @@ pub(crate) fn session_entry_to_proto(entry: &SessionEntryPayload) -> proto::Sess
             .map(|value| serde_json::to_string(value).unwrap_or_default()),
         tool_call_id: entry.tool_call_id.clone(),
         tool_result_is_error: entry.tool_result_is_error,
+        run_status: entry.run_status.clone(),
+        run_error: entry.run_error.clone(),
+        run_duration_ms: entry.run_duration_ms,
     }
 }
 

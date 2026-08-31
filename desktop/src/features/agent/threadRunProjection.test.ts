@@ -2,6 +2,7 @@ import type { AgentMessage } from "@future-os/thread-projection";
 import type { StoredRun, StoredRunEvent } from "../../integrations/storage/threadStore";
 import { describe, expect, it } from "vitest";
 import {
+  applyJournalRunOutcomes,
   applyRecoveredEvents,
   applyRunMetadata,
   deriveRenderFields,
@@ -117,6 +118,14 @@ function run(id: string, patch: Partial<StoredRun> = {}): StoredRun {
 }
 
 describe("applyRunMetadata", () => {
+  it("localizes a journal-backed failure without requiring a run row", () => {
+    const result = applyJournalRunOutcomes([
+      assistant("a1", { status: "failed", runError: "Authentication failed (401)" }),
+    ]);
+    expect(result[0]?.terminationTitle?.trim()).not.toBe("");
+    expect(result[0]?.terminationNotice?.trim()).not.toBe("");
+  });
+
   it("uses canonical run ids instead of positional or timestamp alignment", () => {
     const result = applyRunMetadata(
       [

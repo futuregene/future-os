@@ -82,7 +82,11 @@ export function messageToItems(message: AgentMessage): TimelineItem[] {
 
   const content = message.content ?? "";
   const segments = (message.segments ?? []).map(segmentToTimeline);
-  const hasVisible = content.trim().length > 0 || segments.length > 0;
+  const hasVisible =
+    content.trim().length > 0 ||
+    segments.length > 0 ||
+    message.status === "failed" ||
+    message.stopped === true;
   if (!hasVisible && message.durationMs == null && message.outputTokens == null) return [];
 
   // The copyable/render text: the ordered text blocks, not the flattened
@@ -115,7 +119,10 @@ export function messageToItems(message: AgentMessage): TimelineItem[] {
     ...(message.stopped ? { stopped: true } : {}),
     ...(message.truncated ? { truncated: true } : {}),
   };
-  if (message.status === "failed") item.failed = true;
+  if (message.status === "failed") {
+    item.failed = true;
+    if (message.runError) item.error = message.runError;
+  }
   return [item];
 }
 
@@ -166,6 +173,9 @@ function toSessionEntries(entries: HistoryEntry[]): SessionEntry[] {
       ...(entry.duration_ms != null ? { duration_ms: entry.duration_ms } : {}),
       ...(entry.input_tokens != null ? { input_tokens: entry.input_tokens } : {}),
       ...(entry.cache_read_tokens != null ? { cache_read_tokens: entry.cache_read_tokens } : {}),
+      ...(entry.run_status != null ? { run_status: entry.run_status } : {}),
+      ...(entry.run_error != null ? { run_error: entry.run_error } : {}),
+      ...(entry.run_duration_ms != null ? { run_duration_ms: entry.run_duration_ms } : {}),
     };
   });
 }
@@ -174,108 +184,7 @@ function toSessionEntries(entries: HistoryEntry[]): SessionEntry[] {
  * shared package (`entriesToMessages`), then mapped to the render contract. */
 export function timelineFromEntries(entries: HistoryEntry[]): TimelineState {
   const messages = entriesToMessages(toSessionEntries(entries));
-  // The desktop store's authoritative run outcome, mirrored onto entries by the
-  // remote bridge (`run_status`, plus `run_error` for failed runs).
-  const runOutcomes = new Map(
-    entries
-      .filter(
-        entry => typeof entry.meta?.run_id === "string" && typeof entry.run_status === "string",
-      )
-      .map(
-        entry =>
-          [
-            entry.meta!.run_id!,
-            {
-              status: entry.run_status!,
-              error:
-                typeof entry.run_error === "string" && entry.run_error.trim()
-                  ? entry.run_error
-                  : undefined,
-              durationMs:
-                typeof entry.run_duration_ms === "number" &&
-                Number.isFinite(entry.run_duration_ms) &&
-                entry.run_duration_ms >= 0
-                  ? entry.run_duration_ms
-                  : undefined,
-            },
-          ] as const,
-      ),
-  );
-  const projected = messages.flatMap(message => {
-    const projectedItems = messageToItems(message);
-    const outcome = message.runId ? runOutcomes.get(message.runId) : undefined;
-    if (!outcome) return projectedItems;
-    return projectedItems.map(item =>
-      item.kind === "message" && item.role === "assistant"
-        ? {
-            ...item,
-            ...(outcome.status === "failed" ? { failed: true } : {}),
-            ...(outcome.status === "failed" && outcome.error ? { error: outcome.error } : {}),
-            ...(outcome.status === "cancelled" ? { stopped: true } : {}),
-            ...(item.durationMs == null && outcome.durationMs != null
-              ? { durationMs: outcome.durationMs }
-              : {}),
-          }
-        : item,
-    );
-  });
-  // A run whose first LLM call failed left NO assistant entry in the journal —
-  // the desktop rebuilds its failure bubble from the runs table on reload
-  // (recoverFailedRuns); mobile splices the same bubble right after the user
-  // turn that triggered the run, so the failure survives a re-open.
-  const assistantRunIds = new Set(
-    projected
-      .filter(
-        (item): item is Extract<TimelineItem, { kind: "message" }> =>
-          item.kind === "message" && item.role === "assistant" && typeof item.runId === "string",
-      )
-      .map(item => item.runId!),
-  );
-  // User entries open exchanges 1:1 in journal order (entriesToMessages) and
-  // the shared projection ids them `m_<entry id>` — the same id this file's
-  // toSessionEntries assigns — so a failed run's bubble anchors after its user
-  // item without re-deriving the exchange grouping.
-  const failuresByAnchor = new Map<
-    string,
-    { runId: string; error?: string; durationMs?: number }
-  >();
-  const unanchored: { runId: string; error?: string; durationMs?: number }[] = [];
-  entries.forEach((entry, index) => {
-    if (entry.role !== "user") return;
-    const runId = typeof entry.meta?.run_id === "string" ? entry.meta.run_id : null;
-    if (!runId) return;
-    const outcome = runOutcomes.get(runId);
-    if (outcome?.status !== "failed" || assistantRunIds.has(runId)) return;
-    const failure = { runId, error: outcome.error, durationMs: outcome.durationMs };
-    const text = typeof entry.content === "string" ? entry.content : "";
-    if (text.trim() || (entry.meta?.attachments?.length ?? 0) > 0) {
-      failuresByAnchor.set(`m_${entry.id ?? `entry_${index}`}`, failure);
-    } else {
-      unanchored.push(failure);
-    }
-  });
-  const toFailureBubble = (failure: {
-    runId: string;
-    error?: string;
-    durationMs?: number;
-  }): TimelineItem => ({
-    id: `failed_${failure.runId}`,
-    kind: "message",
-    role: "assistant",
-    text: "",
-    runId: failure.runId,
-    failed: true,
-    ...(failure.error ? { error: failure.error } : {}),
-    ...(failure.durationMs != null ? { durationMs: failure.durationMs } : {}),
-  });
-  const items: TimelineItem[] = [];
-  for (const item of projected) {
-    items.push(item);
-    const failure = failuresByAnchor.get(item.id);
-    if (failure) items.push(toFailureBubble(failure));
-  }
-  for (const failure of unanchored) items.push(toFailureBubble(failure));
-  return { ...emptyTimeline(), items };
+  return { ...emptyTimeline(), items: messages.flatMap(messageToItems) };
 }
 
 /** Message-shaped history fallback (old desktops without get_session_entries). */

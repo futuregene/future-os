@@ -1394,13 +1394,10 @@ fn entries_vec(data: Value) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-/// Add the GUI store's authoritative run outcome to Agent-owned history rows.
-/// The Agent journal deliberately contains conversation content only; mobile
-/// needs this outcome to use the same recovery predicate as the desktop UI.
-/// Failed runs additionally carry `run_error` (the stored raw error) so mobile
-/// can rebuild the same friendly failure bubble the desktop shows on reload.
-/// `run_duration_ms` comes from the same persisted start/end timestamps the
-/// desktop footer uses, including for runs which produced no assistant entry.
+/// Add the GUI store's run outcome to history rows returned by older Agents.
+/// New Agents derive these fields from the authoritative run journal; when
+/// present, those values win. The store remains an additive compatibility
+/// source so mixed-version desktop/mobile deployments keep recovery parity.
 fn entries_with_run_status(session_id: &str, mut entries: Vec<Value>) -> Vec<Value> {
     let outcomes: HashMap<String, (String, Option<String>, Option<i64>)> =
         crate::store::find_thread_by_agent_session(session_id)
@@ -1430,13 +1427,22 @@ fn entries_with_run_status(session_id: &str, mut entries: Vec<Value>) -> Vec<Val
         if let (Some((status, error_message, duration_ms)), Some(object)) =
             (outcome, entry.as_object_mut())
         {
-            object.insert("run_status".to_string(), Value::String(status.clone()));
+            // New agents project the journal's run_terminal outcome directly.
+            // The GUI store is only a compatibility source for older agents;
+            // never overwrite journal authority when both are available.
+            object
+                .entry("run_status".to_string())
+                .or_insert_with(|| Value::String(status.clone()));
             if let Some(duration_ms) = duration_ms {
-                object.insert("run_duration_ms".to_string(), Value::from(*duration_ms));
+                object
+                    .entry("run_duration_ms".to_string())
+                    .or_insert_with(|| Value::from(*duration_ms));
             }
             if status == "failed" {
                 if let Some(message) = error_message.as_ref().filter(|m| !m.trim().is_empty()) {
-                    object.insert("run_error".to_string(), Value::String(message.clone()));
+                    object
+                        .entry("run_error".to_string())
+                        .or_insert_with(|| Value::String(message.clone()));
                 }
             }
         }
@@ -3667,7 +3673,13 @@ mod bridge_tests {
             &session,
             vec![
                 json!({ "entryType": "assistant", "meta": { "run_id": running.id } }),
-                json!({ "entryType": "assistant", "meta": { "run_id": failed.id } }),
+                json!({
+                    "entryType": "assistant",
+                    "meta": { "run_id": failed.id },
+                    "run_status": "completed",
+                    "run_error": "journal truth",
+                    "run_duration_ms": 7
+                }),
                 // An entry referencing a run with no persisted outcome takes
                 // the `outcome.is_none()` (else) arm of the match.
                 json!({ "entryType": "assistant", "meta": { "run_id": "ghost-run" } }),
@@ -3676,10 +3688,11 @@ mod bridge_tests {
         // The running run has no duration (ended_at NULL) and keeps its status.
         assert_eq!(entries[0]["run_status"], json!("running"));
         assert!(entries[0].get("run_duration_ms").is_none());
-        // The failed run carries the stored raw error and a duration.
-        assert_eq!(entries[1]["run_status"], json!("failed"));
-        assert!(entries[1]["run_duration_ms"].is_number());
-        assert_eq!(entries[1]["run_error"], json!("boom"));
+        // Agent journal fields are authoritative when present; the GUI store
+        // only fills missing fields for old agents.
+        assert_eq!(entries[1]["run_status"], json!("completed"));
+        assert_eq!(entries[1]["run_duration_ms"], json!(7));
+        assert_eq!(entries[1]["run_error"], json!("journal truth"));
         // The ghost entry is left untouched.
         assert!(entries[2].get("run_status").is_none());
     }

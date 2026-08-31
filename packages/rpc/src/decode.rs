@@ -484,6 +484,9 @@ pub(crate) fn session_entry_from_proto(entry: &proto::SessionEntry) -> SessionEn
         checkpoint: entry.checkpoint.as_ref().map(|raw| inflate_json_value(raw)),
         tool_call_id: entry.tool_call_id.clone(),
         tool_result_is_error: entry.tool_result_is_error,
+        run_status: entry.run_status.clone(),
+        run_error: entry.run_error.clone(),
+        run_duration_ms: entry.run_duration_ms,
     }
 }
 
