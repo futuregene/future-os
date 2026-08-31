@@ -17,9 +17,29 @@ use anyhow::{anyhow, Context, Result};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::SystemTime;
+
+const DISPLAY_ENTRIES_CACHE_MAX: usize = 12;
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct SessionFileVersion {
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+struct DisplayEntriesCacheEntry {
+    session_id: String,
+    version: SessionFileVersion,
+    entries: Arc<Vec<serde_json::Value>>,
+}
 
 pub struct Manager {
     pub dir: PathBuf,
+    /// Bounded LRU of display projections. Pagination requests for one stable
+    /// JSONL version slice this shared projection instead of loading and
+    /// projecting the complete journal again for every page.
+    display_entries_cache: parking_lot::Mutex<Vec<DisplayEntriesCacheEntry>>,
     /// Test-only save-failure injection (number of saves left to fail).
     #[cfg(test)]
     pub(crate) fail_saves_remaining: std::sync::atomic::AtomicU64,
@@ -29,6 +49,7 @@ impl Manager {
     pub fn new(dir: PathBuf) -> Self {
         Self {
             dir,
+            display_entries_cache: parking_lot::Mutex::new(Vec::new()),
             #[cfg(test)]
             fail_saves_remaining: std::sync::atomic::AtomicU64::new(0),
         }
@@ -40,6 +61,53 @@ impl Manager {
 
     pub(crate) fn session_path(&self, id: &str) -> PathBuf {
         self.dir.join(format!("{}.jsonl", id))
+    }
+
+    pub(crate) fn session_file_version(&self, id: &str) -> Result<SessionFileVersion> {
+        let metadata = fs::metadata(self.session_path(id)).context("read session metadata")?;
+        Ok(SessionFileVersion {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+        })
+    }
+
+    pub(crate) fn cached_display_entries(
+        &self,
+        id: &str,
+        version: &SessionFileVersion,
+    ) -> Option<Arc<Vec<serde_json::Value>>> {
+        let mut cache = self.display_entries_cache.lock();
+        let index = cache
+            .iter()
+            .position(|entry| entry.session_id == id && entry.version == *version)?;
+        let entry = cache.remove(index);
+        let entries = entry.entries.clone();
+        cache.push(entry);
+        Some(entries)
+    }
+
+    pub(crate) fn cache_display_entries(
+        &self,
+        id: &str,
+        version: SessionFileVersion,
+        entries: Arc<Vec<serde_json::Value>>,
+    ) {
+        let mut cache = self.display_entries_cache.lock();
+        cache.retain(|entry| entry.session_id != id);
+        cache.push(DisplayEntriesCacheEntry {
+            session_id: id.to_string(),
+            version,
+            entries,
+        });
+        if cache.len() > DISPLAY_ENTRIES_CACHE_MAX {
+            cache.remove(0);
+        }
+    }
+
+    fn invalidate_display_entries(&self, id: &str) {
+        self.display_entries_cache
+            .lock()
+            .retain(|entry| entry.session_id != id);
     }
 
     /// Agent-owned event data for a session. Queued prompts are intentionally
@@ -239,7 +307,11 @@ impl Manager {
             .context("open session lock file")?;
         let mut file_lock = fd_lock::RwLock::new(lock_file);
         let _guard = file_lock.write().context("acquire session write lock")?;
-        f(&path)
+        let result = f(&path);
+        if result.is_ok() {
+            self.invalidate_display_entries(session_id);
+        }
+        result
     }
 
     /// Append entries to a session file whose advisory write lock is already
@@ -342,7 +414,9 @@ impl Manager {
         let mut file_lock = fd_lock::RwLock::new(lock_file);
         let _guard = file_lock.write().context("acquire session write lock")?;
 
-        Self::write_entries_atomically(&path, &session.entries)
+        Self::write_entries_atomically(&path, &session.entries)?;
+        self.invalidate_display_entries(&session.id);
+        Ok(())
     }
 
     fn write_entries_atomically(path: &Path, entries: &[SessionEntry]) -> Result<()> {
@@ -645,6 +719,7 @@ impl Manager {
 
     /// Delete a session file
     pub fn delete(&self, id: &str) -> Result<()> {
+        self.invalidate_display_entries(id);
         let path = self.session_path(id);
         // Also remove the lock file if present — no session means no lock.
         let lock_path = path.with_extension("jsonl.lock");

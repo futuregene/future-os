@@ -10,6 +10,8 @@ interface UseStickyAutoScrollInput {
   scrollRef: RefObject<HTMLElement | null>;
   /** Changing this (e.g. the message list) re-runs the follow effect. */
   contentKey: unknown;
+  /** False while the real message content is temporarily not mounted. */
+  followEnabled?: boolean;
   /** Extra work to run on every scroll event (e.g. floating-scrollbar visibility). */
   onScroll?: () => void;
   /** Run after a content-driven follow settles (e.g. update floating scrollbar). */
@@ -25,6 +27,7 @@ interface UseStickyAutoScrollInput {
 export function useStickyAutoScroll({
   scrollRef,
   contentKey,
+  followEnabled = true,
   onScroll,
   onContentSettled,
 }: UseStickyAutoScrollInput) {
@@ -66,6 +69,8 @@ export function useStickyAutoScroll({
   // useLayoutEffect so the scroll-to-bottom happens before the browser paints,
   // avoiding a visible "flash at top → jump to bottom" when switching threads.
   useLayoutEffect(() => {
+    if (!followEnabled)
+      return;
     const scrollContainer = scrollRef.current;
     if (!scrollContainer)
       return;
@@ -81,7 +86,7 @@ export function useStickyAutoScroll({
       setShowJumpToLatest(distance > JUMP_BUTTON_THRESHOLD_PX);
     }
     onContentSettledRef.current?.();
-  }, [contentKey, scrollRef]);
+  }, [contentKey, followEnabled, scrollRef]);
 
   return { handleScroll, scrollToLatest, showJumpToLatest };
 }
