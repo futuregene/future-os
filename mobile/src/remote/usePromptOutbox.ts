@@ -215,77 +215,80 @@ export function usePromptOutbox({
       };
       if (streamingRef.current[targetSessionId] ?? false) throw new Error("send_streaming");
 
-      let pending = await loadPendingPrompt();
-      let checkReceipt = false;
-      if (pending && samePendingPrompt(pending, candidate)) {
-        checkReceipt = true;
-      } else {
-        if (pending) {
-          const previousReceipt = promptReceiptSupported
-            ? await pendingPromptReceipt(client, pending.commandId)
-            : null;
-          if (previousReceipt) await clearSessionDraftIfMatches(pending.draftKey, pending);
-          await clearPendingPrompt(pending.commandId);
-        }
-        pending = {
-          version: 1,
-          commandId: randomId("prompt"),
-          ...candidate,
-          createdAt: Date.now(),
-        };
-        await savePendingPrompt(pending);
-      }
-
+      // Acquire the prompt lane before the first storage await. Recovery and a
+      // user tap can otherwise both read the same slot and deliver concurrently.
       sendingRef.current = true;
       setSending(true);
       try {
-        const response = await deliverPendingPrompt(
-          client,
-          pending,
-          checkReceipt,
-          promptReceiptSupported,
-          onUploadProgress,
-        );
-        await clearPendingPrompt(pending.commandId);
-        await clearSessionDraftIfMatches(pending.draftKey, pending);
-        const nextSessionId = response.sessionId || targetSessionId;
-        engine?.mutate(nextSessionId, timeline =>
-          commitAcknowledgedUserMessage(timeline ?? emptyTimeline(), {
-            id: `local:${pending.commandId}`,
-            runId: response.runId,
-            text: text.trim(),
-            ...(attachments.length
-              ? {
-                  attachments: attachments.map(attachment => ({
-                    path: attachment.localUri,
-                    name: attachment.name,
-                    kind: attachment.kind,
-                    mobilePreviewUnsupported: attachment.mobilePreviewUnsupported,
-                  })),
-                }
-              : {}),
-          }),
-        );
-        if (nextSessionId && nextSessionId !== targetSessionId) {
-          const stillViewingSentDraft = conversationEpochRef.current === conversationEpoch;
-          if (stillViewingSentDraft) {
-            selectedRef.current = nextSessionId;
-            setSelectedSessionId(nextSessionId);
-            setDraft(false);
-            setDraftMode("chat");
-            setDraftWorkspaceId("");
+        let pending = await loadPendingPrompt();
+        let checkReceipt = false;
+        if (pending && samePendingPrompt(pending, candidate)) {
+          checkReceipt = true;
+        } else {
+          if (pending) {
+            const previousReceipt = promptReceiptSupported
+              ? await pendingPromptReceipt(client, pending.commandId)
+              : null;
+            if (previousReceipt) await clearSessionDraftIfMatches(pending.draftKey, pending);
+            await clearPendingPrompt(pending.commandId);
           }
-          engine?.mutate(targetSessionId, timeline => ({
-            ...(timeline ?? emptyTimeline()),
-            items: [],
-          }));
-          if (stillViewingSentDraft) void refreshSessions();
+          pending = {
+            version: 1,
+            commandId: randomId("prompt"),
+            ...candidate,
+            createdAt: Date.now(),
+          };
+          await savePendingPrompt(pending);
         }
-      } catch (sendError) {
-        if (!isTransientNatsRequestError(sendError)) {
+        try {
+          const response = await deliverPendingPrompt(
+            client,
+            pending,
+            checkReceipt,
+            promptReceiptSupported,
+            onUploadProgress,
+          );
           await clearPendingPrompt(pending.commandId);
+          await clearSessionDraftIfMatches(pending.draftKey, pending);
+          const nextSessionId = response.sessionId || targetSessionId;
+          engine?.mutate(nextSessionId, timeline =>
+            commitAcknowledgedUserMessage(timeline ?? emptyTimeline(), {
+              id: `local:${pending.commandId}`,
+              runId: response.runId,
+              text: text.trim(),
+              ...(attachments.length
+                ? {
+                    attachments: attachments.map(attachment => ({
+                      path: attachment.localUri,
+                      name: attachment.name,
+                      kind: attachment.kind,
+                      mobilePreviewUnsupported: attachment.mobilePreviewUnsupported,
+                    })),
+                  }
+                : {}),
+            }),
+          );
+          if (nextSessionId && nextSessionId !== targetSessionId) {
+            const stillViewingSentDraft = conversationEpochRef.current === conversationEpoch;
+            if (stillViewingSentDraft) {
+              selectedRef.current = nextSessionId;
+              setSelectedSessionId(nextSessionId);
+              setDraft(false);
+              setDraftMode("chat");
+              setDraftWorkspaceId("");
+            }
+            engine?.mutate(targetSessionId, timeline => ({
+              ...(timeline ?? emptyTimeline()),
+              items: [],
+            }));
+            if (stillViewingSentDraft) void refreshSessions();
+          }
+        } catch (sendError) {
+          if (!isTransientNatsRequestError(sendError)) {
+            await clearPendingPrompt(pending.commandId);
+          }
+          throw sendError;
         }
-        throw sendError;
       } finally {
         sendingRef.current = false;
         setSending(false);
@@ -315,13 +318,14 @@ export function usePromptOutbox({
   const recoverPendingPrompt = useCallback(async () => {
     if (sendingRef.current) return;
     if (pendingRecoveryRef.current) return pendingRecoveryRef.current;
+    const client = clientRef.current;
+    if (!client || !credentialsRef.current) return;
+    // Publish ownership synchronously, before loadPendingPrompt yields.
+    sendingRef.current = true;
+    setSending(true);
     const recovery = (async () => {
-      const client = clientRef.current;
-      if (!client || !credentialsRef.current) return;
       const pending = await loadPendingPrompt();
       if (!pending) return;
-      sendingRef.current = true;
-      setSending(true);
       try {
         const receipt = await deliverPendingPrompt(client, pending, true, promptReceiptSupported);
         await clearPendingPrompt(pending.commandId);
@@ -333,11 +337,10 @@ export function usePromptOutbox({
           await clearPendingPrompt(pending.commandId);
           recordError(recoveryError);
         }
-      } finally {
-        sendingRef.current = false;
-        setSending(false);
       }
     })().finally(() => {
+      sendingRef.current = false;
+      setSending(false);
       pendingRecoveryRef.current = null;
     });
     pendingRecoveryRef.current = recovery;

@@ -6,12 +6,18 @@ import {
   type PendingPrompt,
 } from "../pendingPromptStorage";
 
+const mockData = new Map<string, string>();
+
 jest.mock("@react-native-async-storage/async-storage", () => ({
   __esModule: true,
   default: {
-    getItem: jest.fn(),
-    setItem: jest.fn(),
-    removeItem: jest.fn(),
+    getItem: jest.fn(async (key: string) => mockData.get(key) ?? null),
+    setItem: jest.fn(async (key: string, value: string) => {
+      mockData.set(key, value);
+    }),
+    removeItem: jest.fn(async (key: string) => {
+      mockData.delete(key);
+    }),
   },
 }));
 
@@ -31,7 +37,10 @@ const pending: PendingPrompt = {
 };
 
 describe("pending prompt storage", () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    mockData.clear();
+    jest.clearAllMocks();
+  });
 
   test("round-trips a staged prompt", async () => {
     await savePendingPrompt(pending);
@@ -63,5 +72,29 @@ describe("pending prompt storage", () => {
     mockedAsync.getItem.mockResolvedValueOnce(JSON.stringify(pending));
     await clearPendingPrompt("prompt_1");
     expect(mockedAsync.removeItem).toHaveBeenCalledWith("futureos.remote.pending-prompt.v1");
+  });
+
+  test("a matching clear cannot delete a newer prompt saved concurrently", async () => {
+    await savePendingPrompt(pending);
+    let releaseRead!: () => void;
+    const readStarted = new Promise<void>(resolve => {
+      mockedAsync.getItem.mockImplementationOnce(async () => {
+        resolve();
+        await new Promise<void>(release => {
+          releaseRead = release;
+        });
+        return JSON.stringify(pending);
+      });
+    });
+
+    const clearing = clearPendingPrompt(pending.commandId);
+    await readStarted;
+    const newer = { ...pending, commandId: "prompt_2", text: "newer" };
+    const saving = savePendingPrompt(newer);
+
+    expect(mockedAsync.setItem).toHaveBeenCalledTimes(1);
+    releaseRead();
+    await Promise.all([clearing, saving]);
+    await expect(loadPendingPrompt()).resolves.toEqual(newer);
   });
 });

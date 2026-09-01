@@ -6,12 +6,18 @@ import {
   saveSessionDraft,
 } from "../draftStorage";
 
+const mockData = new Map<string, string>();
+
 jest.mock("@react-native-async-storage/async-storage", () => ({
   __esModule: true,
   default: {
-    getItem: jest.fn(),
-    setItem: jest.fn(),
-    removeItem: jest.fn(),
+    getItem: jest.fn(async (key: string) => mockData.get(key) ?? null),
+    setItem: jest.fn(async (key: string, value: string) => {
+      mockData.set(key, value);
+    }),
+    removeItem: jest.fn(async (key: string) => {
+      mockData.delete(key);
+    }),
   },
 }));
 
@@ -50,6 +56,7 @@ const attachment = {
 
 describe("session draft storage", () => {
   beforeEach(() => {
+    mockData.clear();
     jest.clearAllMocks();
   });
 
@@ -140,5 +147,30 @@ describe("session draft storage", () => {
     );
     await clearSessionDraftIfMatches("s1", { text: "hello", attachments: [different] });
     expect(mockedAsync.removeItem).not.toHaveBeenCalled();
+  });
+
+  test("cold acknowledgement cannot delete a draft saved concurrently", async () => {
+    const original = { text: "hello", attachments: [attachment] };
+    await saveSessionDraft("s1", original);
+    let releaseRead!: () => void;
+    const readStarted = new Promise<void>(resolve => {
+      mockedAsync.getItem.mockImplementationOnce(async () => {
+        resolve();
+        await new Promise<void>(release => {
+          releaseRead = release;
+        });
+        return JSON.stringify({ version: 1, ...original });
+      });
+    });
+
+    const clearing = clearSessionDraftIfMatches("s1", original);
+    await readStarted;
+    const newer = { text: "newer edit", attachments: [attachment] };
+    const saving = saveSessionDraft("s1", newer);
+
+    expect(mockedAsync.setItem).toHaveBeenCalledTimes(1);
+    releaseRead();
+    await Promise.all([clearing, saving]);
+    await expect(loadSessionDraft("s1")).resolves.toEqual({ version: 1, ...newer });
   });
 });

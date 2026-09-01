@@ -1,5 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { File } from "expo-file-system";
+import { createAsyncOperationQueue } from "./asyncOperationQueue";
 import type { MobileAttachment } from "./types";
 
 /**
@@ -17,6 +18,7 @@ export interface SessionDraft {
 
 const DRAFT_VERSION = 1;
 const KEY_PREFIX = "futureos.remote.draft.v1:";
+const enqueueOperation = createAsyncOperationQueue();
 
 function storageKey(sessionId: string): string {
   return `${KEY_PREFIX}${sessionId}`;
@@ -37,7 +39,7 @@ function attachmentFileExists(localUri: string): boolean {
  * Attachments whose backing file no longer exists (a temporary camera/cache
  * file was pruned) are dropped rather than surfacing a dead tap target.
  */
-export async function loadSessionDraft(sessionId: string): Promise<SessionDraft | null> {
+async function loadSessionDraftDirect(sessionId: string): Promise<SessionDraft | null> {
   if (!sessionId) return null;
   try {
     const raw = await AsyncStorage.getItem(storageKey(sessionId));
@@ -63,6 +65,10 @@ export async function loadSessionDraft(sessionId: string): Promise<SessionDraft 
   }
 }
 
+export function loadSessionDraft(sessionId: string): Promise<SessionDraft | null> {
+  return enqueueOperation(() => loadSessionDraftDirect(sessionId));
+}
+
 /**
  * Persist a session's draft. An empty draft (no text and no attachments) clears
  * the slot instead of writing a blank entry, so a composer that was emptied
@@ -73,29 +79,33 @@ export async function saveSessionDraft(
   draft: Omit<SessionDraft, "version">,
 ): Promise<void> {
   if (!sessionId) return;
-  const hasAttachments = (draft.attachments?.length ?? 0) > 0;
-  if (!hasAttachments && (draft.text ?? "").trim().length === 0) {
-    await clearSessionDraft(sessionId);
-    return;
-  }
-  try {
-    await AsyncStorage.setItem(
-      storageKey(sessionId),
-      JSON.stringify({ version: DRAFT_VERSION, ...draft }),
-    );
-  } catch {
-    // Storage full/unavailable — a dropped draft is non-fatal.
-  }
+  await enqueueOperation(async () => {
+    const hasAttachments = (draft.attachments?.length ?? 0) > 0;
+    try {
+      if (!hasAttachments && (draft.text ?? "").trim().length === 0) {
+        await AsyncStorage.removeItem(storageKey(sessionId));
+        return;
+      }
+      await AsyncStorage.setItem(
+        storageKey(sessionId),
+        JSON.stringify({ version: DRAFT_VERSION, ...draft }),
+      );
+    } catch {
+      // Storage full/unavailable — a dropped draft is non-fatal.
+    }
+  });
 }
 
 /** Remove a session's draft (e.g. after its message is sent). */
 export async function clearSessionDraft(sessionId: string): Promise<void> {
   if (!sessionId) return;
-  try {
-    await AsyncStorage.removeItem(storageKey(sessionId));
-  } catch {
-    // Ignore — storage unavailable.
-  }
+  await enqueueOperation(async () => {
+    try {
+      await AsyncStorage.removeItem(storageKey(sessionId));
+    } catch {
+      // Ignore — storage unavailable.
+    }
+  });
 }
 
 /**
@@ -107,15 +117,22 @@ export async function clearSessionDraftIfMatches(
   sessionId: string,
   expected: Pick<SessionDraft, "text" | "attachments">,
 ): Promise<void> {
-  const current = await loadSessionDraft(sessionId);
-  if (!current || current.text.trim() !== expected.text.trim()) return;
-  const identities = (items: MobileAttachment[]) =>
-    items.map(item => `${item.localUri}\u0000${item.name}\u0000${item.transferSize}`).sort();
-  if (
-    JSON.stringify(identities(current.attachments)) !==
-    JSON.stringify(identities(expected.attachments))
-  ) {
-    return;
-  }
-  await clearSessionDraft(sessionId);
+  if (!sessionId) return;
+  await enqueueOperation(async () => {
+    const current = await loadSessionDraftDirect(sessionId);
+    if (!current || current.text.trim() !== expected.text.trim()) return;
+    const identities = (items: MobileAttachment[]) =>
+      items.map(item => `${item.localUri}\u0000${item.name}\u0000${item.transferSize}`).sort();
+    if (
+      JSON.stringify(identities(current.attachments)) !==
+      JSON.stringify(identities(expected.attachments))
+    ) {
+      return;
+    }
+    try {
+      await AsyncStorage.removeItem(storageKey(sessionId));
+    } catch {
+      // Ignore — storage unavailable.
+    }
+  });
 }

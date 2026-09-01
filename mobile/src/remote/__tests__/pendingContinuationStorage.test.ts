@@ -29,7 +29,10 @@ const pending: PendingContinuation = {
 };
 
 describe("pending continuation storage", () => {
-  beforeEach(() => mockData.clear());
+  beforeEach(() => {
+    mockData.clear();
+    jest.clearAllMocks();
+  });
 
   it("round trips the stable continuation identity", async () => {
     await savePendingContinuation(pending);
@@ -68,5 +71,33 @@ describe("pending continuation storage", () => {
     await expect(loadPendingContinuation()).resolves.toEqual(pending);
     await clearPendingContinuation(pending.commandId);
     await expect(loadPendingContinuation()).resolves.toBeNull();
+  });
+
+  it("cannot delete a newer continuation saved while a matching clear is in flight", async () => {
+    await savePendingContinuation(pending);
+    const AsyncStorage = jest.requireMock("@react-native-async-storage/async-storage") as {
+      getItem: jest.Mock;
+      setItem: jest.Mock;
+    };
+    let releaseRead!: () => void;
+    const readStarted = new Promise<void>(resolve => {
+      AsyncStorage.getItem.mockImplementationOnce(async () => {
+        resolve();
+        await new Promise<void>(release => {
+          releaseRead = release;
+        });
+        return JSON.stringify(pending);
+      });
+    });
+
+    const clearing = clearPendingContinuation(pending.commandId);
+    await readStarted;
+    const newer = { ...pending, commandId: "continue-2", sourceRunId: "run-2" };
+    const saving = savePendingContinuation(newer);
+
+    expect(AsyncStorage.setItem).toHaveBeenCalledTimes(1);
+    releaseRead();
+    await Promise.all([clearing, saving]);
+    await expect(loadPendingContinuation()).resolves.toEqual(newer);
   });
 });
