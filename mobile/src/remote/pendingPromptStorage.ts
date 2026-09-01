@@ -1,4 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { createAsyncOperationQueue } from "./asyncOperationQueue";
 import type { MobileAttachment, ThinkingLevel } from "./types";
 
 export interface PendingPrompt {
@@ -16,8 +17,9 @@ export interface PendingPrompt {
 }
 
 const KEY = "futureos.remote.pending-prompt.v1";
+const enqueueOperation = createAsyncOperationQueue();
 
-export async function loadPendingPrompt(): Promise<PendingPrompt | null> {
+async function loadPendingPromptDirect(): Promise<PendingPrompt | null> {
   try {
     const raw = await AsyncStorage.getItem(KEY);
     if (!raw) return null;
@@ -44,12 +46,18 @@ export async function loadPendingPrompt(): Promise<PendingPrompt | null> {
   }
 }
 
+export function loadPendingPrompt(): Promise<PendingPrompt | null> {
+  return enqueueOperation(loadPendingPromptDirect);
+}
+
 export async function savePendingPrompt(prompt: PendingPrompt): Promise<void> {
-  await AsyncStorage.setItem(KEY, JSON.stringify(prompt));
+  await enqueueOperation(() => AsyncStorage.setItem(KEY, JSON.stringify(prompt)));
 }
 
 /** Clear only the record this caller completed; a newer send must survive. */
 export async function clearPendingPrompt(commandId: string): Promise<void> {
-  const current = await loadPendingPrompt();
-  if (current?.commandId === commandId) await AsyncStorage.removeItem(KEY);
+  await enqueueOperation(async () => {
+    const current = await loadPendingPromptDirect();
+    if (current?.commandId === commandId) await AsyncStorage.removeItem(KEY);
+  });
 }

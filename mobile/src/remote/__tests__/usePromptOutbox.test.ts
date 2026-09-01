@@ -335,6 +335,31 @@ describe("usePromptOutbox sendMessage", () => {
     await act(async () => h.renderer.unmount());
   });
 
+  it("acquires the send lane before the first storage await", async () => {
+    const promptResponse = deferred<{ data: ReturnType<typeof ack> }>();
+    const requestRetry = jest.fn((request: { type: string }) => {
+      if (request.type === "prompt") return promptResponse.promise;
+      return Promise.resolve({ data: null });
+    });
+    const h = await mountSend({ requestRetry });
+
+    let first!: Promise<void>;
+    await act(async () => {
+      first = h.result.sendMessage("first");
+      await expect(h.result.sendMessage("second")).rejects.toThrow("send_busy");
+    });
+    await flush();
+    expect(requestRetry.mock.calls.filter(([request]) => request.type === "prompt")).toHaveLength(
+      1,
+    );
+
+    promptResponse.resolve({ data: ack() });
+    await act(async () => {
+      await first;
+    });
+    await act(async () => h.renderer.unmount());
+  });
+
   it("rejects attachments when the client does not support file transfer", async () => {
     const h = await mountSend({ fileTransferSupported: false });
     await expect(h.result.sendMessage("hi", [attachment])).rejects.toThrow(
