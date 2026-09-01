@@ -184,7 +184,7 @@ v2 决策（V1–V9）见 APPROVAL_PLAN §9。v1 期间沿用有效的：escalat
 
 ## 11. Windows 原生写保护（unelevated：RestrictedToken + ACL）
 
-状态：**W1–W6 底层与本机可执行生命周期已在 Windows 11 Home 真机 PASS；W7 已在当前本地测试分支直接开启。** AppContainer SID、private desktop、PowerShell/CLM、Unicode/大输出、用户级单例、活动 capability lease、跨进程占用锁、旧代际 ACE/metadata GC、完整 host probe、reset、Desktop graceful shutdown 及 RPC/CLI 调用均已有自动化证据；RM-01、RM-02、RM-04～RM-07 已在本机 PASS。RM-03 及额外主机矩阵仍待完成。Windows 启动时直接运行完整 host probe；通过才显示该档，任何失败都隐藏入口并回退 `manual`。
+状态：**W1–W7 已完成验证。** AppContainer SID、private desktop、PowerShell/CLM、Unicode/大输出、用户级单例、活动 capability lease、跨进程占用锁、旧代际 ACE/metadata GC、完整 host probe、reset、Desktop graceful shutdown 及 RPC/CLI 调用均已有自动化证据；RM-01～RM-07 与额外主机兼容矩阵均已完成。Windows 启动时直接运行完整 host probe；通过才显示该档，任何失败都隐藏入口并回退 `manual`。
 
 > **本期范围冻结（2026-08-25）**：本期交付目标明确为 **Unelevated**，即命令仍以当前真实 Windows 用户为主体，在其 token 上叠加 `WRITE_RESTRICTED`、capability SID 与 NTFS ACL。它与 Codex 的 legacy/unelevated 路线具有相同的基础机制和能力上限。本期不创建本地沙盒用户、不要求 UAC、不引入 elevated command runner，也不以 Elevated 的独立安全主体保证作为本期 review 或完成门槛。下文 §11.6 的限制是知情接受的产品边界，不应在后续 review 中被误判为“遗漏了 Elevated 实现”；后续候选路线见 §11.10。
 
@@ -342,7 +342,7 @@ RestrictedToken/NTFS 不向父进程可靠报告“刚才拒绝了哪个对象�
 | **W6 — 端到端安全与兼容性** | 将 W1–W5 串入真实 agent/desktop；增加 ACL audit/repair、活动代际跟踪、旧 SID GC、重置/卸载清理、日志脱敏和 feature probe；用仓库脚本进行 Windows 真实机手工批量 smoke，不加入 CI | 必过矩阵：workspace/temp 写成功；workspace 外写失败；一次批准仅开放完整列出的现有 file/subtree，未批准 sibling 仍失败；项目批准仅当前项目和新代际生效；父目录不被扩大；当前用户无权目标仍失败；现有关键对象 deny 硬化有效；不存在对象/glob 缺口与模式说明一致；崩溃/强杀/重启后无权限扩张；常见工具链可用；所有初始化失败均 fail closed |
 | **W7 — 产品与发布** | Windows 启动后直接运行 capability probe；仅通过时显示“写保护”；普通用户文案聚焦写入保护与何时审批，能力差异保留在开发文档；保留一键退回 `manual` | Windows 目标版本手工 smoke 全绿；安全 review 无高优先级问题；升级、降级、重置 SID/ACL 可恢复；遥测不上传原始敏感路径；初始化/ACL 异常时自动回到 `manual`，不得无提示直跑 |
 
-**当前实现状态（2026-08-24）**：Windows 11 Home 非管理员主机上的 `test-windows-sandbox.ps1 -IncludeClippy` 已通过 50 项原生/端到端测试、11 项 capability 审批测试、Agent 用户级单例、2 项 Desktop graceful shutdown、Agent/Desktop Clippy、release CLI probe，并确认退出后 capability record 为 0；测试明确不加入 CI。P1 的 RM-01、RM-02、RM-04～RM-07 已在本机 PASS；RM-03 因当前包无法触发而 `NOT RUN`，P2 额外主机矩阵因无可用主机延后。GUI 手工验证确认 host probe 通过后入口可见、workspace 内写入不拦截、未批准的 workspace 外写入被拦截、正常退出后 capability record 为 0。当前分支没有 W7 独立开关；probe/Agent 失败会 fail closed 并将已保存的 sandbox 档回退为 `manual`；日志仅使用稳定 code，不向产品状态输出原始路径。回收顺序仍为先持久化并应用新集合，再按 Codex 的 `REVOKE_ACCESS` 模式回收无活动引用的旧 SID；失败时保留 metadata 供以后重试。reset/probe 已提供 sessionless agent RPC 与 `future agent` 维护命令；Windows 设置页提供普通用户文案的手动 reset，NSIS 卸载清理已真机 PASS。RM-03、P2 和安全 review 仍是正式发布前需补的证据，但不再阻止本分支本地测试。普通 NTFS DACL 仍无法精确拒绝允许目录内尚不存在的未来文件名，`FILE_DELETE_CHILD` 与 Everyone/logon 宽 ACL 也保留 §11.6 的已知边界，不能宣称与 macOS SBPL 等价。
+**当前实现状态（2026-09-01）**：Windows 11 Home 非管理员主机上的 `test-windows-sandbox.ps1 -IncludeClippy` 已通过 50 项原生/端到端测试、11 项 capability 审批测试、Agent 用户级单例、2 项 Desktop graceful shutdown、Agent/Desktop Clippy、release CLI probe，并确认退出后 capability record 为 0；测试明确不加入 CI。RM-01～RM-07 与 P2 额外主机兼容矩阵均已完成。GUI 手工验证确认 host probe 通过后入口可见、workspace 内写入不拦截、未批准的 workspace 外写入被拦截、正常退出后 capability record 为 0。当前分支没有 W7 独立开关；probe/Agent 失败会 fail closed 并将已保存的 sandbox 档回退为 `manual`；日志仅使用稳定 code，不向产品状态输出原始路径。回收顺序仍为先持久化并应用新集合，再按 Codex 的 `REVOKE_ACCESS` 模式回收无活动引用的旧 SID；失败时保留 metadata 供以后重试。reset/probe 已提供 sessionless agent RPC 与 `future agent` 维护命令；Windows 设置页提供普通用户文案的手动 reset，NSIS 卸载清理已真机 PASS。安全 review 仍是正式发布前需补的证据，但不再阻止本分支本地测试。普通 NTFS DACL 仍无法精确拒绝允许目录内尚不存在的未来文件名，`FILE_DELETE_CHILD` 与 Everyone/logon 宽 ACL 也保留 §11.6 的已知边界，不能宣称与 macOS SBPL 等价。
 
 Windows 真机从仓库根目录用普通（非管理员）PowerShell 执行：
 

@@ -105,17 +105,16 @@ export function compactThreadContext(threadId: string) {
   return invokeCommand<CompactContextResult>("compact_thread_context", { threadId });
 }
 
-/** Result of the post-login Future model sync (agent warms its cache + registry). */
+/** Result of an explicit Future model sync (agent warms its cache + registry). */
 export interface SyncFutureModelsResult {
   synced: boolean;
   modelCount: number;
 }
 
 /**
- * Post-login init: synchronously fetch the Future provider's models inside the
- * agent (warming its cache and rebuilding its registry) so the model list is
- * complete before the onboarding gate closes. Blocks on the platform fetch —
- * only call from the onboarding init flow.
+ * Fetch the Future provider's models inside the agent, warming its cache and
+ * rebuilding its registry. Used by onboarding and the Settings manual action;
+ * the backend scheduler calls the same execution path directly.
  */
 export async function syncFutureModels() {
   return invokeCommand<SyncFutureModelsResult>("sync_future_models");

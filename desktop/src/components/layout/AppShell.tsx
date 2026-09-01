@@ -177,6 +177,12 @@ export function AppShell() {
     }),
     [visibleModelOptions, setSelectedModelId],
   );
+  // Bridge the backend's silent 24-hour Future catalogue refresh into the
+  // existing frontend invalidation path used by onboarding and manual sync.
+  useTauriEvent<{ synced: boolean }>("scheduler-future-models", (result) => {
+    if (result.synced)
+      emitFutureEvent("future-models-synced", undefined);
+  });
 
   // Poll the remote bridge status (for the sidebar indicator dot) at the app
   // level. Returns { status, indicator, refresh } — RemoteView reads `status`

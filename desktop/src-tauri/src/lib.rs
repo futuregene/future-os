@@ -21,6 +21,7 @@ mod menu;
 mod proc;
 mod remote;
 mod run_error;
+mod scheduler;
 mod shadow_review;
 mod skills;
 mod skills_bootstrap;
@@ -663,6 +664,10 @@ pub fn run() {
             if let Err(error) = store::initialize_app_store() {
                 eprintln!("FutureOS store initialization failed: {error}");
             }
+            // Independent fixed-interval maintenance: app updates (24h),
+            // Future balance (1h), and Future models (24h). Missed ticks while
+            // suspended are skipped; each task runs at most once after resume.
+            scheduler::start(app.handle().clone());
             // Do not preemptively cancel non-terminal GUI rows at startup. The
             // Agent is authoritative and may have survived a GUI crash; the
             // watchdog below reattaches or settles each row only after it can

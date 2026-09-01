@@ -42,7 +42,7 @@ You can rename, pin, or delete conversations from the menu next to each one in t
 
 ## The approval mechanism — you're in control
 
-This is the heart of FutureOS. When the agent wants to do something with real-world consequences — **read or write a file, run a shell command, delete files, or write outside the workspace** — it **stops** and shows an **approval card** just above the input box. It waits for you, with **no timeout**.
+This is the heart of FutureOS. When the agent wants to do something with real-world consequences — **access a sensitive file, write or delete files, run a shell command, or write outside the workspace** — it **stops** and shows an **approval card** just above the input box. It waits for you, with **no timeout**. Ordinary reads outside the workspace are not intercepted.
 
 The card tells you exactly what's being requested — the command to run, the files to write (with a preview), or the paths involved. Then you choose:
 

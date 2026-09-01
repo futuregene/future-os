@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
+import { syncFutureModels } from "../../integrations/agent/agentClient";
 import {
   deleteCustomProvider,
   listAgentProviders,
@@ -52,6 +53,7 @@ export function ProvidersPage({
   const [editingBuiltinKey, setEditingBuiltinKey] = useState<BuiltinProvider | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
   const [confirmingLogout, setConfirmingLogout] = useState(false);
+  const [syncingFutureModels, setSyncingFutureModels] = useState(false);
   const [showMoreBuiltin, setShowMoreBuiltin] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
   // Feedback for delete/logout, which are `void`-called from confirm rows.
@@ -87,6 +89,33 @@ export function ProvidersPage({
     }
     catch (error) {
       setActionError(errorMessage(error));
+    }
+  }
+
+  async function handleSyncFutureModels() {
+    setActionError(null);
+    setHint(null);
+    setSyncingFutureModels(true);
+    try {
+      const result = await syncFutureModels();
+      if (!result.synced) {
+        throw new Error(t("providers.modelsUpdateFailed"));
+      }
+      // The sync rebuilds the agent registry. Refetch the provider view as well
+      // so the count beside Future reflects the freshly cached catalog.
+      setProviders(await listAgentProviders());
+      emitFutureEvent("future-models-synced", undefined);
+      onProvidersChanged?.();
+      emitFutureEvent("toast", {
+        message: t("providers.modelsUpdated", { count: result.modelCount }),
+        tone: "info",
+      });
+    }
+    catch (error) {
+      setActionError(errorMessage(error));
+    }
+    finally {
+      setSyncingFutureModels(false);
     }
   }
 
@@ -156,14 +185,27 @@ export function ProvidersPage({
                               </Badge>
                               {provider.hasApiKey
                                 ? (
-                                    <Button
-                                      className="text-ink-soft hover:text-danger"
-                                      onClick={() => setConfirmingLogout(true)}
-                                      size="sm"
-                                      variant="secondary"
-                                    >
-                                      {t("providers.logout")}
-                                    </Button>
+                                    <>
+                                      <Button
+                                        disabled={syncingFutureModels}
+                                        onClick={() => void handleSyncFutureModels()}
+                                        size="sm"
+                                        variant="secondary"
+                                      >
+                                        {syncingFutureModels
+                                          ? t("providers.updatingModels")
+                                          : t("providers.updateModels")}
+                                      </Button>
+                                      <Button
+                                        className="text-ink-soft hover:text-danger"
+                                        disabled={syncingFutureModels}
+                                        onClick={() => setConfirmingLogout(true)}
+                                        size="sm"
+                                        variant="secondary"
+                                      >
+                                        {t("providers.logout")}
+                                      </Button>
+                                    </>
                                   )
                                 : (
                                     <Button

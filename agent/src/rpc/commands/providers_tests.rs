@@ -254,7 +254,10 @@ fn sync_future_models_without_credentials_reports_not_synced() {
     ));
     assert_eq!(resp["success"], true);
     assert_eq!(resp["data"]["synced"], false);
-    assert!(resp["data"]["modelCount"].is_number());
+    assert_eq!(
+        resp["data"]["modelCount"],
+        crate::models::cached_model_count()
+    );
 }
 
 #[test]
@@ -570,7 +573,7 @@ fn list_providers_reports_builtin_and_custom_providers() {
                     "api": "anthropic",
                     "baseUrl": "https://api.example.com",
                     "models": [
-                        {"id": "m1", "name": "Model One", "modalities": ["text"]},
+                        {"id": "m1", "name": "Model One", "modalities": ["text"], "contextWindow": 128001, "maxTokens": 16001},
                         {"id": "m2", "modalities": ["text", "image"]}
                     ]
                 },
@@ -645,6 +648,8 @@ fn list_providers_reports_builtin_and_custom_providers() {
     let m1 = myprov_models.iter().find(|m| m["id"] == "m1").unwrap();
     assert_eq!(m1["name"], "Model One");
     assert_eq!(m1["supportsImages"], false);
+    assert_eq!(m1["contextWindow"], 128001);
+    assert_eq!(m1["maxTokens"], 16001);
     let m2 = myprov_models.iter().find(|m| m["id"] == "m2").unwrap();
     assert_eq!(m2["name"], "m2");
     assert_eq!(m2["supportsImages"], true);

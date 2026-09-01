@@ -108,7 +108,8 @@ fn credential_paths_are_unreadable() {
     // auth.json read is TEMPORARILY allowed alongside the layer-0 override in
     // sandbox/rules.rs (builtin_overrides): the hard-deny blocks the official
     // `future` CLI that skills shell out to. Re-enable both together once the
-    // trusted-CLI credential channel is designed. See rules.rs for background.
+    // tracked auth.json credential-channel task is completed. See rules.rs and
+    // APPROVAL_PLAN.md §3.1 for the intentionally deferred follow-up.
     // let out = run_sandboxed(&default_sandbox(&ws), "cat ~/.future/agent/auth.json");
     // assert!(!out.status.success(), "auth.json read should be denied");
     let out = run_sandboxed(&default_sandbox(&ws), "cat ~/.future/agent/models.json");

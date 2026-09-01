@@ -15,7 +15,7 @@ use crate::{agent_supervisor, build_info, AppError};
 
 const PROGRESS_EVENT: &str = "app-update-progress";
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateStatus {
     pub current_version: String,
@@ -103,6 +103,12 @@ fn resolve_update_status(current_version: String, update: Option<(String, Value)
 /// Check the signed static manifest configured in `tauri.conf.json`.
 #[tauri::command]
 pub async fn check_app_update<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<UpdateStatus, AppError> {
+    crate::scheduler::check_app_update_now(app).await
+}
+
+pub(crate) async fn perform_app_update_check<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<UpdateStatus, AppError> {
     let current_version = build_info::VERSION.to_string();

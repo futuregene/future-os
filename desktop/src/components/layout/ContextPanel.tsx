@@ -45,7 +45,7 @@ const gitTabs = [
 // a strictly smaller, lossier view of the same directory, and the three things
 // that once justified it are all gone: `@`-referencing artifacts is disabled
 // (`isFutureReferenceType`), the cards deliberately show no summary or type
-// badge, and Research (the "reusable output" consumer) is deferred.
+// badge, and Research (the "reusable output" consumer) was removed entirely.
 //
 // Scanning the directory instead would close the gap on recall, but the deeper
 // problem is that "output" is a semantic claim and a filesystem only carries

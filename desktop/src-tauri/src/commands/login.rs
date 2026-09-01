@@ -53,7 +53,7 @@ pub async fn get_future_profile() -> Result<FutureProfile, crate::AppError> {
 
 #[tauri::command]
 pub async fn get_future_balance() -> Result<FutureBalance, crate::AppError> {
-    future_login::fetch_balance().await
+    crate::scheduler::refresh_future_balance_now().await
 }
 
 #[cfg(test)]

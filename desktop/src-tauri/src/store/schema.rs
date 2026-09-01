@@ -175,15 +175,13 @@ CREATE TABLE IF NOT EXISTS artifacts (
     deleted_at INTEGER
 );
 
--- NOTE: Research (`research_collections`, `research_resources`) is deferred
--- past the first release; its data model, storage, and product surface are
--- undecided, so no tables are created for it yet (product record kept in
--- desktop/DEV_MD/PRODUCT.md §4.9). `apply_schema` drops any pre-existing research
--- tables via `DROPPED_TABLES`.
+-- NOTE: Research (`research_collections`, `research_resources`) was removed
+-- before the first release. No tables are created, and `apply_schema` drops
+-- any pre-existing research tables via `DROPPED_TABLES`.
 
 -- NOTE: `data_sources`, `data_credentials`, `skills`, and `skill_enablements`
 -- were removed on 2026-07-07. They were created by an early schema but never had
--- any CRUD code: the Data feature was deferred and Skills went to a
+-- any CRUD code: the Data feature was abandoned and Skills went to a
 -- platform-catalogue + filesystem model (see `crate::skills`), not the DB.
 -- `apply_schema` drops them from pre-existing databases via `DROPPED_TABLES`.
 
@@ -351,7 +349,7 @@ pub(super) const ADDED_INDEXES: &[&str] = &[
 /// can't lose data. Ordered so a table is dropped before the one it references,
 /// keeping the drop FK-safe.
 pub(super) const DROPPED_TABLES: &[&str] = &[
-    // Research deferred: drop resources before collections (FK order).
+    // Research was removed: drop resources before collections (FK order).
     "research_resources",
     "research_collections",
     "data_credentials",
