@@ -322,6 +322,25 @@ fn replay_edge_paths() {
     assert!(store.replay("g1").is_err(), "conflicting ids fail closed");
 }
 
+/// Windows regression: `append_run` opens `runs.jsonl` append-only. On
+/// Windows `fs2::lock_exclusive` is `LockFileEx`, which requires
+/// `GENERIC_READ`; an append-only handle made every `LockFileEx` fail with
+/// `ERROR_ACCESS_DENIED` (5), so `run` aborted with `Error: append run` and
+/// the audit record was silently dropped (`runs.jsonl` stayed empty). The fix
+/// opens the handle with `read(true)`. This test fails on the pre-fix code on
+/// Windows and passes on POSIX either way.
+#[test]
+fn append_run_persists_audit_record() {
+    let (_d, root) = fresh_store("s5-share");
+    let mut store = Store::open(&root).unwrap();
+    registered_goal(&mut store, "g1");
+    store
+        .append_run("g1", &run_record("t1", "completed", now_epoch()))
+        .expect("append_run must succeed and persist the audit record");
+    let goal = store.replay("g1").unwrap().unwrap();
+    assert_eq!(goal.history.len(), 1, "run record persisted, not dropped");
+}
+
 #[test]
 fn replay_skips_malformed_run_lines() {
     let (_d, root) = fresh_store("s5");

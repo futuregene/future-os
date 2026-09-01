@@ -1135,10 +1135,20 @@ impl Store {
 
 /// Append under an advisory lock so concurrent processes cannot interleave
 /// a line in the middle of an event/run (LoopX: file_lock).
+///
+/// The handle must be opened with **read** access: on Windows `fs2`'s
+/// `lock_exclusive` is `LockFileEx`, which requires `GENERIC_READ` on the
+/// handle. An append-only (`FILE_APPEND_DATA`-only) handle makes `LockFileEx`
+/// fail with `ERROR_ACCESS_DENIED` (5) on *every* call — which is exactly why
+/// `append_run` always failed on Windows with `Error: append run` and the
+/// `runs.jsonl` audit history was silently dropped. POSIX `fcntl` has no such
+/// requirement, so this bug is Windows-only. (`append_event_locked` already
+/// opens with `read(true)`, which is why event appends never hit it.)
 fn append_locked(path: PathBuf, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let file = fs::OpenOptions::new()
         .create(true)
+        .read(true)
         .append(true)
         .open(&path)?;
     file.lock_exclusive()?;
