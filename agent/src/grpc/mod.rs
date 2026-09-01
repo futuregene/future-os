@@ -238,6 +238,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             entry_id: cmd.entry_id,
             offset: cmd.offset,
             limit: cmd.limit,
+            before: cmd.before,
             name: cmd.name,
             system_prompt: cmd.system_prompt,
             tools: cmd.tools,

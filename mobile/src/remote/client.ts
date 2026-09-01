@@ -5,6 +5,7 @@ import { ensureFreshCredentials, refreshCredentials } from "./pairing";
 import { jwtExpiry, randomId, encodeBase64Url } from "./codec";
 import { backoffDelayMs, classifyError, transition, type ConnectionState } from "./connectionState";
 import { handshakeTranscript, type HandshakeChallenge, verifyDesktopChallenge } from "./handshake";
+import { decodeRemoteJson } from "./remoteJson";
 import type {
   Presence,
   PresenceSession,
@@ -16,7 +17,6 @@ import type {
 } from "./types";
 
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 const HANDSHAKE_PROTOCOL_VERSION = 1;
 const FOREGROUND_PROBE_TIMEOUT_MS = 4_000;
 const SYSTEM_FAILURE_WINDOW_MS = 10 * 60_000;
@@ -24,7 +24,6 @@ const HEALTHY_RESET_MS = 60_000;
 const MAX_SYSTEM_RECOVERIES = 3;
 const FAILURE_LOG_WINDOW_MS = 24 * 60 * 60_000;
 const MAX_FAILURE_LOGS_PER_CATEGORY = 16;
-
 export type RecoveryReason =
   "foreground" | "network-restored" | "network-changed" | "request-failure";
 
@@ -50,10 +49,6 @@ export interface RemoteClientCallbacks {
   onConnectionState(state: ConnectionState): void;
   onReconnected(): void;
   onError(error: Error): void;
-}
-
-function decodeJson<T>(data: Uint8Array): T {
-  return JSON.parse(decoder.decode(data)) as T;
 }
 
 function failureSupportCode(category: string, detail = ""): string {
@@ -665,7 +660,7 @@ export class RemoteClient {
             : "";
           let event: StreamEvent;
           try {
-            event = decodeJson<StreamEvent>(message.data);
+            event = decodeRemoteJson<StreamEvent>(message.data);
           } catch (error) {
             // A single malformed event must not kill the whole subscription
             // (L6). Reconcile this subject immediately: if the malformed frame
@@ -708,7 +703,7 @@ export class RemoteClient {
           }
           let presence: Presence;
           try {
-            presence = decodeJson<Presence>(message.data);
+            presence = decodeRemoteJson<Presence>(message.data);
           } catch {
             continue;
           }
@@ -759,10 +754,10 @@ export class RemoteClient {
           }
           const suffix = message.subject.slice(`p.${this.credentials.pairId}.state.`.length);
           if (suffix === "sessions") {
-            const data = decodeJson<{ sessions?: PresenceSession[] }>(message.data);
+            const data = decodeRemoteJson<{ sessions?: PresenceSession[] }>(message.data);
             this.callbacks.onSessions(data.sessions ?? []);
           } else if (suffix === "workspaces") {
-            const data = decodeJson<{ workspaces?: RemoteWorkspace[] }>(message.data);
+            const data = decodeRemoteJson<{ workspaces?: RemoteWorkspace[] }>(message.data);
             this.callbacks.onWorkspaces(data.workspaces ?? []);
           }
         }
@@ -930,7 +925,7 @@ export class RemoteClient {
       bytes,
       { timeout: 15_000 },
     );
-    const response = decodeJson<RpcResponse>(message.data);
+    const response = decodeRemoteJson<RpcResponse>(message.data);
     if (!response.success) throw new Error(response.error ?? "upload_chunk_failed");
   }
 
@@ -955,7 +950,7 @@ export class RemoteClient {
         new Uint8Array(),
         { timeout: 15_000 },
       );
-      const response = decodeJson<RpcResponse>(message.data);
+      const response = decodeRemoteJson<RpcResponse>(message.data);
       if (!response.success) throw new Error(response.error ?? "download_chunk_failed");
       return await pending;
     } catch (error) {
@@ -978,7 +973,7 @@ export class RemoteClient {
       encoder.encode(JSON.stringify(payload)),
       { timeout: timeoutMs },
     );
-    const response = decodeJson<RpcResponse<T>>(message.data);
+    const response = decodeRemoteJson<RpcResponse<T>>(message.data);
     if (!response.success) {
       const error = new RemoteResponseError(response.error ?? "command_failed");
       throw error;

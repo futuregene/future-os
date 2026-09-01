@@ -2,7 +2,7 @@ import React from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { RemoteClient } from "../client";
 import { emptyTimeline } from "../timeline";
-import type { HistoryEntry, HistoryMessage, StreamEvent } from "../types";
+import type { HistoryEntry, StreamEvent } from "../types";
 import { useTimelineController } from "../useTimelineController";
 
 type Options = Parameters<typeof useTimelineController>[0];
@@ -19,13 +19,6 @@ function assistantEntry(id: string, text: string, runId?: string): HistoryEntry 
     ...(runId ? { meta: { run_id: runId } } : {}),
   };
 }
-function userMessage(text: string): HistoryMessage {
-  return { role: "user", content: text };
-}
-function assistantMessage(text: string): HistoryMessage {
-  return { role: "assistant", content: text };
-}
-
 function evt(type: string, data: string, runId?: string, idx?: number): StreamEvent {
   return { type, data, ...(runId ? { runId } : {}), ...(idx != null ? { idx } : {}) };
 }
@@ -310,77 +303,118 @@ describe("useTimelineController", () => {
       expect(request).toHaveBeenCalled();
     });
 
-    test("loads entries with pagination and returns a timeline", async () => {
+    test("loads only the latest backward page", async () => {
       options.selectedSessionId = "s1";
+      options.selectedRef.current = "s1";
       request
         .mockResolvedValueOnce({ success: true, data: {} }) // get_state (no active run)
         .mockResolvedValueOnce({
           success: true,
-          data: { entries: [userEntry("e1", "hello")], hasMore: true, nextOffset: 1 },
-        })
-        .mockResolvedValueOnce({
-          success: true,
-          data: { entries: [assistantEntry("e2", "world")], hasMore: false },
+          data: {
+            entries: [userEntry("e3", "latest"), assistantEntry("e4", "answer")],
+            hasMore: true,
+            nextOffset: 20,
+          },
         });
       render();
       await establish();
       const texts = result.current.timeline.items
         .filter(i => i.kind === "message")
         .map(i => (i.kind === "message" ? i.text : ""));
-      expect(texts).toContain("hello");
-      expect(texts).toContain("world");
-    });
-
-    test("stops entry pagination when nextOffset is not advancing", async () => {
-      options.selectedSessionId = "s1";
-      request.mockResolvedValueOnce({ success: true, data: {} }).mockResolvedValue({
-        success: true,
-        data: { entries: [userEntry("e1", "one")], hasMore: true, nextOffset: 0 },
-      });
-      render();
-      await establish();
-      // get_state (1) + get_session_entries (1) = 2; the non-advancing offset stops the loop.
+      expect(texts).toEqual(["latest", "answer"]);
       expect(request).toHaveBeenCalledTimes(2);
+      expect(request.mock.calls[1]?.[0]).toEqual(
+        expect.objectContaining({
+          type: "get_session_entries",
+          before: Number.MAX_SAFE_INTEGER,
+          limit: 10,
+        }),
+      );
+      expect(result.current.canLoadOlderTimeline).toBe(true);
     });
 
-    test("falls back to message history when entries fail", async () => {
+    test("loads one older page and prepends it without refetching the tail", async () => {
       options.selectedSessionId = "s1";
+      options.selectedRef.current = "s1";
       request
         .mockResolvedValueOnce({ success: true, data: {} })
-        .mockRejectedValueOnce(new Error("no entries"))
         .mockResolvedValueOnce({
           success: true,
-          data: { messages: [userMessage("hi"), assistantMessage("yo")], hasMore: false },
-        });
-      render();
-      await establish();
-      const texts = result.current.timeline.items
-        .filter(i => i.kind === "message")
-        .map(i => (i.kind === "message" ? i.text : ""));
-      expect(texts).toContain("hi");
-      expect(texts).toContain("yo");
-    });
-
-    test("falls back to message history, paginates it, and stops on a bad offset", async () => {
-      options.selectedSessionId = "s1";
-      request
-        .mockResolvedValueOnce({ success: true, data: {} })
-        .mockRejectedValueOnce(new Error("no entries"))
-        .mockResolvedValueOnce({
-          success: true,
-          data: { messages: [userMessage("a")], hasMore: true, nextOffset: 1 },
+          data: {
+            entries: [userEntry("e3", "latest"), assistantEntry("e4", "answer")],
+            hasMore: true,
+            nextOffset: 20,
+          },
         })
         .mockResolvedValueOnce({
           success: true,
-          data: { messages: [assistantMessage("b")], hasMore: true, nextOffset: 0 },
+          data: {
+            entries: [userEntry("e1", "older"), assistantEntry("e2", "older answer")],
+            hasMore: false,
+            nextOffset: 0,
+          },
+        })
+        .mockResolvedValueOnce({ success: true, data: {} })
+        .mockResolvedValueOnce({
+          success: true,
+          data: {
+            entries: [userEntry("e3", "latest"), assistantEntry("e4", "reconciled answer")],
+            hasMore: true,
+            nextOffset: 20,
+          },
         });
       render();
       await establish();
+      await act(async () => {
+        await result.current.loadOlderTimeline();
+      });
+      await flush();
       const texts = result.current.timeline.items
         .filter(i => i.kind === "message")
         .map(i => (i.kind === "message" ? i.text : ""));
-      expect(texts).toContain("a");
-      expect(texts).toContain("b");
+      expect(texts).toEqual(["older", "older answer", "latest", "answer"]);
+      expect(request.mock.calls[2]?.[0]).toEqual(
+        expect.objectContaining({ type: "get_session_entries", before: 20, limit: 10 }),
+      );
+      expect(result.current.canLoadOlderTimeline).toBe(false);
+
+      act(() => result.current.reconcileSession("s1", "resend"));
+      await flush();
+      const reconciledTexts = result.current.timeline.items
+        .filter(i => i.kind === "message")
+        .map(i => (i.kind === "message" ? i.text : ""));
+      expect(reconciledTexts).toEqual(["older", "older answer", "latest", "reconciled answer"]);
+      expect(request.mock.calls[4]?.[0]).toEqual(
+        expect.objectContaining({ before: Number.MAX_SAFE_INTEGER, limit: 10 }),
+      );
+    });
+
+    test("rejects a non-advancing backward cursor", async () => {
+      const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+      options.selectedSessionId = "s1";
+      options.selectedRef.current = "s1";
+      request
+        .mockResolvedValueOnce({ success: true, data: {} })
+        .mockResolvedValueOnce({
+          success: true,
+          data: { entries: [userEntry("e2", "latest")], hasMore: true, nextOffset: 20 },
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          data: { entries: [userEntry("e1", "older")], hasMore: true, nextOffset: 20 },
+        });
+      render();
+      await establish();
+      await act(async () => {
+        await result.current.loadOlderTimeline();
+      });
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[remote] older history page failed",
+        expect.objectContaining({ before: 20 }),
+      );
+      expect(result.current.canLoadOlderTimeline).toBe(true);
+      expect(result.current.loadingOlderTimeline).toBe(false);
+      errorSpy.mockRestore();
     });
   });
 

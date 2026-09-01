@@ -12,7 +12,7 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react-native";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
 import { Alert, Linking, Pressable, StyleSheet, Text, View } from "react-native";
@@ -588,7 +588,7 @@ function UserMessageText({ text, onOpenFile }: { text: string; onOpenFile?(path:
   );
 }
 
-export function TimelineCard({
+function TimelineCardView({
   item,
   isLatestAssistant,
   onOpenAttachment,
@@ -755,6 +755,12 @@ export function TimelineCard({
   // never inline in the transcript — so there is nothing to draw here.
   return null;
 }
+
+// Long conversations update the trailing streaming item frequently. Keep
+// already-settled rows out of those renders; FlatList virtualization limits
+// how many are mounted, while memoization limits work inside the mounted
+// window.
+export const TimelineCard = memo(TimelineCardView);
 
 const styles = StyleSheet.create({
   message: {

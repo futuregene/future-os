@@ -48,6 +48,11 @@ tauri-plugin-single-instance = "2"
 # whose re-parsing of `&`/`^`/`%VAR%` in arguments is an injection vector).
 open = "5"
 base64 = "0.22"
+# Optional standard-gzip support for mobile remote JSON replies. It is retained
+# for constrained links but disabled by default because lazy pages are small
+# and React Native's current JS decompression cost exceeded the transfer saving.
+# Enable at desktop process start with FUTURE_REMOTE_JSON_GZIP=1.
+flate2 = "1"
 # Decode + downscale image attachments into thumbnails on the Rust side (avoids
 # shipping the full-size image base64 over the IPC bridge to a webview canvas).
 image = { version = "0.25", default-features = false, features = [

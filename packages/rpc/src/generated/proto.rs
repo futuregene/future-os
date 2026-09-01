@@ -57,6 +57,11 @@ pub struct RpcCommand {
     pub offset: ::core::option::Option<i64>,
     #[prost(int64, optional, tag = "97")]
     pub limit: ::core::option::Option<i64>,
+    /// Exclusive backward cursor for history UI paging. A very large value means
+    /// "start at the current tail"; the response next_offset walks toward zero.
+    /// In this mode limit counts user exchanges rather than raw journal rows.
+    #[prost(int64, optional, tag = "98")]
+    pub before: ::core::option::Option<i64>,
     /// Session name (set by /name command).  Used with set_session_name, and
     /// accepted by new_session as the initial human-readable session title.
     #[prost(string, tag = "93")]

@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { History } from "lucide-react-native";
 import {
   ActivityIndicator,
   BackHandler,
@@ -22,6 +23,7 @@ import { useComposerDraft } from "./useComposerDraft";
 import { useAttachmentPicker } from "./useAttachmentPicker";
 import { useFileDownload } from "./useFileDownload";
 import { useChatScroll } from "./useChatScroll";
+import { useTimelinePaging } from "./useTimelinePaging";
 import { useRename } from "./useRename";
 import { useSendMessage } from "./useSendMessage";
 import { ChatTopBar } from "./components/ChatTopBar";
@@ -32,6 +34,11 @@ import { PreviewModal } from "./components/PreviewModal";
 import { RenameModal } from "./components/RenameModal";
 import { NativeFileActionSheet } from "./components/NativeFileActionSheet";
 import { COMPOSER_FADE_CLEARANCE } from "./utils";
+import { newestFirst } from "./timelineListModel";
+
+function TimelineItemGap() {
+  return <View style={styles.itemGap} />;
+}
 
 export function ChatScreen() {
   const { t } = useTranslation();
@@ -57,6 +64,8 @@ export function ChatScreen() {
   const { message, setMessage, attachments, setAttachments } = useComposerDraft(remote, t);
   const { openAttachmentMenu } = useAttachmentPicker(attachments, setAttachments, t);
   const fileDownload = useFileDownload(remote, t, setTransferProgress);
+  const openTimelineAttachment = fileDownload.openAttachment;
+  const openTimelineFile = fileDownload.openFileLink;
   const { send, retryMessage, continueMessage } = useSendMessage(
     remote,
     t,
@@ -75,6 +84,10 @@ export function ChatScreen() {
     () => timelineItems.filter(item => item.kind !== "approval"),
     [timelineItems],
   );
+  // FlatList's physical start is the stable latest-message anchor. Reversing
+  // only the view data keeps the remote timeline chronological while making
+  // older history append at the far end instead of shifting visible rows.
+  const invertedTranscriptItems = useMemo(() => newestFirst(transcriptItems), [transcriptItems]);
   const latestAssistantId = useMemo(() => {
     for (let index = transcriptItems.length - 1; index >= 0; index -= 1) {
       const item = transcriptItems[index];
@@ -115,16 +128,75 @@ export function ChatScreen() {
     [remote, t],
   );
 
+  const { listRef, atLatest, composerHeight, setComposerHeight, scrollToLatest, onScroll } =
+    useChatScroll(remote.selectedSessionId);
   const {
-    listRef,
-    atLatest,
-    composerHeight,
-    setComposerHeight,
-    scrollToLatest,
-    onContentSizeChange,
-    onListLayout,
+    showLoadOlderHint,
+    loadOlder,
+    onScroll: onPagedScroll,
+  } = useTimelinePaging(
+    remote.selectedSessionId,
+    remote.canLoadOlderTimeline,
+    remote.loadingOlderTimeline,
+    remote.loadOlderTimeline,
     onScroll,
-  } = useChatScroll(remote.selectedSessionId, transcriptItems.length);
+  );
+
+  // Keep FlatList row callbacks referentially stable while still dispatching
+  // through the newest controller closures. Remote context changes on every
+  // streaming commit; passing those closures directly would defeat memoized
+  // settled TimelineCards and is one source of VirtualizedList update work.
+  const timelineActionsRef = useRef({
+    openAttachment: openTimelineAttachment,
+    openFile: openTimelineFile,
+    retry: retryMessage,
+    continue: continueMessage,
+  });
+  useEffect(() => {
+    timelineActionsRef.current = {
+      openAttachment: openTimelineAttachment,
+      openFile: openTimelineFile,
+      retry: retryMessage,
+      continue: continueMessage,
+    };
+  }, [continueMessage, openTimelineAttachment, openTimelineFile, retryMessage]);
+  const handleTimelineAttachment = useCallback(
+    (attachment: Parameters<typeof openTimelineAttachment>[0]) =>
+      void timelineActionsRef.current.openAttachment(attachment),
+    [],
+  );
+  const handleTimelineFile = useCallback(
+    (path: string) => void timelineActionsRef.current.openFile(path),
+    [],
+  );
+  const handleTimelineRetry = useCallback(
+    (item: TimelineItem) => timelineActionsRef.current.retry(item),
+    [],
+  );
+  const handleTimelineContinue = useCallback(
+    (item: TimelineItem) => timelineActionsRef.current.continue(item),
+    [],
+  );
+
+  const renderTimelineItem = useCallback(
+    ({ item }: { item: TimelineItem }) => (
+      <TimelineCard
+        item={item}
+        isLatestAssistant={item.id === latestAssistantId}
+        onOpenAttachment={handleTimelineAttachment}
+        onOpenFile={handleTimelineFile}
+        onRetry={handleTimelineRetry}
+        onContinue={handleTimelineContinue}
+      />
+    ),
+    [
+      handleTimelineAttachment,
+      handleTimelineContinue,
+      handleTimelineFile,
+      handleTimelineRetry,
+      latestAssistantId,
+    ],
+  );
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
@@ -194,15 +266,23 @@ export function ChatScreen() {
         )}
 
         <View style={styles.chatContent}>
+          {/* The inverted newest-first view makes offset zero equal "latest".
+              Older pages append at the opposite edge, so their async Markdown
+              layout cannot move the reader's current viewport. */}
           <FlatList
             contentContainerStyle={[
               styles.timeline,
               {
-                paddingBottom: composerHeight + COMPOSER_FADE_CLEARANCE + spacing.lg + keyboardLift,
+                // The scroll container is inverted, so logical top padding is
+                // rendered at the visual bottom beside the floating composer.
+                paddingTop: composerHeight + COMPOSER_FADE_CLEARANCE + spacing.lg + keyboardLift,
               },
               timelineItems.length === 0 && styles.emptyTimeline,
             ]}
-            data={transcriptItems}
+            data={invertedTranscriptItems}
+            initialNumToRender={10}
+            inverted
+            key={remote.selectedSessionId || "draft"}
             keyExtractor={item => item.id}
             ListEmptyComponent={
               remote.timelineError ? (
@@ -225,25 +305,32 @@ export function ChatScreen() {
                 <Text style={styles.empty}>{t("chat.noHistory")}</Text>
               )
             }
-            onContentSizeChange={onContentSizeChange}
-            onLayout={onListLayout}
-            onScroll={onScroll}
+            maintainVisibleContentPosition={{
+              minIndexForVisible: 0,
+              autoscrollToTopThreshold: 32,
+            }}
+            maxToRenderPerBatch={8}
+            onScroll={onPagedScroll}
             ref={listRef}
-            renderItem={({ item }) => (
-              <TimelineCard
-                item={item}
-                isLatestAssistant={item.id === latestAssistantId}
-                onOpenAttachment={attachment => void fileDownload.openAttachment(attachment)}
-                onOpenFile={path => void fileDownload.openFileLink(path)}
-                onRetry={retryMessage}
-                onContinue={continueMessage}
-              />
-            )}
+            renderItem={renderTimelineItem}
             scrollEventThrottle={16}
             scrollIndicatorInsets={{ bottom: 0 }}
             style={styles.timelineList}
-            ItemSeparatorComponent={() => <View style={styles.itemGap} />}
+            updateCellsBatchingPeriod={32}
+            windowSize={7}
+            ItemSeparatorComponent={TimelineItemGap}
           />
+
+          {showLoadOlderHint && (
+            <Pressable
+              accessibilityRole="button"
+              onPress={loadOlder}
+              style={({ pressed }) => [styles.loadOlder, pressed && styles.loadOlderPressed]}
+            >
+              <History color={colors.inkMuted} size={14} />
+              <Text style={styles.loadOlderLabel}>{t("chat.loadOlder")}</Text>
+            </Pressable>
+          )}
 
           <ComposerDock
             message={message}
@@ -348,6 +435,23 @@ const styles = StyleSheet.create({
   retryPressed: { opacity: 0.75 },
   retryLabel: { color: colors.surface, fontSize: 14, fontWeight: "600" },
   itemGap: { height: spacing.md },
+  loadOlder: {
+    position: "absolute",
+    top: spacing.sm,
+    alignSelf: "center",
+    zIndex: 2,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.line,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surface,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+  },
+  loadOlderPressed: { opacity: 0.72 },
+  loadOlderLabel: { color: colors.inkMuted, fontSize: 12 },
   transferTrack: {
     position: "absolute",
     top: 0,

@@ -45,6 +45,8 @@ interface RemoteContextValue {
   timeline: TimelineState;
   timelinePending: boolean;
   timelineError: "timeout" | null;
+  canLoadOlderTimeline: boolean;
+  loadingOlderTimeline: boolean;
   modelId: string;
   thinkingLevel: ThinkingLevel;
   approvalTier: string;
@@ -59,6 +61,7 @@ interface RemoteContextValue {
   refreshWorkspaces(): Promise<void>;
   selectSession(sessionId: string): Promise<void>;
   retryTimeline(): Promise<void>;
+  loadOlderTimeline(): Promise<void>;
   newConversation(mode?: "chat" | "workspace", workspaceId?: string): Promise<void>;
   closeConversation(): void;
   sendMessage(
@@ -140,6 +143,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     timeline,
     timelinePending,
     timelineError,
+    canLoadOlderTimeline,
+    loadingOlderTimeline,
+    loadOlderTimeline,
     syncEngineRef,
     streamingRef,
     hydrateAttachmentsRef,
@@ -302,6 +308,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       timeline,
       timelinePending,
       timelineError,
+      canLoadOlderTimeline,
+      loadingOlderTimeline,
       modelId,
       thinkingLevel,
       approvalTier,
@@ -316,6 +324,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       refreshWorkspaces,
       selectSession,
       retryTimeline,
+      loadOlderTimeline,
       newConversation,
       closeConversation,
       sendMessage,
@@ -370,6 +379,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       timeline,
       timelineError,
       timelinePending,
+      canLoadOlderTimeline,
+      loadingOlderTimeline,
       unreadSessions,
       workspaces,
       setModel,
@@ -380,6 +391,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       sandboxAvailable,
       unpair,
       retryTimeline,
+      loadOlderTimeline,
     ],
   );
 
