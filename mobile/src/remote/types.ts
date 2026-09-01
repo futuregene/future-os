@@ -336,6 +336,8 @@ export interface RemoteCommand {
   sinceIdx?: number;
   offset?: number;
   limit?: number;
+  /** Exclusive cursor for backward, user-exchange-based history pages. */
+  before?: number;
   modelId?: string;
   providerId?: string;
   level?: string;

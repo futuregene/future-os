@@ -22,9 +22,9 @@ pub use self::approval::{decide_approval, inject_session_rule, reconcile_pending
 pub(crate) use self::client::raw_agent_addr;
 pub use self::client::{
     compact_command, connect_agent, delete_session_command, get_available_models_command,
-    get_run_state_command, get_session_entries_page_command, get_state_command,
-    list_streaming_sessions_command, map_rpc_error, set_default_model_command, set_model_command,
-    set_session_name_command, set_thinking_level_command, RpcResponseExt,
+    get_run_state_command, get_session_entries_before_command, get_session_entries_page_command,
+    get_state_command, list_streaming_sessions_command, map_rpc_error, set_default_model_command,
+    set_model_command, set_session_name_command, set_thinking_level_command, RpcResponseExt,
 };
 pub use self::config_observer::spawn_provider_config_observer;
 pub use self::headless::{
@@ -315,6 +315,34 @@ pub async fn get_session_entries(session_id: String) -> Result<serde_json::Value
     let mut client = connect_agent().await?;
     let entries = fetch_all_session_entries_with_client(&mut client, &session_id).await?;
     Ok(serde_json::json!({ "entries": entries }))
+}
+
+/// Fetch one backward, user-exchange-bounded history page from the Agent. This
+/// keeps remote mobile paging end-to-end: the desktop no longer downloads the
+/// complete Agent history again for every NATS page and then slices it locally.
+pub async fn get_session_entries_before(
+    session_id: String,
+    before: i64,
+    user_exchange_limit: i64,
+) -> Result<serde_json::Value, crate::AppError> {
+    let mut client = connect_agent().await?;
+    let response = client
+        .execute_command(get_session_entries_before_command(
+            session_id,
+            before,
+            user_exchange_limit,
+        ))
+        .await
+        .map_err(|status| format!("get_session_entries failed: {status}"))?
+        .into_inner()
+        .ok_or_rpc_error("get_session_entries returned an error")?;
+    let page = future_rpc::decode::decode_session_entries_page(&response)
+        .ok_or_else(|| "get_session_entries typed page is missing or invalid".to_string())?;
+    Ok(serde_json::json!({
+        "entries": page.entries,
+        "hasMore": page.has_more,
+        "nextOffset": page.next_offset,
+    }))
 }
 
 pub(super) async fn fetch_all_session_entries_with_client(

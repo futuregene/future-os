@@ -4,11 +4,13 @@
 //! the rest of the backend.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use flate2::{write::GzEncoder, Compression};
 use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
+    io::Write,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, LazyLock, Mutex,
@@ -17,6 +19,26 @@ use std::{
 };
 
 static COMMAND_EPISODE: LazyLock<super::FailureEpisode> = LazyLock::new(Default::default);
+
+const REMOTE_JSON_GZIP_THRESHOLD_BYTES: usize = 32 * 1024;
+const REMOTE_JSON_GZIP_ENV: &str = "FUTURE_REMOTE_JSON_GZIP";
+
+/// Large remote JSON replies can be sent as standard gzip without changing the
+/// reply envelope: mobile recognizes the gzip magic bytes and otherwise parses
+/// plain JSON. The capability is deliberately OFF by default. Once history is
+/// fetched in small, lazy pages, gzip's bandwidth saving is outweighed on the
+/// current React Native client by JS-side gunzip + JSON decode time (about one
+/// second across a long thread in the measured emulator run). Keep the wire
+/// path available for high-latency/low-bandwidth deployments; opt in with
+/// `FUTURE_REMOTE_JSON_GZIP=1` (also accepts true/yes/on).
+fn remote_json_gzip_enabled() -> bool {
+    std::env::var(REMOTE_JSON_GZIP_ENV).is_ok_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
 
 type ReplySlot = Arc<tokio::sync::Mutex<Option<Vec<u8>>>>;
 
@@ -122,6 +144,8 @@ struct IncomingCmd {
     // get_messages pagination (NATS payload-limit guard)
     offset: i64,
     limit: i64,
+    // get_session_entries backward cursor (mobile lazy history)
+    before: Option<i64>,
     // set_model / set_thinking_level
     model_id: String,
     provider_id: String,
@@ -170,6 +194,7 @@ impl Default for IncomingCmd {
             since_idx: -1,
             offset: 0,
             limit: 0,
+            before: None,
             model_id: String::new(),
             provider_id: String::new(),
             level: String::new(),
@@ -491,6 +516,22 @@ async fn handle_command(
             } else {
                 DEFAULT_MESSAGE_PAGE_LIMIT
             };
+            if let Some(before) = cmd.before {
+                match crate::agent_bridge::get_session_entries_before(
+                    cmd.session_id.clone(),
+                    before,
+                    limit as i64,
+                )
+                .await
+                {
+                    Ok(data) => {
+                        let page = prepare_backward_entries_page(&cmd.session_id, data);
+                        reply(client, &msg, true, page, None).await;
+                    }
+                    Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
+                }
+                return;
+            }
             match crate::agent_bridge::get_session_entries(cmd.session_id.clone()).await {
                 Ok(data) => {
                     let entries = entries_with_run_status(&cmd.session_id, entries_vec(data));
@@ -1372,6 +1413,11 @@ fn derive_thread_title(content: &str) -> String {
 /// Reply budget for a `get_messages` page: comfortably under NATS's 1MB
 /// user-JWT payload limit, leaving headroom for the reply envelope.
 const MESSAGES_PAGE_BYTES: usize = 512 * 1024;
+/// Backward mobile history keeps the requested ten-exchange semantic maximum,
+/// with the same 512 KiB wire budget as other remote history pages. Complete
+/// oldest exchanges are deferred only when an unusually content-heavy ten-turn
+/// page would exceed that budget; a page never splits an exchange.
+const BACKWARD_HISTORY_PAGE_BYTES: usize = 512 * 1024;
 /// A single persisted message can embed a huge tool result; cap its content so
 /// one oversized message can't push a page past the payload limit on its own.
 const MESSAGE_CONTENT_CAP_BYTES: usize = 256 * 1024;
@@ -1452,6 +1498,50 @@ fn entries_with_run_status(session_id: &str, mut entries: Vec<Value>) -> Vec<Val
 
 fn paginate_messages(messages: Vec<Value>, offset: usize, limit: usize) -> Value {
     paginate_items(messages, offset, limit, "messages")
+}
+
+/// Apply the remote wire caps to a backward Agent page without losing its
+/// cursor. If ten unusually large exchanges exceed the NATS page budget, drop
+/// complete oldest exchanges until the page fits and advance the returned
+/// cursor past those omitted rows; they remain reachable on the next pull.
+fn prepare_backward_entries_page(session_id: &str, data: Value) -> Value {
+    let mut entries = entries_with_run_status(session_id, entries_vec(data.clone()));
+    for entry in &mut entries {
+        cap_remote_item(entry, MESSAGE_CONTENT_CAP_BYTES);
+    }
+    let agent_start = data
+        .get("nextOffset")
+        .or_else(|| data.get("next_offset"))
+        .and_then(Value::as_u64)
+        .unwrap_or_default() as usize;
+    let agent_has_more = data
+        .get("hasMore")
+        .or_else(|| data.get("has_more"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let mut removed = 0usize;
+    while serde_json::to_vec(&entries).map_or(0, |bytes| bytes.len()) > BACKWARD_HISTORY_PAGE_BYTES
+    {
+        let Some(next_user) = entries
+            .iter()
+            .enumerate()
+            .skip(1)
+            .find_map(|(index, entry)| {
+                (entry.get("role").and_then(Value::as_str) == Some("user")).then_some(index)
+            })
+        else {
+            break;
+        };
+        entries.drain(..next_user);
+        removed += next_user;
+    }
+    let next_offset = agent_start.saturating_add(removed);
+    json!({
+        "offset": next_offset,
+        "nextOffset": next_offset,
+        "hasMore": agent_has_more || removed > 0,
+        "entries": entries,
+    })
 }
 
 /// Page a full item list into a reply that fits the NATS payload cap.
@@ -1691,12 +1781,37 @@ async fn reply(
         "data": data,
         "error": error,
     });
-    // A serde_json::Value always serializes, so this cannot fail.
-    let payload = serde_json::to_vec(&body).expect("a response Value always serializes");
+    // Plain JSON is the default. When FUTURE_REMOTE_JSON_GZIP explicitly opts
+    // in, only large replies that actually shrink are gzip-compressed; mobile
+    // recognizes standard gzip magic bytes without a negotiation round.
+    let payload = encode_reply_payload(&body);
     let _ = REPLY_CAPTURE.try_with(|capture| {
         *capture.lock().unwrap() = Some(payload.clone());
     });
     publish_reply_payload(client, msg, payload).await;
+}
+
+fn encode_reply_payload(body: &Value) -> Vec<u8> {
+    encode_reply_payload_with_gzip(body, remote_json_gzip_enabled())
+}
+
+fn encode_reply_payload_with_gzip(body: &Value, gzip_enabled: bool) -> Vec<u8> {
+    let plain = serde_json::to_vec(body).expect("a response Value always serializes");
+    if !gzip_enabled || plain.len() < REMOTE_JSON_GZIP_THRESHOLD_BYTES {
+        return plain;
+    }
+
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+    if encoder.write_all(&plain).is_err() {
+        return plain;
+    }
+    let Ok(compressed) = encoder.finish() else {
+        return plain;
+    };
+    if compressed.len() >= plain.len() {
+        return plain;
+    }
+    compressed
 }
 
 /// Reply `{}` on success or the error text on failure — the shared shape for
@@ -1732,6 +1847,32 @@ async fn publish_reply_payload(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::read::GzDecoder;
+    use std::io::Read;
+
+    #[test]
+    fn remote_json_gzip_is_automatic_thresholded_and_standard() {
+        let body = json!({ "entries": ["repeated history ".repeat(8_000)] });
+        let plain = serde_json::to_vec(&body).unwrap();
+
+        let encoded = encode_reply_payload_with_gzip(&body, true);
+        assert!(encoded.starts_with(&[0x1f, 0x8b]), "expected standard gzip");
+        assert!(
+            encoded.len() < plain.len() / 4,
+            "expected useful compression"
+        );
+        let mut decoder = GzDecoder::new(encoded.as_slice());
+        let mut decoded = Vec::new();
+        decoder.read_to_end(&mut decoded).unwrap();
+        assert_eq!(decoded, plain);
+
+        let small = json!({ "ok": true });
+        let encoded_small = encode_reply_payload_with_gzip(&small, true);
+        assert_eq!(encoded_small, serde_json::to_vec(&small).unwrap());
+
+        let disabled = encode_reply_payload_with_gzip(&body, false);
+        assert_eq!(disabled, plain, "gzip must remain opt-in");
+    }
 
     #[test]
     fn handshake_transcript_binds_both_device_identities_and_nonces() {
@@ -1829,6 +1970,33 @@ mod tests {
         // The page itself stays comfortably under the 1MB NATS payload cap.
         let size = serde_json::to_vec(&page).map(|b| b.len()).unwrap();
         assert!(size < 1024 * 1024, "page too large: {size}");
+    }
+
+    #[test]
+    fn backward_history_budget_defers_complete_oldest_exchanges() {
+        let big = "x".repeat(220 * 1024);
+        let mut entries = Vec::new();
+        for index in 0..3 {
+            entries.push(json!({
+                "id": format!("u{index}"),
+                "role": "user",
+                "content": format!("q{index}")
+            }));
+            entries.push(json!({
+                "id": format!("a{index}"),
+                "role": "assistant",
+                "content": big.clone()
+            }));
+        }
+        let page = prepare_backward_entries_page(
+            "missing-session",
+            json!({ "entries": entries, "hasMore": false, "nextOffset": 10 }),
+        );
+        let rows = page["entries"].as_array().unwrap();
+        assert_eq!(rows.first().and_then(|row| row["id"].as_str()), Some("u1"));
+        assert_eq!(page["nextOffset"], 12);
+        assert_eq!(page["hasMore"], true);
+        assert!(serde_json::to_vec(rows).unwrap().len() <= BACKWARD_HISTORY_PAGE_BYTES);
     }
 
     #[test]
@@ -2634,6 +2802,20 @@ mod bridge_tests {
         assert_eq!(reply["data"]["entries"].as_array().unwrap().len(), 1);
         assert_eq!(reply["data"]["entries"][0]["run_status"], json!("failed"));
         assert!(reply["data"]["entries"][0]["run_duration_ms"].is_number());
+
+        // Mobile's tail request is forwarded as an Agent backward cursor; the
+        // desktop must not expand it back into a full-history forward loop.
+        let reply = bridge
+            .call(json!({
+                    "id": unique("cmd"),
+                    "type": "get_session_entries",
+                    "sessionId": session,
+                    "before": i64::MAX,
+                    "limit": 10
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(true));
+        assert_eq!(reply["data"]["entries"].as_array().unwrap().len(), 1);
 
         // Entries honor an explicit positive limit too.
         let reply = bridge

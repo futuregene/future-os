@@ -805,6 +805,43 @@ pub(crate) fn cmd_get_session_entries(
         }
         projected
     };
+    if let Some(raw_before) = cmd.before {
+        // Mobile history walks backward from the tail so the first response is
+        // immediately renderable at the newest message. Count user entries,
+        // not raw journal rows: one page therefore matches the desktop UI's
+        // "N user exchanges" contract and never splits a question from the
+        // assistant/tool activity that follows it. The returned rows remain in
+        // chronological order; nextOffset is the exclusive cursor for the next
+        // older request.
+        let end = (raw_before.max(0) as usize).min(entries.len());
+        let exchange_limit = cmd.limit.unwrap_or(10).clamp(1, 100) as usize;
+        let mut start = end;
+        let mut user_entries = 0usize;
+        while start > 0 {
+            start -= 1;
+            let is_user =
+                entries[start].get("role").and_then(|value| value.as_str()) == Some("user");
+            if is_user {
+                user_entries += 1;
+                if user_entries >= exchange_limit {
+                    break;
+                }
+            }
+        }
+        let page = entries
+            .get(start..end)
+            .map(<[serde_json::Value]>::to_vec)
+            .unwrap_or_default();
+        return RpcResponse::ok(
+            id,
+            "get_session_entries",
+            serde_json::json!({
+                "entries": page,
+                "hasMore": start > 0,
+                "nextOffset": start,
+            }),
+        );
+    }
     if let Some(raw_offset) = cmd.offset {
         const PAGE_BYTES: usize = 8 * 1024 * 1024;
         let offset = raw_offset.max(0) as usize;

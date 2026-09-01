@@ -9,19 +9,44 @@ import {
   markApprovalDecision,
   mergeHistoryAttachments,
   timelineFromEntries,
-  timelineFromHistory,
   type TimelineState,
 } from "./timeline";
-import type {
-  EntriesData,
-  HistoryData,
-  HistoryEntry,
-  HistoryMessage,
-  RemoteSessionState,
-  StreamEvent,
-} from "./types";
+import type { EntriesData, HistoryEntry, RemoteSessionState, StreamEvent } from "./types";
 
 const TIMELINE_LOAD_TIMEOUT_MS = 15_000;
+const HISTORY_PAGE_USER_EXCHANGES = 10;
+const HISTORY_TAIL_CURSOR = Number.MAX_SAFE_INTEGER;
+
+interface HistoryPagingState {
+  nextBefore: number;
+  hasMore: boolean;
+  loadedExchanges: number;
+  loading: boolean;
+}
+
+function historyUserExchanges(entries: HistoryEntry[]): number {
+  return entries.reduce((count, entry) => count + (entry.role === "user" ? 1 : 0), 0);
+}
+
+function prependHistoryPage(live: TimelineState, older: TimelineState): TimelineState {
+  const liveIds = new Set(live.items.map(item => item.id));
+  const olderItems = older.items.filter(item => !liveIds.has(item.id));
+  return olderItems.length === 0 ? live : { ...live, items: [...olderItems, ...live.items] };
+}
+
+/** Replace the already-loaded tail with a fresh durable page while retaining
+ * the older prefix the user explicitly paged in. Entry ids are stable across
+ * journal reads, so the first overlap is the exact splice point. */
+function retainOlderHistoryPrefix(
+  existing: TimelineState | null,
+  latest: TimelineState,
+): TimelineState {
+  if (!existing || latest.items.length === 0) return latest;
+  const latestIds = new Set(latest.items.map(item => item.id));
+  const overlap = existing.items.findIndex(item => latestIds.has(item.id));
+  if (overlap <= 0) return latest;
+  return { ...latest, items: [...existing.items.slice(0, overlap), ...latest.items] };
+}
 
 function diagnosticError(error: unknown): { name?: string; message: string; code?: unknown } {
   if (error instanceof Error) {
@@ -61,6 +86,8 @@ export function useTimelineController({
   const syncEngineRef = useRef<SyncEngine | null>(null);
   const cursorsRef = useRef<Record<string, RunCursor>>({});
   const streamingRef = useRef<Record<string, boolean>>({});
+  const historyPagingRef = useRef<Record<string, HistoryPagingState>>({});
+  const [historyPaging, setHistoryPaging] = useState<Record<string, HistoryPagingState>>({});
   const hydrateAttachmentsRef = useRef<(sessionId: string) => Promise<void>>(async () => undefined);
 
   useEffect(() => {
@@ -138,41 +165,86 @@ export function useTimelineController({
     async (sessionId: string): Promise<TimelineState> => {
       const client = clientRef.current;
       if (!client) return emptyTimeline();
-      try {
-        const entries: HistoryEntry[] = [];
-        let offset = 0;
-        for (;;) {
-          const response = await client.requestRetry<EntriesData>(
-            { type: "get_session_entries", sessionId, offset },
-            sessionId,
-          );
-          entries.push(...(response.data.entries ?? []));
-          if (!response.data.hasMore) break;
-          const next = response.data.nextOffset;
-          if (typeof next !== "number" || next <= offset) break;
-          offset = next;
-        }
-        return timelineFromEntries(entries);
-      } catch {
-        // Older desktops fall back to message-shaped history.
-      }
-      const history: HistoryMessage[] = [];
-      let offset = 0;
-      for (;;) {
-        const response = await client.requestRetry<HistoryData>(
-          { type: "get_messages", sessionId, offset },
+      const retained = historyPagingRef.current[sessionId];
+      const response = await client.requestRetry<EntriesData>(
+        {
+          type: "get_session_entries",
           sessionId,
-        );
-        history.push(...(response.data.messages ?? []));
-        if (!response.data.hasMore) break;
-        const next = response.data.nextOffset;
-        if (typeof next !== "number" || next <= offset) break;
-        offset = next;
-      }
-      return timelineFromHistory(history);
+          before: HISTORY_TAIL_CURSOR,
+          limit: HISTORY_PAGE_USER_EXCHANGES,
+        },
+        sessionId,
+      );
+      const entries = response.data.entries ?? [];
+      const nextBefore = response.data.nextOffset ?? 0;
+      const latest = timelineFromEntries(entries);
+      const history = retainOlderHistoryPrefix(
+        syncEngineRef.current?.timelineFor(sessionId) ?? null,
+        latest,
+      );
+      const retainedOlderPages =
+        retained && retained.loadedExchanges > historyUserExchanges(entries) ? retained : null;
+      const page: HistoryPagingState = {
+        nextBefore: retainedOlderPages?.nextBefore ?? nextBefore,
+        hasMore: retainedOlderPages?.hasMore ?? (response.data.hasMore === true && nextBefore > 0),
+        loadedExchanges: history.items.reduce(
+          (count, item) => count + (item.kind === "message" && item.role === "user" ? 1 : 0),
+          0,
+        ),
+        loading: false,
+      };
+      historyPagingRef.current[sessionId] = page;
+      setHistoryPaging(previous => ({ ...previous, [sessionId]: page }));
+      return history;
     },
     [clientRef],
   );
+
+  const loadOlderTimeline = useCallback(async () => {
+    const sessionId = selectedRef.current;
+    const current = historyPagingRef.current[sessionId];
+    const client = clientRef.current;
+    if (!sessionId || !client || !current?.hasMore || current.loading) return;
+
+    const loading = { ...current, loading: true };
+    historyPagingRef.current[sessionId] = loading;
+    setHistoryPaging(previous => ({ ...previous, [sessionId]: loading }));
+    try {
+      const response = await client.requestRetry<EntriesData>(
+        {
+          type: "get_session_entries",
+          sessionId,
+          before: current.nextBefore,
+          limit: HISTORY_PAGE_USER_EXCHANGES,
+        },
+        sessionId,
+      );
+      const entries = response.data.entries ?? [];
+      const nextBefore = response.data.nextOffset ?? 0;
+      if (response.data.hasMore && (nextBefore <= 0 || nextBefore >= current.nextBefore)) {
+        throw new Error("history_backward_cursor_not_advancing");
+      }
+      const next: HistoryPagingState = {
+        nextBefore,
+        hasMore: response.data.hasMore === true && nextBefore > 0,
+        loadedExchanges: current.loadedExchanges + historyUserExchanges(entries),
+        loading: false,
+      };
+      historyPagingRef.current[sessionId] = next;
+      setHistoryPaging(previous => ({ ...previous, [sessionId]: next }));
+      const older = timelineFromEntries(entries);
+      syncEngineRef.current?.mutate(sessionId, live => prependHistoryPage(live, older));
+    } catch (error) {
+      const failed = { ...current, loading: false };
+      historyPagingRef.current[sessionId] = failed;
+      setHistoryPaging(previous => ({ ...previous, [sessionId]: failed }));
+      console.error("[remote] older history page failed", {
+        sessionId,
+        before: current.nextBefore,
+        error: diagnosticError(error),
+      });
+    }
+  }, [clientRef, selectedRef]);
 
   useEffect(() => {
     const engine = new SyncEngine({
@@ -265,6 +337,8 @@ export function useTimelineController({
     setTimelineErrors({});
     cursorsRef.current = {};
     streamingRef.current = {};
+    historyPagingRef.current = {};
+    setHistoryPaging({});
   }, []);
 
   const ensureDraftTimeline = useCallback(() => {
@@ -280,6 +354,7 @@ export function useTimelineController({
     [selectedSessionId, draft, timelines],
   );
   const timelineError = selectedSessionId ? (timelineErrors[selectedSessionId] ?? null) : null;
+  const selectedHistoryPaging = selectedSessionId ? historyPaging[selectedSessionId] : undefined;
 
   useEffect(() => {
     if (!timelinePending || !selectedSessionId || timelineError) return;
@@ -324,6 +399,9 @@ export function useTimelineController({
     timeline,
     timelinePending,
     timelineError,
+    canLoadOlderTimeline: selectedHistoryPaging?.hasMore ?? false,
+    loadingOlderTimeline: selectedHistoryPaging?.loading ?? false,
+    loadOlderTimeline,
     syncEngineRef,
     streamingRef,
     hydrateAttachmentsRef,

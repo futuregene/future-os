@@ -67,6 +67,10 @@ pub struct RpcCommand {
     pub offset: Option<i64>,
     #[serde(default)]
     pub limit: Option<i64>,
+    /// Exclusive backward cursor for lazy history pages. `limit` counts user
+    /// exchanges when this is present; `next_offset` walks toward zero.
+    #[serde(default)]
+    pub before: Option<i64>,
     #[serde(default)]
     pub name: String,
     #[serde(default)]

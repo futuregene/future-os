@@ -773,6 +773,44 @@ fn get_session_entries_paginates_only_when_offset_is_explicit() {
         .is_none());
 }
 
+#[test]
+fn get_session_entries_pages_backward_by_user_exchange() {
+    let state = make_app_state();
+    let mut entries = Vec::new();
+    for i in 0..5 {
+        entries.push(crate::session::SessionEntry::new_user(
+            "user",
+            serde_json::json!(format!("q{i}")),
+        ));
+        entries.push(crate::session::SessionEntry::new_assistant(
+            serde_json::json!(format!("a{i}")),
+            vec![],
+        ));
+    }
+    save_via(&state, "default", "mock", entries);
+
+    let mut latest_cmd = make_cmd("get_session_entries");
+    latest_cmd.before = Some(i64::MAX);
+    latest_cmd.limit = Some(2);
+    let latest = parse_response(&handle_command_internal(&state, latest_cmd));
+    let latest_entries = latest["data"]["entries"].as_array().unwrap();
+    assert_eq!(latest_entries.len(), 4);
+    assert_eq!(latest_entries[0]["content"], "q3");
+    assert_eq!(latest_entries[3]["content"], "a4");
+    assert_eq!(latest["data"]["hasMore"], true);
+    assert_eq!(latest["data"]["nextOffset"], 6);
+
+    let mut older_cmd = make_cmd("get_session_entries");
+    older_cmd.before = Some(6);
+    older_cmd.limit = Some(2);
+    let older = parse_response(&handle_command_internal(&state, older_cmd));
+    let older_entries = older["data"]["entries"].as_array().unwrap();
+    assert_eq!(older_entries.len(), 4);
+    assert_eq!(older_entries[0]["content"], "q1");
+    assert_eq!(older_entries[3]["content"], "a2");
+    assert_eq!(older["data"]["nextOffset"], 2);
+}
+
 // ── coverage batch 1: fork / clone ──────────────────────────────────────
 
 #[test]

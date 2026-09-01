@@ -259,6 +259,18 @@ pub fn get_session_entries_page_command(session_id: String, offset: i64, limit: 
     }
 }
 
+pub fn get_session_entries_before_command(
+    session_id: String,
+    before: i64,
+    user_exchange_limit: i64,
+) -> RpcCommand {
+    RpcCommand {
+        before: Some(before),
+        limit: Some(user_exchange_limit),
+        ..base_command("get_session_entries", session_id)
+    }
+}
+
 pub fn new_session_command(
     session_id: String,
     cwd: String,
@@ -432,6 +444,7 @@ pub(super) fn base_command(command_type: &str, session_id: String) -> RpcCommand
         max_events: 0,
         offset: None,
         limit: None,
+        before: None,
         requested_run_id: String::new(),
         client_request_id: String::new(),
         busy_policy: String::new(),
@@ -648,6 +661,10 @@ mod tests {
         assert_eq!(command.r#type, "get_session_entries");
         assert_eq!(command.offset, Some(25));
         assert_eq!(command.limit, Some(50));
+        let command = get_session_entries_before_command("sess".to_string(), i64::MAX, 10);
+        assert_eq!(command.r#type, "get_session_entries");
+        assert_eq!(command.before, Some(i64::MAX));
+        assert_eq!(command.limit, Some(10));
     }
 
     #[test]
