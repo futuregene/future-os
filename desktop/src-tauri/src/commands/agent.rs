@@ -7,12 +7,12 @@ pub async fn list_agent_models() -> Result<Vec<agent_bridge::AgentModelOption>, 
     agent_bridge::list_agent_models().await
 }
 
-/// Post-login init: synchronously fetch the Future provider's models in the
-/// agent (warming its cache + rebuilding its registry) so the model list is
-/// complete before the onboarding gate closes. See [`agent_bridge::sync_future_models`].
+/// Explicitly fetch the Future provider's models in the agent (warming its
+/// cache + rebuilding its registry). The scheduler and this manual/onboarding
+/// command share the same single-flight execution path.
 #[tauri::command]
 pub async fn sync_future_models() -> Result<agent_bridge::SyncFutureModelsResult, crate::AppError> {
-    agent_bridge::sync_future_models().await
+    crate::scheduler::refresh_future_models_now().await
 }
 
 /// Persist the onboarding model-picker's choice as the agent's global default

@@ -819,9 +819,9 @@ impl ServerSession {
         };
 
         // Build the run future; SessionRuntime owns spawning, monitoring, and
-        // the task slot. TODO(runtime-persistence): once terminal persistence
-        // is an ordered writer command, move the remaining execution-input
-        // assembly into a dedicated RunExecution value.
+        // the task slot. Terminal persistence is committed through the
+        // SessionPersistence FIFO writer below, after every mid-run append;
+        // the run cannot return to Idle before that durable boundary succeeds.
         let perm = run_permission_level;
         let scope_sandbox = sandbox.clone();
         let run_task = async move {

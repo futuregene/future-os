@@ -13,7 +13,7 @@
 - 支持 Workspace 与普通 Chat 两种工作入口；Workspace 支持打开（按路径去重）、重命名、软删除（级联软删子对话）。
 - 支持 Thread 创建、恢复、重命名、置顶、归档、删除。
 - 支持消息、Run、Run Event 的持久化（消息与事件现由 Agent 持久化，GUI 只存 Run 状态等附加数据，见 §4.3、§4.5）。
-- 支持 artifacts、Data sources、Skills。（Research 延后，见 §4.12。）
+- 支持 artifacts、Data sources、Skills。（Research 已移除，见 §4.12。）
 - 支持统一引用对象，用于 `@` 引用 Artifact、文件和 Data Source。
 - 支持审批对象，用于高风险操作的批准或拒绝。
 - 支持 Review 对象，用于文件、代码和文本类 artifact 的变更对比。
@@ -301,7 +301,7 @@ Approval Request 表示需要用户批准或拒绝的高风险操作。
 | `thread_id` | 所属 Thread |
 | `run_id` | 来源 Run |
 | `tool_call_id` | 来源 Tool Call，可为空 |
-| `kind` | `shell_command`、`file_write`、`file_delete`、`network_access`、`data_access`、`batch_operation`、`outside_workspace_write`、`outside_workspace_read` |
+| `kind` | `shell_command`、`file_read`、`file_write`、`file_delete`、`network_access`、`data_access`、`batch_operation`、`outside_workspace_write` |
 | `status` | `pending`、`approved`、`rejected`、`cancelled` |
 | `title` | 标题 |
 | `summary` | 摘要 |
@@ -331,14 +331,14 @@ Approval Request 表示需要用户批准或拒绝的高风险操作。
 - 审批支持键盘快捷操作：`Esc` 拒绝，`Cmd/Ctrl + Enter` 允许一次。
 - `requested_action` 预览需要可读化展示；内容过长时 UI 内部滚动，最大高度不超过窗口高度的三分之一。
 - 批量操作使用 `batch_operation`，用于一组文件写入、批量删除、批量命令或跨多个资源的高风险动作。
-- 超出当前 workspace 范围的读取对应枚举值 `outside_workspace_read`（与上表 `kind` 一致）。注意：该读取审批**当前尚未实现**，Agent 侧仅对 workspace 外的写入 / 编辑 / 删除（`outside_workspace_write` 等）触发审批。
+- **产品设计：** workspace 外的普通读取不拦截，也不产生 `outside_workspace_read` 审批；敏感路径仍由不可覆盖的敏感文件守卫按 `file_read` 处理。workspace 外的写入 / 编辑 / 删除继续通过 `outside_workspace_write` 等审批。
 - GUI 或 Agent 重启后遗留的 `pending` 审批**不**无条件取消：启动收敛保留它们，由 `reconcile_pending_approvals`（启动一次 + watchdog 周期）按 Agent `get_state.pendingApprovals` 的权威集合裁决——Agent 仍在等待的保留卡片（run 复活并回到 `waiting_approval`），Agent 已不持有的（在他处已决、已 abort、或 Agent 自身重启丢失）才转为 `cancelled`，本地缺失的可从 Agent payload 重建。非终态 Run 同样不启动即取消，而是经 `reconcile_interrupted_runs` + `reanimate_run` + active-run watchdog 按 Agent 实际状态收敛（GUI 崩溃期间 Agent 可能仍在运行；仅当 Agent 确认 run 已消失才 settle）。
 - 如果审批通过后产生文件变更，再由 Review Changeset 展示实际修改对比。
 - P2 引入结构化 `action_payload` 和 `sandbox_boundary` 字段（设计细节见 git history，原 `P2_APPROVAL_MODEL.md`）。
 - **v2（审批规则重构，2026-07-04）**：审批对象收敛为**文件路径访问**，规则改为**文件式**（`${WS}/.future/approval_rule.json`、`~/.future/approval_rule.json`，agent 直接读），语义与实现见 [`APPROVAL_PLAN.md`](APPROVAL_PLAN.md) / [`SANDBOX_PLAN.md`](SANDBOX_PLAN.md)。相应地：
   - `approval_requests` 新增 `save_suggestion`（TEXT，JSON）——审批卡片“本工作区/对话允许”的建议规则 `{path, access, action}`；敏感文件为空（只能允许一次）。
   - **三张预留配置表 `sandbox_config` / `approval_policy_config` / `approval_rules` 已删除**（2026-07-05）——规则迁到文件后它们成为死结构；对应 `store/approval_config.rs` 模块与三个 record 类型一并移除。旧库里遗留的空表无害（无代码引用），新库不再创建。Phase 2 曾短暂用 `approval_rules` 存规则并经 gRPC 下发，v2 已拆除该链路。
-  - `kind` 扩展 `sandbox_escalation`（bash 越界失败的升级审批）；`outside_workspace_read` 等旧枚举随命令级模型作废。
+  - `kind` 扩展 `sandbox_escalation`（bash 越界失败的升级审批）；`outside_workspace_read` 是已废弃的旧枚举，不再由当前实现产生。
 
 ### 4.9 Review Changeset
 
@@ -500,7 +500,7 @@ Artifact 表示工作过程中产生的可复用产物。
 ### 4.14–4.17 Data Source / Data Credential / Skill / Skill Enablement（已废弃）
 
 > **已废弃并从 schema 删除（2026-07-07）。** 这四张表（`data_sources`、`data_credentials`、`skills`、`skill_enablements`）曾由早期 schema 建立，但从未接入任何 CRUD 代码：
-> - **Data 模块**（CSV/TSV/MySQL 数据源）整体延后，未进入第一版实现。
+> - **Data 模块**（CSV/TSV/MySQL 数据源）未纳入第一版，现已废弃。
 > - **Skill** 改走**官方平台目录 + 文件系统**路线（`GET {platform}/client/v1/skills` → 下载安装到 `~/.future/agent/skills`），不入库；语义见 PRODUCT.md §4.8，实现见 `src-tauri/src/skills.rs`。
 >
 > `apply_schema` 通过 `DROPPED_TABLES`（`store/schema.rs`）在旧库上 `DROP TABLE IF EXISTS` 清除它们。若日后重启 Data 功能，需重新设计并回写本节。
@@ -601,7 +601,7 @@ Object Reference 表示某个对象引用了另一个对象。
 
 > `messages`、`run_events`、`tool_calls`、`tool_outputs` 曾在此清单，随「Agent JSONL 为唯一真源」改造从 schema 删除（`DROPPED_TABLES` 在旧库清除；消息与事件改由 Agent 持久化，详见 §4.3、§4.5–4.7）。
 >
-> `research_collections`、`research_resources` 曾在此清单，因 Research 延后于第一版发布前从 schema 移除（详见 §4.12–4.13）。
+> `research_collections`、`research_resources` 曾在此清单，因 Research 已于第一版发布前移除而从 schema 删除（详见 §4.12–4.13）。
 >
 > `data_sources`、`data_credentials`、`skills`、`skill_enablements` 曾在此清单，已于 2026-07-07 从 schema 删除（从未接线，详见 §4.14–4.17）。
 >

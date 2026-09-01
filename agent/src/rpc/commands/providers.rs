@@ -29,14 +29,17 @@ pub(crate) fn handle_sync_future_models(state: &AppState, id: &str) -> String {
     let _provider_guard = PROVIDER_COMMAND_LOCK
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
-    // Dedicated post-login initialization: synchronously fetch the Future
-    // provider's models (warming the cache), then rebuild the registry against
-    // that warm cache so the very next `list_models` returns a complete list.
-    // Unlike `reload_auth`, this blocks on the network fetch — it is only ever
-    // called once by the GUI's onboarding init flow, never on a hot path.
+    // Synchronously fetch the Future provider's models (warming the cache),
+    // then rebuild the registry against that warm cache so the very next
+    // `list_models` returns a complete list. Unlike `reload_auth`, this blocks
+    // on the network fetch; the GUI uses it for onboarding, manual refresh, and
+    // its low-frequency maintenance schedule, never on a hot request path.
     let synced = crate::models::sync_future_models_cache();
     refresh_authoritative_provider_state(state);
-    let model_count = state.model_registry.read().all_models().len();
+    // Report only the Future catalogue just synchronized. `all_models()` also
+    // includes every built-in and configured third-party provider, which makes
+    // the settings success message claim thousands of Future models.
+    let model_count = crate::models::cached_model_count();
     let revision =
         crate::rpc::publish_provider_config_changed("future", "models_synced", false, true);
     RpcResponse::ok(
@@ -287,6 +290,8 @@ fn provider_view(state: &AppState) -> Result<serde_json::Value, String> {
                         "id": model_id,
                         "name": model_name,
                         "supportsImages": supports_images,
+                        "contextWindow": model.get("contextWindow").and_then(serde_json::Value::as_i64).unwrap_or(128_000),
+                        "maxTokens": model.get("maxTokens").and_then(serde_json::Value::as_i64).unwrap_or(16_384),
                     }))
                 })
                 .collect::<Vec<_>>();

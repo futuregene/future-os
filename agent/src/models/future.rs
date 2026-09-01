@@ -597,7 +597,8 @@ pub(super) fn get_future_models_with_cache(api_key: &str, base_url: &str) -> Vec
 /// caches were populated, `false` when there is no Future key or the platform
 /// could not be reached.
 ///
-/// This is the dedicated post-login initialization path. Unlike
+/// This is the explicit synchronization path used by post-login setup, manual
+/// refresh, and low-frequency maintenance. Unlike
 /// [`get_future_models_with_cache`] — which never blocks and returns an empty
 /// list on a cold cache, leaving the just-rebuilt registry model-less until a
 /// later refresh — this call blocks (up to the fetch timeout) so the caller can

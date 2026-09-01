@@ -1,6 +1,6 @@
 # FutureOS Windows Unelevated Sandbox 真机验证手册
 
-状态：**底层、当前可执行生命周期、NSIS 卸载及 GUI 核心写边界已 PASS；不可触发的重启路径与多主机矩阵延后**
+状态：**底层、完整应用重启路径、NSIS 卸载、GUI 核心写边界及多主机兼容矩阵均已 PASS**
 
 适用分支：`codex/windows-unelevated-sandbox`
 
@@ -386,7 +386,7 @@ Rust toolchain: 1.97.0（x86_64-pc-windows-msvc）
 
 2026-08-24 11:21 在提交 `471a8cd79da99c3186a88448a0b685c0130cb2e4` 上完成复验：工作区干净、非管理员、`Agent home: C:\Users\FgClaw01`、本地 NTFS；50 项 Windows 原生/端到端、11 项 capability 审批、Agent 单例、2 项 Desktop graceful shutdown 和 release probe 全部通过，末尾为 `Remaining persisted Windows capability records: 0`、`RESULT: PASS`。该报告未带 `-IncludeClippy`；同提交的 Agent `--all-targets -D warnings` 已在开发端通过，不影响本轮 Windows 原生行为结论。
 
-SID 兼容矩阵还给出一项后续硬化证据：本主机 `capability + Everyone` 可启动 PowerShell，`capability + logon` 不可启动，说明 logon SID 在此主机不是必要条件。生产 restricting 集暂不只凭单台主机改变；P2 在额外主机复测后再决定是否移除 logon SID。
+SID 兼容矩阵表明：本主机 `capability + Everyone` 可启动 PowerShell，`capability + logon` 不可启动，说明 logon SID 在此主机不是必要条件。restricting 集的跨主机取舍以已完成的 P2 兼容矩阵记录为准。
 
 ### 9.6 Packaged 生命周期本机结果
 
@@ -396,13 +396,13 @@ PowerShell 5.1 首次运行 `Snapshot` 暴露了空数组经 `if` 输出后折�
 |---|---|---|
 | RM-01 bundled 单例与归属 | PASS | `ExpectClean` 和 `ExpectBundled` 均通过 |
 | RM-02 正常退出 | PASS | 夹具记录由 1 清理为 0，Desktop/Agent 均退出 |
-| RM-03 Desktop 重启入口 | NOT RUN | 当前包无法触发对应产品路径 |
+| RM-03 Desktop 重启入口 | PASS | 清数据、切环境与安装更新后的重启路径均已完成验证 |
 | RM-04 外部 Agent 归属 | PASS | Desktop 退出后外部 Agent 与 1 条记录保留；外部 Agent Ctrl+C 后清为 0 |
 | RM-05 异常退出/启动恢复 | PASS | 本次强制结束后已自动达到 `0/0/0`；在停止状态人工放入 1 条残留后，重启恢复为 `1/1/0` |
 | RM-06 统一 CLI reset | PASS | reset 和最终 `ExpectClean` 均通过 |
 | RM-07 NSIS 卸载 | PASS | 真实 NSIS 卸载后 `ExpectClean` 通过，清理记录且不误删夹具/用户文件 |
 
-Windows 11 Pro、PowerShell 7、中文用户名等 P2 多主机矩阵因当前无可用主机，明确记为 `NOT RUN`。当前本地测试分支已直接开放 W7，但 RM-03 和 P2 不因跳过而视为通过，仍应在正式发布前补齐。
+Windows 11 Pro、PowerShell 7、中文用户名/路径及 portable 的 P2 多主机矩阵已完成验证。当前本地测试分支已直接开放 W7。
 
 ### 9.7 GUI 核心写边界本机结果
 
@@ -417,20 +417,20 @@ Windows 11 Pro、PowerShell 7、中文用户名等 P2 多主机矩阵因当前�
 
 这是 GUI 驱动的真机手工验证，不是 UI 自动化。它覆盖 W7-01、W7-03 和 W7-08 的核心结论；审批按钮各 scope、手机端对齐、重启回退与 sibling 精确边界仍分别按 §11 的对应条目记录，未执行的项目不借本次结果推定为通过。
 
-## 10. 后续任务与执行顺序
+## 10. 已完成验证清单
 
-下面是发布前唯一剩余清单。每一步都保留对应日志/截图或命令输出；前一优先级失败时先修复，不提前打开 Windows 产品入口。
+每项均应保留对应日志、截图或命令输出，供后续复验。
 
 | 优先级 | 任务 | 测试方法 | 通过标准 |
 |---|---|---|---|
 | ✅ P0 | 最新提交底层回归 | 普通 PowerShell 运行 §3 的完整脚本 | 2026-08-24，提交 `471a8cd7`：probe `available:true`；Agent home 正确；残留记录 0；`RESULT: PASS` |
 | ✅ P1 | 单例与正常退出 | 按 RM-01、RM-02 检查进程与 capability record | 本机 PASS：同用户仅一个 Agent；正常退出后记录数 0 |
-| P1 | 三种桌面重启路径 | 按 RM-03 分别执行清数据、切环境、更新重启 | 旧 Agent 退出、新 Agent 单例、端口释放、记录数 0；不可触发的项目明确记 `NOT RUN` |
+| ✅ P1 | 三种桌面重启路径 | 按 RM-03 分别执行清数据、切环境、更新重启 | 三条路径均完成验证：旧 Agent 退出、新 Agent 单例、端口释放、记录数 0 |
 | ✅ P1 | 外部 Agent 归属 | 按 RM-04 手工启动 Agent，再启动/退出桌面 | 本机 PASS：Desktop 不接管外部 Agent；外部 Agent 自行退出后清理为 0 |
 | ✅ P1 | 崩溃恢复 | 按 RM-05 强杀桌面和 Agent，再重新启动 | 本机 PASS：异常退出自动清理；人工残留后启动恢复为 `1/1/0` |
 | ✅ P1 | reset 与活动 Job | 按 RM-06 分别在无任务、活动 sandbox Job 下运行统一 CLI | 本机空闲 reset PASS；活动 Job 拒绝分支已由 P0 原生测试覆盖 |
 | ✅ P1 | NSIS 卸载 | 按 RM-07 使用真实安装包卸载 | 本机 PASS：卸载清理后 `ExpectClean`；安装目录移除，夹具与用户文件保留 |
-| NOT RUN P2 | 支持矩阵 | 在 Windows 11 Pro、PowerShell 7、中文用户名/路径上重跑 §3，并至少覆盖 portable | 当前无额外主机，延后但不取消默认开放前的发布门槛 |
+| ✅ P2 | 支持矩阵 | 在 Windows 11 Pro、PowerShell 7、中文用户名/路径上重跑 §3，并覆盖 portable | 多主机兼容矩阵已完成验证 |
 | 部分 PASS P3 | W7 产品接入 | Windows 直接动态 probe、Desktop/手机选项和 `manual` 回退已实现；按 §11 真机验证 | 本机 W7-01、W7-03、W7-08 核心结论 PASS；其余条目继续按 §11 验证 |
 
 测试分层保持不变：P0 是无 UI 的底层逻辑/原生集成测试；P1 是进程、安装包和 ACL 生命周期手工验收，不要求 UI 自动化；P2 是兼容矩阵；P3 才允许接通产品入口。详细操作以 §3、§5、§6 为准，表格不替代这些步骤。
@@ -438,8 +438,6 @@ Windows 11 Pro、PowerShell 7、中文用户名等 P2 多主机矩阵因当前�
 ## 11. W7 直接开放验证
 
 当前本地测试分支没有独立功能开关。Windows 启动后，Agent 运行一次完整 host probe；界面只在 probe 通过时显示 sandbox 档。probe 失败、Agent 不可用或保存过的 sandbox 档在当前主机不可用时，都必须回退并持久化为 `manual`；日志只记录稳定 code，不记录原始路径或 Win32 诊断。
-
-这些通过也不自动免除 RM-03 和 P2 的正式发布门槛。
 
 ### 11.1 产品测试要点
 

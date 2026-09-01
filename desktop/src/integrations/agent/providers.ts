@@ -185,6 +185,11 @@ export function peekFutureBalance(): FutureBalance | null {
   return balanceCache;
 }
 
+/** Accept a balance pushed by the backend scheduler. */
+export function storeFutureBalance(balance: FutureBalance): void {
+  balanceCache = balance;
+}
+
 /** Drop the cached balance so the next fetch refetches (call on logout). */
 export function clearFutureBalanceCache(): void {
   balanceCache = null;

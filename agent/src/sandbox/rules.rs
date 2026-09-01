@@ -290,8 +290,9 @@ pub fn builtin_overrides(workspace: &Path, home: Option<&Path>) -> Vec<PathRule>
         // trust isn't expressible here. The proper fix is a dedicated
         // credential channel (agent injects a short-lived scoped token via env,
         // or `future` reverse-requests the key from the agent over a socket
-        // with peer-credential verification), not a path allow-hole. That's a
-        // larger, cross-platform effort — deferred.
+        // with peer-credential verification), not a path allow-hole. This is
+        // the tracked auth.json follow-up, intentionally not scheduled yet;
+        // see APPROVAL_PLAN.md §3.1.
         //
         // NOTE: while auth.json is allowed, any shell command can read/write it
         // — acceptable for local testing only. models.json stays denied.

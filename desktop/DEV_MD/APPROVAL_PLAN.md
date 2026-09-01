@@ -1,6 +1,6 @@
 # FutureOS 审批规则方案（APPROVAL_PLAN）
 
-状态：**方案 v2 已实现；Windows unelevated 的能力请求、一次/项目审批、共享 UI 与受限执行内部链已实现，Windows 真机验证及产品启用待完成**（v2 定稿 2026-07-04，落地见 SANDBOX_PLAN R1/R2/R3 ✅、`src-tauri/src/approval_rules.rs`、`commands/approvals.rs`；取代 SANDBOX_PLAN v1 的"规则引擎 + 审批策略"部分）。2026-08 更新：工具名 `bash`→`shell`；敏感文件守卫上移为不可覆盖层（§3）；`auth.json` 暂放行（§3.1）；Windows `sandbox` 档定义为 unelevated **写保护**后端，使用路径能力审批（§5、§6.4、SANDBOX_PLAN §11）。
+状态：**方案 v2、Windows unelevated 能力请求、一次/项目审批、共享 UI、受限执行内部链、真机验证及产品启用均已完成**（v2 定稿 2026-07-04，落地见 SANDBOX_PLAN R1/R2/R3 ✅、`src-tauri/src/approval_rules.rs`、`commands/approvals.rs`；取代 SANDBOX_PLAN v1 的"规则引擎 + 审批策略"部分）。2026-08 更新：工具名 `bash`→`shell`；敏感文件守卫上移为不可覆盖层（§3）；`auth.json` 暂放行（§3.1）；Windows `sandbox` 档定义为 unelevated **写保护**后端，使用路径能力审批（§5、§6.4、SANDBOX_PLAN §11）。
 
 > 本文是审批系统的**语义主文档**：规则模型、规则文件、判定流程、审批 UI。OS 层如何强制执行（Seatbelt 编译、escalation、降级模式、返工计划）见 [SANDBOX_PLAN.md](SANDBOX_PLAN.md)。产品语义基线 PRODUCT.md §4.6 需在实现后同步。
 
@@ -83,7 +83,10 @@ workspace 规则文件在 workspace 里 = 兜底可写；它又是最高优先�
   - `${WORKSPACE_DIR}/.future/approval_rule.json`
   - `~/.future/approval_rule.json`
   - `~/.future/agent/models.json`（及 `agent-app` 变体）
-- `~/.future/agent/auth.json` 当前**暂放行**：skills 有时会 shell 到官方 `future` CLI 读凭证，硬 deny 会拦死这些流程。待专用凭证通道（短时 scoped token 注入或 peer-credential 反查）落地后恢复 deny；放行期间任何 shell 命令都可读写 auth.json，仅本地测试可接受。
+- `~/.future/agent/auth.json` 当前**暂放行**：skills 有时会 shell 到官方 `future` CLI 读凭证，硬 deny 会拦死这些流程。放行期间任何 shell 命令都可读写 auth.json，仅本地测试可接受。
+
+> **后续任务（暂不实施）— auth.json 专用凭据通道：** 让官方 `future` CLI 通过短时、作用域受限的 token 注入，或通过带 peer-credential 验证的 Agent RPC 获取所需凭据；完成后恢复对 `auth.json`（含 `agent-app` 变体）的 sandbox 读写 deny。验收应证明：官方 CLI 仍能完成所需认证流程，普通 sandbox shell 无法读写凭据文件，令牌不出现在日志、历史、工具输出或子进程环境中，并覆盖 macOS、Linux 与 Windows。
+
 - 读规则文件不限制（内容无密，agent 看到规则反而有助于理解边界）。
 - 精确到文件、不封整个 `.future` 目录——普通 Chat 的临时 workspace 就在 `~/.future/agent/workspace/` 下，封目录会砸掉 Chat 自己的工作区。
 - 修改规则文件的合法通道只有两个：**用户手改**、**GUI 代写**（「本工作区允许」按钮，走 Tauri 可信路径，不经 agent 工具）。

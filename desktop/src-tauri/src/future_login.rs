@@ -88,7 +88,7 @@ pub struct FutureProfile {
 /// Credit balance, as returned by `{platform}/client/v1/account/balance`.
 /// Deserialized from the platform's snake_case payload; serialized to camelCase
 /// for the frontend. Mirrors the CLI's `future account balance`.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all(serialize = "camelCase"))]
 pub struct FutureBalance {
     /// Credits as a human-readable number (already divided by the internal unit,

@@ -127,7 +127,7 @@ Approval 解决“是否允许执行”。它发生在高风险操作真正执�
 - **审批分三档**（输入框下拉 / 设置页切换，全局生效）：
   - **手动审批**（默认，全平台）：read/write/edit 按规则弹审批；shell 的只读命令（`ls/cat/grep/git status` 等）免问直跑，其余命令弹卡片确认；不启用 OS 沙盒。
   - **沙箱保护**（macOS）：shell 在 Seatbelt 沙盒里自动跑，越界失败后走升级审批；read/write/edit 仍按规则弹审批。
-  - **写保护**（Windows，后端完成并通过 smoke 后开放）：shell 在 unelevated RestrictedToken + NTFS ACL 写边界内运行；默认只允许 workspace/session temp，额外外部写路径走前置审批。它不限制 shell 读取和网络，也不能用普通目录 ACL 完整保护 workspace 内尚不存在的未来文件名或 glob，不宣称与 macOS 等价。
+  - **写保护**（Windows，后端完成并通过 smoke 后开放）：shell 在 unelevated RestrictedToken + NTFS ACL 写边界内运行；默认只允许 workspace/session temp，额外外部写路径走前置审批。普通路径的 workspace 外读取与网络不拦截；敏感路径读取仍受敏感文件守卫控制。它也不能用普通目录 ACL 完整保护 workspace 内尚不存在的未来文件名或 glob，不宣称与 macOS 等价。
   - **完全放开**：全部放行，不再询问，也不启用沙箱。
 - **网络完全放开、不审批**。
 - **敏感文件**（`.env`、`*.pem`、`*.key`、`~/.ssh`、凭证等）默认 ask 且**不可被规则覆盖**——只能“允许一次”，不能持久放行；应用自身配置（`~/.future/agent/models.json` 等）与规则文件的写硬 deny，跳过用户意愿。

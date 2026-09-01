@@ -579,18 +579,18 @@ pub async fn reload_agent_credentials() -> Result<(), crate::AppError> {
 }
 
 /// Result of [`sync_future_models`]: whether the platform fetch populated the
-/// agent's model cache, and the total model count in the rebuilt registry.
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
+/// agent's model cache, and the number of Future models in that cache.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncFutureModelsResult {
     pub synced: bool,
     pub model_count: usize,
 }
 
-/// Post-login initialization: ask the agent to synchronously fetch the Future
-/// provider's models (warming its cache) and rebuild its model registry, so the
-/// next [`list_agent_models`] returns a complete list. Blocks on the platform
-/// fetch inside the agent — only called once from the onboarding init flow.
+/// Ask the agent to synchronously fetch the Future provider's models (warming
+/// its cache) and rebuild its model registry, so the next [`list_agent_models`]
+/// returns a complete list. Used by post-login setup, manual refresh, and the
+/// desktop's low-frequency maintenance schedule.
 /// Best-effort like [`reload_agent_credentials`]: an unavailable agent yields a
 /// zeroed result rather than an error.
 pub async fn sync_future_models() -> Result<SyncFutureModelsResult, crate::AppError> {
