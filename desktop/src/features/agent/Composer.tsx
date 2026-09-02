@@ -297,10 +297,18 @@ function ComposerImpl({
   function submitValue() {
     const trimmed = (editorRef.current?.getContent() ?? "").trim();
     // Block submission while a reply streams (the send button is already an
-    // abort button then; this guard stops Enter from firing a new message) and
-    // while an async send is in flight.
-    if ((!trimmed && attachments.length === 0) || disabled || sendPending || sending)
+    // abort button then), while context compaction is running, and while an
+    // async send is in flight. The editor intentionally remains enabled so the
+    // next message can still be drafted during either operation.
+    if (
+      (!trimmed && attachments.length === 0)
+      || disabled
+      || sendPending
+      || sending
+      || contextActionPending
+    ) {
       return;
+    }
     const clearComposer = () => {
       editorRef.current?.clear();
       setAttachments([]);
@@ -738,7 +746,12 @@ function ComposerImpl({
             : (
                 <button
                   className="inline-flex size-7 items-center justify-center rounded-md bg-accent text-white transition-colors hover:bg-accent-hover disabled:bg-accent-disabled"
-                  disabled={(inputEmpty && attachments.length === 0) || disabled || sendPending}
+                  disabled={
+                    (inputEmpty && attachments.length === 0)
+                    || disabled
+                    || sendPending
+                    || contextActionPending
+                  }
                   type="submit"
                   aria-label={t("composer.send")}
                   title={t("composer.send")}

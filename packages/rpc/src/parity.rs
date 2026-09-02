@@ -476,6 +476,17 @@ fn compact_wire_parity() {
     assert_command_parity(
         "compact",
         json!({
+            "tokensBefore": 0,
+            "tokensAfter": 0,
+            "summary": "",
+            "messagesRemoved": 0
+        }),
+    );
+    assert_command_parity(
+        "compact",
+        json!({
+            "checkpointId": "cp-1",
+            "alreadyCompacted": true,
             "tokensBefore": 100000,
             "tokensAfter": 20000,
             "summary": "The user asked about X.",
@@ -504,7 +515,7 @@ fn cycle_model_wire_parity() {
 fn sync_future_models_wire_parity() {
     assert_command_parity(
         "sync_future_models",
-        json!({"synced": true, "modelCount": 42}),
+        json!({"synced": true, "modelCount": 42, "revision": 7}),
     );
 }
 
