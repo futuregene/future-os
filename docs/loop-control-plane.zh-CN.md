@@ -21,6 +21,18 @@
 Agent 执行一个有界回合（gRPC）→ 写证据 → 内核据此决定下一回合
 ```
 
+> **编排者是 AI agent，loop 是它的看板 + 操纵杆。** 内核只守正确性底线
+> （verify 闸门、验收契约、非空证据、终局闭环）——它**绝不**判断一个*探索性*
+> 产出*对不对*。这个判断权属于编排 agent：它读工件，然后决定继续、纠正、停止
+> 还是关单。loop 把做这些事的操纵杆递到编排者手上——实时观察 worker
+> （`worker tail`）、打断/纠正（`supervisor steer`、`todo update`）、停止
+> （`worker stop`）、按自己的判断关单（手动 `todo complete`，刻意不重跑机器
+> `--verify` 闸门）。
+>
+> 跨回合上下文放在**持久工件里，而不是 session 记忆**：*正常完成*的回合
+> session 不可 resume（只有基础设施中断的才可），所以每个回合重读报告 / 账本 /
+> 目标文档，而不是依赖上一个 session 的推理历史。
+
 ## 核心概念
 
 | 概念 | 命令 | 说明 |
@@ -29,14 +41,15 @@ Agent 执行一个有界回合（gRPC）→ 写证据 → 内核据此决定下�
 | 任务 todo | `todo add/update/complete/supersede` | 五类：advancement（推进）/ user-gate（人工门禁）/ user-action（不冻结的人待办）/ monitor（监视外部状态）/ blocker（外部阻塞）；`--blocks` 依赖链；`--priority` |
 | 证据 evidence | `todo complete --evidence` | **非空强制**：关单必须写明实际落地了什么（路径、attempt id、测量结果），`--force` 是操作者显式覆盖 |
 | 验收契约 acceptance | `todo add --acceptance "tok1,tok2"` | 关单证据必须包含全部 token（大小写不敏感）——"done ≠ delivered" 的硬形式 |
-| 验证器 verify | `todo add --verify "cmd"` | 每个回合后内核执行命令，exit 0 才算完成；上限 `--max-validation-attempts`。空关单的物理阻断器 |
+| 验证器 verify | `todo add --verify "cmd"` | 每个 **run 回合边界**后内核执行命令，exit 0 才算完成；上限 `--max-validation-attempts`。用于机器可判的确定性交付物。**不适用于探索性任务**（检索/报告）——内核判不了其正确性，正确性由编排 agent 读工件判断；手动 `todo complete` 也刻意不重跑 `--verify` |
 | 租约 lease | `lease claim/renew/release/status` | 任务被谁租用、多久过期。**租约活性自愈**：记录持有进程 pid，进程死了自动回收——杀掉 worker 后无需手动清理 |
-| 门禁 gate | `gate resolve` | 任何打开的用户门禁冻结全部工作直到解决；user-action（不冻结的人待办）会展示给用户但不阻塞 agent |
+| 门禁 gate | `gate resolve` | 任何打开的用户门禁冻结全部工作直到解决。门禁是决策点不是工作项：对 gate 用 `todo complete` 会**报错并指向 `gate resolve`**（决策被记录，绝不默默标 done）；user-action（不冻结的人待办）展示给用户但不阻塞 agent |
 | 交付闭环 delivery | `delivery status/record` | 完成 = `delivered` 待验证态；操作者用 `verified/failed/rework` 结案；3 回合未验证自动派生跟进任务 |
 | 终局 terminal | `frontier show` | 验证式闭环：todos 完成/被取代 + 闭环意图 + 无验收缺口 + 无待决 deferred 工作；`frontier` 给出终局判定与缺口明细 |
 | 配额 quota | `quota should-run/usage/spend/decisions` | 确定性 should-run 内核：每个回合的调度、拒绝原因、花费全部可审计 |
 | 调度器 scheduler | `scheduler tick/show/liveness` | 监视器节奏、宿主故障记录、活性心跳 |
 | 多 agent | `agent contract/recipe/succession/collective` | 一个目标多个 worker：契约（替补关系/交接规则）、命名配方一键上车、离线超时自动替补晋升、唤醒轮值表、集体回合账本 |
+| worker 可观测 | `worker tail` | 把 worker 的实时回合日志（`.live.jsonl`）渲染成浓缩 tool/用量视图（`--raw` 看原始）——编排者观察 worker 实际在做什么的窗口，据此 steer / stop / 放行 |
 | 前端面 frontier | `frontier show` | 成果连续段（outcome segments）、结构化 replan 规则、有界语义历史（N=50）、终局判定 |
 
 ## 用技能驱动 loop（推荐入口）
@@ -59,7 +72,10 @@ Agent 加载 future-loop 技能（v3.x 驾驶手册）
 
 **技能与 CLI 的分工**：技能负责"何时该做什么、如何拆解、如何驾驶"（编排层）；
 CLI 是底层机制（状态内核 + 硬校验 + 决策）。技能是 v3.x 持续维护的驾驶手册，
-与本页同步更新；完整语义见 [future-skills/builtin/future-loop](https://github.com/futuregene/future-skills/tree/main/builtin/future-loop)。
+与本页同步更新。其内容源头在 **`skills` git submodule** 的
+`skills/builtin/future-loop/SKILL.md`（仓库 [future-skills](https://github.com/futuregene/future-skills)）；
+改 `~/.future/agent/skills/` 的安装副本只对本地机器生效——要随仓库分发文档改动，
+请改 submodule 源（向 future-skills 提 PR，再回本仓库 bump 指针）。
 
 ## 用户工作流（从零到闭环）
 
@@ -81,6 +97,7 @@ future loop gate resolve --goal G --todo-id GATE --decision "approve"
 # 5. 观察与闭环
 future loop ui                           # 实时 Web 仪表盘（http://127.0.0.1:7717）
 future loop status --goal G
+future loop worker tail --goal G --agent-id mac-worker   # 观察 worker 实时回合
 future loop frontier show --goal G        # 终局判定 + 缺口明细
 future loop delivery record --goal G ...  # verified / failed / rework
 ```
@@ -144,6 +161,11 @@ supervisor（运行 `/future-loop` 技能的编排 agent）与其 worker 通过�
   一条 `host_died` 备注，促使编排者重启，而不是只在下次 `status` 轮询时才发现有 worker
   死了。
 
+- **回合中观察 worker：** 上述消息都是回合边界驱动的。要看 worker *此刻*在做什么
+  （在调哪些工具、token/成本消耗），用 `future loop worker tail --goal G [--agent-id A]
+  [--lines N] [--raw]`——它把 worker 的 `.live.jsonl` 回合流渲染成浓缩 tool/用量视图。
+  这是 steer/stop 操纵杆的可观测补充：先观察，再带完整上下文打断或纠正。
+
 ## loop 状态以 CLI 为准
 
 控制面通过 **`future loop` CLI** 驱动与观察——目标状态是项目本地的
@@ -153,16 +175,21 @@ supervisor（运行 `/future-loop` 技能的编排 agent）与其 worker 通过�
 经 agent 服务运行，所以在一个客户端（如 TUI）启动的目标可以在任何其他客户端
 （如飞书聊天）继续驾驶。
 
-## CLI 全景（7 组 40 命令）
+## CLI 全景（7 组 41 命令）
 
 ```bash
 future loop registry        # 全部命令（组/命令）
 future loop commands        # 按操作者旅程分组视图
 ```
 
+多动词命令（`supervisor`、`worker`、`todo`）暴露逐动词用法：`<cmd> <sub> --help`
+渲染该动词的精确签名（如 `supervisor steer --help` → `--agent-id` +
+`--instruction`），`<cmd> --help` 列出其子命令——编排者无需解析合并后的顶层
+usage 即可发现参数。
+
 - **goal 组**（5）：`goal` `status` `ui` `models` `diagnose`
 - **todo 组**（6）：`todo` `gate` `replan` `frontier` `lease` `task-graph`
-- **agent 组**（5）：`agent` `scope` `lane` `supervisor` `worker`
+- **agent 组**（5）：`agent` `scope` `lane` `supervisor` `worker`（list / stop / **tail**）
 - **ops 组**（18）：`version` `doctor` `history` `turn` `todo-event` `evidence-log` `backup` `authority` `profile` `quota` `scheduler` `store` `backfill` `privacy` `runs` `heartbeat-prompt` `worker-bridge` `run`
 - **work-items 组**（3）：`attention` `inbox` `delivery`
 - **cli 组**（2）：`registry` `commands`
@@ -180,4 +207,4 @@ future loop commands        # 按操作者旅程分组视图
 - 安装与构建：[build-and-install.zh-CN.md](build-and-install.zh-CN.md)
 - 证据账本：[long-run-evidence-ledger.zh-CN.md](long-run-evidence-ledger.zh-CN.md)
 - TUI 使用：[tui.zh-CN.md](tui.zh-CN.md)
-- 技能源码：[future-skills/builtin/future-loop](https://github.com/futuregene/future-skills/tree/main/builtin/future-loop)
+- 技能源码：[`skills/builtin/future-loop`](../skills/builtin/future-loop)（git submodule → [future-skills](https://github.com/futuregene/future-skills/tree/main/builtin/future-loop)）
