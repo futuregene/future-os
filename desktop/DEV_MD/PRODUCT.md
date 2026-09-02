@@ -121,7 +121,7 @@ GUI 中的工具调用应展示短标题、状态、耗时、路径或命令摘�
 
 Approval 解决“是否允许执行”。它发生在高风险操作真正执行之前。
 
-审批的对象是**文件路径访问**（读 / 写），不是命令。设计与实现细节见 [`APPROVAL_PLAN.md`](APPROVAL_PLAN.md)（规则模型、分层、规则文件、三档）与 [`SANDBOX_PLAN.md`](SANDBOX_PLAN.md)（Seatbelt 强制、escalation、非 macOS 回退）。要点：
+审批的对象是**文件路径访问**（读 / 写），不是命令。设计与实现细节见 [`APPROVAL_PLAN.md`](APPROVAL_PLAN.md)（规则模型、分层、规则文件、三档）与 [`SANDBOX_PLAN.md`](SANDBOX_PLAN.md)（各平台 OS 强制、escalation、回退）；尚未实现的 Linux 专项方案见 [`LINUX_SANDBOX_PLAN.md`](LINUX_SANDBOX_PLAN.md)，不属于当前产品承诺。要点：
 
 - **按路径的分层规则**得出 `ask / allow / deny`，首个匹配即返回：内置安全覆盖（不可改）→ 敏感文件守卫（不可改）→ 本对话/工作区临时规则 → 规则文件（`${WS}/.future/approval_rule.json`、`~/.future/approval_rule.json`）→ 兜底（读放开、写限 workspace/temp）。
 - **审批分三档**（输入框下拉 / 设置页切换，全局生效）：
@@ -131,7 +131,7 @@ Approval 解决“是否允许执行”。它发生在高风险操作真正执�
   - **完全放开**：全部放行，不再询问，也不启用沙箱。
 - **网络完全放开、不审批**。
 - **敏感文件**（`.env`、`*.pem`、`*.key`、`~/.ssh`、凭证等）默认 ask 且**不可被规则覆盖**——只能“允许一次”，不能持久放行；应用自身配置（`~/.future/agent/models.json` 等）与规则文件的写硬 deny，跳过用户意愿。
-- Windows 后端完成前不显示“写保护”；Linux 仍只显示“手动审批 / 完全放开”。TUI / CLI / channels 走各自 `permission_level`，不参与本套审批。
+- Windows 只有完整 host probe 通过才显示“写保护”；Linux 仍只显示“手动审批 / 完全放开”。TUI / CLI / channels 走各自 `permission_level`，不参与本套审批。
 - 桌面端的 macOS、Windows 和手动审批复用同一个审批卡片；移动端原生卡片消费同一份可信语义。普通用户首先看到由可信后端生成的“行为 + 目标”标题；单目标不重复显示字段，命令/文件预览折叠为“查看命令 / 查看详情”，ACL、SID、backend、hash、规则层等技术数据不展示。
 - 审批按场景提供三个语义：**不允许 / 仅允许这一次 / 此项目以后都允许**（具体文案可继续调整）。“此项目以后都允许”把卡片表达的同一行为和目标保存为该 workspace 的 allow 规则并即时对本轮生效；敏感文件、macOS 整命令 escalation 和不可持久化请求不提供此选项。
 - 多目标审批完整列出全部目标、最多 8 项并按整组决策；无法生成可信行为/目标或 payload 解析失败时 fail closed，不显示批准按钮。

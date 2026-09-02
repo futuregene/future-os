@@ -1,8 +1,8 @@
 # FutureOS Sandbox 方案（SANDBOX_PLAN）
 
-状态：**v2 macOS 已实现；Windows unelevated 写保护底层已通过首台真机验收，产品入口仍关闭**（2026-07-04 按纯文件路径规则模型重写；2026-08-24 收口 Windows 底层与发布验证）
+状态：**v2 macOS 已实现；Windows unelevated 写保护已完成产品启用与真机验证；Linux 一期已确认 Bubblewrap/system bwrap、网络开放、有界 glob、三层 probe 和整命令 escalation，路径级能力与 macOS 改造放二期**（2026-09-02）
 
-> 规则系统的**语义主文档**是 [APPROVAL_PLAN.md](APPROVAL_PLAN.md)（规则模型、分层、规则文件、审批 UI、决策记录）。本文只管**强制执行**：Seatbelt 如何从规则编译、escalation、工具层拦截、协议、非 macOS 的两档回退，以及 v1 已实现资产的复用/返工清单。
+> 规则系统的**语义主文档**是 [APPROVAL_PLAN.md](APPROVAL_PLAN.md)（规则模型、分层、规则文件、审批 UI、决策记录）。本文只管**强制执行**：Seatbelt 如何从规则编译、escalation、工具层拦截、协议与各平台后端。Linux 的当前代码审计、Codex 对照、能力边界与开发阶段见 [LINUX_SANDBOX_PLAN.md](LINUX_SANDBOX_PLAN.md)。
 >
 > v1（Codex 式"三模式×三策略 + SQLite 规则"）已实现并全绿（原 Phase 1/2，见 §6），随 v2 模型被部分取代——v1 的历史设计见 git history 本文件旧版。
 
@@ -130,14 +130,14 @@ v1（原 Phase 1 + Phase 2）已全部实现并通过验证（agent 67 测 + GUI
 - `command_prefix` 规则、`save_suggestion` 的命令建议（路径建议保留）。
 - SQLite 规则链路（§5）；proto `SandboxPolicy` 旧字段；三模式/三策略枚举。
 
-## 7. 非 macOS：当前回退与 Windows 目标态
+## 7. 平台状态与 Linux 当前回退
 
-> 当前发布态仍只有 macOS 提供 OS 沙盒；Windows unelevated 后端完成并通过 Windows smoke 之前，UI 不得提前显示 `sandbox`。完成后的 Windows 档名为“写保护”，能力不等同 macOS“沙箱保护”。
+> 当前发布态由 macOS Seatbelt 和 Windows unelevated RestrictedToken 提供 OS 强制。Windows 档名为“写保护”，能力不等同 macOS“沙箱保护”。Linux 尚无 OS 后端，仍不显示 `sandbox`。
 
-- `platform_sandbox_available()` 非 macOS 恒 false → 即便某会话误发 `tier=sandbox`，`wraps_bash()` 也为假，bash 退回**手动审批档**行为（只读白名单免问 + 非白名单弹卡片审批），不裸跑无闸。
-- **工具层规则照常生效**（判定在 agent 进程内，不依赖平台）——read/write/edit 的 ask/deny、凭证 ask、第 0 层写保护在 Linux/Windows 依然工作。差别只在 bash 没有 Seatbelt 硬拦：`cat ~/.ssh/id_rsa` 若不在只读白名单里会弹卡片，但用户批准后仍能读（无 OS 强制）。
-- Linux bwrap 仍按"最后再做"排期：写侧 bind 白名单同构可编译；读侧 ask/deny 用 `--tmpfs`/`--ro-bind` 遮盖近似。届时可为 Linux 也开放"沙箱保护"档。
-- **Windows 原生后端见 §11**：把 shell 从“白名单+命令卡片”升级到 RestrictedToken + ACL 的写边界；落地后提供“写保护”档，并使用具体路径 capability 审批，不宣称 shell deny-read。
+- Linux 的 `platform_sandbox_availability()` 当前固定返回 false。即使某会话误发 `tier=sandbox`，`wraps_shell()` 也为 false，shell 会退回**手动审批档**（只读白名单免问 + 非白名单弹卡片），不会裸跑无闸。
+- **工具层规则照常生效**（判定在 agent 进程内，不依赖 OS 后端）——read/write/edit 的 ask/deny、凭证 ask、第 0 层写保护在 Linux 依然工作。差别是 shell 没有 OS 硬边界：用户批准命令后，子进程可使用当前用户原有权限访问文件。
+- Linux 不能只用一句“`tmpfs`/`ro-bind` 遮盖”作为实现规格：空内容遮盖可能不产生拒绝，glob 对运行中新路径也不是动态规则。完整方案、与 macOS 的不等价项和阶段计划见 [LINUX_SANDBOX_PLAN.md](LINUX_SANDBOX_PLAN.md)。
+- **Windows 原生后端见 §11**：RestrictedToken + ACL 强制写边界，使用具体路径 capability 审批，不宣称 shell deny-read。
 
 ## 8. 实施阶段
 
@@ -173,14 +173,14 @@ v1（原 Phase 1 + Phase 2）已全部实现并通过验证（agent 67 测 + GUI
 
 - 命令级审批规则（allow/ask/deny by command prefix）——纯文件模型，试用后再评估（APPROVAL_PLAN §8）。
 - 网络审批 / 域名过滤——不做。将来若确需，经"Seatbelt 锁出口到本地代理 + 代理读 CONNECT/SNI"实现，届时再加规则类型（本版 schema 不预留）。
-- escalation 精确放宽（只开单项权限）。
-- ~~Windows 原生沙盒~~（**改为做**，方案见 §11）；bwrap 捆绑 helper。
+- escalation 精确放宽（只开单项权限）不属于当前已实现版本；已确认放到 Linux 二期，并与 macOS 一起迁移到跨平台路径级能力，见 LINUX_SANDBOX_PLAN §5.1。
+- ~~Windows 原生沙盒~~（**已完成**，方案见 §11）。Linux bwrap 与 helper 改由 [LINUX_SANDBOX_PLAN.md](LINUX_SANDBOX_PLAN.md) 独立跟踪，不再列为笼统“不做”。
 - `auto_review`（审查 agent 作 reviewer）。
 - MCP / 新工具的沙盒接入规范（工具集扩展时再定）。
 
 ## 10. 决策记录
 
-v2 决策（V1–V9）见 APPROVAL_PLAN §9。v1 期间沿用有效的：escalation 按命令放行（Q2）、channels 无审批 UI 按失败返回（Q3）、`.git` 不排除（Q4）、`sandbox-exec` deprecated 接受（Q5）、失败启发式保守（Q6）、默认切换不告知（Q7）、temp 读写全开、macOS→Linux→（无 Windows）平台顺序、R1–R6 安全 review 修正（详见 git history 本文件 v1 版）。
+v2 决策（V1–V14）见 APPROVAL_PLAN §9。仍沿用的历史决定包括：macOS escalation 按命令放行（Q2）、channels 无审批 UI 按失败返回（Q3）、`.git` 不排除（Q4）、`sandbox-exec` deprecated 接受（Q5）、失败启发式保守（Q6）、默认切换不告知（Q7）和 temp 读写全开。Windows 已由 §11 独立收口；Linux 已确认决策和剩余 review 项见 [LINUX_SANDBOX_PLAN.md](LINUX_SANDBOX_PLAN.md)，不沿用旧版平台排期描述。
 
 ## 11. Windows 原生写保护（unelevated：RestrictedToken + ACL）
 
