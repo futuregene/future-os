@@ -50,10 +50,10 @@ jobs:
       APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm
@@ -158,7 +158,7 @@ jobs:
           chmod 600 "$keys_dir/AuthKey_${APPLE_API_KEY_ID}.p8"
           echo "APPLE_API_KEY_DIR=$keys_dir" >> "$GITHUB_ENV"
 
-      - name: Install dependencies
+      - name: Install mobile dependencies
         working-directory: mobile
         run: npm ci
 
@@ -166,7 +166,7 @@ jobs:
         working-directory: mobile
         run: npx expo prebuild --platform ios
 
-      - name: Build and export signed .ipa
+      - name: Build iOS IPA
         working-directory: mobile/ios
         env:
           DEVELOPMENT_TEAM: ${{ env.DEVELOPMENT_TEAM }}
@@ -222,9 +222,8 @@ jobs:
           [[ -n "$ipa" && -s "$ipa" ]] || { echo "Exported .ipa not found." >&2; exit 1; }
           cp "$ipa" "$RUNNER_TEMP/$app_name"
           echo "IPA_PATH=$RUNNER_TEMP/$app_name" >> "$GITHUB_ENV"
-          echo "IPA_NAME=$app_name" >> "$GITHUB_ENV"
 
-      - name: Upload to TestFlight
+      - name: Upload iOS IPA to TestFlight
         env:
           APPLE_API_KEY_DIR: ${{ env.APPLE_API_KEY_DIR }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}

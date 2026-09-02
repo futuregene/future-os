@@ -175,7 +175,7 @@ jobs:
 
       - name: Checkout
         if: steps.affected.outputs.run == 'true'
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       # Pinned to match rust-toolchain.toml so CI and local dev use the same
       # compiler. Bump both together (see build.yml for the same pin).
@@ -330,7 +330,7 @@ jobs:
 
       - name: Checkout
         if: steps.affected.outputs.run == 'true'
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup Rust
         if: steps.affected.outputs.run == 'true'
@@ -438,7 +438,7 @@ jobs:
 
       - name: Checkout
         if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.desktop_tauri == 'true'
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup Rust
         if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.desktop_tauri == 'true'
@@ -506,10 +506,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm
@@ -542,10 +542,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm

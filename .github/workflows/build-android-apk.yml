@@ -10,6 +10,10 @@ on:
         description: Exact version supplied by the coordinator.
         required: true
         type: string
+      artifact_version:
+        description: Public artifact version supplied by the coordinator.
+        required: true
+        type: string
       build_number:
         description: Monotonic Android versionCode supplied by the coordinator.
         required: true
@@ -44,27 +48,30 @@ jobs:
       OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
 
       - name: Resolve version
         env:
           FUTURE_VERSION: ${{ inputs.version }}
+          INPUT_ARTIFACT_VERSION: ${{ inputs.artifact_version }}
           INPUT_BUILD_NUMBER: ${{ inputs.build_number }}
         run: |
           set -euo pipefail
           version="$(node scripts/version.mjs)"
+          artifact_version="${INPUT_ARTIFACT_VERSION:-$version}"
           build_number="${INPUT_BUILD_NUMBER:-${{ github.run_number }}}"
           echo "FUTURE_VERSION=$version" >> "$GITHUB_ENV"
+          echo "FUTURE_ARTIFACT_VERSION=$artifact_version" >> "$GITHUB_ENV"
           echo "FUTURE_BUILD_NUMBER=$build_number" >> "$GITHUB_ENV"
-          echo "Android version: $version (build $build_number)"
+          echo "Android version: $version (artifacts $artifact_version, build $build_number)"
 
       - name: Setup Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: "temurin"
           java-version: 17
@@ -92,7 +99,7 @@ jobs:
           keyPassword=$KEYSTORE_PASSWORD
           EOF
 
-      - name: Install dependencies
+      - name: Install mobile dependencies
         working-directory: mobile
         run: npm ci
 
@@ -104,30 +111,30 @@ jobs:
         working-directory: mobile
         run: npx expo prebuild --platform android
 
-      - name: Build release APK
+      - name: Build Android APK
         working-directory: mobile/android
         run: ./gradlew assembleRelease
 
-      - name: Rename APK
+      - name: Stage artifacts
         run: |
           cp mobile/android/app/build/outputs/apk/release/app-release.apk \
-             "FutureOS_${FUTURE_VERSION}_android-universal.apk"
+             "FutureOS_${FUTURE_ARTIFACT_VERSION}_android-universal.apk"
 
-      - name: Upload APK artifact
+      - name: Upload artifacts to GitHub
         uses: actions/upload-artifact@v7
         with:
-          name: futureos-android-apk
+          name: futureos-android-universal-apk
           if-no-files-found: error
           overwrite: true
           path: FutureOS_*_android-universal.apk
           retention-days: 3
 
-      - name: Upload APK to OSS
+      - name: Upload artifacts to OSS
         if: github.event_name == 'workflow_dispatch' && !inputs.coordinated
         run: |
           set -euo pipefail
-          APK="FutureOS_${FUTURE_VERSION}_android-universal.apk"
-          ossutil cp -f "$APK" "oss://$OSS_BUCKET/test/$FUTURE_VERSION/$APK"
-          ossutil stat "oss://$OSS_BUCKET/test/$FUTURE_VERSION/$APK"
+          APK="FutureOS_${FUTURE_ARTIFACT_VERSION}_android-universal.apk"
+          ossutil cp -f "$APK" "oss://$OSS_BUCKET/test/$FUTURE_ARTIFACT_VERSION/$APK"
+          ossutil stat "oss://$OSS_BUCKET/test/$FUTURE_ARTIFACT_VERSION/$APK"
           echo "==> Download URL:"
-          echo "https://dl.future-os.cn/test/$FUTURE_VERSION/$APK"
+          echo "https://dl.future-os.cn/test/$FUTURE_ARTIFACT_VERSION/$APK"

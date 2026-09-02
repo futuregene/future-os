@@ -7,9 +7,9 @@ permissions: read-all
 # both but still creates updater artifacts signed by the Tauri updater key.
 # Keep both modes restricted to trusted triggers because both access secrets.
 #
-# Standalone dev builds go to `dev/<artifact-version>/`. Formal releases call this workflow from
-# release.yml and consume its verified artifact; only the coordinator publishes
-# to `releases/` and advances latest.json.
+# Standalone dev builds go to `dev/<artifact-version>/`. Coordinators consume
+# the verified artifacts; only they publish complete channels and advance their
+# latest.json manifests.
 
 on:
   workflow_dispatch:
@@ -23,6 +23,10 @@ on:
     inputs:
       version:
         description: Exact release version supplied by the coordinator.
+        required: true
+        type: string
+      artifact_version:
+        description: Public artifact version supplied by the coordinator.
         required: true
         type: string
       signed:
@@ -75,13 +79,13 @@ jobs:
           - name: Apple Silicon
             runner: macos-latest
             asset_arch: aarch64
-            artifact_name: futureos-macos
+            artifact_name: futureos-macos-aarch64
           # Keep the Intel build pinned to a named image: unlike
           # `macos-latest`, this cannot silently switch architectures.
           - name: Intel
             runner: macos-15-intel
             asset_arch: x64
-            artifact_name: futureos-macos-intel
+            artifact_name: futureos-macos-x64
     env:
       OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
       OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
@@ -90,10 +94,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm
@@ -162,17 +166,18 @@ jobs:
         id: v
         env:
           FUTURE_VERSION: ${{ inputs.version }}
+          FUTURE_ARTIFACT_VERSION: ${{ inputs.artifact_version }}
           FUTURE_BUILD_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && !inputs.coordinated && 'dev' || '' }}
         run: node scripts/version.mjs --github-output
 
-      - name: Install npm dependencies (Desktop)
+      - name: Install desktop dependencies
         working-directory: desktop
         run: npm ci
 
       # The unified `future` CLI is the single sidecar (tauri.conf.json
       # bundle.externalBin); the agent runs through `future agent`, so only the
       # CLI needs building and staging.
-      - name: Build CLI binary
+      - name: Build CLI
         working-directory: cli
         env:
           FUTURE_VERSION: ${{ steps.v.outputs.version }}
@@ -415,7 +420,7 @@ jobs:
       # mount the website DMG and extract the automatic-updater archive. Both
       # copies of the app must retain their Developer ID signature and stapled
       # notarization ticket and must pass Gatekeeper assessment.
-      - name: Verify distributable macOS artifacts
+      - name: Verify signed artifacts
         if: inputs.signed
         run: |
           set -euo pipefail
@@ -560,7 +565,7 @@ jobs:
           hdiutil convert "$work" -format UDZO -o "$out"
           mv -f "$out" "$src"
 
-      - name: Verify unsigned macOS artifacts
+      - name: Verify unsigned artifacts
         if: ${{ !inputs.signed }}
         run: |
           set -euo pipefail
@@ -576,23 +581,26 @@ jobs:
           echo "MACOS_UPDATER=${updaters[0]}" >> "$GITHUB_ENV"
           echo "MACOS_UPDATER_SIG=${updater_sigs[0]}" >> "$GITHUB_ENV"
 
-      - name: Stage macOS artifacts
+      - name: Stage artifacts
         run: |
           set -euo pipefail
-          suffix="${{ inputs.signed && '' || '-unsigned' }}"
-          published_version="${{ inputs.coordinated && steps.v.outputs.version || steps.v.outputs.artifact_version }}"
+          if [[ "${{ inputs.signed }}" == "true" ]]; then
+            suffix=""
+          else
+            suffix="-unsigned"
+          fi
+          published_version="${{ steps.v.outputs.artifact_version }}"
           mkdir -p release-assets
           dmg_output="release-assets/FutureOS_${published_version}_${{ matrix.asset_arch }}${suffix}.dmg"
           updater_output="release-assets/FutureOS_${published_version}_${{ matrix.asset_arch }}${suffix}.app.tar.gz"
           cp "$DISTRIBUTABLE_DMG" "$dmg_output"
           cp "$MACOS_UPDATER" "$updater_output"
           cp "$MACOS_UPDATER_SIG" "$updater_output.sig"
-          echo "SIGNED_RELEASE_DMG=$dmg_output" >> "$GITHUB_ENV"
 
-      - name: Upload macOS artifact
+      - name: Upload artifacts to GitHub
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.artifact_name }}${{ inputs.signed && '' || '-unsigned' }}
+          name: ${{ inputs.signed && matrix.artifact_name || format('{0}-unsigned', matrix.artifact_name) }}
           if-no-files-found: error
           overwrite: true
           path: release-assets/*
@@ -620,7 +628,7 @@ jobs:
             | sed -E 's#^https?://##; s/^oss-//; s/-internal//; s/\.aliyuncs\.com$//')"
           echo "OSS_REGION=$region" >> "$GITHUB_ENV"
 
-      - name: Upload macOS artifacts to OSS
+      - name: Upload artifacts to OSS
         if: github.event_name == 'workflow_dispatch' && !inputs.coordinated
         run: |
           set -euo pipefail
