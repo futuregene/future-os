@@ -73,8 +73,7 @@ curl -fsSL https://dl.future-os.cn/install.sh | bash
 ```
 
 The script auto-detects the platform, installs the matching package from the
-release manifest, verifies its SHA-256, then runs `future init` and the
-interactive `future config` provider setup:
+release manifest, verifies its SHA-256, then runs `future init`:
 
 - **Debian/Ubuntu** — `FutureOS_<version>_amd64.deb`, installed with `apt` (resolves dependencies).
 - **Every other Linux** — `FutureOS-portable-linux.tar.gz` (`futureos` desktop app + unified `future` CLI), extracted to `/usr/local/bin` (or `~/.local/bin` when not writable).

@@ -3,8 +3,7 @@
 #   iex (irm https://dl.future-os.cn/install.ps1)
 #
 # Downloads the signed NSIS installer for the latest release from the release
-# manifest, verifies its SHA-256, runs it silently, then executes `future init`
-# and the interactive `future config` provider setup.
+# manifest, verifies its SHA-256, runs it silently, then executes `future init`.
 #
 # Env overrides:
 #   FUTUREOS_VERSION  pin a specific release (e.g. v0.1.2); default = latest
@@ -65,12 +64,8 @@ if ($futureExe) {
     if ($LASTEXITCODE -ne 0) {
         Write-Warning "future init did not complete. Retry with: `"$futureExe`" init"
     }
-
-    Write-Host "==> Configuring a model provider..." -ForegroundColor Green
-    & $futureExe config
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "Model provider setup did not complete. Retry with: `"$futureExe`" config"
-    }
+    # Interactive provider setup (`future config`) is intentionally skipped
+    # until just before the release ships.
 } else {
     Write-Warning "Bundled future.exe was not found. Run 'future init' and 'future config' manually."
 }

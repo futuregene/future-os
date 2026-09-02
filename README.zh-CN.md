@@ -72,7 +72,7 @@ iex (irm https://dl.future-os.cn/install.ps1)
 各平台（桌面应用、工具链、GUI 打包）的分步安装步骤见
 **[构建与安装](docs/build-and-install.zh-CN.md)** 文档。
 
-安装脚本最后会自动执行 `future init`，然后进入交互式 `future config` 模型提供商配置。
+安装脚本最后会自动执行 `future init`。
 
 ### 配置模型
 

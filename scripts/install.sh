@@ -5,7 +5,7 @@
 #   Windows:        iex (irm https://dl.future-os.cn/install.ps1)
 #
 # Auto-detects the OS, installs the prebuilt release, then runs `future init`
-# and the interactive `future config` provider setup — no local build:
+# — no local build:
 #   - macOS            downloads the signed DMG, verifies its SHA-256 against
 #                      the release manifest, and copies it to /Applications.
 #   - Linux (Debian)   downloads the .deb and installs it with apt/dpkg.
@@ -71,9 +71,9 @@ verify_sha256() { # file expected
   say "Checksum verified"
 }
 
-# Initialize bundled skills/CLI links, then launch the interactive provider
-# setup. The one-line installer itself is commonly piped into bash, so stdin is
-# the exhausted script pipe; read interactive answers from the controlling TTY.
+# Initialize bundled skills/CLI links. Interactive provider setup
+# (`future config`) is intentionally not run here yet — add it back right
+# before the release ships so installers stay non-interactive until then.
 run_future_setup() {
   local future_bin="$1"
   if [[ ! -x "$future_bin" ]]; then
@@ -84,15 +84,6 @@ run_future_setup() {
   say "Initializing FutureOS"
   if ! "$future_bin" init; then
     warn "future init did not complete — retry with: $future_bin init"
-  fi
-
-  if { : </dev/tty; } 2>/dev/null; then
-    say "Configuring a model provider"
-    if ! "$future_bin" config </dev/tty; then
-      warn "model provider setup did not complete — retry with: $future_bin config"
-    fi
-  else
-    warn "no interactive terminal available — run '$future_bin config' to configure a model provider"
   fi
 }
 

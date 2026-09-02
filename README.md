@@ -72,7 +72,7 @@ iex (irm https://dl.future-os.cn/install.ps1)
 Step-by-step installation for every platform (desktop app, toolchains, GUI
 packaging) is in the **[Build & Install](docs/build-and-install.md)** guide.
 
-The installers finish by running `future init` and the interactive `future config` provider setup.
+The installers finish by running `future init`.
 
 ### Configure a model
 
