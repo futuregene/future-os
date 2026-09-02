@@ -42,6 +42,8 @@ Run the pre-PR pass in the worktree on the CI toolchain (the repo pins `rust-too
 
 **Always sync with `origin/main` right before pushing** — not just at the start of the pass. Re-run `git fetch origin main`; if main moved while you were running checks, merge it again and re-run the checks it affects. Branch protection requires the head branch to be up to date with main, and on a fast-moving main a stale branch bounces between BEHIND and re-queued CI (use `gh pr merge --squash --auto` so the merge fires as soon as checks go green).
 
+**If a PR opens BEHIND / "update branch" is requested, update it immediately — before anything else.** The moment `gh pr view` (or the GitHub banner) shows the branch is not up to date with main: `git fetch origin main && git merge origin/main` into the PR branch (resolve conflicts here), re-run the scoped checks the merge touches, push, and let `--auto` re-fire. Do not keep working on other tasks or start new work while your PR sits BEHIND — on a fast-moving main it will bounce between BEHIND and re-queued CI, and every other queued PR behind it waits too.
+
 Do not skip steps or use narrower flags than CI — a green local check on a smaller scope does not guarantee CI passes (e.g. clippy without `--all-targets` misses test code). `make help` lists every target.
 
 During normal development you don't need to run this full suite every time — iterate on targeted checks (`cargo check`, a single test, `tsc`) to save time. The full pass is only mandatory right before a PR; without it the PR cannot merge.
