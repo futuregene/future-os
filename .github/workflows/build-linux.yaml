@@ -1,0 +1,246 @@
+name: Build Linux
+
+permissions: read-all
+
+# Linux packages have no platform code-signing identity. Formal release .deb
+# files are nevertheless signed with the existing Tauri updater key so clients
+# can authenticate them before invoking the system package manager.
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: Exact release version supplied by the coordinator.
+        required: false
+        type: string
+        default: ""
+      release:
+        description: Stage artifacts using formal release names.
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: true
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: false
+      TAURI_UPDATER_PUBLIC_KEY:
+        required: true
+
+jobs:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Resolve version
+        id: v
+        env:
+          FUTURE_VERSION: ${{ inputs.version }}
+        run: node scripts/version.mjs --github-output
+
+  build:
+    name: Build Linux (${{ matrix.arch }})
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            os: ubuntu-latest
+            deb_arch: amd64
+            artifact_name: futureos-linux
+            release_artifact_name: futureos-linux-release
+          # Build natively: cross-compiling the WebKit-heavy GUI would require
+          # a complete aarch64 sysroot.
+          - arch: aarch64
+            os: ubuntu-24.04-arm
+            deb_arch: arm64
+            artifact_name: futureos-linux-arm64
+            release_artifact_name: futureos-linux-arm64-release
+    env:
+      FUTURE_VERSION: ${{ needs.version.outputs.version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            desktop/src-tauri
+          cache-on-failure: true
+          cache-all-crates: true
+
+      - name: Install Linux system dependencies
+        run: |
+          bash scripts/ci/install-apt-packages.sh \
+            build-essential \
+            curl \
+            file \
+            mold \
+            binutils \
+            libayatana-appindicator3-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            musl-tools \
+            patchelf \
+            wget
+
+      - name: Install npm dependencies (Desktop)
+        working-directory: desktop
+        run: npm ci
+
+      # Build the unified CLI as a fully static musl binary. It is both the
+      # Tauri sidecar and a standalone distribution for headless Linux hosts.
+      - name: Build CLI binary (Linux, static musl)
+        working-directory: cli
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+        run: |
+          set -euo pipefail
+          target="${{ matrix.arch }}-unknown-linux-musl"
+          rustup target add "$target"
+          cargo build --release --target "$target"
+          triple=$(rustc -Vv | sed -n 's/^host: //p')
+          mkdir -p ../desktop/src-tauri/binaries
+          cp "../target/$target/release/future" "../desktop/src-tauri/binaries/future-$triple"
+          tar -czf "FutureOS_${FUTURE_VERSION}_linux_${{ matrix.arch }}-cli.tar.gz" \
+            -C "../target/$target/release" future
+
+      - name: Set Tauri bundle version
+        run: node scripts/version.mjs --set-bundle
+
+      - name: Build desktop bundle (.deb)
+        if: inputs.release != true
+        working-directory: desktop
+        run: npm run tauri:build
+
+      # Formal Linux builds embed the same updater trust root and endpoint as
+      # macOS and Windows. The .deb itself is signed after it is renamed below;
+      # createUpdaterArtifacts is intentionally omitted because no AppImage is
+      # produced by this workflow.
+      - name: Build desktop bundle (.deb, updater-enabled)
+        if: inputs.release == true
+        env:
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          : "${TAURI_UPDATER_PUBLIC_KEY:?TAURI_UPDATER_PUBLIC_KEY secret is required}"
+          overlay="$RUNNER_TEMP/tauri.linux-updater.json"
+          node -e '
+            const fs = require("node:fs");
+            fs.writeFileSync(process.argv[1], JSON.stringify({
+              plugins: {
+                updater: {
+                  pubkey: process.env.TAURI_UPDATER_PUBLIC_KEY,
+                  endpoints: [
+                    "https://dl.future-os.cn/releases/latest.json"
+                  ]
+                }
+              }
+            }));
+          ' "$overlay"
+          npm --prefix desktop run tauri:build -- --config "$overlay"
+
+      - name: Assemble Linux portable
+        run: |
+          set -euo pipefail
+          dir="futureos-portable-linux"
+          mkdir -p "$dir"
+          cp "desktop/src-tauri/target/release/futureos" "$dir/futureos"
+          cp "target/${{ matrix.arch }}-unknown-linux-musl/release/future" "$dir/future"
+          chmod +x "$dir"/*
+          cp "docs/dist/readme-linux.txt" "$dir/Readme.txt"
+          mkdir -p "$dir/licenses/loop"
+          cp LICENSE "$dir/licenses/"
+          cp orchestration/loop/LICENSE orchestration/loop/NOTICE orchestration/loop/UPSTREAM.md "$dir/licenses/loop/"
+          tar -czf "FutureOS_${FUTURE_VERSION}_linux_${{ matrix.arch }}-portable.tar.gz" \
+            -C "$dir" .
+
+      - name: Upload desktop bundle
+        if: inputs.release != true
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact_name }}
+          if-no-files-found: error
+          overwrite: true
+          path: desktop/src-tauri/target/release/bundle/deb/*.deb
+          retention-days: 3
+
+      - name: Upload Linux portable
+        if: inputs.release != true
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact_name }}-portable
+          if-no-files-found: error
+          overwrite: true
+          path: FutureOS_*_linux_${{ matrix.arch }}-portable.tar.gz
+          retention-days: 3
+
+      - name: Upload Linux CLI (static)
+        if: inputs.release != true
+        uses: actions/upload-artifact@v7
+        with:
+          name: future-cli-linux-${{ matrix.arch }}
+          if-no-files-found: error
+          overwrite: true
+          path: cli/FutureOS_*_linux_${{ matrix.arch }}-cli.tar.gz
+          retention-days: 3
+
+      - name: Stage release assets
+        if: inputs.release == true
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${TAURI_SIGNING_PRIVATE_KEY:?TAURI_SIGNING_PRIVATE_KEY secret is required}"
+          mkdir -p release-assets
+          deb="$(find desktop/src-tauri/target/release/bundle/deb -maxdepth 1 -name '*.deb' -print -quit)"
+          [[ -n "$deb" ]] || {
+            echo "Tauri produced no .deb bundle" >&2
+            exit 1
+          }
+          release_deb="release-assets/FutureOS_${FUTURE_VERSION}_${{ matrix.deb_arch }}.deb"
+          cp "$deb" "$release_deb"
+          npm --prefix desktop exec -- tauri signer sign "$release_deb"
+          [[ -s "$release_deb.sig" ]] || {
+            echo "Tauri produced no updater signature for $release_deb" >&2
+            exit 1
+          }
+          cp "FutureOS_${FUTURE_VERSION}_linux_${{ matrix.arch }}-portable.tar.gz" "release-assets/"
+          cp "cli/FutureOS_${FUTURE_VERSION}_linux_${{ matrix.arch }}-cli.tar.gz" "release-assets/"
+
+      - name: Upload Linux release assets
+        if: inputs.release == true
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.release_artifact_name }}
+          if-no-files-found: error
+          overwrite: true
+          path: release-assets/
+          retention-days: 7

@@ -25,6 +25,42 @@ permissions: read-all
 
 on:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: Exact marketing version supplied by the coordinator.
+        required: true
+        type: string
+      build_number:
+        description: Monotonic App Store build number supplied by the coordinator.
+        required: true
+        type: string
+      coordinated:
+        description: Let the caller handle release publication.
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      IOS_DIST_CERT_P12_BASE64:
+        required: true
+      IOS_DIST_CERT_P12_PWD:
+        required: true
+      IOS_PROVISIONING_PROFILE_BASE64:
+        required: true
+      APPLE_API_KEY:
+        required: true
+      APPLE_API_KEY_ID:
+        required: true
+      APPLE_API_ISSUER:
+        required: true
+      OSS_ENDPOINT:
+        required: false
+      OSS_BUCKET:
+        required: false
+      OSS_ACCESS_KEY_ID:
+        required: false
+      OSS_ACCESS_KEY_SECRET:
+        required: false
 
 jobs:
   version:
@@ -39,15 +75,20 @@ jobs:
 
       - name: Resolve build number
         id: v
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_BUILD_NUMBER: ${{ inputs.build_number }}
         run: |
           # Marketing version bumped to 0.0.2: TestFlight already accepted
           # 0.0.1 with build number 31479016198, so 0.0.1's sequence can only
           # increase; small run_number values must start fresh under 0.0.2.
           # The store build number is this workflow's per-repo run counter
           # (starts at 1; stays within int32).
-          echo "version=0.0.2" >> "$GITHUB_OUTPUT"
-          echo "build_number=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
-          echo "TestFlight version: 0.0.2 (build ${{ github.run_number }})"
+          version="${INPUT_VERSION:-0.0.2}"
+          build_number="${INPUT_BUILD_NUMBER:-${{ github.run_number }}}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "build_number=$build_number" >> "$GITHUB_OUTPUT"
+          echo "TestFlight version: $version (build $build_number)"
 
   build:
     name: Build and upload TestFlight
@@ -163,7 +204,6 @@ jobs:
         working-directory: mobile
         run: npm ci
 
-     
       - name: Prebuild iOS
         working-directory: mobile
         env:
@@ -252,6 +292,7 @@ jobs:
             --verbose
 
       - name: Upload IPA to OSS
+        if: github.event_name == 'workflow_dispatch' && !inputs.coordinated
         run: |
           set -euo pipefail
           : "${IPA_PATH:?IPA_PATH is required}"

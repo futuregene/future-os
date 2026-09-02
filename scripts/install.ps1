@@ -15,7 +15,7 @@ $Base = if ($env:FUTUREOS_BASE) { $env:FUTUREOS_BASE } else { 'https://dl.future
 $Version = $env:FUTUREOS_VERSION
 
 if ($Version) {
-    # Byte-identical alias of the signed installer, kept for the pinned-version path.
+    # Signed release installers use the canonical name without a signing suffix.
     $Url = "$Base/$Version/FutureOS_${Version}_x64-setup.exe"
     $Sha = $null
 } else {

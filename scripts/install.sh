@@ -40,14 +40,13 @@ esac
 
 fetch() { curl -fsSL --proto '=https' --tlsv1.2 "$1"; }
 
-# Asset URL+SHA-256 for one release file, read from the `assets` section of
-# the pretty-printed release manifest (latest.json). Filename-keyed (e.g.
-# "FutureOS_v0.1.2_aarch64-sign.dmg") -> "URL SHA256".
+# Asset URL+SHA-256 for one key in the `assets` section of the pretty-printed
+# release manifest (latest.json), e.g. "linux-x86_64-deb" -> "URL SHA256".
 manifest_asset() {
-  awk -v f="$1" '
+  awk -v key="$1" '
     /"assets":/ { in_assets=1; next }
-    in_assets && $0 ~ f {
-      u=$0; getline; s=$0;
+    in_assets && index($0, "\"" key "\"") {
+      getline; u=$0; getline; s=$0;
       gsub(/^.*"url": *"/,"",u); gsub(/".*$/,"",u);
       gsub(/^.*"sha256": *"/,"",s); gsub(/".*$/,"",s);
       print u, s; exit
@@ -87,13 +86,17 @@ resolve_latest() {
 
 # Resolve the download URL+SHA-256 for one asset key (e.g. "darwin-aarch64").
 # The pinned-version path constructs the URL directly and skips verification,
-# since there is no manifest to check against.
+# since there is no manifest lookup in that flow yet.
 ASSET_URL=""
 ASSET_SHA=""
 resolve_asset() {
-  local key="$1" filename="$2"
+  local key="$1" filename="$2" fallback_key="${3:-}" manifest_value=""
   if [[ -z "${FUTUREOS_VERSION:-}" ]]; then
-    read -r ASSET_URL ASSET_SHA <<< "$(manifest_asset "$filename")" || true
+    manifest_value="$(manifest_asset "$key")"
+    if [[ -z "$manifest_value" && -n "$fallback_key" ]]; then
+      manifest_value="$(manifest_asset "$fallback_key")"
+    fi
+    read -r ASSET_URL ASSET_SHA <<< "$manifest_value" || true
     [[ -n "$ASSET_URL" ]] || die "no release asset '$key' in $LATEST"
   else
     ASSET_URL="$BASE/$VERSION/$filename"
@@ -105,14 +108,14 @@ resolve_asset() {
 install_macos() {
   local filename dmg mnt dmg_arch
   resolve_latest
-  # Release artifacts use the short "x64" for Intel (FutureOS_<v>_x64-sign.dmg),
+  # Release artifacts use the short "x64" for Intel (FutureOS_<v>_x64.dmg),
   # while latest.json asset keys use the Rust-style "x86_64".
   case "$ARCH" in
     x86_64)  dmg_arch="x64" ;;
     aarch64) dmg_arch="aarch64" ;;
     *) die "unsupported architecture: $ARCH" ;;
   esac
-  filename="FutureOS_${VERSION}_${dmg_arch}-sign.dmg"
+  filename="FutureOS_${VERSION}_${dmg_arch}.dmg"
   resolve_asset "darwin-$ARCH" "$filename"
   say "Installing FutureOS $VERSION ($OS-$ARCH)"
   say "Downloading $ASSET_URL"
@@ -151,23 +154,28 @@ install_linux() {
       *) die "unsupported architecture: $ARCH" ;;
     esac
     pkg_type="deb"
-    key="linux-$ARCH"
+    key="linux-$ARCH-deb"
     filename="FutureOS_${VERSION}_${DEB_ARCH}.deb"
     say "Debian-based system detected — installing the .deb package"
   else
     pkg_type="portable"
     key="linux-$ARCH-portable"
-    # x86_64 keeps its historical arch-less filename; aarch64 tarballs carry
-    # the -arm64 suffix (see release.yml's linux matrix).
+    # Release filenames always carry the normalized Linux architecture.
     case "$ARCH" in
-      x86_64)  filename="FutureOS-portable-linux.tar.gz" ;;
-      aarch64) filename="FutureOS-portable-linux-arm64.tar.gz" ;;
+      x86_64)  filename="FutureOS_${VERSION}_linux_x86_64-portable.tar.gz" ;;
+      aarch64) filename="FutureOS_${VERSION}_linux_aarch64-portable.tar.gz" ;;
       *) die "unsupported architecture: $ARCH" ;;
     esac
     say "Non-Debian system detected — installing the portable tarball"
   fi
 
-  resolve_asset "$key" "$filename"
+  if [[ "$pkg_type" == "deb" ]]; then
+    # Prefer the explicit package-format key. Fall back to the historical key
+    # while old manifests may still be served by mirrors or pinned caches.
+    resolve_asset "$key" "$filename" "linux-$ARCH"
+  else
+    resolve_asset "$key" "$filename"
+  fi
   say "Installing FutureOS $VERSION ($OS-$ARCH, $pkg_type)"
   say "Downloading $ASSET_URL"
   pkg="$TMP/FutureOS.$pkg_type"
