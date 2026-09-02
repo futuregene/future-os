@@ -4344,6 +4344,22 @@ async fn run_turns(
                 s.instruction
             ))
         });
+        // Persist the consumption BEFORE the turn runs: if this run dies
+        // mid-turn, the next run still must not re-inject the stale steer.
+        if let Some(steer) = goal.pending_steer.as_ref() {
+            if steer_note
+                .as_ref()
+                .is_some_and(|n| n.contains(steer.instruction.as_str()))
+            {
+                store.append(Event::SteerConsumed {
+                    goal_id: goal_id.to_string(),
+                    agent_id: steer.agent_id.clone(),
+                    steer_ts: steer.ts,
+                    ts: now_epoch(),
+                })?;
+                last_steer_ts = steer.ts;
+            }
+        }
         let continue_note = next_continue_note.take();
         let turn_note = steer_note.or(continue_note);
         let turn_future = execute_turn(
@@ -7583,6 +7599,7 @@ fn describe_event(event: &crate::store::Event) -> String {
     use crate::store::Event;
     let kind = match event {
         Event::GoalStarted { .. } => "goal_started",
+        Event::SteerConsumed { .. } => "steer_consumed",
         Event::TodoAdded { .. } => "todo_added",
         Event::TodoCompleted {
             todo_id,

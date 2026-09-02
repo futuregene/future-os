@@ -210,20 +210,33 @@ jobs:
       # protobuf-compiler is needed only for the `proto codegen is fresh` step
       # below — normal builds never run protoc (generation is gated on
       # REGENERATE_PROTO).
-      - name: Install Linux deps
+      # Base toolchain packages always; the WebKit/GTK/SSL stack ONLY when the
+      # desktop backend is affected (clippy links its -sys build scripts, which
+      # need pkg-config to find the libs). A loop-only PR skips ~40-60s of apt
+      # (the historical flake point: apt fetching from a slow Azure mirror),
+      # and protobuf-compiler is only needed for the proto-freshness step.
+      - name: Install Linux deps (base)
         if: steps.affected.outputs.run == 'true'
         run: |
           bash scripts/ci/install-apt-packages.sh \
             build-essential \
             binutils \
             mold \
-            pkg-config \
+            pkg-config
+
+      # protobuf-compiler is needed only for the `proto codegen is fresh` step
+      # below — normal builds never run protoc (generation is gated on
+      # REGENERATE_PROTO). Install it in that step's own condition so proto-
+      # unrelated PRs skip it entirely.
+      - name: Install Linux deps (desktop GUI stack)
+        if: steps.affected.outputs.run == 'true' && needs.changes.outputs.desktop_tauri == 'true'
+        run: |
+          bash scripts/ci/install-apt-packages.sh \
             libayatana-appindicator3-dev \
             libgtk-3-dev \
             librsvg2-dev \
             libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            protobuf-compiler
+            libwebkit2gtk-4.1-dev
 
       # tauri-build's build script aborts with `resource path ... doesn't exist`
       # unless every `bundle.externalBin` sidecar is present. For lint empty
@@ -246,6 +259,10 @@ jobs:
       # checked in; guard against proto edits that skip `make generate-proto`.
       # Output is deterministic for pinned prost/tonic-build, so a regenerate
       # on the same source must be a no-op.
+      - name: Install protoc
+        if: steps.affected.outputs.run == 'true' && needs.changes.outputs.proto == 'true'
+        run: bash scripts/ci/install-apt-packages.sh protobuf-compiler
+
       - name: proto codegen is fresh
         if: steps.affected.outputs.run == 'true' && needs.changes.outputs.proto == 'true'
         run: |
@@ -454,14 +471,22 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true
 
-      - name: Install Linux system dependencies
+      # Base toolchain always (when Linux runs); the WebKit/GTK/SSL stack only
+      # when the desktop backend is actually affected - a workspace-only PR
+      # skips ~40-60s of apt (the historical flake point).
+      - name: Install Linux system dependencies (base)
         if: (needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.desktop_tauri == 'true') && runner.os == 'Linux'
         run: |
           bash scripts/ci/install-apt-packages.sh \
             build-essential \
             binutils \
             mold \
-            pkg-config \
+            pkg-config
+
+      - name: Install Linux system dependencies (desktop GUI stack)
+        if: needs.changes.outputs.desktop_tauri == 'true' && runner.os == 'Linux'
+        run: |
+          bash scripts/ci/install-apt-packages.sh \
             libayatana-appindicator3-dev \
             libgtk-3-dev \
             librsvg2-dev \
