@@ -72,9 +72,15 @@ iex (irm https://dl.future-os.cn/install.ps1)
 各平台（桌面应用、工具链、GUI 打包）的分步安装步骤见
 **[构建与安装](docs/build-and-install.zh-CN.md)** 文档。
 
+安装脚本最后会自动执行 `future init`，然后进入交互式 `future config` 模型提供商配置。
+
 ### 配置模型
 
-Agent 至少需要一个带 API key 的模型才能回复。
+Agent 至少需要配置一个模型提供商才能回复。交互式配置同时支持 FutureOS 和自定义 Provider：
+
+```bash
+future config
+```
 
 **FutureOS 托管模型** —— 设备码登录会自动配好 key 和模型列表：
 
@@ -199,7 +205,7 @@ future tui        # 终端界面
 | 现象 | 解决 |
 |---|---|
 | 客户端报连接 / gRPC 错误退出 | Agent 没启动。先启动它(`future agent`)，并确认端口没被占用：`lsof -i :50051`。 |
-| Agent 回复鉴权 / "no model" 错误 | 还没配置模型。运行 `future auth login`，或在 `models.json` 里加一个 provider——见 [配置模型](#配置模型)。 |
+| Agent 回复鉴权 / "no model" 错误 | 还没配置模型。运行 `future config`——见 [配置模型](#配置模型)。 |
 | 构建 / 安装问题 | 见 [构建与安装](docs/build-and-install.zh-CN.md)（平台工具链、链接器、GUI 打包）。 |
 
 ## 社区

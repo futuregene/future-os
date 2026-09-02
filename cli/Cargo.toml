@@ -39,6 +39,7 @@ tokio-tungstenite.workspace = true
 futures-util.workspace = true
 async-trait.workspace = true
 indexmap = "2"
+rpassword = "7"
 
 [dev-dependencies]
 tempfile.workspace = true

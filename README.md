@@ -72,9 +72,15 @@ iex (irm https://dl.future-os.cn/install.ps1)
 Step-by-step installation for every platform (desktop app, toolchains, GUI
 packaging) is in the **[Build & Install](docs/build-and-install.md)** guide.
 
+The installers finish by running `future init` and the interactive `future config` provider setup.
+
 ### Configure a model
 
-The agent needs at least one model with an API key before it can answer.
+The agent needs at least one model provider before it can answer. The interactive setup supports both FutureOS and custom providers:
+
+```bash
+future config
+```
 
 **FutureOS hosted models** — device-flow sign-in provisions keys and a model list automatically:
 
@@ -207,7 +213,7 @@ future tui       # terminal UI
 | Symptom | Fix |
 |---|---|
 | Client exits with a connection / gRPC error | The agent isn't running. Start it (`future agent`) and check nothing else holds the port: `lsof -i :50051`. |
-| Agent replies with an auth / "no model" error | No model configured yet. Run `future auth login`, or add a provider to `models.json` — see [Configure a model](#configure-a-model). |
+| Agent replies with an auth / "no model" error | No model configured yet. Run `future config` — see [Configure a model](#configure-a-model). |
 | Build / install problems | See [Build & Install](docs/build-and-install.md) (platform toolchains, linker, GUI packaging). |
 
 ## Community
