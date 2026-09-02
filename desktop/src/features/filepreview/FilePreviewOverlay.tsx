@@ -50,7 +50,7 @@ export function FilePreviewOverlay({
     return null;
 
   return (
-    <Overlay onClose={onClose} open={open}>
+    <Overlay backdropBlur={kind === "image" ? "strong" : "default"} onClose={onClose} open={open}>
       <IconButton
         className="fixed right-4 top-4 z-10 bg-surface/80 text-ink shadow-panel hover:bg-surface"
         icon={<X className="size-5" />}

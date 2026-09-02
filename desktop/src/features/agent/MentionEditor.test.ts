@@ -3,7 +3,7 @@
 import type { ContextToolOption, SkillMentionOption } from "./MentionEditor";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MentionEditor } from "./MentionEditor";
 import { buildSlashMenuGroups, hasMixedSlashResults } from "./slashMenu";
 
@@ -26,6 +26,73 @@ describe("mention editor", () => {
     expect(editor.getAttribute("autocorrect")).toBe("off");
     expect(editor.getAttribute("spellcheck")).toBe("false");
 
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it("prefers plain text when the clipboard also contains an image", () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const onPasteImages = vi.fn();
+    act(() => {
+      root.render(createElement(MentionEditor, {
+        onPasteImages,
+        onSubmit: () => {},
+        placeholder: "Message",
+      }));
+    });
+
+    const editor = container.querySelector<HTMLElement>("[role=\"textbox\"]")!;
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    range.collapse(false);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const image = new File(["image"], "rendered.png", { type: "image/png" });
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", {
+      value: {
+        getData: (type: string) => type === "text/plain" ? "editable text" : "",
+        items: [{ getAsFile: () => image, kind: "file", type: "image/png" }],
+      },
+    });
+
+    act(() => editor.dispatchEvent(event));
+
+    expect(editor.textContent).toBe("editable text");
+    expect(onPasteImages).not.toHaveBeenCalled();
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it("attaches an image-only clipboard", () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const onPasteImages = vi.fn();
+    act(() => {
+      root.render(createElement(MentionEditor, {
+        onPasteImages,
+        onSubmit: () => {},
+        placeholder: "Message",
+      }));
+    });
+
+    const editor = container.querySelector<HTMLElement>("[role=\"textbox\"]")!;
+    const image = new File(["image"], "image.png", { type: "image/png" });
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", {
+      value: {
+        getData: () => "",
+        items: [{ getAsFile: () => image, kind: "file", type: "image/png" }],
+      },
+    });
+
+    act(() => editor.dispatchEvent(event));
+
+    expect(onPasteImages).toHaveBeenCalledWith([image]);
     act(() => root.unmount());
     container.remove();
   });

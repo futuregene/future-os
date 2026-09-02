@@ -481,12 +481,15 @@ export function MentionEditor({
   }
 
   function handlePaste(event: ReactClipboardEvent<HTMLDivElement>) {
-    // Pasted images become attachments (handled by the parent), never editor text.
+    // Some apps (notably PowerPoint on macOS) publish both a rendered image and
+    // plain text for copied text boxes. Prefer the editable representation when
+    // both are present; a clipboard that contains only images still attaches.
+    const text = event.clipboardData.getData("text/plain");
     const imageFiles = Array.from(event.clipboardData.items)
       .filter(item => item.kind === "file" && item.type.startsWith("image/"))
       .map(item => item.getAsFile())
       .filter((file): file is File => file !== null);
-    if (imageFiles.length > 0) {
+    if (text.length === 0 && imageFiles.length > 0) {
       event.preventDefault();
       onPasteImages?.(imageFiles);
       return;
@@ -494,7 +497,6 @@ export function MentionEditor({
 
     // Otherwise force plain text so pasted rich HTML can't smuggle markup or
     // block nodes into the editor.
-    const text = event.clipboardData.getData("text/plain");
     event.preventDefault();
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0)

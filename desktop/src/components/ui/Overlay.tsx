@@ -9,10 +9,13 @@ import { useOverlayLayer } from "./overlayStack";
  * the backdrop tint, z-index, and escape handling live in one place.
  */
 export function Overlay({
+  backdropBlur = "default",
   children,
   onClose,
   open,
 }: {
+  /** File/image previews can request a stronger blur without affecting dialogs. */
+  backdropBlur?: "default" | "strong";
   children: ReactNode;
   onClose: () => void;
   open: boolean;
@@ -43,7 +46,7 @@ export function Overlay({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
       <button
         aria-label={t("close")}
-        className="absolute inset-0 cursor-default bg-overlay backdrop-blur-[1px]"
+        className={`absolute inset-0 cursor-default bg-overlay ${backdropBlur === "strong" ? "backdrop-blur-md" : "backdrop-blur-sm"}`}
         onClick={onClose}
         type="button"
       />
