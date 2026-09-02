@@ -37,7 +37,7 @@ alias future="/Applications/FutureOS.app/Contents/MacOS/future"
 
 大部分命令都要连接 FutureOS 的 agent(后台服务)。如果**桌面应用已打开**,agent 就已经在运行。否则,用 `future agent` 启动 agent(或直接运行 `future-agent` 二进制,二者是同一套代码;打开桌面应用也会自动拉起 agent)。
 
-`future auth login` 和 `future auth logout` 是例外:agent 未运行时也能直接用,密钥变更会写入 `~/.future/agent/auth.json`,agent 下次启动时自动读取。
+`future config`、`future auth login` 和 `future auth logout` 是例外：agent 未运行时也能直接使用，配置会写入 `~/.future/agent/`，agent 下次启动时自动读取。
 
 ---
 
@@ -50,6 +50,19 @@ future init
 ```
 
 安装所有内置技能。在 macOS 和 Linux 上,还会把 `future`(若存在,连同 `future-agent`)链接到 `~/.future/bin/`,并提示 PATH 配置。
+
+### `config` —— 配置模型提供商
+
+```bash
+future config
+```
+
+交互式选择 **FutureOS** 或**自定义提供商**：
+
+- FutureOS：若已配置 token，会先询问是否重新登录；否则直接进入设备码登录流程。
+- 自定义：依次填写提供商 ID、API 协议、Base URL、API key、模型 ID、上下文窗口等信息。API key 输入时不会回显。
+
+配置写入 `~/.future/agent/models.json` 和 `~/.future/agent/auth.json`。如果 agent 正在运行，会通过 RPC 写入并立即刷新模型列表；否则在 agent 下次启动时生效。
 
 ### `auth` —— 登录与登出
 

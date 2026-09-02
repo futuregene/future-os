@@ -5,6 +5,7 @@ Usage:
 
 Groups:
   init      Install built-in skills and initialize local commands
+  config    Configure a model provider interactively
   auth      Authentication & API key management
   account   Platform account info
   run       Send a prompt to the agent (one-shot, non-interactive)
@@ -22,6 +23,7 @@ Apps (run the FutureOS components — same as their standalone binaries):
 
 Quick start:
   future init                                Initialize Future OS
+  future config                              Configure a model provider
   future auth login                          Sign in to the Future platform
   future agent                               Start the agent server
   future tui                                 Launch the terminal UI
@@ -32,6 +34,7 @@ Quick start:
 
 Run 'future <group> --help' for per-group details.
   future init --help         Initialization behavior
+  future config --help       Interactive model-provider setup
   future run --help          All run options (model, fork, thinking, tools, etc.)
   future auth --help         Auth subcommands
   future account --help      Account subcommands

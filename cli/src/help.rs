@@ -10,6 +10,7 @@ Usage:
 
 Groups:
   init      Install built-in skills and initialize local commands
+  config    Configure a model provider interactively
   auth      Authentication & API key management
   account   Platform account info
   run       Send a prompt to the agent (one-shot, non-interactive)
@@ -27,6 +28,7 @@ Apps (run the FutureOS components — same as their standalone binaries):
 
 Quick start:
   future init                                Initialize Future OS
+  future config                              Configure a model provider
   future auth login                          Sign in to the Future platform
   future agent                               Start the agent server
   future tui                                 Launch the terminal UI
@@ -37,6 +39,7 @@ Quick start:
 
 Run 'future <group> --help' for per-group details.
   future init --help         Initialization behavior
+  future config --help       Interactive model-provider setup
   future run --help          All run options (model, fork, thinking, tools, etc.)
   future auth --help         Auth subcommands
   future account --help      Account subcommands
@@ -57,6 +60,22 @@ Usage:
 
 Installs all built-in skills. On macOS and Linux, also links future and, when
 available, its sibling future-agent into ~/.future/bin/ and prints a PATH setup hint."#;
+
+/// `future config --help` output.
+pub const CONFIG_HELP: &str = r#"future config — configure a model provider interactively
+
+Usage:
+  future config
+
+Provider choices:
+  FutureOS  Reuse the device-code login flow. If a token is already configured,
+            asks before replacing it.
+  Custom    Prompt for provider ID, API protocol, base URL, API key, model ID,
+            token limits, and image support; then update ~/.future/agent/models.json
+            and ~/.future/agent/auth.json.
+
+API keys are read without terminal echo. If Future Agent is running, custom
+provider changes take effect immediately; otherwise they apply on its next start."#;
 
 /// `future auth` group help (index.ts, no-command / --help branch).
 pub const AUTH_GROUP_HELP: &str = r#"future auth — authenticate with the Future platform

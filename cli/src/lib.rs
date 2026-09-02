@@ -60,6 +60,20 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
         return catch(out, commands::init::init_command(out)).await;
     }
 
+    // `future config` — interactive model-provider setup.
+    if group == Some("config") {
+        if command == Some("--help") || command == Some("-h") {
+            out.log(help::CONFIG_HELP);
+            return 0;
+        }
+        if let Some(argument) = command {
+            out.log_err(&format!("Unknown argument: {argument}\n"));
+            out.log_err("Usage: future config");
+            return 1;
+        }
+        return catch(out, commands::configure::configure(out)).await;
+    }
+
     // if (group === "auth" && (!command || command === "--help" || command === "-h"))
     if group == Some("auth")
         && (command.is_none() || command == Some("--help") || command == Some("-h"))
@@ -313,6 +327,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn config_help_and_unknown_arg() {
+        let (code, stdout, stderr) = run(&["config", "--help"]).await;
+        assert_eq!(code, 0);
+        assert_eq!(stdout, format!("{}\n", help::CONFIG_HELP));
+        assert_eq!(stderr, "");
+
+        let (code, stdout, stderr) = run(&["config", "unexpected"]).await;
+        assert_eq!(code, 1);
+        assert_eq!(stdout, "");
+        assert_eq!(
+            stderr,
+            "Unknown argument: unexpected\n\nUsage: future config\n"
+        );
+    }
+
+    #[tokio::test]
     async fn auth_group_help_variants() {
         // Plain group help.
         let (code, stdout, stderr) = run(&["auth"]).await;
@@ -358,6 +388,8 @@ mod tests {
         let cases: &[(&[&str], &str)] = &[
             (&["init", "--help"], help::INIT_HELP),
             (&["init", "-h"], help::INIT_HELP),
+            (&["config", "--help"], help::CONFIG_HELP),
+            (&["config", "-h"], help::CONFIG_HELP),
             (&["auth", "--help"], help::AUTH_GROUP_HELP),
             (&["auth", "-h"], help::AUTH_GROUP_HELP),
             (&["auth", "login", "--help"], help::AUTH_LOGIN_HELP),
