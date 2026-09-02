@@ -1,17 +1,26 @@
 //! Turn envelope (G-9) — the per-turn prompt assembly, expanded from the P0
 //! ~30-line `compose_turn_message` into an envelope: instruction + context +
-//! evidence + decision summary (reference `control_plane/quota/turn_envelope.py`,
-//! 796 lines — we implement the minimal deterministic core the host needs).
+//! evidence (reference `control_plane/quota/turn_envelope.py`, 796 lines — we
+//! implement the minimal deterministic core the host needs).
 //!
 //! The envelope is a plain-text prompt for a policy-free agent: one bounded
 //! turn, no loop policy embedded (all policy stays in the decision kernel).
 //! [`compose_turn_message`] keeps the P0 signature used by the gRPC executor
-//! and delegates here; the richer [`compose_turn_envelope`] carries the
-//! decision summary for hosts that have the packet at hand.
+//! and delegates to [`compose_turn_envelope`]. The kernel's scheduling
+//! internals (the should-run verdict, mode, reason, arbitration) are
+//! deliberately NOT in the envelope — they are addressed to the orchestrator
+//! and operator, not the worker (ARCHITECTURE.md "Not in the envelope").
 
-use crate::contract::ShouldRunPacket;
 use crate::decision::truncate;
 use crate::state::{FailureKind, Goal, RunRecord, Todo, TodoStatus};
+
+/// Recompute the todo's advisory signals from the ledger, using the SAME
+/// kernel detectors the delivery reason uses (shared text in
+/// `decision::stall::todo_signals`) — the envelope's advisory channel.
+/// Exported for the envelope; not a decision: the reading agent acts (or not).
+fn compose_todo_signals(goal: &Goal, todo: &Todo) -> Vec<String> {
+    crate::decision::todo_signals(goal, todo)
+}
 
 /// Envelope schema version (reference `TURN_ENVELOPE_SCHEMA_VERSION`).
 pub const TURN_ENVELOPE_SCHEMA_VERSION: &str = "future_loop_turn_envelope_v0";
@@ -20,6 +29,9 @@ pub const TURN_ENVELOPE_SCHEMA_VERSION: &str = "future_loop_turn_envelope_v0";
 const GOAL_MEMORY_SEMANTIC_EVENTS: usize = 5;
 /// Cap the failure-cause text so a runaway error never bloats the prompt.
 const GOAL_MEMORY_ERROR_CHARS: usize = 200;
+/// Cap the combined upstream-evidence summary a fan-in todo's envelope
+/// injects (a wide fan-in must not bloat the prompt).
+const UPSTREAM_EVIDENCE_CHARS: usize = 1_200;
 
 /// Compose the goal-memory block fed to the orchestrating agent every turn.
 ///
@@ -116,40 +128,30 @@ fn failure_label(r: &RunRecord) -> String {
     }
 }
 
-/// Compose the per-turn packet: todo + resolved gate decisions + prior
-/// evidence (+ decision summary when available).
-///
+/// Compose the per-turn packet: todo + resolved gate decisions + upstream
+/// evidence + prior evidence (+ signals when available).///
 /// P0 signature (executor + worker paths) — delegates to the full envelope
-/// without a decision summary so existing call sites keep working.
+/// so existing call sites keep working.
 pub fn compose_turn_message(goal: &Goal, todo: &Todo, prev: Option<&RunRecord>) -> String {
-    compose_turn_envelope(goal, todo, None, prev)
+    compose_turn_envelope(goal, todo, prev)
 }
 
-/// Full envelope: schema header + decision summary (mode/decision/reason) +
-/// goal context + instruction + resolved gate decisions + prior evidence +
-/// completion-contract footer.
-pub fn compose_turn_envelope(
-    goal: &Goal,
-    todo: &Todo,
-    decision_summary: Option<&ShouldRunPacket>,
-    prev: Option<&RunRecord>,
-) -> String {
+/// Full envelope: schema header + goal context + instruction + resolved gate
+/// decisions + upstream evidence (fan-in) + prior evidence + goal memory +
+/// signals + completion-contract footer.
+///
+/// The kernel's scheduling internals (should-run verdict / mode / arbitration)
+/// are deliberately absent: they are the kernel's own decision state, addressed
+/// to the orchestrator and operator, not to the worker (ARCHITECTURE.md "Not
+/// in the envelope"). The OBSERVABLE SIGNALS (outcome floor, oscillation,
+/// failure count, no-progress) are different in kind: they are observations
+/// about the work, computed from the ledger, and the advisory channel the
+/// architecture promises ("surfaces them as advisories in the turn envelope")
+/// — so they ARE recomputed here, from the same kernel detectors the delivery
+/// reason uses (no duplicated logic).
+pub fn compose_turn_envelope(goal: &Goal, todo: &Todo, prev: Option<&RunRecord>) -> String {
     let mut out = String::new();
     out.push_str(&format!("── {TURN_ENVELOPE_SCHEMA_VERSION} ──\n"));
-    if let Some(p) = decision_summary {
-        out.push_str(&format!(
-            "decision: {} | should_run: {} | mode: {}\n",
-            p.decision,
-            p.should_run,
-            p.interaction_contract.mode.as_str()
-        ));
-        out.push_str(&format!("reason: {}\n", p.reason));
-        if let Some(arb) = &p.scheduler_arbitration {
-            out.push_str(&format!("arbitration: {}\n", arb.disposition.as_str()));
-        }
-    } else {
-        out.push_str("decision: bounded_delivery\n");
-    }
     out.push_str(&format!(
         "goal: {} | objective: {}\n",
         goal.goal_id, goal.objective
@@ -179,6 +181,10 @@ pub fn compose_turn_envelope(
         }
     }
 
+    // Upstream evidence: a fan-in (synthesis) todo ordered after its
+    // done/superseded predecessors carries their evidence summaries.
+    out.push_str(&compose_upstream_evidence(goal, todo));
+
     // Evidence from the previous turn.
     if let Some(p) = prev {
         out.push_str(&format!(
@@ -191,16 +197,74 @@ pub fn compose_turn_envelope(
     // Goal memory: prior failures on this todo + recent semantic history.
     out.push_str(&compose_goal_memory(goal, todo));
 
+    // Signals: observations about THIS todo's work, recomputed from the
+    // ledger with the same kernel detectors the delivery reason uses
+    // (outcome floor / oscillation / failure count / no-progress). The
+    // advisory channel the architecture promises; what to do about a signal
+    // stays the worker's decision.
+    let signals = compose_todo_signals(goal, todo);
+    if !signals.is_empty() {
+        out.push_str(&format!("\nsignals: {}\n", signals.join(" ")));
+    }
     // Completion contract footer (LoopX: completion must declare closure intent).
     out.push_str("\n\nComplete the todo and report what you did and observed.");
     out.push_str("\nOn completion, declare the successor todo or --no-follow-up.");
     out
 }
 
+/// Compose the upstream-evidence block for a fan-in (synthesis) todo.
+///
+/// A synthesis todo is ordered after its upstream predecessors by `--blocks`
+/// (each predecessor id sits in `blocked_by_gate`); its envelope injects each
+/// done/superseded predecessor's completion evidence so the synthesis worker
+/// reads what landed instead of re-deriving it (ARCHITECTURE.md
+/// "Worker↔worker: … its envelope injects their evidence and artifact paths").
+///
+/// The combined summary is capped at [`UPSTREAM_EVIDENCE_CHARS`]. Returns an
+/// empty string when there are no done/superseded predecessors with evidence.
+pub fn compose_upstream_evidence(goal: &Goal, todo: &Todo) -> String {
+    let Some(ids) = todo.blocked_by_gate.as_deref() else {
+        return String::new();
+    };
+    let mut entries: Vec<String> = Vec::new();
+    let mut used = 0usize;
+    for gid in ids.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let Some(pred) = goal.todo(gid) else {
+            continue;
+        };
+        if !matches!(pred.status, TodoStatus::Done | TodoStatus::Superseded) {
+            continue;
+        }
+        let Some(evidence) = pred.evidence.as_deref() else {
+            continue;
+        };
+        let evidence = evidence.trim();
+        if evidence.is_empty() {
+            continue;
+        }
+        let remaining = UPSTREAM_EVIDENCE_CHARS.saturating_sub(used);
+        if remaining == 0 {
+            break;
+        }
+        let snippet = truncate(evidence, remaining);
+        used += snippet.chars().count();
+        entries.push(format!("upstream {}: {}", pred.id, snippet));
+    }
+    if entries.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    out.push_str("\nUpstream evidence:\n");
+    for e in entries {
+        out.push_str(&e);
+        out.push('\n');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contract::TurnMode;
     use crate::state::Todo;
     use std::time::Duration;
 
@@ -257,20 +321,76 @@ mod tests {
     }
 
     #[test]
-    fn envelope_with_decision_summary_embeds_packet() {
+    fn envelope_omits_kernel_scheduling_internals() {
         let mut g = Goal::new("g1", "o", "/tmp");
         g.add(Todo::monitor("M1", "Watch", Duration::from_secs(3600)));
         g.todo_mut("M1").unwrap().resume_when =
             Some(std::time::SystemTime::now() - Duration::from_secs(5));
-        let packet = crate::decision::decide(&g, std::time::SystemTime::now());
-        assert_eq!(packet.interaction_contract.mode, TurnMode::MonitorPoll);
-        let msg = compose_turn_envelope(&g, g.todo("M1").unwrap(), Some(&packet), None);
-        assert!(msg.contains("decision: run"), "envelope: {msg}");
-        assert!(msg.contains("should_run: true"));
-        assert!(msg.contains("mode: monitor_poll"));
+        let msg = compose_turn_envelope(&g, g.todo("M1").unwrap(), None);
+        // The should-run verdict / mode / arbitration are the kernel's own
+        // decision state, addressed to the orchestrator — never the worker.
+        assert!(!msg.contains("decision:"), "decision: leaked: {msg}");
+        assert!(!msg.contains("should_run:"), "should_run: leaked: {msg}");
+        assert!(!msg.contains("mode:"), "mode: leaked: {msg}");
+        assert!(!msg.contains("arbitration:"), "arbitration: leaked: {msg}");
+    }
+
+    #[test]
+    fn envelope_carries_signals_as_advisories() {
+        // Signals are observations about the work, not kernel decision state:
+        // the architecture surfaces them as advisories in the turn envelope,
+        // recomputed from the ledger with the same detectors as the delivery
+        // reason. This goal has a failed attempt + a breached outcome floor.
+        let mut g = Goal::new("g1", "o", "/tmp");
+        g.add(Todo::advancement("T1", "Work"));
+        g.todo_mut("T1").unwrap().failed_attempts = 2;
+        g.execution_profile.outcome_floor_streak_threshold = 3;
+        g.outcome_streak = 4;
+        let msg = compose_turn_message(&g, g.todo("T1").unwrap(), None);
+        assert!(msg.contains("signals: [signal:"), "envelope: {msg}");
         assert!(
-            msg.contains("arbitration:"),
-            "scheduler arbitration recorded"
+            msg.contains("has 2 failed attempt(s)"),
+            "failure-count signal: {msg}"
+        );
+        assert!(
+            msg.contains("outcome floor"),
+            "outcome-floor signal recomputed: {msg}"
+        );
+        // ...and the same detector text the decision kernel emits:
+        let packet = crate::decision::decide(&g, std::time::SystemTime::now());
+        assert!(packet.reason.contains("has 2 failed attempt(s)"));
+        assert!(packet.reason.contains("outcome floor"));
+    }
+
+    #[test]
+    fn envelope_has_no_signals_block_when_clean() {
+        let mut g = Goal::new("g1", "o", "/tmp");
+        g.add(Todo::advancement("T1", "Work"));
+        let msg = compose_turn_message(&g, g.todo("T1").unwrap(), None);
+        assert!(!msg.contains("signals:"), "envelope: {msg}");
+    }
+
+    #[test]
+    fn envelope_injects_upstream_evidence_for_fan_in() {
+        let mut g = Goal::new("g1", "o", "/tmp");
+        let mut up1 = Todo::advancement("U1", "Probe direction A");
+        up1.status = TodoStatus::Done;
+        up1.evidence = Some("direction A landed: found X".to_string());
+        let mut up2 = Todo::advancement("U2", "Probe direction B");
+        up2.status = TodoStatus::Done;
+        up2.evidence = Some("direction B landed: found Y".to_string());
+        g.add(up1);
+        g.add(up2);
+        g.add(Todo::advancement("S1", "Synthesize the probes").blocking(&["U1", "U2"]));
+        let msg = compose_turn_message(&g, g.todo("S1").unwrap(), None);
+        assert!(msg.contains("Upstream evidence:"), "envelope: {msg}");
+        assert!(
+            msg.contains("upstream U1: direction A landed: found X"),
+            "envelope: {msg}"
+        );
+        assert!(
+            msg.contains("upstream U2: direction B landed: found Y"),
+            "envelope: {msg}"
         );
     }
 

@@ -295,8 +295,8 @@ fn safe_file_name(name: &str) -> String {
     }
 }
 
-/// Decode an image and write a downscaled JPEG thumbnail under
-/// `~/.future/app/images/<thread_id>/thumb/<stamp>.jpg`, returning its path.
+/// Decode an image and write a downscaled PNG thumbnail under
+/// `~/.future/app/images/<thread_id>/thumb/<stamp>.png`, returning its path.
 /// Done entirely in Rust so the full-size image (up to tens of MB) never crosses
 /// the IPC bridge to a webview canvas — only the tiny thumbnail is produced. The
 /// decoder's allocation is capped to reject decompression bombs. Returns an error
@@ -335,20 +335,21 @@ pub fn generate_image_thumbnail(
         .map_err(|error| format!("undecodable image: {error}"))?;
     let thumb = img.resize(MAX_EDGE, MAX_EDGE, image::imageops::FilterType::Lanczos3);
 
+    let rgba = thumb.to_rgba8();
     let mut buf = Vec::new();
-    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 70);
+    let encoder = image::codecs::png::PngEncoder::new(&mut buf);
     image::ImageEncoder::write_image(
         encoder,
-        thumb.to_rgb8().as_raw(),
+        rgba.as_raw(),
         thumb.width(),
         thumb.height(),
-        image::ExtendedColorType::Rgb8,
+        image::ExtendedColorType::Rgba8,
     )
     .map_err(|error| format!("thumbnail encode failed: {error}"))?;
 
     let dir = crate::store::thread_images_dir(&thread_id)?.join("thumb");
     std::fs::create_dir_all(&dir)?;
-    let path = dir.join(format!("{}.jpg", unique_stamp()));
+    let path = dir.join(format!("{}.png", unique_stamp()));
     std::fs::write(&path, &buf)?;
     Ok(path.display().to_string())
 }
@@ -943,16 +944,20 @@ mod tests {
     }
 
     #[test]
-    fn thumbnail_generates_a_jpeg_for_a_real_image() {
+    fn thumbnail_generates_a_png_and_preserves_alpha() {
         let home = crate::auth_store::test_support::HomeGuard::new("files_thumb_ok");
         let root = future_root("thumb_src2");
         let src = root.join("in.png");
-        image::RgbImage::from_pixel(8, 8, image::Rgb([7, 8, 9]))
+        image::RgbaImage::from_pixel(8, 8, image::Rgba([7, 8, 9, 0]))
             .save(&src)
             .unwrap();
         let thumb = generate_image_thumbnail("thread_x".into(), src.display().to_string()).unwrap();
-        assert!(thumb.ends_with(".jpg"));
+        assert!(thumb.ends_with(".png"));
         assert!(Path::new(&thumb).is_file());
+        assert_eq!(
+            image::open(&thumb).unwrap().to_rgba8().get_pixel(0, 0).0,
+            [7, 8, 9, 0]
+        );
         drop(home);
     }
 

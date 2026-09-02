@@ -516,6 +516,8 @@ message CompactResult {
   int64 tokens_after = 2;
   string summary = 3;
   int64 messages_removed = 4;
+  string checkpoint_id = 5;
+  bool already_compacted = 6;
 }
 
 // shell response.
@@ -536,6 +538,7 @@ message CycleModelResult {
 message SyncFutureModelsResult {
   bool synced = 1;
   uint64 model_count = 2;
+  int64 revision = 3;
 }
 
 // refresh_skills response. Field names mirror the wire JSON spelling

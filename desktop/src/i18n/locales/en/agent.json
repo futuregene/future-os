@@ -134,7 +134,8 @@
     "skillsSection": "Skills",
     "compactContext": "Compact",
     "compactContextDescription": "Compact this conversation's context",
-    "compactionNotNeeded": "This conversation does not need compaction yet.",
+    "compactionNotNeeded": "There is no conversation context to compact.",
+    "compactionNoNewContent": "No conversation content was added after the last compaction.",
     "compactionRequestFailed": "Context compaction failed: {{message}}",
     "approval": "Approval mode",
     "approvalTier": {

@@ -136,6 +136,7 @@ mod tests {
         let result = sync_future_models().await.expect("sync");
         assert!(result.synced);
         assert_eq!(result.model_count, 3);
+        assert_eq!(result.revision, 0);
         script_mock_agent(MockScript::default());
     }
 

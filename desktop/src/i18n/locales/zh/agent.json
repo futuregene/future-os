@@ -135,7 +135,8 @@
     "skillsSection": "技能",
     "compactContext": "压缩",
     "compactContextDescription": "压缩此对话的上下文",
-    "compactionNotNeeded": "当前对话暂时不需要压缩。",
+    "compactionNotNeeded": "当前没有可压缩的对话上下文。",
+    "compactionNoNewContent": "自上次压缩后没有新增对话内容，无需再次压缩。",
     "compactionRequestFailed": "上下文压缩失败：{{message}}",
     "approval": "审批模式",
     "approvalTier": {

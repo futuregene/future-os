@@ -34,7 +34,7 @@ jobs:
       OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # ─── Publish the Chinese wiki to Aliyun OSS ────────────────────────────
       # ossutil v2 is fetched directly from Aliyun's public CDN (no third-party

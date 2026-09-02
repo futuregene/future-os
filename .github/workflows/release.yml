@@ -13,13 +13,14 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
+      artifact_version: ${{ steps.v.outputs.artifact_version }}
       bundle_version: ${{ steps.v.outputs.bundle_version }}
       build_number: ${{ steps.v.outputs.build_number }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
       - name: Resolve version
@@ -43,6 +44,7 @@ jobs:
     uses: ./.github/workflows/build-macos-signed.yml
     with:
       version: ${{ needs.version.outputs.version }}
+      artifact_version: ${{ needs.version.outputs.artifact_version }}
       signed: true
       coordinated: true
     secrets: inherit
@@ -53,6 +55,7 @@ jobs:
     uses: ./.github/workflows/build-windows-signed.yml
     with:
       version: ${{ needs.version.outputs.version }}
+      artifact_version: ${{ needs.version.outputs.artifact_version }}
       signed: true
       coordinated: true
     secrets: inherit
@@ -63,6 +66,7 @@ jobs:
     uses: ./.github/workflows/build-linux.yaml
     with:
       version: ${{ needs.version.outputs.version }}
+      artifact_version: ${{ needs.version.outputs.artifact_version }}
       release: true
     secrets: inherit
 
@@ -72,6 +76,7 @@ jobs:
     uses: ./.github/workflows/build-android-apk.yml
     with:
       version: ${{ needs.version.outputs.version }}
+      artifact_version: ${{ needs.version.outputs.artifact_version }}
       build_number: ${{ needs.version.outputs.build_number }}
       coordinated: true
     secrets: inherit
@@ -103,12 +108,12 @@ jobs:
       RELEASE_ORIGIN: https://dl.future-os.cn/releases
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
-      - name: Download release artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/checkout@v7
+      - name: Download artifacts from GitHub
+        uses: actions/download-artifact@v8
         with:
           path: release-assets
-      - name: Stage and validate release assets
+      - name: Stage and validate artifacts
         run: |
           set -euo pipefail
           mkdir -p publish
@@ -143,7 +148,7 @@ jobs:
           count="$(find publish -type f | wc -l | tr -d ' ')"
           [[ "$count" == "17" ]] || { echo "Expected 17 assets, found $count." >&2; exit 1; }
 
-      - name: Generate Tauri-compatible latest.json
+      - name: Generate update manifest
         run: |
           set -euo pipefail
           export PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -200,8 +205,8 @@ jobs:
           NODE
           cat latest.json
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Publish release to GitHub
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: FutureOS ${{ env.VERSION }}
@@ -212,7 +217,7 @@ jobs:
             latest.json
       - name: Setup ossutil
         run: bash scripts/setup-ossutil.sh
-      - name: Upload and verify versioned release assets
+      - name: Upload artifacts to OSS
         run: |
           set -euo pipefail
           target="oss://$OSS_BUCKET/releases/$VERSION"
@@ -222,7 +227,7 @@ jobs:
           done
           ossutil cp -f latest.json "$target/latest.json"
           ossutil stat "$target/latest.json"
-      - name: Advance latest.json
+      - name: Update release manifest
         run: |
           set -euo pipefail
           ossutil cp -f "oss://$OSS_BUCKET/releases/latest.json" current-latest.json
