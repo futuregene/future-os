@@ -1,12 +1,10 @@
-name: Build FutureOS Windows (signed)
+name: Build Windows signed
 
 permissions: read-all
 
-# Signed Windows build. Runs ONLY on the self-hosted Windows runner, because the
-# Certum code signing key lives in a cloud HSM reachable only through a
-# SimplySign Desktop session held open on that machine — a GitHub-hosted runner
-# cannot reach it. Everything else (macOS, Linux, and the unsigned Windows build)
-# stays in build.yml on GitHub-hosted runners.
+# Signed mode runs on the self-hosted Windows runner because the Certum key is
+# reachable only through its SimplySign session. Unsigned mode runs on a clean
+# GitHub-hosted runner and still uses the Tauri updater key.
 #
 # ┌────────────────────────────────────────────────────────────────────────────┐
 # │ SECURITY — DO NOT ADD `pull_request` (OR `pull_request_target`,            │
@@ -33,12 +31,28 @@ permissions: read-all
 
 on:
   workflow_dispatch:
+    inputs:
+      signed:
+        description: Sign with the Windows Authenticode certificate.
+        required: false
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       version:
         description: Exact release version supplied by the coordinator.
         required: true
         type: string
+      signed:
+        description: Sign with the Windows Authenticode certificate.
+        required: false
+        type: boolean
+        default: false
+      coordinated:
+        description: Let the caller publish the collected artifacts.
+        required: false
+        type: boolean
+        default: false
     secrets:
       TAURI_SIGNING_PRIVATE_KEY:
         required: true
@@ -57,9 +71,9 @@ on:
 
 jobs:
   build:
-    name: Build signed Windows
+    name: Build Windows (${{ inputs.signed && 'signed' || 'unsigned' }})
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
-    runs-on: [self-hosted, Windows]
+    runs-on: ${{ inputs.signed && fromJSON('["self-hosted","Windows"]') || 'windows-latest' }}
     # ossutil v2 auto-reads the OSS_* env vars; OSS_REGION is derived in the
     # Setup ossutil step (v2 signs with SigV4, which requires a region).
     env:
@@ -88,7 +102,7 @@ jobs:
           ) | Add-Content -Path $env:GITHUB_OUTPUT
 
       - name: Setup Node.js
-        if: steps.detect.outputs.node == 'false'
+        if: ${{ !inputs.signed || steps.detect.outputs.node == 'false' }}
         uses: actions/setup-node@v6
         with:
           node-version: "24"
@@ -96,12 +110,25 @@ jobs:
       # Match the toolchain pinned in rust-toolchain.toml and the other CI
       # workflows, rather than accepting whichever stable version is current.
       - name: Install Rust
-        if: steps.detect.outputs.cargo == 'false'
+        if: inputs.signed && steps.detect.outputs.cargo == 'false'
         shell: powershell
         run: |
           Invoke-WebRequest https://win.rustup.rs -OutFile "$env:RUNNER_TEMP\rustup-init.exe"
           & "$env:RUNNER_TEMP\rustup-init.exe" -y --default-toolchain 1.97.0
           "$env:USERPROFILE\.cargo\bin" | Add-Content -Path $env:GITHUB_PATH
+
+      - name: Setup Rust (GitHub-hosted)
+        if: ${{ !inputs.signed }}
+        uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Enable lld-link if available
+        if: ${{ !inputs.signed }}
+        shell: pwsh
+        run: |
+          $lld = Get-Command lld-link -ErrorAction SilentlyContinue
+          if ($lld) {
+            "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=lld-link" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          }
 
       # Single source of truth: scripts/version.mjs. A `vX.Y.Z` tag → release
       # ("X.Y.Z"); anything else → dev ("0.0.2-<hash>").
@@ -121,6 +148,7 @@ jobs:
       # answers an expired PIN cache with a *dialog box*. Unattended that hangs
       # rather than fails, and the job would otherwise burn the 6-hour default.
       - name: Preflight — signing certificate
+        if: inputs.signed
         shell: powershell
         timeout-minutes: 5
         run: |
@@ -134,7 +162,7 @@ jobs:
       # signer. Landed in a runner-temp dir added to PATH — no global install on
       # this long-lived machine.
       - name: Setup ossutil
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && !inputs.coordinated
         shell: powershell
         run: |
           if (-not (Get-Command ossutil -ErrorAction SilentlyContinue)) {
@@ -151,7 +179,6 @@ jobs:
         working-directory: desktop
         run: npm ci
 
-     
       # The unified `future` CLI is the single sidecar (tauri.conf.json
       # bundle.externalBin); the agent runs through `future agent`, so only the
       # CLI needs building and staging.
@@ -171,6 +198,7 @@ jobs:
       # this is the last moment the sidecar can be signed without unpacking the
       # installer afterwards.
       - name: Sign sidecar
+        if: inputs.signed
         shell: powershell
         timeout-minutes: 15
         run: |
@@ -192,6 +220,7 @@ jobs:
       # sign command aborts the bundle — Tauri propagates the non-zero exit — so a
       # half-signed installer is never produced.
       - name: Build desktop bundle (signed)
+        if: inputs.signed
         shell: powershell
         timeout-minutes: 120
         env:
@@ -226,12 +255,47 @@ jobs:
             Remove-Item -Force $overlay -ErrorAction SilentlyContinue
           }
 
+      - name: Build desktop bundle (unsigned)
+        if: ${{ !inputs.signed }}
+        shell: pwsh
+        timeout-minutes: 120
+        env:
+          FUTURE_VERSION: ${{ steps.v.outputs.version }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+        run: |
+          if (-not $env:TAURI_SIGNING_PRIVATE_KEY) { throw "TAURI_SIGNING_PRIVATE_KEY secret is required" }
+          if (-not $env:TAURI_UPDATER_PUBLIC_KEY) { throw "TAURI_UPDATER_PUBLIC_KEY secret is required" }
+          $overlay = Join-Path $env:RUNNER_TEMP "tauri.windows-unsigned.json"
+          $config = @{
+            bundle = @{ createUpdaterArtifacts = $true }
+            plugins = @{
+              updater = @{
+                pubkey = $env:TAURI_UPDATER_PUBLIC_KEY
+                endpoints = @("https://dl.future-os.cn/releases/latest.json")
+              }
+            }
+          }
+          $json = $config | ConvertTo-Json -Depth 10
+          [IO.File]::WriteAllText($overlay, $json, [Text.UTF8Encoding]::new($false))
+          Push-Location desktop
+          try {
+            npm run tauri:build -- --config $overlay
+            if ($LASTEXITCODE -ne 0) { throw "tauri build failed (exit $LASTEXITCODE)" }
+          }
+          finally {
+            Pop-Location
+            Remove-Item -Force $overlay -ErrorAction SilentlyContinue
+          }
+
       # Portable (install-free) build: the desktop exe plus the unified CLI binary,
       # all in one directory. Signed here rather than assumed: the bundler signs
       # its own copies on the way into the installer, so whether
       # target/release/futureos.exe itself ends up signed is its business. Signing
       # the staged copies makes the zip's contents certain either way.
       - name: Assemble Windows portable (signed)
+        if: inputs.signed
         shell: powershell
         timeout-minutes: 15
         run: |
@@ -249,11 +313,26 @@ jobs:
           }
           Compress-Archive -Path "$dir/*" -DestinationPath "FutureOS-portable-windows.zip" -Force
 
+      - name: Assemble Windows portable (unsigned)
+        if: ${{ !inputs.signed }}
+        shell: pwsh
+        run: |
+          $dir = "futureos-portable"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Copy-Item "desktop/src-tauri/target/release/futureos.exe" "$dir/FutureOS.exe"
+          Copy-Item "target/release/future.exe" "$dir/future.exe"
+          Copy-Item "docs/dist/readme-windows.txt" "$dir/Readme.txt"
+          New-Item -ItemType Directory -Force -Path "$dir/licenses/loop" | Out-Null
+          Copy-Item "LICENSE" "$dir/licenses/"
+          Copy-Item "orchestration/loop/LICENSE", "orchestration/loop/NOTICE", "orchestration/loop/UPSTREAM.md" "$dir/licenses/loop/"
+          Compress-Archive -Path "$dir/*" -DestinationPath "FutureOS-portable-windows-unsigned.zip" -Force
+
       # Independent of what the bundler claims it did. The signature is the entire
       # point of this workflow, so a silently-unsigned artifact — or an
       # untimestamped one, which dies the day the certificate expires and takes
       # every already-shipped installer with it — must block the upload.
       - name: Verify signatures
+        if: inputs.signed
         shell: powershell
         run: |
           . scripts/lib/windows-signing.ps1
@@ -273,52 +352,64 @@ jobs:
           }
           if ($bad) { throw "Not properly signed: $($bad -join ', ')" }
 
-      - name: Stage signed artifacts
+      - name: Verify updater signature
+        if: ${{ !inputs.signed }}
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem desktop/src-tauri/target/release/bundle/nsis/*.exe -ErrorAction SilentlyContinue)
+          if ($installers.Count -ne 1) { throw "Expected exactly one NSIS installer, found $($installers.Count)." }
+          $signature = "$($installers[0].FullName).sig"
+          if (-not (Test-Path $signature) -or (Get-Item $signature).Length -eq 0) {
+            throw "Tauri produced no non-empty updater signature."
+          }
+
+      - name: Stage Windows artifacts
         shell: powershell
         run: |
-          $stage = "signed-release"
+          $stage = "release-assets"
           Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
-          Get-ChildItem desktop/src-tauri/target/release/bundle/nsis/*.exe | ForEach-Object {
-            $name = "$([IO.Path]::GetFileNameWithoutExtension($_.Name))-sign$($_.Extension)"
-            $output = Join-Path $stage $name
-            Copy-Item $_.FullName $output
-            Copy-Item "$($_.FullName).sig" "$output.sig"
-          }
-          Copy-Item "FutureOS-portable-windows.zip" (Join-Path $stage "FutureOS-portable-windows-sign.zip")
+          $installers = @(Get-ChildItem desktop/src-tauri/target/release/bundle/nsis/*.exe)
+          if ($installers.Count -ne 1) { throw "Expected exactly one NSIS installer, found $($installers.Count)." }
+          $suffix = "${{ inputs.signed && '' || '-unsigned' }}"
+          $output = Join-Path $stage "FutureOS_${{ steps.v.outputs.version }}_x64-setup${suffix}.exe"
+          Copy-Item $installers[0].FullName $output
+          Copy-Item "$($installers[0].FullName).sig" "$output.sig"
+          $portable = "FutureOS-portable-windows${suffix}.zip"
+          Copy-Item $portable (Join-Path $stage $portable)
 
           Get-ChildItem $stage | Select-Object -ExpandProperty Name
 
-      - name: Upload signed Windows installer artifact
+      - name: Upload Windows installer artifact
         uses: actions/upload-artifact@v7
         with:
-          name: futureos-windows-signed
+          name: futureos-windows${{ inputs.signed && '' || '-unsigned' }}
           if-no-files-found: error
           overwrite: true
           path: |
-            signed-release/*-setup-sign.exe
-            signed-release/*-setup-sign.exe.sig
+            release-assets/*-setup*.exe
+            release-assets/*-setup*.exe.sig
           retention-days: 7
 
-      - name: Upload signed Windows portable artifact
+      - name: Upload Windows portable artifact
         uses: actions/upload-artifact@v7
         with:
-          name: futureos-windows-portable-signed
+          name: futureos-windows-portable${{ inputs.signed && '' || '-unsigned' }}
           if-no-files-found: error
           overwrite: true
-          path: signed-release/*-portable-windows-sign.zip
+          path: release-assets/*portable-windows*.zip
           retention-days: 7
 
       - name: Upload to OSS test channel
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && !inputs.coordinated
         shell: powershell
         run: |
           $version = "${{ steps.v.outputs.version }}"
           Write-Host "==> Uploading to oss://$env:OSS_BUCKET/test/$version/"
-          Get-ChildItem signed-release | Select-Object -ExpandProperty Name
-          ossutil cp -r -f "signed-release\" "oss://$env:OSS_BUCKET/test/$version/"
+          Get-ChildItem release-assets | Select-Object -ExpandProperty Name
+          ossutil cp -r -f "release-assets\" "oss://$env:OSS_BUCKET/test/$version/"
           if ($LASTEXITCODE -ne 0) { throw "ossutil upload failed (exit $LASTEXITCODE)" }
 
           Write-Host "==> Download URLs:"
-          Get-ChildItem signed-release | ForEach-Object { Write-Host "  https://dl.future-os.cn/test/$version/$($_.Name)" }
+          Get-ChildItem release-assets | ForEach-Object { Write-Host "  https://dl.future-os.cn/test/$version/$($_.Name)" }

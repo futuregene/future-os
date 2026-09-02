@@ -25,38 +25,49 @@ permissions: read-all
 
 on:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: Exact marketing version supplied by the coordinator.
+        required: true
+        type: string
+      build_number:
+        description: Monotonic App Store build number supplied by the coordinator.
+        required: true
+        type: string
+      coordinated:
+        description: Let the caller handle release publication.
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      IOS_DIST_CERT_P12_BASE64:
+        required: true
+      IOS_DIST_CERT_P12_PWD:
+        required: true
+      IOS_PROVISIONING_PROFILE_BASE64:
+        required: true
+      APPLE_API_KEY:
+        required: true
+      APPLE_API_KEY_ID:
+        required: true
+      APPLE_API_ISSUER:
+        required: true
+      OSS_ENDPOINT:
+        required: false
+      OSS_BUCKET:
+        required: false
+      OSS_ACCESS_KEY_ID:
+        required: false
+      OSS_ACCESS_KEY_SECRET:
+        required: false
 
 jobs:
-  version:
-    name: Resolve TestFlight version
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.v.outputs.version }}
-      build_number: ${{ steps.v.outputs.build_number }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Resolve build number
-        id: v
-        run: |
-          # Marketing version bumped to 0.0.2: TestFlight already accepted
-          # 0.0.1 with build number 31479016198, so 0.0.1's sequence can only
-          # increase; small run_number values must start fresh under 0.0.2.
-          # The store build number is this workflow's per-repo run counter
-          # (starts at 1; stays within int32).
-          echo "version=0.0.2" >> "$GITHUB_OUTPUT"
-          echo "build_number=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
-          echo "TestFlight version: 0.0.2 (build ${{ github.run_number }})"
-
   build:
     name: Build and upload TestFlight
-    needs: version
     runs-on: macos-latest
     timeout-minutes: 120
     env:
-      FUTURE_VERSION: ${{ needs.version.outputs.version }}
-      FUTURE_BUILD_NUMBER: ${{ needs.version.outputs.build_number }}
       APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
       APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
       APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
@@ -74,6 +85,20 @@ jobs:
           node-version: "24"
           cache: npm
           cache-dependency-path: package-lock.json
+
+      - name: Resolve version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_BUILD_NUMBER: ${{ inputs.build_number }}
+        run: |
+          set -euo pipefail
+          # TestFlight marketing versions must be plain numeric SemVer. The
+          # coordinators pass bundle_version; standalone runs keep 0.0.2.
+          version="${INPUT_VERSION:-0.0.2}"
+          build_number="${INPUT_BUILD_NUMBER:-${{ github.run_number }}}"
+          echo "FUTURE_VERSION=$version" >> "$GITHUB_ENV"
+          echo "FUTURE_BUILD_NUMBER=$build_number" >> "$GITHUB_ENV"
+          echo "TestFlight version: $version (build $build_number)"
 
       # Import the base64-encoded iOS Distribution certificate into an ephemeral
       # keychain, resolve its identity, and write the provisioning profile.
@@ -163,18 +188,13 @@ jobs:
         working-directory: mobile
         run: npm ci
 
-     
       - name: Prebuild iOS
         working-directory: mobile
-        env:
-          FUTURE_VERSION: ${{ needs.version.outputs.version }}
         run: npx expo prebuild --platform ios
 
       - name: Build and export signed .ipa
         working-directory: mobile/ios
         env:
-          FUTURE_VERSION: ${{ needs.version.outputs.version }}
-          FUTURE_BUILD_NUMBER: ${{ needs.version.outputs.build_number }}
           DEVELOPMENT_TEAM: ${{ env.DEVELOPMENT_TEAM }}
           SIGNING_IDENTITY: ${{ env.SIGNING_IDENTITY }}
           PROVISIONING_PROFILE: ${{ env.PROVISIONING_PROFILE }}
@@ -223,7 +243,7 @@ jobs:
             -exportPath "$RUNNER_TEMP/FutureOS-export" \
             -exportOptionsPlist "$export_options"
 
-          app_name="FutureOS_${{ needs.version.outputs.version }}_${{ needs.version.outputs.build_number }}.ipa"
+          app_name="FutureOS_${FUTURE_VERSION}_${FUTURE_BUILD_NUMBER}.ipa"
           ipa="$(find "$RUNNER_TEMP/FutureOS-export" -maxdepth 1 -name '*.ipa' -print -quit)"
           [[ -n "$ipa" && -s "$ipa" ]] || { echo "Exported .ipa not found." >&2; exit 1; }
           cp "$ipa" "$RUNNER_TEMP/$app_name"
@@ -252,12 +272,13 @@ jobs:
             --verbose
 
       - name: Upload IPA to OSS
+        if: github.event_name == 'workflow_dispatch' && !inputs.coordinated
         run: |
           set -euo pipefail
           : "${IPA_PATH:?IPA_PATH is required}"
           : "${IPA_NAME:?IPA_NAME is required}"
 
-          version="${{ needs.version.outputs.version }}"
+          version="$FUTURE_VERSION"
           case "$(uname -m)" in
             arm64) arch="arm64" ;;
             x86_64) arch="amd64" ;;

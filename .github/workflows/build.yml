@@ -1,20 +1,22 @@
-name: Build FutureOS app
+name: Build Unsigned
 
 permissions: read-all
 
+# Release rehearsal. It invokes the same platform workflows as release.yml,
+# but macOS and Windows skip platform code signing. The complete test release is
+# published under test/<version>/, including its own latest.json; test/latest.json
+# is deliberately never written here.
 on:
   workflow_dispatch:
 
 jobs:
-  # Compute the build version once (single source of truth: scripts/version.mjs).
-  # Manual builds resolve to a development version (`0.0.2-<hash>`).
   version:
     name: Resolve version
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
-      is_release: ${{ steps.v.outputs.is_release }}
       bundle_version: ${{ steps.v.outputs.bundle_version }}
+      build_number: ${{ steps.v.outputs.build_number }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -24,301 +26,190 @@ jobs:
           node-version: "24"
       - name: Resolve version
         id: v
-        run: node scripts/version.mjs --github-output
+        run: |
+          node scripts/version.mjs --github-output
+          echo "build_number=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
 
-  build:
-    name: Build ${{ matrix.name }}
+  macos:
+    name: Build unsigned macOS
     needs: version
-    runs-on: ${{ matrix.os }}
-    # Injected into every build step so Rust build.rs (FUTURE_VERSION → agent,
-    # Desktop) and the TS build scripts (generated version module) all agree.
-    env:
-      FUTURE_VERSION: ${{ needs.version.outputs.version }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: macOS
-            os: macos-latest
-            artifact_name: futureos-macos
-            bundle_path: desktop/src-tauri/target/release/bundle/dmg/*.dmg
-          - name: macOS Intel
-            os: macos-15-intel
-            artifact_name: futureos-macos-intel
-            bundle_path: desktop/src-tauri/target/release/bundle/dmg/*.dmg
-          - name: Windows
-            os: windows-latest
-            artifact_name: futureos-windows
-            bundle_path: desktop/src-tauri/target/release/bundle/nsis/*.exe
-          - name: Linux
-            os: ubuntu-latest
-            artifact_name: futureos-linux
-            bundle_path: desktop/src-tauri/target/release/bundle/deb/*.deb
-            cli_arch: x86_64
-          # Native arm64 runner — cross-compiling the WebKit-heavy GUI from
-          # x86_64 would need a full aarch64 sysroot; building natively is far
-          # simpler. Note: arm64 runners are free for public repos, billed for
-          # private ones.
-          - name: Linux ARM
-            os: ubuntu-24.04-arm
-            artifact_name: futureos-linux-arm64
-            bundle_path: desktop/src-tauri/target/release/bundle/deb/*.deb
-            cli_arch: aarch64
+    uses: ./.github/workflows/build-macos-signed.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      signed: false
+      coordinated: true
+    secrets: inherit
 
+  windows:
+    name: Build unsigned Windows
+    needs: version
+    uses: ./.github/workflows/build-windows-signed.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      signed: false
+      coordinated: true
+    secrets: inherit
+
+  linux:
+    name: Build Linux
+    needs: version
+    uses: ./.github/workflows/build-linux.yaml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      release: true
+    secrets: inherit
+
+  android:
+    name: Build Android APK
+    needs: version
+    uses: ./.github/workflows/build-android-apk.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      build_number: ${{ needs.version.outputs.build_number }}
+      coordinated: true
+    secrets: inherit
+
+  ios:
+    name: Build and submit iOS
+    needs: version
+    uses: ./.github/workflows/build-ios-testflight.yml
+    with:
+      version: ${{ needs.version.outputs.bundle_version }}
+      build_number: ${{ needs.version.outputs.build_number }}
+      coordinated: true
+    secrets: inherit
+
+  publish:
+    name: Publish complete test release
+    needs: [version, macos, windows, linux, android, ios]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: futureos-test-publish
+      cancel-in-progress: false
+    env:
+      OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+      OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
+      OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+      OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+      VERSION: ${{ needs.version.outputs.version }}
+      RELEASE_ORIGIN: https://dl.future-os.cn/test
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - name: Download release artifacts
+        uses: actions/download-artifact@v7
         with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: package-lock.json
-
-      # Pinned to match rust-toolchain.toml so CI and local dev use the same
-      # compiler. Bump both together.
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.97.0
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            .
-            desktop/src-tauri
-          # Persist the target dir even when a later step fails, so a broken
-          # release run doesn't throw away a full cold compile.
-          cache-on-failure: true
-          # Cache every dependency crate, not just direct workspace deps —
-          # covers transitive/build-dep crates that otherwise recompile.
-          cache-all-crates: true
-
-      - name: Install Linux system dependencies
-        if: runner.os == 'Linux'
-        run: |
-          bash scripts/ci/install-apt-packages.sh \
-            build-essential \
-            curl \
-            file \
-            mold \
-            binutils \
-            libayatana-appindicator3-dev \
-            libgtk-3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            musl-tools \
-            patchelf \
-            wget
-
-      # No protoc needed here: proto generation is gated on REGENERATE_PROTO and
-      # the generated code is checked in, so packaging builds never run protoc.
-
-      # Linking the agent and the (large, WebView-heavy) Tauri binary dominates
-      # the Windows job; lld-link links far faster than MSVC link.exe. Opt into
-      # it for CI ONLY — via the target-specific linker env var, so .cargo/
-      # config.toml is untouched and local Windows devs keep the default linker.
-      # Self-healing: only enabled when lld-link is actually on PATH (it ships
-      # with the LLVM preinstalled on windows-latest), so a future runner-image
-      # change that drops LLVM silently falls back to link.exe instead of failing
-      # the build. lld-link honours the /DEBUG:NONE rustflag from config.toml.
-      - name: Enable lld-link if available (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $lld = Get-Command lld-link -ErrorAction SilentlyContinue
-          if ($lld) {
-            Write-Host "Using lld-link at $($lld.Source)"
-            "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=lld-link" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          } else {
-            Write-Host "lld-link not found — falling back to MSVC link.exe"
-          }
-
-      - name: Install npm dependencies (Desktop)
-        working-directory: desktop
-        run: npm ci
-
-     
-      # Windows Defender real-time scanning inspects every intermediate file the
-      # Rust compiler and linker emit — thousands of them — and is the single
-      # biggest drag on the Windows job. Turn it off for the runner (which has
-      # admin rights); it's a throwaway VM. Never fail the build if Defender is
-      # policy-managed and refuses.
-      - name: Disable Windows Defender real-time scanning
-        if: runner.os == 'Windows'
-        shell: pwsh
-        continue-on-error: true
-        run: Set-MpPreference -DisableRealtimeMonitoring $true
-
-      # Compile the CLI into a standalone binary (Rust workspace member).
-      - name: Build CLI binary (macOS)
-        if: runner.os == 'macOS'
-        working-directory: cli
-        run: |
-          cargo build --release
-          # Stage it as a Tauri sidecar too (bundle.externalBin) so the CLI ships
-          # inside the installers, not just the portable packages.
-          triple=$(rustc -Vv | sed -n 's/^host: //p')
-          mkdir -p ../desktop/src-tauri/binaries
-          cp ../target/release/future "../desktop/src-tauri/binaries/future-$triple"
-
-      # Linux: build the CLI as a FULLY STATIC musl binary, not against glibc.
-      # The glibc build would only run on distros with a glibc at least as new
-      # as the runner image; the static binary runs on any Linux of this arch
-      # (old distros, Alpine, bare containers). It is staged as the Tauri
-      # sidecar — so the bundled CLI/TUI stays usable even on systems where the
-      # GUI itself can't start (missing WebKitGTK, old glibc) — and packed as a
-      # standalone CLI-only tarball for servers. musl-tools provides musl-gcc
-      # for the C dependencies (ring).
-      - name: Build CLI binary (Linux, static musl)
-        if: runner.os == 'Linux'
-        working-directory: cli
-        env:
-          CC_x86_64_unknown_linux_musl: musl-gcc
-          CC_aarch64_unknown_linux_musl: musl-gcc
+          path: release-assets
+      - name: Stage and validate release assets
         run: |
           set -euo pipefail
-          target="$(uname -m)-unknown-linux-musl"
-          rustup target add "$target"
-          cargo build --release --target "$target"
-          # Stage it as a Tauri sidecar too (bundle.externalBin) so the CLI ships
-          # inside the installers, not just the portable packages. The sidecar
-          # filename uses the host (glibc) triple; Tauri only copies the file
-          # and doesn't care how the binary is linked.
-          triple=$(rustc -Vv | sed -n 's/^host: //p')
-          mkdir -p ../desktop/src-tauri/binaries
-          cp "../target/$target/release/future" "../desktop/src-tauri/binaries/future-$triple"
-          # Standalone CLI-only distribution (CLI + TUI + agent in one static
-          # binary) for servers and distros the GUI can't run on.
-          tar -czf "future-$target.tar.gz" -C "../target/$target/release" future
+          mkdir -p publish
+          names=(
+            "FutureOS_${VERSION}_aarch64-unsigned.dmg"
+            "FutureOS_${VERSION}_aarch64-unsigned.app.tar.gz"
+            "FutureOS_${VERSION}_aarch64-unsigned.app.tar.gz.sig"
+            "FutureOS_${VERSION}_x64-unsigned.dmg"
+            "FutureOS_${VERSION}_x64-unsigned.app.tar.gz"
+            "FutureOS_${VERSION}_x64-unsigned.app.tar.gz.sig"
+            "FutureOS_${VERSION}_x64-setup-unsigned.exe"
+            "FutureOS_${VERSION}_x64-setup-unsigned.exe.sig"
+            "FutureOS_${VERSION}_amd64.deb"
+            "FutureOS_${VERSION}_amd64.deb.sig"
+            "FutureOS_${VERSION}_arm64.deb"
+            "FutureOS_${VERSION}_arm64.deb.sig"
+            "FutureOS_${VERSION}_linux_x86_64-portable.tar.gz"
+            "FutureOS_${VERSION}_linux_aarch64-portable.tar.gz"
+            "FutureOS_${VERSION}_linux_x86_64-cli.tar.gz"
+            "FutureOS_${VERSION}_linux_aarch64-cli.tar.gz"
+            "FutureOS_${VERSION}_android-universal.apk"
+          )
+          for name in "${names[@]}"; do
+            source="$(find release-assets -type f -name "$name" -print -quit)"
+            [[ -n "$source" ]] || {
+              echo "Required test release asset is missing: $name" >&2
+              find release-assets -maxdepth 3 -type f -print >&2
+              exit 1
+            }
+            cp -v "$source" "publish/$name"
+          done
+          count="$(find publish -type f | wc -l | tr -d ' ')"
+          [[ "$count" == "17" ]] || { echo "Expected 17 assets, found $count." >&2; exit 1; }
 
-      - name: Build CLI binary (Windows)
-        if: runner.os == 'Windows'
-        working-directory: cli
-        shell: pwsh
-        run: |
-          cargo build --release
-          # Stage it as a Tauri sidecar too (bundle.externalBin) so the CLI ships
-          # inside the NSIS installer, not just the portable zip.
-          $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
-          New-Item -ItemType Directory -Force -Path ../desktop/src-tauri/binaries | Out-Null
-          Copy-Item "../target/release/future.exe" "../desktop/src-tauri/binaries/future-$triple.exe"
-
-      # Pin the Tauri installer version to the plain semver core (NSIS rejects
-      # SemVer suffixes). The display version keeps the full FUTURE_VERSION.
-      - name: Set Tauri bundle version
-        run: node scripts/version.mjs --set-bundle
-
-      - name: Build desktop bundle
-        working-directory: desktop
-        run: npm run tauri:build
-
-      # macOS: the unified `future` CLI is the Tauri sidecar (bundle.externalBin); the
-      # agent runs through `future agent`, so only the CLI binary sits in the .app.
-      # already sit in the .app's Contents/MacOS, signed by Tauri. We only need
-      # to drop the first-launch (Gatekeeper) note into the dmg — the .app is
-      # unsigned/un-notarized. Tauri's dmg is read-only, so round-trip it through
-      # a read-write image, add the note, and re-seal the .app ad-hoc.
-      - name: Inject first-launch note into macOS dmg
-        if: runner.os == 'macOS'
+      - name: Generate Tauri-compatible latest.json
         run: |
           set -euo pipefail
-          src=$(ls desktop/src-tauri/target/release/bundle/dmg/*.dmg | head -n1)
-          work="$RUNNER_TEMP/rw.dmg"
-          out="$RUNNER_TEMP/out.dmg"
-          mnt="$RUNNER_TEMP/mnt"
-          hdiutil convert "$src" -format UDRW -o "$work"
-          hdiutil resize -size 700m "$work"
-          mkdir -p "$mnt"
-          hdiutil attach "$work" -mountpoint "$mnt" -nobrowse -noverify
-          app=$(ls -d "$mnt"/*.app | head -n1)
-          cp "docs/dist/readme-macos.txt" "$mnt/Readme.txt"
-          # License & attribution notices (MIT + Apache-2.0 LoopX-derived loop).
-          mkdir -p "$mnt/licenses/loop"
-          cp LICENSE "$mnt/licenses/"
-          cp orchestration/loop/LICENSE orchestration/loop/NOTICE orchestration/loop/UPSTREAM.md "$mnt/licenses/loop/"
-          codesign --force --sign - "$app"
-          hdiutil detach "$mnt"
-          hdiutil convert "$work" -format UDZO -o "$out"
-          mv -f "$out" "$src"
+          export PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          export MAC_ARM_FILE="FutureOS_${VERSION}_aarch64-unsigned.dmg"
+          export MAC_ARM_UPDATER_FILE="FutureOS_${VERSION}_aarch64-unsigned.app.tar.gz"
+          export MAC_INTEL_FILE="FutureOS_${VERSION}_x64-unsigned.dmg"
+          export MAC_INTEL_UPDATER_FILE="FutureOS_${VERSION}_x64-unsigned.app.tar.gz"
+          export WINDOWS_FILE="FutureOS_${VERSION}_x64-setup-unsigned.exe"
+          export LINUX_DEB_FILE="FutureOS_${VERSION}_amd64.deb"
+          export LINUX_DEB_ARM_FILE="FutureOS_${VERSION}_arm64.deb"
+          export LINUX_PORTABLE_FILE="FutureOS_${VERSION}_linux_x86_64-portable.tar.gz"
+          export LINUX_PORTABLE_ARM_FILE="FutureOS_${VERSION}_linux_aarch64-portable.tar.gz"
+          export LINUX_CLI_FILE="FutureOS_${VERSION}_linux_x86_64-cli.tar.gz"
+          export LINUX_CLI_ARM_FILE="FutureOS_${VERSION}_linux_aarch64-cli.tar.gz"
+          export ANDROID_APK_FILE="FutureOS_${VERSION}_android-universal.apk"
+          node <<'NODE'
+          const fs = require("node:fs");
+          const crypto = require("node:crypto");
+          const sha256 = file => crypto.createHash("sha256").update(fs.readFileSync(`publish/${file}`)).digest("hex");
+          const url = file => `${process.env.RELEASE_ORIGIN}/${process.env.VERSION}/${file}`;
+          const updater = file => ({
+            url: url(file),
+            signature: fs.readFileSync(`publish/${file}.sig`, "utf8").trim(),
+            sha256: sha256(file),
+          });
+          const asset = file => ({ url: url(file), sha256: sha256(file) });
+          const manifest = {
+            version: process.env.VERSION,
+            pub_date: process.env.PUB_DATE,
+            platforms: {
+              "darwin-aarch64": updater(process.env.MAC_ARM_UPDATER_FILE),
+              "darwin-x86_64": updater(process.env.MAC_INTEL_UPDATER_FILE),
+              "windows-x86_64": updater(process.env.WINDOWS_FILE),
+              "linux-x86_64-deb": updater(process.env.LINUX_DEB_FILE),
+              "linux-aarch64-deb": updater(process.env.LINUX_DEB_ARM_FILE),
+            },
+            assets: {
+              "darwin-aarch64": asset(process.env.MAC_ARM_FILE),
+              "darwin-x86_64": asset(process.env.MAC_INTEL_FILE),
+              "windows-x86_64": asset(process.env.WINDOWS_FILE),
+              "linux-x86_64-deb": asset(process.env.LINUX_DEB_FILE),
+              "linux-aarch64-deb": asset(process.env.LINUX_DEB_ARM_FILE),
+              "linux-x86_64": asset(process.env.LINUX_DEB_FILE),
+              "linux-x86_64-portable": asset(process.env.LINUX_PORTABLE_FILE),
+              "linux-x86_64-cli": asset(process.env.LINUX_CLI_FILE),
+              "linux-aarch64": asset(process.env.LINUX_DEB_ARM_FILE),
+              "linux-aarch64-portable": asset(process.env.LINUX_PORTABLE_ARM_FILE),
+              "linux-aarch64-cli": asset(process.env.LINUX_CLI_ARM_FILE),
+              "android-universal": asset(process.env.ANDROID_APK_FILE),
+              "android": asset(process.env.ANDROID_APK_FILE),
+            },
+          };
+          fs.writeFileSync("latest.json", `${JSON.stringify(manifest, null, 2)}\n`);
+          NODE
+          cat latest.json
 
-      - name: Upload desktop bundle
+      - name: Upload latest.json artifact
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.artifact_name }}
+          name: futureos-test-latest-json
+          path: latest.json
           if-no-files-found: error
           overwrite: true
-          path: ${{ matrix.bundle_path }}
-          # Dev/test bundles — expire fast so the shared Actions storage quota
-          # doesn't fill up. Release assets live on the GitHub Release, not here.
-          retention-days: 3
-
-      # Portable (install-free) Windows build: the desktop exe plus the agent and
-      # CLI binary, all in one directory. The agent runs through `future agent`
-      # (embedded), so only the unified CLI is staged next to the exe. Requires
-      # the WebView2 Evergreen runtime (ships with Win 10/11).
-      - name: Assemble Windows portable
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
-          $dir = "futureos-portable"
-          New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          Copy-Item "desktop/src-tauri/target/release/futureos.exe" "$dir/FutureOS.exe"
-          Copy-Item "target/release/future.exe" "$dir/future.exe"
-          Copy-Item "docs/dist/readme-windows.txt" "$dir/Readme.txt"
-          # License & attribution notices (MIT + Apache-2.0 LoopX-derived loop).
-          New-Item -ItemType Directory -Force -Path "$dir/licenses/loop" | Out-Null
-          Copy-Item "LICENSE" "$dir/licenses/"
-          Copy-Item "orchestration/loop/LICENSE", "orchestration/loop/NOTICE", "orchestration/loop/UPSTREAM.md" "$dir/licenses/loop/"
-          Compress-Archive -Path "$dir/*" -DestinationPath "FutureOS-portable-windows.zip" -Force
-
-      - name: Upload Windows portable
-        if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v7
-        with:
-          name: futureos-windows-portable
-          if-no-files-found: error
-          overwrite: true
-          path: FutureOS-portable-windows.zip
-          retention-days: 3
-
-      # Portable (install-free) Linux build: the desktop binary plus the unified
-      # CLI binary, all in one directory.
-      - name: Assemble Linux portable
-        if: runner.os == 'Linux'
+          retention-days: 7
+      - name: Setup ossutil
+        run: bash scripts/setup-ossutil.sh
+      - name: Publish complete versioned test release
         run: |
           set -euo pipefail
-          dir="futureos-portable-linux"
-          mkdir -p "$dir"
-          cp "desktop/src-tauri/target/release/futureos" "$dir/futureos"
-          # The static musl CLI build — see the CLI build step above.
-          cp "target/$(uname -m)-unknown-linux-musl/release/future" "$dir/future"
-          chmod +x "$dir"/*
-          cp "docs/dist/readme-linux.txt" "$dir/Readme.txt"
-          # License & attribution notices (MIT + Apache-2.0 LoopX-derived loop).
-          mkdir -p "$dir/licenses/loop"
-          cp LICENSE "$dir/licenses/"
-          cp orchestration/loop/LICENSE orchestration/loop/NOTICE orchestration/loop/UPSTREAM.md "$dir/licenses/loop/"
-          tar -czf FutureOS-portable-linux.tar.gz -C "$dir" .
-
-      - name: Upload Linux portable
-        if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.artifact_name }}-portable
-          if-no-files-found: error
-          overwrite: true
-          path: FutureOS-portable-linux.tar.gz
-          retention-days: 3
-
-      - name: Upload Linux CLI (static)
-        if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v7
-        with:
-          name: future-cli-linux-${{ matrix.cli_arch }}
-          if-no-files-found: error
-          overwrite: true
-          path: cli/future-*-unknown-linux-musl.tar.gz
-          retention-days: 3
+          target="oss://$OSS_BUCKET/test/$VERSION"
+          ossutil cp -r -f publish/ "$target/"
+          find publish -maxdepth 1 -type f -print0 | while IFS= read -r -d '' file; do
+            ossutil stat "$target/$(basename "$file")"
+          done
+          ossutil cp -f latest.json "$target/latest.json"
+          ossutil stat "$target/latest.json"
+          echo "Manifest: https://dl.future-os.cn/test/$VERSION/latest.json"
