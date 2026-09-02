@@ -134,10 +134,23 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
     // registry instead of the flag being silently swallowed by argument
     // parsing (previously `--help` on a subcommand was a no-op boolean).
     if args[1..].iter().any(|a| a == "--help" || a == "-h") {
-        print!(
-            "{}",
-            render_command_help(&registry, &args[0], include_experimental)
-        );
+        // `<command> <sub> --help` renders the exact verb usage when args[1]
+        // is a known subcommand; otherwise the command-level help.
+        let sub = args
+            .get(1)
+            .map(|s| s.as_str())
+            .filter(|s| !s.starts_with('-'));
+        let text = match sub {
+            Some(s)
+                if registry
+                    .find_subcommand(&args[0], s, include_experimental)
+                    .is_some() =>
+            {
+                render_subcommand_help(&registry, &args[0], s, include_experimental)
+            }
+            _ => render_command_help(&registry, &args[0], include_experimental),
+        };
+        print!("{text}");
         return Ok(());
     }
     let mut store = Store::open(&root_dir())?;
@@ -283,8 +296,32 @@ fn build_cli_registry() -> CommandRegistry {
     r.command(
         todo,
         "todo",
-        "add/claim/complete/archive todos",
-        "todo add|claim|complete|archive --goal G ...",
+        "add/update/claim/complete/archive todos",
+        "todo add|update|claim|complete|archive --goal G ...",
+    );
+    r.subcommand(
+        "todo",
+        "add",
+        "add a todo (hard checks: --verify gate, --acceptance tokens; --class / --owner scope)",
+        "add --goal G --text \"...\" [--priority P0|P1|P2] [--blocks T] [--verify \"cmd\"] [--acceptance \"a,b\"] [--owner A] [--class C]",
+    );
+    r.subcommand(
+        "todo",
+        "update",
+        "revise a todo's text/contract (non-interrupting, picked up next turn; --class is immutable)",
+        "update --goal G --todo-id T [--text \"...\"] [--priority P] [--blocks T] [--acceptance \"a,b\"] [--owner A]",
+    );
+    r.subcommand(
+        "todo",
+        "complete",
+        "close a todo — requires --no-follow-up | --successor and non-empty --evidence",
+        "complete --goal G --todo-id T --no-follow-up | --successor T2 [--evidence \"...\"] [--force]",
+    );
+    r.subcommand(
+        "todo",
+        "supersede",
+        "mark a todo obsolete with a reason",
+        "supersede --goal G --todo-id T --reason \"...\"",
     );
     r.command(
         todo,
@@ -342,6 +379,36 @@ fn build_cli_registry() -> CommandRegistry {
         "supervisor register|steer|proposal/receipt events (G-16)",
         "supervisor register|steer|propose|receipt|events --goal G ...",
     );
+    r.subcommand(
+        "supervisor",
+        "register",
+        "bind your session so workers push intervention reports to you",
+        "register --goal G --session-id S",
+    );
+    r.subcommand(
+        "supervisor",
+        "steer",
+        "interrupt the in-flight worker turn and inject an instruction",
+        "steer --goal G [--agent-id A] --instruction \"...\"",
+    );
+    r.subcommand(
+        "supervisor",
+        "propose",
+        "record a supervisor proposal event",
+        "propose --goal G [--agent-id A] ...",
+    );
+    r.subcommand(
+        "supervisor",
+        "receipt",
+        "record a proposal receipt event",
+        "receipt --goal G [--agent-id A] ...",
+    );
+    r.subcommand(
+        "supervisor",
+        "events",
+        "read the supervisor event projection (gates / completions / failures / progress)",
+        "events --goal G [--format json]",
+    );
     r.command(
         agent,
         "report",
@@ -351,8 +418,26 @@ fn build_cli_registry() -> CommandRegistry {
     r.command(
         agent,
         "worker",
-        "list/stop goal workers (ledger stop signal + gRPC abort — not pkill)",
-        "worker list --goal G [--format json] | worker stop --goal G [--agent-id A | --all] [--delete]",
+        "list/stop/tail goal workers (ledger stop signal + gRPC abort — not pkill)",
+        "worker list --goal G [--format json] | worker stop --goal G [--agent-id A | --all] [--delete] | worker tail --goal G --agent-id A [--lines N]",
+    );
+    r.subcommand(
+        "worker",
+        "list",
+        "registered workers + backing session + running/ended/idle",
+        "list --goal G [--format json]",
+    );
+    r.subcommand(
+        "worker",
+        "stop",
+        "stop worker(s) cleanly (ledger signal + gRPC abort); --delete also reclaims the session",
+        "stop --goal G [--agent-id A | --all] [--delete]",
+    );
+    r.subcommand(
+        "worker",
+        "tail",
+        "stream a worker's live turn log (condensed tool/usage view; --raw for verbatim .live.jsonl)",
+        "tail --goal G [--agent-id A] [--lines N] [--raw]",
     );
 
     let ops = r.group("ops", "operations / diagnostics");
@@ -542,19 +627,52 @@ fn render_command_help(
         } else {
             ""
         };
-        format!(
-            "{} — {}{}\n\nusage: {}\n\ngroup: {} — {}\n\nfull command list: {} --help\n",
+        let mut out = format!(
+            "{} — {}{}\n\nusage: {}\n\ngroup: {} — {}\n",
+            def.name, def.summary, mark, def.usage, group.name, group.summary
+        );
+        if !def.subcommands.is_empty() {
+            out.push_str("\nsubcommands:\n");
+            for sub in &def.subcommands {
+                out.push_str(&format!(
+                    "  {:<14} {}\n      usage: {} {}\n",
+                    sub.name, sub.summary, def.name, sub.usage
+                ));
+            }
+        }
+        out.push_str(&format!("\nfull command list: {} --help\n", prog()));
+        out
+    } else {
+        // Unreachable: main_from_args validates the command before help.
+        format!("unknown command `{command}` (try `{} --help`)\n", prog())
+    }
+}
+
+/// Render `<command> <sub> --help` — the exact usage of one verb (steer /
+/// update / stop / …) so an AI orchestrator discovers its flags directly
+/// instead of parsing a merged top-level usage line.
+fn render_subcommand_help(
+    registry: &CommandRegistry,
+    command: &str,
+    sub: &str,
+    include_experimental: bool,
+) -> String {
+    match registry.find_subcommand(command, sub, include_experimental) {
+        Some((group, parent, def)) => format!(
+            "{} {} — {}\n\nusage: {} {}\n\ngroup: {} — {}\n\nfull command list: {} --help\n",
+            parent.name,
             def.name,
             def.summary,
-            mark,
+            parent.name,
             def.usage,
             group.name,
             group.summary,
             prog()
-        )
-    } else {
-        // Unreachable: main_from_args validates the command before help.
-        format!("unknown command `{command}` (try `{} --help`)\n", prog())
+        ),
+        None => format!(
+            "unknown subcommand `{sub}` for `{command}` (try `{} {command} --help`)\n",
+            prog()
+        ),
     }
 }
 
@@ -1967,6 +2085,17 @@ fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
     }
     if t.status == TodoStatus::Superseded {
         bail!("todo {todo_id} was superseded — nothing to complete");
+    }
+    // Gates are decision points, not work items: they are resolved via
+    // `gate resolve` (which records the operator's decision), never marked
+    // "done" via `todo complete`. Closing a gate here would bypass the
+    // decision-recording contract — this is the manual-close counterpart to
+    // the run loop's gate handling (see the gate-freeze note below).
+    if t.class == TaskClass::UserGate {
+        bail!(
+            "todo {todo_id} is a user gate — resolve it with `future loop gate resolve \
+             --goal {goal_id} --todo-id {todo_id} --decision \"...\"`, not `todo complete`"
+        );
     }
     if t.class == TaskClass::Advancement && !no_follow_up && successor.is_none() {
         bail!(
@@ -5649,11 +5778,142 @@ async fn cmd_worker(store: &mut Store, args: &[String]) -> Result<()> {
     match sub {
         "list" => cmd_worker_list(&*store, &args[1..]).await,
         "stop" | "kill" => cmd_worker_stop(store, &args[1..]).await,
+        "tail" => cmd_worker_tail(&*store, &args[1..]).await,
         other => bail!(
             "unknown worker subcommand `{other}` (try `{} worker --help`)",
             prog()
         ),
     }
+}
+
+/// `future loop worker tail --goal G [--agent-id A] [--lines N]` — render the
+/// most recent lines of a worker's live turn log
+/// (`.future/loop/runs/<run_id>.live.jsonl`), the loop's own per-run
+/// observability stream. This is the orchestrator's window into what a worker
+/// is *actually doing* (tool calls, prompts, streaming) so it can decide
+/// whether to steer / stop / let it run — without hand-tailing the file.
+/// `--agent-id` picks one worker's latest run; without it, the latest run
+/// across all workers on the goal. Default `--lines 20`.
+async fn cmd_worker_tail(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut agent_id = None;
+    let mut lines = 20usize;
+    reject_unknown_flags(
+        args,
+        &[
+            "--goal",
+            "--agent-id",
+            "--lines",
+            "--raw",
+            "--format",
+            "--json",
+        ],
+    )?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--agent-id" {
+            agent_id = Some(v);
+        } else if k == "--lines" {
+            lines = v.parse().unwrap_or(20);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let runs_dir = std::path::PathBuf::from(store.root_path()).join("runs");
+    let sessions = bound_worker_sessions(&goal, &runs_dir, &goal_id);
+
+    // Pick the target run: the requested agent's latest, else the latest
+    // across all workers (max wall_ts).
+    let target = match agent_id.as_deref() {
+        Some(aid) => sessions
+            .iter()
+            .filter(|s| s.agent_id == aid && !s.run_id.is_empty())
+            .max_by_key(|s| s.wall_ts)
+            .ok_or_else(|| anyhow::anyhow!("no run found for worker `{aid}` on goal {goal_id}"))?,
+        None => sessions
+            .iter()
+            .filter(|s| !s.run_id.is_empty())
+            .max_by_key(|s| s.wall_ts)
+            .ok_or_else(|| anyhow::anyhow!("no runs yet for goal {goal_id}"))?,
+    };
+    let path = runs_dir.join(format!("{}.live.jsonl", target.run_id));
+    if !path.is_file() {
+        bail!("live log not found: {}", path.display());
+    }
+    let text = std::fs::read_to_string(&path)?;
+    let raw = wants_json(args) || args.iter().any(|a| a == "--raw");
+    if raw {
+        let all: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        let start = all.len().saturating_sub(lines);
+        println!(
+            "worker {} run {} ({} line(s), showing last {}) — {}",
+            target.agent_id,
+            target.run_id,
+            all.len(),
+            all.len() - start,
+            path.display()
+        );
+        for line in &all[start..] {
+            println!("{line}");
+        }
+        return Ok(());
+    }
+    // Condensed view: the events an orchestrator actually scans — the run
+    // header, tool calls, token usage, and the worker's visible text — with
+    // the high-frequency streaming deltas (text_chunk / thinking_delta /
+    // tool_delta) collapsed away. `--raw` / `--format json` dumps the log
+    // verbatim instead.
+    let events = condense_live_log(&text);
+    let start = events.len().saturating_sub(lines);
+    println!(
+        "worker {} run {} ({} event(s), showing last {}) — {}",
+        target.agent_id,
+        target.run_id,
+        events.len(),
+        events.len() - start,
+        path.display()
+    );
+    for ev in &events[start..] {
+        println!("{ev}");
+    }
+    Ok(())
+}
+
+/// Collapse a `.live.jsonl` stream into the lines an orchestrator scans:
+/// run header, tool start/end, token usage, and visible assistant text.
+/// Streaming deltas (text_chunk / thinking_delta / tool_delta) are dropped.
+/// Pure + unit-testable.
+fn condense_live_log(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        match ty {
+            "run_header" => out.push("[run start]".to_string()),
+            "tool_start" => {
+                let tool = v.get("tool").and_then(|t| t.as_str()).unwrap_or("?");
+                out.push(format!("[tool →] {tool}"));
+            }
+            "tool_end" => out.push("[tool ✓]".to_string()),
+            "usage" => {
+                if let Some(u) = v.get("usage") {
+                    let total = u.get("total_tokens").and_then(|t| t.as_u64()).unwrap_or(0);
+                    let cost = u.get("credit_cost").and_then(|c| c.as_f64()).unwrap_or(0.0);
+                    out.push(format!("[usage] {total} tokens, ¥{cost:.4}"));
+                }
+            }
+            "user_message" => out.push("[prompt]".to_string()),
+            "agent_start" => out.push("[agent start]".to_string()),
+            "agent_end" => out.push("[agent end]".to_string()),
+            _ => {}
+        }
+    }
+    out
 }
 
 async fn cmd_worker_list(store: &Store, args: &[String]) -> Result<()> {
@@ -8579,6 +8839,56 @@ mod cli_quirks_tests {
     }
 
     #[test]
+    fn render_command_help_lists_subcommands() {
+        let registry = build_cli_registry();
+        let help = render_command_help(&registry, "supervisor", false);
+        assert!(help.contains("subcommands:"), "got: {help}");
+        assert!(help.contains("steer"), "got: {help}");
+        assert!(help.contains("--instruction"), "got: {help}");
+        let whelp = render_command_help(&registry, "worker", false);
+        assert!(whelp.contains("tail"), "got: {whelp}");
+    }
+
+    #[test]
+    fn render_subcommand_help_shows_exact_verb_usage() {
+        let registry = build_cli_registry();
+        let help = render_subcommand_help(&registry, "supervisor", "steer", false);
+        assert!(help.contains("supervisor steer"), "got: {help}");
+        assert!(help.contains("--instruction"), "got: {help}");
+        assert!(help.contains("--agent-id"), "got: {help}");
+        // unknown verb → fallback error
+        let bad = render_subcommand_help(&registry, "supervisor", "nope", false);
+        assert!(bad.contains("unknown subcommand"), "got: {bad}");
+    }
+
+    #[test]
+    fn condense_live_log_drops_streaming_deltas_keeps_tools_and_usage() {
+        let log = concat!(
+            "{\"type\":\"run_header\",\"idx\":0}\n",
+            "{\"type\":\"text_chunk\",\"idx\":1}\n",
+            "{\"type\":\"thinking_delta\",\"idx\":2}\n",
+            "{\"type\":\"tool_start\",\"idx\":3,\"tool\":\"write\"}\n",
+            "{\"type\":\"tool_delta\",\"idx\":4}\n",
+            "{\"type\":\"tool_end\",\"idx\":5}\n",
+            "{\"type\":\"usage\",\"idx\":6,\"usage\":{\"total_tokens\":100,\"credit_cost\":0.001}}\n",
+            "{\"type\":\"agent_end\",\"idx\":7}\n",
+            "not json\n",
+        );
+        let out = condense_live_log(log);
+        assert_eq!(
+            out,
+            vec![
+                "[run start]".to_string(),
+                "[tool →] write".to_string(),
+                "[tool ✓]".to_string(),
+                "[usage] 100 tokens, ¥0.0010".to_string(),
+                "[agent end]".to_string(),
+            ],
+            "got: {out:?}"
+        );
+    }
+
+    #[test]
     fn render_command_help_marks_experimental_commands() {
         let mut registry = CommandRegistry::new();
         let ops = registry.group("ops", "operations");
@@ -9467,6 +9777,34 @@ mod residual_branch_tests {
                 ts: 1,
             })
             .unwrap();
+    }
+
+    // ── todo_complete: a user gate is resolved via `gate resolve`, never ────
+    // ── marked done via `todo complete` (M1: decision points are not work) ──
+    #[test]
+    fn todo_complete_rejects_user_gate() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::user_gate("gate1", "approve deploy?", &[]),
+                ts: 2,
+            })
+            .unwrap();
+        let args = vec![
+            "--goal".to_string(),
+            "g".to_string(),
+            "--todo-id".to_string(),
+            "gate1".to_string(),
+            "--no-follow-up".to_string(),
+            "--evidence".to_string(),
+            "x".to_string(),
+        ];
+        let err = todo_complete(&mut store, &args).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("user gate"), "got: {msg}");
+        assert!(msg.contains("gate resolve"), "got: {msg}");
     }
 
     // ── print_monitor_poll_plan: goal-vanished early return ────────────────

@@ -84,6 +84,12 @@ pub struct CommandDef {
     /// Operator journey (P1-9). Defaults to maintainer; the CLI builder
     /// reassigns statically known commands via `set_journey`.
     pub journey: Journey,
+    /// Per-subcommand usage for multi-verb commands (`supervisor steer`,
+    /// `todo update`, `worker stop`, …). Empty for single-verb commands.
+    /// Rendered by `<command> --help` and addressable via `<command> <sub>
+    /// --help` so an AI orchestrator can discover the exact flags of one
+    /// verb instead of a merged top-level usage line.
+    pub subcommands: Vec<CommandDef>,
 }
 
 /// One registered command group (LoopX command groups: goal / todo / agent /
@@ -160,10 +166,49 @@ impl CommandRegistry {
                     usage: usage.to_string(),
                     experimental,
                     journey: Journey::Maintainer,
+                    subcommands: Vec::new(),
                 },
             ));
         }
         self
+    }
+
+    /// Register a subcommand (verb) under an already-registered command so
+    /// `<command> --help` lists it and `<command> <sub> --help` renders its
+    /// exact usage. No-op when the parent command is unknown or the
+    /// subcommand name is already present (idempotent).
+    pub fn subcommand(
+        &mut self,
+        command: &str,
+        name: &str,
+        summary: &str,
+        usage: &str,
+    ) -> &mut Self {
+        for (_, c) in &mut self.commands {
+            if c.name == command && !c.subcommands.iter().any(|s| s.name == name) {
+                c.subcommands.push(CommandDef {
+                    name: name.to_string(),
+                    summary: summary.to_string(),
+                    usage: usage.to_string(),
+                    experimental: false,
+                    journey: Journey::Maintainer,
+                    subcommands: Vec::new(),
+                });
+            }
+        }
+        self
+    }
+
+    /// Find a subcommand by `parent` + `sub` name.
+    pub fn find_subcommand(
+        &self,
+        command: &str,
+        sub: &str,
+        include_experimental: bool,
+    ) -> Option<(&GroupDef, &CommandDef, &CommandDef)> {
+        let (group, parent) = self.find(command, include_experimental)?;
+        let sub_def = parent.subcommands.iter().find(|s| s.name == sub)?;
+        Some((group, parent, sub_def))
     }
 
     /// Assign the operator journey (P1-9) for an already-registered
@@ -344,6 +389,25 @@ mod tests {
         r.command(g, "cmd", "one", "cmd");
         r.command(g, "cmd", "two", "cmd");
         assert_eq!(r.command_count(false), 1);
+    }
+
+    #[test]
+    fn subcommands_register_and_find() {
+        let mut r = sample();
+        r.subcommand("goal", "init", "create a goal", "init --objective \"...\"");
+        r.subcommand("goal", "cancel", "end a goal", "cancel --goal G");
+        // idempotent re-register
+        r.subcommand("goal", "init", "dup", "init");
+        // unknown parent → no-op
+        r.subcommand("nope", "x", "y", "z");
+        let (_, parent, sub) = r.find_subcommand("goal", "init", false).unwrap();
+        assert_eq!(parent.name, "goal");
+        assert_eq!(sub.name, "init");
+        assert_eq!(sub.summary, "create a goal");
+        assert_eq!(parent.subcommands.len(), 2);
+        assert!(r.find_subcommand("goal", "cancel", false).is_some());
+        assert!(r.find_subcommand("goal", "missing", false).is_none());
+        assert!(r.find_subcommand("backup", "init", false).is_none());
     }
 
     #[test]
