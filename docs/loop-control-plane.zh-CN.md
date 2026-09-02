@@ -21,17 +21,11 @@
 Agent 执行一个有界回合（gRPC）→ 写证据 → 内核据此决定下一回合
 ```
 
-> **编排者是 AI agent，loop 是它的看板 + 操纵杆。** 内核只守正确性底线
-> （verify 闸门、验收契约、非空证据、终局闭环）——它**绝不**判断一个*探索性*
-> 产出*对不对*。这个判断权属于编排 agent：它读工件，然后决定继续、纠正、停止
-> 还是关单。loop 把做这些事的操纵杆递到编排者手上——实时观察 worker
-> （`worker tail`）、打断/纠正（`supervisor steer`、`todo update`）、停止
-> （`worker stop`）、按自己的判断关单（手动 `todo complete`，刻意不重跑机器
-> `--verify` 闸门）。
->
-> 跨回合上下文放在**持久工件里，而不是 session 记忆**：*正常完成*的回合
-> session 不可 resume（只有基础设施中断的才可），所以每个回合重读报告 / 账本 /
-> 目标文档，而不是依赖上一个 session 的推理历史。
+> **编排者是 AI agent，loop 是它的看板 + 操纵杆。** 设计原则——kanban 而非
+> 规则引擎、带可观测/操纵杆的 agent 编排者、用户经 skill 驱动、CLI 单一接口、
+> 持久状态优于 session 记忆——统一维护在
+> [`orchestration/loop/ARCHITECTURE.zh-CN.md`](../orchestration/loop/ARCHITECTURE.zh-CN.md)，
+> 此处不再重复；本页只讲运维模型。
 
 ## 核心概念
 

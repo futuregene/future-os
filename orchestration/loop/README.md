@@ -4,7 +4,10 @@ The FutureOS loop control plane: durable goals / todos / gates / quotas, a
 deterministic should-run decision kernel, event-sourced state, and a gRPC
 executor bridge — productized as the `future loop` CLI.
 
-Documentation: [`docs/loop-control-plane.md`](../../docs/loop-control-plane.md).
+Documentation: [`ARCHITECTURE.md`](ARCHITECTURE.md) (design principles,
+[中文版](ARCHITECTURE.zh-CN.md)) and
+[`docs/loop-control-plane.md`](../../docs/loop-control-plane.md) (operational
+model).
 
 ## License & attribution
 
