@@ -380,13 +380,23 @@ It carries **two layers**, and deliberately not a third:
   it is where "durable artifacts, not session memory" actually lands.
 
 **Not in the envelope: the kernel's scheduling internals.** The should-run
-verdict, mode, and reason are the kernel's *own* decision state, addressed
-to the orchestrator and the operator — not to the worker. Putting them in
-the worker's prompt would leak the scheduler's hesitation into the executor
-(a worker's job is how to do the work, not whether the kernel thought it
-should run) and blur the observe/decide split. The envelope tells the
-worker *what to do and the context to do it well*; it does not tell the
+verdict, mode, and arbitration disposition are the kernel's *own* decision
+state, addressed to the orchestrator and the operator — not to the worker.
+Putting them in the worker's prompt would leak the scheduler's hesitation into
+the executor (a worker's job is how to do the work, not whether the kernel
+thought it should run) and blur the observe/decide split. The envelope tells
+the worker *what to do and the context to do it well*; it does not tell the
 worker what the kernel was thinking.
+
+**In the envelope: the observable signals.** Signals (outcome floor,
+oscillation, failure count, no-progress) are a different kind of quantity:
+observations about the *work*, recomputed from the ledger — not the kernel's
+hesitation. Principle 1 promises them as advisories "in the turn envelope",
+and that is where they live: the envelope's context layer carries a `signals`
+block recomputed by the same kernel detectors that render the delivery
+reason's advisories (one detector set, two consumers — the orchestrator reads
+them in the packet reason, the worker reads them in the envelope). What to do
+about a signal is, as everywhere, a decision — never a kernel directive.
 
 **One envelope, no special cases.** A first turn, a resumed turn, and an
 ordinary turn all use the same envelope; the differences fall out of

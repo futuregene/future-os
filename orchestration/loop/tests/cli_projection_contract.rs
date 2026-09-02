@@ -16,10 +16,8 @@ use future_loop::turn_envelope::{
 fn turn_envelope_carries_decision_context() {
     let mut goal = Goal::new("g1", "Ship the platform", "/tmp");
     goal.add(Todo::advancement("T1", "Implement the adapter"));
-    let packet = decide(&goal, std::time::SystemTime::now());
-    let msg = compose_turn_envelope(&goal, goal.todo("T1").unwrap(), Some(&packet), None);
+    let msg = compose_turn_envelope(&goal, goal.todo("T1").unwrap(), None);
     assert!(msg.contains(TURN_ENVELOPE_SCHEMA_VERSION));
-    assert!(msg.contains("decision: run"), "decision banner");
     assert!(msg.contains("objective: Ship the platform"), "goal context");
     assert!(
         msg.contains("execution: cadence="),
@@ -31,10 +29,10 @@ fn turn_envelope_carries_decision_context() {
     );
     assert!(msg.contains("Complete the todo and report what you did and observed."));
     assert!(msg.contains("--no-follow-up"), "completion contract footer");
-    assert!(
-        msg.contains("arbitration:"),
-        "scheduler arbitration in envelope"
-    );
+    // The kernel's scheduling internals are NOT part of the worker prompt.
+    assert!(!msg.contains("decision:"), "decision: leaked: {msg}");
+    assert!(!msg.contains("should_run:"), "should_run: leaked: {msg}");
+    assert!(!msg.contains("arbitration:"), "arbitration: leaked: {msg}");
 }
 
 #[test]
@@ -65,6 +63,30 @@ fn turn_envelope_includes_prior_evidence_and_gate_decisions() {
     assert!(msg.contains("Resolved gate decision(s): G1: approved"));
     assert!(msg.contains("Evidence from the previous turn (todo T0)"));
     assert!(msg.contains("prior evidence payload"));
+}
+
+#[test]
+fn turn_envelope_injects_upstream_evidence_for_fan_in() {
+    let mut goal = Goal::new("g1", "o", "/tmp");
+    let mut up1 = Todo::advancement("U1", "Probe direction A");
+    up1.status = future_loop::state::TodoStatus::Done;
+    up1.evidence = Some("direction A landed: found X".into());
+    let mut up2 = Todo::advancement("U2", "Probe direction B");
+    up2.status = future_loop::state::TodoStatus::Done;
+    up2.evidence = Some("direction B landed: found Y".into());
+    goal.add(up1);
+    goal.add(up2);
+    goal.add(Todo::advancement("S1", "Synthesize the probes").blocking(&["U1", "U2"]));
+    let msg = compose_turn_message(&goal, goal.todo("S1").unwrap(), None);
+    assert!(msg.contains("Upstream evidence:"), "envelope: {msg}");
+    assert!(
+        msg.contains("upstream U1: direction A landed: found X"),
+        "envelope: {msg}"
+    );
+    assert!(
+        msg.contains("upstream U2: direction B landed: found Y"),
+        "envelope: {msg}"
+    );
 }
 
 // ── CLI projection: quota output includes breakdown + usage summary ────────

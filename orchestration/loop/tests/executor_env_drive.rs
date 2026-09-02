@@ -41,7 +41,6 @@ fn validator_spawn_failure_is_inconclusive() {
             None,
             None,
             None,
-            None,
         )
         .await
         .unwrap();

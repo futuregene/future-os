@@ -9,11 +9,12 @@
 use std::collections::BTreeMap;
 
 use future_loop::agents::multi_agent::{
-    apply_recipe_onboard, collective_turn_ledger, contract_issues, latest_contract, recipe_named,
-    recipes, record_contract, record_recipe, record_succession, succession_attention_items,
-    succession_candidates_with, successions, wake_roster, AgentRecipe, HandoffRule,
-    MultiAgentContract, PeerRole, SuccessionCandidate, MULTI_AGENT_CONTRACT_SCHEMA_VERSION,
-    MULTI_AGENT_RECIPE_SCHEMA_VERSION, SUCCESSION_REASON_LEASE_EXPIRED, SUCCESSION_REASON_OFFLINE,
+    apply_recipe_onboard, auto_promote_successions, collective_turn_ledger, contract_issues,
+    latest_contract, recipe_named, recipes, record_contract, record_recipe, record_succession,
+    succession_attention_items, succession_candidates_with, successions, wake_roster, AgentRecipe,
+    HandoffRule, MultiAgentContract, PeerRole, SuccessionCandidate,
+    MULTI_AGENT_CONTRACT_SCHEMA_VERSION, MULTI_AGENT_RECIPE_SCHEMA_VERSION,
+    SUCCESSION_REASON_LEASE_EXPIRED, SUCCESSION_REASON_OFFLINE,
 };
 use future_loop::state::{now_epoch, Goal, Priority, Todo};
 use future_loop::store::{Event, Store};
@@ -507,6 +508,44 @@ fn succession_triggers_on_offline_heartbeat() {
         .unwrap();
     let goal = store.replay("g1").unwrap().unwrap();
     assert!(succession_candidates_with(&goal, &contract, now, 600).is_empty());
+}
+
+#[test]
+fn auto_promote_records_succession_and_is_idempotent() {
+    let root = tmp_root("auto-promote");
+    let mut store = Store::open(&root).unwrap();
+    goal_with_primary(&mut store, "g1");
+    let contract = contract_with_backup();
+    record_contract(&mut store, "g1", &contract).unwrap();
+
+    let now = now_epoch();
+    // Primary heartbeated two hours ago → offline past the default 30m
+    // threshold, with no manual `apply` in sight.
+    store
+        .append(Event::SchedulerTicked {
+            goal_id: "g1".into(),
+            agent_id: "primary".into(),
+            action: "tick".into(),
+            rrule: None,
+            ts: now - 7200,
+        })
+        .unwrap();
+
+    // Auto-promotion lands a SuccessionOccurred event without `apply`.
+    let promoted = auto_promote_successions(&mut store, "g1", now).unwrap();
+    assert_eq!(promoted.len(), 1);
+    assert_eq!(promoted[0].primary, "primary");
+    assert_eq!(promoted[0].backup, "backup");
+    assert_eq!(promoted[0].reason, SUCCESSION_REASON_OFFLINE);
+    let recorded = successions(&store, "g1").unwrap();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].event_id, promoted[0].event_id);
+
+    // Re-running is idempotent: same event id, no duplicate.
+    let again = auto_promote_successions(&mut store, "g1", now).unwrap();
+    assert_eq!(again.len(), 1);
+    assert_eq!(again[0].event_id, promoted[0].event_id);
+    assert_eq!(successions(&store, "g1").unwrap().len(), 1);
 }
 
 #[test]

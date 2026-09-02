@@ -305,11 +305,18 @@ turn envelope 是编排者/内核与 worker 之间唯一的信息接口——wor
   让 worker 不重复劳动、不再踩已知的坑——「持久产物而非 session 记忆」
   正落在这里。
 
-**不在信封里：内核的调度内部状态。** should-run 判定、mode、reason 是内核
-*自己的*决策状态，是给编排者和 operator 看的——不是给 worker 的。把它们
-放进 worker 的 prompt，等于把调度器的犹豫泄漏进执行者（worker 该关心的是
-怎么干活，不是内核觉得该不该跑），也模糊了观察/决策的分离。信封告诉
-worker *做什么、以及做好它所需的上下文*；不告诉 worker 内核在想什么。
+**不在信封里：内核的调度内部状态。** should-run 判定、mode、arbitration
+处置是内核*自己的*决策状态，是给编排者和 operator 看的——不是给 worker
+的。把它们放进 worker 的 prompt，等于把调度器的犹豫泄漏进执行者（worker
+该关心的是怎么干活，不是内核觉得该不该跑），也模糊了观察/决策的分离。信封
+告诉 worker *做什么、以及做好它所需的上下文*；不告诉 worker 内核在想什么。
+
+**在信封里：可观察信号。** 信号（outcome floor、oscillation、失败计数、
+无进展）是另一类量：它们是对*工作本身*的观察、从账本重算——不是调度器的
+犹豫。原则 1 承诺信号以 advisory 形式进 turn envelope，它们确实在那里：
+信封的上下文层携带一个 `signals` 块，由与 delivery reason 的 advisory
+相同的内核检测器重算（一套检测器、两个消费者——编排者从 packet reason 读，
+worker 从信封读）。对信号如何处置，一如全程，是决策而非内核指令。
 
 **一个信封，没有特例。** 第一回合、resume 的回合、普通回合用同一个信封，
 差异完全由账本此刻装着什么自然产生。第一回合的信封自然短（没有失败史、

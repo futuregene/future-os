@@ -3227,6 +3227,7 @@ async fn scheduler_tick(store: &mut Store, args: &[String]) -> Result<()> {
         record_tick_heartbeat(store, &goal_id, &agent, &action, &state)?;
         print_monitor_poll_plan(store, &goal_id)?;
         notify_dead_holders(store, &goal_id).await?;
+        crate::agents::multi_agent::auto_promote_successions(store, &goal_id, now)?;
         return Ok(());
     }
 
@@ -3241,6 +3242,7 @@ async fn scheduler_tick(store: &mut Store, args: &[String]) -> Result<()> {
     record_tick_heartbeat(store, &goal_id, &agent, &action, &state)?;
     print_monitor_poll_plan(store, &goal_id)?;
     notify_dead_holders(store, &goal_id).await?;
+    crate::agents::multi_agent::auto_promote_successions(store, &goal_id, now)?;
     Ok(())
 }
 
@@ -4243,9 +4245,6 @@ async fn run_turns(
             turn,
             goal.history.last(),
             true,
-            // G-9: embed the decision summary (mode/reason/arbitration) in
-            // the turn envelope.
-            Some(&packet),
             Some(runs_dir),
             Some(&progress),
             turn_note.as_deref(),
@@ -7324,8 +7323,17 @@ fn cmd_turn(store: &Store, args: &[String]) -> Result<()> {
     let packet =
         crate::decision::decide_for(&goal, std::time::SystemTime::now(), agent_id.as_deref());
     let prev = goal.history.last().filter(|r| r.todo_id == todo_id);
-    let envelope = crate::turn_envelope::compose_turn_envelope(&goal, todo, Some(&packet), prev);
+    let envelope = crate::turn_envelope::compose_turn_envelope(&goal, todo, prev);
     println!("{envelope}");
+    // The worker prompt no longer carries the kernel's scheduling internals
+    // (ARCHITECTURE.md "Not in the envelope"), so surface the decision summary
+    // separately to keep `turn`'s operator visibility into what the kernel
+    // decided for this todo.
+    println!("{}", crate::cli_projection::render_decision_line(&packet));
+    println!("reason: {}", packet.reason);
+    if let Some(arb) = &packet.scheduler_arbitration {
+        println!("arbitration: {}", arb.disposition.as_str());
+    }
     Ok(())
 }
 

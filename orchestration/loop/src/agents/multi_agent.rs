@@ -498,6 +498,47 @@ pub fn successions(store: &Store, goal_id: &str) -> Result<Vec<SuccessionRecord>
     Ok(out)
 }
 
+/// Auto-promote every currently-met succession trigger for `goal_id` by
+/// recording its `SuccessionOccurred` event (the declarative contract says a
+/// primary whose lease expired or whose heartbeat went silent is succeeded
+/// by its `backup_for` peer — the scheduler tick drives this periodically, so
+/// promotion happens without an explicit `agent succession apply`). Idempotent
+/// per trigger episode: re-recording the same (primary, backup, reason)
+/// returns the existing event id (see [`record_succession`]). Returns the
+/// succession records that landed (empty when no trigger is met, the goal is
+/// gone, or no contract is set).
+pub fn auto_promote_successions(
+    store: &mut Store,
+    goal_id: &str,
+    now: u64,
+) -> Result<Vec<SuccessionRecord>> {
+    let Some(goal) = store.replay(goal_id)? else {
+        return Ok(vec![]);
+    };
+    let Some(contract) = latest_contract(store, goal_id)? else {
+        return Ok(vec![]);
+    };
+    let candidates = succession_candidates(&goal, &contract, now);
+    for candidate in &candidates {
+        record_succession(store, goal_id, candidate)?;
+    }
+    if candidates.is_empty() {
+        return Ok(vec![]);
+    }
+    // Re-read the ledger and return only the episodes we just promoted, so the
+    // caller sees exactly what landed (already-recorded episodes are returned
+    // with their existing event id, not a duplicate).
+    let promoted = successions(store, goal_id)?
+        .into_iter()
+        .filter(|r| {
+            candidates
+                .iter()
+                .any(|c| c.primary == r.primary && c.backup == r.backup && c.reason == r.reason)
+        })
+        .collect();
+    Ok(promoted)
+}
+
 /// Attention hints for recorded successions — one item per role slot
 /// (latest succession per primary wins). A succession is considered
 /// recovered once the primary's scheduler heartbeat lands at or after the
