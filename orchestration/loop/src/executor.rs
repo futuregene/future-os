@@ -7,7 +7,7 @@
 use anyhow::{Context, Result};
 
 use crate::agent_client::{AgentClient, RunSummary, TurnProgressTracker};
-use crate::decision::{compose_goal_boundary, compose_turn_envelope, compose_turn_message};
+use crate::decision::{compose_goal_boundary, compose_turn_envelope};
 use crate::state::{
     now_epoch, task_validation_receipt, Goal, RecoveryKind, RunRecord, TaskValidation, Todo,
     ValidationStatus,
@@ -264,9 +264,6 @@ pub fn incomplete_continue_note(streak: u32, max_retries: u32, todo_id: &str) ->
 }
 
 /// Execute one bounded turn for `todo` and return the ledger entry (spend).
-/// `decision_summary` (G-9): the `ShouldRunPacket` from the decision kernel,
-/// embedded in the turn envelope so the agent sees the decision context
-/// (mode / reason / arbitration) alongside the instruction.
 /// `continue_note`: injected at the top of the turn message when the previous
 /// turn ended incomplete (bounded retry).
 #[allow(clippy::too_many_arguments)]
@@ -279,7 +276,6 @@ pub async fn execute_turn(
     turn: u32,
     prev: Option<&RunRecord>,
     boundary_injected: bool,
-    decision_summary: Option<&crate::contract::ShouldRunPacket>,
     runs_dir: Option<std::path::PathBuf>,
     progress: Option<&TurnProgressTracker>,
     continue_note: Option<&str>,
@@ -289,10 +285,7 @@ pub async fn execute_turn(
             .append_system_prompt(session_id, &compose_goal_boundary(goal))
             .await?;
     }
-    let message = match decision_summary {
-        Some(packet) => compose_turn_envelope(goal, todo, Some(packet), prev),
-        None => compose_turn_message(goal, todo, prev),
-    };
+    let message = compose_turn_envelope(goal, todo, prev);
     // Surface the backing agent session id so in-turn tooling (e.g. trace
     // converters) can locate the real session deterministically instead of
     // guessing by file mtime.

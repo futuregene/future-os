@@ -1,7 +1,14 @@
 //! Stall semantics — conditions that force a replan instead of delivery:
 //! outcome-floor breaches, exhausted repair budgets, and stalled monitors.
+//! Also owns the shared SIGNAL TEXT: the advisory strings the decision kernel
+//! puts in the delivery reason are the exact strings the turn envelope's
+//! context layer recomputes (ARCHITECTURE.md: signals are advisories surfaced
+//! in the turn envelope; one detector set, two consumers).
 
 use crate::state::{Goal, TaskClass, Todo};
+
+use super::oscillation::oscillation_replan_reason;
+use super::LLM_ZOMBIE_TURN_THRESHOLD;
 
 /// Consecutive no-change monitor polls before the monitor is considered
 /// stalled (LoopX replan trigger).
@@ -29,6 +36,46 @@ pub(crate) fn outcome_floor_breach(goal: &Goal) -> Option<String> {
     } else {
         None
     }
+}
+
+/// The advisory signals for ONE runnable advancement todo, as they appear in
+/// the delivery reason and (recomputed from the ledger) in the turn envelope:
+/// outcome floor, oscillation, failure count, and the LLM-zombie
+/// (no-write-tool) warning. Each is an observation the reading agent acts on;
+/// none of them is a kernel-forced replan. Order and wording are part of the
+/// surface — both consumers must render these verbatim.
+pub fn todo_signals(goal: &Goal, todo: &Todo) -> Vec<String> {
+    let mut advisories: Vec<String> = vec![];
+    if let Some(signal) = outcome_floor_breach(goal) {
+        advisories.push(format!(
+            "[signal: {signal} — consider changing strategy or superseding a stale todo]"
+        ));
+    }
+    if let Some(signal) = oscillation_replan_reason(goal) {
+        advisories.push(format!(
+            "[signal: {signal} — consider a different validator or splitting the todo]"
+        ));
+    }
+    if todo.failed_attempts > 0 {
+        advisories.push(format!(
+            "[signal: todo {} has {} failed attempt(s) — consider superseding or asking the operator]",
+            todo.id, todo.failed_attempts
+        ));
+    }
+    // LLM-zombie signal (was a forced replan in #343; now an advisory —
+    // the kernel surfaces it, the agent decides whether to restart with a
+    // fresh session).
+    let no_progress_turns = goal
+        .turn_no_progress
+        .iter()
+        .filter(|np| np.todo_id == todo.id)
+        .count() as u32;
+    if no_progress_turns >= LLM_ZOMBIE_TURN_THRESHOLD {
+        advisories.push(format!(
+            "[signal: {no_progress_turns} turns with no write-class tool (write/edit/shell) — the worker may be stuck; consider restarting with a fresh session]"
+        ));
+    }
+    advisories
 }
 
 /// Any open advancement todo has blown through its repair budget.

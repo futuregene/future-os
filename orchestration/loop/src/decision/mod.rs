@@ -52,9 +52,8 @@ use self::goal_boundary::goal_boundary_json;
 use self::heartbeat_recommendation::recommendation;
 use self::identity::identity_gate;
 use self::monitor::{monitor_outcome, MonitorOutcome};
-use self::oscillation::oscillation_replan_reason;
 use self::primary_action::agent_channel;
-use self::stall::{is_monitor_stalled, outcome_floor_breach};
+use self::stall::is_monitor_stalled;
 use crate::quota::error_codes::DecisionReasonCode;
 
 pub use self::arbitration::{
@@ -64,6 +63,7 @@ pub use self::arbitration::{
 pub use self::goal_boundary::compose_goal_boundary;
 pub use self::monitor::{monitor_poll_classification, MONITOR_NO_CHANGE_BACKOFF_SECS};
 pub use self::oscillation::OSCILLATION_PATTERN_LEN;
+pub use self::stall::todo_signals;
 pub use self::stall::{MAX_REPAIR_ATTEMPTS, MONITOR_NO_CHANGE_REPLAN_THRESHOLD};
 pub use crate::quota::slot_accounting::QUOTA_ALLOWED_SLOTS;
 pub use crate::state::now_epoch;
@@ -183,36 +183,11 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
     // observations the agent reads and acts on; the kernel surfaces them in
     // the delivery reason but never converts them into a `replan`.
     if let Some(todo) = runnable_todos.first() {
-        let mut advisories: Vec<String> = vec![];
-        if let Some(signal) = outcome_floor_breach(goal) {
-            advisories.push(format!(
-                "[signal: {signal} — consider changing strategy or superseding a stale todo]"
-            ));
-        }
-        if let Some(signal) = oscillation_replan_reason(goal) {
-            advisories.push(format!(
-                "[signal: {signal} — consider a different validator or splitting the todo]"
-            ));
-        }
-        if todo.failed_attempts > 0 {
-            advisories.push(format!(
-                "[signal: todo {} has {} failed attempt(s) — consider superseding or asking the operator]",
-                todo.id, todo.failed_attempts
-            ));
-        }
-        // LLM-zombie signal (was a forced replan in #343; now an advisory —
-        // the kernel surfaces it, the agent decides whether to restart with a
-        // fresh session).
-        let no_progress_turns = goal
-            .turn_no_progress
-            .iter()
-            .filter(|np| np.todo_id == todo.id)
-            .count() as u32;
-        if no_progress_turns >= LLM_ZOMBIE_TURN_THRESHOLD {
-            advisories.push(format!(
-                "[signal: {no_progress_turns} turns with no write-class tool (write/edit/shell) — the worker may be stuck; consider restarting with a fresh session]"
-            ));
-        }
+        // Rule signals are shared surface: the exact same advisory strings are
+        // recomputed into the turn envelope's context layer (see
+        // `turn_envelope::compose_todo_signals`), so the worker reads what the
+        // orchestrator reads.
+        let advisories: Vec<String> = stall::todo_signals(goal, todo);
         let attempt = todo.failed_attempts + 1;
         let (reason, code) = if attempt > 1 {
             (

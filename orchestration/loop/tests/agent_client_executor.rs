@@ -568,7 +568,6 @@ fn execute_turn_completed_no_validator() {
             1,
             None,
             false,
-            None,
             Some(runs_dir.clone()),
             None,
             None,
@@ -590,7 +589,7 @@ fn execute_turn_completed_no_validator() {
 }
 
 #[test]
-fn execute_turn_with_decision_summary_and_prev() {
+fn execute_turn_with_prev() {
     rt().block_on(async {
         let (addr, _) = spawn_mock(MockState {
             events: completed_events("mock-run-1"),
@@ -599,7 +598,6 @@ fn execute_turn_with_decision_summary_and_prev() {
         .await;
         let mut client = AgentClient::connect(&addr).await.unwrap();
         let (goal, todo) = sample_goal_with_todo();
-        let packet = future_loop::decision::decide_for(&goal, std::time::SystemTime::now(), None);
         let prev = sample_record("completed");
         let record = execute_turn(
             &mut client,
@@ -610,7 +608,6 @@ fn execute_turn_with_decision_summary_and_prev() {
             2,
             Some(&prev),
             true,
-            Some(&packet),
             None,
             None,
             None,
@@ -647,7 +644,6 @@ fn execute_turn_error_turn_skips_validator() {
             1,
             None,
             true,
-            None,
             None,
             None,
             None,
@@ -691,7 +687,6 @@ fn execute_turn_surfaces_agent_truncation_on_incomplete() {
             None,
             None,
             None,
-            None,
         )
         .await
         .unwrap();
@@ -728,7 +723,6 @@ fn execute_turn_leaves_truncation_none_without_agent_end() {
             None,
             None,
             None,
-            None,
         )
         .await
         .unwrap();
@@ -761,7 +755,6 @@ fn execute_turn_validator_pass_and_fail() {
             None,
             None,
             None,
-            None,
         )
         .await
         .unwrap();
@@ -786,7 +779,6 @@ fn execute_turn_validator_pass_and_fail() {
             1,
             None,
             true,
-            None,
             None,
             None,
             None,
