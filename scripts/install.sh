@@ -4,7 +4,8 @@
 #   macOS / Linux:  curl -fsSL https://dl.future-os.cn/install.sh | bash
 #   Windows:        iex (irm https://dl.future-os.cn/install.ps1)
 #
-# Auto-detects the OS and installs the prebuilt release — no local build:
+# Auto-detects the OS, installs the prebuilt release, then runs `future init`
+# — no local build:
 #   - macOS            downloads the signed DMG, verifies its SHA-256 against
 #                      the release manifest, and copies it to /Applications.
 #   - Linux (Debian)   downloads the .deb and installs it with apt/dpkg.
@@ -68,6 +69,22 @@ verify_sha256() { # file expected
     die "checksum mismatch — aborting (got $got, expected $expected)"
   fi
   say "Checksum verified"
+}
+
+# Initialize bundled skills/CLI links. Interactive provider setup
+# (`future config`) is intentionally not run here yet — add it back right
+# before the release ships so installers stay non-interactive until then.
+run_future_setup() {
+  local future_bin="$1"
+  if [[ ! -x "$future_bin" ]]; then
+    warn "bundled future CLI not found at $future_bin — run 'future init' and 'future config' manually"
+    return 0
+  fi
+
+  say "Initializing FutureOS"
+  if ! "$future_bin" init; then
+    warn "future init did not complete — retry with: $future_bin init"
+  fi
 }
 
 # Resolve the version to install: FUTUREOS_VERSION wins, otherwise read the
@@ -136,13 +153,14 @@ install_macos() {
     die "failed to copy FutureOS.app to /Applications"
   fi
   hdiutil detach "$mnt" >/dev/null 2>&1 || true
+  run_future_setup "/Applications/FutureOS.app/Contents/MacOS/future"
   say "Done — FutureOS $VERSION installed"
   say "Launch the app with: open -a FutureOS"
-  say "Terminal users: the unified 'future' CLI is bundled with the app (run 'future init' to link it into ~/.future/bin, then use 'future agent|tui|channel|loop')."
+  say "Terminal users: add ~/.future/bin to PATH, then use 'future agent|tui|channel|loop'."
 }
 
 install_linux() {
-  local filename key pkg pkg_type prefix DEB_ARCH
+  local filename key pkg pkg_type prefix DEB_ARCH deb_package future_bin
   resolve_latest
 
   if command -v dpkg >/dev/null 2>&1; then
@@ -183,6 +201,7 @@ install_linux() {
   [[ -n "$ASSET_SHA" ]] && verify_sha256 "$pkg" "$ASSET_SHA"
 
   if [[ "$pkg_type" == "deb" ]]; then
+    deb_package="$(dpkg-deb -f "$pkg" Package 2>/dev/null || true)"
     if command -v apt-get >/dev/null 2>&1; then
       say "Installing with apt (resolves dependencies)"
       sudo apt-get install -y "$pkg"
@@ -190,6 +209,14 @@ install_linux() {
       say "Installing with dpkg"
       sudo dpkg -i "$pkg"
     fi
+    future_bin=""
+    if [[ -n "$deb_package" ]]; then
+      future_bin="$(dpkg-query -L "$deb_package" 2>/dev/null | awk '/\/future$/ { print; exit }')"
+    fi
+    if [[ -z "$future_bin" ]] && command -v future >/dev/null 2>&1; then
+      future_bin="$(command -v future)"
+    fi
+    run_future_setup "${future_bin:-/usr/lib/FutureOS/future}"
     say "Done — FutureOS $VERSION installed"
     say "Launch 'FutureOS' from your application menu"
   else
@@ -202,6 +229,7 @@ install_linux() {
     say "Extracting portable tarball to $prefix"
     tar -xzf "$pkg" -C "$prefix"
     chmod +x "$prefix/futureos" "$prefix/future"
+    run_future_setup "$prefix/future"
     if [[ ":$PATH:" != *":$prefix:"* ]]; then
       warn "Add $prefix to your PATH: export PATH=\"$prefix:\$PATH\""
     fi
