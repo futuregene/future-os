@@ -161,6 +161,17 @@ are architectural decisions (mechanisms of the principles above), fixed here:
    gates. A synchronous run would demote the orchestrator to "just another
    worker" for the run's whole lifetime.
 
+   **This is a caller-side contract, not a kernel mechanism.** `run` is a
+   foreground CLI invocation; the kernel offers no server-side spawn or job
+   handle. Detachment is achieved by how the orchestrator launches it
+   (shell background / nohup / setsid / scheduler) and is enforced by
+   discipline: **the orchestrating agent must never run `future loop run`
+   synchronously and wait for a todo to complete** — while it blocks, no
+   worker is watched, no gate is answered, no signal is read, and the goal's
+   dead time is the orchestrator's fault (see the skill's drive playbook).
+   The liveness path below (lease + pid + scheduler tick) exists precisely
+   because detached runs cannot rely on a blocked caller noticing anything.
+
 2. **The ledger is the authoritative state.** Every worker writeback lands
    in the event ledger — replayable, auditable, crash-safe. The ledger never
    loses "what happened", even when every other channel fails.
@@ -362,6 +373,29 @@ Two scoping rules keep the lifecycle simple: parking happens at **turn
 boundaries** (no preemptive mid-turn suspension or checkpoints), and a
 session is bound to **one goal** (no cross-goal reuse — context
 contamination outweighs the savings).
+
+**How the states map to the kernel's actual surface.** The lifecycle above is
+the model; the kernel implements it with fewer moving parts, and the mapping
+matters when reasoning about behavior:
+
+- **ACTIVE / INTERRUPTED** are explicit: a run is a live process holding
+  leases; the writeback stamps a `FailureKind` per turn and `cmd_run` records
+  a `SessionRetention` (id + classification + resumable advisory) when the
+  run exits.
+- **PARKED has no dedicated state.** A quiet-wait exit (monitor not due,
+  blocker with no fallback, work leased to others, gated with no fallback)
+  retains the session and stops — the *effect* of parking, derivable from
+  the goal's frontier. Resuming "with delta" is just the ordinary turn
+  envelope recomputed from the ledger on the next `run`.
+- **RETIRE has no dedicated state either.** `worker stop --delete` and a
+  non-resumable retention (`HardError` / `ScienceVerifyFailed`) are the
+  retire transition: the next run cold-starts fresh from the ledger. A
+  context-limit hit classifies as `HardError`, so it retires by the same
+  rule — there is no separate pre-emptive "retire before the ceiling with a
+  handoff todo" mechanism; write the handoff into evidence before the
+  context runs out.
+- **spawn** is `run`'s session creation; there is no orchestrator-side
+  session registry beyond the ledger's `worker_session_bound` events.
 
 ## The turn envelope: what the orchestrator injects into a worker
 

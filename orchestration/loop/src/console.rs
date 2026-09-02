@@ -4109,7 +4109,7 @@ async fn run_turns(
         let goal = store
             .replay(goal_id)?
             .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found (deleted while running?)"))?;
-        let packet = decide_for(&goal, SystemTime::now(), agent_id);
+        let mut packet = decide_for(&goal, SystemTime::now(), agent_id);
         // P1-1②③: persist the compact decision projection + the heartbeat
         // receipt for this turn (projection-only; replay ignores both).
         crate::quota::decision_summary::record_turn_decision(store, &packet, agent_id, turn)?;
@@ -4142,6 +4142,13 @@ async fn run_turns(
                 .unwrap_or_default();
             println!("⟳ USER GATE: {q}");
             // Up-channel ①: a user gate needs the supervisor's decision.
+            // ARCHITECTURE.md "Workers escalate; they never decide whether a
+            // human is needed" cuts both ways: the escalation is a signal to
+            // the orchestrator, not a freeze. The decision kernel already
+            // computed a gate-independent fallback (delivery_allowed =
+            // has_fallback) — run it instead of stopping, so gate-wait costs
+            // no dead time. With no fallback (or an anonymous run, which
+            // cannot claim), stop as before.
             let gate_ids = &packet.interaction_contract.user_channel.todo_ids;
             let key = format!("ask_user:{}", gate_ids.join(","));
             notify_supervisor(
@@ -4154,14 +4161,31 @@ async fn run_turns(
                 &key,
             )
             .await;
-            break;
+            let fallback = packet
+                .interaction_contract
+                .agent_channel
+                .fallback_todo
+                .clone();
+            match fallback {
+                Some(fb) if packet.interaction_contract.agent_channel.delivery_allowed => {
+                    println!(
+                        "   ↳ gate-independent fallback {fb} keeps running while the gate waits"
+                    );
+                    packet.interaction_contract.agent_channel.selected_todo = Some(fb);
+                    // Fall through to the claim/execute path below with the
+                    // fallback selected — this turn still counts as bounded
+                    // delivery on the fallback todo.
+                }
+                _ => break,
+            }
         }
         if mode == crate::contract::TurnMode::WaitMonitor {
             println!("   waiting… (monitor not due)");
             break;
         }
 
-        // bounded_delivery / monitor_poll: execute one turn.
+        // bounded_delivery / monitor_poll: execute one turn (or a gated turn's
+        // gate-independent fallback selected above).
         // Claim with a lease BEFORE executing — atomically (check+append under
         // one lock) so two concurrent `run --agent-id` workers can never both
         // win the same todo; on contention, re-decide against the fresh
@@ -4186,7 +4210,6 @@ async fn run_turns(
             }
             forced_ws = !conflicts.is_empty() && force_workspace;
         }
-        let mut packet = packet;
         let Some(todo_id) =
             claim_selected_with_lease(store, goal_id, &mut packet, agent_id, lease_secs)?
         else {

@@ -131,6 +131,15 @@ run 如何发起、worker 如何触达编排会话，属于架构决策（上述
    响应 gate。同步 run 会把编排者在 run 的整个生命周期内降级成「又一个
    worker」。
 
+   **这是调用方契约，不是内核机制。** `run` 是一个前台 CLI 调用；内核不
+   提供服务端 spawn 或 job handle。分离靠编排者怎么启动它（shell 后台 /
+   nohup / setsid / 调度器）达成，靠纪律维持：**编排 agent 绝不能同步地
+   跑 `future loop run` 并原地等某个 todo 完成**——阻塞期间没有 worker
+   被盯、没有 gate 被应答、没有信号被读，goal 的死时间就是编排者的过错
+   （见 skill 的 drive playbook）。下文的 liveness 路径（lease + pid +
+   scheduler tick）之所以存在，正是因为 detached run 不能指望一个阻塞的
+   调用者会注意到什么。
+
 2. **账本是权威状态。** worker 每次 writeback 落在事件账本里——可重放、
    可审计、崩溃不丢。即使其他所有通道都失败，账本也永远不会丢「发生过
    什么」。
