@@ -441,14 +441,14 @@ function AttachmentChip({ attachment }: { attachment: MessageAttachment }) {
     return (
       <>
         <button
-          className="inline-flex items-center overflow-hidden rounded-md ring-1 ring-line-soft transition-shadow hover:ring-line"
+          className="inline-flex max-w-64 items-center overflow-hidden rounded-md"
           onClick={handleOpen}
           title={attachment.name}
           type="button"
         >
           <img
             alt={attachment.name}
-            className="size-16 object-cover"
+            className="max-h-64 max-w-64 object-contain"
             onError={() => setFailed(true)}
             src={convertFileSrc(attachment.thumbnail)}
           />
