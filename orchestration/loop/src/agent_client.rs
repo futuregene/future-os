@@ -545,6 +545,13 @@ async fn consume_run_stream(
                 if let Some(n) = data.get("tool_name").and_then(|v| v.as_str()) {
                     line["tool"] = serde_json::Value::String(n.to_string());
                 }
+                // phase distinguishes the provider's input-stream start
+                // ("input") from the actual execution start ("execution") —
+                // one tool call emits BOTH, so consumers counting starts
+                // (idle detection, tail rendering) can dedup on it.
+                if let Some(p) = data.get("phase").and_then(|v| v.as_str()) {
+                    line["phase"] = serde_json::Value::String(p.to_string());
+                }
             }
             // Tee usage so the read-only dashboard can expose real-time
             // in/out tokens + cost for an in-flight run (each request emits
@@ -573,6 +580,28 @@ async fn consume_run_stream(
             }
             "text_chunk" => {
                 if let Some(text) = data.get("text").and_then(|v| v.as_str()) {
+                    // Separator on sentence boundaries: the agent streams one
+                    // text_chunk sequence PER assistant message, and adjacent
+                    // messages concatenate without whitespace (observed:
+                    // "the code.Let me", "SKILL.md.Now"). When the previous
+                    // chunk ended a sentence (. ! ? or CJK equivalent) and
+                    // the next begins a letter, insert a space. Mid-word
+                    // streaming never trips this (no terminator before the
+                    // letter), and "3.14" / "example.com/x" keep their dots
+                    // (digit / separator follow, not a letter).
+                    if let (Some(prev_last), Some(next_first)) =
+                        (summary.text.chars().last(), text.chars().next())
+                    {
+                        let sentence_end =
+                            matches!(prev_last, '.' | '!' | '?' | '。' | '！' | '？');
+                        if sentence_end
+                            && next_first.is_alphabetic()
+                            && !prev_last.is_whitespace()
+                            && !text.starts_with(' ')
+                        {
+                            summary.text.push(' ');
+                        }
+                    }
                     summary.text.push_str(text);
                     if summary.text.len() > 8_000 {
                         // truncate at a UTF-8 char boundary — str::truncate panics mid-char
