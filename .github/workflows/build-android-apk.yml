@@ -4,6 +4,34 @@ permissions: read-all
 
 on:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: Exact version supplied by the coordinator.
+        required: true
+        type: string
+      build_number:
+        description: Monotonic Android versionCode supplied by the coordinator.
+        required: true
+        type: string
+      coordinated:
+        description: Let the caller publish the collected artifact.
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      ANDROID_KEYSTORE_BASE64:
+        required: true
+      ANDROID_KEYSTORE_PASSWORD:
+        required: true
+      OSS_ENDPOINT:
+        required: false
+      OSS_BUCKET:
+        required: false
+      OSS_ACCESS_KEY_ID:
+        required: false
+      OSS_ACCESS_KEY_SECRET:
+        required: false
 
 jobs:
   version:
@@ -22,6 +50,9 @@ jobs:
           node-version: "24"
       - name: Resolve version
         id: v
+        env:
+          FUTURE_VERSION: ${{ inputs.version }}
+          INPUT_BUILD_NUMBER: ${{ inputs.build_number }}
         run: |
           node scripts/version.mjs --github-output
           # versionCode must be a monotonic integer if this ever goes to Play
@@ -30,7 +61,7 @@ jobs:
           # workflow's own per-repo counter, starting at 1. It resets if the
           # workflow is renamed, but that only matters for Play (not currently
           # used); versionCode monotonicity within a single workflow is enough.
-          echo "build_number=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "build_number=${INPUT_BUILD_NUMBER:-${{ github.run_number }}}" >> "$GITHUB_OUTPUT"
 
   build-apk:
     name: Build APK
@@ -56,15 +87,16 @@ jobs:
       - name: Setup Java
         uses: actions/setup-java@v5
         with:
-          distribution: 'temurin'
+          distribution: "temurin"
           java-version: 17
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
         with:
-          packages: 'platforms;android-36 build-tools;36.0.0'
+          packages: "platforms;android-36 build-tools;36.0.0"
 
       - name: Setup ossutil
+        if: github.event_name == 'workflow_dispatch' && !inputs.coordinated
         run: bash scripts/setup-ossutil.sh
 
       - name: Restore keystore
@@ -85,7 +117,6 @@ jobs:
         working-directory: mobile
         run: npm ci
 
-     
       - name: Generate version
         working-directory: mobile
         run: npm run gen-version
@@ -102,7 +133,7 @@ jobs:
         run: |
           V="${{ needs.version.outputs.version }}"
           cp mobile/android/app/build/outputs/apk/release/app-release.apk \
-             "FutureOS_${V}.apk"
+             "FutureOS_${V}_android-universal.apk"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v7
@@ -110,14 +141,15 @@ jobs:
           name: futureos-android-apk
           if-no-files-found: error
           overwrite: true
-          path: FutureOS_${{ needs.version.outputs.version }}.apk
+          path: FutureOS_${{ needs.version.outputs.version }}_android-universal.apk
           retention-days: 3
 
       - name: Upload APK to OSS
+        if: github.event_name == 'workflow_dispatch' && !inputs.coordinated
         run: |
           set -euo pipefail
           V="${{ needs.version.outputs.version }}"
-          APK="FutureOS_${V}.apk"
+          APK="FutureOS_${V}_android-universal.apk"
           ossutil cp -f "$APK" "oss://$OSS_BUCKET/test/$V/$APK"
           ossutil stat "oss://$OSS_BUCKET/test/$V/$APK"
           echo "==> Download URL:"

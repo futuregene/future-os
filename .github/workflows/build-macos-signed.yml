@@ -1,11 +1,11 @@
-name: Build FutureOS macOS (signed)
+name: Build macOS signed
 
 permissions: read-all
 
-# Signed and notarized macOS build. Keep this workflow restricted to trusted
-# triggers: it imports the Developer ID certificate and can submit software to
-# Apple's notarization service. Do not add pull_request or other events that can
-# execute untrusted code with the signing credentials.
+# Shared macOS packaging workflow. Signed mode imports the Developer ID
+# certificate and submits to Apple's notarization service; unsigned mode skips
+# both but still creates updater artifacts signed by the Tauri updater key.
+# Keep both modes restricted to trusted triggers because both access secrets.
 #
 # Manual builds go to `test/<version>/`. Formal releases call this workflow from
 # release.yml and consume its verified artifact; only the coordinator publishes
@@ -13,23 +13,39 @@ permissions: read-all
 
 on:
   workflow_dispatch:
+    inputs:
+      signed:
+        description: Sign and notarize with Apple Developer ID.
+        required: false
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       version:
         description: Exact release version supplied by the coordinator.
         required: true
         type: string
+      signed:
+        description: Sign and notarize with Apple Developer ID.
+        required: false
+        type: boolean
+        default: false
+      coordinated:
+        description: Let the caller publish the collected artifacts.
+        required: false
+        type: boolean
+        default: false
     secrets:
       MACOS_CERTIFICATE:
-        required: true
+        required: false
       MACOS_CERTIFICATE_PWD:
-        required: true
+        required: false
       APPLE_API_KEY:
-        required: true
+        required: false
       APPLE_API_KEY_ID:
-        required: true
+        required: false
       APPLE_API_ISSUER:
-        required: true
+        required: false
       TAURI_SIGNING_PRIVATE_KEY:
         required: true
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
@@ -47,7 +63,7 @@ on:
 
 jobs:
   build:
-    name: Build signed and notarized macOS (${{ matrix.name }})
+    name: Build macOS (${{ matrix.name }}, ${{ inputs.signed && 'signed' || 'unsigned' }})
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
@@ -59,13 +75,13 @@ jobs:
           - name: Apple Silicon
             runner: macos-latest
             asset_arch: aarch64
-            artifact_name: futureos-macos-signed
+            artifact_name: futureos-macos
           # Keep the Intel build pinned to a named image: unlike
           # `macos-latest`, this cannot silently switch architectures.
           - name: Intel
             runner: macos-15-intel
             asset_arch: x64
-            artifact_name: futureos-macos-intel-signed
+            artifact_name: futureos-macos-intel
     env:
       OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
       OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
@@ -102,6 +118,7 @@ jobs:
       # ephemeral keychain. Resolve its full identity rather than hard-coding the
       # team or company name, then pass it to Tauri and codesign.
       - name: Install Apple signing certificate
+        if: inputs.signed
         env:
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
           MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
@@ -151,7 +168,6 @@ jobs:
         working-directory: desktop
         run: npm ci
 
-     
       # The unified `future` CLI is the single sidecar (tauri.conf.json
       # bundle.externalBin); the agent runs through `future agent`, so only the
       # CLI needs building and staging.
@@ -177,6 +193,7 @@ jobs:
       # afterwards, so it is a distinct distribution container and is notarized
       # and stapled in the next step.
       - name: Prepare Apple notarization key
+        if: inputs.signed
         env:
           APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
@@ -193,6 +210,7 @@ jobs:
       # builds. A per-run overlay keeps unsigned/local builds unchanged while
       # embedding the production updater endpoint/key only in formal artifacts.
       - name: Build desktop bundle (signed, notarized and updater-enabled)
+        if: inputs.signed
         env:
           FUTURE_VERSION: ${{ steps.v.outputs.version }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
@@ -224,11 +242,41 @@ jobs:
           ' "$overlay"
           npm --prefix desktop run tauri:build -- --config "$overlay"
 
+      - name: Build desktop bundle (unsigned and updater-enabled)
+        if: ${{ !inputs.signed }}
+        env:
+          FUTURE_VERSION: ${{ steps.v.outputs.version }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          : "${TAURI_SIGNING_PRIVATE_KEY:?TAURI_SIGNING_PRIVATE_KEY secret is required}"
+          : "${TAURI_UPDATER_PUBLIC_KEY:?TAURI_UPDATER_PUBLIC_KEY secret is required}"
+          overlay="$RUNNER_TEMP/tauri.macos-unsigned.json"
+          node -e '
+            const fs = require("node:fs");
+            fs.writeFileSync(process.argv[1], JSON.stringify({
+              bundle: {
+                createUpdaterArtifacts: true,
+                macOS: { signingIdentity: "-" }
+              },
+              plugins: {
+                updater: {
+                  pubkey: process.env.TAURI_UPDATER_PUBLIC_KEY,
+                  endpoints: ["https://dl.future-os.cn/releases/latest.json"]
+                }
+              }
+            }));
+          ' "$overlay"
+          npm --prefix desktop run tauri:build -- --config "$overlay"
+
       # Tauri notarizes the app before it creates the DMG. Apple treats the
       # resulting signed disk image as a separate distribution artifact: submit
       # it after creation and staple its own ticket so installation also works
       # when Gatekeeper cannot reach Apple's notarization service.
       - name: Notarize and staple DMG
+        if: inputs.signed
         timeout-minutes: 60
         env:
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
@@ -367,6 +415,7 @@ jobs:
       # copies of the app must retain their Developer ID signature and stapled
       # notarization ticket and must pass Gatekeeper assessment.
       - name: Verify distributable macOS artifacts
+        if: inputs.signed
         run: |
           set -euo pipefail
           : "${SIGNED_DMG:?SIGNED_DMG is required}"
@@ -484,29 +533,71 @@ jobs:
 
           echo "MACOS_UPDATER=$updater" >> "$GITHUB_ENV"
           echo "MACOS_UPDATER_SIG=$updater_sig" >> "$GITHUB_ENV"
+          echo "DISTRIBUTABLE_DMG=$dmg" >> "$GITHUB_ENV"
 
-      - name: Stage signed macOS artifacts
+      - name: Inject first-launch note into unsigned DMG
+        if: ${{ !inputs.signed }}
         run: |
           set -euo pipefail
-          mkdir -p signed-release
-          dmg_output="signed-release/FutureOS_${{ steps.v.outputs.version }}_${{ matrix.asset_arch }}-sign.dmg"
-          updater_output="signed-release/FutureOS_${{ steps.v.outputs.version }}_${{ matrix.asset_arch }}.app.tar.gz"
-          cp "$SIGNED_DMG" "$dmg_output"
+          src="$(find desktop/src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
+          [[ -n "$src" ]] || { echo "Tauri produced no DMG." >&2; exit 1; }
+          work="$RUNNER_TEMP/rw.dmg"
+          out="$RUNNER_TEMP/out.dmg"
+          mnt="$RUNNER_TEMP/mnt"
+          hdiutil convert "$src" -format UDRW -o "$work"
+          hdiutil resize -size 700m "$work"
+          mkdir -p "$mnt"
+          hdiutil attach "$work" -mountpoint "$mnt" -nobrowse -noverify
+          app="$(find "$mnt" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          [[ -n "$app" ]] || { echo "DMG contains no app bundle." >&2; exit 1; }
+          cp docs/dist/readme-macos.txt "$mnt/Readme.txt"
+          mkdir -p "$mnt/licenses/loop"
+          cp LICENSE "$mnt/licenses/"
+          cp orchestration/loop/LICENSE orchestration/loop/NOTICE orchestration/loop/UPSTREAM.md "$mnt/licenses/loop/"
+          codesign --force --sign - "$app"
+          hdiutil detach "$mnt"
+          hdiutil convert "$work" -format UDZO -o "$out"
+          mv -f "$out" "$src"
+
+      - name: Verify unsigned macOS artifacts
+        if: ${{ !inputs.signed }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          dmgs=(desktop/src-tauri/target/release/bundle/dmg/*.dmg)
+          updaters=(desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz)
+          updater_sigs=(desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig)
+          [[ ${#dmgs[@]} -eq 1 && -s "${dmgs[0]}" ]] || { echo "Expected one non-empty DMG." >&2; exit 1; }
+          [[ ${#updaters[@]} -eq 1 && -s "${updaters[0]}" ]] || { echo "Expected one non-empty updater archive." >&2; exit 1; }
+          [[ ${#updater_sigs[@]} -eq 1 && -s "${updater_sigs[0]}" ]] || { echo "Expected one non-empty updater signature." >&2; exit 1; }
+          hdiutil verify "${dmgs[0]}"
+          echo "DISTRIBUTABLE_DMG=${dmgs[0]}" >> "$GITHUB_ENV"
+          echo "MACOS_UPDATER=${updaters[0]}" >> "$GITHUB_ENV"
+          echo "MACOS_UPDATER_SIG=${updater_sigs[0]}" >> "$GITHUB_ENV"
+
+      - name: Stage macOS artifacts
+        run: |
+          set -euo pipefail
+          suffix="${{ inputs.signed && '' || '-unsigned' }}"
+          mkdir -p release-assets
+          dmg_output="release-assets/FutureOS_${{ steps.v.outputs.version }}_${{ matrix.asset_arch }}${suffix}.dmg"
+          updater_output="release-assets/FutureOS_${{ steps.v.outputs.version }}_${{ matrix.asset_arch }}${suffix}.app.tar.gz"
+          cp "$DISTRIBUTABLE_DMG" "$dmg_output"
           cp "$MACOS_UPDATER" "$updater_output"
           cp "$MACOS_UPDATER_SIG" "$updater_output.sig"
           echo "SIGNED_RELEASE_DMG=$dmg_output" >> "$GITHUB_ENV"
 
-      - name: Upload signed macOS artifact
+      - name: Upload macOS artifact
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.artifact_name }}
+          name: ${{ matrix.artifact_name }}${{ inputs.signed && '' || '-unsigned' }}
           if-no-files-found: error
           overwrite: true
-          path: signed-release/*
+          path: release-assets/*
           retention-days: 7
 
       - name: Setup ossutil
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && !inputs.coordinated
         run: |
           set -euo pipefail
           version="2.3.0"
@@ -527,16 +618,16 @@ jobs:
             | sed -E 's#^https?://##; s/^oss-//; s/-internal//; s/\.aliyuncs\.com$//')"
           echo "OSS_REGION=$region" >> "$GITHUB_ENV"
 
-      - name: Upload signed macOS artifacts to OSS
-        if: github.event_name == 'workflow_dispatch'
+      - name: Upload macOS artifacts to OSS
+        if: github.event_name == 'workflow_dispatch' && !inputs.coordinated
         run: |
           set -euo pipefail
           version="${{ steps.v.outputs.version }}"
           echo "==> Uploading macOS artifacts to oss://$OSS_BUCKET/test/$version/"
-          ossutil cp -r -f signed-release/ "oss://$OSS_BUCKET/test/$version/"
+          ossutil cp -r -f release-assets/ "oss://$OSS_BUCKET/test/$version/"
 
           echo "==> Download URLs:"
-          find signed-release -maxdepth 1 -type f -print | while read -r output; do
+          find release-assets -maxdepth 1 -type f -print | while read -r output; do
             echo "https://dl.future-os.cn/test/$version/$(basename "$output")"
           done
 
