@@ -1335,11 +1335,17 @@ impl Goal {
                     // the todo's validator): without it such a goal could never
                     // reach terminal closure.
                     && !self.has_passed_validation(&t.id)
-                    && !self
-                        .delivery_state(&t.id)
-                        .is_some_and(|d| d.outcome == crate::work_items::delivery_outcome::OUTCOME_VERIFIED)
+                    && !self.is_delivery_verified(&t.id)
             })
             .collect()
+    }
+
+    /// Whether the orchestrator explicitly resolved this todo's delivery as
+    /// verified (the delivery-closure judgement that #465 lets satisfy the
+    /// validator-receipt floor for pre-receipt-era completions).
+    fn is_delivery_verified(&self, todo_id: &str) -> bool {
+        self.delivery_state(todo_id)
+            .is_some_and(|d| d.outcome == crate::work_items::delivery_outcome::OUTCOME_VERIFIED)
     }
 
     /// Whether any run record for `todo_id` carries a passed independent
