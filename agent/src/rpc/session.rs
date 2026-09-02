@@ -651,6 +651,7 @@ impl ServerSession {
         };
         match prepared {
             crate::compaction::ContextPreparation::Unchanged { prompt } => Ok(serde_json::json!({
+                "alreadyCompacted": active_checkpoint.is_some(),
                 "tokensBefore": prompt.usage.estimated_input_tokens,
                 "tokensAfter": prompt.usage.estimated_input_tokens,
                 "summary": "",
@@ -2712,6 +2713,7 @@ mod tests {
         // session has not filled its in-memory message cache yet.
         session.messages.write().clear();
         let result = session.compact("").unwrap();
+        assert!(result["checkpointId"].as_str().is_some());
         assert!(result["messagesRemoved"].as_i64().unwrap() > 0);
         assert!(result["summary"].is_string());
         let started = events.try_recv().unwrap();
@@ -2721,6 +2723,95 @@ mod tests {
         let started_data: serde_json::Value = serde_json::from_str(&started.data).unwrap();
         let committed_data: serde_json::Value = serde_json::from_str(&committed.data).unwrap();
         assert_eq!(started_data["operation_id"], committed_data["operation_id"]);
+    }
+
+    #[test]
+    fn repeated_manual_compaction_after_restart_uses_persisted_checkpoint() {
+        let mut session = make_test_session("compact-restart");
+        session.agent_loop.try_write().unwrap().provider = Arc::new(SummaryProvider);
+        session.model = "glm-4.5v".to_string();
+        {
+            let mut messages = session.messages.write();
+            for (role, text) in [
+                ("user", "test the tools"),
+                ("assistant", "I will test them"),
+                ("user", "continue"),
+                ("assistant", "all tool tests passed"),
+            ] {
+                messages.push(crate::types::AgentMessage {
+                    role: role.to_string(),
+                    content: vec![crate::types::ContentBlock::text(text)],
+                    ..Default::default()
+                });
+            }
+            for message in messages.iter_mut() {
+                message.ensure_journal_entry_id();
+            }
+            let mut entries = vec![crate::session::SessionEntry::session_info(
+                serde_json::json!({"cwd": session.cwd, "model": session.model}),
+                session.model.clone(),
+                session.thinking_level.clone(),
+            )];
+            entries.extend(messages.iter().map(crate::session::agent_message_to_entry));
+            let snapshot = crate::session::Session::snapshot(
+                session.session_id.clone(),
+                session.cwd.clone(),
+                session.model.clone(),
+                String::new(),
+                String::new(),
+                entries,
+            );
+            session.session_manager.save(&snapshot).unwrap();
+        }
+        let first = session.compact("").unwrap();
+        assert!(first["checkpointId"].as_str().is_some());
+
+        // Simulate an Agent restart: construct a fresh ServerSession against
+        // the same persisted JSONL, with an empty in-memory message cache and a
+        // provider that would fail if a second summary request were attempted.
+        // The durable checkpoint must be enough to recognize a consecutive
+        // manual compaction as a clean no-op across process boundaries.
+        let mut restarted = ServerSession::new(
+            session.session_id.clone(),
+            Arc::new(tokio::sync::RwLock::new(Loop::new(
+                Arc::new(FailingProvider),
+                "mock",
+            ))),
+            session.session_manager.clone(),
+            &session.cwd,
+            Arc::new(SseBroadcaster::new()),
+            ApprovalGate::default(),
+            session.model_registry.clone(),
+        );
+        restarted.model = session.model.clone();
+        let persisted = restarted
+            .session_manager
+            .load(&restarted.session_id)
+            .unwrap();
+        let persisted_checkpoint =
+            crate::session::latest_context_checkpoint(&persisted.entries).unwrap();
+        let restored_messages =
+            crate::session::entries_to_agent_messages(&persisted.entries, false);
+        let restored_prompt = crate::compaction::project_prompt_context(
+            &restored_messages,
+            Some(&persisted_checkpoint),
+            None,
+            64_000,
+        );
+        assert_eq!(restored_prompt.messages.len(), 1);
+        assert_eq!(
+            restored_prompt.messages[0]
+                .message
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("internal_context_checkpoint")),
+            Some(&serde_json::Value::Bool(true)),
+        );
+        let mut restarted_events = restarted.broadcaster.subscribe();
+        let repeated = restarted.compact("").unwrap();
+        assert_eq!(repeated["alreadyCompacted"], true);
+        assert_eq!(repeated["messagesRemoved"], 0);
+        assert!(restarted_events.try_recv().is_err());
     }
 
     #[tokio::test]

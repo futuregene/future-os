@@ -1,6 +1,6 @@
 import type { AgentMessage, MessageAttachment } from "@future-os/thread-projection";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { FileText, GitBranch, Paperclip, RotateCcw, StepForward } from "lucide-react";
+import { FileText, GitBranch, Paperclip, RotateCcw, StepForward, TriangleAlert } from "lucide-react";
 import { Fragment, memo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CopyButton } from "../../components/ui/CopyButton";
@@ -222,6 +222,7 @@ function MessageBlockImpl({
                 <div className="mt-4">
                   <StatusDivider
                     label={message.stopped ? t("thread.responseStopped") : (message.terminationTitle ?? t("thread.responseIncomplete"))}
+                    warning={!message.stopped}
                   />
                   {isLast === true && !message.stopped
                     ? (
@@ -342,22 +343,25 @@ function UserMessageText({ content }: { content: string }) {
   );
 }
 
-function StatusDivider({ label, failed = false, pulsing = false, title }: {
+function StatusDivider({ label, pulsing = false, title, warning = false }: {
   label: string;
-  failed?: boolean;
   pulsing?: boolean;
   title?: string;
+  warning?: boolean;
 }) {
   return (
     <div
       aria-label={label}
       className={cn("flex select-none items-center gap-3 py-1", pulsing && "animate-pulse")}
-      role={failed ? "alert" : "status"}
+      role="status"
       title={title}
     >
-      <span className={cn("h-px flex-1", failed ? "bg-danger/40" : "bg-line")} />
-      <span className={cn("whitespace-nowrap text-xs", failed ? "text-danger" : "text-ink-muted")}>{label}</span>
-      <span className={cn("h-px flex-1", failed ? "bg-danger/40" : "bg-line")} />
+      <span className="h-px flex-1 bg-line" />
+      <span className="flex items-center gap-1 whitespace-nowrap text-xs text-ink-muted">
+        {warning ? <TriangleAlert aria-hidden="true" className="size-3 shrink-0" /> : null}
+        {label}
+      </span>
+      <span className="h-px flex-1 bg-line" />
     </div>
   );
 }
@@ -387,8 +391,14 @@ function CompactionDivider({
               formattedCount: formatNumber(tokensBefore, i18n.language),
             })
           : t("message.compacted");
-  const failed = status === "failed";
-  return <StatusDivider failed={failed} label={label} pulsing={status === "running"} title={error} />;
+  return (
+    <StatusDivider
+      label={label}
+      pulsing={status === "running"}
+      title={error}
+      warning={status === "failed"}
+    />
+  );
 }
 
 /**

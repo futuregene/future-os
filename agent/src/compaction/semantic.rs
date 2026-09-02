@@ -215,10 +215,6 @@ fn plan(
     if threshold_gated && tokens_before <= window.saturating_sub(reserve) {
         return Ok(PlannedPreparation::Unchanged(prompt));
     }
-    if let Some(on_started) = on_started {
-        on_started();
-    }
-
     let costs = prompt
         .messages
         .iter()
@@ -258,6 +254,26 @@ fn plan(
         || (cut == prompt.messages.len() && !allow_full_active_turn)
     {
         return Err(ContextError::NoValidBoundary);
+    }
+
+    // A projected prompt may consist solely of the existing internal
+    // checkpoint when the user compacts twice without adding another turn.
+    // That checkpoint is useful model context but is deliberately excluded
+    // from the next summary input. Treat this as a clean no-op instead of
+    // emitting started/failed lifecycle events for an empty summary request.
+    let has_compactable_content = prompt.messages[..cut]
+        .iter()
+        .filter(|item| internal_summary(&item.message).is_none())
+        .any(|item| {
+            !serialize_message(&item.message, SerializationMode::Normal)
+                .trim()
+                .is_empty()
+        });
+    if !has_compactable_content {
+        return Ok(PlannedPreparation::Unchanged(prompt));
+    }
+    if let Some(on_started) = on_started {
+        on_started();
     }
 
     let removed = prompt.messages[..cut].to_vec();
@@ -1492,6 +1508,37 @@ mod tests {
         assert_eq!(checkpoint.trigger, CompactionTrigger::Manual);
         assert_eq!(checkpoint.phase, Some(CompactionPhase::Standalone));
         assert_eq!(provider.requests.lock().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn repeated_manual_compaction_without_new_content_is_unchanged() {
+        let provider = ScriptedProvider::new([]);
+        let mut checkpoint = projected(
+            "user",
+            "[Context compaction: existing summary]",
+            "checkpoint-entry",
+        );
+        crate::compaction::stamp_internal_checkpoint_message(
+            &mut checkpoint.message,
+            "checkpoint-entry",
+        );
+        let mut prompt = test_prompt();
+        prompt.messages = vec![checkpoint];
+
+        let prepared = test_manager()
+            .prepare_semantic_with_phase(
+                prompt,
+                CompactionTrigger::Manual,
+                CompactionPhase::Standalone,
+                None,
+                &provider,
+                &AtomicBool::new(false),
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(prepared, ContextPreparation::Unchanged { .. }));
+        assert!(provider.requests.lock().is_empty());
     }
 
     #[test]

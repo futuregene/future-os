@@ -260,7 +260,12 @@ export function AgentThread({
     try {
       const result = await compactThreadContext(thread.id);
       if (!result.checkpointId) {
-        emitFutureEvent("toast", { message: t("composer.compactionNotNeeded"), tone: "info" });
+        emitFutureEvent("toast", {
+          message: t(result.alreadyCompacted
+            ? "composer.compactionNoNewContent"
+            : "composer.compactionNotNeeded"),
+          tone: "info",
+        });
       }
     }
     catch (error) {

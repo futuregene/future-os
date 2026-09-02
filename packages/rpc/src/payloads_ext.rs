@@ -175,6 +175,7 @@ pub struct CycleModelPayload {
 pub struct SyncFutureModelsPayload {
     pub synced: bool,
     pub model_count: usize,
+    pub revision: i64,
 }
 
 // ── refresh_skills ───────────────────────────────────────────────────────────
@@ -193,6 +194,10 @@ pub struct RefreshSkillsPayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompactPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub already_compacted: Option<bool>,
     pub tokens_before: i64,
     pub tokens_after: i64,
     pub summary: String,

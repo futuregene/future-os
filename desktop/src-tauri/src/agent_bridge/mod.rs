@@ -585,6 +585,10 @@ pub async fn reload_agent_credentials() -> Result<(), crate::AppError> {
 pub struct SyncFutureModelsResult {
     pub synced: bool,
     pub model_count: usize,
+    // Older Agents predate the typed-RPC revision field. Preserve the legacy
+    // JSON fallback by treating its absence as the initial revision.
+    #[serde(default)]
+    pub revision: i64,
 }
 
 /// Ask the agent to synchronously fetch the Future provider's models (warming
@@ -602,6 +606,7 @@ pub async fn sync_future_models() -> Result<SyncFutureModelsResult, crate::AppEr
             return Ok(SyncFutureModelsResult {
                 model_count: 0,
                 synced: false,
+                revision: 0,
             });
         }
     };
@@ -2068,11 +2073,12 @@ mod bridge_tests {
 
         mock.push_data(
             "sync_future_models",
-            serde_json::json!({"synced": true, "modelCount": 7}),
+            serde_json::json!({"synced": true, "modelCount": 7, "revision": 11}),
         );
         let result = sync_future_models().await.expect("sync");
         assert!(result.synced);
         assert_eq!(result.model_count, 7);
+        assert_eq!(result.revision, 11);
 
         // Down agent → zeroed result.
         let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock addr");
@@ -2081,6 +2087,7 @@ mod bridge_tests {
         std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
         assert!(!result.synced);
         assert_eq!(result.model_count, 0);
+        assert_eq!(result.revision, 0);
 
         mock.push(
             "sync_future_models",

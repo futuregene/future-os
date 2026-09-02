@@ -497,6 +497,10 @@ pub struct CompactResult {
     pub summary: ::prost::alloc::string::String,
     #[prost(int64, tag = "4")]
     pub messages_removed: i64,
+    #[prost(string, tag = "5")]
+    pub checkpoint_id: ::prost::alloc::string::String,
+    #[prost(bool, tag = "6")]
+    pub already_compacted: bool,
 }
 /// shell response.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -524,6 +528,8 @@ pub struct SyncFutureModelsResult {
     pub synced: bool,
     #[prost(uint64, tag = "2")]
     pub model_count: u64,
+    #[prost(int64, tag = "3")]
+    pub revision: i64,
 }
 /// refresh_skills response. Field names mirror the wire JSON spelling
 /// (snake_case).

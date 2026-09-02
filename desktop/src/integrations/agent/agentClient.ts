@@ -95,6 +95,7 @@ export async function loadAgentModelOptions() {
 
 export interface CompactContextResult {
   checkpointId?: string;
+  alreadyCompacted?: boolean;
   messagesRemoved?: number;
   tokensBefore?: number;
   tokensAfter?: number;
@@ -109,6 +110,7 @@ export function compactThreadContext(threadId: string) {
 export interface SyncFutureModelsResult {
   synced: boolean;
   modelCount: number;
+  revision: number;
 }
 
 /**

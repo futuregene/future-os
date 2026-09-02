@@ -641,6 +641,8 @@ fn commands_from_proto(response: &proto::CommandsResponse) -> crate::payloads_ex
 
 fn compact_from_proto(result: &proto::CompactResult) -> crate::payloads_ext::CompactPayload {
     crate::payloads_ext::CompactPayload {
+        checkpoint_id: (!result.checkpoint_id.is_empty()).then(|| result.checkpoint_id.clone()),
+        already_compacted: result.already_compacted.then_some(true),
         tokens_before: result.tokens_before,
         tokens_after: result.tokens_after,
         summary: result.summary.clone(),
@@ -671,6 +673,7 @@ fn sync_future_models_from_proto(
     crate::payloads_ext::SyncFutureModelsPayload {
         synced: result.synced,
         model_count: result.model_count as usize,
+        revision: result.revision,
     }
 }
 
