@@ -38,11 +38,13 @@ Run the pre-PR pass in the worktree on the CI toolchain (the repo pins `rust-too
    - Rust: `cargo fmt -p <crate> --check` + `cargo clippy -p <crate> --all-targets -- -D warnings` + `cargo test -p <crate>` for each crate with code changes (run the crate's own test targets; integration tests under `tests/` are included by `cargo test -p <crate>`). Cross-crate public-API changes: also test the direct consumers of the changed API.
    - Desktop TS: `tsc --noEmit`, `eslint`, `vitest run` only when `desktop/` files changed; plus `cargo fmt --check` / `cargo clippy` under `desktop/src-tauri` only when it changed.
    - Do NOT run workspace-wide `make test` / `make lint-rust` for a module-scoped PR - CI runs the full matrix and is the backstop. Escalate to a full local pass only when a change cuts across many crates (e.g. `packages/rpc` wire-contract changes) or after a CI failure local repro is needed.
-3. Commit any fmt/clippy fixes, push, then create the PR.
+3. Commit any fmt/clippy fixes, push, create the PR, then enable auto-merge immediately with `gh pr merge <n> --squash --auto`. Always enable auto-merge on every PR you open — never leave a PR without it.
 
 **Always sync with `origin/main` right before pushing** — not just at the start of the pass. Re-run `git fetch origin main`; if main moved while you were running checks, merge it again and re-run the checks it affects. Branch protection requires the head branch to be up to date with main, and on a fast-moving main a stale branch bounces between BEHIND and re-queued CI (use `gh pr merge --squash --auto` so the merge fires as soon as checks go green).
 
 **If a PR opens BEHIND / "update branch" is requested, update it immediately — before anything else.** The moment `gh pr view` (or the GitHub banner) shows the branch is not up to date with main: `git fetch origin main && git merge origin/main` into the PR branch (resolve conflicts here), re-run the scoped checks the merge touches, push, and let `--auto` re-fire. Do not keep working on other tasks or start new work while your PR sits BEHIND — on a fast-moving main it will bounce between BEHIND and re-queued CI, and every other queued PR behind it waits too.
+
+**Check PR status synchronously — never `sleep`-poll.** Once the PR is up (and auto-merge is on), wait for checks by blocking on `gh pr checks <n> --watch --required --fail-fast` (add `--interval 5` for a faster refresh). `--watch` blocks until all required checks finish; `--fail-fast` returns immediately on the first failure. Do not loop `sleep N; gh pr checks` — polling wastes time and can miss the completion window. With auto-merge enabled, the merge fires automatically as soon as checks go green, so `--watch` is all you need to know when it's done.
 
 Do not skip steps or use narrower flags than CI — a green local check on a smaller scope does not guarantee CI passes (e.g. clippy without `--all-targets` misses test code). `make help` lists every target.
 
