@@ -1327,7 +1327,17 @@ impl Goal {
                 t.class == TaskClass::Advancement
                     && t.status == TodoStatus::Done
                     && t.validator.is_some()
+                    // Two independent paths satisfy the validator-receipt floor:
+                    // a passed receipt in the run history, or an explicit
+                    // orchestrator `delivery record --outcome verified`. The
+                    // second matters for validator-todos completed before the
+                    // receipt mechanism existed (or runs whose receipt predates
+                    // the todo's validator): without it such a goal could never
+                    // reach terminal closure.
                     && !self.has_passed_validation(&t.id)
+                    && !self
+                        .delivery_state(&t.id)
+                        .is_some_and(|d| d.outcome == crate::work_items::delivery_outcome::OUTCOME_VERIFIED)
             })
             .collect()
     }
