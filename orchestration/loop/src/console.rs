@@ -10,7 +10,7 @@
 //!   gate resolve — resolve a user gate with a decision payload
 //!   status       — project the active state (todos, gaps, next action)
 //!   quota should-run — emit the typed ShouldRunPacket (deterministic)
-//!   run          — drive one bounded gRPC turn + writeback (needs agent)
+//!   run          — drive one bounded gRPC turn + writeback (agent-id or anonymous)
 //!
 //! State is project-local under `<cwd>/.future/loop/` (override with the
 //! `FUTURE_LOOP_ROOT` env var), one goal per directory, event-sourced:
@@ -541,7 +541,7 @@ fn build_cli_registry() -> CommandRegistry {
     r.command(
         ops,
         "run",
-        "drive one bounded gRPC turn (requires --agent-id; auto-registers)",
+        "drive one bounded gRPC turn (--agent-id for lease coordination, or --anonymous; auto-registers)",
         "run --goal G --agent-id A [--model M] [--thinking-level L] [--max-turns N] [--max-turn-secs N] [--max-incomplete-retries N] [--lease-secs N] [--force-workspace] [--session-policy auto|fresh|resume] [--resume-session ID] [--anonymous]",
     );
 
@@ -3701,6 +3701,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         &[
             "--agent-id",
             "--anonymous",
+            "--detach",
             "--force-workspace",
             "--goal",
             "--lease-secs",
@@ -3742,6 +3743,78 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
             resume_session = Some(v);
         }
     });
+    // Detached dispatch (ARCHITECTURE.md "Runs are detached"): by default the
+    // run process re-executes ITSELF in the background so the orchestrating
+    // agent never blocks on a todo. The detached child (`--detach`) writes its
+    // own log under <root>/detached/<goal>/ and runs the foreground turn loop;
+    // the parent exits immediately after printing the child pid (lease+pid
+    // liveness supervises it from there). `--detach` marks the child.
+    // Opt-outs: `FUTURE_LOOP_NO_DETACH=1` (tests / embedders), or any `--detach`
+    // (the child runs foreground). Re-exec only makes sense from the real
+    // CLI binaries — under a test harness `current_exe` is the test binary,
+    // so detach is skipped there too (exe stem check below).
+    let detach_requested = args.iter().any(|a| a == "--detach");
+    let exe_stem = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .unwrap_or_default();
+    let from_cli_binary = exe_stem == "future-loop" || exe_stem == "future";
+    let no_detach_env = std::env::var("FUTURE_LOOP_NO_DETACH").ok().as_deref() == Some("1");
+    let should_detach = !detach_requested && from_cli_binary && !no_detach_env;
+    if should_detach {
+        let goal_for_dir = goal_id
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+        let run_log_dir = std::path::PathBuf::from(store.root_path())
+            .join("detached")
+            .join(&goal_for_dir);
+        std::fs::create_dir_all(&run_log_dir)?;
+        let ts = now_epoch();
+        let who = agent_id.clone().unwrap_or_else(|| "anonymous".to_string());
+        let log_path = run_log_dir.join(format!("{who}-{ts}.log"));
+        let exe = std::env::current_exe()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "future-loop".to_string());
+        let mut cmd = std::process::Command::new(&exe);
+        // The re-executed binary is the same CLI (future-loop / future), so
+        // the child re-enters the dispatcher with the command name prepended.
+        // The child re-enters the CLI dispatcher, which expects the command
+        // name first; our args start at `run`'s flags (we ARE cmd_run), so
+        // re-prepend the command name.
+        let mut child_args: Vec<String> = Vec::with_capacity(args.len() + 2);
+        child_args.push("run".to_string());
+        child_args.extend(args.iter().cloned());
+        child_args.push("--detach".to_string());
+        cmd.args(&child_args);
+        // Platform-neutral detachment: own process group (POSIX process_group
+        // / Windows CREATE_NEW_PROCESS_GROUP|DETACHED_PROCESS), stdio routed
+        // to the log file so the parent's terminal stays clean.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+            const DETACHED_PROCESS: u32 = 0x0000_0008;
+            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+        }
+        let log = std::fs::File::create(&log_path)?;
+        cmd.stdout(log.try_clone()?)
+            .stderr(log)
+            .stdin(std::process::Stdio::null());
+        let child = cmd
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("spawn detached run (log {}): {e}", log_path.display()))?;
+        println!(
+            "⏏ detached run pid={} (agent {who}) — log {}",
+            child.id(),
+            log_path.display()
+        );
+        return Ok(());
+    }
     if !matches!(session_policy.as_str(), "auto" | "fresh" | "resume") {
         bail!("--session-policy must be auto | fresh | resume");
     }
@@ -5599,7 +5672,15 @@ fn parse_pairs(args: &[String], mut f: impl FnMut(&str, String)) {
         let k = args[i].as_str();
         if k.starts_with("--") {
             // boolean flags (no value) are followed by another flag or end.
-            if matches!(k, "--no-follow-up" | "--anonymous" | "--help" | "-h") {
+            if matches!(
+                k,
+                "--no-follow-up"
+                    | "--anonymous"
+                    | "--detach"
+                    | "--force-workspace"
+                    | "--help"
+                    | "-h"
+            ) {
                 f(k, "true".to_string());
                 i += 1;
             } else if i + 1 < args.len() && !args[i + 1].starts_with("--") {

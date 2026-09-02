@@ -118,6 +118,9 @@ fn bin() -> &'static str {
 fn run(root: &str, args: &[&str]) -> (String, String, i32) {
     let output = Command::new(bin())
         .env("FUTURE_LOOP_ROOT", root)
+        // Identity-gate tests exercise the FOREGROUND error path; the default
+        // detach would re-dispatch and the parent would exit 0.
+        .env("FUTURE_LOOP_NO_DETACH", "1")
         .args(args)
         .output()
         .expect("future-loop binary runs");
