@@ -63,7 +63,8 @@ scripts/build-desktop-macos.sh  # 本地 DMG；有 Developer ID 证书时自动�
 curl -fsSL https://dl.future-os.cn/install.sh | bash
 ```
 
-脚本自动识别平台并从发布清单安装匹配的包，并校验 SHA-256：
+脚本自动识别平台并从发布清单安装匹配的包，校验 SHA-256，然后执行
+`future init`：
 
 - **Debian/Ubuntu** —— `FutureOS_<version>_amd64.deb`，通过 `apt` 安装（自动解析依赖）。
 - **其他 Linux** —— `FutureOS-portable-linux.tar.gz`（`futureos` 桌面应用 + 统一 `future` CLI），解压到 `/usr/local/bin`（不可写时使用 `~/.local/bin`）。

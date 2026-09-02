@@ -37,7 +37,7 @@ alias future="/Applications/FutureOS.app/Contents/MacOS/future"
 
 Most commands connect to the FutureOS agent (the background service). If the **desktop app is open**, the agent is already running. Otherwise, start the agent with `future agent` (or the `future-agent` binary directly — both are the same code), or open the desktop app, which starts it automatically.
 
-`future auth login` and `future auth logout` are the exception: they also work with the agent stopped, writing the key change to `~/.future/agent/auth.json` for the agent to pick up on its next start.
+`future config`, `future auth login`, and `future auth logout` are exceptions: they also work with the agent stopped, writing configuration under `~/.future/agent/` for the agent to pick up on its next start.
 
 ---
 
@@ -50,6 +50,19 @@ future init
 ```
 
 Installs all built-in skills. On macOS and Linux, also links `future` (and `future-agent` when available) into `~/.future/bin/` and prints a PATH setup hint.
+
+### `config` — configure a model provider
+
+```bash
+future config
+```
+
+Interactively select **FutureOS** or a **custom provider**:
+
+- FutureOS: if a token is already configured, asks whether to sign in again; otherwise starts the device-code login flow.
+- Custom: prompts for the provider ID, API protocol, base URL, API key, model ID, context window, and related settings. API key input is not echoed.
+
+Configuration is written to `~/.future/agent/models.json` and `~/.future/agent/auth.json`. If the agent is running, the command writes through its RPC and refreshes the model registry immediately; otherwise the changes take effect the next time the agent starts.
 
 ### `auth` — sign in and out
 
