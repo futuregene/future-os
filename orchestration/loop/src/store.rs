@@ -18,7 +18,7 @@ use anyhow::{bail, Context, Result};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
-use crate::state::{Goal, RunRecord, Todo};
+use crate::state::{Goal, RunRecord, Todo, TodoStatus};
 
 const REGISTRY_FILE: &str = "registry.json";
 const EVENTS_FILE: &str = "events.jsonl";
@@ -1497,14 +1497,23 @@ fn apply(goal: &mut Goal, event: Event) {
                 "completed".to_string()
             };
             if let Some(t) = goal.todo_mut(&todo_id) {
-                t.complete(no_follow_up, successor_ids);
-                // The event ts is authoritative for the completion stamp
-                // (wall-clock replay is second-granular; GateResolved already
-                // applies the same rule).
-                t.completed_at = Some(ts);
-                t.updated_at = ts;
-                if let Some(e) = evidence {
-                    t.evidence = Some(e);
+                // Terminal-state guard: a todo superseded while a detached
+                // run was in flight must not be resurrected to done by the
+                // run's late TodoCompleted writeback (cancel/supersede wins
+                // over an in-flight delivery — the kanban's terminal states
+                // are monotonic). The run record itself is still kept.
+                if t.status == TodoStatus::Superseded {
+                    // Skip the status transition but keep the semantic fold.
+                } else {
+                    t.complete(no_follow_up, successor_ids);
+                    // The event ts is authoritative for the completion stamp
+                    // (wall-clock replay is second-granular; GateResolved already
+                    // applies the same rule).
+                    t.completed_at = Some(ts);
+                    t.updated_at = ts;
+                    if let Some(e) = evidence {
+                        t.evidence = Some(e);
+                    }
                 }
             }
             // G13 ①: completion moves the frontier (segment reset marker).

@@ -155,9 +155,9 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
     }
     let mut store = Store::open(&root_dir())?;
     match args[0].as_str() {
-        "goal" => cmd_goal(&mut store, &args[1..]),
+        "goal" => cmd_goal(&mut store, &args[1..]).await,
         "agent" => cmd_agent(&mut store, &args[1..]),
-        "todo" => cmd_todo(&mut store, &args[1..]),
+        "todo" => cmd_todo(&mut store, &args[1..]).await,
         "gate" => cmd_gate(&mut store, &args[1..]),
         "backup" => cmd_backup(&store, &args[1..]),
         "authority" => cmd_authority(&mut store, &args[1..]),
@@ -678,13 +678,13 @@ fn render_subcommand_help(
 
 // ── goal ───────────────────────────────────────────────────────────────────
 
-fn cmd_goal(store: &mut Store, args: &[String]) -> Result<()> {
+async fn cmd_goal(store: &mut Store, args: &[String]) -> Result<()> {
     // goal cancel / goal delete (lifecycle management)
     if args.first().map(|s| s.as_str()) == Some("cancel") {
-        return cmd_goal_cancel(store, &args[1..]);
+        return cmd_goal_cancel(store, &args[1..]).await;
     }
     if args.first().map(|s| s.as_str()) == Some("delete") {
-        return cmd_goal_delete(store, &args[1..]);
+        return cmd_goal_delete(store, &args[1..]).await;
     }
     let mut objective = None;
     let mut cwd = None;
@@ -752,7 +752,7 @@ fn cmd_goal(store: &mut Store, args: &[String]) -> Result<()> {
 
 /// `goal cancel --goal G [--reason ...]` — stop automation while retaining
 /// state (the reference: cancel keeps the goal reviewable; automation stops).
-fn cmd_goal_cancel(store: &mut Store, args: &[String]) -> Result<()> {
+async fn cmd_goal_cancel(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut reason = "cancelled by user".to_string();
     reject_unknown_flags(args, &["--goal", "--reason"])?;
@@ -777,13 +777,23 @@ fn cmd_goal_cancel(store: &mut Store, args: &[String]) -> Result<()> {
     let next_action = "goal cancelled — automation stopped, state retained";
     store.set_next_action(&goal_id, next_action)?;
     sync_compat(store, &goal_id)?;
-    println!("goal {goal_id} cancelled ✔ (automation stopped, state retained — reason: {reason})");
+    // Default-detached runs are real processes: stopping automation means
+    // stopping them (ledger signal + gRPC abort of in-flight turns), not just
+    // flipping the goal status a running client would only see at its next
+    // turn boundary.
+    let stopped = stop_goal_workers(store, &goal_id, None).await?;
+    let workers_note = if stopped > 0 {
+        format!("; {stopped} detached run(s) signalled to stop")
+    } else {
+        String::new()
+    };
+    println!("goal {goal_id} cancelled ✔ (automation stopped, state retained — reason: {reason}){workers_note}");
     Ok(())
 }
 
 /// `goal delete --goal G [--force]` — remove the registry entry + state.
 /// Irreversible; requires --force (tip: `goal cancel` keeps state).
-fn cmd_goal_delete(store: &mut Store, args: &[String]) -> Result<()> {
+async fn cmd_goal_delete(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut force = false;
     reject_unknown_flags(args, &["--force", "--goal"])?;
@@ -801,6 +811,10 @@ fn cmd_goal_delete(store: &mut Store, args: &[String]) -> Result<()> {
              (tip: use `goal cancel` to stop automation while keeping state)"
         );
     }
+    // Stop any live detached run BEFORE removing the state: after deletion the
+    // run client can no longer read the ledger it tails (it would spin on a
+    // missing events file), and its writebacks would target a deleted goal.
+    stop_goal_workers(store, &goal_id, None).await?;
     store.delete_goal(&goal_id)?;
     println!("goal {goal_id} deleted ✔ (registry entry + state removed)");
     Ok(())
@@ -808,7 +822,7 @@ fn cmd_goal_delete(store: &mut Store, args: &[String]) -> Result<()> {
 
 // ── todo ───────────────────────────────────────────────────────────────────
 
-fn cmd_todo(store: &mut Store, args: &[String]) -> Result<()> {
+async fn cmd_todo(store: &mut Store, args: &[String]) -> Result<()> {
     if args.is_empty() {
         bail!("todo requires add|claim|complete");
     }
@@ -817,7 +831,7 @@ fn cmd_todo(store: &mut Store, args: &[String]) -> Result<()> {
         "claim" => todo_claim(store, &args[1..]),
         "complete" => todo_complete(store, &args[1..]),
         "archive" => todo_archive(store, &args[1..]),
-        "supersede" => todo_supersede(store, &args[1..]),
+        "supersede" => todo_supersede(store, &args[1..]).await,
         "update" => todo_update(store, &args[1..]),
         other => bail!("unknown todo subcommand `{other}`"),
     }
@@ -6183,9 +6197,25 @@ async fn cmd_worker_stop(store: &mut Store, args: &[String]) -> Result<()> {
         );
     }
 
-    let mut client =
-        crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr()).await?;
-    for t in &targets {
+    abort_worker_sessions(&targets, delete).await;
+    Ok(())
+}
+
+/// gRPC abort for the given worker sessions (and optional session reclaim).
+/// The ledger `worker_stopped` event (appended by the caller BEFORE this) is
+/// the durable stop signal the run client exits on at its turn boundary; the
+/// abort interrupts the in-flight turn NOW. Best-effort on unreachable agents.
+async fn abort_worker_sessions(targets: &[WorkerSession], delete: bool) {
+    if targets.is_empty() {
+        return;
+    }
+    let Ok(mut client) =
+        crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr()).await
+    else {
+        println!("⚠ agent unreachable — stop rides the ledger signal alone");
+        return;
+    };
+    for t in targets {
         match client.abort(&t.session_id).await {
             Ok(()) => {
                 println!(
@@ -6207,7 +6237,47 @@ async fn cmd_worker_stop(store: &mut Store, args: &[String]) -> Result<()> {
             }
         }
     }
-    Ok(())
+}
+
+/// Cancel/delete/supersede companion: stop every live worker of `goal_id`
+/// (optionally just one agent) so an in-flight detached run cannot keep
+/// writing back after the board changed under it. Appends the SAME
+/// `worker_stopped` ledger signal `worker stop` uses (the run client exits at
+/// its next turn boundary), then gRPC-aborts the in-flight turns. Returns the
+/// number of workers signalled.
+async fn stop_goal_workers(
+    store: &mut Store,
+    goal_id: &str,
+    agent_id: Option<&str>,
+) -> Result<usize> {
+    let goal = match store.replay(goal_id)? {
+        Some(g) => g,
+        None => return Ok(0),
+    };
+    let runs_dir = std::path::PathBuf::from(store.root_path()).join("runs");
+    let sessions = bound_worker_sessions(&goal, &runs_dir, goal_id);
+    let targets: Vec<WorkerSession> = match agent_id {
+        Some(a) => sessions
+            .iter()
+            .filter(|s| s.agent_id == a)
+            .cloned()
+            .collect(),
+        None => sessions,
+    };
+    if targets.is_empty() {
+        return Ok(0);
+    }
+    store.append(Event::WorkerStopped {
+        goal_id: goal_id.to_string(),
+        agent_id: agent_id.map(str::to_string),
+        ts: crate::state::now_epoch(),
+    })?;
+    println!(
+        "■ stop signal sent to {} worker(s) of {goal_id} — run clients exit at their next turn boundary",
+        targets.len()
+    );
+    abort_worker_sessions(&targets, false).await;
+    Ok(targets.len())
 }
 
 /// `loopx scope --goal G --agent-id A [--exclude X]` — the identity-scoped
@@ -7958,7 +8028,7 @@ fn todo_archive(store: &mut Store, args: &[String]) -> Result<()> {
 
 /// `todo supersede --goal G --todo-id T [--reason ...]` — mark an unfinished
 /// todo superseded (obsolete; runnable frontier and closure both ignore it).
-fn todo_supersede(store: &mut Store, args: &[String]) -> Result<()> {
+async fn todo_supersede(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut todo_id = None;
     let mut reason = None;
@@ -7991,6 +8061,18 @@ fn todo_supersede(store: &mut Store, args: &[String]) -> Result<()> {
     })?;
     refresh_next_action(store, &goal_id)?;
     sync_compat(store, &goal_id)?;
+    // If a detached run is executing THIS todo, stop it: its in-flight turn is
+    // now wasted work, and a late writeback must not fight the supersede
+    // (replay also guards: a late TodoCompleted never resurrects a superseded
+    // todo). The event-signal + gRPC abort is the same channel `worker stop`
+    // uses; the holder pid probe is not needed here — the ledger signal is
+    // authoritative and pid-less orphans are already handled by liveness.
+    if let Some(holder) = goal.todo(&todo_id).and_then(|t| t.claimed_by.clone()) {
+        let stopped = stop_goal_workers(store, &goal_id, Some(&holder)).await?;
+        if stopped > 0 {
+            println!("  ■ holder {holder} signalled to stop (todo superseded mid-run)");
+        }
+    }
     println!(
         "todo {todo_id} superseded ✔{}",
         reason
