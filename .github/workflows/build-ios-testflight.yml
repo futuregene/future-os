@@ -2,29 +2,19 @@ name: Build iOS TestFlight
 
 permissions: read-all
 
-# Manual iOS distribution build. Imports the iOS Distribution certificate and
-# App Store provisioning profile from secrets, builds a signed Release .ipa with
-# Expo prebuild + xcodebuild, uploads it to TestFlight via altool, and mirrors
-# the .ipa to OSS.
+# Reusable iOS distribution workflow. Imports the iOS Distribution certificate
+# and App Store provisioning profile from secrets, builds a signed Release .ipa
+# with Expo prebuild + xcodebuild, and uploads it to TestFlight via altool.
 #
-# TestFlight requires a plain numeric marketing version. It was pinned at `0.0.1`
-# until 0.0.1's build number hit 31479016198 (the old github.run_id counter).
-# TestFlight enforces a monotonically increasing build number per marketing
-# version, so switching back to small run_number build numbers under 0.0.1 would
-# be rejected. Bumping the marketing version to `0.0.2` resets the build-number
-# sequence, letting it restart at 1. The store build number (CFBundleVersion /
-# Android versionCode) comes from `github.run_number` via FUTURE_BUILD_NUMBER —
-# this workflow's per-repo counter starting at 1. It must stay small: Android
-# versionCode is an int32, and `github.run_id` (a GitHub-wide counter) already
-# exceeds its limit. Bump the marketing version here only when cutting a real
-# release or resetting the TestFlight build-number sequence again.
+# TestFlight requires a plain numeric marketing version and a monotonically
+# increasing build number per marketing version. Both are required inputs from
+# the coordinator, so this workflow must not be manually dispatched.
 #
 # Keep this workflow restricted to trusted triggers: it imports signing
 # credentials and submits software to Apple's TestFlight service. Do not add
 # pull_request or other events that can execute untrusted code with them.
 
 on:
-  workflow_dispatch:
   workflow_call:
     inputs:
       version:
@@ -35,11 +25,6 @@ on:
         description: Monotonic App Store build number supplied by the coordinator.
         required: true
         type: string
-      coordinated:
-        description: Let the caller handle release publication.
-        required: false
-        type: boolean
-        default: false
     secrets:
       IOS_DIST_CERT_P12_BASE64:
         required: true
@@ -53,14 +38,6 @@ on:
         required: true
       APPLE_API_ISSUER:
         required: true
-      OSS_ENDPOINT:
-        required: false
-      OSS_BUCKET:
-        required: false
-      OSS_ACCESS_KEY_ID:
-        required: false
-      OSS_ACCESS_KEY_SECRET:
-        required: false
 
 jobs:
   build:
@@ -71,10 +48,6 @@ jobs:
       APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
       APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
       APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-      OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
-      OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
-      OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
-      OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -93,9 +66,10 @@ jobs:
         run: |
           set -euo pipefail
           # TestFlight marketing versions must be plain numeric SemVer. The
-          # coordinators pass bundle_version; standalone runs keep 0.0.2.
-          version="${INPUT_VERSION:-0.0.2}"
-          build_number="${INPUT_BUILD_NUMBER:-${{ github.run_number }}}"
+          # coordinators pass bundle_version rather than a dev version with a
+          # commit hash.
+          version="${INPUT_VERSION:?version input is required}"
+          build_number="${INPUT_BUILD_NUMBER:?build_number input is required}"
           echo "FUTURE_VERSION=$version" >> "$GITHUB_ENV"
           echo "FUTURE_BUILD_NUMBER=$build_number" >> "$GITHUB_ENV"
           echo "TestFlight version: $version (build $build_number)"
@@ -270,34 +244,6 @@ jobs:
             --apiIssuer "$APPLE_API_ISSUER" \
             --apiKeyPath "$APPLE_API_KEY_DIR" \
             --verbose
-
-      - name: Upload IPA to OSS
-        if: github.event_name == 'workflow_dispatch' && !inputs.coordinated
-        run: |
-          set -euo pipefail
-          : "${IPA_PATH:?IPA_PATH is required}"
-          : "${IPA_NAME:?IPA_NAME is required}"
-
-          version="$FUTURE_VERSION"
-          case "$(uname -m)" in
-            arm64) arch="arm64" ;;
-            x86_64) arch="amd64" ;;
-            *) echo "Unsupported macOS architecture: $(uname -m)" >&2; exit 1 ;;
-          esac
-          pkg="ossutil-2.3.0-mac-${arch}"
-          curl -fsSL "https://gosspublic.alicdn.com/ossutil/v2/2.3.0/${pkg}.zip" \
-            -o "$RUNNER_TEMP/ossutil.zip"
-          unzip -q "$RUNNER_TEMP/ossutil.zip" -d "$RUNNER_TEMP/ossutil"
-          chmod +x "$RUNNER_TEMP/ossutil/$pkg/ossutil"
-          export PATH="$RUNNER_TEMP/ossutil/$pkg:$PATH"
-
-          region="$(printf '%s' "$OSS_ENDPOINT" \
-            | sed -E 's#^https?://##; s/^oss-//; s/-internal//; s/\.aliyuncs\.com$//')"
-          echo "==> Uploading IPA to oss://$OSS_BUCKET/test/$version/"
-          ossutil cp -f "$IPA_PATH" "oss://$OSS_BUCKET/test/$version/$IPA_NAME" --region "$region"
-          ossutil stat "oss://$OSS_BUCKET/test/$version/$IPA_NAME" --region "$region"
-          echo "==> Download URL:"
-          echo "https://dl.future-os.cn/test/$version/$IPA_NAME"
 
       - name: Clean up signing material
         if: always()

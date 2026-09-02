@@ -1,24 +1,28 @@
 #!/usr/bin/env node
 // Single source of truth for FutureOS build versioning.
 //
-// Three cases, all keyed off "is this a release tag":
+// Coordinated and standalone cases:
+//   - coordinated test     → dev,     version = "0.0.2-<run_number>+test"
+//   - coordinated nightly  → dev,     version = "0.0.2-<run_number>+nightly"
+//   - standalone dev build → dev,     version = "0.0.2-<hash>+dev"
 //   - on a `vX.Y.Z` tag    → release, version = "X.Y.Z"   (X must be ≥ 1)
-//   - other online build   → dev,    version = "0.0.2-<hash>"
-//   - local build          → dev,    version = "0.0.2-<hash>+local"
-//                                      (…+local.dirty when the tree is dirty)
-//   - iOS TestFlight       → dev,    version = "0.0.2"
-//                                      (plain number: TestFlight rejects suffixes;
-//                                      injected via FUTURE_VERSION by the workflow)
+//   - other online build   → dev,     version = "0.0.2-<hash>"
+//   - local build          → dev,     version = "0.0.2-<hash>+local"
+//                                       (…+local.dirty when the tree is dirty)
+//   - iOS TestFlight       → dev,     version = "0.0.2"
+//                                       (plain number: TestFlight rejects suffixes;
+//                                       injected via FUTURE_VERSION by the workflow)
 //
 // The dev minor is pinned at `0.0.2` (DEV_VERSION below), NOT derived from git.
 // CI uses a shallow checkout (fetch-depth: 1), so `git rev-list --count HEAD`
 // always returns 1 there and a commit-count version would be frozen at 0.0.1.
-// The short hash still identifies the exact code; local builds add `+local` (and
+// Standalone builds retain the short hash; coordinated test/nightly builds are
+// traceable through their workflow run number. Local builds add `+local` (and
 // `.dirty` when the tree is dirty) so a tester's laptop build is never mistaken
-// for the matching online build, and a dirty local build's hash must not be
-// trusted verbatim. Store build numbers (Android versionCode / iOS
-// CFBundleVersion) are injected separately by the workflows via github.run_number,
-// so the display version does not need to be monotonic.
+// for the matching online build. Store build numbers (Android versionCode / iOS
+// CFBundleVersion) are injected separately by the workflows via github.run_number.
+// Coordinated test/nightly display versions reuse that counter so desktop
+// updater versions are monotonic within each channel.
 //
 // Bump DEV_VERSION (0.0.2 → 0.0.3) whenever the test-build version should
 // advance — e.g. TestFlight already accepted a larger build number under the
@@ -43,20 +47,52 @@ import { execSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-/** Dev-build display version (semver core; the short hash is appended later). */
+/** Dev-build SemVer core used by hash and coordinated channel versions. */
 const DEV_VERSION = "0.0.2";
 
-/** Resolve the display version string for this build. */
-export function resolveVersion() {
-  // Explicit override (set by CI job env / Makefile) wins.
+/** Resolve the internal and public artifact versions together. */
+export function resolveVersions() {
+  // Explicit overrides (set by CI job env / Makefile) win. Callers that need a
+  // distinct public version must provide both instead of relying on parsing.
   if (process.env.FUTURE_VERSION) {
-    return process.env.FUTURE_VERSION.trim();
+    const version = process.env.FUTURE_VERSION.trim();
+    const artifactVersion =
+      process.env.FUTURE_ARTIFACT_VERSION?.trim() || version;
+    return { version, artifactVersion };
   }
-  // Release tag: refs/tags/vX.Y.Z → X.Y.Z
+  // Release tag: refs/tags/vX.Y.Z → X.Y.Z. Keep this ahead of every dev
+  // channel so a repository-level channel variable can never alter a release.
   const ref = process.env.GITHUB_REF || "";
   const tag = ref.match(/^refs\/tags\/v(\d+\.\d+\.\d+)$/);
   if (tag) {
-    return tag[1];
+    const version = tag[1];
+    return { version, artifactVersion: version };
+  }
+  // Build Test supplies both values so test and nightly updater versions are
+  // monotonically ordered within their respective channels.
+  const buildChannel = process.env.FUTURE_BUILD_CHANNEL?.trim();
+  const runNumber = process.env.FUTURE_RUN_NUMBER?.trim();
+  if (buildChannel || runNumber) {
+    if (!new Set(["test", "nightly", "dev"]).has(buildChannel)) {
+      throw new Error(
+        `FUTURE_BUILD_CHANNEL must be test, nightly, or dev, got ${buildChannel || "empty"}`,
+      );
+    }
+    if (buildChannel === "dev") {
+      if (runNumber) {
+        throw new Error("FUTURE_RUN_NUMBER is not used by the dev channel");
+      }
+      const artifactVersion = `${DEV_VERSION}-${gitShortHash()}`;
+      return { version: `${artifactVersion}+dev`, artifactVersion };
+    }
+    if (!/^[1-9]\d*$/.test(runNumber || "")) {
+      throw new Error(
+        `FUTURE_RUN_NUMBER must be a positive integer, got ${runNumber || "empty"}`,
+      );
+    }
+    const artifactVersion = `${DEV_VERSION}-${runNumber}`;
+    const version = `${artifactVersion}+${buildChannel}`;
+    return { version, artifactVersion };
   }
   // Dev build: pinned 0.0.2 + short hash. The hash locates the exact code and
   // keeps distinct branches from colliding on the same display version. A
@@ -66,20 +102,30 @@ export function resolveVersion() {
   // Online (CI) builds are reproducible from the pushed commit, so the hash
   // stands alone. Local builds add `+local` (and `.dirty` for an uncommitted
   // tree) so a tester's laptop build is never confused with the online one.
+  const artifactVersion = `${DEV_VERSION}-${hash}`;
   if (process.env.GITHUB_ACTIONS || process.env.CI) {
-    return `${DEV_VERSION}-${hash}`;
+    return { version: artifactVersion, artifactVersion };
   }
-  return `${DEV_VERSION}-${hash}+local${gitDirty() ? ".dirty" : ""}`;
+  const version = `${artifactVersion}+local${gitDirty() ? ".dirty" : ""}`;
+  return { version, artifactVersion };
+}
+
+/** Resolve only the internal display version for existing callers. */
+export function resolveVersion() {
+  return resolveVersions().version;
 }
 
 /** Short git hash, or "unknown" outside a git checkout (tarball build). */
 function gitShortHash() {
   try {
-    return execSync("git rev-parse --short HEAD", { stdio: ["ignore", "pipe", "ignore"] })
-      .toString()
-      .trim() || "unknown";
-  }
-  catch {
+    return (
+      execSync("git rev-parse --short HEAD", {
+        stdio: ["ignore", "pipe", "ignore"],
+      })
+        .toString()
+        .trim() || "unknown"
+    );
+  } catch {
     return "unknown";
   }
 }
@@ -87,11 +133,14 @@ function gitShortHash() {
 /** Whether the working tree has uncommitted changes (untracked included). */
 function gitDirty() {
   try {
-    return execSync("git status --porcelain", { stdio: ["ignore", "pipe", "ignore"] })
-      .toString()
-      .trim().length > 0;
-  }
-  catch {
+    return (
+      execSync("git status --porcelain", {
+        stdio: ["ignore", "pipe", "ignore"],
+      })
+        .toString()
+        .trim().length > 0
+    );
+  } catch {
     return false;
   }
 }
@@ -117,15 +166,18 @@ function patchJson(path, version) {
 
 function main() {
   const arg = process.argv[2];
-  const version = resolveVersion();
+  const { version, artifactVersion } = resolveVersions();
 
   switch (arg) {
     case "--json":
-      process.stdout.write(JSON.stringify({
-        version,
-        isRelease: isRelease(version),
-        bundleVersion: bundleVersion(version),
-      }));
+      process.stdout.write(
+        JSON.stringify({
+          version,
+          isRelease: isRelease(version),
+          bundleVersion: bundleVersion(version),
+          artifactVersion,
+        }),
+      );
       break;
 
     case "--github-output": {
@@ -137,6 +189,7 @@ function main() {
         `version=${version}`,
         `is_release=${isRelease(version)}`,
         `bundle_version=${bundleVersion(version)}`,
+        `artifact_version=${artifactVersion}`,
       ].join("\n");
       writeFileSync(out, `${lines}\n`, { flag: "a" });
       break;
@@ -147,12 +200,15 @@ function main() {
       if (!out) {
         throw new Error("usage: version.mjs --gen-ts <path>");
       }
-      writeFileSync(out, [
-        "// Generated by scripts/version.mjs at build time — do not edit or commit.",
-        `export const VERSION = ${JSON.stringify(version)};`,
-        `export const IS_RELEASE = ${isRelease(version)};`,
-        "",
-      ].join("\n"));
+      writeFileSync(
+        out,
+        [
+          "// Generated by scripts/version.mjs at build time — do not edit or commit.",
+          `export const VERSION = ${JSON.stringify(version)};`,
+          `export const IS_RELEASE = ${isRelease(version)};`,
+          "",
+        ].join("\n"),
+      );
       break;
     }
 

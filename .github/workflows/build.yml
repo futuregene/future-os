@@ -1,13 +1,19 @@
-name: Build Unsigned
+name: Build Test
 
 permissions: read-all
 
-# Release rehearsal. It invokes the same platform workflows as release.yml,
-# but macOS and Windows skip platform code signing. The complete test release is
-# published under test/<version>/, including its own latest.json; test/latest.json
-# is deliberately never written here.
+# Release rehearsal. It invokes the same platform workflows as release.yml.
+# Normal test builds are unsigned and publish under test/<version>/; nightly
+# builds sign macOS and Windows and publish under nightly/<version>/. Each
+# channel advances its own latest.json only after the complete build succeeds.
 on:
   workflow_dispatch:
+    inputs:
+      nightly:
+        description: Build a signed nightly release.
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   version:
@@ -15,8 +21,10 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
+      artifact_version: ${{ steps.v.outputs.artifact_version }}
       bundle_version: ${{ steps.v.outputs.bundle_version }}
       build_number: ${{ steps.v.outputs.build_number }}
+      channel: ${{ steps.v.outputs.channel }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -26,27 +34,33 @@ jobs:
           node-version: "24"
       - name: Resolve version
         id: v
+        env:
+          FUTURE_BUILD_CHANNEL: ${{ inputs.nightly && 'nightly' || 'test' }}
+          FUTURE_RUN_NUMBER: ${{ github.run_number }}
         run: |
+          set -euo pipefail
           node scripts/version.mjs --github-output
           echo "build_number=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "channel=$FUTURE_BUILD_CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "Build Test channel: $FUTURE_BUILD_CHANNEL (build ${{ github.run_number }})"
 
   macos:
-    name: Build unsigned macOS
+    name: Build macOS
     needs: version
     uses: ./.github/workflows/build-macos-signed.yml
     with:
       version: ${{ needs.version.outputs.version }}
-      signed: false
+      signed: ${{ inputs.nightly }}
       coordinated: true
     secrets: inherit
 
   windows:
-    name: Build unsigned Windows
+    name: Build Windows
     needs: version
     uses: ./.github/workflows/build-windows-signed.yml
     with:
       version: ${{ needs.version.outputs.version }}
-      signed: false
+      signed: ${{ inputs.nightly }}
       coordinated: true
     secrets: inherit
 
@@ -70,17 +84,16 @@ jobs:
     secrets: inherit
 
   ios:
-    name: Build and submit iOS
+    name: Build iOS
     needs: version
     uses: ./.github/workflows/build-ios-testflight.yml
     with:
       version: ${{ needs.version.outputs.bundle_version }}
       build_number: ${{ needs.version.outputs.build_number }}
-      coordinated: true
     secrets: inherit
 
   publish:
-    name: Publish complete test release
+    name: Publish complete test build
     needs: [version, macos, windows, linux, android, ios]
     runs-on: ubuntu-latest
     concurrency:
@@ -92,7 +105,8 @@ jobs:
       OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
       OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
       VERSION: ${{ needs.version.outputs.version }}
-      RELEASE_ORIGIN: https://dl.future-os.cn/test
+      ARTIFACT_VERSION: ${{ needs.version.outputs.artifact_version }}
+      CHANNEL: ${{ needs.version.outputs.channel }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -104,15 +118,20 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p publish
+          if [[ "$CHANNEL" == "nightly" ]]; then
+            suffix=""
+          else
+            suffix="-unsigned"
+          fi
           names=(
-            "FutureOS_${VERSION}_aarch64-unsigned.dmg"
-            "FutureOS_${VERSION}_aarch64-unsigned.app.tar.gz"
-            "FutureOS_${VERSION}_aarch64-unsigned.app.tar.gz.sig"
-            "FutureOS_${VERSION}_x64-unsigned.dmg"
-            "FutureOS_${VERSION}_x64-unsigned.app.tar.gz"
-            "FutureOS_${VERSION}_x64-unsigned.app.tar.gz.sig"
-            "FutureOS_${VERSION}_x64-setup-unsigned.exe"
-            "FutureOS_${VERSION}_x64-setup-unsigned.exe.sig"
+            "FutureOS_${VERSION}_aarch64${suffix}.dmg"
+            "FutureOS_${VERSION}_aarch64${suffix}.app.tar.gz"
+            "FutureOS_${VERSION}_aarch64${suffix}.app.tar.gz.sig"
+            "FutureOS_${VERSION}_x64${suffix}.dmg"
+            "FutureOS_${VERSION}_x64${suffix}.app.tar.gz"
+            "FutureOS_${VERSION}_x64${suffix}.app.tar.gz.sig"
+            "FutureOS_${VERSION}_x64-setup${suffix}.exe"
+            "FutureOS_${VERSION}_x64-setup${suffix}.exe.sig"
             "FutureOS_${VERSION}_amd64.deb"
             "FutureOS_${VERSION}_amd64.deb.sig"
             "FutureOS_${VERSION}_arm64.deb"
@@ -130,7 +149,8 @@ jobs:
               find release-assets -maxdepth 3 -type f -print >&2
               exit 1
             }
-            cp -v "$source" "publish/$name"
+            published_name="${name//$VERSION/$ARTIFACT_VERSION}"
+            cp -v "$source" "publish/$published_name"
           done
           count="$(find publish -type f | wc -l | tr -d ' ')"
           [[ "$count" == "17" ]] || { echo "Expected 17 assets, found $count." >&2; exit 1; }
@@ -138,24 +158,30 @@ jobs:
       - name: Generate Tauri-compatible latest.json
         run: |
           set -euo pipefail
+          if [[ "$CHANNEL" == "nightly" ]]; then
+            suffix=""
+          else
+            suffix="-unsigned"
+          fi
           export PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          export MAC_ARM_FILE="FutureOS_${VERSION}_aarch64-unsigned.dmg"
-          export MAC_ARM_UPDATER_FILE="FutureOS_${VERSION}_aarch64-unsigned.app.tar.gz"
-          export MAC_INTEL_FILE="FutureOS_${VERSION}_x64-unsigned.dmg"
-          export MAC_INTEL_UPDATER_FILE="FutureOS_${VERSION}_x64-unsigned.app.tar.gz"
-          export WINDOWS_FILE="FutureOS_${VERSION}_x64-setup-unsigned.exe"
-          export LINUX_DEB_FILE="FutureOS_${VERSION}_amd64.deb"
-          export LINUX_DEB_ARM_FILE="FutureOS_${VERSION}_arm64.deb"
-          export LINUX_PORTABLE_FILE="FutureOS_${VERSION}_linux_x86_64-portable.tar.gz"
-          export LINUX_PORTABLE_ARM_FILE="FutureOS_${VERSION}_linux_aarch64-portable.tar.gz"
-          export LINUX_CLI_FILE="FutureOS_${VERSION}_linux_x86_64-cli.tar.gz"
-          export LINUX_CLI_ARM_FILE="FutureOS_${VERSION}_linux_aarch64-cli.tar.gz"
-          export ANDROID_APK_FILE="FutureOS_${VERSION}_android-universal.apk"
+          export RELEASE_ORIGIN="https://dl.future-os.cn/$CHANNEL"
+          export MAC_ARM_FILE="FutureOS_${ARTIFACT_VERSION}_aarch64${suffix}.dmg"
+          export MAC_ARM_UPDATER_FILE="FutureOS_${ARTIFACT_VERSION}_aarch64${suffix}.app.tar.gz"
+          export MAC_INTEL_FILE="FutureOS_${ARTIFACT_VERSION}_x64${suffix}.dmg"
+          export MAC_INTEL_UPDATER_FILE="FutureOS_${ARTIFACT_VERSION}_x64${suffix}.app.tar.gz"
+          export WINDOWS_FILE="FutureOS_${ARTIFACT_VERSION}_x64-setup${suffix}.exe"
+          export LINUX_DEB_FILE="FutureOS_${ARTIFACT_VERSION}_amd64.deb"
+          export LINUX_DEB_ARM_FILE="FutureOS_${ARTIFACT_VERSION}_arm64.deb"
+          export LINUX_PORTABLE_FILE="FutureOS_${ARTIFACT_VERSION}_linux_x86_64-portable.tar.gz"
+          export LINUX_PORTABLE_ARM_FILE="FutureOS_${ARTIFACT_VERSION}_linux_aarch64-portable.tar.gz"
+          export LINUX_CLI_FILE="FutureOS_${ARTIFACT_VERSION}_linux_x86_64-cli.tar.gz"
+          export LINUX_CLI_ARM_FILE="FutureOS_${ARTIFACT_VERSION}_linux_aarch64-cli.tar.gz"
+          export ANDROID_APK_FILE="FutureOS_${ARTIFACT_VERSION}_android-universal.apk"
           node <<'NODE'
           const fs = require("node:fs");
           const crypto = require("node:crypto");
           const sha256 = file => crypto.createHash("sha256").update(fs.readFileSync(`publish/${file}`)).digest("hex");
-          const url = file => `${process.env.RELEASE_ORIGIN}/${process.env.VERSION}/${file}`;
+          const url = file => `${process.env.RELEASE_ORIGIN}/${process.env.ARTIFACT_VERSION}/${file}`;
           const updater = file => ({
             url: url(file),
             signature: fs.readFileSync(`publish/${file}.sig`, "utf8").trim(),
@@ -195,21 +221,67 @@ jobs:
       - name: Upload latest.json artifact
         uses: actions/upload-artifact@v7
         with:
-          name: futureos-test-latest-json
+          name: futureos-${{ needs.version.outputs.channel }}-latest-json
           path: latest.json
           if-no-files-found: error
           overwrite: true
           retention-days: 7
       - name: Setup ossutil
         run: bash scripts/setup-ossutil.sh
-      - name: Publish complete versioned test release
+      - name: Publish complete test build
         run: |
           set -euo pipefail
-          target="oss://$OSS_BUCKET/test/$VERSION"
+          target="oss://$OSS_BUCKET/$CHANNEL/$ARTIFACT_VERSION"
           ossutil cp -r -f publish/ "$target/"
           find publish -maxdepth 1 -type f -print0 | while IFS= read -r -d '' file; do
             ossutil stat "$target/$(basename "$file")"
           done
           ossutil cp -f latest.json "$target/latest.json"
           ossutil stat "$target/latest.json"
-          echo "Manifest: https://dl.future-os.cn/test/$VERSION/latest.json"
+          echo "Version manifest: https://dl.future-os.cn/$CHANNEL/$ARTIFACT_VERSION/latest.json"
+
+      - name: Advance channel latest.json
+        run: |
+          set -euo pipefail
+          pointer="oss://$OSS_BUCKET/$CHANNEL/latest.json"
+          if ossutil cp -f "$pointer" current-latest.json; then
+            decision="$(node <<'NODE'
+          const fs = require("node:fs");
+          const current = JSON.parse(fs.readFileSync("current-latest.json", "utf8")).version;
+          const next = process.env.VERSION;
+          const expectedChannel = process.env.CHANNEL;
+          const parse = value => {
+            const match = /^(\d+)\.(\d+)\.(\d+)-(\d+)\+(test|nightly)$/.exec(value);
+            if (!match) throw new Error(`Unsupported channel version: ${value}`);
+            return {
+              numbers: match.slice(1, 5).map(Number),
+              channel: match[5],
+            };
+          };
+          const currentVersion = parse(current);
+          const nextVersion = parse(next);
+          if (currentVersion.channel !== expectedChannel || nextVersion.channel !== expectedChannel) {
+            throw new Error(`Channel mismatch: expected ${expectedChannel}, current ${current}, next ${next}`);
+          }
+          for (let index = 0; index < nextVersion.numbers.length; index += 1) {
+            if (nextVersion.numbers[index] > currentVersion.numbers[index]) {
+              process.stdout.write("advance");
+              process.exit(0);
+            }
+            if (nextVersion.numbers[index] < currentVersion.numbers[index]) {
+              throw new Error(`Refusing to move ${expectedChannel}/latest.json backward from ${current} to ${next}`);
+            }
+          }
+          process.stdout.write("current");
+          NODE
+            )"
+          else
+            decision="advance"
+          fi
+          if [[ "$decision" == "advance" ]]; then
+            ossutil cp -f latest.json "$pointer"
+            ossutil stat "$pointer"
+          else
+            echo "Channel pointer is already at $VERSION; no update needed."
+          fi
+          echo "Channel manifest: https://dl.future-os.cn/$CHANNEL/latest.json"
