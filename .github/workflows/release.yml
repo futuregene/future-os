@@ -38,7 +38,7 @@ jobs:
           }
 
   macos:
-    name: Build signed macOS
+    name: Build macOS
     needs: version
     uses: ./.github/workflows/build-macos-signed.yml
     with:
@@ -48,7 +48,7 @@ jobs:
     secrets: inherit
 
   windows:
-    name: Build signed Windows
+    name: Build Windows
     needs: version
     uses: ./.github/workflows/build-windows-signed.yml
     with:
@@ -77,13 +77,12 @@ jobs:
     secrets: inherit
 
   ios:
-    name: Build and submit iOS
+    name: Build iOS
     needs: version
     uses: ./.github/workflows/build-ios-testflight.yml
     with:
       version: ${{ needs.version.outputs.bundle_version }}
       build_number: ${{ needs.version.outputs.build_number }}
-      coordinated: true
     secrets: inherit
 
   publish:

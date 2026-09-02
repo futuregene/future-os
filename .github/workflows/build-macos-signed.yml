@@ -7,7 +7,7 @@ permissions: read-all
 # both but still creates updater artifacts signed by the Tauri updater key.
 # Keep both modes restricted to trusted triggers because both access secrets.
 #
-# Manual builds go to `test/<version>/`. Formal releases call this workflow from
+# Standalone dev builds go to `dev/<artifact-version>/`. Formal releases call this workflow from
 # release.yml and consume its verified artifact; only the coordinator publishes
 # to `releases/` and advances latest.json.
 
@@ -162,6 +162,7 @@ jobs:
         id: v
         env:
           FUTURE_VERSION: ${{ inputs.version }}
+          FUTURE_BUILD_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && !inputs.coordinated && 'dev' || '' }}
         run: node scripts/version.mjs --github-output
 
       - name: Install npm dependencies (Desktop)
@@ -579,9 +580,10 @@ jobs:
         run: |
           set -euo pipefail
           suffix="${{ inputs.signed && '' || '-unsigned' }}"
+          published_version="${{ inputs.coordinated && steps.v.outputs.version || steps.v.outputs.artifact_version }}"
           mkdir -p release-assets
-          dmg_output="release-assets/FutureOS_${{ steps.v.outputs.version }}_${{ matrix.asset_arch }}${suffix}.dmg"
-          updater_output="release-assets/FutureOS_${{ steps.v.outputs.version }}_${{ matrix.asset_arch }}${suffix}.app.tar.gz"
+          dmg_output="release-assets/FutureOS_${published_version}_${{ matrix.asset_arch }}${suffix}.dmg"
+          updater_output="release-assets/FutureOS_${published_version}_${{ matrix.asset_arch }}${suffix}.app.tar.gz"
           cp "$DISTRIBUTABLE_DMG" "$dmg_output"
           cp "$MACOS_UPDATER" "$updater_output"
           cp "$MACOS_UPDATER_SIG" "$updater_output.sig"
@@ -622,13 +624,13 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && !inputs.coordinated
         run: |
           set -euo pipefail
-          version="${{ steps.v.outputs.version }}"
-          echo "==> Uploading macOS artifacts to oss://$OSS_BUCKET/test/$version/"
-          ossutil cp -r -f release-assets/ "oss://$OSS_BUCKET/test/$version/"
+          version="${{ steps.v.outputs.artifact_version }}"
+          echo "==> Uploading macOS artifacts to oss://$OSS_BUCKET/dev/$version/"
+          ossutil cp -r -f release-assets/ "oss://$OSS_BUCKET/dev/$version/"
 
           echo "==> Download URLs:"
           find release-assets -maxdepth 1 -type f -print | while read -r output; do
-            echo "https://dl.future-os.cn/test/$version/$(basename "$output")"
+            echo "https://dl.future-os.cn/dev/$version/$(basename "$output")"
           done
 
       - name: Clean up signing material

@@ -25,7 +25,7 @@ permissions: read-all
 # step fails in seconds if the session is dead, rather than after a 40-minute
 # compile.
 #
-# Manual builds go to `test/<version>/`. Formal releases call this workflow from
+# Standalone dev builds go to `dev/<artifact-version>/`. Formal releases call this workflow from
 # release.yml and consume its verified artifact; only the coordinator publishes
 # to `releases/` and advances latest.json.
 
@@ -136,6 +136,7 @@ jobs:
         id: v
         env:
           FUTURE_VERSION: ${{ inputs.version }}
+          FUTURE_BUILD_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && !inputs.coordinated && 'dev' || '' }}
         run: node scripts/version.mjs --github-output
 
       # Fail now, not after a 40-minute compile: the certificate is only visible
@@ -373,7 +374,8 @@ jobs:
           $installers = @(Get-ChildItem desktop/src-tauri/target/release/bundle/nsis/*.exe)
           if ($installers.Count -ne 1) { throw "Expected exactly one NSIS installer, found $($installers.Count)." }
           $suffix = "${{ inputs.signed && '' || '-unsigned' }}"
-          $output = Join-Path $stage "FutureOS_${{ steps.v.outputs.version }}_x64-setup${suffix}.exe"
+          $publishedVersion = "${{ inputs.coordinated && steps.v.outputs.version || steps.v.outputs.artifact_version }}"
+          $output = Join-Path $stage "FutureOS_${publishedVersion}_x64-setup${suffix}.exe"
           Copy-Item $installers[0].FullName $output
           Copy-Item "$($installers[0].FullName).sig" "$output.sig"
           $portable = "FutureOS-portable-windows${suffix}.zip"
@@ -401,15 +403,15 @@ jobs:
           path: release-assets/*portable-windows*.zip
           retention-days: 7
 
-      - name: Upload to OSS test channel
+      - name: Upload to OSS dev channel
         if: github.event_name == 'workflow_dispatch' && !inputs.coordinated
         shell: powershell
         run: |
-          $version = "${{ steps.v.outputs.version }}"
-          Write-Host "==> Uploading to oss://$env:OSS_BUCKET/test/$version/"
+          $version = "${{ steps.v.outputs.artifact_version }}"
+          Write-Host "==> Uploading to oss://$env:OSS_BUCKET/dev/$version/"
           Get-ChildItem release-assets | Select-Object -ExpandProperty Name
-          ossutil cp -r -f "release-assets\" "oss://$env:OSS_BUCKET/test/$version/"
+          ossutil cp -r -f "release-assets\" "oss://$env:OSS_BUCKET/dev/$version/"
           if ($LASTEXITCODE -ne 0) { throw "ossutil upload failed (exit $LASTEXITCODE)" }
 
           Write-Host "==> Download URLs:"
-          Get-ChildItem release-assets | ForEach-Object { Write-Host "  https://dl.future-os.cn/test/$version/$($_.Name)" }
+          Get-ChildItem release-assets | ForEach-Object { Write-Host "  https://dl.future-os.cn/dev/$version/$($_.Name)" }
