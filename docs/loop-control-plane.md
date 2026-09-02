@@ -35,6 +35,21 @@ objective
 agent executes one bounded turn (gRPC) → writes evidence → kernel decides the next turn
 ```
 
+> **The orchestrator is an AI agent; the loop is its kanban + control levers.**
+> The kernel enforces only the correctness floor (verify gates, acceptance
+> contracts, non-empty evidence, terminal closure) — it never judges whether an
+> *exploratory* result is *right*. That judgement belongs to the orchestrator,
+> which reads the artifacts and decides: keep going, steer, stop, or close. The
+> loop hands the orchestrator the levers to do that — observe a worker live
+> (`worker tail`), interrupt/correct (`supervisor steer`, `todo update`), stop
+> (`worker stop`), and close on its own judgement (manual `todo complete`, which
+> deliberately does not re-run the machine `--verify` gate).
+>
+> Cross-turn context lives in **durable artifacts, not session memory**: a
+> session from a *normally completed* run is not resumable (only an
+> infra-interrupted one is), so each turn re-reads the report / ledger / goal
+> doc rather than relying on a prior session's reasoning history.
+
 ## Core concepts
 
 | Concept | Command | What it does |
@@ -43,15 +58,16 @@ agent executes one bounded turn (gRPC) → writes evidence → kernel decides th
 | Todo | `todo add/update/complete/supersede` | Five classes: advancement / user-gate / user-action / monitor (external-state watch) / blocker; `--blocks` dependency chains; `--priority` |
 | Evidence | `todo complete --evidence` | **Non-empty, enforced**: closing a todo must state what actually landed (paths, attempt ids, measurements); `--force` is the explicit operator override |
 | Acceptance contract | `todo add --acceptance "tok1,tok2"` | Completion evidence must contain every token (case-insensitive) — the hard form of "done ≠ delivered" |
-| Verifier | `todo add --verify "cmd"` | The kernel runs the command after each turn; only exit 0 completes the todo (bounded by `--max-validation-attempts`). The physical blocker of empty closures |
+| Verifier | `todo add --verify "cmd"` | The kernel runs the command after each **run turn boundary**; only exit 0 lets that turn's todo complete (bounded by `--max-validation-attempts`). A machine-checkable gate for deterministic deliverables. **Not** for exploratory todos (research/report) whose correctness the kernel cannot judge — the orchestrator judges those by reading the artifact, and a manual `todo complete` deliberately does not re-run `--verify` |
 | Lease | `lease claim/renew/release/status` | Who holds a todo and until when. **Lease liveness**: the holder's pid is recorded; a dead process's leases are auto-reclaimed — no manual cleanup after killing a worker |
-| Gate | `gate resolve` | Any open user gate freezes all work until resolved; user-actions (non-blocking human to-dos) surface to the user without freezing the agent |
+| Gate | `gate resolve` | Any open user gate freezes all work until resolved. Gates are decision points, not work items: `todo complete` on a gate **bails and points at `gate resolve`** (the decision is recorded, never silently marked "done"). user-actions (non-blocking human to-dos) surface to the user without freezing the agent |
 | Delivery closure | `delivery status/record` | Completion lands in a pending `delivered` state; an operator resolves it as `verified/failed/rework`; unverified deliveries auto-derive a follow-up after 3 turns |
 | Terminal | `frontier show` | Validated closure: todos done/superseded + closure intent + no acceptance gaps + no pending deferred work; `frontier` gives the terminal judgement with gap detail |
 | Dashboard | `ui` | Local read-only web dashboard on 127.0.0.1: goal cards, attention queue, kernel decision, todo DAG, workers/cost, run/event ledgers — live over SSE; mutations stay in the CLI |
 | Quota | `quota should-run/usage/spend/decisions` | The deterministic should-run kernel: scheduling, refusal reasons, and spend are all auditable |
 | Scheduler | `scheduler tick/show/liveness` | Monitor cadence, host-failure records, liveness heartbeats |
 | Multi-agent | `agent contract/recipe/succession/collective` | One goal, several workers: contract (backups / handoff rules), named recipes for one-command onboarding, auto back-up promotion on offline timeout, wake roster, collective turn ledger |
+| Worker observability | `worker tail` | Stream a worker's live turn log (`.live.jsonl`) as a condensed tool/usage view (`--raw` for verbatim) — the orchestrator's window into what a worker is actually doing, so it can steer / stop / let it run |
 | Frontier | `frontier show` | Outcome segments, structured replan rules, bounded semantic history (N=50), terminal judgement |
 
 ## Drive loop via the skill (recommended entry)
@@ -77,8 +93,12 @@ Agent loads the future-loop skill (v3.x driving manual)
 **Skill vs CLI**: the skill owns "what to do when, how to decompose, how to
 drive" (the orchestration layer); the CLI is the underlying mechanism (state
 kernel + hard checks + decisions). The skill is a maintained v3.x manual, kept
-in sync with this page; full semantics at
-[future-skills/builtin/future-loop](https://github.com/futuregene/future-skills/tree/main/builtin/future-loop).
+in sync with this page. Its source of truth lives in the **`skills` git
+submodule** at `skills/builtin/future-loop/SKILL.md` (repo
+[future-skills](https://github.com/futuregene/future-skills)); editing the
+installed copy at `~/.future/agent/skills/` only affects the local machine —
+change the submodule source (PR to future-skills, then bump the pointer here)
+to ship a doc change.
 
 ## User workflow (zero to closure)
 
@@ -100,6 +120,7 @@ future loop gate resolve --goal G --todo-id GATE --decision "approve"
 # 5. Observe and close
 future loop ui                       # live web dashboard (http://127.0.0.1:7717)
 future loop status --goal G
+future loop worker tail --goal G --agent-id mac-worker   # watch a worker's live turn
 future loop frontier show --goal G        # terminal judgement + gap detail
 future loop delivery record --goal G ...  # verified / failed / rework
 ```
@@ -174,6 +195,14 @@ channel. Both directions ride the same event-sourced state:
   prompting the orchestrator to relaunch rather than only discovering the dead
   worker on its next `status` poll.
 
+- **Watch a worker mid-turn:** the messaging above is turn-boundary driven.
+  To see what a worker is doing *right now* (which tools it is calling, its
+  token/cost burn), use `future loop worker tail --goal G [--agent-id A]
+  [--lines N] [--raw]` — it renders the worker's `.live.jsonl` turn stream as
+  a condensed tool/usage view. This is the observability complement to the
+  steer/stop levers: observe first, then interrupt or redirect with full
+  context.
+
 ## Loop state is CLI-first
 
 The control plane is driven and observed through the **`future loop` CLI** —
@@ -185,16 +214,22 @@ Because the state lives in the project and the skill runs through the agent
 service, a goal started in one client (e.g. the TUI) can be driven from any
 other (e.g. a Feishu chat).
 
-## CLI surface (7 groups, 40 commands)
+## CLI surface (7 groups, 41 commands)
 
 ```bash
 future loop registry        # every command (groups/commands)
 future loop commands        # grouped by operator journey
 ```
 
+Multi-verb commands (`supervisor`, `worker`, `todo`) expose per-verb usage:
+`<cmd> <sub> --help` renders the exact verb signature (e.g.
+`supervisor steer --help` → `--agent-id` + `--instruction`), and `<cmd>
+--help` lists its subcommands — so an orchestrator can discover flags without
+parsing a merged top-level line.
+
 - **goal group** (5): `goal` `status` `ui` `models` `diagnose`
 - **todo group** (6): `todo` `gate` `replan` `frontier` `lease` `task-graph`
-- **agent group** (5): `agent` `scope` `lane` `supervisor` `worker`
+- **agent group** (5): `agent` `scope` `lane` `supervisor` `worker` (list / stop / **tail**)
 - **ops group** (18): `version` `doctor` `history` `turn` `todo-event` `evidence-log` `backup` `authority` `profile` `quota` `scheduler` `store` `backfill` `privacy` `runs` `heartbeat-prompt` `worker-bridge` `run`
 - **work-items group** (3): `attention` `inbox` `delivery`
 - **cli group** (2): `registry` `commands`
@@ -212,4 +247,4 @@ future loop commands        # grouped by operator journey
 - Install & build: [build-and-install.md](build-and-install.md)
 - Evidence ledger: [long-run-evidence-ledger.md](long-run-evidence-ledger.md)
 - TUI usage: [tui.md](tui.md)
-- Skill source: [future-skills/builtin/future-loop](https://github.com/futuregene/future-skills/tree/main/builtin/future-loop)
+- Skill source: [`skills/builtin/future-loop`](../skills/builtin/future-loop) (git submodule → [future-skills](https://github.com/futuregene/future-skills/tree/main/builtin/future-loop))
