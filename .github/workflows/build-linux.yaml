@@ -28,27 +28,8 @@ on:
         required: true
 
 jobs:
-  version:
-    name: Resolve version
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.v.outputs.version }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: "24"
-      - name: Resolve version
-        id: v
-        env:
-          FUTURE_VERSION: ${{ inputs.version }}
-        run: node scripts/version.mjs --github-output
-
   build:
     name: Build Linux (${{ matrix.arch }})
-    needs: version
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -66,9 +47,6 @@ jobs:
             deb_arch: arm64
             artifact_name: futureos-linux-arm64
             release_artifact_name: futureos-linux-arm64-release
-    env:
-      FUTURE_VERSION: ${{ needs.version.outputs.version }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -79,6 +57,15 @@ jobs:
           node-version: "24"
           cache: npm
           cache-dependency-path: package-lock.json
+
+      - name: Resolve version
+        env:
+          FUTURE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="$(node scripts/version.mjs)"
+          echo "FUTURE_VERSION=$version" >> "$GITHUB_ENV"
+          echo "Linux version: $version"
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@1.97.0

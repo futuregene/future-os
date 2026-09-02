@@ -13,6 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
+      bundle_version: ${{ steps.v.outputs.bundle_version }}
       build_number: ${{ steps.v.outputs.build_number }}
     steps:
       - name: Checkout
@@ -80,7 +81,7 @@ jobs:
     needs: version
     uses: ./.github/workflows/build-ios-testflight.yml
     with:
-      version: ${{ needs.version.outputs.version }}
+      version: ${{ needs.version.outputs.bundle_version }}
       build_number: ${{ needs.version.outputs.build_number }}
       coordinated: true
     secrets: inherit
