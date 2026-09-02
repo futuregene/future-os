@@ -31,13 +31,14 @@ Development happens in an isolated git worktree (this repo uses `.claude/worktre
 
 ### Before opening a PR
 
-Run the full pre-PR pass in the worktree on the CI toolchain (the repo pins `rust-toolchain.toml`; `make lint-rust` uses the same clippy flags CI uses):
+Run the pre-PR pass in the worktree on the CI toolchain (the repo pins `rust-toolchain.toml`; `make lint-rust` uses the same clippy flags CI uses):
 
 1. `git fetch origin main` then merge `origin/main` into the worktree branch (resolve conflicts here).
-2. `make lint-rust` — CI's Rust fmt + clippy (workspace + `desktop/src-tauri`, `--all-targets` included).
-3. Desktop: `tsc --noEmit`, `eslint "src/**/*.{ts,tsx}"`, `vitest run`; plus `cargo fmt --check` / `cargo clippy` under `desktop/src-tauri`.
-4. `make test` — all unit suites (Rust crates + desktop + mobile).
-5. Commit any fmt/clippy fixes, push, then create the PR.
+2. **Scope checks to the modules the PR touches** - targeted beats exhaustive:
+   - Rust: `cargo fmt -p <crate> --check` + `cargo clippy -p <crate> --all-targets -- -D warnings` + `cargo test -p <crate>` for each crate with code changes (run the crate's own test targets; integration tests under `tests/` are included by `cargo test -p <crate>`). Cross-crate public-API changes: also test the direct consumers of the changed API.
+   - Desktop TS: `tsc --noEmit`, `eslint`, `vitest run` only when `desktop/` files changed; plus `cargo fmt --check` / `cargo clippy` under `desktop/src-tauri` only when it changed.
+   - Do NOT run workspace-wide `make test` / `make lint-rust` for a module-scoped PR - CI runs the full matrix and is the backstop. Escalate to a full local pass only when a change cuts across many crates (e.g. `packages/rpc` wire-contract changes) or after a CI failure local repro is needed.
+3. Commit any fmt/clippy fixes, push, then create the PR.
 
 **Always sync with `origin/main` right before pushing** — not just at the start of the pass. Re-run `git fetch origin main`; if main moved while you were running checks, merge it again and re-run the checks it affects. Branch protection requires the head branch to be up to date with main, and on a fast-moving main a stale branch bounces between BEHIND and re-queued CI (use `gh pr merge --squash --auto` so the merge fires as soon as checks go green).
 
