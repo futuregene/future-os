@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use future_rpc::proto::future_agent_server::{FutureAgent, FutureAgentServer};
 use future_rpc::proto::{RpcCommand, RpcResponse, StreamEvent, StreamRequest};
+use futures_util::StreamExt as _;
 
 // ─── Mock FutureAgent gRPC ──────────────────────────────────────────────────
 
@@ -193,8 +194,9 @@ impl FutureAgent for MockAgent {
 
     async fn stream_events(
         &self,
-        _request: tonic::Request<StreamRequest>,
+        request: tonic::Request<StreamRequest>,
     ) -> Result<tonic::Response<Self::StreamEventsStream>, tonic::Status> {
+        let global_events = request.into_inner().global_events;
         let st = lock(&self.state);
         if st.stream_status_error {
             return Err(tonic::Status::internal("mock stream attach failure"));
@@ -202,6 +204,18 @@ impl FutureAgent for MockAgent {
         if st.stream_hang {
             return Ok(tonic::Response::new(Box::pin(
                 futures_util::stream::pending(),
+            )));
+        }
+        if global_events {
+            let ping = StreamEvent {
+                r#type: "ping".to_string(),
+                session_idx: -1,
+                run_sequence: -1,
+                ..Default::default()
+            };
+            return Ok(tonic::Response::new(Box::pin(
+                futures_util::stream::once(async move { Ok(ping) })
+                    .chain(futures_util::stream::pending()),
             )));
         }
         let mut items: Vec<Result<StreamEvent, tonic::Status>> =
@@ -212,7 +226,6 @@ impl FutureAgent for MockAgent {
             }
         }
         if let Some(d) = st.stream_event_delay {
-            use futures_util::StreamExt as _;
             let stream = futures_util::stream::iter(items).then(move |item| async move {
                 tokio::time::sleep(d).await;
                 item
