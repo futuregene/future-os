@@ -36,19 +36,11 @@ agent executes one bounded turn (gRPC) → writes evidence → kernel decides th
 ```
 
 > **The orchestrator is an AI agent; the loop is its kanban + control levers.**
-> The kernel enforces only the correctness floor (verify gates, acceptance
-> contracts, non-empty evidence, terminal closure) — it never judges whether an
-> *exploratory* result is *right*. That judgement belongs to the orchestrator,
-> which reads the artifacts and decides: keep going, steer, stop, or close. The
-> loop hands the orchestrator the levers to do that — observe a worker live
-> (`worker tail`), interrupt/correct (`supervisor steer`, `todo update`), stop
-> (`worker stop`), and close on its own judgement (manual `todo complete`, which
-> deliberately does not re-run the machine `--verify` gate).
->
-> Cross-turn context lives in **durable artifacts, not session memory**: a
-> session from a *normally completed* run is not resumable (only an
-> infra-interrupted one is), so each turn re-reads the report / ledger / goal
-> doc rather than relying on a prior session's reasoning history.
+> The design principles — kanban not a rule engine, agent-as-orchestrator with
+> observability/steer levers, users driving via the skill, CLI as the single
+> interface, durable state over session memory — live in
+> [`orchestration/loop/ARCHITECTURE.md`](../orchestration/loop/ARCHITECTURE.md)
+> and are not repeated here; this page documents the operational model.
 
 ## Core concepts
 
