@@ -19,12 +19,13 @@ jobs:
       OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
       OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v7
 
       - name: Setup ossutil
         run: bash scripts/setup-ossutil.sh
 
-      - name: Upload installers to the bucket root
+      - name: Upload artifacts to OSS
         run: |
           set -euo pipefail
           for f in install.sh install.ps1; do

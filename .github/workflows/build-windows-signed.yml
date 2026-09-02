@@ -25,9 +25,9 @@ permissions: read-all
 # step fails in seconds if the session is dead, rather than after a 40-minute
 # compile.
 #
-# Standalone dev builds go to `dev/<artifact-version>/`. Formal releases call this workflow from
-# release.yml and consume its verified artifact; only the coordinator publishes
-# to `releases/` and advances latest.json.
+# Standalone dev builds go to `dev/<artifact-version>/`. Coordinators consume
+# the verified artifacts; only they publish complete channels and advance their
+# latest.json manifests.
 
 on:
   workflow_dispatch:
@@ -41,6 +41,10 @@ on:
     inputs:
       version:
         description: Exact release version supplied by the coordinator.
+        required: true
+        type: string
+      artifact_version:
+        description: Public artifact version supplied by the coordinator.
         required: true
         type: string
       signed:
@@ -84,7 +88,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       # One presence check for every toolchain; the install steps below are gated
       # on these outputs so this long-lived machine skips the download. No
@@ -103,7 +107,7 @@ jobs:
 
       - name: Setup Node.js
         if: ${{ !inputs.signed || steps.detect.outputs.node == 'false' }}
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
 
@@ -136,6 +140,7 @@ jobs:
         id: v
         env:
           FUTURE_VERSION: ${{ inputs.version }}
+          FUTURE_ARTIFACT_VERSION: ${{ inputs.artifact_version }}
           FUTURE_BUILD_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && !inputs.coordinated && 'dev' || '' }}
         run: node scripts/version.mjs --github-output
 
@@ -176,14 +181,14 @@ jobs:
           $region = $env:OSS_ENDPOINT -replace '^https?://','' -replace '^oss-','' -replace '-internal','' -replace '\.aliyuncs\.com$',''
           "OSS_REGION=$region" | Add-Content -Path $env:GITHUB_ENV
 
-      - name: Install npm dependencies (Desktop)
+      - name: Install desktop dependencies
         working-directory: desktop
         run: npm ci
 
       # The unified `future` CLI is the single sidecar (tauri.conf.json
       # bundle.externalBin); the agent runs through `future agent`, so only the
       # CLI needs building and staging.
-      - name: Build CLI binary
+      - name: Build CLI
         working-directory: cli
         shell: powershell
         env:
@@ -291,32 +296,12 @@ jobs:
           }
 
       # Portable (install-free) build: the desktop exe plus the unified CLI binary,
-      # all in one directory. Signed here rather than assumed: the bundler signs
-      # its own copies on the way into the installer, so whether
-      # target/release/futureos.exe itself ends up signed is its business. Signing
-      # the staged copies makes the zip's contents certain either way.
-      - name: Assemble Windows portable (signed)
-        if: inputs.signed
+      # all in one directory. In signed mode, sign the staged copies explicitly:
+      # the bundler signs its installer copies but does not guarantee that the
+      # original target/release executable is signed.
+      - name: Assemble Windows portable
         shell: powershell
         timeout-minutes: 15
-        run: |
-          . scripts/lib/windows-signing.ps1
-          $signTool = Find-SignTool
-          $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
-          $dir = "futureos-portable"
-          New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          Copy-Item "desktop/src-tauri/target/release/futureos.exe" "$dir/FutureOS.exe"
-          Copy-Item "target/release/future.exe" "$dir/future.exe"
-          Copy-Item "docs/dist/readme-windows.txt" "$dir/Readme.txt"
-          foreach ($exe in @("FutureOS.exe", "future.exe")) {
-            Invoke-SignFile -SignTool $signTool -Thumbprint $env:SIGN_THUMBPRINT -Path "$dir/$exe"
-            Write-Host "signed: $exe"
-          }
-          Compress-Archive -Path "$dir/*" -DestinationPath "FutureOS-portable-windows.zip" -Force
-
-      - name: Assemble Windows portable (unsigned)
-        if: ${{ !inputs.signed }}
-        shell: pwsh
         run: |
           $dir = "futureos-portable"
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
@@ -326,13 +311,26 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$dir/licenses/loop" | Out-Null
           Copy-Item "LICENSE" "$dir/licenses/"
           Copy-Item "orchestration/loop/LICENSE", "orchestration/loop/NOTICE", "orchestration/loop/UPSTREAM.md" "$dir/licenses/loop/"
-          Compress-Archive -Path "$dir/*" -DestinationPath "FutureOS-portable-windows-unsigned.zip" -Force
+
+          if ("${{ inputs.signed }}" -eq "true") {
+            . scripts/lib/windows-signing.ps1
+            $signTool = Find-SignTool
+            foreach ($exe in @("FutureOS.exe", "future.exe")) {
+              Invoke-SignFile -SignTool $signTool -Thumbprint $env:SIGN_THUMBPRINT -Path "$dir/$exe"
+              Write-Host "signed: $exe"
+            }
+            $suffix = ""
+          } else {
+            $suffix = "-unsigned"
+          }
+          $portable = "FutureOS_${{ steps.v.outputs.artifact_version }}_windows_x64-portable${suffix}.zip"
+          Compress-Archive -Path "$dir/*" -DestinationPath $portable -Force
 
       # Independent of what the bundler claims it did. The signature is the entire
       # point of this workflow, so a silently-unsigned artifact — or an
       # untimestamped one, which dies the day the certificate expires and takes
       # every already-shipped installer with it — must block the upload.
-      - name: Verify signatures
+      - name: Verify code signatures
         if: inputs.signed
         shell: powershell
         run: |
@@ -364,7 +362,7 @@ jobs:
             throw "Tauri produced no non-empty updater signature."
           }
 
-      - name: Stage Windows artifacts
+      - name: Stage artifacts
         shell: powershell
         run: |
           $stage = "release-assets"
@@ -373,37 +371,30 @@ jobs:
 
           $installers = @(Get-ChildItem desktop/src-tauri/target/release/bundle/nsis/*.exe)
           if ($installers.Count -ne 1) { throw "Expected exactly one NSIS installer, found $($installers.Count)." }
-          $suffix = "${{ inputs.signed && '' || '-unsigned' }}"
-          $publishedVersion = "${{ inputs.coordinated && steps.v.outputs.version || steps.v.outputs.artifact_version }}"
+          if ("${{ inputs.signed }}" -eq "true") {
+            $suffix = ""
+          } else {
+            $suffix = "-unsigned"
+          }
+          $publishedVersion = "${{ steps.v.outputs.artifact_version }}"
           $output = Join-Path $stage "FutureOS_${publishedVersion}_x64-setup${suffix}.exe"
           Copy-Item $installers[0].FullName $output
           Copy-Item "$($installers[0].FullName).sig" "$output.sig"
-          $portable = "FutureOS-portable-windows${suffix}.zip"
+          $portable = "FutureOS_${publishedVersion}_windows_x64-portable${suffix}.zip"
           Copy-Item $portable (Join-Path $stage $portable)
 
           Get-ChildItem $stage | Select-Object -ExpandProperty Name
 
-      - name: Upload Windows installer artifact
+      - name: Upload artifacts to GitHub
         uses: actions/upload-artifact@v7
         with:
-          name: futureos-windows${{ inputs.signed && '' || '-unsigned' }}
+          name: ${{ inputs.signed && 'futureos-windows-x64' || 'futureos-windows-x64-unsigned' }}
           if-no-files-found: error
           overwrite: true
-          path: |
-            release-assets/*-setup*.exe
-            release-assets/*-setup*.exe.sig
+          path: release-assets/*
           retention-days: 7
 
-      - name: Upload Windows portable artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: futureos-windows-portable${{ inputs.signed && '' || '-unsigned' }}
-          if-no-files-found: error
-          overwrite: true
-          path: release-assets/*portable-windows*.zip
-          retention-days: 7
-
-      - name: Upload to OSS dev channel
+      - name: Upload artifacts to OSS
         if: github.event_name == 'workflow_dispatch' && !inputs.coordinated
         shell: powershell
         run: |

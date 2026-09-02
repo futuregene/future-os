@@ -3,9 +3,10 @@ name: Build Test
 permissions: read-all
 
 # Release rehearsal. It invokes the same platform workflows as release.yml.
-# Normal test builds are unsigned and publish under test/<version>/; nightly
-# builds sign macOS and Windows and publish under nightly/<version>/. Each
-# channel advances its own latest.json only after the complete build succeeds.
+# Normal test builds leave macOS and Windows unsigned and publish under
+# test/<version>/; nightly builds sign both platforms and publish under
+# nightly/<version>/. Each channel advances its own latest.json only after the
+# complete build succeeds.
 on:
   workflow_dispatch:
     inputs:
@@ -27,9 +28,9 @@ jobs:
       channel: ${{ steps.v.outputs.channel }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
       - name: Resolve version
@@ -50,6 +51,7 @@ jobs:
     uses: ./.github/workflows/build-macos-signed.yml
     with:
       version: ${{ needs.version.outputs.version }}
+      artifact_version: ${{ needs.version.outputs.artifact_version }}
       signed: ${{ inputs.nightly }}
       coordinated: true
     secrets: inherit
@@ -60,6 +62,7 @@ jobs:
     uses: ./.github/workflows/build-windows-signed.yml
     with:
       version: ${{ needs.version.outputs.version }}
+      artifact_version: ${{ needs.version.outputs.artifact_version }}
       signed: ${{ inputs.nightly }}
       coordinated: true
     secrets: inherit
@@ -70,6 +73,7 @@ jobs:
     uses: ./.github/workflows/build-linux.yaml
     with:
       version: ${{ needs.version.outputs.version }}
+      artifact_version: ${{ needs.version.outputs.artifact_version }}
       release: true
     secrets: inherit
 
@@ -79,6 +83,7 @@ jobs:
     uses: ./.github/workflows/build-android-apk.yml
     with:
       version: ${{ needs.version.outputs.version }}
+      artifact_version: ${{ needs.version.outputs.artifact_version }}
       build_number: ${{ needs.version.outputs.build_number }}
       coordinated: true
     secrets: inherit
@@ -109,12 +114,12 @@ jobs:
       CHANNEL: ${{ needs.version.outputs.channel }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
-      - name: Download release artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/checkout@v7
+      - name: Download artifacts from GitHub
+        uses: actions/download-artifact@v8
         with:
           path: release-assets
-      - name: Stage and validate release assets
+      - name: Stage and validate artifacts
         run: |
           set -euo pipefail
           mkdir -p publish
@@ -124,23 +129,23 @@ jobs:
             suffix="-unsigned"
           fi
           names=(
-            "FutureOS_${VERSION}_aarch64${suffix}.dmg"
-            "FutureOS_${VERSION}_aarch64${suffix}.app.tar.gz"
-            "FutureOS_${VERSION}_aarch64${suffix}.app.tar.gz.sig"
-            "FutureOS_${VERSION}_x64${suffix}.dmg"
-            "FutureOS_${VERSION}_x64${suffix}.app.tar.gz"
-            "FutureOS_${VERSION}_x64${suffix}.app.tar.gz.sig"
-            "FutureOS_${VERSION}_x64-setup${suffix}.exe"
-            "FutureOS_${VERSION}_x64-setup${suffix}.exe.sig"
-            "FutureOS_${VERSION}_amd64.deb"
-            "FutureOS_${VERSION}_amd64.deb.sig"
-            "FutureOS_${VERSION}_arm64.deb"
-            "FutureOS_${VERSION}_arm64.deb.sig"
-            "FutureOS_${VERSION}_linux_x86_64-portable.tar.gz"
-            "FutureOS_${VERSION}_linux_aarch64-portable.tar.gz"
-            "FutureOS_${VERSION}_linux_x86_64-cli.tar.gz"
-            "FutureOS_${VERSION}_linux_aarch64-cli.tar.gz"
-            "FutureOS_${VERSION}_android-universal.apk"
+            "FutureOS_${ARTIFACT_VERSION}_aarch64${suffix}.dmg"
+            "FutureOS_${ARTIFACT_VERSION}_aarch64${suffix}.app.tar.gz"
+            "FutureOS_${ARTIFACT_VERSION}_aarch64${suffix}.app.tar.gz.sig"
+            "FutureOS_${ARTIFACT_VERSION}_x64${suffix}.dmg"
+            "FutureOS_${ARTIFACT_VERSION}_x64${suffix}.app.tar.gz"
+            "FutureOS_${ARTIFACT_VERSION}_x64${suffix}.app.tar.gz.sig"
+            "FutureOS_${ARTIFACT_VERSION}_x64-setup${suffix}.exe"
+            "FutureOS_${ARTIFACT_VERSION}_x64-setup${suffix}.exe.sig"
+            "FutureOS_${ARTIFACT_VERSION}_amd64.deb"
+            "FutureOS_${ARTIFACT_VERSION}_amd64.deb.sig"
+            "FutureOS_${ARTIFACT_VERSION}_arm64.deb"
+            "FutureOS_${ARTIFACT_VERSION}_arm64.deb.sig"
+            "FutureOS_${ARTIFACT_VERSION}_linux_x86_64-portable.tar.gz"
+            "FutureOS_${ARTIFACT_VERSION}_linux_aarch64-portable.tar.gz"
+            "FutureOS_${ARTIFACT_VERSION}_linux_x86_64-cli.tar.gz"
+            "FutureOS_${ARTIFACT_VERSION}_linux_aarch64-cli.tar.gz"
+            "FutureOS_${ARTIFACT_VERSION}_android-universal.apk"
           )
           for name in "${names[@]}"; do
             source="$(find release-assets -type f -name "$name" -print -quit)"
@@ -149,13 +154,12 @@ jobs:
               find release-assets -maxdepth 3 -type f -print >&2
               exit 1
             }
-            published_name="${name//$VERSION/$ARTIFACT_VERSION}"
-            cp -v "$source" "publish/$published_name"
+            cp -v "$source" "publish/$name"
           done
           count="$(find publish -type f | wc -l | tr -d ' ')"
           [[ "$count" == "17" ]] || { echo "Expected 17 assets, found $count." >&2; exit 1; }
 
-      - name: Generate Tauri-compatible latest.json
+      - name: Generate update manifest
         run: |
           set -euo pipefail
           if [[ "$CHANNEL" == "nightly" ]]; then
@@ -218,7 +222,7 @@ jobs:
           NODE
           cat latest.json
 
-      - name: Upload latest.json artifact
+      - name: Upload update manifest to GitHub
         uses: actions/upload-artifact@v7
         with:
           name: futureos-${{ needs.version.outputs.channel }}-latest-json
@@ -228,7 +232,7 @@ jobs:
           retention-days: 7
       - name: Setup ossutil
         run: bash scripts/setup-ossutil.sh
-      - name: Publish complete test build
+      - name: Upload artifacts to OSS
         run: |
           set -euo pipefail
           target="oss://$OSS_BUCKET/$CHANNEL/$ARTIFACT_VERSION"
@@ -240,7 +244,7 @@ jobs:
           ossutil stat "$target/latest.json"
           echo "Version manifest: https://dl.future-os.cn/$CHANNEL/$ARTIFACT_VERSION/latest.json"
 
-      - name: Advance channel latest.json
+      - name: Update channel manifest
         run: |
           set -euo pipefail
           pointer="oss://$OSS_BUCKET/$CHANNEL/latest.json"
