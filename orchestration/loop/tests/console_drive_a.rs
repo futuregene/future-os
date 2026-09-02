@@ -803,8 +803,10 @@ fn todo_complete_gate_class_bypasses_freeze() {
         "user_gate",
     ]);
     let a = todo_id_by_text(&cr.root, &gid, "gate A");
-    // Completing a GATE-class todo is allowed even while another gate is open.
-    cli_ok(&[
+    // A user gate is a decision point, not a work item: `todo complete` on it
+    // is rejected and directed to `gate resolve` (the manual-close counterpart
+    // of the run loop's gate handling). Resolve it via `gate resolve` instead.
+    let err = cli_err(&[
         "todo",
         "complete",
         "--goal",
@@ -815,6 +817,22 @@ fn todo_complete_gate_class_bypasses_freeze() {
         "--evidence",
         "fixture evidence for completion contract",
         "--force",
+    ]);
+    assert!(
+        err.contains("gate resolve"),
+        "error must point at gate resolve: {err}"
+    );
+    // The gate-freeze contract still holds: while gate B is open, gate A
+    // cannot be resolved into work, but `gate resolve` closes it cleanly.
+    cli_ok(&[
+        "gate",
+        "resolve",
+        "--goal",
+        &gid,
+        "--todo-id",
+        &a,
+        "--decision",
+        "approved",
     ]);
     let store = open_store(&cr);
     let g = store.replay(&gid).unwrap().unwrap();

@@ -50,7 +50,7 @@ fn help_lists_all_pre_existing_commands_in_groups() {
         "goal init --objective",
         "status [--goal G]",
         "── todo ──",
-        "todo add|claim|complete|archive",
+        "todo add|update|claim|complete|archive",
         "gate resolve --goal G",
         "── agent ──",
         "agent onboard --goal G",
