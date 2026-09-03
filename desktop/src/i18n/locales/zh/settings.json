@@ -121,7 +121,7 @@
     "builtinModelsCount": "{{count}} 个模型",
     "showMoreBuiltin": "更多供应商（{{count}}）",
     "hideMoreBuiltin": "收起供应商",
-    "modelsCount": "{{baseUrl}} · {{count}} 个模型",
+    "modelsCount": "{{count}} 个模型",
     "keyDialogTitle": "设置 {{provider}} 密钥",
     "keyDialogDescription": "密钥仅保存在本机，用于连接该模型服务。",
     "keyRequired": "请填写 API Key。",

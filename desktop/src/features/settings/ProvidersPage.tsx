@@ -280,7 +280,14 @@ export function ProvidersPage({
                   <SettingsRow
                     key={provider.id}
                     title={provider.name}
-                    description={t("providers.modelsCount", { baseUrl: provider.baseUrl, count: provider.models.length })}
+                    description={(
+                      <div className="flex items-baseline gap-2">
+                        <span className="truncate">{provider.baseUrl}</span>
+                        <span className="shrink-0 whitespace-nowrap">
+                          {t("providers.modelsCount", { count: provider.models.length })}
+                        </span>
+                      </div>
+                    )}
                   >
                     {confirmingDelete === provider.id
                       ? (
