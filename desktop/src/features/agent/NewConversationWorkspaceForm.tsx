@@ -2,6 +2,7 @@ import type { FormEvent } from "react";
 import { FolderOpen } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
+import { TextInput } from "../../components/ui/TextInput";
 import { cn } from "../../lib/cn";
 
 /**
@@ -59,8 +60,7 @@ export function WorkspaceModal({
               <span className="truncate">{path || pathPlaceholder}</span>
             </span>
           </button>
-          <input
-            className="h-9 w-full rounded-md border border-line-soft bg-surface px-2 text-sm text-ink outline-none focus:border-accent"
+          <TextInput
             onChange={event => onDisplayNameChange(event.target.value)}
             placeholder={t("newConversation.modal.displayNameOpen")}
             value={displayName}
