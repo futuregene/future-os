@@ -249,6 +249,12 @@ pub(crate) fn handle_abort(
     // which a failed try_write() silently did.
     let abort_result = {
         let sess = session.read();
+        tracing::info!(
+            session_id = %sess.session_id,
+            requested_run_id = %cmd.run_id,
+            source = "rpc_abort",
+            "session abort requested by RPC client"
+        );
         sess.abort_run((!cmd.run_id.is_empty()).then_some(cmd.run_id.as_str()))
             .map(|()| sess.session_id.clone())
     };
