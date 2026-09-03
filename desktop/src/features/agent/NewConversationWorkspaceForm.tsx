@@ -60,6 +60,7 @@ export function WorkspaceModal({
             </span>
           </button>
           <input
+            autoCapitalize="none"
             autoCorrect="off"
             className="h-9 w-full rounded-md border border-line-soft bg-surface px-2 text-sm text-ink outline-none focus:border-accent"
             onChange={event => onDisplayNameChange(event.target.value)}

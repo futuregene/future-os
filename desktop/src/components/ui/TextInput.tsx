@@ -6,8 +6,8 @@ const inputBaseClass
 
 // React 19: `ref` is an ordinary prop, so `forwardRef` is no longer needed.
 // Text fields in this app hold technical values (URLs, ids, keys, queries), so
-// autocorrect and spellcheck are off by default; the trailing spread lets a
-// call site opt back in.
+// autocapitalize, autocorrect, and spellcheck are off by default; the trailing
+// spread lets a call site opt back in.
 export function TextInput({
   className,
   ref,
@@ -15,6 +15,7 @@ export function TextInput({
 }: InputHTMLAttributes<HTMLInputElement> & { ref?: Ref<HTMLInputElement> }) {
   return (
     <input
+      autoCapitalize="none"
       autoCorrect="off"
       className={cn(inputBaseClass, className)}
       ref={ref}
