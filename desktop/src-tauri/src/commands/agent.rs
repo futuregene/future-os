@@ -23,6 +23,11 @@ pub async fn set_default_model(model_id: String) -> Result<(), crate::AppError> 
 }
 
 #[tauri::command]
+pub async fn probe_sandbox() -> Result<agent_bridge::SandboxProbeResult, crate::AppError> {
+    agent_bridge::probe_sandbox().await
+}
+
+#[tauri::command]
 pub async fn probe_windows_sandbox(
 ) -> Result<agent_bridge::WindowsSandboxProbeResult, crate::AppError> {
     agent_bridge::probe_windows_sandbox().await
@@ -52,12 +57,14 @@ mod tests {
         crate::commands::ipc_harness::assert_all_reject_bad_body(
             tauri::generate_handler![
                 set_default_model,
+                probe_sandbox,
                 probe_windows_sandbox,
                 reset_windows_sandbox,
                 agent_prompt
             ],
             &[
                 "set_default_model",
+                "probe_sandbox",
                 "probe_windows_sandbox",
                 "reset_windows_sandbox",
                 "agent_prompt",
@@ -99,11 +106,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn windows_sandbox_maintenance_commands_parse_agent_results() {
+    async fn sandbox_maintenance_commands_parse_agent_results() {
         let _lock = mock_agent_lock();
         crate::commands::agent_mock::ensure_mock_agent();
         script_mock_agent(MockScript {
             data: HashMap::from([
+                (
+                    "probe_sandbox".to_string(),
+                    r#"{"available":true,"code":"available","backend":"linux_bubblewrap","path":"/usr/bin/bwrap","version":"0.11.1","capabilities":{}}"#.to_string(),
+                ),
                 (
                     "probe_windows_sandbox".to_string(),
                     r#"{"available":true,"code":"available"}"#.to_string(),
@@ -115,6 +126,9 @@ mod tests {
             ]),
             ..Default::default()
         });
+        let product_probe = probe_sandbox().await.expect("product probe");
+        assert!(product_probe.available);
+        assert_eq!(product_probe.backend, "linux_bubblewrap");
         let probe = probe_windows_sandbox().await.expect("probe");
         assert!(probe.available);
         assert_eq!(probe.code, "available");

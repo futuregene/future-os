@@ -147,6 +147,7 @@
       "manual": "Asks before each action",
       "sandbox": "Asks when needed",
       "sandboxWindows": "Restricts out-of-scope writes and asks when needed",
+      "sandboxLinux": "Runs in system Bubblewrap and asks when needed",
       "off": "<em>ANY</em> command, no approval"
     },
     "attachImageUnsupportedHint": "The current model doesn't support images and may not read this image correctly",

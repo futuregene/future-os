@@ -74,6 +74,30 @@ fn agent_is_singleton_per_user_even_on_different_ports() {
 }
 
 #[test]
+fn platform_sandbox_probe_is_machine_readable_and_sessionless() {
+    let home = isolated_home();
+    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        .arg("--probe-sandbox")
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .output()
+        .expect("run platform sandbox probe");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).expect("probe JSON");
+    assert!(value["available"].is_boolean());
+    assert!(value["code"].is_string());
+    assert!(value["backend"].is_string());
+    assert!(!home
+        .path()
+        .join(".future/agent/agent-instance.lock")
+        .exists());
+}
+
+#[test]
 fn agent_starts_serves_and_shuts_down_via_profile_timer() {
     let home = isolated_home();
     let profile = home.path().join("flame.svg");

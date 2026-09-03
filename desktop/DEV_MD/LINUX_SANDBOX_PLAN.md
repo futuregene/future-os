@@ -1,8 +1,8 @@
 # FutureOS Linux 沙盒调研与开发计划
 
-状态：**方案已完成第一轮决策收口；开发分支已完成 L0–L3：system bwrap probe、纯计划、隐藏 helper、FD-backed mount/lifecycle、启动前有界 glob 展开、symlink 双路径、missing-path CAS 清理、窄 allow 重开、结束 detection-only、结构化 violation 与 Linux 整命令 escalation。当前受控执行环境禁用了 user namespace，因此新增真 bwrap smoke 记录为环境限制；主干产品仍只显示“手动审批 / 完全放开”，L4 产品接入待实施**（2026-09-03）。
+状态：**方案已完成第一轮决策收口；开发分支已完成 L0–L4 及 L6 本地接入：system bwrap probe、执行链与规则强制、结构化 violation/escalation、平台统一 availability、Settings/Composer、doctor 和显式 manual 回退。当前受控执行环境禁用了 user namespace，因此真 bwrap smoke 记录为环境限制；L5 多发行版/架构/安装包真机矩阵与安全 review 尚未完成，本分支仅达到“可供真机实测”，不代表主干发布门槛已满足**（2026-09-03）。
 
-本文是 [`SANDBOX_PLAN.md`](SANDBOX_PLAN.md) 的 Linux 专项设计稿。审批规则语义仍以 [`APPROVAL_PLAN.md`](APPROVAL_PLAN.md) 为准；本文只讨论如何把现有 `RuleSet` 强制到 Linux shell 子进程，以及产品启用前需要补齐的证据。代码落点、实施波次与逐项验收命令见 [`LINUX_SANDBOX_IMPLEMENTATION.md`](LINUX_SANDBOX_IMPLEMENTATION.md)。
+本文是 [`SANDBOX_PLAN.md`](SANDBOX_PLAN.md) 的 Linux 专项设计稿。审批规则语义仍以 [`APPROVAL_PLAN.md`](APPROVAL_PLAN.md) 为准；本文只讨论如何把现有 `RuleSet` 强制到 Linux shell 子进程，以及产品启用前需要补齐的证据。代码落点、实施波次与逐项验收命令见 [`LINUX_SANDBOX_IMPLEMENTATION.md`](LINUX_SANDBOX_IMPLEMENTATION.md)，用户安装、稳定诊断码和能力限制见 [`LINUX_SANDBOX_USER_GUIDE.md`](LINUX_SANDBOX_USER_GUIDE.md)。
 
 ### 已确认决策（2026-09-02）
 
@@ -31,8 +31,8 @@
 
 FutureOS 当前实现：
 
-- `agent/src/sandbox/mod.rs` 的 `platform_sandbox_availability()` 仅让 macOS Seatbelt 和通过完整 host probe 的 Windows RestrictedToken 后端返回可用；Linux 固定为 `false`。
-- 开发分支的 Linux 会话在 typed probe 成功时选择 Bubblewrap backend；probe 不可用仍安全回退到手动审批档，不会裸跑。read/write/edit 的进程内路径规则继续生效。
+- `agent/src/sandbox/mod.rs` 的平台统一 product probe 让 macOS Seatbelt、Windows RestrictedToken 与 Linux Bubblewrap 仅在各自完整 host probe 通过时返回可用，并提供稳定 backend/code；Linux 不再固定为 `false`。
+- 开发分支的 Linux 会话在 typed probe 成功时选择 Bubblewrap backend；probe 不可用时 Agent policy 设置、执行时 backend 解析和 Desktop 持久设置三处都会显式回退到手动审批档，UI 同时显示诊断码，绝不静默裸跑。read/write/edit 的进程内路径规则继续生效。
 - shell OS 包装已引入平台中立 `PreparedShell`，Linux 走“规则快照 -> `LinuxSandboxPlan` -> 自重入 helper -> Bubblewrap -> structured violation”链路；Windows 仍在 `tools::spawn_shell()` 走专用 restricted runner。
 - 当前网络策略明确为完全开放；Linux 第一版不应偷偷改变为断网。
 - 内置 workspace secret 包含 `.env`、`.env.*`、`**/*.pem`、`**/*.key`、`**/*.p12`、`**/id_rsa*`。这些 glob 是 Linux 设计最难与 Seatbelt 动态匹配完全等价的部分。
@@ -255,7 +255,7 @@ layer 0 hard deny  >  approved execution_grants  >  secret ask guards  >  sessio
 
 完成定义：规则矩阵与 macOS 对照测试通过；所有不等价项在文档、probe capability 和 UI 文案中一致。
 
-### L4 — 打包与诊断
+### L4 — 打包与诊断（本地可交付部分已完成）
 
 - 实现 system bwrap 探测、各支持发行版 UI 安装提示与官网详细教程；覆盖 x86_64/aarch64、glibc 目标和实际桌面分发格式。
 - 增加 `future doctor`/Agent probe 等价诊断入口，输出稳定 JSON code；日志不泄露敏感路径。
@@ -274,7 +274,7 @@ layer 0 hard deny  >  approved execution_grants  >  secret ask guards  >  sessio
 
 结果必须分为 `PASS / FAIL / NOT RUN / ENVIRONMENT LIMIT`，不能用 macOS 单测或容器 smoke 代替 Linux 真机发布结论。
 
-### L6 — 主干合入与产品发布
+### L6 — 主干合入与产品发布（本地接入已完成，发布仍受 L5 阻塞）
 
 - 收口开发分支已经接入的 UI availability hook；probe 失败回退 manual，并给出可操作说明。
 - 同步 PRODUCT/ER/APPROVAL/SANDBOX 文档和中英文 UI，准确写出 glob 有界保证。

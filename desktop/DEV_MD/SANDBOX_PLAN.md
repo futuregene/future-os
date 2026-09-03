@@ -1,6 +1,6 @@
 # FutureOS Sandbox 方案（SANDBOX_PLAN）
 
-状态：**v2 macOS 已实现；Windows unelevated 写保护已完成产品启用与真机验证；Linux 一期已确认 Bubblewrap/system bwrap、网络开放、有界 glob、三层 probe 和整命令 escalation，路径级能力与 macOS 改造放二期**（2026-09-02）
+状态：**v2 macOS 已实现；Windows unelevated 写保护已完成产品启用与真机验证；Linux 一期 Bubblewrap 后端、产品 availability、稳定诊断和显式 manual 回退已在开发分支实现，发布前 L5 真机矩阵与安全 review 待完成**（2026-09-03）
 
 > 规则系统的**语义主文档**是 [APPROVAL_PLAN.md](APPROVAL_PLAN.md)（规则模型、分层、规则文件、审批 UI、决策记录）。本文只管**强制执行**：Seatbelt 如何从规则编译、escalation、工具层拦截、协议与各平台后端。Linux 的当前代码审计、Codex 对照、能力边界与开发阶段见 [LINUX_SANDBOX_PLAN.md](LINUX_SANDBOX_PLAN.md)。
 >
@@ -132,11 +132,11 @@ v1（原 Phase 1 + Phase 2）已全部实现并通过验证（agent 67 测 + GUI
 
 ## 7. 平台状态与 Linux 当前回退
 
-> 当前发布态由 macOS Seatbelt 和 Windows unelevated RestrictedToken 提供 OS 强制。Windows 档名为“写保护”，能力不等同 macOS“沙箱保护”。Linux 尚无 OS 后端，仍不显示 `sandbox`。
+> 当前开发分支由 macOS Seatbelt、Windows unelevated RestrictedToken 和 Linux system Bubblewrap 提供 OS 强制。Windows 档名为“写保护”，能力不等同 macOS/Linux“沙箱保护”。Linux 入口仅在统一 host probe 成功后显示；L5 真机发布矩阵完成前不代表已满足主干发布门槛。
 
-- Linux 的 `platform_sandbox_availability()` 当前固定返回 false。即使某会话误发 `tier=sandbox`，`wraps_shell()` 也为 false，shell 会退回**手动审批档**（只读白名单免问 + 非白名单弹卡片），不会裸跑无闸。
+- Linux 的平台统一 probe 执行安全 PATH、版本/参数和真实 namespace/mount 检查并返回稳定 code。`probe_sandbox` RPC、`future agent --probe-sandbox` 与 `future doctor` 消费同一结果。明确不可用时，Agent 在 policy 接收和执行解析两层回退为**手动审批档**，Desktop 持久化该回退并显示 code/安装提示；瞬时 RPC 失败保留原设置等待重试。任何失败都不会把 `tier=sandbox` 当成 `off` 裸跑。
 - **工具层规则照常生效**（判定在 agent 进程内，不依赖 OS 后端）——read/write/edit 的 ask/deny、凭证 ask、第 0 层写保护在 Linux 依然工作。差别是 shell 没有 OS 硬边界：用户批准命令后，子进程可使用当前用户原有权限访问文件。
-- Linux 不能只用一句“`tmpfs`/`ro-bind` 遮盖”作为实现规格：空内容遮盖可能不产生拒绝，glob 对运行中新路径也不是动态规则。完整方案、与 macOS 的不等价项和阶段计划见 [LINUX_SANDBOX_PLAN.md](LINUX_SANDBOX_PLAN.md)。
+- Linux 以只读 root、窄 writable/reopen/protected mount、namespace/cap drop/no-new-privs 和 helper 生命周期边界强制；精确路径及启动时已有 glob 匹配是硬保护，命令中新 glob 匹配仅结束检测并标记 `detection_only`。网络开放、WSL 不支持、仅使用 system bwrap。安装、稳定 code 和限制见 [LINUX_SANDBOX_USER_GUIDE.md](LINUX_SANDBOX_USER_GUIDE.md)，完整设计见 [LINUX_SANDBOX_PLAN.md](LINUX_SANDBOX_PLAN.md)。
 - **Windows 原生后端见 §11**：RestrictedToken + ACL 强制写边界，使用具体路径 capability 审批，不宣称 shell deny-read。
 
 ## 8. 实施阶段
@@ -167,7 +167,7 @@ v1（原 Phase 1 + Phase 2）已全部实现并通过验证（agent 67 测 + GUI
 - [x] **当轮即时生效**：`RuleSet.session` 改 `Arc<Mutex<Vec<PathRule>>>`（`SessionRules`）；`ServerSession.session_rules` 每轮清空、`resolve_with_session` 共享进 live sandbox；`add_session_rule` gRPC 命令；GUI `save_approval_rule` 写文件后经 `inject_session_rule` 注入当前 agent 会话 → 本轮同目录后续操作立刻不再问。守卫压得住 session（密钥仍每次问）。
 - [x] 文档：PRODUCT.md §4.6、ER.md §4.8 同步 v2；本文件 + APPROVAL_PLAN 更新。
 - 验收：agent 58 lib + smoke 9 + GUI 72 + 前端 39 全绿；`make lint`/`check-desktop` 干净。
-- **不做**（本期）：设置菜单编辑 user 级规则、规则列表查看；Linux bwrap；降级提示徽标。
+- **不做**（本期）：设置菜单编辑 user 级规则、规则列表查看；Linux 网络隔离或 bundled bwrap；降级提示徽标。
 
 ## 9. 明确不做
 

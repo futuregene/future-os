@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Select } from "../../components/ui/Select";
 import { getLanguage, LANGUAGE_LABELS, setLanguage, SUPPORTED_LANGUAGES } from "../../i18n";
 import { useSandboxAvailability } from "../../integrations/agent/useSandboxAvailability";
-import { isWindows } from "../../lib/platform";
+import { isLinux, isWindows } from "../../lib/platform";
 import { SettingsList, SettingsRow, SettingsSection, Switch } from "./SettingsPrimitives";
 
 export function GeneralPage({
@@ -54,7 +54,9 @@ export function GeneralPage({
           description={t(
             approvalTier === "sandbox" && isWindows
               ? "approvalTier.description.sandboxWindows"
-              : `approvalTier.description.${approvalTier}`,
+              : approvalTier === "sandbox" && isLinux
+                ? "approvalTier.description.sandboxLinux"
+                : `approvalTier.description.${approvalTier}`,
           )}
         >
           <Select
@@ -74,6 +76,18 @@ export function GeneralPage({
             <option value="off">{t("approvalTier.off")}</option>
           </Select>
         </SettingsRow>
+        {isLinux && sandboxAvailability.resolved && !sandboxAvailability.available
+          ? (
+              <SettingsRow
+                title={t("approvalTier.linuxUnavailable.title")}
+                description={t("approvalTier.linuxUnavailable.description", {
+                  code: sandboxAvailability.code ?? "probe_failed",
+                })}
+              >
+                <code className="text-xs text-ink-muted">{t("approvalTier.linuxUnavailable.install")}</code>
+              </SettingsRow>
+            )
+          : null}
         <SettingsRow
           title={t("showThinking.title")}
           description={t("showThinking.description")}

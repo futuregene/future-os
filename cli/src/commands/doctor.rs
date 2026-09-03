@@ -95,6 +95,7 @@ pub async fn doctor(out: &Output) -> Result<(), String> {
     results.push(check_login().await);
     // 2. Components.
     results.push(check_agent().await);
+    results.push(check_sandbox());
     results.push(check_component("future", "CLI").await);
     results.push(check_component("future-tui", "TUI").await);
     results.push(check_component("future-desktop", "Desktop").await);
@@ -162,6 +163,44 @@ async fn check_login() -> CheckResult {
 }
 
 // ── 2. Components ──────────────────────────────────────────────────────────
+
+fn check_sandbox() -> CheckResult {
+    match future_agent::sandbox::platform_sandbox_probe_product() {
+        Ok(probe) => {
+            let status = if probe.available {
+                Status::Ok
+            } else {
+                Status::Warn
+            };
+            let mut lines = vec![format!(
+                "backend={} code={} available={}",
+                probe.backend, probe.code, probe.available
+            )];
+            if let Some(path) = probe.path {
+                lines.push(format!("binary={}", path.display()));
+            }
+            if let Some(version) = probe.version {
+                lines.push(format!("version={version}"));
+            }
+            if cfg!(target_os = "linux") && !probe.available {
+                lines.push(
+                    "Install system Bubblewrap (apt/dnf package: bubblewrap); WSL is unsupported"
+                        .to_string(),
+                );
+            }
+            CheckResult {
+                name: "OS sandbox".to_string(),
+                status,
+                lines,
+            }
+        }
+        Err(error) => CheckResult {
+            name: "OS sandbox".to_string(),
+            status: Status::Warn,
+            lines: vec![format!("backend=unknown code=probe_failed error={error}")],
+        },
+    }
+}
 
 async fn check_component(bin: &str, label: &str) -> CheckResult {
     let bin_path = which(bin).await;
@@ -1365,8 +1404,19 @@ mod tests {
             stdout.contains("models-only \u{1b}[2m(custom)\u{1b}[0m"),
             "stdout: {stdout}"
         );
-        // Everything ok → the all-clear line.
-        assert!(stdout.contains("All checks passed."), "stdout: {stdout}");
+        // The host sandbox is intentionally a real capability check. CI or a
+        // container may disable namespaces even when every fixture above is
+        // healthy, so only expect the all-clear when that host probe passes.
+        if future_agent::sandbox::platform_sandbox_probe_product()
+            .expect("sandbox probe")
+            .available
+        {
+            assert!(stdout.contains("All checks passed."), "stdout: {stdout}");
+        } else {
+            assert!(stdout.contains("OS sandbox"), "stdout: {stdout}");
+            assert!(stdout.contains("code="), "stdout: {stdout}");
+            assert!(!stdout.contains("All checks passed."), "stdout: {stdout}");
+        }
     }
 
     #[tokio::test]

@@ -17,7 +17,7 @@ import { deleteTempAttachment, savePastedImage } from "../../integrations/storag
 import { cn } from "../../lib/cn";
 import { formatBytes } from "../../lib/format";
 import { onFutureEvent } from "../../lib/futureEvents";
-import { isWindows } from "../../lib/platform";
+import { isLinux, isWindows } from "../../lib/platform";
 import { classifyAttachment, fileNameFromPath, imageExtensionFromMime, MAX_IMAGES_PER_TURN, READ_SOURCE_MAX_BYTES, splitFileName } from "./attachments";
 import { clearComposerDraft, loadComposerDraft, saveComposerDraft } from "./composerDraft";
 import { MentionEditor } from "./MentionEditor";
@@ -637,7 +637,9 @@ function ComposerImpl({
                             ? <Trans t={t} i18nKey="composer.approvalTierDesc.off" components={{ em: <span className="font-semibold" /> }} />
                             : t(tier === "sandbox" && isWindows
                                 ? "composer.approvalTierDesc.sandboxWindows"
-                                : `composer.approvalTierDesc.${tier}`)}
+                                : tier === "sandbox" && isLinux
+                                  ? "composer.approvalTierDesc.sandboxLinux"
+                                  : `composer.approvalTierDesc.${tier}`)}
                         </span>
                       </span>
                     </SelectMenuItem>

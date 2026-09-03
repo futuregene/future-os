@@ -121,17 +121,18 @@ GUI 中的工具调用应展示短标题、状态、耗时、路径或命令摘�
 
 Approval 解决“是否允许执行”。它发生在高风险操作真正执行之前。
 
-审批的对象是**文件路径访问**（读 / 写），不是命令。设计与实现细节见 [`APPROVAL_PLAN.md`](APPROVAL_PLAN.md)（规则模型、分层、规则文件、三档）与 [`SANDBOX_PLAN.md`](SANDBOX_PLAN.md)（各平台 OS 强制、escalation、回退）；尚未实现的 Linux 专项方案见 [`LINUX_SANDBOX_PLAN.md`](LINUX_SANDBOX_PLAN.md)，不属于当前产品承诺。要点：
+审批的对象是**文件路径访问**（读 / 写），不是命令。设计与实现细节见 [`APPROVAL_PLAN.md`](APPROVAL_PLAN.md)（规则模型、分层、规则文件、三档）与 [`SANDBOX_PLAN.md`](SANDBOX_PLAN.md)（各平台 OS 强制、escalation、回退）；Linux Bubblewrap 的实现边界与发布前真机门槛见 [`LINUX_SANDBOX_PLAN.md`](LINUX_SANDBOX_PLAN.md)。要点：
 
 - **按路径的分层规则**得出 `ask / allow / deny`，首个匹配即返回：内置安全覆盖（不可改）→ 敏感文件守卫（不可改）→ 本对话/工作区临时规则 → 规则文件（`${WS}/.future/approval_rule.json`、`~/.future/approval_rule.json`）→ 兜底（读放开、写限 workspace/temp）。
 - **审批分三档**（输入框下拉 / 设置页切换，全局生效）：
   - **手动审批**（默认，全平台）：read/write/edit 按规则弹审批；shell 的只读命令（`ls/cat/grep/git status` 等）免问直跑，其余命令弹卡片确认；不启用 OS 沙盒。
   - **沙箱保护**（macOS）：shell 在 Seatbelt 沙盒里自动跑，越界失败后走升级审批；read/write/edit 仍按规则弹审批。
-  - **写保护**（Windows，后端完成并通过 smoke 后开放）：shell 在 unelevated RestrictedToken + NTFS ACL 写边界内运行；默认只允许 workspace/session temp，额外外部写路径走前置审批。普通路径的 workspace 外读取与网络不拦截；敏感路径读取仍受敏感文件守卫控制。它也不能用普通目录 ACL 完整保护 workspace 内尚不存在的未来文件名或 glob，不宣称与 macOS 等价。
+  - **写保护**（Windows）：shell 在 unelevated RestrictedToken + NTFS ACL 写边界内运行；默认只允许 workspace/session temp，额外外部写路径走前置审批。普通路径的 workspace 外读取与网络不拦截；敏感路径读取仍受敏感文件守卫控制。它也不能用普通目录 ACL 完整保护 workspace 内尚不存在的未来文件名或 glob，不宣称与 macOS 等价。
+  - **沙箱保护**（Linux 开发分支，发布前真机矩阵待完成）：shell 在 system Bubblewrap 中运行，网络开放；精确路径和启动时已有 glob 匹配硬保护，命令中新匹配仅结束后检测。完整 probe 失败显式回退手动审批，绝不裸跑。安装与限制见 [`LINUX_SANDBOX_USER_GUIDE.md`](LINUX_SANDBOX_USER_GUIDE.md)。
   - **完全放开**：全部放行，不再询问，也不启用沙箱。
 - **网络完全放开、不审批**。
 - **敏感文件**（`.env`、`*.pem`、`*.key`、`~/.ssh`、凭证等）默认 ask 且**不可被规则覆盖**——只能“允许一次”，不能持久放行；应用自身配置（`~/.future/agent/models.json` 等）与规则文件的写硬 deny，跳过用户意愿。
-- Windows 只有完整 host probe 通过才显示“写保护”；Linux 仍只显示“手动审批 / 完全放开”。TUI / CLI / channels 走各自 `permission_level`，不参与本套审批。
+- Windows 只有完整 host probe 通过才显示“写保护”；Linux 只有 system Bubblewrap 完整 host probe 通过才显示“沙箱保护”。Linux probe 明确失败时回退并持久化为“手动审批”，同时显示稳定诊断码与安装提示；瞬时连接错误不会改写设置。TUI / CLI / channels 走各自 `permission_level`，不参与本套审批。
 - 桌面端的 macOS、Windows 和手动审批复用同一个审批卡片；移动端原生卡片消费同一份可信语义。普通用户首先看到由可信后端生成的“行为 + 目标”标题；单目标不重复显示字段，命令/文件预览折叠为“查看命令 / 查看详情”，ACL、SID、backend、hash、规则层等技术数据不展示。
 - 审批按场景提供三个语义：**不允许 / 仅允许这一次 / 此项目以后都允许**（具体文案可继续调整）。“此项目以后都允许”把卡片表达的同一行为和目标保存为该 workspace 的 allow 规则并即时对本轮生效；敏感文件、macOS 整命令 escalation 和不可持久化请求不提供此选项。
 - 多目标审批完整列出全部目标、最多 8 项并按整组决策；无法生成可信行为/目标或 payload 解析失败时 fail closed，不显示批准按钮。
@@ -282,7 +283,7 @@ assistant 的**思考过程**（模型 reasoning）按发生顺序**内联**展�
 
 输入 `/` 打开统一的上下文工具与 Skill 菜单。当前上下文工具提供「压缩 / Compact」；它只操作当前对话，不创建用户消息，压缩生命周期在消息区以三态分割线反馈。菜单的混合结果排序与分隔规则见 4.8。
 
-输入框区域除模型、思考等级选择外，还提供**审批模式**的快速切换下拉；它与设置「通用」页里的审批模式是同一个全局选择。macOS 显示“手动审批 / 沙箱保护 / 完全放开”；Windows 后端完成并通过 smoke 后显示“手动审批 / 写保护 / 完全放开”；Linux 显示“手动审批 / 完全放开”。
+输入框区域除模型、思考等级选择外，还提供**审批模式**的快速切换下拉；它与设置「通用」页里的审批模式是同一个全局选择。macOS 显示“手动审批 / 沙箱保护 / 完全放开”；Windows host probe 通过后显示“手动审批 / 写保护 / 完全放开”；Linux Bubblewrap host probe 通过后显示“手动审批 / 沙箱保护 / 完全放开”。
 
 每条消息下方提供**复制按钮**（用户消息与 assistant 消息都有），复制该消息的纯文本内容；复制按钮平时隐藏，hover 消息行时才显示。assistant 消息**流式生成期间**例外：底部信息栏常驻显示，元素按序为——复制按钮位置改为常显的**生成中动态指示**（一个动态圆点，贯穿整个流式生成，表示对话尚未结束）、**用时·输出 token**，以及仅当**显示思考过程**关闭且模型正在思考时出现的**「正在思考中…」**提示；生成结束后才恢复复制按钮及其 hover 显隐逻辑。
 
@@ -322,7 +323,7 @@ GUI 的颜色统一走 `desktop/tailwind.config.js` 里定义的**语义 token**
 
 设置面板（左侧导航底部齿轮进入；New Chat 下方的「Models」快捷入口可直达模型页）分三页：
 
-- **通用**：界面语言切换（中文 / English，默认中文，选择存于本地）；**审批模式**按平台显示（macOS：手动审批 / 沙箱保护 / 完全放开；Windows host probe 通过时：手动审批 / 写保护 / 完全放开；Linux：手动审批 / 完全放开，默认均为手动审批）；显示思考过程开关（默认关闭）。
+- **通用**：界面语言切换（中文 / English，默认中文，选择存于本地）；**审批模式**按平台显示（macOS：手动审批 / 沙箱保护 / 完全放开；Windows host probe 通过时：手动审批 / 写保护 / 完全放开；Linux Bubblewrap host probe 通过时：手动审批 / 沙箱保护 / 完全放开，失败时显示稳定诊断码和 apt/dnf 安装提示并保持手动审批；默认均为手动审批）；显示思考过程开关（默认关闭）。
 - **提供商**：
   - **内置 FutureGene**（只读）：点「连接」走 GUI 内置的设备码 OAuth 登录——在系统浏览器完成授权，弹窗显示验证码和可复制链接（浏览器没自动打开时的降级），成功后写入凭证；已配置后支持「重新登录 / 退出登录」。GUI 自带登录，不依赖 CLI。
   - **自定义提供商**：增 / 改 / 删 OpenAI 兼容或 Anthropic 兼容的第三方 provider（id / 名称 / API 类型 / Base URL / API Key），并可逐条配置模型列表——每个模型含 id / 名称 / 是否支持图片 / 上下文窗口 / 最大输出 token，带字段校验（id 格式与唯一性、token 上限为正且不超过上下文窗口、模型数量上限）。

@@ -12,7 +12,14 @@
       "manual": "Prompts before file reads and writes; read-only commands run automatically.",
       "sandbox": "Commands run in the macOS sandbox; file operations still prompt.",
       "sandboxWindows": "Protects Windows writes and asks before writing outside allowed locations.",
+      "sandboxLinux": "Commands run in system Bubblewrap with an open network. Existing sensitive glob matches are protected at command start; new matches are detected after the command.",
       "off": "No prompts, no sandbox — everything runs."
+    },
+    "fallbackNotice": "Sandbox protection is unavailable (diagnostic: {{code}}). Switched to Manual mode; commands will not run without sandbox protection.",
+    "linuxUnavailable": {
+      "title": "Linux sandbox unavailable",
+      "description": "FutureOS stayed in Manual mode (diagnostic: {{code}}). Install system Bubblewrap and ensure unprivileged user namespaces and /proc mounts are allowed. WSL is not supported.",
+      "install": "Ubuntu/Debian: sudo apt install bubblewrap · Fedora: sudo dnf install bubblewrap"
     }
   },
   "showThinking": {

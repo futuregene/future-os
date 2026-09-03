@@ -1,6 +1,6 @@
 # Linux Bubblewrap 沙盒实施计划与验收矩阵
 
-状态：**开发执行基线；Wave 1–4（L0–L3）已完成，L4/L6 产品与诊断接入待实施**（2026-09-03）。产品与安全语义以 [`LINUX_SANDBOX_PLAN.md`](LINUX_SANDBOX_PLAN.md) 为准；本文把 L0–L6 转成代码落点、提交顺序、自动化门禁和真机验收项，不改变 L-D1–L-D9。
+状态：**开发执行基线；Wave 1–5（L0–L4 与 L6 本地产品接入）已完成，等待本地总门禁与 L5 真机矩阵**（2026-09-03）。产品与安全语义以 [`LINUX_SANDBOX_PLAN.md`](LINUX_SANDBOX_PLAN.md) 为准；本文把 L0–L6 转成代码落点、提交顺序、自动化门禁和真机验收项，不改变 L-D1–L-D9。
 
 ## 1. 开发基线
 
@@ -102,12 +102,20 @@
 4. helper 以稳定 marker 返回 violation kind/path provenance/policy digest/affected count，日志与普通 UI 不输出完整敏感路径集合。glob 新匹配只做命令结束 detection-only，不称为动态硬保护。
 5. Linux 路径拒绝可以触发一期整命令脱沙盒审批；基础设施错误、普通 command error 和 2/125/126/127 不触发。
 
-### Wave 5 — L4/L6 产品、诊断与文档
+### Wave 5 — L4/L6 产品、诊断与文档（已完成，2026-09-03）
 
-1. Desktop 平台 probe、Settings/Composer 和 remote bridge 使用统一结果；Linux 成功可直接显示 sandbox，失败展示本地化 code 与安装/排障链接。
-2. 已保存 sandbox 后环境失效：稳定失败才持久回退 manual 并通知；瞬时连接/probe error 保留设置等待重试。任何路径都不能把 sandbox 请求静默作为 off 执行。
-3. `future doctor` 与 machine-readable Agent probe 展示相同 backend/code/path/version/capability（敏感路径脱敏）。
-4. 同步 PRODUCT/APPROVAL/SANDBOX/Linux 计划及中英文用户文档，明确 network open、system bwrap only、no WSL、glob 启动时快照。
+1. Desktop 平台 probe、Settings/Composer 和 remote bridge 已改用统一 `probe_sandbox` 结果；Linux probe 成功直接显示 sandbox，失败展示本地化稳定 code 与安装/排障命令。
+2. 已保存 sandbox 后环境失效时，Agent 会把请求 tier 改为 manual，`ResolvedSandbox` 在执行边界再次强制同一回退；Desktop 仅在 definitive unavailable 时持久化 manual 并显示通知。瞬时 RPC 错误保留设置等待重试，任何路径都不会静默按 off 裸跑。
+3. `future-agent --probe-sandbox`（以及 `future agent --probe-sandbox`）输出 machine-readable JSON；`future doctor` 使用同一 probe 并展示 backend/code/available、system bwrap 路径和版本。probe 只暴露 bwrap 可执行文件路径，不输出规则或受保护文件路径。
+4. Settings/Composer 和中英文文档明确 network open、system bwrap only、no WSL、glob 启动时快照与结束后 detection-only；不随应用打包或下载 bwrap。
+
+#### Linux 安装与诊断速查
+
+- Ubuntu/Debian：`sudo apt install bubblewrap`
+- Fedora：`sudo dnf install bubblewrap`
+- 机器可读诊断：`future agent --probe-sandbox`；预期 JSON 至少包含 `available`、`backend`、`code`，Linux 成功时还包含 `path`、`version`、`capabilities`。
+- 汇总诊断：`future doctor`；`binary_missing` 表示未找到可信 system bwrap，`path_rejected` 表示 PATH 候选不安全，`required_feature_missing` 表示系统包缺少必要参数，`user_namespace_disabled` / `proc_mount_restricted` 表示主机策略不允许生产基线，`probe_timeout` / `probe_failed` 表示探测未正常完成。
+- WSL 不受支持；网络保持开放；glob 仅对命令启动时已有匹配提供硬保护，命令中新匹配仅在结束后报告 detection-only violation。
 
 ### Wave 6 — 本地总门禁与 L5 交付
 
@@ -142,9 +150,9 @@
 | V-01 | violation | EACCES/EPERM/EROFS 结构化分类；普通失败和 2/126/127 不误判 | `cargo test -p future-agent sandbox::linux::violation sandbox::tests::linux_denial` | PASS（2026-09-03：可信 marker 优先、推断 provenance；2/125/126/127 与普通错误排除） |
 | V-02 | escalation | Linux policy violation 可审批单次脱沙盒；infra failure 绝不 escalation | `cargo test -p future-agent tools:: rpc::approval` | PASS（2026-09-03：Linux classifier 接入既有整命令 post-hoc escalation；prepare/helper exit 125 不触发） |
 | G-01 | glob | 启动前已有匹配被硬保护；命令中新匹配只报告 detection-only | ignored Linux smoke | ENVIRONMENT LIMIT（2026-09-03：展开/检测单测 PASS；新增 combined smoke 因当前环境 probe=`user_namespace_disabled` 跳过） |
-| U-01 | RPC/Desktop | Linux availability/retry/reason/manual fallback | `cd desktop && npx vitest run src/integrations/agent/useSandboxAvailability.test.ts`；Rust bridge/settings tests | NOT RUN |
-| U-02 | i18n/UI | Settings/Composer 安装与限制文案中英文齐全 | `cd desktop && npx tsc --noEmit && npx eslint "src/**/*.{ts,tsx}" && npx vitest run` | NOT RUN |
-| C-01 | CLI | machine-readable probe 与 doctor code 一致 | `cargo test -p future-agent --test cli_smoke && cargo test -p future-cli doctor` | NOT RUN |
+| U-01 | RPC/Desktop | Linux availability/retry/reason/manual fallback | `cd desktop && npx vitest run src/integrations/agent/useSandboxAvailability.test.ts`；Rust bridge/settings tests | PARTIAL PASS（2026-09-03：Agent settings、dispatcher、Tauri bridge targeted tests 与 Tauri check/clippy PASS；TS 测试已补，当前环境无 `node`/`npx`，待 Q-02 执行） |
+| U-02 | i18n/UI | Settings/Composer 安装与限制文案中英文齐全 | `cd desktop && npx tsc --noEmit && npx eslint "src/**/*.{ts,tsx}" && npx vitest run` | IMPLEMENTED / NOT RUN（2026-09-03：中英文文案已同步；当前环境无 `node`/`npx`） |
+| C-01 | CLI | machine-readable probe 与 doctor code 一致 | `cargo test -p future-agent --test cli_smoke && cargo test -p future-cli doctor` | PASS（2026-09-03：Agent machine-readable probe smoke PASS；future-cli doctor 19 tests PASS；本机实测 JSON 为 `linux_bubblewrap/user_namespace_disabled`） |
 | Q-01 | Rust gate | workspace + Tauri fmt/clippy | `make lint-rust` | NOT RUN |
 | Q-02 | all tests | Rust、Desktop、Mobile 全量单测 | `make test` | NOT RUN |
 | L5-01 | real hosts | Ubuntu 22.04/24.04、Debian stable、Fedora；x86_64/aarch64 | 真机手册逐项执行 | NOT RUN |

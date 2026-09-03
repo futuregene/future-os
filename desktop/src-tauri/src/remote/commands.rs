@@ -47,13 +47,13 @@ async fn product_sandbox_available() -> Result<bool, crate::AppError> {
     {
         Ok(true)
     }
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     {
-        crate::agent_bridge::probe_windows_sandbox()
+        crate::agent_bridge::probe_sandbox()
             .await
             .map(|result| result.available)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         Ok(false)
     }

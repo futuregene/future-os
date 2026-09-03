@@ -101,9 +101,11 @@ impl ResolvedSandbox {
     /// Resolve rules for `workspace`. The tier comes from the session policy.
     pub fn resolve(policy: &SandboxPolicy, workspace: &str) -> Self {
         let rules = RuleSet::resolve(Path::new(workspace));
+        let backend_receipt = platform_backend_receipt();
+        let tier = effective_tier(policy.tier, &backend_receipt);
         Self {
-            tier: policy.tier,
-            backend_receipt: platform_backend_receipt(),
+            tier,
+            backend_receipt,
             workspace: rules.workspace.clone(),
             rules,
         }
@@ -117,9 +119,11 @@ impl ResolvedSandbox {
         session: rules::SessionRules,
     ) -> Self {
         let rules = RuleSet::resolve_with_session(Path::new(workspace), session);
+        let backend_receipt = platform_backend_receipt();
+        let tier = effective_tier(policy.tier, &backend_receipt);
         Self {
-            tier: policy.tier,
-            backend_receipt: platform_backend_receipt(),
+            tier,
+            backend_receipt,
             workspace: rules.workspace.clone(),
             rules,
         }
@@ -364,6 +368,17 @@ impl ResolvedSandbox {
             "violation": violation,
             "cwd": self.workspace.to_string_lossy(),
         })
+    }
+}
+
+fn effective_tier(requested: SandboxTier, receipt: &SandboxBackendReceipt) -> SandboxTier {
+    if requested == SandboxTier::Sandbox && !receipt.is_available() {
+        tracing::warn!(
+            "OS sandbox requested but unavailable; explicitly falling back to manual approval"
+        );
+        SandboxTier::Manual
+    } else {
+        requested
     }
 }
 
@@ -906,25 +921,87 @@ fn platform_backend_receipt() -> SandboxBackendReceipt {
     SandboxBackendReceipt::Unavailable
 }
 
+/// Stable, product-facing sandbox diagnostic shared by RPC, CLI doctor, and
+/// execution availability. Optional fields are omitted on backends where they
+/// do not apply; `diagnostic` details never cross this boundary.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxProbeResult {
+    pub available: bool,
+    pub code: String,
+    pub backend: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<linux::probe::LinuxSandboxCapabilities>,
+}
+
 /// Resolve product sandbox support without collapsing a transient Windows
 /// probe failure into an authoritative unsupported result.
-pub(crate) fn platform_sandbox_availability() -> std::io::Result<bool> {
+#[allow(clippy::needless_return)] // Each target compiles a different cfg branch.
+pub fn platform_sandbox_probe_product() -> std::io::Result<SandboxProbeResult> {
     #[cfg(target_os = "macos")]
     {
-        Ok(Path::new("/usr/bin/sandbox-exec").exists())
+        let path = PathBuf::from("/usr/bin/sandbox-exec");
+        let available = path.exists();
+        Ok(SandboxProbeResult {
+            available,
+            code: if available {
+                "available"
+            } else {
+                "binary_missing"
+            }
+            .to_string(),
+            backend: "macos_seatbelt".to_string(),
+            path: available.then_some(path),
+            version: None,
+            capabilities: None,
+        })
     }
     #[cfg(target_os = "windows")]
     {
-        cached_windows_sandbox_probe().map(|probe| probe.available)
+        let probe = probe_windows_sandbox_product()?;
+        Ok(SandboxProbeResult {
+            available: probe.available,
+            code: probe.code.to_string(),
+            backend: "windows_restricted".to_string(),
+            path: None,
+            version: None,
+            capabilities: None,
+        })
     }
     #[cfg(target_os = "linux")]
     {
-        Ok(linux::probe::probe_linux_sandbox_host().available)
+        let probe = linux::probe::probe_linux_sandbox_host();
+        Ok(SandboxProbeResult {
+            available: probe.available,
+            code: serde_json::to_value(probe.code)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_else(|| "probe_failed".to_string()),
+            backend: "linux_bubblewrap".to_string(),
+            path: probe.path,
+            version: probe.version,
+            capabilities: probe.capabilities,
+        })
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
-        Ok(false)
+        Ok(SandboxProbeResult {
+            available: false,
+            code: "platform_unsupported".to_string(),
+            backend: "none".to_string(),
+            path: None,
+            version: None,
+            capabilities: None,
+        })
     }
+}
+
+pub(crate) fn platform_sandbox_availability() -> std::io::Result<bool> {
+    platform_sandbox_probe_product().map(|probe| probe.available)
 }
 
 #[cfg(target_os = "windows")]
@@ -1108,6 +1185,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unavailable_backend_explicitly_falls_back_to_manual() {
+        assert_eq!(
+            effective_tier(SandboxTier::Sandbox, &SandboxBackendReceipt::Unavailable),
+            SandboxTier::Manual
+        );
+        assert_eq!(
+            effective_tier(SandboxTier::Off, &SandboxBackendReceipt::Unavailable),
+            SandboxTier::Off
+        );
+    }
+
+    #[test]
     fn windows_probe_response_hides_internal_diagnostics() {
         let result = WindowsSandboxProbe::unavailable("backend_initialization_failed", "secret");
         let value = serde_json::to_value(result).unwrap();
@@ -1214,6 +1303,7 @@ mod tests {
         sandbox.backend_receipt = SandboxBackendReceipt::MacosSeatbelt {
             executable: PathBuf::from("/usr/bin/sandbox-exec"),
         };
+        sandbox.tier = SandboxTier::Sandbox;
         assert!(sandbox.wraps_shell());
         assert!(!sandbox.shell_needs_approval());
         // Sandbox tier without the OS sandbox falls back to shell approval.

@@ -1,27 +1,33 @@
 import { useEffect, useState } from "react";
-import { isMacOS, isWindows } from "../../lib/platform";
+import { isLinux, isMacOS, isWindows } from "../../lib/platform";
 import { invokeCommand } from "../tauri/invoke";
 
-interface WindowsSandboxProbeResult {
+export interface SandboxProbeResult {
   available: boolean;
   code: string;
+  backend: string;
+  path?: string;
+  version?: string;
+  capabilities?: Record<string, boolean>;
 }
 
 export interface SandboxAvailability {
   available: boolean;
   definitive: boolean;
   resolved: boolean;
+  code?: string;
+  backend?: string;
 }
 
-let windowsProbe: Promise<boolean> | null = null;
+let sharedProbe: Promise<SandboxProbeResult> | null = null;
 
-const WINDOWS_PROBE_RETRY_DELAYS_MS = [0, 100, 250, 500, 1_000, 2_000] as const;
+const PROBE_RETRY_DELAYS_MS = [0, 100, 250, 500, 1_000, 2_000] as const;
 
-export function windowsSandboxAvailable(
-  result: WindowsSandboxProbeResult,
-): boolean {
-  return result.available;
-}
+type SandboxProbe = () => Promise<SandboxProbeResult>;
+type Delay = (milliseconds: number) => Promise<void>;
+
+const delay: Delay = milliseconds =>
+  new Promise(resolve => setTimeout(resolve, milliseconds));
 
 export function shouldPersistSandboxFallback(
   availability: SandboxAvailability,
@@ -35,17 +41,11 @@ export function shouldPersistSandboxFallback(
   );
 }
 
-type WindowsSandboxProbe = () => Promise<WindowsSandboxProbeResult>;
-type Delay = (milliseconds: number) => Promise<void>;
-
-const delay: Delay = milliseconds =>
-  new Promise(resolve => setTimeout(resolve, milliseconds));
-
-export async function probeWindowsSandboxWithRetry(
-  probe: WindowsSandboxProbe,
-  retryDelays: readonly number[] = WINDOWS_PROBE_RETRY_DELAYS_MS,
+export async function probeSandboxWithRetry(
+  probe: SandboxProbe,
+  retryDelays: readonly number[] = PROBE_RETRY_DELAYS_MS,
   wait: Delay = delay,
-): Promise<boolean> {
+): Promise<SandboxProbeResult> {
   let lastError: unknown;
 
   for (const retryDelay of retryDelays) {
@@ -53,64 +53,81 @@ export async function probeWindowsSandboxWithRetry(
       await wait(retryDelay);
 
     try {
-      return windowsSandboxAvailable(await probe());
+      return await probe();
     }
     catch (error) {
-      // The bundled Agent starts off the Desktop launch path. A refused RPC
-      // connection means "not ready yet", not "sandbox unsupported".
+      // Agent startup and transport failures are transient. A successful RPC
+      // carrying available=false is authoritative and is never retried.
       lastError = error;
     }
   }
 
-  throw lastError ?? new Error("Windows sandbox probe did not run");
+  throw lastError ?? new Error("Sandbox probe did not run");
 }
 
-function sharedWindowsProbe(): Promise<boolean> {
-  windowsProbe ??= probeWindowsSandboxWithRetry(() =>
-    invokeCommand<WindowsSandboxProbeResult>("probe_windows_sandbox"),
+function productProbe(): Promise<SandboxProbeResult> {
+  sharedProbe ??= probeSandboxWithRetry(() =>
+    invokeCommand<SandboxProbeResult>("probe_sandbox"),
   ).catch((error) => {
-    // Do not permanently cache a transient Agent connection failure. A later
-    // mount (for example, opening Settings after startup) gets a fresh attempt.
-    windowsProbe = null;
+    sharedProbe = null;
     throw error;
   });
-  return windowsProbe;
+  return sharedProbe;
 }
 
 function initialAvailability(): SandboxAvailability {
-  if (isMacOS)
-    return { available: true, definitive: true, resolved: true };
-  if (!isWindows)
-    return { available: false, definitive: true, resolved: true };
+  if (isMacOS) {
+    return {
+      available: true,
+      definitive: true,
+      resolved: true,
+      code: "available",
+      backend: "macos_seatbelt",
+    };
+  }
+  if (!isWindows && !isLinux) {
+    return {
+      available: false,
+      definitive: true,
+      resolved: true,
+      code: "platform_unsupported",
+      backend: "none",
+    };
+  }
   return { available: false, definitive: false, resolved: false };
 }
 
 /**
- * Product-facing sandbox availability. Windows requires a successful native
- * host probe; the promise is shared so Settings and Composer do not
- * independently exercise the native probe.
+ * Product-facing sandbox availability. Linux and Windows consume the same
+ * Agent probe used by execution. Explicit unavailable results are definitive;
+ * exhausted transport failures preserve the saved tier for a later retry.
  */
 export function useSandboxAvailability(): SandboxAvailability {
   const [availability, setAvailability] = useState(initialAvailability);
 
   useEffect(() => {
-    if (!isWindows)
+    if (!isWindows && !isLinux)
       return;
     let current = true;
-    void sharedWindowsProbe()
-      .then((available) => {
-        if (current)
-          setAvailability({ available, definitive: true, resolved: true });
+    void productProbe()
+      .then((result) => {
+        if (current) {
+          setAvailability({
+            available: result.available,
+            definitive: true,
+            resolved: true,
+            code: result.code,
+            backend: result.backend,
+          });
+        }
       })
       .catch(() => {
-        // Exhausted connection/probe retries fail closed for this mount, but
-        // are not an authoritative unsupported verdict. Keep the saved tier so
-        // a later mount can recover automatically.
         if (current) {
           setAvailability({
             available: false,
             definitive: false,
             resolved: true,
+            code: "probe_transport_error",
           });
         }
       });

@@ -5,6 +5,27 @@ use std::sync::Arc;
 
 use crate::rpc::{AppState, RpcCommand, RpcResponse, ServerSession, SseEvent};
 
+pub(crate) fn handle_probe_sandbox(id: &str) -> String {
+    match crate::sandbox::platform_sandbox_probe_product() {
+        Ok(result) => RpcResponse::ok(
+            id,
+            "probe_sandbox",
+            serde_json::to_value(result).unwrap_or_else(|_| {
+                serde_json::json!({
+                    "available": false,
+                    "code": "serialization_failed",
+                    "backend": "none"
+                })
+            }),
+        ),
+        Err(error) => RpcResponse::build_fail(
+            id,
+            "probe_sandbox",
+            &format!("Sandbox availability could not be determined: {error}"),
+        ),
+    }
+}
+
 pub(crate) fn handle_probe_windows_sandbox(id: &str) -> String {
     match crate::sandbox::probe_windows_sandbox_product() {
         Ok(result) => {
@@ -322,27 +343,41 @@ pub(crate) fn handle_set_sandbox_policy(
     cmd: &RpcCommand,
     id: &str,
 ) -> String {
-    let Some(policy) = cmd.sandbox_policy.clone() else {
+    let Some(mut policy) = cmd.sandbox_policy.clone() else {
         return RpcResponse::build_fail(id, "set_sandbox_policy", "missing sandbox_policy payload");
     };
-    let sandbox_available = match crate::sandbox::platform_sandbox_availability() {
-        Ok(available) => available,
+    let probe = match crate::sandbox::platform_sandbox_probe_product() {
+        Ok(probe) => probe,
         Err(error) if policy.tier.as_str() == "sandbox" => {
             return RpcResponse::build_fail(
                 id,
                 "set_sandbox_policy",
-                &format!("Windows sandbox availability could not be determined: {error}"),
+                &format!("Sandbox availability could not be determined: {error}"),
             );
         }
-        // Manual/off do not depend on the OS sandbox and must remain selectable
-        // while a transient Windows probe error is being retried.
-        Err(_) => false,
+        Err(_) => crate::sandbox::SandboxProbeResult {
+            available: false,
+            code: "probe_failed".to_string(),
+            backend: "none".to_string(),
+            path: None,
+            version: None,
+            capabilities: None,
+        },
     };
-    let summary = serde_json::json!({
-        "tier": policy.tier.as_str(),
-        "sandboxAvailable": sandbox_available,
-    });
+    let requested_tier = policy.tier.as_str().to_string();
+    let fallback = requested_tier == "sandbox" && !probe.available;
+    if fallback {
+        policy.tier = crate::sandbox::SandboxTier::Manual;
+    }
     let tier = policy.tier.as_str().to_string();
+    let summary = serde_json::json!({
+        "tier": tier,
+        "requestedTier": requested_tier,
+        "sandboxAvailable": probe.available,
+        "sandboxCode": probe.code,
+        "sandboxBackend": probe.backend,
+        "fallback": if fallback { Some("manual") } else { None },
+    });
     session.write().set_sandbox_policy(policy);
     let sess = session.read();
     sess.broadcaster.broadcast(SseEvent::new(

@@ -139,7 +139,7 @@ workspace 规则文件在 workspace 里 = 兜底可写；它又是最高优先�
 | 执行路径 | ask 的表现 |
 |---|---|
 | **read / write / edit 工具**（agent 进程内，路径确切已知） | 真前置审批：工具执行前弹卡片，等用户决定。**read 工具本次新接入审批**（v1 它完全不受控，是已知漏洞）。 |
-| **shell / macOS sandbox** | 子进程无法中途询问；`ask` 与 `deny` 编译为 Seatbelt 拒绝。命中后进入现有 escalation：卡片展示原命令、失败摘要和可推断路径；当前批准语义仍是整条命令脱离 Seatbelt 重跑一次。无法可靠归因的路径必须标为“未知”，不得伪装成精确路径审批。 |
+| **shell / macOS/Linux sandbox** | 子进程无法中途询问；`ask` 与 `deny` 编译为 Seatbelt/Bubblewrap 拒绝。命中后进入现有 escalation：卡片展示原命令、失败摘要和可推断路径；当前批准语义仍是整条命令脱离 OS 沙箱重跑一次。无法可靠归因的路径必须标为“未知”，不得伪装成精确路径审批。Linux 的 glob 只对启动时已有匹配提供硬保护。 |
 | **shell / Windows write-protect** | RestrictedToken 无法可靠报告刚才拒绝的对象路径，因此采用**声明式路径能力前置审批**：shell 调用附带 workspace/session temp 之外所需的额外写路径；GUI 在执行前以普通用户能理解的“行为 + 目标”展示实际能力。批准后只扩展本次 capability 或持久路径规则，命令仍在 RestrictedToken 下执行。未声明的外部写只失败，不提供模糊的整命令放行。普通 NTFS ACL 无法完整强制 workspace 内尚不存在文件名/glob 的 shell ask/deny，这项取舍必须在开发文档和发布说明中明确，不加入普通用户的具体审批卡片。 |
 | **shell / manual** | 无 OS 沙盒，使用只读白名单：`ls/cat/grep/git status` 等免问，其余命令弹 `shell_command` 卡片前置审批（仅“允许一次”，不落规则）。 |
 
@@ -237,9 +237,10 @@ Windows `sandbox` 档的 shell 调用新增显式能力请求；示意结构：
 | **手动审批** | `manual` | 按规则 ask/allow/deny（默认档） | 只读白名单免问，其余弹卡片前置审批 | 无 | 全平台（默认） |
 | **沙箱保护** | `sandbox` | 按规则 ask/allow/deny | Seatbelt 包裹自动跑，越界经命令级 escalation | 读写规则均由 Seatbelt 强制 | macOS |
 | **写保护（Windows）** | `sandbox` | 按规则 ask/allow/deny | RestrictedToken 自动跑；额外写路径走 §6.4 能力审批 | **只强制写边界**；读和网络开放 | Windows（完整 host probe 通过后显示） |
+| **沙箱保护（Linux）** | `sandbox` | 按规则 ask/allow/deny | system Bubblewrap 自动跑；拒绝后可审批整命令脱沙箱重跑一次 | 精确路径和启动时已有 glob 硬保护；网络开放；新 glob 匹配仅结束检测 | Linux（完整 host probe 通过后显示；真机发布矩阵待完成） |
 | **完全放开** | `off` | 全放行、不问 | 直跑、不问 | 无 | 全平台 |
 
-- **默认 `manual`**，全平台一致。Windows 完整 host probe 通过后以“写保护”名称显示，不能沿用 macOS“凭证拒读也受 OS 强制”的说明。Linux 当前仍不显示；其 bubblewrap 后端尚处设计阶段，不能把计划能力写成已发布能力。
+- **默认 `manual`**，全平台一致。Windows 完整 host probe 通过后以“写保护”名称显示，不能沿用 macOS“凭证拒读也受 OS 强制”的说明。Linux 开发分支在完整 Bubblewrap probe 通过后显示“沙箱保护”；明确失败时持久回退 manual，瞬时连接失败保留设置等待重试。L5 真机矩阵完成前不得宣称已达到主干发布门槛。
 - 若某会话下发 `sandbox` 但平台无 `sandbox-exec`（`available=false`），`wraps_shell()` 为假，shell 退回**手动审批档的白名单行为**（安全兜底），工具审批照常。
 - `off` 档在 **agent 层**就不再发审批请求（`request()` 直接放行），前端不再有"自动点批准"的补丁逻辑。
 - TUI / CLI / channels 走各自的 `permission_level` 语义，规则文件与沙盒不参与（等同 `off` 的对外行为，但保留既有工作区边界）。
@@ -258,7 +259,7 @@ v1 的 `read-only / workspace-write / danger-full-access` 三种模式与 `untru
 - **网络完全放开**：未列入清单的 workspace 内密文可被读取并经网络外发，防线只有内置清单的覆盖度。换来的是 npm/pip/git 等零打扰。
 - **弱命令级护栏**：手动审批档只有一个**只读白名单**（`shell_auto_allow`：`ls/cat/grep/git status` 等；含重定向/管道到非只读命令/`&&`/命令替换一律落到"问"）——它是免打扰闸，不是安全边界。非白名单命令弹卡片但仅"允许一次"，用户点批准后 `git push --force`、`npm publish`、`rm -rf .` 照跑（Shadow Review 事后可见）。命令级持久 allow/deny 整体不做。
 - macOS escalation 批准 = 整条命令出 Seatbelt（含其一切文件访问），非精确放宽；Windows write-protect 不采用此语义。
-- Linux 当前暂无 OS 强制。拟议 bubblewrap 后端能强制具体路径和启动时已有 glob 匹配，但普通 mount view 无法动态匹配命令运行中新建的 secret glob；已确认接受这项有界保证，详见 LINUX_SANDBOX_PLAN §3.1。Windows write-protect 接受 shell 读取和网络开放、glob 不可转 NTFS ACE、以及 NTFS deny-wins 与规则层级不能完全等价；详见 SANDBOX_PLAN §11。
+- Linux Bubblewrap 后端已实现具体路径和启动时已有 glob 匹配的 OS 强制；普通 mount view 无法动态匹配命令运行中新建的 secret glob，因此只做结束检测并标记 `detection_only`。该有界保证、system-bwrap-only、网络开放和发布前真机门槛详见 LINUX_SANDBOX_PLAN §3.1 与 LINUX_SANDBOX_USER_GUIDE。Windows write-protect 接受 shell 读取和网络开放、glob 不可转 NTFS ACE、以及 NTFS deny-wins 与规则层级不能完全等价；详见 SANDBOX_PLAN §11。
 
 ## 9. 决策记录（v2，2026-07-04）
 
@@ -279,4 +280,4 @@ v1 的 `read-only / workspace-write / danger-full-access` 三种模式与 `untru
 | V13（2026-08-21） | 所有平台复用 `ApprovalPrompt`；普通卡片由可信后端用标题表达“行为 + 目标”，单目标不重复字段，技术 enforcement 数据不展示，原始命令折叠；多目标最多 8 项且整组决策，payload 无法可信解析时 fail closed |
 | V14（2026-08-25） | Windows 本期范围冻结为 Unelevated；真实用户主体、`FILE_DELETE_CHILD` 与既有宽 ACL 是知情能力边界，不以 Elevated 保证验收本期。后续若升级独立安全主体，优先单独评估一个专用本地用户，不混入当前 PR |
 
-沿用 v1 未变的决策：macOS escalation 按命令放行（原 Q2）、`.git` 不排除（Q4）、`sandbox-exec` deprecated 风险接受（Q5）、失败特征启发式保守（Q6）、temp 目录读写全开。Windows 改用路径能力放行。Linux 一期已确认 Bubblewrap 为唯一后端、网络开放、仅使用 system bwrap、接受有界 glob、三层 probe，并复用 macOS 整命令 escalation；独立 `sandbox` 分支可直接显示入口但测试完成前不合入主干。跨 macOS/Linux 的路径级 `execution_grants` 与 macOS 改造一起放二期，详见 LINUX_SANDBOX_PLAN。
+沿用 v1 未变的决策：macOS escalation 按命令放行（原 Q2）、`.git` 不排除（Q4）、`sandbox-exec` deprecated 风险接受（Q5）、失败特征启发式保守（Q6）、temp 目录读写全开。Windows 改用路径能力放行。Linux 一期已实现 Bubblewrap 唯一后端、网络开放、仅使用 system bwrap、有界 glob、三层 probe，并复用 macOS 整命令 escalation；独立开发分支在 probe 成功后直接显示入口，明确失败则带稳定诊断码回退 manual，测试完成前不合入主干。跨 macOS/Linux 的路径级 `execution_grants` 与 macOS 改造一起放二期，详见 LINUX_SANDBOX_PLAN。

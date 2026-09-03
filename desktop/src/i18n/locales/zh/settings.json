@@ -12,7 +12,14 @@
       "manual": "读写文件前询问；只读命令直接放行，其余命令需批准。",
       "sandbox": "命令在 macOS 沙箱中运行，越界时申请提权。",
       "sandboxWindows": "命令启用 Windows 写保护；越界写入需要批准。",
+      "sandboxLinux": "命令在系统 Bubblewrap 中运行，网络保持开放。命令启动时硬保护已有敏感 glob 匹配，命令中新匹配仅在结束后检测。",
       "off": "全部放开，不再询问，也不启用沙箱。"
+    },
+    "fallbackNotice": "沙箱保护不可用（诊断码：{{code}}）。已显式切换为手动审批，命令不会在无沙箱保护下静默运行。",
+    "linuxUnavailable": {
+      "title": "Linux 沙箱不可用",
+      "description": "FutureOS 已保持为手动审批（诊断码：{{code}}）。请安装系统 Bubblewrap，并确认允许非特权用户命名空间和 /proc 挂载。不支持 WSL。",
+      "install": "Ubuntu/Debian：sudo apt install bubblewrap · Fedora：sudo dnf install bubblewrap"
     }
   },
   "showThinking": {
