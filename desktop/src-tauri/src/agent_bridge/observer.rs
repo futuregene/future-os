@@ -263,11 +263,14 @@ pub fn seed_observers_from_store() {
 }
 
 /// Background discovery of conversations created outside the GUI (TUI, CLI,
-/// channels, another machine). Two cadences: a 1s pass over the agent's
-/// streaming sessions — a run started by another client appears in the
-/// sidebar within ~1s — and a 60s full import for idle sessions plus
-/// observer import. Idle observers are not re-touched here: opening a thread,
-/// a prompt, or a newly streaming session wakes it instead.
+/// channels, another machine). The `session_created` push observer
+/// (`session_events.rs`) imports most sessions within milliseconds; this poll
+/// remains the backstop for missed events and agents too old to emit the
+/// event. Two cadences: a 1s pass over the agent's streaming sessions — a run
+/// started by another client appears in the sidebar within ~1s — and a 60s
+/// full import for idle sessions plus observer import. Idle observers are not
+/// re-touched here: opening a thread, a prompt, or a newly streaming session
+/// wakes it instead.
 #[cfg(test)]
 static TEST_DISCOVERY_STOP: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -342,10 +345,11 @@ async fn discover_streaming_sessions() {
             .flatten()
             .is_some();
         if !known {
-            match super::import::import_streaming_session(&session_id).await {
-                Ok(()) => eprintln!(
+            match super::import::import_discovered_session(&session_id).await {
+                Ok(true) => eprintln!(
                     "FutureOS discovered streaming session {session_id} (created by another client)"
                 ),
+                Ok(false) => {}
                 Err(error) => {
                     eprintln!("FutureOS could not import discovered session {session_id}: {error}")
                 }

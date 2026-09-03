@@ -315,6 +315,13 @@ export function AppShell() {
     void refreshStore();
   });
 
+  // Sessions created outside the GUI (TUI/CLI/channels) were imported into the
+  // store by the backend — refresh the thread list so they appear in the
+  // sidebar without a user action.
+  useTauriEvent("threads-updated", () => {
+    void refreshStore();
+  });
+
   function handleSectionChange(nextSection: ActivitySection) {
     if (nextSection === "settings") {
       setSettingsTab("general");

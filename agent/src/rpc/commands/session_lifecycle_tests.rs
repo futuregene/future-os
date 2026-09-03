@@ -882,6 +882,75 @@ fn fork_from_explicit_parent_session() {
 }
 
 #[test]
+fn fork_propagates_created_by_from_the_forking_client() {
+    let state = make_app_state();
+    let user = crate::session::SessionEntry::new_user("user", serde_json::json!("fork me"));
+    let entry_id = user.id.clone();
+    save_via(&state, "default", "mock", vec![user]);
+    // The parent is a desktop-owned session (created via the GUI's
+    // new_session): the fork must announce itself as desktop so the GUI skips
+    // its own push import of the session it is about to link itself.
+    state.get_session("default").unwrap().write().created_by = "desktop".to_string();
+
+    // Inheritance when the command carries no provenance.
+    let mut cmd = make_cmd("fork");
+    cmd.entry_id = entry_id.clone();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true);
+    let fork_id = resp["data"]["sessionId"].as_str().unwrap();
+    assert_eq!(
+        state.get_session(fork_id).unwrap().read().created_by,
+        "desktop"
+    );
+
+    // The command's explicit provenance wins (e.g. a CLI forking a GUI session).
+    let mut cmd = make_cmd("fork");
+    cmd.entry_id = entry_id;
+    cmd.created_by = "cli".to_string();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true);
+    let fork_id = resp["data"]["sessionId"].as_str().unwrap();
+    assert_eq!(state.get_session(fork_id).unwrap().read().created_by, "cli");
+}
+
+#[test]
+fn clone_propagates_the_parent_created_by() {
+    let state = make_app_state();
+    let user = crate::session::SessionEntry::new_user("user", serde_json::json!("clone me"));
+    save_via(&state, "default", "mock", vec![user]);
+    // cmd_clone's guard requires in-memory messages on the live session.
+    {
+        let session = state.get_session("default").unwrap();
+        session
+            .read()
+            .messages
+            .write()
+            .push(crate::types::AgentMessage::new_user(
+                "user",
+                serde_json::json!("clone me"),
+            ));
+        session.write().created_by = "tui".to_string();
+    }
+
+    let resp = parse_response(&handle_command_internal(&state, make_cmd("clone")));
+    assert_eq!(resp["success"], true);
+    assert_eq!(resp["data"]["cancelled"], false);
+    // The clone response carries no id — find the newly registered session
+    // (make_app_state starts with only "default").
+    let clone_id = state
+        .sessions
+        .read()
+        .keys()
+        .find(|id| id.as_str() != "default")
+        .cloned()
+        .expect("clone registered a new session");
+    assert_eq!(
+        state.get_session(&clone_id).unwrap().read().created_by,
+        "tui"
+    );
+}
+
+#[test]
 fn clone_rejects_empty_session() {
     let state = make_app_state();
     let resp = parse_response(&handle_command_internal(&state, make_cmd("clone")));

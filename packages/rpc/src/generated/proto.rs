@@ -1209,7 +1209,8 @@ pub struct StreamRequest {
     /// Optional list of event types to receive.  Empty = all events.
     /// Valid types: "ping", "agent_start", "agent_end", "text_chunk",
     /// "thinking_start", "thinking_delta", "thinking_end", "tool_start",
-    /// "tool_delta", "tool_end", "approval_request", "error", "stop".
+    /// "tool_delta", "tool_end", "approval_request", "error", "stop",
+    /// plus "session_created" on the global control-plane stream.
     #[prost(string, repeated, tag = "1")]
     pub event_types: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// Scope events to a specific session.  Required so the agent
@@ -1226,7 +1227,8 @@ pub struct StreamRequest {
     pub atomic_attach: bool,
     /// Subscribe to process-wide Agent control-plane events instead of one
     /// session. When true, session_id/run_id must be empty and atomic_attach
-    /// false. The initial ping carries the current config revision.
+    /// false. The initial ping carries the current config revision. Carries
+    /// "provider_config_changed" and "session_created".
     #[prost(bool, tag = "6")]
     pub global_events: bool,
 }
@@ -1252,6 +1254,10 @@ pub struct StreamEvent {
     ///    compaction_started / compaction_committed /
     ///    compaction_failed                                     sideband signals
     ///    provider_config_changed  global provider/auth configuration committed
+    ///    session_created          global control-plane signal: a session was minted
+    ///                             (new_session / fork / clone, never disk hydration)
+    ///                             — carries {sessionId, createdBy, cwd}; subscribe
+    ///                             via global_events
     ///
     /// Provider-specific aliases are normalized inside the Agent and never cross
     /// this RPC boundary.

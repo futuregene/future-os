@@ -298,6 +298,16 @@ fn emit_remote_activity_on<R: tauri::Runtime>(handle: &tauri::AppHandle<R>, thre
     let _ = handle.emit("remote-activity", thread_id.to_string());
 }
 
+/// Notify the frontend that the thread list changed behind its back — sessions
+/// created outside the GUI (TUI/CLI/channels) were imported into the store —
+/// so the sidebar re-lists threads. No payload: a bare invalidation signal.
+pub(crate) fn emit_threads_updated() {
+    if let Some(handle) = APP_HANDLE.get() {
+        use tauri::Emitter;
+        let _ = handle.emit("threads-updated", ());
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ThreadRuntimeUpdate {
@@ -707,6 +717,10 @@ pub fn run() {
             // Global provider/auth completion stream. This is independent of
             // chat observers and fans committed revisions to WebView + Mobile.
             agent_bridge::spawn_provider_config_observer();
+            // Global session lifecycle stream: sessions created by other
+            // clients (TUI/CLI/channels) are imported within milliseconds of
+            // the agent's session_created announcement.
+            agent_bridge::spawn_session_events_observer();
             // Discovery: conversations created by other clients (TUI/CLI) get
             // a thread stub + an observer — streaming ones within ~1s, idle
             // ones on the 60s import pass.

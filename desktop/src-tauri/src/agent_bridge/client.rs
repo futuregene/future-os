@@ -215,6 +215,10 @@ pub(super) fn fork_command(
     RpcCommand {
         entry_id,
         parent_session,
+        // Declare the GUI as the forking client: the agent propagates this to
+        // the forked session's provenance, so the session_created push skips
+        // it (the GUI creates its own thread row for the fork).
+        created_by: "desktop".to_string(),
         ..base_command("fork", session_id)
     }
 }

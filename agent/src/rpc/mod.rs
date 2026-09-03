@@ -22,14 +22,15 @@ pub use commands::handle_command_internal;
 pub use protocol::{RpcCommand, RpcResponse, SseBroadcaster, SseEvent, BROADCAST_RING_CAPACITY};
 pub use session::ServerSession;
 
-/// Provider/auth configuration is process-wide Agent state, not chat state.
-/// This broadcaster gives every client one authoritative completion stream.
-static GLOBAL_CONFIG_BROADCASTER: LazyLock<Arc<SseBroadcaster>> =
+/// Process-wide control-plane events (not chat state): provider/auth config
+/// completions and session lifecycle signals. This broadcaster gives every
+/// client one authoritative stream.
+static GLOBAL_EVENTS_BROADCASTER: LazyLock<Arc<SseBroadcaster>> =
     LazyLock::new(|| Arc::new(SseBroadcaster::new()));
 static CONFIG_REVISION: AtomicI64 = AtomicI64::new(0);
 
-pub fn global_config_broadcaster() -> Arc<SseBroadcaster> {
-    GLOBAL_CONFIG_BROADCASTER.clone()
+pub fn global_events_broadcaster() -> Arc<SseBroadcaster> {
+    GLOBAL_EVENTS_BROADCASTER.clone()
 }
 
 pub fn current_config_revision() -> i64 {
@@ -44,7 +45,7 @@ pub fn publish_provider_config_changed(
     models_changed: bool,
 ) -> i64 {
     let revision = CONFIG_REVISION.fetch_add(1, Ordering::AcqRel) + 1;
-    GLOBAL_CONFIG_BROADCASTER.broadcast(SseEvent::new(
+    GLOBAL_EVENTS_BROADCASTER.broadcast(SseEvent::new(
         "provider_config_changed",
         serde_json::json!({
             "revision": revision,
@@ -55,6 +56,22 @@ pub fn publish_provider_config_changed(
         }),
     ));
     revision
+}
+
+/// Announce a newly minted session on the global control-plane stream. Fired
+/// by `AppState::create_session` (new_session / fork / clone — never disk
+/// hydration) so other clients (e.g. the desktop) can surface the session
+/// immediately instead of waiting for their discovery polls. An idempotent
+/// hint: consumers reconcile against their own state, so no revision counter.
+pub fn publish_session_created(session_id: &str, created_by: &str, cwd: &str) {
+    GLOBAL_EVENTS_BROADCASTER.broadcast(SseEvent::new(
+        "session_created",
+        serde_json::json!({
+            "sessionId": session_id,
+            "createdBy": created_by,
+            "cwd": cwd,
+        }),
+    ));
 }
 
 /// Map one broadcaster/journal event into its replay payload carrier. The
@@ -240,6 +257,8 @@ impl AppState {
     /// an unbound broadcaster silently holds events in memory only.
     pub fn create_session(&self, mut session: ServerSession) -> String {
         let id = session.session_id.clone();
+        let created_by = session.created_by.clone();
+        let cwd = session.cwd.clone();
         session.broadcaster = Arc::new(SseBroadcaster::new());
         if let Err(error) = session
             .broadcaster
@@ -250,6 +269,9 @@ impl AppState {
         let session = Arc::new(RwLock::new(session));
         self.sessions.write().insert(id.clone(), session.clone());
         ServerSession::ensure_scheduler_worker(&session);
+        // Announce after the map insert so subscribers can resolve the
+        // session (e.g. get_state) the moment they see the event.
+        publish_session_created(&id, &created_by, &cwd);
         id
     }
 
@@ -1078,6 +1100,59 @@ mod tests {
         let id = state.create_session(session);
         assert_eq!(id, "journal-fail");
         assert!(state.get_session("journal-fail").is_some());
+    }
+
+    #[test]
+    fn create_session_publishes_global_session_created() {
+        let _sink = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .with_ansi(false)
+                .finish(),
+        );
+        let (_dir, state) = bare_app_state();
+        let mut rx = global_events_broadcaster().subscribe();
+        let mut session = crate::rpc::ServerSession::new_with_queue_budget(
+            "announce-me".to_string(),
+            std::sync::Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
+                std::sync::Arc::new(crate::test_support::EmptyProvider),
+                "mock",
+            ))),
+            state.session_manager.clone(),
+            "/tmp/project",
+            std::sync::Arc::new(SseBroadcaster::new()),
+            state.approval_gate.clone(),
+            state.model_registry.clone(),
+            state.queue_budget.clone(),
+        );
+        session.created_by = "tui".to_string();
+        state.create_session(session);
+
+        // Other tests broadcast on the same global stream concurrently —
+        // drain until THIS session's announcement arrives.
+        for _ in 0..64 {
+            match rx.try_recv() {
+                Ok(event)
+                    if event.event_type == "session_created"
+                        && event.data.contains("announce-me") =>
+                {
+                    let data: serde_json::Value = serde_json::from_str(&event.data).unwrap();
+                    assert_eq!(data["sessionId"], "announce-me");
+                    assert_eq!(data["createdBy"], "tui");
+                    assert_eq!(data["cwd"], "/tmp/project");
+                    return;
+                }
+                Ok(_) => continue,
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => panic!(
+                    "session_created was not published: create_session must announce new sessions"
+                ),
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                    panic!("global broadcaster channel closed before session_created arrived")
+                }
+            }
+        }
+        panic!("session_created for announce-me never arrived on the global stream");
     }
 
     #[test]

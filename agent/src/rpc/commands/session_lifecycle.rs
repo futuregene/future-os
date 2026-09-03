@@ -895,13 +895,14 @@ pub(crate) fn cmd_fork(
     }
 
     // Extract needed data from session
-    let (session_manager, broadcaster, _cwd, current_session_id) = {
+    let (session_manager, broadcaster, _cwd, current_session_id, parent_created_by) = {
         let sess = session.read();
         (
             sess.session_manager.clone(),
             sess.broadcaster.clone(),
             sess.cwd.clone(),
             sess.session_id.clone(),
+            sess.created_by.clone(),
         )
     };
     // The fork gets its own agent loop — sharing the parent's loop would let
@@ -958,6 +959,14 @@ pub(crate) fn cmd_fork(
         state.model_registry.clone(),
         state.queue_budget.clone(),
     );
+    // Provenance: the forking client owns the child (cmd.created_by), else
+    // inherit the parent's — a desktop fork of an imported TUI session must
+    // still announce itself as desktop so the GUI skips its own push import.
+    new_sess.created_by = if !cmd.created_by.is_empty() {
+        cmd.created_by.clone()
+    } else {
+        parent_created_by
+    };
     let supports_images = state
         .model_registry
         .read()
@@ -992,7 +1001,7 @@ pub(crate) fn cmd_clone(
     id: &str,
 ) -> String {
     // Extract needed data from session
-    let (session_manager, broadcaster, _cwd, session_id) = {
+    let (session_manager, broadcaster, _cwd, session_id, parent_created_by) = {
         let sess = session.read();
         if sess.messages.read().is_empty() {
             return RpcResponse::build_fail(
@@ -1006,6 +1015,7 @@ pub(crate) fn cmd_clone(
             sess.broadcaster.clone(),
             sess.cwd.clone(),
             sess.session_id.clone(),
+            sess.created_by.clone(),
         )
     };
     // Own agent loop for the clone (same reasoning as fork).
@@ -1064,6 +1074,9 @@ pub(crate) fn cmd_clone(
         state.model_registry.clone(),
         state.queue_budget.clone(),
     );
+    // Provenance: clones inherit the parent's creator — keeps the
+    // session_created announcement accurate for the cloning client.
+    new_sess.created_by = parent_created_by;
     let supports_images = state
         .model_registry
         .read()

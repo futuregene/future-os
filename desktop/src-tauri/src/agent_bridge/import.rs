@@ -434,15 +434,20 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
     Ok(run_count)
 }
 
-/// Runtime discovery import for a session that is streaming RIGHT NOW
-/// (created by another client — TUI/CLI/another machine). Creates only the
-/// thread stub: the session observer mints run rows live as events arrive, so
-/// minting synthetic historical runs here (as `import_one` does) would
-/// duplicate the live run. Title/model heal on the next full
-/// `import_missing_sessions` pass, which has richer summaries.
-pub(crate) async fn import_streaming_session(session_id: &str) -> Result<(), crate::AppError> {
+/// Runtime discovery import for a session reported by another client
+/// (TUI/CLI/channels/another machine) — via the 1s streaming poll or the
+/// `session_created` push. Creates only the thread stub: for a streaming
+/// session the observer mints run rows live as events arrive, so minting
+/// synthetic historical runs here (as `import_one` does) would duplicate the
+/// live run. Title/model heal on the next full `import_missing_sessions`
+/// pass, which has richer summaries. Returns `true` when a stub was created,
+/// `false` when the session was already known (or tombstoned).
+pub(crate) async fn import_discovered_session(session_id: &str) -> Result<bool, crate::AppError> {
+    if store::is_agent_session_tombstoned(session_id)? {
+        return Ok(false);
+    }
     if store::find_thread_by_agent_session(session_id)?.is_some() {
-        return Ok(());
+        return Ok(false);
     }
     let mut client = connect_agent().await?;
     let response = client
@@ -487,7 +492,7 @@ pub(crate) async fn import_streaming_session(session_id: &str) -> Result<(), cra
         workspace_name,
         agent_session_id: Some(session_id.to_string()),
     })?;
-    Ok(())
+    Ok(true)
 }
 
 /// Discover agent sessions not yet in the GUI DB and import them. Runs in the
@@ -540,6 +545,8 @@ pub async fn import_missing_sessions() {
         eprintln!(
             "FutureOS: imported {imported} session(s) ({total_runs} runs) out of {total} agent session(s)"
         );
+        // New threads landed in the store — let the sidebar know.
+        crate::emit_threads_updated();
     }
 }
 
@@ -1149,7 +1156,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn import_streaming_session_variants() {
+    async fn import_discovered_session_variants() {
         let _home = super::super::test_support::TestHome::new("import-streaming");
         let mock = super::super::test_support::mock_agent();
 
@@ -1158,7 +1165,7 @@ mod tests {
             "get_state",
             super::super::test_support::Reply::Reject("gone".into()),
         );
-        let err = import_streaming_session("sess-live")
+        let err = import_discovered_session("sess-live")
             .await
             .expect_err("reject");
         assert!(err.to_string().contains("get_state"), "{err}");
@@ -1173,16 +1180,34 @@ mod tests {
                 "model": "future/k3"
             }),
         );
-        import_streaming_session("sess-live").await.expect("import");
+        assert!(import_discovered_session("sess-live")
+            .await
+            .expect("import"));
         let thread = crate::store::find_thread_by_agent_session("sess-live")
             .expect("find")
             .expect("some");
         assert_eq!(thread.title, "Live Session");
 
-        // Already-known session → no-op Ok.
-        import_streaming_session("sess-live")
+        // Already-known session → no-op Ok(false).
+        assert!(!import_discovered_session("sess-live")
             .await
-            .expect("idempotent");
+            .expect("idempotent"));
+    }
+
+    #[tokio::test]
+    async fn import_discovered_session_skips_tombstoned_sessions() {
+        let home = super::super::test_support::TestHome::new("import-disc-tomb");
+        let workspace = super::super::test_support::seed_workspace(home.path(), "ws");
+        let thread = super::super::test_support::seed_thread(&workspace.id, Some("sess-tomb2"));
+        crate::store::delete_thread(&thread.id).expect("delete");
+
+        let _mock = super::super::test_support::mock_agent();
+        // No get_state reply is scripted: a tombstoned session must bail
+        // before any RPC, so an unserved command would fail the test.
+        assert!(!import_discovered_session("sess-tomb2").await.expect("skip"));
+        assert!(crate::store::find_thread_by_agent_session("sess-tomb2")
+            .expect("find")
+            .is_none());
     }
 
     #[tokio::test]
