@@ -26,23 +26,29 @@ fn index_row(ts: &str, path: &str, classification: &str) -> String {
     )
 }
 
-fn seed_run_history(root: &str, rows: &[(&str, &str, &str)]) {
+/// Seed run FILES (the source of truth). The run index is a derived
+/// projection (no persisted index.jsonl), so readers scan these files.
+/// Each file carries a real `timestamp` + `terminal_state` payload.
+fn seed_run_files(root: &str, rows: &[(&str, &str, &str)]) {
     let runs = future_loop::runtime::runs_dir(root, "g1");
     std::fs::create_dir_all(&runs).unwrap();
-    let mut text = String::new();
     for (ts, path, classification) in rows {
-        text.push_str(&index_row(ts, path, classification));
         let file_name = path.rsplit('/').next().unwrap();
-        std::fs::write(runs.join(file_name), "{}").unwrap();
+        std::fs::write(
+            runs.join(file_name),
+            format!(
+                "{{\"timestamp\":\"{ts}\",\"turn\":1,\"terminal_state\":\"{classification}\"}}"
+            ),
+        )
+        .unwrap();
     }
-    std::fs::write(runs.join("index.jsonl"), text).unwrap();
 }
 
 /// ── Run history buckets 24h/7d by class (event-ledger proxy) ──────────────
 #[test]
 fn run_history_buckets_by_class() {
     let root = tmp_root("history");
-    seed_run_history(
+    seed_run_files(
         &root,
         &[
             (
@@ -83,7 +89,7 @@ fn run_history_buckets_by_class() {
 #[test]
 fn compaction_archives_old_runs_recoverably() {
     let root = tmp_root("compact");
-    seed_run_history(
+    seed_run_files(
         &root,
         &[
             (
@@ -109,35 +115,22 @@ fn compaction_archives_old_runs_recoverably() {
         "archived, not deleted"
     );
     assert!(runs.join("new.json").exists());
-    // Index re-points the archived row.
-    let rows = run_history::read_index_rows(&runs.join("index.jsonl")).unwrap();
+    // The index re-derives the archived path on the next read (no persistent
+    // index.jsonl to re-point).
+    let rows = run_index::load_run_index(&root, "g1").unwrap();
     let old = rows.iter().find(|r| r.path.contains("old.json")).unwrap();
     assert!(old.path.contains("archive/"));
-    // Pre-compaction backup exists (rollback).
-    let backups: Vec<_> = std::fs::read_dir(&runs)
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .starts_with("index.pre-compaction")
-        })
-        .collect();
-    assert_eq!(backups.len(), 1);
 }
 
 /// ── Index dedup detection + non-destructive rebuild ───────────────────────
 #[test]
 fn index_dedup_and_rebuild() {
     let root = tmp_root("index");
-    seed_run_history(
+    // Seed run FILES (source of truth) + a hand-written index.jsonl carrying
+    // a duplicate row — this exercises the `runs index` on-demand surface.
+    seed_run_files(
         &root,
         &[
-            (
-                "2026-08-05T00:00:00+00:00",
-                "goals/g1/runs/a.json",
-                "run_recorded",
-            ),
             (
                 "2026-08-05T00:00:00+00:00",
                 "goals/g1/runs/a.json",
@@ -151,14 +144,30 @@ fn index_dedup_and_rebuild() {
         ],
     );
     let index = future_loop::runtime::index_path(&root, "g1");
+    std::fs::write(
+        &index,
+        format!(
+            "{}{}",
+            index_row(
+                "2026-08-05T00:00:00+00:00",
+                "goals/g1/runs/a.json",
+                "run_recorded"
+            ),
+            index_row(
+                "2026-08-05T00:00:00+00:00",
+                "goals/g1/runs/a.json",
+                "run_recorded"
+            ),
+        ),
+    )
+    .unwrap();
     let report = run_index::detect_duplicates(&index).unwrap();
     assert_eq!(report.duplicate_groups.len(), 1);
     assert_eq!(report.duplicate_groups[0].line_numbers, vec![1, 2]);
     assert!(report.repairable);
 
     // Rebuild rescans run files and rewrites the index (non-destructive).
-    // Only 2 distinct files exist on disk (the duplicate index row has no
-    // separate artifact), so the rebuilt index has 2 rows.
+    // Only 2 distinct files exist on disk, so the rebuilt index has 2 rows.
     std::fs::write(&index, "garbage\n").unwrap();
     let rebuild = run_index::rebuild_index(&root, "g1").unwrap();
     assert_eq!(rebuild.rows_written, 2);
@@ -182,7 +191,7 @@ fn index_dedup_and_rebuild() {
 #[test]
 fn retention_keeps_latest_and_ttl() {
     let root = tmp_root("retention");
-    seed_run_history(
+    seed_run_files(
         &root,
         &[
             (

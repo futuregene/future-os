@@ -191,6 +191,23 @@ pub fn repair_index_if_drifted(
     Ok(Some(IndexRepairOutcome { drift, rebuilt }))
 }
 
+/// Derive the run index rows for a goal by scanning the run files on disk
+/// (the source of truth). This is the read-side of the "index is a pure
+/// projection" design: writers no longer append a persistent `index.jsonl`
+/// (that was the cross-process interleave drift source), so readers scan the
+/// run dir (including the archive subdir) and derive rows in memory. Rows are
+/// sorted newest-first so callers get a stable, deterministic order.
+pub fn load_run_index(runtime_root: &str, goal_id: &str) -> Result<Vec<RunIndexRow>> {
+    let runs = crate::runtime::runs_dir(runtime_root, goal_id);
+    if !runs.exists() {
+        return Ok(vec![]);
+    }
+    let mut rows: Vec<RunIndexRow> = vec![];
+    collect_run_files(&runs, goal_id, &mut rows)?;
+    rows.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    Ok(rows)
+}
+
 /// Rebuild the run index by rescanning the run files on disk (LoopX
 /// `run_index_rebuild`): the old index is backed up, the new index is
 /// written via tmp+rename, and rows are never deleted. Handles the case
