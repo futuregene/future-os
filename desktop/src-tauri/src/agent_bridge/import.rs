@@ -3,14 +3,35 @@
 //! records + per-reply run records so they appear in the thread list and right
 //! panel immediately.
 
-use std::sync::Arc;
-use tokio::sync::Semaphore;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex, Weak};
+use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 
 use super::client::{
     connect_agent, get_state_command, list_session_ids_command, list_sessions_command,
     map_rpc_error, set_session_name_command, RpcResponseExt,
 };
 use crate::store;
+
+/// Serialize the complete import lifecycle per Agent session. The database
+/// unique index prevents duplicate thread rows, while this lock also prevents
+/// a push observer from starting against a row whose full-history import is
+/// still synthesizing run projections.
+static SESSION_IMPORT_LOCKS: LazyLock<Mutex<HashMap<String, Weak<AsyncMutex<()>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn session_import_lock(session_id: &str) -> Arc<AsyncMutex<()>> {
+    let mut locks = SESSION_IMPORT_LOCKS
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(session_id).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(AsyncMutex::new(()));
+    locks.insert(session_id.to_string(), Arc::downgrade(&lock));
+    lock
+}
 
 // ─── agent RPC types ────────────────────────────────────────────────────────
 
@@ -285,6 +306,7 @@ async fn write_back_cwd(session_id: &str, cwd: &str) -> Result<(), String> {
         session_id.to_string(),
         cwd.to_string(),
         "desktop",
+        crate::device_identity::device_id_or_empty(),
         serde_json::Value::Null,
         None, // keep existing model
         None, // keep existing thinking level
@@ -313,6 +335,8 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
     if summary.id == "cov-test-import-panic" {
         panic!("cov test seam: simulated import panic");
     }
+    let import_lock = session_import_lock(&summary.id);
+    let _import_guard = import_lock.lock().await;
     if store::is_agent_session_tombstoned(&summary.id)? {
         return Ok(0);
     }
@@ -377,14 +401,18 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
     let title = best_title;
     let (mode, workspace_id, workspace_path, workspace_name) = thread_mode(summary, &title);
 
-    let thread = store::create_thread(store::CreateThreadInput {
-        mode,
-        title: Some(title.clone()),
-        workspace_id,
-        workspace_path: workspace_path.clone(),
-        workspace_name,
-        agent_session_id: Some(summary.id.clone()),
-    })?;
+    let (thread, created) =
+        store::get_or_create_thread_for_agent_session(store::CreateThreadInput {
+            mode,
+            title: Some(title.clone()),
+            workspace_id,
+            workspace_path: workspace_path.clone(),
+            workspace_name,
+            agent_session_id: Some(summary.id.clone()),
+        })?;
+    if !created {
+        return Ok(0);
+    }
 
     // Sync the agent's session_name to the newly-derived title so the sidebar
     // and agent state stay consistent — the agent may have a stale session_name
@@ -435,14 +463,16 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
 }
 
 /// Runtime discovery import for a session reported by another client
-/// (TUI/CLI/channels/another machine) — via the 1s streaming poll or the
-/// `session_created` push. Creates only the thread stub: for a streaming
+/// (TUI/CLI/channels/another machine) via the `session_created` push. Creates
+/// only the thread stub: for a streaming
 /// session the observer mints run rows live as events arrive, so minting
 /// synthetic historical runs here (as `import_one` does) would duplicate the
 /// live run. Title/model heal on the next full `import_missing_sessions`
 /// pass, which has richer summaries. Returns `true` when a stub was created,
 /// `false` when the session was already known (or tombstoned).
 pub(crate) async fn import_discovered_session(session_id: &str) -> Result<bool, crate::AppError> {
+    let import_lock = session_import_lock(session_id);
+    let _import_guard = import_lock.lock().await;
     if store::is_agent_session_tombstoned(session_id)? {
         return Ok(false);
     }
@@ -484,7 +514,7 @@ pub(crate) async fn import_discovered_session(session_id: &str) -> Result<bool, 
     };
     let title = session_title(&summary);
     let (mode, workspace_id, workspace_path, workspace_name) = thread_mode(&summary, &title);
-    store::create_thread(store::CreateThreadInput {
+    let (_, created) = store::get_or_create_thread_for_agent_session(store::CreateThreadInput {
         mode,
         title: Some(title),
         workspace_id,
@@ -492,7 +522,7 @@ pub(crate) async fn import_discovered_session(session_id: &str) -> Result<bool, 
         workspace_name,
         agent_session_id: Some(session_id.to_string()),
     })?;
-    Ok(true)
+    Ok(created)
 }
 
 /// Discover agent sessions not yet in the GUI DB and import them. Runs in the
@@ -545,6 +575,11 @@ pub async fn import_missing_sessions() {
         eprintln!(
             "FutureOS: imported {imported} session(s) ({total_runs} runs) out of {total} agent session(s)"
         );
+        // Full discovery also finds idle sessions, which never appear in the
+        // 1s streaming poll. Arm their passive observers now so later runs and
+        // session metadata changes are projected without requiring a click or
+        // an app restart.
+        super::observer::seed_observers_from_store();
         // New threads landed in the store — let the sidebar know.
         crate::emit_threads_updated();
     }
@@ -1211,6 +1246,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_discovery_creates_one_thread_for_the_agent_session() {
+        let _home = super::super::test_support::TestHome::new("import-disc-concurrent");
+        let mock = super::super::test_support::mock_agent();
+        // The per-session lock makes the loser observe the stored winner before
+        // issuing get_state, so one scripted response is sufficient.
+        mock.push_data(
+            "get_state",
+            serde_json::json!({
+                "sessionId": "sess-race",
+                "sessionName": "Race",
+                "cwd": "",
+                "model": "future/k3"
+            }),
+        );
+
+        let (left, right) = tokio::join!(
+            import_discovered_session("sess-race"),
+            import_discovered_session("sess-race")
+        );
+        let mut outcomes = vec![left.expect("left"), right.expect("right")];
+        outcomes.sort_unstable();
+        assert_eq!(outcomes, vec![false, true]);
+        assert_eq!(
+            crate::store::list_threads()
+                .expect("list")
+                .into_iter()
+                .filter(|thread| thread.agent_session_id.as_deref() == Some("sess-race"))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn import_missing_sessions_imports_and_logs_errors() {
         let _home = super::super::test_support::TestHome::new("import-missing");
         let mock = super::super::test_support::mock_agent();
@@ -1244,5 +1312,11 @@ mod tests {
         assert!(crate::store::find_thread_by_agent_session("sess-m2")
             .expect("find")
             .is_some());
+        let observers = super::super::observer::OBSERVERS.lock().unwrap();
+        assert!(observers.contains_key("sess-m1"));
+        assert!(observers.contains_key("sess-m2"));
+        drop(observers);
+        super::super::observer::drop_observer("sess-m1");
+        super::super::observer::drop_observer("sess-m2");
     }
 }

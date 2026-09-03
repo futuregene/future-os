@@ -661,6 +661,7 @@ impl ServerSession {
         let last_prompt = self.last_prompt_tokens.clone();
         let session_name = self.session_name.clone();
         let created_by = self.created_by.clone();
+        let creator_id = self.creator_id.clone();
         let source_meta = self.source_meta.clone();
         let auto_compaction = self.auto_compaction;
         let approval_gate = self.approval_gate.clone();
@@ -971,6 +972,9 @@ impl ServerSession {
                 });
                 if !created_by.is_empty() {
                     info["created_by"] = serde_json::Value::String(created_by);
+                }
+                if !creator_id.is_empty() {
+                    info["creator_id"] = serde_json::Value::String(creator_id);
                 }
                 if !source_meta.is_null() {
                     info["source_meta"] = source_meta;
@@ -1339,6 +1343,9 @@ impl ServerSession {
             });
             if !self.created_by.is_empty() {
                 info["created_by"] = serde_json::Value::String(self.created_by.clone());
+            }
+            if !self.creator_id.is_empty() {
+                info["creator_id"] = serde_json::Value::String(self.creator_id.clone());
             }
             if !self.source_meta.is_null() {
                 info["source_meta"] = self.source_meta.clone();

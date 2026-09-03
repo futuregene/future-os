@@ -426,6 +426,7 @@ fn new_session_honors_explicit_id_cwd_model_level_and_provenance() {
     cmd.model_id = "explicit/model".to_string();
     cmd.level = "low".to_string();
     cmd.created_by = "gui".to_string();
+    cmd.creator_id = "desktop-creator-1".to_string();
     cmd.source_meta = "{\"thread\":\"t1\"}".to_string();
     cmd.parent_session = "parent-1".to_string();
     let resp = parse_response(&handle_command_internal(&state, cmd));
@@ -434,6 +435,7 @@ fn new_session_honors_explicit_id_cwd_model_level_and_provenance() {
     let session = state.get_session("ns-explicit").unwrap();
     let sess = session.read();
     assert_eq!(sess.created_by, "gui");
+    assert_eq!(sess.creator_id, "desktop-creator-1");
     assert_eq!(sess.source_meta, serde_json::json!({"thread": "t1"}));
     assert_eq!(sess.parent_session_id, "parent-1");
     assert_eq!(sess.model, "explicit/model");
@@ -887,10 +889,10 @@ fn fork_propagates_created_by_from_the_forking_client() {
     let user = crate::session::SessionEntry::new_user("user", serde_json::json!("fork me"));
     let entry_id = user.id.clone();
     save_via(&state, "default", "mock", vec![user]);
-    // The parent is a desktop-owned session (created via the GUI's
-    // new_session): the fork must announce itself as desktop so the GUI skips
-    // its own push import of the session it is about to link itself.
+    // The parent is a desktop-created session. Category provenance may be
+    // inherited by an old client, but creator identity never is.
     state.get_session("default").unwrap().write().created_by = "desktop".to_string();
+    state.get_session("default").unwrap().write().creator_id = "desktop-parent".to_string();
 
     // Inheritance when the command carries no provenance.
     let mut cmd = make_cmd("fork");
@@ -902,15 +904,30 @@ fn fork_propagates_created_by_from_the_forking_client() {
         state.get_session(fork_id).unwrap().read().created_by,
         "desktop"
     );
+    assert!(state
+        .get_session(fork_id)
+        .unwrap()
+        .read()
+        .creator_id
+        .is_empty());
 
     // The command's explicit provenance wins (e.g. a CLI forking a GUI session).
     let mut cmd = make_cmd("fork");
     cmd.entry_id = entry_id;
     cmd.created_by = "cli".to_string();
+    cmd.creator_id = "cli-creator".to_string();
     let resp = parse_response(&handle_command_internal(&state, cmd));
     assert_eq!(resp["success"], true);
     let fork_id = resp["data"]["sessionId"].as_str().unwrap();
     assert_eq!(state.get_session(fork_id).unwrap().read().created_by, "cli");
+    assert_eq!(
+        state.get_session(fork_id).unwrap().read().creator_id,
+        "cli-creator"
+    );
+    let persisted = state.session_manager.load(fork_id).expect("persisted fork");
+    let info = persisted.get_session_info().expect("fork session_info");
+    assert_eq!(info["created_by"], "cli");
+    assert_eq!(info["creator_id"], "cli-creator");
 }
 
 #[test]
@@ -932,7 +949,9 @@ fn clone_propagates_the_parent_created_by() {
         session.write().created_by = "tui".to_string();
     }
 
-    let resp = parse_response(&handle_command_internal(&state, make_cmd("clone")));
+    let mut cmd = make_cmd("clone");
+    cmd.creator_id = "tui-creator".to_string();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
     assert_eq!(resp["success"], true);
     assert_eq!(resp["data"]["cancelled"], false);
     // The clone response carries no id — find the newly registered session
@@ -947,6 +966,10 @@ fn clone_propagates_the_parent_created_by() {
     assert_eq!(
         state.get_session(&clone_id).unwrap().read().created_by,
         "tui"
+    );
+    assert_eq!(
+        state.get_session(&clone_id).unwrap().read().creator_id,
+        "tui-creator"
     );
 }
 

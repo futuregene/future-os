@@ -33,6 +33,13 @@ pub fn global_events_broadcaster() -> Arc<SseBroadcaster> {
     GLOBAL_EVENTS_BROADCASTER.clone()
 }
 
+/// Backward-compatible name retained for Rust callers compiled against the
+/// config-only version of the global stream.
+#[deprecated(note = "use global_events_broadcaster")]
+pub fn global_config_broadcaster() -> Arc<SseBroadcaster> {
+    global_events_broadcaster()
+}
+
 pub fn current_config_revision() -> i64 {
     CONFIG_REVISION.load(Ordering::Acquire)
 }
@@ -64,11 +71,23 @@ pub fn publish_provider_config_changed(
 /// immediately instead of waiting for their discovery polls. An idempotent
 /// hint: consumers reconcile against their own state, so no revision counter.
 pub fn publish_session_created(session_id: &str, created_by: &str, cwd: &str) {
+    publish_session_created_with_creator(session_id, created_by, "", cwd);
+}
+
+/// Creator-aware session announcement. The three-argument wrapper remains for
+/// source compatibility and emits an empty creator id (legacy semantics).
+pub fn publish_session_created_with_creator(
+    session_id: &str,
+    created_by: &str,
+    creator_id: &str,
+    cwd: &str,
+) {
     GLOBAL_EVENTS_BROADCASTER.broadcast(SseEvent::new(
         "session_created",
         serde_json::json!({
             "sessionId": session_id,
             "createdBy": created_by,
+            "creatorId": creator_id,
             "cwd": cwd,
         }),
     ));
@@ -258,6 +277,7 @@ impl AppState {
     pub fn create_session(&self, mut session: ServerSession) -> String {
         let id = session.session_id.clone();
         let created_by = session.created_by.clone();
+        let creator_id = session.creator_id.clone();
         let cwd = session.cwd.clone();
         session.broadcaster = Arc::new(SseBroadcaster::new());
         if let Err(error) = session
@@ -271,7 +291,7 @@ impl AppState {
         ServerSession::ensure_scheduler_worker(&session);
         // Announce after the map insert so subscribers can resolve the
         // session (e.g. get_state) the moment they see the event.
-        publish_session_created(&id, &created_by, &cwd);
+        publish_session_created_with_creator(&id, &created_by, &creator_id, &cwd);
         id
     }
 
@@ -1126,6 +1146,7 @@ mod tests {
             state.queue_budget.clone(),
         );
         session.created_by = "tui".to_string();
+        session.creator_id = "tui-creator".to_string();
         state.create_session(session);
 
         // Other tests broadcast on the same global stream concurrently —
@@ -1139,6 +1160,7 @@ mod tests {
                     let data: serde_json::Value = serde_json::from_str(&event.data).unwrap();
                     assert_eq!(data["sessionId"], "announce-me");
                     assert_eq!(data["createdBy"], "tui");
+                    assert_eq!(data["creatorId"], "tui-creator");
                     assert_eq!(data["cwd"], "/tmp/project");
                     return;
                 }

@@ -166,10 +166,9 @@ fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
-/// Register (or refresh) the sole observer for an Agent session, bound to one
-/// immutable GUI-thread owner for its lifetime. A legacy database may contain
-/// more than one thread referencing the same Agent session; that data remains
-/// readable, but a second thread cannot silently take over the live observer.
+/// Register (or refresh) the sole observer for an Agent session, bound to its
+/// one immutable GUI-thread owner for the observer's lifetime. The store's
+/// unique binding index prevents a second thread from claiming the session.
 pub fn ensure_observer_for_thread(session_id: &str, thread_id: &str) -> Result<(), String> {
     ensure_observer_inner(session_id, thread_id, true)
 }
@@ -262,30 +261,23 @@ pub fn seed_observers_from_store() {
     }
 }
 
-/// Background discovery of conversations created outside the GUI (TUI, CLI,
-/// channels, another machine). The `session_created` push observer
-/// (`session_events.rs`) imports most sessions within milliseconds; this poll
-/// remains the backstop for missed events and agents too old to emit the
-/// event. Two cadences: a 1s pass over the agent's streaming sessions — a run
-/// started by another client appears in the sidebar within ~1s — and a 60s
-/// full import for idle sessions plus observer import. Idle observers are not
-/// re-touched here: opening a thread, a prompt, or a newly streaming session
-/// wakes it instead.
+/// Low-frequency reconciliation for conversations created outside the GUI.
+/// The `session_created` stream is the realtime path and also reconciles once
+/// after every attach/reconnect. This 60-second pass is only the final backstop
+/// for an Agent too old to emit notifications or an unusually long outage.
 #[cfg(test)]
 static TEST_DISCOVERY_STOP: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 pub fn spawn_session_discovery() {
     tauri::async_runtime::spawn(async move {
-        let mut ticks = 0u64;
         loop {
             tokio::time::sleep(discovery_interval()).await;
             #[cfg(test)]
             if TEST_DISCOVERY_STOP.swap(false, std::sync::atomic::Ordering::Relaxed) {
                 return;
             }
-            ticks += 1;
-            discovery_tick(ticks).await;
+            super::import::import_missing_sessions().await;
         }
     });
 }
@@ -299,68 +291,33 @@ fn discovery_interval() -> std::time::Duration {
     {
         return std::time::Duration::from_millis(ms);
     }
-    std::time::Duration::from_secs(1)
+    std::time::Duration::from_secs(60)
 }
 
-/// One discovery tick: the fast streaming-session pass, plus the full
-/// idle-session import every 60 ticks.
-async fn discovery_tick(ticks: u64) {
-    discover_streaming_sessions().await;
-    if ticks.is_multiple_of(60) {
-        super::import::import_missing_sessions().await;
+/// Reconcile one externally-created Agent session into Desktop exactly once,
+/// arm its observer immediately, and invalidate the sidebar when a row landed.
+/// Push notification handling uses this path; full reconciliation uses the
+/// same database get-or-create primitive through `import_missing_sessions`.
+pub(super) async fn reconcile_discovered_session(
+    session_id: &str,
+) -> Result<bool, crate::AppError> {
+    let created = super::import::import_discovered_session(session_id).await?;
+    ensure_discovered_session_observer(session_id).map_err(crate::AppError::Message)?;
+    if created {
+        crate::emit_threads_updated();
     }
+    Ok(created)
 }
 
-/// The fast discovery pass: sessions the agent reports as streaming that have
-/// no local thread get a thread stub plus an observer.
-async fn discover_streaming_sessions() {
-    let Ok(mut client) = connect_agent().await else {
-        return;
+fn ensure_discovered_session_observer(session_id: &str) -> Result<(), String> {
+    let Some(thread) = crate::store::find_thread_by_agent_session(session_id)
+        .map_err(|error| error.to_string())?
+    else {
+        // A tombstone intentionally prevents import and therefore has no
+        // Desktop owner to observe.
+        return Ok(());
     };
-    let response = match client
-        .execute_command(super::client::list_streaming_sessions_command())
-        .await
-    {
-        Ok(response) => response.into_inner(),
-        Err(_) => return,
-    };
-    if !response.success {
-        return;
-    }
-    let session_ids: Vec<String> = future_rpc::decode::response_data(&response)
-        .get("sessionIds")
-        .and_then(|value| value.as_array().cloned())
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|value| {
-            value
-                .as_str()
-                .filter(|id| !id.is_empty())
-                .map(str::to_string)
-        })
-        .collect();
-    for session_id in session_ids {
-        let known = crate::store::find_thread_by_agent_session(&session_id)
-            .ok()
-            .flatten()
-            .is_some();
-        if !known {
-            match super::import::import_discovered_session(&session_id).await {
-                Ok(true) => eprintln!(
-                    "FutureOS discovered streaming session {session_id} (created by another client)"
-                ),
-                Ok(false) => {}
-                Err(error) => {
-                    eprintln!("FutureOS could not import discovered session {session_id}: {error}")
-                }
-            }
-        }
-        if let Ok(Some(thread)) = crate::store::find_thread_by_agent_session(&session_id) {
-            if let Err(error) = ensure_observer_for_thread(&session_id, &thread.id) {
-                eprintln!("FutureOS could not observe discovered session {session_id}: {error}");
-            }
-        }
-    }
+    ensure_observer_for_thread(session_id, &thread.id)
 }
 
 /// Drop the observer for a session going away (thread/session deleted).
@@ -1430,16 +1387,21 @@ mod tests {
     }
 
     #[test]
-    fn seed_observers_creates_and_logs_conflicts() {
-        let home = TestHome::new("observer-seed-conflict");
+    fn seed_observers_creates_one_observer_per_unique_session() {
+        let home = TestHome::new("observer-seed-unique");
         let _mock = mock_agent();
         let workspace = seed_workspace(home.path(), "ws");
-        let t1 = seed_thread(&workspace.id, Some("sess-shared"));
-        let _t2 = seed_thread(&workspace.id, Some("sess-shared"));
+        let _t1 = seed_thread(&workspace.id, Some("sess-one"));
+        let _t2 = seed_thread(&workspace.id, Some("sess-two"));
+
         seed_observers_from_store();
-        assert!(OBSERVERS.lock().unwrap().contains_key("sess-shared"));
-        drop_observer("sess-shared");
-        let _ = t1;
+
+        let observers = OBSERVERS.lock().unwrap();
+        assert!(observers.contains_key("sess-one"));
+        assert!(observers.contains_key("sess-two"));
+        drop(observers);
+        drop_observer("sess-one");
+        drop_observer("sess-two");
     }
 
     #[tokio::test]
@@ -1699,60 +1661,6 @@ mod tests {
 
         // Malformed JSON → None.
         assert!(settings_event_payload("s", "t", "e", "not json").is_none());
-    }
-
-    #[tokio::test]
-    async fn discover_streaming_sessions_paths() {
-        let home = TestHome::new("observer-discover");
-        let mock = mock_agent();
-        let workspace = seed_workspace(home.path(), "ws");
-        seed_thread(&workspace.id, Some("sess-known"));
-
-        // Empty sessionIds → no-op.
-        mock.push_data(
-            "list_streaming_sessions",
-            serde_json::json!({"sessionIds": []}),
-        );
-        discover_streaming_sessions().await;
-
-        // A known session → only ensure_observer.
-        mock.push_data(
-            "list_streaming_sessions",
-            serde_json::json!({"sessionIds": ["sess-known"]}),
-        );
-        discover_streaming_sessions().await;
-        assert!(OBSERVERS.lock().unwrap().contains_key("sess-known"));
-        drop_observer("sess-known");
-
-        // An unknown session → import + observe.
-        mock.push_data(
-            "list_streaming_sessions",
-            serde_json::json!({"sessionIds": ["sess-new"]}),
-        );
-        mock.push_data(
-            "get_state",
-            serde_json::json!({"sessionId": "sess-new", "sessionName": "New", "cwd": "", "model": "future/k3"}),
-        );
-        discover_streaming_sessions().await;
-        assert!(OBSERVERS.lock().unwrap().contains_key("sess-new"));
-        drop_observer("sess-new");
-
-        // Reject (success=false) → return.
-        mock.push("list_streaming_sessions", Reply::Reject("nope".to_string()));
-        discover_streaming_sessions().await;
-
-        // Transport error → return.
-        mock.push(
-            "list_streaming_sessions",
-            Reply::Status(tonic::Code::Internal, "down"),
-        );
-        discover_streaming_sessions().await;
-
-        // Connect failure → return.
-        let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock addr");
-        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
-        discover_streaming_sessions().await;
-        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
     }
 
     #[tokio::test]
@@ -2091,69 +1999,23 @@ mod tests {
         assert_eq!(state.last_settled_run.as_deref(), Some("run-owned-term"));
     }
 
-    /// Discovery logs import and observe failures without surfacing them.
-    #[tokio::test]
-    async fn discover_streaming_sessions_logs_import_and_observe_errors() {
-        let home = TestHome::new("observer-discover-err");
-        let mock = mock_agent();
-        let workspace = seed_workspace(home.path(), "ws");
-        let thread = seed_thread(&workspace.id, Some("sess-conflict"));
-
-        // Unknown session whose import fails (get_state reject).
-        mock.push_data(
-            "list_streaming_sessions",
-            serde_json::json!({"sessionIds": ["sess-bad"]}),
-        );
-        mock.push("get_state", Reply::Reject("gone".to_string()));
-        discover_streaming_sessions().await;
-
-        // Known session already observed by a phantom thread → owner conflict.
-        let (cancel, _rx) = oneshot::channel();
-        let shared = Arc::new(ObserverShared::new("ghost-thread"));
-        OBSERVERS.lock().unwrap().insert(
-            "sess-conflict".to_string(),
-            ObserverHandle { cancel, shared },
-        );
-        mock.push_data(
-            "list_streaming_sessions",
-            serde_json::json!({"sessionIds": ["sess-conflict"]}),
-        );
-        discover_streaming_sessions().await;
-        OBSERVERS.lock().unwrap().remove("sess-conflict");
-        let _ = thread;
-    }
-
-    /// The discovery loop ticks, then stops on the test seam; the default
-    /// (unseamed) interval is 1s.
+    /// The low-frequency reconciliation loop ticks, then stops on the test
+    /// seam; the production interval is 60 seconds.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn discovery_loop_ticks_and_stops() {
         let _home = TestHome::new("observer-discovery-loop");
         let mock = mock_agent();
+        for _ in 0..8 {
+            mock.push_typed_data("list_sessions", serde_json::json!({"sessions": []}));
+        }
         std::env::set_var("FUTURE_TEST_DISCOVERY_INTERVAL_MS", "10");
         spawn_session_discovery();
         tokio::time::sleep(Duration::from_millis(60)).await;
         TEST_DISCOVERY_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
         tokio::time::sleep(Duration::from_millis(30)).await;
         std::env::remove_var("FUTURE_TEST_DISCOVERY_INTERVAL_MS");
-        assert_eq!(discovery_interval(), Duration::from_secs(1));
+        assert_eq!(discovery_interval(), Duration::from_secs(60));
         let _ = mock;
-    }
-
-    /// The 60th discovery tick runs the full import; other ticks do not.
-    #[tokio::test]
-    async fn discovery_tick_imports_on_the_60th_tick() {
-        let _home = TestHome::new("observer-discovery-tick");
-        let mock = mock_agent();
-        mock.push_data(
-            "list_streaming_sessions",
-            serde_json::json!({"sessionIds": []}),
-        );
-        discovery_tick(1).await;
-        mock.push_data(
-            "list_streaming_sessions",
-            serde_json::json!({"sessionIds": []}),
-        );
-        discovery_tick(60).await;
     }
 
     // ── run_observer self-heal paths ─────────────────────────────────

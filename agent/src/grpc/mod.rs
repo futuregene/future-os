@@ -231,6 +231,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             mode: cmd.mode,
             custom_instructions: cmd.custom_instructions,
             created_by: cmd.created_by,
+            creator_id: cmd.creator_id,
             source_meta: cmd.source_meta,
             enabled: cmd.enabled,
             command: cmd.command,
@@ -864,7 +865,12 @@ mod tests {
             .await
             .expect("global subscription succeeds");
         let mut stream = response.into_inner();
-        crate::rpc::publish_session_created("tui-session", "tui", "/tmp/project");
+        crate::rpc::publish_session_created_with_creator(
+            "tui-session",
+            "tui",
+            "creator-tui",
+            "/tmp/project",
+        );
         // Parallel tests publish session_created on the same global stream —
         // drain until THIS announcement arrives.
         for _ in 0..32 {
@@ -873,6 +879,7 @@ mod tests {
             let data: serde_json::Value = serde_json::from_str(&event.data).unwrap();
             if data["sessionId"] == "tui-session" {
                 assert_eq!(data["createdBy"], "tui");
+                assert_eq!(data["creatorId"], "creator-tui");
                 assert_eq!(data["cwd"], "/tmp/project");
                 return;
             }

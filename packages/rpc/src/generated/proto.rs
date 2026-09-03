@@ -142,6 +142,12 @@ pub struct RpcCommand {
     /// per-client data, not part of the typed contract.
     #[prost(string, tag = "162")]
     pub source_meta: ::prost::alloc::string::String,
+    /// Stable identity of the creator installation/account. Unlike a future
+    /// client_id this does not identify one process or transport connection.
+    /// Consumers use it to distinguish their own lifecycle announcements from
+    /// sessions created by another instance of the same client type.
+    #[prost(string, tag = "163")]
+    pub creator_id: ::prost::alloc::string::String,
     /// ── set_auth ───────────────────────────────────────────────────────────
     /// One auth.json entry mutation (typed sub-message, not JSON-in-string).
     /// Read when type == "set_auth".
@@ -1256,7 +1262,9 @@ pub struct StreamEvent {
     ///    provider_config_changed  global provider/auth configuration committed
     ///    session_created          global control-plane signal: a session was minted
     ///                             (new_session / fork / clone, never disk hydration)
-    ///                             — carries {sessionId, createdBy, cwd}; subscribe
+    ///                             — carries {sessionId, createdBy, creatorId, cwd};
+    ///                             creatorId is the durable creator installation,
+    ///                             not a per-connection client id; subscribe
     ///                             via global_events
     ///
     /// Provider-specific aliases are normalized inside the Agent and never cross

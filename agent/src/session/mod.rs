@@ -32,7 +32,7 @@ pub use entry::{
     ENTRY_TYPE_RUN_TERMINAL, ENTRY_TYPE_SESSION_INFO, ENTRY_TYPE_SYSTEM,
     ENTRY_TYPE_THINKING_LEVEL_CHANGE, ENTRY_TYPE_TOOL, ENTRY_TYPE_USER,
 };
-pub use fork::fork_session;
+pub use fork::{fork_session, set_creation_provenance};
 pub use manager::Manager;
 pub use model::{Session, SessionSummary, CURRENT_SESSION_VERSION};
 pub use persistence::SessionPersistence;

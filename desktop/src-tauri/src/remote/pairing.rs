@@ -1,7 +1,9 @@
-//! Persisted desktop identity and the platform pairing/JWT control plane.
+//! Platform pairing/JWT control plane.
 //!
 //! The NKey seed never leaves this desktop. The platform receives only the
-//! public user key and returns a short-lived, pair-scoped NATS user JWT.
+//! public user key and returns a short-lived, pair-scoped NATS user JWT. The
+//! installation-wide device id is owned by `device_identity`; pairing stores a
+//! copy because the server credential is bound to that exact identity.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
@@ -134,9 +136,7 @@ pub async fn create_pairing() -> Result<(PairingCreds, String, Option<i64>), cra
     let nkey_seed = key_pair
         .seed()
         .map_err(|error| crate::AppError::Message(format!("generate desktop NKey: {error}")))?;
-    let desktop_id = load_creds()
-        .map(|creds| creds.desktop_id)
-        .unwrap_or_else(new_device_id);
+    let desktop_id = crate::device_identity::device_id()?;
     let platform = crate::future_platform::current_platform_url();
     let response = http_client()?
         .post(format!("{platform}/client/v1/remote/pair/code"))
@@ -214,11 +214,6 @@ pub async fn revoke_pairing(creds: &PairingCreds) -> Result<(), crate::AppError>
         return Ok(());
     }
     Err(response_error(response, "revoke remote pairing").await)
-}
-
-pub fn new_device_id() -> String {
-    let key = nkeys::KeyPair::new_user().public_key();
-    format!("desktop_{}", &key[1..17])
 }
 
 pub fn refresh_delay(creds: &PairingCreds) -> std::time::Duration {
@@ -641,13 +636,6 @@ mod http_tests {
         // Already expired → the 5s floor.
         creds.jwt_expires_at = now_secs() - 10;
         assert_eq!(refresh_delay(&creds).as_secs(), 5);
-    }
-
-    #[test]
-    fn new_device_id_format() {
-        let id = new_device_id();
-        assert!(id.starts_with("desktop_"));
-        assert_eq!(id.len(), "desktop_".len() + 16);
     }
 
     #[test]

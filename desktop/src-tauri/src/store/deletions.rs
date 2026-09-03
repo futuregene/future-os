@@ -153,7 +153,7 @@ mod tests {
                  id, workspace_id, mode, title, agent_session_id, created_at, updated_at
              ) VALUES
                  ('t1', 'ws1', 'chat', 'T1', 'sess_1', 1, 1),
-                 ('t2', 'ws1', 'chat', 'T2', 'sess_1', 1, 1),
+                 ('t2', 'ws1', 'chat', 'T2', 'sess_2', 1, 1),
                  ('t3', 'ws1', 'chat', 'T3', '  ', 1, 1),
                  ('t4', 'ws1', 'chat', 'T4', NULL, 1, 1);",
         )
@@ -169,8 +169,8 @@ mod tests {
             .expect("query")
             .collect::<Result<Vec<_>, _>>()
             .expect("collect");
-        // sess_1 deduped across t1/t2; blank and NULL session ids fall back to
-        // the thread id.
-        assert_eq!(ids, vec!["sess_1", "t3", "t4"]);
+        // Bound session ids are unique; blank and NULL ids fall back to the
+        // owning thread id.
+        assert_eq!(ids, vec!["sess_1", "sess_2", "t3", "t4"]);
     }
 }

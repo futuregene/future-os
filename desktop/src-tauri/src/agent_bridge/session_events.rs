@@ -6,9 +6,11 @@
 //! `observer.rs` remain the backstop for missed events and agents too old to
 //! emit the event.
 //!
-//! Sessions the GUI itself created (`createdBy: "desktop"`) are skipped: the
-//! GUI manages those threads and their session links itself, and importing a
-//! stub here would race the prompt pipeline's own thread-row update.
+//! Sessions created by this Desktop installation (`creatorId == deviceId`) are
+//! skipped: the GUI manages those threads and their session links itself, and
+//! importing a stub here would race the prompt pipeline's own thread-row
+//! update. Another Desktop has the same `createdBy` category but a different
+//! creator id, so its sessions are imported normally.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -47,6 +49,11 @@ async fn observe_once(backoff: &mut Duration) -> Result<(), crate::AppError> {
         .await
         .map_err(|error| format!("global session events stream failed: {error}"))?
         .into_inner();
+    // The global stream is an in-memory notification channel, not a durable
+    // log. Once the subscription exists, reconcile the Agent's authoritative
+    // session list before consuming queued notifications. This closes startup
+    // and reconnect gaps without a one-second streaming-session poll.
+    super::import::import_missing_sessions().await;
     // A successful attachment proves the Agent is healthy again; if this
     // stream later closes, reconnect promptly instead of retaining the
     // maximum delay accumulated during an earlier outage.
@@ -90,15 +97,40 @@ async fn handle_session_created(data: &str) {
         .get("createdBy")
         .and_then(|value| value.as_str())
         .unwrap_or_default();
-    if created_by == "desktop" {
-        // The GUI creates its own thread rows for its sessions; a push import
-        // here would race the prompt pipeline linking the session to a thread.
+    let creator_id = payload
+        .get("creatorId")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    // Compatibility with a pre-creatorId Agent: conservatively preserve the
+    // old self-import guard. New Agents never take this branch, so two current
+    // Desktop installations with distinct device ids still discover each
+    // other correctly.
+    if creator_id.is_empty() && created_by == "desktop" {
         return;
     }
-    match super::import::import_discovered_session(session_id).await {
+    if !creator_id.is_empty() {
+        match crate::device_identity::device_id() {
+            Ok(device_id) if creator_id == device_id => {
+                return; // This installation's prompt/fork path owns the local row.
+            }
+            Ok(_) => {}
+            Err(error) => {
+                // Importing while identity is unknown could steal the unique
+                // binding from this installation's in-flight create. The
+                // reconnect/periodic reconciliation will retry after the
+                // original thread has had a chance to persist its binding.
+                eprintln!(
+                    "FutureOS deferred session {session_id} while device identity is unavailable: {error}"
+                );
+                return;
+            }
+        }
+    }
+    match super::observer::reconcile_discovered_session(session_id).await {
         Ok(true) => {
-            eprintln!("FutureOS imported session {session_id} announced by client {created_by:?}");
-            crate::emit_threads_updated();
+            eprintln!(
+                "FutureOS imported session {session_id} announced by client {created_by:?} creator {creator_id:?}"
+            );
         }
         Ok(false) => {}
         Err(error) => {
@@ -113,13 +145,23 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn handle_session_created_skips_desktop_and_malformed_payloads() {
+    async fn handle_session_created_skips_own_creator_and_malformed_payloads() {
         let _home = TestHome::new("session-events-skip");
         let _mock = mock_agent();
+        let creator_id = crate::device_identity::device_id().expect("device id");
 
-        // GUI-created sessions are the GUI's own bookkeeping — no import, and
-        // no get_state RPC (an unserved command would fail the test).
-        handle_session_created(r#"{"sessionId":"s-mine","createdBy":"desktop","cwd":"/ws"}"#).await;
+        // This installation's sessions are its own bookkeeping — no import,
+        // and no get_state RPC (an unserved command would fail the test).
+        handle_session_created(
+            &serde_json::json!({
+                "sessionId": "s-mine",
+                "createdBy": "desktop",
+                "creatorId": creator_id,
+                "cwd": "/ws"
+            })
+            .to_string(),
+        )
+        .await;
         assert!(crate::store::find_thread_by_agent_session("s-mine")
             .expect("find")
             .is_none());
@@ -143,21 +185,32 @@ mod tests {
                 "model": "future/k3"
             }),
         );
-        handle_session_created(r#"{"sessionId":"s-tui","createdBy":"tui","cwd":"/tmp"}"#).await;
+        handle_session_created(
+            r#"{"sessionId":"s-tui","createdBy":"desktop","creatorId":"desktop_other","cwd":"/tmp"}"#,
+        )
+        .await;
         let thread = crate::store::find_thread_by_agent_session("s-tui")
             .expect("find")
             .expect("imported stub");
         assert_eq!(thread.title, "From TUI");
+        assert!(super::super::observer::OBSERVERS
+            .lock()
+            .unwrap()
+            .contains_key("s-tui"));
 
         // A repeat announcement is a no-op (import_discovered_session is
         // idempotent), and no additional RPC is scripted.
-        handle_session_created(r#"{"sessionId":"s-tui","createdBy":"tui","cwd":"/tmp"}"#).await;
+        handle_session_created(
+            r#"{"sessionId":"s-tui","createdBy":"desktop","creatorId":"desktop_other","cwd":"/tmp"}"#,
+        )
+        .await;
     }
 
     #[tokio::test]
     async fn observe_once_consumes_the_stream_until_it_ends() {
         let _home = TestHome::new("session-events-stream");
         let mock = mock_agent();
+        mock.push_typed_data("list_sessions", serde_json::json!({"sessions": []}));
         mock.push_data(
             "get_state",
             serde_json::json!({
@@ -198,12 +251,5 @@ mod tests {
         let result = observe_once(&mut backoff).await;
         std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn spawn_session_events_observer_runs_once() {
-        let _mock = mock_agent();
-        spawn_session_events_observer();
-        spawn_session_events_observer();
     }
 }

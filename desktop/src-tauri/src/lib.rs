@@ -7,6 +7,7 @@ mod auth_store;
 mod build_info;
 mod commands;
 mod config_io;
+mod device_identity;
 mod error;
 mod future_login;
 mod future_platform;
@@ -721,9 +722,9 @@ pub fn run() {
             // clients (TUI/CLI/channels) are imported within milliseconds of
             // the agent's session_created announcement.
             agent_bridge::spawn_session_events_observer();
-            // Discovery: conversations created by other clients (TUI/CLI) get
-            // a thread stub + an observer — streaming ones within ~1s, idle
-            // ones on the 60s import pass.
+            // Low-frequency safety reconciliation for lifecycle notifications
+            // missed during outages or emitted by an older Agent. The global
+            // stream is the realtime path and reconciles on every reconnect.
             agent_bridge::spawn_session_discovery();
             // Continuously flush local deletion tombstones. This is independent
             // of the current UI route and makes offline GUI deletes converge.
