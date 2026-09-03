@@ -90,12 +90,17 @@ sudo apt install -y protobuf-compiler                             # 可选 —�
 
 ```bash
 scripts/build-desktop-linux.sh --out-dir ./dist   # → ./dist/FutureOS_<version>_amd64.deb + FutureOS-portable-linux.tar.gz
+scripts/start-desktop-linux.sh                    # 本地 Linux Desktop + agent 开发会话
 make install        # 或直接从源码安装：GUI + 统一 `future` CLI + 技能（agent/tui/channel/loop 已内嵌）→ /usr/local/bin（sudo）
 make install-cli    # 仅统一 `future` CLI
 make install-desktop    # 仅桌面应用（自带 agent/CLI sidecar）
 make install-skills # 内置技能 + /future-loop 技能
 make package-desktop    # 桌面打包 → .deb 位于 desktop/src-tauri/target/release/bundle/
 ```
+
+`scripts/start-desktop-linux.sh` 会以开发模式针对本地构建的 agent 运行 GUI，
+并在 GUI 退出后停止由脚本启动的 agent。Bubblewrap 检查只作提示，以便同时测试
+沙盒不可用时的界面。
 
 ## Windows
 

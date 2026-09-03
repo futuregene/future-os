@@ -100,12 +100,17 @@ Build and install:
 
 ```bash
 scripts/build-desktop-linux.sh --out-dir ./dist   # → ./dist/FutureOS_<version>_amd64.deb + FutureOS-portable-linux.tar.gz
+scripts/start-desktop-linux.sh                    # local Linux Desktop + agent development session
 make install        # or install straight from source: GUI + unified `future` CLI + skills → /usr/local/bin (sudo)
 make install-cli    # unified `future` CLI only
 make install-desktop    # desktop app only (stages its own agent/CLI sidecars)
 make install-skills # built-in skills + the /future-loop skill
 make package-desktop    # desktop bundle → .deb in desktop/src-tauri/target/release/bundle/
 ```
+
+`scripts/start-desktop-linux.sh` runs the GUI in dev mode against a locally
+built agent and stops the agent it started when the GUI exits. Bubblewrap
+diagnostics are informational so the sandbox-unavailable UI can also be tested.
 
 ## Windows
 
