@@ -4165,6 +4165,18 @@ async fn run_turns(
     last_failure_kind: &mut Option<crate::state::FailureKind>,
 ) -> Result<()> {
     let mut turn = 0u32;
+    // P2: goal-monotonic turn counter. `turn` below restarts at 1 on every
+    // `run` process, so a worker relaunched across runs (or resumed after a
+    // timeout) would re-emit `turn-1` heartbeat receipts and decision
+    // summaries, making cross-run provenance unreadable from the ledger. The
+    // number of already-recorded decision summaries equals the count of turns
+    // that have STARTED on this goal (timeout turns included, because the
+    // receipt is written before the turn executes), so offset the local
+    // counter by it to obtain a goal-wide monotonic turn number.
+    let base_turn = store
+        .events(goal_id)
+        .map(|events| crate::quota::decision_summary::decision_summaries(&events).len() as u32)
+        .unwrap_or(0);
     // Continue note for the NEXT turn: set when the previous turn ended
     // incomplete; consumed exactly once by the next execute_turn call.
     let mut next_continue_note: Option<String> = None;
@@ -4204,15 +4216,25 @@ async fn run_turns(
         if turn > max_turns {
             bail!("max-turns ({max_turns}) reached without validated closure");
         }
+        // Goal-wide turn number: `turn` is local to this run process, so every
+        // persisted reference (decision summary, heartbeat receipt, run record,
+        // client_request_id) must use the offset value to stay distinguishable
+        // across runs.
+        let global_turn = base_turn + turn;
         let goal = store
             .replay(goal_id)?
             .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found (deleted while running?)"))?;
         let mut packet = decide_for(&goal, SystemTime::now(), agent_id);
         // P1-1②③: persist the compact decision projection + the heartbeat
         // receipt for this turn (projection-only; replay ignores both).
-        crate::quota::decision_summary::record_turn_decision(store, &packet, agent_id, turn)?;
+        crate::quota::decision_summary::record_turn_decision(
+            store,
+            &packet,
+            agent_id,
+            global_turn,
+        )?;
         println!(
-            "── turn {turn}: decision={} mode={} | {}",
+            "── turn {global_turn}: decision={} mode={} | {}",
             packet.decision,
             packet.interaction_contract.mode.as_str(),
             packet.reason
@@ -4379,7 +4401,7 @@ async fn run_turns(
             &boundary,
             agent_id,
             &todo,
-            turn,
+            global_turn,
             goal.history.last(),
             true,
             Some(runs_dir),
