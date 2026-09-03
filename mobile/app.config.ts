@@ -16,6 +16,8 @@ const bundleVersion = version.split(/[-+]/)[0];
 // local dev builds just use a constant — TestFlight/Play enforce monotonicity
 // only, not that the number corresponds to any git commit.
 const buildNumber = process.env.FUTURE_BUILD_NUMBER || "1";
+const cameraPermission =
+  "FutureOS uses the camera to scan desktop pairing QR codes and take photos you choose to attach to conversations.";
 
 const config: ExpoConfig = {
   name: "FutureOS",
@@ -31,14 +33,14 @@ const config: ExpoConfig = {
     [
       "expo-camera",
       {
-        cameraPermission: "Allow FutureOS to scan the desktop pairing QR code.",
+        cameraPermission,
         recordAudioAndroid: false,
       },
     ],
     [
       "expo-image-picker",
       {
-        cameraPermission: "Allow FutureOS to take photos for conversation attachments.",
+        cameraPermission,
         photosPermission: "Allow FutureOS to select photos for conversation attachments.",
         microphonePermission: false,
       },
