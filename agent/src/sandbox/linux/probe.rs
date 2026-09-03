@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::fs::Metadata;
 use std::path::{Path, PathBuf};
@@ -13,6 +13,9 @@ pub const REQUIRED_BWRAP_OPTIONS: &[&str] = &[
     "--unshare-ipc",
     "--cap-drop",
     "--ro-bind",
+    "--bind",
+    "--chmod",
+    "--chdir",
     "--dev",
     "--proc",
 ];
@@ -27,6 +30,14 @@ pub const BASELINE_BWRAP_ARGS: &[&str] = &[
     "ALL",
     "--ro-bind",
     "/",
+    "/",
+    "--bind",
+    "/tmp",
+    "/tmp",
+    "--chmod",
+    "0755",
+    "/tmp",
+    "--chdir",
     "/",
     "--dev",
     "/dev",
@@ -57,7 +68,7 @@ pub enum LinuxSandboxProbeCode {
     BinaryIdentityChanged,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BwrapIdentity {
     pub device: u64,
@@ -129,7 +140,7 @@ pub struct LinuxSandboxProbe {
     pub capabilities: Option<LinuxSandboxCapabilities>,
     pub expires_at_unix_ms: Option<u128>,
     #[serde(skip)]
-    diagnostic: Option<String>,
+    pub(crate) diagnostic: Option<String>,
 }
 
 impl LinuxSandboxProbe {

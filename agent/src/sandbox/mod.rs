@@ -32,7 +32,12 @@ use rules::{Decision, Op, RuleSet};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SandboxBackendReceipt {
     Unavailable,
-    MacosSeatbelt { executable: PathBuf },
+    MacosSeatbelt {
+        executable: PathBuf,
+    },
+    LinuxBubblewrap {
+        probe: linux::probe::LinuxSandboxProbe,
+    },
     WindowsRestricted,
 }
 
@@ -198,16 +203,35 @@ impl ResolvedSandbox {
         &self.rules
     }
 
-    /// Prepare a structured shell invocation. Linux execution remains
-    /// unavailable until the L2 helper consumes its probe receipt and plan.
-    pub fn prepare_shell(&self, command: &str, escalated: bool) -> PreparedShell {
+    /// Prepare a structured shell invocation. Backend construction failures
+    /// are infrastructure errors: callers must return them directly rather
+    /// than feeding them into sandbox-denial escalation.
+    pub fn prepare_shell_for_cwd(
+        &self,
+        command: &str,
+        escalated: bool,
+        cwd: &Path,
+    ) -> anyhow::Result<PreparedShell> {
         if !escalated && self.wraps_shell() {
             #[cfg(target_os = "macos")]
             {
-                return seatbelt::prepare(self, command);
+                return Ok(seatbelt::prepare(self, command));
+            }
+            #[cfg(target_os = "linux")]
+            if let SandboxBackendReceipt::LinuxBubblewrap { probe } = &self.backend_receipt {
+                let plan =
+                    linux::plan::LinuxSandboxPlan::compile(&self.rules.snapshot(), &|path| {
+                        path.exists()
+                    })?;
+                return Ok(linux::runner::prepare(probe, plan, command, cwd)?);
             }
         }
-        PreparedShell::plain(command)
+        Ok(PreparedShell::plain(command))
+    }
+
+    pub fn prepare_shell(&self, command: &str, escalated: bool) -> PreparedShell {
+        self.prepare_shell_for_cwd(command, escalated, &self.workspace)
+            .expect("sandbox backend preparation failed")
     }
 
     /// Compatibility adapter for callers that need a Tokio command.
@@ -845,8 +869,13 @@ fn platform_backend_receipt() -> SandboxBackendReceipt {
             return SandboxBackendReceipt::WindowsRestricted;
         }
     }
-    // Linux probe support lands in L0, but the receipt remains unavailable
-    // until the L2 helper can actually enforce the compiled plan.
+    #[cfg(target_os = "linux")]
+    {
+        let probe = linux::probe::probe_linux_sandbox_host();
+        if probe.available {
+            return SandboxBackendReceipt::LinuxBubblewrap { probe };
+        }
+    }
     SandboxBackendReceipt::Unavailable
 }
 
@@ -861,7 +890,11 @@ pub(crate) fn platform_sandbox_availability() -> std::io::Result<bool> {
     {
         cached_windows_sandbox_probe().map(|probe| probe.available)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
+    {
+        Ok(linux::probe::probe_linux_sandbox_host().available)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         Ok(false)
     }

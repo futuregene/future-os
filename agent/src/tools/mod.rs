@@ -1069,7 +1069,9 @@ async fn spawn_shell(
     // itself, so the command passes through unmodified.
     #[cfg(windows)]
     let merged_cmd = command.to_string();
-    let prepared = sandbox.prepare_shell(&merged_cmd, escalated);
+    let prepared = sandbox
+        .prepare_shell_for_cwd(&merged_cmd, escalated, &cwd)
+        .map_err(|error| anyhow!("Failed to initialize OS sandbox: {error}"))?;
     let mut child = prepared.into_command();
     child.current_dir(&cwd).env("PWD", &cwd);
     // Prepend the agent binary's directory to PATH so bundled tools in the

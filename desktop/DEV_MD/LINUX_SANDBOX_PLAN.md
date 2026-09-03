@@ -1,6 +1,6 @@
 # FutureOS Linux 沙盒调研与开发计划
 
-状态：**方案已完成第一轮决策收口；开发分支已完成 L0/L1 的 typed probe、缓存/identity、平台中立 `PreparedShell` 与纯 `LinuxSandboxPlan`，L2 helper 尚未接入，因此 Linux OS 沙盒仍不会被标记为 available，主干产品仍只显示“手动审批 / 完全放开”**（2026-09-03）。
+状态：**方案已完成第一轮决策收口；开发分支已完成 L0/L1，并完成 L2 的隐藏自重入 helper、版本化请求、FD-backed mount、`no_new_privs`、PID/信号/父进程死亡处理和 shell 执行接缝。当前 Linux probe 成功时后端可被选择，但 L3 glob 展开和 missing-path 保护尚未完成；遇到这些规则时执行链会以 infrastructure error fail closed，不会脱沙盒重跑。主干产品仍只显示“手动审批 / 完全放开”**（2026-09-03）。
 
 本文是 [`SANDBOX_PLAN.md`](SANDBOX_PLAN.md) 的 Linux 专项设计稿。审批规则语义仍以 [`APPROVAL_PLAN.md`](APPROVAL_PLAN.md) 为准；本文只讨论如何把现有 `RuleSet` 强制到 Linux shell 子进程，以及产品启用前需要补齐的证据。代码落点、实施波次与逐项验收命令见 [`LINUX_SANDBOX_IMPLEMENTATION.md`](LINUX_SANDBOX_IMPLEMENTATION.md)。
 
@@ -22,7 +22,7 @@
 
 ## 1. 调研范围与当前事实
 
-本轮只调查和补文档，没有修改 Agent 运行时代码，也没有运行 Linux 实机测试。
+初始调研阶段只补文档；当前开发分支已经修改 Agent 运行时代码，并在本机 system bwrap 上运行 L2 integration smoke。该结果仍不替代 L5 目标发行版、架构和安装包真机矩阵。
 
 代码快照：
 

@@ -1,6 +1,6 @@
 # Linux Bubblewrap 沙盒实施计划与验收矩阵
 
-状态：**开发执行基线**（2026-09-03）。产品与安全语义以 [`LINUX_SANDBOX_PLAN.md`](LINUX_SANDBOX_PLAN.md) 为准；本文把 L0–L6 转成代码落点、提交顺序、自动化门禁和真机验收项，不改变 L-D1–L-D9。
+状态：**开发执行基线；Wave 1–3（L0–L2）已完成，L3 待实施**（2026-09-03）。产品与安全语义以 [`LINUX_SANDBOX_PLAN.md`](LINUX_SANDBOX_PLAN.md) 为准；本文把 L0–L6 转成代码落点、提交顺序、自动化门禁和真机验收项，不改变 L-D1–L-D9。
 
 ## 1. 开发基线
 
@@ -83,9 +83,9 @@
 
 **硬门禁：** unsupported matcher、扫描超限、规则层读取失败、危险 symlink/missing-path 形态都返回 typed error，不能静默删掉一条规则继续执行。
 
-### Wave 3 — L2 自重入 helper 与执行链
+### Wave 3 — L2 自重入 helper 与执行链（已完成，2026-09-03）
 
-建议新增 `agent/src/sandbox/linux/{request.rs,helper.rs,runner.rs}`：
+已新增 `agent/src/sandbox/linux/{request.rs,helper.rs,runner.rs}`：
 
 1. 版本化、有长度/数量上限的 request；只接受父 Agent 生成的结构化字段。拒绝未知版本、重复/非法 FD、NUL、非绝对 mount target 和超限 payload。
 2. `future agent <hidden-helper-mode>` / `future-agent <hidden-helper-mode>` 在 singleton lock 之前分派，不读取模型配置、不启动 gRPC。
@@ -131,16 +131,16 @@
 | R-02 | rules/plan | 窄 allow reopen、hard deny 不可 reopen、根去重 | 同上 | PASS（2026-09-03） |
 | R-03 | rules/plan | symlink、missing exact、glob 快照/上限/异常 fail closed | 同上 | NOT RUN |
 | R-04 | cross-platform | Seatbelt/Windows/manual/off 行为不回归 | `cargo test -p future-agent sandbox:: tools:: rpc::commands::settings` | PASS（2026-09-03：sandbox 115 tests；Agent clippy all tests） |
-| H-01 | helper parser | version/size/count/FD/path 输入校验 | `cargo test -p future-agent sandbox::linux::request` | NOT RUN |
-| H-02 | helper boundary | helper 绕过 Agent singleton，但非法直接调用失败 | `cargo test -p future-agent --test cli_smoke linux_helper` | NOT RUN |
-| H-03 | mount smoke | workspace/temp 写成功，workspace 外写失败且 host 无文件 | `cargo test -p future-agent --test linux_sandbox_smoke filesystem_ -- --ignored --test-threads=1` | NOT RUN |
-| H-04 | secret smoke | 已有 secret 精确/glob 文件读写均失败 | 同上 | NOT RUN |
-| H-05 | missing/symlink | missing exact 不能创建；symlink 不越界；host 无临时残留 | 同上 | NOT RUN |
-| H-06 | network | 未 unshare network；本地 TCP/namespace identity 验证网络保持开放 | 同上 | NOT RUN |
-| H-07 | lifecycle | 正常 exit/signal 原样；abort/timeout/parent death 无后代残留 | 同上 | NOT RUN |
-| H-08 | FD security | 仅 stdio/request/mount FD 可见，Agent listener/db/log FD 不继承 | 同上 | NOT RUN |
+| H-01 | helper parser | version/size/count/FD/path 输入校验 | `cargo test -p future-agent sandbox::linux::request` | PASS（2026-09-03：version/path/NUL/phase/FD identity 与重复 FD；size/count 常量已强制，边界补测留 L3） |
+| H-02 | helper boundary | helper 绕过 Agent singleton，但非法直接调用失败 | `cargo test -p future-agent --test linux_sandbox_smoke` | PASS（2026-09-03：非法 payload 返回 infrastructure exit 125，未创建 singleton lock） |
+| H-03 | mount smoke | workspace/temp 写成功，workspace 外写失败且 host 无文件 | `cargo test -p future-agent --test linux_sandbox_smoke filesystem_ -- --ignored --test-threads=1` | PASS（2026-09-03：当前 Ubuntu 26.04/system bwrap；workspace 写成功、外部写拒绝、exit 23 原样） |
+| H-04 | secret smoke | 已有 secret 精确/glob 文件读写均失败 | 同上 | NOT RUN（2026-09-03：具体 unreadable mount 已 PASS；glob 展开属于 L3） |
+| H-05 | missing/symlink | missing exact 不能创建；symlink 不越界；host 无临时残留 | 同上 | NOT RUN（L3） |
+| H-06 | network | 未 unshare network；本地 TCP/namespace identity 验证网络保持开放 | 同上 | NOT RUN（argv 单测确认未使用 `--unshare-net`，仍需网络 smoke） |
+| H-07 | lifecycle | 正常 exit/signal 原样；abort/timeout/parent death 无后代残留 | 同上 | NOT RUN（2026-09-03：exit/signal/parent-death smoke 已 PASS；Agent timeout/abort 待补） |
+| H-08 | FD security | 仅 stdio/request/mount FD 可见，Agent listener/db/log FD 不继承 | 同上 | PASS（2026-09-03：mount FD 仅传给 bwrap，inner command smoke 未见 fd > 2） |
 | V-01 | violation | EACCES/EPERM/EROFS 结构化分类；普通失败和 2/126/127 不误判 | `cargo test -p future-agent sandbox::linux::violation tools::` | NOT RUN |
-| V-02 | escalation | Linux policy violation 可审批单次脱沙盒；infra failure 绝不 escalation | `cargo test -p future-agent tools:: rpc::approval` | NOT RUN |
+| V-02 | escalation | Linux policy violation 可审批单次脱沙盒；infra failure 绝不 escalation | `cargo test -p future-agent tools:: rpc::approval` | NOT RUN（L2 已保证 prepare/helper 初始化错误在 post-hoc 分类前直接返回；L3 补完整行为测试） |
 | G-01 | glob | 启动前已有匹配被硬保护；命令中新匹配只报告 detection-only | ignored Linux smoke | NOT RUN |
 | U-01 | RPC/Desktop | Linux availability/retry/reason/manual fallback | `cd desktop && npx vitest run src/integrations/agent/useSandboxAvailability.test.ts`；Rust bridge/settings tests | NOT RUN |
 | U-02 | i18n/UI | Settings/Composer 安装与限制文案中英文齐全 | `cd desktop && npx tsc --noEmit && npx eslint "src/**/*.{ts,tsx}" && npx vitest run` | NOT RUN |
