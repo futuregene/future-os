@@ -143,6 +143,12 @@ printf '%s\n' "network-open"   # 再访问测试者控制的本地 HTTP 服务
 | SM-05 | 网络保持开放 | NOT RUN | |
 | SM-06 | Settings/Composer 中英文与 manual fallback | NOT RUN | |
 
+### 5.1 当前开发机回归证据（不替代目标矩阵）
+
+2026-09-03 在 Ubuntu 26.04、x86_64、`/usr/bin/bwrap` 0.11.1 上执行了上述完整 ignored smoke 命令。结果为 **5/5 PASS、0 skip**：probe 返回 `available:true`；workspace 写入/外部拒绝与 exit 23 通过；mode-000 opaque file 覆盖保证 unreadable mount 不可读写且命令看不到内部 FD；原始 `SIGTERM` 保真；按 host PID/进程身份跟踪确认 helper 父死后后代消失；missing target 无 host 残留且新 glob 输出 detection-only marker。此结果关闭本机回归，但该系统版本不在 RH-01～RH-06 内，因此 SM-01 及 L5 目标真机状态仍为 `NOT RUN`。
+
+实现修复要点：probe 使用独立 mode-0700 tmpfs 验证可写临时目录与只读 root，避免把受控执行环境的 `/tmp` 挂载限制误判为 user namespace 禁用；unreadable file 使用临时 mode-000 opaque source，missing directory 使用 mode-000 tmpfs，避免对 ro-bind 目标执行会失败的 chmod；inner helper 通过专用 close-on-exec 状态 pipe 把原始 wait status 传回 outer helper；parent-death smoke 按 host `/proc` 的真实后代 PID 与进程身份检查，不再把 PID namespace 内的 PID 当作 host PID。
+
 ## 6. 负向环境矩阵
 
 负向测试必须使用专用 VM/主机快照，不要修改日常开发机的全局安全策略。每个场景恢复后再次确认正常 probe。具体 sysctl/LSM 配置因发行版而异，必须由机器管理员按发行版文档实施；以下只规定观察命令和产品断言，不提供绕过组织安全策略的命令。

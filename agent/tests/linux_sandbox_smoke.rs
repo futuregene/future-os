@@ -45,6 +45,7 @@ fn helper_request_with_globs(
             .collect(),
             glob_snapshots,
             policy_digest: "0".repeat(64),
+            status_fd: None,
         }
         .encode()
         .unwrap(),
@@ -132,8 +133,8 @@ fn helper_parent_death_does_not_leave_command_running() {
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
-    let pid_file = workspace.join("pid");
-    let command = format!("echo $$ > {}; exec sleep 30", pid_file.display());
+    let ready_file = workspace.join("ready");
+    let command = format!("touch {}; exec sleep 30", ready_file.display());
     let Some(request) = helper_request(command, &workspace, Vec::new()) else {
         return;
     };
@@ -142,25 +143,59 @@ fn helper_parent_death_does_not_leave_command_running() {
         .spawn()
         .unwrap();
     for _ in 0..100 {
-        if pid_file.exists() {
+        if ready_file.exists() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    let pid: i32 = std::fs::read_to_string(&pid_file)
-        .expect("sandboxed command did not start")
-        .trim()
-        .parse()
-        .unwrap();
+    assert!(ready_file.exists(), "sandboxed command did not start");
+    let descendants = descendant_processes(child.id());
+    assert!(
+        descendants.len() >= 3,
+        "expected bwrap, inner helper, and command descendants: {descendants:?}"
+    );
     child.kill().unwrap();
     child.wait().unwrap();
     for _ in 0..100 {
-        if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
+        if descendants.iter().all(|(pid, stat)| {
+            std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .map(|current| current != *stat)
+                .unwrap_or(true)
+        }) {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    panic!("sandboxed descendant {pid} survived helper death");
+    panic!("sandboxed descendants survived helper death: {descendants:?}");
+}
+
+fn descendant_processes(root: u32) -> Vec<(u32, String)> {
+    let mut parents = vec![root];
+    let mut descendants = Vec::new();
+    while let Some(parent) = parents.pop() {
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            break;
+        };
+        for entry in entries.flatten() {
+            let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+                continue;
+            };
+            let Ok(status) = std::fs::read_to_string(entry.path().join("status")) else {
+                continue;
+            };
+            let is_child = status.lines().any(|line| {
+                line.strip_prefix("PPid:")
+                    .and_then(|value| value.trim().parse::<u32>().ok())
+                    == Some(parent)
+            });
+            if is_child && !descendants.iter().any(|(seen, _)| *seen == pid) {
+                let stat = std::fs::read_to_string(entry.path().join("stat")).unwrap_or_default();
+                descendants.push((pid, stat));
+                parents.push(pid);
+            }
+        }
+    }
+    descendants
 }
 
 #[test]

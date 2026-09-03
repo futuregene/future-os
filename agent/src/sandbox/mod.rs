@@ -1670,7 +1670,8 @@ mod tests {
     #[test]
     fn sandbox_denial_heuristic_variants() {
         let ws = temp_workspace("denial-heur");
-        let s = enabled(&ws);
+        let mut s = enabled(&ws);
+        s.set_backend_available_for_test(true);
         assert!(!looks_like_sandbox_denial(&s, 0, "Operation not permitted"));
         assert!(looks_like_sandbox_denial(
             &s,

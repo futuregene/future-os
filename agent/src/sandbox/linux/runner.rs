@@ -58,6 +58,7 @@ pub fn prepare(
         mounts,
         glob_snapshots: plan.glob_snapshots,
         policy_digest: plan.policy_digest.clone(),
+        status_fd: None,
     };
     let encoded = request.encode()?;
     let executable = std::env::current_exe().map_err(LinuxSandboxRunnerError::CurrentExecutable)?;

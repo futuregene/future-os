@@ -1,6 +1,6 @@
 # Linux Bubblewrap 沙盒实施计划与验收矩阵
 
-状态：**开发执行基线；Wave 1–6 的 Rust/Tauri 本地门禁已完成，当前非交互 PATH 缺少 Node/npm 且受控环境禁用 product probe 所需 user namespace，均明确记为环境限制；等待 L5 真机矩阵与安全 review**（2026-09-03）。产品与安全语义以 [`LINUX_SANDBOX_PLAN.md`](LINUX_SANDBOX_PLAN.md) 为准；本文把 L0–L6 转成代码落点、提交顺序、自动化门禁和真机验收项，不改变 L-D1–L-D9。
+状态：**开发执行基线；Wave 1–6 的 Rust/Tauri 本地门禁已完成，本机 product probe 与 5 个 ignored Bubblewrap smoke 已实际 PASS；当前非交互 PATH 缺少 Node/npm，明确记为环境限制；等待 L5 目标真机矩阵与安全 review**（2026-09-03）。产品与安全语义以 [`LINUX_SANDBOX_PLAN.md`](LINUX_SANDBOX_PLAN.md) 为准；本文把 L0–L6 转成代码落点、提交顺序、自动化门禁和真机验收项，不改变 L-D1–L-D9。
 
 ## 1. 开发基线
 
@@ -142,19 +142,19 @@
 | H-01 | helper parser | version/size/count/FD/path 输入校验 | `cargo test -p future-agent sandbox::linux::request` | PASS（2026-09-03：version/path/NUL/phase/FD identity 与重复 FD；size/count 常量已强制，边界补测留 L3） |
 | H-02 | helper boundary | helper 绕过 Agent singleton，但非法直接调用失败 | `cargo test -p future-agent --test linux_sandbox_smoke` | PASS（2026-09-03：非法 payload 返回 infrastructure exit 125，未创建 singleton lock） |
 | H-03 | mount smoke | workspace/temp 写成功，workspace 外写失败且 host 无文件 | `cargo test -p future-agent --test linux_sandbox_smoke filesystem_ -- --ignored --test-threads=1` | PASS（2026-09-03：当前 Ubuntu 26.04/system bwrap；workspace 写成功、外部写拒绝、exit 23 原样） |
-| H-04 | secret smoke | 已有 secret 精确/glob 文件读写均失败 | 同上 | ENVIRONMENT LIMIT（2026-09-03：具体 unreadable mount 历史 PASS；本轮 glob 单测 PASS，但当前执行环境 probe=`user_namespace_disabled`，新增真 bwrap smoke 未运行） |
-| H-05 | missing/symlink | missing exact 不能创建；symlink 不越界；host 无临时残留 | 同上 | ENVIRONMENT LIMIT（2026-09-03：CAS inode cleanup 与 symlink 双路径单测 PASS；新增真 bwrap smoke 因当前环境禁用 userns 跳过） |
+| H-04 | secret smoke | 已有 secret 精确/glob 文件读写均失败 | 同上 | PASS（2026-09-03：本机真实 bwrap；unreadable file 由 mode-000 opaque source 覆盖，读写均失败且 inner command 仅见 stdio FD） |
+| H-05 | missing/symlink | missing exact 不能创建；symlink 不越界；host 无临时残留 | 同上 | PASS（2026-09-03：本机真实 bwrap；missing target 以 mode-000 tmpfs 覆盖，CAS placeholder 清理后 host 无残留；symlink 双路径单测 PASS） |
 | H-06 | network | 未 unshare network；本地 TCP/namespace identity 验证网络保持开放 | 同上 | NOT RUN（argv 单测确认未使用 `--unshare-net`，仍需网络 smoke） |
-| H-07 | lifecycle | 正常 exit/signal 原样；abort/timeout/parent death 无后代残留 | 同上 | NOT RUN（2026-09-03：exit/signal/parent-death smoke 已 PASS；Agent timeout/abort 待补） |
+| H-07 | lifecycle | 正常 exit/signal 原样；abort/timeout/parent death 无后代残留 | 同上 | PARTIAL PASS（2026-09-03：本机真实 bwrap 的 exit、原始 signal 与 parent-death 后代清理均 PASS；Agent timeout/abort 的 Linux 专项集成仍 NOT RUN） |
 | H-08 | FD security | 仅 stdio/request/mount FD 可见，Agent listener/db/log FD 不继承 | 同上 | PASS（2026-09-03：mount FD 仅传给 bwrap，inner command smoke 未见 fd > 2） |
 | V-01 | violation | EACCES/EPERM/EROFS 结构化分类；普通失败和 2/126/127 不误判 | `cargo test -p future-agent sandbox::linux::violation sandbox::tests::linux_denial` | PASS（2026-09-03：可信 marker 优先、推断 provenance；2/125/126/127 与普通错误排除） |
 | V-02 | escalation | Linux policy violation 可审批单次脱沙盒；infra failure 绝不 escalation | `cargo test -p future-agent tools:: rpc::approval` | PASS（2026-09-03：Linux classifier 接入既有整命令 post-hoc escalation；prepare/helper exit 125 不触发） |
-| G-01 | glob | 启动前已有匹配被硬保护；命令中新匹配只报告 detection-only | ignored Linux smoke | ENVIRONMENT LIMIT（2026-09-03：展开/检测单测 PASS；新增 combined smoke 因当前环境 probe=`user_namespace_disabled` 跳过） |
+| G-01 | glob | 启动前已有匹配被硬保护；命令中新匹配只报告 detection-only | ignored Linux smoke | PASS（2026-09-03：本机真实 bwrap；missing target 保持不可创建，命令中新建 glob 命中并输出 detection-only marker） |
 | U-01 | RPC/Desktop | Linux availability/retry/reason/manual fallback | `cd desktop && npx vitest run src/integrations/agent/useSandboxAvailability.test.ts`；Rust bridge/settings tests | PASS / ENVIRONMENT LIMIT（2026-09-03：既有记录显示 Desktop availability 12 tests PASS；本轮 Agent workspace tests、Tauri 1095 tests 与 fmt/clippy PASS；当前非交互 PATH 无 `node`/`npm`/`npx`，按 bounded 策略未安装、未重跑 Vitest） |
 | U-02 | i18n/UI | Settings/Composer 安装与限制文案中英文齐全 | `cd desktop && npx tsc --noEmit && npx eslint "src/**/*.{ts,tsx}" && npx vitest run` | PASS / ENVIRONMENT LIMIT（2026-09-03：既有记录显示 TypeScript、ESLint、Vitest 69 files / 687 tests PASS；本轮环境无 `node`/`npm`/`npx`，未安装依赖、未重跑） |
 | C-01 | CLI | machine-readable probe 与 doctor code 一致 | `cargo test -p future-agent --test cli_smoke && cargo test -p future-cli doctor` | PASS（2026-09-03：Agent machine-readable probe smoke PASS；future-cli doctor 20 tests PASS；本机实测 JSON 为 `linux_bubblewrap/user_namespace_disabled`） |
 | Q-01 | Rust gate | workspace + Tauri fmt/clippy | `make lint-rust` | PASS（2026-09-03 本轮分项有界执行：`cargo fmt --all --check`、workspace `cargo clippy --workspace --all-targets -- -D warnings`、Tauri fmt/clippy 均 PASS；当前 PATH 无 Node，未重跑依赖 Node 解析 toolchain 的 Make wrapper） |
-| Q-02 | all tests | Rust、Desktop、Mobile 全量单测 | `make test` | PARTIAL PASS / ENVIRONMENT LIMIT（2026-09-03 本轮未等待总 Make target：`cargo test --workspace -- --test-threads=1` PASS，Tauri 1095/1095 PASS；当前 PATH 无 `node`/`npm`/`npx`，Desktop/Mobile Node 门禁未重跑且未安装。既有记录的 Desktop 687 与 Mobile 551 tests PASS 保留为历史证据） |
+| Q-02 | all tests | Rust、Desktop、Mobile 全量单测 | `make test` | PARTIAL PASS / ENVIRONMENT LIMIT（2026-09-03 有界分项执行：`cargo test --workspace -- --test-threads=1` PASS；Tauri 1095 项首次 1094 PASS/1 个 remote runtime 时序测试 FAIL，单测定向重跑 PASS，判定为非本改动 flaky；当前 PATH 无 `node`/`npm`/`npx`，Desktop/Mobile Node 门禁未重跑且未安装。既有记录的 Desktop 687 与 Mobile 551 tests PASS 保留为历史证据） |
 | L5-01 | real hosts | Ubuntu 22.04/24.04、Debian stable、Fedora；x86_64/aarch64 | [`LINUX_SANDBOX_REAL_MACHINE_VALIDATION.md`](LINUX_SANDBOX_REAL_MACHINE_VALIDATION.md) RH/SM 矩阵 | NOT RUN |
 | L5-02 | packages | `.deb` 与 portable tarball 安装、`.deb` 升级/卸载及 system bwrap 引导 | 真机手册 PKG 矩阵 | NOT RUN（本期明确不发布 AppImage/rpm，不属于验收范围） |
 | L5-03 | security review | TOCTOU/FD/setuid/namespace/cleanup/escalation/logging review | 真机手册 SEC-01～SEC-12 + reviewer sign-off | NOT RUN |

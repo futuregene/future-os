@@ -5,9 +5,11 @@ use super::request::{HelperPhase, LinuxSandboxRequest, MountKind};
 use anyhow::{anyhow, Context, Result};
 use std::ffi::CString;
 use std::fs::File;
+use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::process::CommandExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
@@ -33,7 +35,12 @@ pub fn run_encoded(encoded: &str) -> ! {
 fn run_request(request: LinuxSandboxRequest) -> Result<ExitStatus> {
     match request.phase {
         HelperPhase::Outer => run_outer(request),
-        HelperPhase::Inner => run_inner(request),
+        HelperPhase::Inner => {
+            let status_fd = request.status_fd.context("missing status fd")?;
+            let status = run_inner(request)?;
+            write_raw_status(status_fd, status)?;
+            Ok(status)
+        }
     }
 }
 
@@ -60,18 +67,46 @@ fn run_outer(mut request: LinuxSandboxRequest) -> Result<ExitStatus> {
     }
     clear_cloexec(bwrap.as_raw_fd())?;
     let bwrap_fd = bwrap.as_raw_fd();
-    let mut inherited = Vec::with_capacity(request.mounts.len() + 1);
+    let (mut status_read, status_write) = create_pipe().context("create status pipe")?;
+    let status_fd = status_write.as_raw_fd();
+    clear_cloexec(status_fd)?;
+    let mut inherited = Vec::with_capacity(request.mounts.len() + 3);
     inherited.push(bwrap);
+    inherited.push(status_write);
+    let mut opaque_directories = std::collections::BTreeSet::new();
+    let mut needs_empty_file = false;
     for mount in &mut request.mounts {
         let file = open_mount_source(&mount.source)
             .with_context(|| format!("mount source is unavailable: {}", mount.source.display()))?;
         let fd = file.as_raw_fd();
         clear_cloexec(fd)?;
-        mount.expected = Some(identity_from_metadata(&file.metadata()?));
+        let metadata = file.metadata()?;
+        mount.expected = Some(identity_from_metadata(&metadata));
         mount.source_fd = Some(fd);
+        if matches!(
+            mount.kind,
+            MountKind::Unreadable | MountKind::MissingProtected
+        ) {
+            if metadata.is_dir() {
+                opaque_directories.insert(mount.target.clone());
+            } else {
+                needs_empty_file = true;
+            }
+        }
         inherited.push(file);
     }
+    let empty_file = needs_empty_file
+        .then(create_opaque_file)
+        .transpose()
+        .context("create unreadable-file source")?;
+    let empty_fd = if let Some(file) = &empty_file {
+        clear_cloexec(file.file.as_raw_fd())?;
+        Some(file.file.as_raw_fd())
+    } else {
+        None
+    };
     request.phase = HelperPhase::Inner;
+    request.status_fd = Some(status_fd);
     let encoded = request.encode()?;
     let current_exe = std::env::current_exe().context("resolve current helper executable")?;
 
@@ -98,17 +133,27 @@ fn run_outer(mut request: LinuxSandboxRequest) -> Result<ExitStatus> {
         let fd = mount.source_fd.context("validated mount fd disappeared")?;
         let source = format!("/proc/self/fd/{fd}");
         match mount.kind {
-            MountKind::Writable => command.arg("--bind"),
-            MountKind::ReadOnly | MountKind::Unreadable | MountKind::MissingProtected => {
-                command.arg("--ro-bind")
+            MountKind::Writable => {
+                command.arg("--bind").arg(source).arg(&mount.target);
             }
-        };
-        command.arg(source).arg(&mount.target);
-        if matches!(
-            mount.kind,
-            MountKind::Unreadable | MountKind::MissingProtected
-        ) {
-            command.arg("--chmod").arg("000").arg(&mount.target);
+            MountKind::ReadOnly => {
+                command.arg("--ro-bind").arg(source).arg(&mount.target);
+            }
+            MountKind::Unreadable | MountKind::MissingProtected => {
+                if opaque_directories.contains(&mount.target) {
+                    command
+                        .arg("--perms")
+                        .arg("000")
+                        .arg("--tmpfs")
+                        .arg(&mount.target);
+                } else {
+                    let source = format!(
+                        "/proc/self/fd/{}",
+                        empty_fd.context("missing unreadable-file fd")?
+                    );
+                    command.arg("--ro-bind").arg(source).arg(&mount.target);
+                }
+            }
         }
     }
     command
@@ -128,6 +173,10 @@ fn run_outer(mut request: LinuxSandboxRequest) -> Result<ExitStatus> {
         .filter_map(|mount| mount.source_fd)
         .collect();
     keep.push(bwrap_fd);
+    keep.push(status_fd);
+    if let Some(fd) = empty_fd {
+        keep.push(fd);
+    }
     // SAFETY: pre_exec runs after fork in the single child. close_unlisted_fds
     // only uses libc calls and stack data captured before the fork.
     unsafe {
@@ -145,7 +194,8 @@ fn run_outer(mut request: LinuxSandboxRequest) -> Result<ExitStatus> {
     command.process_group(0);
     let mut child = command.spawn().context("start verified bubblewrap")?;
     drop(inherited);
-    let status = wait_forwarding_signals(&mut child)?;
+    let bwrap_status = wait_forwarding_signals(&mut child)?;
+    let status = read_raw_status(&mut status_read).unwrap_or(bwrap_status);
     report_dynamic_glob_creations(&request)?;
     drop(placeholders);
     Ok(status)
@@ -192,12 +242,24 @@ fn run_inner(request: LinuxSandboxRequest) -> Result<ExitStatus> {
     for mount in &request.mounts {
         let actual = std::fs::metadata(&mount.target)
             .with_context(|| format!("verify mounted target {}", mount.target.display()))?;
-        let expected = mount.expected.as_ref().context("missing mount identity")?;
-        if identity_from_metadata(&actual) != *expected {
-            return Err(anyhow!(
-                "mounted target identity changed: {}",
-                mount.target.display()
-            ));
+        if matches!(
+            mount.kind,
+            MountKind::Unreadable | MountKind::MissingProtected
+        ) {
+            if actual.permissions().mode() & 0o777 != 0 {
+                return Err(anyhow!(
+                    "protected target permissions are not empty: {}",
+                    mount.target.display()
+                ));
+            }
+        } else {
+            let expected = mount.expected.as_ref().context("missing mount identity")?;
+            if identity_from_metadata(&actual) != *expected {
+                return Err(anyhow!(
+                    "mounted target identity changed: {}",
+                    mount.target.display()
+                ));
+            }
         }
     }
     // SAFETY: PR_SET_NO_NEW_PRIVS has no pointer arguments and is applied to
@@ -205,7 +267,9 @@ fn run_inner(request: LinuxSandboxRequest) -> Result<ExitStatus> {
     if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
         return Err(std::io::Error::last_os_error()).context("set no_new_privs");
     }
-    close_unlisted_fds(&[]);
+    let status_fd = request.status_fd.context("missing status fd")?;
+    set_cloexec(status_fd)?;
+    close_unlisted_fds(&[status_fd]);
     let (program, argv) = request.argv.split_first().context("empty command argv")?;
     let mut command = Command::new(program);
     command.args(argv).current_dir(&request.cwd);
@@ -253,6 +317,62 @@ fn wait_forwarding_signals(child: &mut std::process::Child) -> Result<ExitStatus
     Ok(status)
 }
 
+struct OpaqueFile {
+    file: File,
+    path: std::path::PathBuf,
+}
+
+impl Drop for OpaqueFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn create_opaque_file() -> Result<OpaqueFile> {
+    static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    for _ in 0..100 {
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            ".future-sandbox-unreadable-{}-{id}",
+            std::process::id()
+        ));
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o0)
+            .open(&path)
+        {
+            Ok(file) => return Ok(OpaqueFile { file, path }),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(anyhow!("could not allocate unreadable-file source"))
+}
+
+fn create_pipe() -> Result<(File, File)> {
+    let mut fds = [-1; 2];
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    // SAFETY: pipe2 returned two owned descriptors.
+    Ok(unsafe { (File::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])) })
+}
+
+fn write_raw_status(fd: i32, status: ExitStatus) -> Result<()> {
+    let bytes = status.into_raw().to_ne_bytes();
+    // SAFETY: this helper exclusively owns the inherited status descriptor.
+    let mut file = unsafe { File::from_raw_fd(fd) };
+    file.write_all(&bytes).context("write command status")
+}
+
+fn read_raw_status(file: &mut File) -> Option<ExitStatus> {
+    let mut bytes = [0; std::mem::size_of::<i32>()];
+    file.read_exact(&mut bytes).ok()?;
+    Some(ExitStatus::from_raw(i32::from_ne_bytes(bytes)))
+}
+
 fn open_mount_source(path: &std::path::Path) -> Result<File> {
     let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| anyhow!("NUL in path"))?;
     // O_PATH pins the inode without requiring read permission and works for
@@ -270,6 +390,14 @@ fn clear_cloexec(fd: i32) -> Result<()> {
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
     if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } < 0 {
         return Err(std::io::Error::last_os_error()).context("make mount fd inheritable");
+    }
+    Ok(())
+}
+
+fn set_cloexec(fd: i32) -> Result<()> {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+        return Err(std::io::Error::last_os_error()).context("mark status fd close-on-exec");
     }
     Ok(())
 }
@@ -332,7 +460,6 @@ fn reap_all_children() {
 }
 
 fn mirror_status(status: ExitStatus) -> ! {
-    use std::os::unix::process::ExitStatusExt;
     if let Some(signal) = status.signal() {
         unsafe {
             libc::signal(signal, libc::SIG_DFL);

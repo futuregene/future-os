@@ -2,7 +2,7 @@ use super::probe::BwrapIdentity;
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
 
-pub const REQUEST_VERSION: u16 = 2;
+pub const REQUEST_VERSION: u16 = 3;
 pub const MAX_ENCODED_REQUEST_BYTES: usize = 256 * 1024;
 pub const MAX_MOUNTS: usize = 2048;
 pub const MAX_ARG_BYTES: usize = 128 * 1024;
@@ -45,6 +45,7 @@ pub struct LinuxSandboxRequest {
     pub mounts: Vec<MountRequest>,
     pub glob_snapshots: Vec<super::plan::GlobSnapshot>,
     pub policy_digest: String,
+    pub status_fd: Option<i32>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -134,6 +135,13 @@ impl LinuxSandboxRequest {
             return Err(RequestError::InvalidDigest);
         }
         let mut fds = std::collections::BTreeSet::new();
+        match (self.phase, self.status_fd) {
+            (HelperPhase::Outer, None) => {}
+            (HelperPhase::Inner, Some(fd)) if fd >= 3 => {
+                fds.insert(fd);
+            }
+            _ => return Err(RequestError::InvalidFd),
+        }
         for mount in &self.mounts {
             validate_path(&mount.source)?;
             validate_path(&mount.target)?;
@@ -201,6 +209,7 @@ mod tests {
             }],
             glob_snapshots: Vec::new(),
             policy_digest: "a".repeat(64),
+            status_fd: None,
         }
     }
 
@@ -237,6 +246,7 @@ mod tests {
         let mut invalid = request();
         invalid.phase = HelperPhase::Inner;
         assert_eq!(invalid.validate(), Err(RequestError::InvalidFd));
+        invalid.status_fd = Some(6);
         invalid.mounts[0].source_fd = Some(7);
         invalid.mounts[0].expected = Some(identity());
         invalid.mounts.push(invalid.mounts[0].clone());

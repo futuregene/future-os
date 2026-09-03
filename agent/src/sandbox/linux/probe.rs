@@ -14,7 +14,8 @@ pub const REQUIRED_BWRAP_OPTIONS: &[&str] = &[
     "--cap-drop",
     "--ro-bind",
     "--bind",
-    "--chmod",
+    "--tmpfs",
+    "--perms",
     "--chdir",
     "--dev",
     "--proc",
@@ -34,8 +35,9 @@ pub const BASELINE_BWRAP_ARGS: &[&str] = &[
     "--bind",
     "/tmp",
     "/tmp",
-    "--chmod",
-    "0755",
+    "--perms",
+    "0700",
+    "--tmpfs",
     "/tmp",
     "--chdir",
     "/",
@@ -44,7 +46,9 @@ pub const BASELINE_BWRAP_ARGS: &[&str] = &[
     "--proc",
     "/proc",
     "--",
-    "/bin/true",
+    "/bin/sh",
+    "-c",
+    "touch /tmp/future-bwrap-probe && ! touch /etc/future-bwrap-probe",
 ];
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
