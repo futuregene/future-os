@@ -881,7 +881,7 @@ pub struct Goal {
     /// Session retention: the last run's agent session that MAY be resumable.
     /// The loop kernel never decides resume-vs-fresh itself — it only records
     /// WHY the session was interrupted (the failure classification) and keeps
-    /// the session id on disk; the CALLER (orchestrator / `run --session-policy`)
+    /// the session id on disk; the CALLER (orchestrator / `run --resume-session`)
     /// decides whether to resume it or start fresh. Written at run exit.
     #[serde(default)]
     pub session_retention: Option<SessionRetention>,

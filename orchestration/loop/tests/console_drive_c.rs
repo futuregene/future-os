@@ -189,6 +189,42 @@ fn supervisor_surface() {
     .contains("--adapter-id"));
     assert!(cli_err(&["supervisor", "events"]).contains("--goal required"));
     assert!(cli_err(&["supervisor", "bogus", "--goal", &gid]).contains("propose|receipt|events"));
+    // Ghost flags removed: flags the reject array accepted but the parse
+    // closure never read are now hard `unknown flag` errors.
+    assert!(cli_err(&[
+        "supervisor",
+        "propose",
+        "--goal",
+        &gid,
+        "--agent-id",
+        "sup",
+        "--decision-id",
+        "d",
+        "--target-agent-id",
+        "w",
+        "--outcome",
+        "x",
+    ])
+    .contains("unknown flag `--outcome`"));
+    assert!(cli_err(&[
+        "supervisor",
+        "receipt",
+        "--goal",
+        &gid,
+        "--decision-id",
+        "d",
+        "--receipt-id",
+        "r",
+        "--adapter-id",
+        "a",
+        "--agent-id",
+        "sup",
+    ])
+    .contains("unknown flag `--agent-id`"));
+    assert!(
+        cli_err(&["supervisor", "events", "--goal", &gid, "--format", "json",])
+            .contains("unknown flag `--format`")
+    );
 }
 
 // ── task-graph / attention ─────────────────────────────────────────────────

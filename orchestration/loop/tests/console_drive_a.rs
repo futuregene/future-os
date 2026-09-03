@@ -1433,6 +1433,28 @@ fn replan_ack_and_obligations() {
     .contains("not found"));
     assert!(cli_err(&["replan", "obligations"]).contains("--goal required"));
     assert!(cli_err(&["replan", "obligations", "--goal", "goal_nope"]).contains("not found"));
+    // Ghost flags removed: `replan ack` no longer accepts --format/--json,
+    // `replan obligations` no longer accepts --delta-kind.
+    assert!(cli_err(&[
+        "replan",
+        "ack",
+        "--goal",
+        &gid,
+        "--delta-kind",
+        "vision_patch",
+        "--format",
+        "json"
+    ])
+    .contains("unknown flag `--format`"));
+    assert!(cli_err(&[
+        "replan",
+        "obligations",
+        "--goal",
+        &gid,
+        "--delta-kind",
+        "vision_patch"
+    ])
+    .contains("unknown flag `--delta-kind`"));
 }
 
 // ── top-level dispatch quirks ──────────────────────────────────────────────

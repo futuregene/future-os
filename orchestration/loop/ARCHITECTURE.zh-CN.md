@@ -292,10 +292,10 @@ ACTIVE 或 PARKED 中的会话都可能被中断（parked 会话不会撞 429，
   污染：**应 fresh**。
 - `HardError` — 回合出错且无可恢复的基础设施原因：**应 fresh**。
 
-内核只提供这个分类（观察数据）；resume-vs-fresh 由调用方经
-`--session-policy` / `--resume-session` 显式决策，默认 `auto` 只 resume
-内核判定「可恢复」（`InfraRecoverable`）的会话。内核依然是纯工具——
-提供状态和信号，但**从不替 agent 做决策**。
+内核只提供这个分类（观察数据）；resume-vs-fresh 由调用方显式决策。
+**默认即 fresh —— 没有 `--session-policy` 标志。** 唯一恢复路径是显式 pin
+（`--resume-session <id>`），因为 goal 级 retention 只存单个 id，并行 worker
+下有歧义。内核依然是纯工具——提供状态和信号，但**从不替 agent 做决策**。
 
 两条界定让生命周期保持简单：泊车发生在 **turn 边界**（不做 turn 中途的
 抢占式挂起或检查点），会话绑定**一个 goal**（不跨 goal 复用——上下文

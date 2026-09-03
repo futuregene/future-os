@@ -761,10 +761,10 @@ fn notify_dead_holders_early_returns() {
     std::env::remove_var("FUTURE_LOOP_AGENT_ADDR");
 }
 
-// ── run session-policy validation + resume-session parsing ─────────────────
+// ── run session-policy removal + resume-session parsing ───────────────────
 
 #[test]
-fn run_rejects_bad_session_policy() {
+fn run_rejects_removed_session_policy_flag() {
     let cr = cli_root();
     let gid = init_goal(&cr, "run session policy");
     let err = cli_err(&[
@@ -774,10 +774,23 @@ fn run_rejects_bad_session_policy() {
         "--agent-id",
         "a1",
         "--session-policy",
-        "bogus",
+        "fresh",
     ]);
-    assert!(
-        err.contains("--session-policy must be auto | fresh | resume"),
-        "{err}"
-    );
+    assert!(err.contains("unknown flag `--session-policy`"), "{err}");
+}
+
+#[test]
+fn run_rejects_resume_policy_value() {
+    let cr = cli_root();
+    let gid = init_goal(&cr, "run resume policy");
+    let err = cli_err(&[
+        "run",
+        "--goal",
+        &gid,
+        "--agent-id",
+        "a1",
+        "--session-policy",
+        "resume",
+    ]);
+    assert!(err.contains("unknown flag `--session-policy`"), "{err}");
 }

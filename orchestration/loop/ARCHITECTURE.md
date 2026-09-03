@@ -364,9 +364,10 @@ is now — new todos, fresh evidence, current gauges, gate verdicts.
 - `HardError` — the turn errored without a recoverable infra cause: **fresh**.
 
 The kernel only provides this classification (observation data); the caller
-decides resume-vs-fresh explicitly via `--session-policy` /
-`--resume-session`, and the default `auto` resumes only sessions the kernel
-judged resumable (`InfraRecoverable`). The kernel stays a pure tool: it
+decides resume-vs-fresh explicitly. **Fresh is the default — there is no
+`--session-policy` flag.** The only resume path is an explicit pin
+(`--resume-session <id>`), because the goal-level retention holds a single id
+and is ambiguous with parallel workers. The kernel stays a pure tool: it
 provides state and signals, but never makes the decision.
 
 Two scoping rules keep the lifecycle simple: parking happens at **turn
