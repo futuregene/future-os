@@ -4060,19 +4060,40 @@ fn claim_selected_with_lease(
 /// uses it to decide session retention (resume vs fresh), never the kernel.
 ///
 /// Enqueue an intervention report to the registered supervisor session (the
-/// up channel). `dedup_key` doubles as the idempotency key: re-sending the
-/// same key is a no-op on the agent (`knows_request`), so "state transition
-/// only" notification is enforced by keying on the transition (todo id +
-/// failure count, gate ids, …). No supervisor registered → the report is
-/// dropped (the durable user-gate ledger remains the authoritative
-/// intervention channel).
+/// up channel). Dual-mode: the note is FIRST written to the ledger
+/// ([`crate::store::Event::SupervisorNote`]) — durable, replayable, and
+/// visible to `supervisor events` / `status` even when the push is lost or the
+/// supervisor is busy — and THEN pushed to the supervisor session, which only
+/// wakes an IDLE supervisor (an active orchestrator drains it late).
+/// `dedup_key` doubles as the prompt idempotency key (re-sending the same key
+/// is a no-op on the agent) AND is recorded on the ledger note so the two
+/// channels correlate. No supervisor registered → the note is still ledgered
+/// (a later `supervisor register` reads it back); only the push is skipped.
 #[doc(hidden)] // test-visible seam
+#[allow(clippy::too_many_arguments)]
 pub async fn notify_supervisor(
+    store: &mut Store,
     client: &mut crate::agent_client::AgentClient,
+    goal_id: &str,
     supervisor_session_id: Option<&str>,
+    kind: &str,
+    todo_id: &str,
     message: &str,
     dedup_key: &str,
 ) {
+    // ① Durable ledger note — authoritative intervention channel; survives a
+    // lost/delayed push and a busy supervisor.
+    if let Err(e) = store.append(crate::store::Event::SupervisorNote {
+        goal_id: goal_id.to_string(),
+        todo_id: todo_id.to_string(),
+        note_kind: kind.to_string(),
+        message: message.to_string(),
+        dedup_key: dedup_key.to_string(),
+        ts: crate::state::now_epoch(),
+    }) {
+        println!("   ⚠ supervisor note ledger append failed: {e}");
+    }
+    // ② Best-effort push — wakes an idle supervisor only.
     let Some(sid) = supervisor_session_id else {
         return;
     };
@@ -4089,16 +4110,21 @@ pub async fn notify_supervisor(
 /// that hits the same stop re-notifies only once.
 #[doc(hidden)] // test-visible seam
 pub async fn notify_infra_stop(
+    store: &mut Store,
     client: &mut crate::agent_client::AgentClient,
-    supervisor_session_id: Option<&str>,
     goal_id: &str,
+    supervisor_session_id: Option<&str>,
     todo_id: &str,
     kind: &str,
     detail: &str,
 ) {
     notify_supervisor(
+        store,
         client,
+        goal_id,
         supervisor_session_id,
+        "infra_stopped",
+        todo_id,
         &format!(
             "[future-loop] goal {goal_id}: todo {todo_id} stopped before completion ({kind}) — {detail}"
         ),
@@ -4121,9 +4147,7 @@ pub async fn notify_dead_holders(store: &mut Store, goal_id: &str) -> Result<()>
     let Some(goal) = store.replay(goal_id)? else {
         return Ok(());
     };
-    let Some(supervisor) = goal.supervisor_session_id.clone() else {
-        return Ok(());
-    };
+    let supervisor = goal.supervisor_session_id.clone();
     let dead: Vec<(String, u32)> = crate::work_items::task_lease::dead_holder_todos(&goal)
         .into_iter()
         .filter_map(|t| t.holder_pid.map(|pid| (t.id.clone(), pid)))
@@ -4138,8 +4162,12 @@ pub async fn notify_dead_holders(store: &mut Store, goal_id: &str) -> Result<()>
     };
     for (todo_id, pid) in dead {
         notify_supervisor(
+            store,
             &mut client,
-            Some(supervisor.as_str()),
+            goal_id,
+            supervisor.as_deref(),
+            "host_died",
+            &todo_id,
             &format!(
                 "[future-loop] goal {goal_id}: todo {todo_id} stopped before completion (host_died) — holder pid {pid} is gone (no release); relaunch to reclaim the lease"
             ),
@@ -4165,6 +4193,18 @@ async fn run_turns(
     last_failure_kind: &mut Option<crate::state::FailureKind>,
 ) -> Result<()> {
     let mut turn = 0u32;
+    // P2: goal-monotonic turn counter. `turn` below restarts at 1 on every
+    // `run` process, so a worker relaunched across runs (or resumed after a
+    // timeout) would re-emit `turn-1` heartbeat receipts and decision
+    // summaries, making cross-run provenance unreadable from the ledger. The
+    // number of already-recorded decision summaries equals the count of turns
+    // that have STARTED on this goal (timeout turns included, because the
+    // receipt is written before the turn executes), so offset the local
+    // counter by it to obtain a goal-wide monotonic turn number.
+    let base_turn = store
+        .events(goal_id)
+        .map(|events| crate::quota::decision_summary::decision_summaries(&events).len() as u32)
+        .unwrap_or(0);
     // Continue note for the NEXT turn: set when the previous turn ended
     // incomplete; consumed exactly once by the next execute_turn call.
     let mut next_continue_note: Option<String> = None;
@@ -4204,15 +4244,25 @@ async fn run_turns(
         if turn > max_turns {
             bail!("max-turns ({max_turns}) reached without validated closure");
         }
+        // Goal-wide turn number: `turn` is local to this run process, so every
+        // persisted reference (decision summary, heartbeat receipt, run record,
+        // client_request_id) must use the offset value to stay distinguishable
+        // across runs.
+        let global_turn = base_turn + turn;
         let goal = store
             .replay(goal_id)?
             .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found (deleted while running?)"))?;
         let mut packet = decide_for(&goal, SystemTime::now(), agent_id);
         // P1-1②③: persist the compact decision projection + the heartbeat
         // receipt for this turn (projection-only; replay ignores both).
-        crate::quota::decision_summary::record_turn_decision(store, &packet, agent_id, turn)?;
+        crate::quota::decision_summary::record_turn_decision(
+            store,
+            &packet,
+            agent_id,
+            global_turn,
+        )?;
         println!(
-            "── turn {turn}: decision={} mode={} | {}",
+            "── turn {global_turn}: decision={} mode={} | {}",
             packet.decision,
             packet.interaction_contract.mode.as_str(),
             packet.reason
@@ -4250,8 +4300,12 @@ async fn run_turns(
             let gate_ids = &packet.interaction_contract.user_channel.todo_ids;
             let key = format!("ask_user:{}", gate_ids.join(","));
             notify_supervisor(
+                store,
                 client,
+                goal_id,
                 goal.supervisor_session_id.as_deref(),
+                "ask_user",
+                &gate_ids.join(","),
                 &format!(
                     "[future-loop] goal {goal_id} needs your decision on user gate(s): {}. Question: {q}",
                     gate_ids.join(", ")
@@ -4379,7 +4433,7 @@ async fn run_turns(
             &boundary,
             agent_id,
             &todo,
-            turn,
+            global_turn,
             goal.history.last(),
             true,
             Some(runs_dir),
@@ -4404,9 +4458,10 @@ async fn run_turns(
                         // polling a dead worker.
                         *last_failure_kind = Some(crate::state::FailureKind::InfraRecoverable);
                         notify_infra_stop(
+                            store,
                             client,
-                            goal.supervisor_session_id.as_deref(),
                             goal_id,
+                            goal.supervisor_session_id.as_deref(),
                             &todo_id,
                             "transport",
                             &format!("{e}"),
@@ -4427,9 +4482,10 @@ async fn run_turns(
                     // otherwise skips the ②/③ reports).
                     *last_failure_kind = Some(crate::state::FailureKind::InfraRecoverable);
                     notify_infra_stop(
+                        store,
                         client,
-                        goal.supervisor_session_id.as_deref(),
                         goal_id,
+                        goal.supervisor_session_id.as_deref(),
                         &todo_id,
                         "timeout",
                         &format!("turn exceeded --max-turn-secs ({max_turn_secs}s)"),
@@ -4447,9 +4503,10 @@ async fn run_turns(
                 Err(e) => {
                     *last_failure_kind = Some(crate::state::FailureKind::InfraRecoverable);
                     notify_infra_stop(
+                        store,
                         client,
-                        goal.supervisor_session_id.as_deref(),
                         goal_id,
+                        goal.supervisor_session_id.as_deref(),
                         &todo_id,
                         "transport",
                         &format!("{e}"),
@@ -4595,8 +4652,12 @@ async fn run_turns(
             // transition keyed on the todo id, so re-notification across runs
             // is deduped).
             notify_supervisor(
+                store,
                 client,
+                goal_id,
                 g.supervisor_session_id.as_deref(),
+                "completed",
+                &todo_id,
                 &format!(
                     "[future-loop] goal {goal_id}: todo {todo_id} completed{} — evidence: {}",
                     if is_last {
@@ -4655,8 +4716,12 @@ async fn run_turns(
                         .unwrap_or_else(|| record.terminal_state.clone()),
                 };
                 notify_supervisor(
+                    store,
                     client,
+                    goal_id,
                     g.supervisor_session_id.as_deref(),
+                    "failed",
+                    &todo_id,
                     &format!(
                         "[future-loop] goal {goal_id}: todo {todo_id} failed (attempt {attempts}) — error: {failure_text}",
                     ),
@@ -4711,9 +4776,10 @@ async fn run_turns(
                     // Keyed on the streak so a relaunch that re-exhausts
                     // re-notifies at the new streak value.
                     notify_infra_stop(
+                        store,
                         client,
-                        g.supervisor_session_id.as_deref(),
                         goal_id,
+                        g.supervisor_session_id.as_deref(),
                         &todo_id,
                         "incomplete_budget",
                         &format!(
@@ -5570,26 +5636,15 @@ fn auto_register_workspaces(cwd: &str) -> Vec<String> {
     }
 }
 
-/// P1-2③: run the drift self-heal at run start and print the repair summary.
-/// Extracted so the drifted-index projection (and both backup-path variants)
-/// are unit-testable without a live agent client.
-fn run_index_self_heal(store: &mut Store, goal_id: &str) -> Result<()> {
-    if let Some(outcome) = crate::runtime::run_index::repair_index_if_drifted(store, goal_id)? {
-        print_run_index_self_heal(&outcome);
-    }
+/// P1-2③: run-index self-heal seam at run start. The run index is no longer
+/// a persisted append-only file (writers stopped appending it — that was the
+/// cross-process interleave drift source — and readers derive it from the run
+/// files on disk via `run_index::load_run_index`). There is therefore nothing
+/// to self-heal at run start; the seam is kept as a no-op so the run path's
+/// intent stays explicit. The legacy `runs index` / `store verify --repair`
+/// commands still rebuild an index.jsonl on demand for human inspection.
+fn run_index_self_heal(_store: &mut Store, _goal_id: &str) -> Result<()> {
     Ok(())
-}
-
-fn print_run_index_self_heal(outcome: &crate::runtime::run_index::IndexRepairOutcome) {
-    let backup = if outcome.rebuilt.backup_path.is_empty() {
-        "none".to_string()
-    } else {
-        outcome.rebuilt.backup_path.clone()
-    };
-    println!(
-        "⚒ projection self-heal: run_index drifted ({} rows) — rebuilt {} rows (backup {backup})",
-        outcome.drift.drift_count, outcome.rebuilt.rows_written,
-    );
 }
 
 /// P0-2①: a completed advancement todo is a delivery pending verification —
@@ -7935,6 +7990,16 @@ fn describe_event(event: &crate::store::Event) -> String {
                 "progress_reported agent={agent_id} todo={todo_id} message=\"{message}\""
             );
         }
+        Event::SupervisorNote {
+            todo_id,
+            note_kind,
+            message,
+            ..
+        } => {
+            return format!(
+                "supervisor_note kind={note_kind} todo={todo_id} message=\"{message}\""
+            );
+        }
     };
     kind.to_string()
 }
@@ -10104,35 +10169,6 @@ mod residual_branch_tests {
         );
     }
 
-    // ── print_run_index_self_heal: empty + non-empty backup ────────────────
-    #[test]
-    fn run_index_self_heal_prints_both_backup_variants() {
-        let drift = crate::runtime::run_index::IndexDriftReport {
-            goal_id: "g".into(),
-            index_path: String::new(),
-            index_rows: 0,
-            run_files: 1,
-            missing_rows: 1,
-            stale_rows: 0,
-            duplicate_rows: 0,
-            drift_count: 1,
-            repair_recommended: true,
-            missing_identities: vec![],
-            stale_identities: vec![],
-        };
-        let mk = |backup: String| crate::runtime::run_index::IndexRepairOutcome {
-            drift: drift.clone(),
-            rebuilt: crate::runtime::run_index::RebuildReport {
-                index_path: String::new(),
-                backup_path: backup,
-                rows_written: 1,
-                non_destructive: true,
-            },
-        };
-        print_run_index_self_heal(&mk(String::new()));
-        print_run_index_self_heal(&mk("index.pre-rebuild-123.jsonl".into()));
-    }
-
     // ── record_delivery_if_advancement: advancement vs non-advancement ─────
     #[test]
     fn record_delivery_only_for_advancement_todos() {
@@ -10153,24 +10189,6 @@ mod residual_branch_tests {
         let goal = store.replay("g").unwrap().unwrap();
         assert!(goal.delivery_state("t1").is_some());
         assert!(goal.delivery_state("m1").is_none());
-    }
-
-    // ── run_index_self_heal: drifted index drives the repair summary ────────
-    #[test]
-    fn run_index_self_heal_detects_and_repairs_drift() {
-        let (_dir, mut store) = tmp_store();
-        registered(&mut store, "g");
-        // Seed a run file (source of truth) with no index row → drift.
-        let runs = store.goal_dir("g").join("runs");
-        std::fs::create_dir_all(&runs).unwrap();
-        std::fs::write(
-            runs.join("a.json"),
-            r#"{"timestamp":"123","turn":1,"terminal_state":"completed"}"#,
-        )
-        .unwrap();
-        run_index_self_heal(&mut store, "g").unwrap();
-        // A clean index now reports no drift (the None arm).
-        run_index_self_heal(&mut store, "g").unwrap();
     }
 
     fn seed_overdue_delivery(store: &mut Store) {

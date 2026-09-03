@@ -10,7 +10,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::Serialize;
 
-use crate::runtime::run_history::{read_index_rows, row_epoch, RunIndexRow};
+use crate::runtime::run_history::{row_epoch, RunIndexRow};
 
 pub const RUN_ARCHIVE_DIR: &str = "archive";
 
@@ -51,11 +51,9 @@ pub fn archive_runs_before(
     cutoff_epoch: u64,
 ) -> Result<CompactionReport> {
     let runs = crate::runtime::runs_dir(runtime_root, goal_id);
-    let index = runs.join("index.jsonl");
-    if !index.exists() {
-        anyhow::bail!("goal {goal_id} has no run index to compact");
-    }
-    let rows = read_index_rows(&index)?;
+    // The index is a pure projection: derive it from the run files on disk
+    // (no persistent index.jsonl to read or re-point).
+    let rows = crate::runtime::run_index::load_run_index(runtime_root, goal_id)?;
     let archive_dir = runs.join(RUN_ARCHIVE_DIR);
 
     let mut archived: Vec<String> = vec![];
@@ -97,34 +95,9 @@ pub fn archive_runs_before(
         rewritten.push(rewritten_row);
     }
 
-    if !archived.is_empty() {
-        // Backup the pre-compaction index (rollback), then rewrite.
-        let backup = runs.join(format!(
-            "index.pre-compaction-{}.jsonl",
-            crate::state::now_epoch()
-        ));
-        std::fs::copy(&index, &backup).context("backup run index")?;
-        let payload = rewritten
-            .iter()
-            .map(|row| {
-                serde_json::json!({
-                    "goal_id": row.goal_id,
-                    "timestamp": row.timestamp,
-                    "path": row.path,
-                    "turn": row.turn,
-                    "classification": row.classification,
-                })
-            })
-            .collect::<Vec<_>>();
-        let mut text = String::new();
-        for value in payload {
-            text.push_str(&serde_json::to_string(&value)?);
-            text.push('\n');
-        }
-        let tmp = index.with_extension("jsonl.tmp");
-        std::fs::write(&tmp, text).context("write compacted index tmp")?;
-        std::fs::rename(&tmp, &index).context("rename compacted index")?;
-    }
+    // NOTE: the index is no longer persisted, so there is nothing to re-point
+    // or rewrite — `load_run_index` re-derives rows (including archived paths)
+    // from the run files on the next read.
 
     Ok(CompactionReport {
         goal_id: goal_id.to_string(),
@@ -143,8 +116,7 @@ pub fn archive_keeping_latest(
     goal_id: &str,
     keep: usize,
 ) -> Result<CompactionReport> {
-    let index = crate::runtime::index_path(runtime_root, goal_id);
-    let mut rows = read_index_rows(&index)?;
+    let mut rows = crate::runtime::run_index::load_run_index(runtime_root, goal_id)?;
     if rows.len() <= keep {
         return Ok(CompactionReport {
             goal_id: goal_id.to_string(),
@@ -200,15 +172,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let runs = dir.path().join("goals").join("g1").join("runs");
         std::fs::create_dir_all(&runs).unwrap();
-        let index = runs.join("index.jsonl");
-        // A row whose timestamp does not parse is kept verbatim...
+        // A run file whose timestamp does not parse is kept verbatim...
         std::fs::write(
-            &index,
-            "{\"goal_id\":\"g1\",\"timestamp\":\"not-a-date\",\"path\":\"goals/g1/runs/x.json\",\"turn\":0,\"classification\":\"run_recorded\"}\n\
-             {\"goal_id\":\"g1\",\"timestamp\":\"2026-07-01T00:00:00+00:00\",\"path\":\"goals/g1/runs/2026-07-01T00-00-00-00-00.json\",\"turn\":1,\"classification\":\"run_recorded\"}\n",
+            runs.join("x.json"),
+            r#"{"timestamp":"not-a-date","turn":0,"terminal_state":"run_recorded"}"#,
         )
         .unwrap();
-        std::fs::write(runs.join("2026-07-01T00-00-00-00-00.json"), "{}").unwrap();
+        std::fs::write(
+            runs.join("2026-07-01T00-00-00-00-00.json"),
+            r#"{"timestamp":"2026-07-01T00:00:00+00:00","turn":1,"terminal_state":"run_recorded"}"#,
+        )
+        .unwrap();
         // ...and a pre-existing archive destination is left in place (no rename).
         let archive = runs.join("archive");
         std::fs::create_dir_all(&archive).unwrap();
@@ -220,10 +194,13 @@ mod tests {
         let cutoff = crate::scheduler::state::parse_epoch("2026-08-05T00:00:00+00:00").unwrap();
         let report = archive_runs_before(dir.path().to_str().unwrap(), "g1", cutoff).unwrap();
         assert_eq!(report.archived.len(), 1);
-        let rows = read_index_rows(&index).unwrap();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].path, "goals/g1/runs/x.json", "unparseable row kept");
-        assert!(rows[1].path.contains("archive/"));
+        let rows =
+            crate::runtime::run_index::load_run_index(dir.path().to_str().unwrap(), "g1").unwrap();
+        assert!(
+            rows.iter().any(|r| r.path == "goals/g1/runs/x.json"),
+            "unparseable row kept"
+        );
+        assert!(rows.iter().any(|r| r.path.contains("archive/")));
         // The old run file stays put because the destination already existed.
         assert!(runs.join("2026-07-01T00-00-00-00-00.json").exists());
         let kept = std::fs::read_to_string(archive.join("2026-07-01T00-00-00-00-00.json")).unwrap();
@@ -235,15 +212,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let runs = dir.path().join("goals").join("g1").join("runs");
         std::fs::create_dir_all(&runs).unwrap();
-        let index = runs.join("index.jsonl");
         std::fs::write(
-            &index,
-            "{\"goal_id\":\"g1\",\"timestamp\":\"2026-07-01T00:00:00+00:00\",\"path\":\"goals/g1/runs/2026-07-01T00-00-00-00-00.json\",\"turn\":1,\"classification\":\"run_recorded\"}\n\
-             {\"goal_id\":\"g1\",\"timestamp\":\"2026-08-05T00:00:00+00:00\",\"path\":\"goals/g1/runs/2026-08-05T00-00-00-00-00.json\",\"turn\":2,\"classification\":\"run_recorded\"}\n",
+            runs.join("2026-07-01T00-00-00-00-00.json"),
+            r#"{"timestamp":"2026-07-01T00:00:00+00:00","turn":1,"terminal_state":"run_recorded"}"#,
         )
         .unwrap();
-        std::fs::write(runs.join("2026-07-01T00-00-00-00-00.json"), "{}").unwrap();
-        std::fs::write(runs.join("2026-08-05T00-00-00-00-00.json"), "{}").unwrap();
+        std::fs::write(
+            runs.join("2026-08-05T00-00-00-00-00.json"),
+            r#"{"timestamp":"2026-08-05T00:00:00+00:00","turn":2,"terminal_state":"run_recorded"}"#,
+        )
+        .unwrap();
 
         let now = crate::scheduler::state::parse_epoch("2026-08-05T00:00:00+00:00").unwrap();
         let cutoff = now.saturating_sub(3 * 86400);
@@ -251,21 +229,13 @@ mod tests {
         assert_eq!(report.archived.len(), 1);
         assert!(report.archived[0].contains("archive/"));
         assert!(runs.join("archive/2026-07-01T00-00-00-00-00.json").exists());
-        // The archived row is re-pointed; the fresh row is untouched.
-        let rows = read_index_rows(&index).unwrap();
+        // The archived run re-derives under archive/; the fresh run is intact.
+        let rows =
+            crate::runtime::run_index::load_run_index(dir.path().to_str().unwrap(), "g1").unwrap();
         assert_eq!(rows.len(), 2);
-        assert!(rows[0].path.contains("archive/"));
-        assert_eq!(rows[1].path, "goals/g1/runs/2026-08-05T00-00-00-00-00.json");
-        // Index backup exists (rollback).
-        let backups: Vec<_> = std::fs::read_dir(&runs)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with("index.pre-compaction")
-            })
-            .collect();
-        assert_eq!(backups.len(), 1);
+        assert!(rows.iter().any(|r| r.path.contains("archive/")));
+        assert!(rows
+            .iter()
+            .any(|r| r.path == "goals/g1/runs/2026-08-05T00-00-00-00-00.json"));
     }
 }

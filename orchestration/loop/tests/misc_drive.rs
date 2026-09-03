@@ -281,17 +281,23 @@ fn runtime_run_history_and_index_arms() {
     let store = open_store(&cr);
     let runs_dir = store.goal_dir(&gid).join("runs");
     std::fs::create_dir_all(&runs_dir).unwrap();
-    // Index rows: malformed line skipped; empty classification → "work";
-    // unparseable timestamp → row_epoch None (skipped in totals).
-    let index = runs_dir.join("index.jsonl");
+    // The run history is a derived projection: it scans run FILES on disk
+    // (there is no persisted index to read). Seed three run files — one with
+    // an unparseable timestamp (row_epoch None, skipped in totals), two with
+    // real timestamps (empty classification → "work").
     std::fs::write(
-        &index,
-        concat!(
-            "{bad json\n",
-            "{\"goal_id\":\"G\",\"timestamp\":\"not-a-date\",\"path\":\"a.json\",\"classification\":\"\"}\n",
-            "{\"goal_id\":\"G\",\"timestamp\":\"2026-08-10T00:00:00+00:00\",\"path\":\"b.json\",\"classification\":\"\"}\n",
-            "{\"goal_id\":\"G\",\"timestamp\":\"2026-08-10T00:00:00+00:00\",\"path\":\"c.json\",\"classification\":\"monitor\"}\n",
-        ),
+        runs_dir.join("a.json"),
+        "{\"timestamp\":\"not-a-date\",\"turn\":1,\"terminal_state\":\"completed\"}",
+    )
+    .unwrap();
+    std::fs::write(
+        runs_dir.join("b.json"),
+        "{\"timestamp\":\"2026-08-10T00:00:00+00:00\",\"turn\":2,\"terminal_state\":\"completed\"}",
+    )
+    .unwrap();
+    std::fs::write(
+        runs_dir.join("c.json"),
+        "{\"timestamp\":\"2026-08-10T00:00:00+00:00\",\"turn\":3,\"terminal_state\":\"monitor\"}",
     )
     .unwrap();
     let projection =
@@ -316,7 +322,8 @@ fn runtime_run_history_and_index_arms() {
     let missing = runs_dir.join("absent.jsonl");
     let report = future_loop::runtime::run_index::detect_duplicates(&missing).unwrap();
     assert_eq!(report.total_rows, 0);
-    // rebuild over an EXISTING index → pre-rebuild backup is written.
+    // rebuild (on-demand, for `runs index --rebuild`) over run files → the
+    // first rebuild writes the index; the second backs up the prior index.
     future_loop::compat::write_run(
         &store.goal_dir(&gid),
         &gid,
@@ -398,9 +405,11 @@ fn run_compaction_arms() {
     let report =
         future_loop::runtime::run_compaction::archive_keeping_latest(&cr.root, &gid3, 1).unwrap();
     assert_eq!(report.archived.len(), 1, "{report:?}");
-    // No index → error.
-    let gid2 = init_goal(&cr, "no index goal");
-    assert!(future_loop::runtime::run_compaction::archive_runs_before(&cr.root, &gid2, 1).is_err());
+    // No run files → a clean no-op report (the index is a derived projection).
+    let gid2 = init_goal(&cr, "no runs goal");
+    let report =
+        future_loop::runtime::run_compaction::archive_runs_before(&cr.root, &gid2, 1).unwrap();
+    assert_eq!(report.archived.len(), 0, "{report:?}");
 }
 
 // ── cli_projection remaining arms ──────────────────────────────────────────

@@ -417,6 +417,28 @@ pub enum Event {
         message: String,
         ts: u64,
     },
+    /// A supervisor-facing intervention note (todo completed / failed / infra
+    /// stop / user-gate ask / dead-holder). Written to the ledger FIRST and
+    /// THEN pushed to the supervisor session, so an active (busy) supervisor
+    /// that never drains the prompt still sees the note by polling
+    /// `supervisor events` — the notification is durable even when the push
+    /// is lost or delayed. `kind` mirrors the push channel (`completed` /
+    /// `failed` / `infra_stopped` / `ask_user` / `host_died`); `dedup_key` is
+    /// the same idempotency key the prompt push uses, so re-notification
+    /// across runs can be correlated. Projection-only — `apply` ignores it
+    /// (a note never mutates the kanban; consumption is the supervisor
+    /// projection). Distinct notes always append (audit trail); an identical
+    /// note within the same second is a content-derived no-op.
+    SupervisorNote {
+        goal_id: String,
+        #[serde(default)]
+        todo_id: String,
+        note_kind: String,
+        message: String,
+        #[serde(default)]
+        dedup_key: String,
+        ts: u64,
+    },
     /// P0-2②: outcome_followthrough fired — a delivered-but-unverified work
     /// item aged past the turn threshold, so a follow-up todo was
     /// auto-created (the followup itself is the TodoAdded event; this event
@@ -641,6 +663,7 @@ impl Event {
             | Event::TodoExpired { goal_id, .. }
             | Event::DeliveryOutcomeRecorded { goal_id, .. }
             | Event::ProgressReported { goal_id, .. }
+            | Event::SupervisorNote { goal_id, .. }
             | Event::FollowthroughCreated { goal_id, .. }
             | Event::DecisionSummaryRecorded { goal_id, .. }
             | Event::HeartbeatReceiptRecorded { goal_id, .. }
@@ -2027,6 +2050,10 @@ fn apply(goal: &mut Goal, event: Event) {
         // Projection-only: a progress note is a statement, not a claim — it
         // never touches the kanban. Consumption is the supervisor projection.
         Event::ProgressReported { .. } => {}
+        // Projection-only: a supervisor note is already folded into the
+        // supervisor projection (and pushed to the supervisor session); it
+        // never mutates the kanban.
+        Event::SupervisorNote { .. } => {}
     }
 }
 

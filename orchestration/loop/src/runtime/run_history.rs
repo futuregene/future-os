@@ -90,8 +90,7 @@ pub fn build_run_history(
     goal_id: &str,
     now_epoch: u64,
 ) -> Result<Option<RunHistoryProjection>> {
-    let index = crate::runtime::index_path(runtime_root, goal_id);
-    let rows = read_index_rows(&index)?;
+    let rows = crate::runtime::run_index::load_run_index(runtime_root, goal_id)?;
     if rows.is_empty() {
         return Ok(None);
     }
@@ -132,9 +131,7 @@ mod tests {
     use super::*;
 
     fn index_row(ts: &str, classification: &str) -> String {
-        format!(
-            "{{\"goal_id\":\"g1\",\"timestamp\":\"{ts}\",\"path\":\"goals/g1/runs/x.json\",\"turn\":1,\"classification\":\"{classification}\"}}\n"
-        )
+        format!("{{\"timestamp\":\"{ts}\",\"turn\":1,\"terminal_state\":\"{classification}\"}}")
     }
 
     #[test]
@@ -142,15 +139,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let runs = dir.path().join("goals").join("g1").join("runs");
         std::fs::create_dir_all(&runs).unwrap();
-        let index = runs.join("index.jsonl");
+        // The index is derived from the run files on disk.
         std::fs::write(
-            &index,
-            format!(
-                "{}{}{}",
-                index_row("2026-08-05T12:00:00+00:00", "run_recorded"),
-                index_row("2026-08-04T12:00:00+00:00", "run_recorded"),
-                index_row("2026-07-20T12:00:00+00:00", "quota_monitor_poll"),
-            ),
+            runs.join("a.json"),
+            index_row("2026-08-05T12:00:00+00:00", "run_recorded"),
+        )
+        .unwrap();
+        std::fs::write(
+            runs.join("b.json"),
+            index_row("2026-08-04T12:00:00+00:00", "run_recorded"),
+        )
+        .unwrap();
+        std::fs::write(
+            runs.join("c.json"),
+            index_row("2026-07-20T12:00:00+00:00", "quota_monitor_poll"),
         )
         .unwrap();
         let now = crate::scheduler::state::parse_epoch("2026-08-05T13:00:00+00:00").unwrap();

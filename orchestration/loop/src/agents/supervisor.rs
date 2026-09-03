@@ -233,6 +233,7 @@ pub fn build_supervisor_event_projection(
     let mut proposals: Vec<(String, String, String, String, u64)> = vec![];
     let mut receipts: Vec<(&str, &str)> = vec![];
     let mut progress: Vec<(String, String, String, u64)> = vec![];
+    let mut notes: Vec<(String, String, String, String, u64)> = vec![];
     for stored in &events {
         match &stored.event {
             Event::SupervisorProposed {
@@ -268,6 +269,23 @@ pub fn build_supervisor_event_projection(
             } if g == goal_id => {
                 progress.push((agent_id.clone(), todo_id.clone(), message.clone(), *ts))
             }
+            // Supervisor intervention notes (todo completed/failed/infra-stop/
+            // ask_user/host_died) — the durable half of the dual-mode notify
+            // (ledgered first, then pushed). Polled via `supervisor events`.
+            Event::SupervisorNote {
+                goal_id: g,
+                todo_id,
+                note_kind,
+                message,
+                dedup_key,
+                ts,
+            } if g == goal_id => notes.push((
+                todo_id.clone(),
+                note_kind.clone(),
+                message.clone(),
+                dedup_key.clone(),
+                *ts,
+            )),
             _ => {}
         }
     }
@@ -305,6 +323,18 @@ pub fn build_supervisor_event_projection(
             })
         })
         .collect();
+    let note_items: Vec<serde_json::Value> = notes
+        .into_iter()
+        .map(|(todo_id, kind, message, dedup_key, ts)| {
+            serde_json::json!({
+                "todo_id": todo_id,
+                "kind": kind,
+                "message": message,
+                "dedup_key": dedup_key,
+                "ts": ts,
+            })
+        })
+        .collect();
     Ok(serde_json::json!({
         "ok": true,
         "schema_version": SUPERVISOR_EVENT_PROJECTION_SCHEMA_VERSION,
@@ -314,6 +344,8 @@ pub fn build_supervisor_event_projection(
         "items": rows,
         "progress_count": progress_items.len(),
         "progress": progress_items,
+        "note_count": note_items.len(),
+        "notes": note_items,
         "boundary": {
             "proposal_is_execution_evidence": false,
             "executed_requires_capability_matched_receipt": true,

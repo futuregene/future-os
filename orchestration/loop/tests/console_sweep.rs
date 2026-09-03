@@ -590,7 +590,9 @@ fn steer_worker_poll_once_aborts_on_targeted_and_broadcast_steer() {
 fn notify_supervisor_enqueues_to_registered_session_only() {
     // Hold the CLI lock so FUTURE_LOOP_AGENT_ADDR set/remove cannot race a
     // concurrent in-process run() driving the same global env.
-    let _cr = cli_root();
+    let cr = cli_root();
+    let gid = init_goal(&cr, "notify seam");
+    let mut store = open_store(&cr);
     let rt = rt();
     let (addr, shared) = rt.block_on(spawn_mock(MockState::default()));
     std::env::set_var("FUTURE_LOOP_AGENT_ADDR", &addr);
@@ -601,18 +603,45 @@ fn notify_supervisor_enqueues_to_registered_session_only() {
         .await
         .unwrap();
 
-        // No supervisor registered → dropped, no prompt on the wire.
-        future_loop::console::notify_supervisor(&mut client, None, "hello", "k1").await;
+        // No supervisor registered → ledgered but no prompt on the wire.
+        future_loop::console::notify_supervisor(
+            &mut store,
+            &mut client,
+            &gid,
+            None,
+            "completed",
+            "t1",
+            "hello",
+            "k1",
+        )
+        .await;
         assert!(shared.lock().unwrap().prompt_calls.is_empty());
 
-        // Registered → enqueued to that session with enqueue_if_busy.
-        future_loop::console::notify_supervisor(&mut client, Some("sup-sess"), "hello", "k2").await;
+        // Registered → ledgered AND enqueued to that session (enqueue_if_busy).
+        future_loop::console::notify_supervisor(
+            &mut store,
+            &mut client,
+            &gid,
+            Some("sup-sess"),
+            "completed",
+            "t1",
+            "hello",
+            "k2",
+        )
+        .await;
         let calls = shared.lock().unwrap().prompt_calls.clone();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "sup-sess");
         assert_eq!(calls[0].1, "enqueue_if_busy");
     });
     std::env::remove_var("FUTURE_LOOP_AGENT_ADDR");
+    // Both notifications are durable ledger notes (the un-pushed one too).
+    let events = store.events(&gid).unwrap();
+    let notes = events
+        .iter()
+        .filter(|se| matches!(&se.event, future_loop::store::Event::SupervisorNote { .. }))
+        .count();
+    assert_eq!(notes, 2);
 }
 
 /// The dead-worker push: a claimed todo whose holder process is gone is
@@ -746,7 +775,9 @@ fn steer_worker_poll_once_read_errors_and_bad_lines() {
 
 #[test]
 fn notify_supervisor_survives_prompt_failure() {
-    let _cr = cli_root();
+    let cr = cli_root();
+    let gid = init_goal(&cr, "notify fail");
+    let mut store = open_store(&cr);
     let rt = rt();
     let st = MockState {
         fail_commands: ["prompt".to_string()].into_iter().collect(),
@@ -760,8 +791,25 @@ fn notify_supervisor_survives_prompt_failure() {
         )
         .await
         .unwrap();
-        // A failing enqueue is best-effort: the report is dropped, no panic.
-        future_loop::console::notify_supervisor(&mut client, Some("sup-sess"), "hi", "k").await;
+        // A failing enqueue is best-effort: the note is still ledgered, no panic.
+        future_loop::console::notify_supervisor(
+            &mut store,
+            &mut client,
+            &gid,
+            Some("sup-sess"),
+            "failed",
+            "t1",
+            "hi",
+            "k",
+        )
+        .await;
     });
     std::env::remove_var("FUTURE_LOOP_AGENT_ADDR");
+    // The durable ledger note survives the prompt failure.
+    let events = store.events(&gid).unwrap();
+    let notes = events
+        .iter()
+        .filter(|se| matches!(&se.event, future_loop::store::Event::SupervisorNote { .. }))
+        .count();
+    assert_eq!(notes, 1);
 }

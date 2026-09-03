@@ -195,7 +195,6 @@ pub fn pid_alive(_pid: u32) -> bool {
 /// Append one run's files (JSON + markdown + index row) into the goal's
 /// state directory (`<cwd>/.future/loop/goals/<id>/runs/`).
 pub fn write_run(goal_dir: &Path, goal_id: &str, record: &crate::state::RunRecord) -> Result<()> {
-    use std::io::Write;
     let dir = goal_dir.join("runs");
     fs::create_dir_all(&dir)?;
     // Run-file names: 2026-08-05T11-03-14-08-00 (offset without +/:)
@@ -235,23 +234,14 @@ pub fn write_run(goal_dir: &Path, goal_id: &str, record: &crate::state::RunRecor
     md.push_str(&format!("- evidence: {}\n", record.evidence));
     fs::write(dir.join(format!("{ts}.md")), md)?;
 
-    // index.jsonl (append)
-    let index_line = format!(
-        "{}\n",
-        json!({
-            "goal_id": goal_id,
-            "timestamp": rfc3339(record.recorded_at),
-            "path": format!("goals/{goal_id}/runs/{ts}.json"),
-            "turn": record.turn,
-            "classification": record.terminal_state,
-        })
-    );
-    fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join("index.jsonl"))
-        .and_then(|mut f| f.write_all(index_line.as_bytes()))
-        .context("append runs/index.jsonl")?;
+    // NOTE: the run index is no longer appended here. It was a per-process
+    // `OpenOptions::append` with no cross-process lock, so N concurrent
+    // workers writing a run at once could interleave index rows and drift the
+    // read model (the `run_index drifted — rebuilt` self-heal noise). The
+    // index is now a pure projection derived on read from the run files in
+    // this directory (see `run_index::load_run_index`) — the run JSON/MD
+    // files above remain the single source of truth and are never contended
+    // (each is a unique file).
     Ok(())
 }
 
