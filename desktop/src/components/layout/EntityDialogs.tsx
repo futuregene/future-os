@@ -59,6 +59,7 @@ export function RenameDialog({
       </label>
       <input
         autoFocus
+        autoCorrect="off"
         className="mt-2 h-10 w-full rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none transition focus:border-focus focus:ring-2 focus:ring-focus"
         disabled={submitting}
         id={inputId}
@@ -69,6 +70,7 @@ export function RenameDialog({
             onConfirm();
           }
         }}
+        spellCheck={false}
         value={value}
       />
       {error ? <div className="mt-2 text-xs leading-5 text-danger">{error}</div> : null}

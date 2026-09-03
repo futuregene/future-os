@@ -60,9 +60,11 @@ export function WorkspaceModal({
             </span>
           </button>
           <input
+            autoCorrect="off"
             className="h-9 w-full rounded-md border border-line-soft bg-surface px-2 text-sm text-ink outline-none focus:border-accent"
             onChange={event => onDisplayNameChange(event.target.value)}
             placeholder={t("newConversation.modal.displayNameOpen")}
+            spellCheck={false}
             value={displayName}
           />
           <div className="min-h-5 truncate px-1 text-xs text-ink-muted" title={path || undefined}>
