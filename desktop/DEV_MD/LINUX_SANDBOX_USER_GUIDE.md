@@ -55,4 +55,4 @@ future doctor
 - 命令运行中新产生的 glob 匹配无法由固定 mount view 动态拦截，只在命令结束后报告 `detection_only` violation；这不是动态硬保护。
 - 第一版越界批准会把**整条命令**脱离 Bubblewrap 重跑一次。批准界面会明确提示这一点；路径级临时能力属于后续版本。
 - 仅支持 system bwrap；没有 bundled fallback，也不会自动改用较弱的 Linux 后端。
-- AppImage、deb、rpm、目标发行版及 aarch64 的发布结论必须按真机验收手册验证；本地开发 smoke 不能替代这些结果。
+- `.deb`、portable tarball、目标发行版及 aarch64 的发布结论必须按真机验收手册验证；本地开发 smoke 不能替代这些结果。本期不发布 AppImage/rpm。

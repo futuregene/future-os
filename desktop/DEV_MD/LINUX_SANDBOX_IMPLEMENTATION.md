@@ -120,7 +120,7 @@
 ### Wave 6 — 本地总门禁与 L5 交付
 
 1. 执行 §4 自动化和当前 Linux 主机 smoke，结果逐项写为 PASS/FAIL/NOT RUN/ENVIRONMENT LIMIT。
-2. 已输出独立的 [`LINUX_SANDBOX_REAL_MACHINE_VALIDATION.md`](LINUX_SANDBOX_REAL_MACHINE_VALIDATION.md)，覆盖目标发行版、架构、userns/proc 负向环境、实际发布包与 AppImage/rpm 范围确认；不得用容器或当前 Ubuntu 26.04 结果替代。
+2. 已输出独立的 [`LINUX_SANDBOX_REAL_MACHINE_VALIDATION.md`](LINUX_SANDBOX_REAL_MACHINE_VALIDATION.md)，覆盖目标发行版、架构、userns/proc 负向环境以及 `.deb` 与 portable tarball 实际发布包；本期明确不发布 AppImage/rpm，不得用容器或当前 Ubuntu 26.04 结果替代真机结论。
 3. security review 至少逐项复核 mount TOCTOU、FD 泄漏、setuid bwrap、namespace/capability、临时对象清理、错误 escalation 与日志脱敏。
 
 ## 4. 可执行验收矩阵
@@ -156,7 +156,7 @@
 | Q-01 | Rust gate | workspace + Tauri fmt/clippy | `make lint-rust` | PASS（2026-09-03 本轮分项有界执行：`cargo fmt --all --check`、workspace `cargo clippy --workspace --all-targets -- -D warnings`、Tauri fmt/clippy 均 PASS；当前 PATH 无 Node，未重跑依赖 Node 解析 toolchain 的 Make wrapper） |
 | Q-02 | all tests | Rust、Desktop、Mobile 全量单测 | `make test` | PARTIAL PASS / ENVIRONMENT LIMIT（2026-09-03 本轮未等待总 Make target：`cargo test --workspace -- --test-threads=1` PASS，Tauri 1095/1095 PASS；当前 PATH 无 `node`/`npm`/`npx`，Desktop/Mobile Node 门禁未重跑且未安装。既有记录的 Desktop 687 与 Mobile 551 tests PASS 保留为历史证据） |
 | L5-01 | real hosts | Ubuntu 22.04/24.04、Debian stable、Fedora；x86_64/aarch64 | [`LINUX_SANDBOX_REAL_MACHINE_VALIDATION.md`](LINUX_SANDBOX_REAL_MACHINE_VALIDATION.md) RH/SM 矩阵 | NOT RUN |
-| L5-02 | packages | deb/portable 安装、升级、卸载与 system bwrap 引导；确认 AppImage/rpm 范围 | 真机手册 PKG 矩阵 | NOT RUN（当前流水线不产出 AppImage/rpm，范围项为 ENVIRONMENT LIMIT，需发布负责人确认） |
+| L5-02 | packages | `.deb` 与 portable tarball 安装、`.deb` 升级/卸载及 system bwrap 引导 | 真机手册 PKG 矩阵 | NOT RUN（本期明确不发布 AppImage/rpm，不属于验收范围） |
 | L5-03 | security review | TOCTOU/FD/setuid/namespace/cleanup/escalation/logging review | 真机手册 SEC-01～SEC-12 + reviewer sign-off | NOT RUN |
 
 ## 5. 提交与完成规则

@@ -72,7 +72,7 @@ future doctor
 
 ## 4. 安装包矩阵
 
-当前仓库发布流水线生成 `.deb` 和 portable tarball，不生成 AppImage/rpm。因此 AppImage/rpm 在决定进入发布范围前保持 `ENVIRONMENT LIMIT`，不得写成 PASS；若后续开始产出，则将其改为 `NOT RUN` 并完整执行本节。
+本期发布范围仅包含 `.deb` 和 portable tarball，明确不发布 AppImage/rpm；后两者不属于本次验收项。
 
 | ID | 制品/动作 | x86_64 | aarch64 | 状态 | 预期结果 |
 |---|---|---|---|---|---|
@@ -80,8 +80,6 @@ future doctor
 | PKG-02 | `.deb` 原位升级 | Ubuntu/Debian | Ubuntu/Debian | NOT RUN | 设置/会话保留；probe 仍一致 |
 | PKG-03 | `.deb` 卸载 | Ubuntu/Debian | Ubuntu/Debian | NOT RUN | 应用文件移除；系统 bwrap 不被移除 |
 | PKG-04 | portable tarball | 任一目标发行版 | 任一 aarch64 目标 | NOT RUN | 解压后 CLI/GUI 可运行；helper 自重入可用 |
-| PKG-05 | AppImage | 若纳入发布范围 | 若纳入发布范围 | ENVIRONMENT LIMIT | 当前流水线不产出 |
-| PKG-06 | rpm | Fedora | Fedora aarch64 | ENVIRONMENT LIMIT | 当前流水线不产出 |
 
 `.deb` 建议命令（替换文件名）：
 
@@ -198,14 +196,13 @@ Evidence/issue URLs:
 | 发布门槛 | 当前状态 | 完成条件 |
 |---|---|---|
 | L5-01 目标真机 | NOT RUN | RH-01～RH-06 与 SM-01～SM-06 在对应机器全部 PASS |
-| L5-02 发布包 | NOT RUN | PKG-01～PKG-04 PASS；AppImage/rpm 由发布负责人明确纳入并 PASS，或明确排除于发布范围 |
+| L5-02 发布包 | NOT RUN | PKG-01～PKG-04 全部 PASS；本期不发布 AppImage/rpm |
 | L5-03 安全 review | NOT RUN | SEC-01～SEC-12 全部 PASS，reviewer 完成 sign-off，阻断问题为零 |
 
 交付给测试/发布负责人后的剩余 TODO：
 
-1. 提供同一 commit 的 x86_64/arm64 候选 `.deb` 与 portable tarball及 SHA-256。
+1. 提供同一 commit 的 x86_64/arm64 候选 `.deb` 与 portable tarball 及 SHA-256。
 2. 分配 RH-01～RH-06 的原生主机并上传逐机日志；所有 smoke 必须实际运行而不是 skip。
 3. 在隔离 VM 完成 NEG-01～NEG-08；环境限制项重新分配，不视为豁免。
 4. 由非实现者完成 SEC-01～SEC-12 和 sign-off。
-5. 发布负责人书面确认 AppImage/rpm 是否属于本次范围；当前仓库未产出二者。
-6. 把本手册中的状态与证据链接回填后，才可把实施矩阵 L5-01～03 改为 PASS，并宣称满足主干发布门槛。
+5. 把本手册中的状态与证据链接回填后，才可把实施矩阵 L5-01～03 改为 PASS，并宣称满足主干发布门槛。

@@ -269,7 +269,7 @@ layer 0 hard deny  >  approved execution_grants  >  secret ask guards  >  sessio
 - Ubuntu 22.04/24.04、Debian stable、Fedora 当前支持版；x86_64 和 aarch64 各至少一台真实环境。
 - unprivileged userns 禁用、容器禁止 `/proc` mount、bwrap 缺失/过旧/参数不足、PATH 命中 workspace 伪造二进制的负向结果；WSL 不在支持或测试范围内。
 - bash/cargo/npm/python/git 常用链路，Unicode、大输出、cwd symlink、外部 writable root、嵌套规则、敏感 glob、并发创建和 abort/timeout。
-- AppImage/deb/rpm（按最终发布范围）安装、更新、卸载和 helper 完整性。
+- `.deb` 和 portable tarball 安装、更新、卸载及 helper 完整性；本期不发布 AppImage/rpm。
 - 安全 review：mount TOCTOU、FD 泄漏、setuid bwrap 边界、namespace/capability、临时对象 CAS 清理、错误路径是否会无沙盒重跑。
 
 结果必须分为 `PASS / FAIL / NOT RUN / ENVIRONMENT LIMIT`，不能用 macOS 单测或容器 smoke 代替 Linux 真机发布结论。
