@@ -364,19 +364,25 @@ fn normalize_tool_delta(current: &str, incoming: &str) -> (String, bool) {
 }
 
 fn chat_usage(value: &Value) -> Usage {
+    // Token counts may arrive as JSON integers, floats, or numeric strings
+    // depending on the upstream gateway (the Future platform has been
+    // observed returning non-integer encodings for some models). Parse
+    // defensively so a float/string encoding doesn't silently zero out the
+    // token accounting — which would report every turn as 0 tokens (the
+    // observed symptom for qwen-family models).
+    fn tok(v: &Value, key: &str) -> i64 {
+        v.get(key)
+            .and_then(|x| {
+                x.as_i64()
+                    .or_else(|| x.as_f64().map(|f| f as i64))
+                    .or_else(|| x.as_str().and_then(|s| s.parse::<f64>().ok()).map(|f| f as i64))
+            })
+            .unwrap_or(0)
+    }
     Usage {
-        prompt_tokens: value
-            .get("prompt_tokens")
-            .and_then(Value::as_i64)
-            .unwrap_or(0),
-        completion_tokens: value
-            .get("completion_tokens")
-            .and_then(Value::as_i64)
-            .unwrap_or(0),
-        total_tokens: value
-            .get("total_tokens")
-            .and_then(Value::as_i64)
-            .unwrap_or(0),
+        prompt_tokens: tok(value, "prompt_tokens"),
+        completion_tokens: tok(value, "completion_tokens"),
+        total_tokens: tok(value, "total_tokens"),
         cache_read_tokens: value
             .get("prompt_tokens_details")
             .and_then(|details| details.get("cached_tokens"))
@@ -879,6 +885,41 @@ mod tests {
         assert_eq!(usage.cache_write_tokens, Some(6));
         assert_eq!(usage.reasoning_tokens, Some(7));
         assert_eq!(usage.credit_cost, Some(0.5));
+    }
+
+    #[test]
+    fn decode_frame_parses_float_and_string_token_counts() {
+        // Some gateways (notably the Future platform for certain models)
+        // encode token counts as JSON floats or numeric strings. A strict
+        // `as_i64` would silently drop these to 0 and report the whole turn
+        // as tokenless. Verify the defensive parse recovers them.
+        let adapter = OpenAiChatAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(json!({
+                    "choices": [{"delta": {"content": "hi"}}],
+                    "usage": {
+                        "prompt_tokens": 1234.0,
+                        "completion_tokens": "56",
+                        "total_tokens": 1290,
+                        "credit_cost": "0.00019072"
+                    }
+                })),
+                state.as_mut(),
+            )
+            .unwrap();
+        let usage = events
+            .iter()
+            .find_map(|event| match event {
+                ModelStreamEvent::Usage(usage) => Some(usage),
+                _ => None,
+            })
+            .expect("usage event expected");
+        assert_eq!(usage.prompt_tokens, 1234);
+        assert_eq!(usage.completion_tokens, 56);
+        assert_eq!(usage.total_tokens, 1290);
+        assert_eq!(usage.credit_cost, Some(0.00019072));
     }
 
     #[test]
