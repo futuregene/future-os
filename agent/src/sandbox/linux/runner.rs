@@ -8,10 +8,6 @@ use std::path::{Path, PathBuf};
 pub enum LinuxSandboxRunnerError {
     #[error("Linux sandbox probe did not provide a verified backend receipt")]
     InvalidProbeReceipt,
-    #[error("Linux sandbox plan still contains unexpanded glob rules")]
-    UnexpandedGlob,
-    #[error("Linux sandbox plan contains missing protected paths")]
-    MissingPathUnsupported,
     #[error("current FutureOS executable could not be resolved: {0}")]
     CurrentExecutable(std::io::Error),
     #[error(transparent)]
@@ -30,22 +26,27 @@ pub fn prepare(
     if !probe.available {
         return Err(LinuxSandboxRunnerError::InvalidProbeReceipt);
     }
-    // L3 expands these before execution. Until that compiler lands, refusing
-    // the command is safer than silently dropping a protection rule.
-    if !plan.unsupported_dynamic_globs.is_empty() {
-        return Err(LinuxSandboxRunnerError::UnexpandedGlob);
-    }
-    if !plan.missing_protected_paths.is_empty() {
-        return Err(LinuxSandboxRunnerError::MissingPathUnsupported);
-    }
-
     let mut mounts = Vec::new();
     extend_mounts(&mut mounts, &plan.writable_roots, MountKind::Writable);
     extend_mounts(&mut mounts, &plan.read_only_paths, MountKind::ReadOnly);
     extend_mounts(&mut mounts, &plan.unreadable_paths, MountKind::Unreadable);
-    // Reopens deliberately come last so a narrow allow wins over a wider
-    // lower-priority protection mount.
+    extend_mounts(
+        &mut mounts,
+        &plan.missing_protected_paths,
+        MountKind::MissingProtected,
+    );
+    extend_mounts(
+        &mut mounts,
+        &plan.reopened_read_only_paths,
+        MountKind::ReadOnly,
+    );
     extend_mounts(&mut mounts, &plan.reopened_paths, MountKind::Writable);
+    // Bubblewrap applies mounts in argv order. Broad mounts must precede
+    // narrow mounts so alternating deny/allow descendants remain visible;
+    // for the same target, protection precedes the effective reopen.
+    // `sort_by_key` is stable, so equal targets retain the construction order:
+    // writable root, write protection, read protection, then effective reopen.
+    mounts.sort_by_key(|mount| mount.target.components().count());
 
     let request = LinuxSandboxRequest {
         version: REQUEST_VERSION,
@@ -55,6 +56,7 @@ pub fn prepare(
         cwd: cwd.to_path_buf(),
         argv: shell_argv(command),
         mounts,
+        glob_snapshots: plan.glob_snapshots,
         policy_digest: plan.policy_digest.clone(),
     };
     let encoded = request.encode()?;
@@ -129,14 +131,16 @@ mod tests {
             read_only_paths: Vec::new(),
             unreadable_paths: Vec::new(),
             reopened_paths: Vec::new(),
+            reopened_read_only_paths: Vec::new(),
             missing_protected_paths: Vec::new(),
             unsupported_dynamic_globs: Vec::new(),
+            glob_snapshots: Vec::new(),
             policy_digest: "a".repeat(64),
         }
     }
 
     #[test]
-    fn preparation_is_structured_and_fail_closed_for_unfinished_policy_features() {
+    fn preparation_is_structured_and_includes_complete_policy() {
         let prepared = prepare(&probe(), plan(), "echo ok", Path::new("/tmp/work")).unwrap();
         assert_eq!(prepared.boundary.backend, ShellBackend::LinuxBubblewrap);
         assert_eq!(
@@ -148,20 +152,54 @@ mod tests {
             .iter()
             .any(|arg| arg == "--linux-sandbox-helper"));
 
-        let mut glob = plan();
-        glob.unsupported_dynamic_globs.push("/tmp/**/*.pem".into());
-        assert!(matches!(
-            prepare(&probe(), glob, "true", Path::new("/tmp/work")),
-            Err(LinuxSandboxRunnerError::UnexpandedGlob)
-        ));
-        let mut missing = plan();
-        missing
+        let mut complete = plan();
+        complete
             .missing_protected_paths
             .push(PathBuf::from("/tmp/missing"));
-        assert!(matches!(
-            prepare(&probe(), missing, "true", Path::new("/tmp/work")),
-            Err(LinuxSandboxRunnerError::MissingPathUnsupported)
-        ));
+        let prepared = prepare(&probe(), complete, "true", Path::new("/tmp/work")).unwrap();
+        assert!(prepared
+            .args
+            .iter()
+            .any(|arg| arg == "--linux-sandbox-helper"));
+    }
+
+    #[test]
+    fn mount_order_preserves_alternating_broad_and_narrow_rules() {
+        let mut policy = plan();
+        policy.read_only_paths = vec![PathBuf::from("/tmp/work/vendor")];
+        policy.reopened_paths = vec![PathBuf::from("/tmp/work/vendor/ok")];
+        policy.unreadable_paths = vec![PathBuf::from("/tmp/work/vendor/ok/secret")];
+        let prepared = prepare(&probe(), policy, "true", Path::new("/tmp/work")).unwrap();
+        let encoded = prepared.args.last().unwrap();
+        let request = LinuxSandboxRequest::decode(encoded).unwrap();
+        let targets: Vec<_> = request.mounts.iter().map(|mount| &mount.target).collect();
+        let broad = targets
+            .iter()
+            .position(|path| path.as_path() == Path::new("/tmp/work/vendor"))
+            .unwrap();
+        let reopen = targets
+            .iter()
+            .position(|path| path.as_path() == Path::new("/tmp/work/vendor/ok"))
+            .unwrap();
+        let narrow = targets
+            .iter()
+            .position(|path| path.as_path() == Path::new("/tmp/work/vendor/ok/secret"))
+            .unwrap();
+        assert!(broad < reopen && reopen < narrow);
+
+        let mut policy = plan();
+        let same = PathBuf::from("/tmp/work/secret");
+        policy.read_only_paths = vec![same.clone()];
+        policy.unreadable_paths = vec![same.clone()];
+        let prepared = prepare(&probe(), policy, "true", Path::new("/tmp/work")).unwrap();
+        let request = LinuxSandboxRequest::decode(prepared.args.last().unwrap()).unwrap();
+        let same_target: Vec<_> = request
+            .mounts
+            .iter()
+            .filter(|mount| mount.target == same)
+            .map(|mount| mount.kind)
+            .collect();
+        assert_eq!(same_target, [MountKind::ReadOnly, MountKind::Unreadable]);
     }
 
     #[test]

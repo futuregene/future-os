@@ -4,3 +4,4 @@ pub mod plan;
 pub mod probe;
 pub mod request;
 pub mod runner;
+pub mod violation;

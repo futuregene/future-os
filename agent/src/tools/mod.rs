@@ -2809,6 +2809,52 @@ mod tests {
         assert!(error.contains("not approved: no way"), "{error}");
     }
 
+    #[tokio::test]
+    async fn linux_denial_uses_whole_command_escalation_and_infra_does_not() {
+        let ws = test_path("linux-post-hoc");
+        std::fs::create_dir_all(&ws).unwrap();
+        let mut sandbox = ResolvedSandbox::resolve(
+            &crate::sandbox::SandboxPolicy {
+                tier: crate::sandbox::SandboxTier::Sandbox,
+            },
+            ws.to_string_lossy().as_ref(),
+        );
+        sandbox.set_linux_backend_available_for_test();
+        let deny: crate::sandbox::EscalationRequester = Arc::new(|request| {
+            assert_eq!(request.command, "touch /protected");
+            crate::sandbox::EscalationDecision::Denied("linux policy".into())
+        });
+        let denied = post_hoc_escalation(
+            &Some(deny),
+            &sandbox,
+            "touch /protected",
+            10,
+            "touch: Permission denied\n\n[exit: 1]",
+        )
+        .await
+        .expect("Linux denial should request whole-command escalation")
+        .unwrap();
+        assert!(denied.contains("not approved: linux policy"));
+
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let call_counter = calls.clone();
+        let requester: crate::sandbox::EscalationRequester = Arc::new(move |_| {
+            call_counter.fetch_add(1, Ordering::SeqCst);
+            crate::sandbox::EscalationDecision::Approved
+        });
+        assert!(post_hoc_escalation(
+            &Some(requester),
+            &sandbox,
+            "bad-helper",
+            10,
+            "future-linux-sandbox-helper: identity changed\n\n[exit: 125]",
+        )
+        .await
+        .is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let _ = std::fs::remove_dir_all(ws);
+    }
+
     #[cfg(target_os = "macos")]
     #[allow(clippy::await_holding_lock)] // HOME must stay pinned across awaits
     #[tokio::test(flavor = "current_thread")]

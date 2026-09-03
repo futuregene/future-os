@@ -1,6 +1,6 @@
 # Linux Bubblewrap 沙盒实施计划与验收矩阵
 
-状态：**开发执行基线；Wave 1–3（L0–L2）已完成，L3 待实施**（2026-09-03）。产品与安全语义以 [`LINUX_SANDBOX_PLAN.md`](LINUX_SANDBOX_PLAN.md) 为准；本文把 L0–L6 转成代码落点、提交顺序、自动化门禁和真机验收项，不改变 L-D1–L-D9。
+状态：**开发执行基线；Wave 1–4（L0–L3）已完成，L4/L6 产品与诊断接入待实施**（2026-09-03）。产品与安全语义以 [`LINUX_SANDBOX_PLAN.md`](LINUX_SANDBOX_PLAN.md) 为准；本文把 L0–L6 转成代码落点、提交顺序、自动化门禁和真机验收项，不改变 L-D1–L-D9。
 
 ## 1. 开发基线
 
@@ -94,13 +94,13 @@
 5. helper 作为 PID 1 时转发信号、回收后代并保留原始 exit/signal。Agent timeout/abort 后断言无残留后代。
 6. `spawn_shell()` 调用 prepared backend；helper/probe/request/identity 失败作为 infrastructure error 返回，不进入 post-hoc escalation。
 
-### Wave 4 — L3 完整规则与 violation/escalation
+### Wave 4 — L3 完整规则与 violation/escalation（已完成，2026-09-03）
 
 1. 启动前 glob 展开使用内部 walker 作为可信实现；可选 `rg` 只能是优化，缺失/失败必须安全回到内部 walker。固定最大匹配数、节点数、深度和总耗时，任何上限命中 fail closed。
-2. 同时处理 lexical path 与 canonical target；对不存在 exact path 在 sandbox view 中建立保护目标，证明不污染 host。若必须创建 host 临时对象，cleanup 必须核对 inode identity/CAS，绝不删除并发用户对象。
-3. helper 通过受控 FD/状态结构返回 violation kind/path provenance/policy digest；日志与普通 UI 不输出完整敏感路径集合。
-4. glob 新匹配只做命令结束 detection-only，结果与 capability 明确标记，不称为动态硬保护。
-5. Linux 路径拒绝可以触发一期整命令脱沙盒审批；基础设施错误、普通 command error 和 2/126/127 不触发。
+2. 同时处理 lexical path 与 canonical target；对不存在 exact path 在 sandbox view 中建立保护目标；host 占位对象 cleanup 核对 inode identity/CAS，绝不删除并发用户对象。
+3. 宽保护与窄重开按路径深度排列；read allow 只重开为只读，write allow 若会绕过仍生效的 read deny 则 typed fail closed；不存在的重开目标因无法无歧义创建 file/dir mount source 同样 typed fail closed，hard deny 不可重开。
+4. helper 以稳定 marker 返回 violation kind/path provenance/policy digest/affected count，日志与普通 UI 不输出完整敏感路径集合。glob 新匹配只做命令结束 detection-only，不称为动态硬保护。
+5. Linux 路径拒绝可以触发一期整命令脱沙盒审批；基础设施错误、普通 command error 和 2/125/126/127 不触发。
 
 ### Wave 5 — L4/L6 产品、诊断与文档
 
@@ -129,19 +129,19 @@
 | P-03 | probe integration | missing/old/missing-feature/userns/proc 各返回预期 code | `cargo test -p future-agent --test linux_sandbox_smoke probe_ -- --ignored --test-threads=1` | NOT RUN |
 | R-01 | rules/plan | fallback roots、外部 allow、ask/deny、层级顺序 | `cargo test -p future-agent sandbox::linux::plan` | PASS（2026-09-03） |
 | R-02 | rules/plan | 窄 allow reopen、hard deny 不可 reopen、根去重 | 同上 | PASS（2026-09-03） |
-| R-03 | rules/plan | symlink、missing exact、glob 快照/上限/异常 fail closed | 同上 | NOT RUN |
+| R-03 | rules/plan | symlink、missing exact、glob 快照/上限/异常 fail closed | 同上 | PASS（2026-09-03：内部 no-follow walker、2048 match/100000 node/64 depth/2s 上限；lexical+canonical symlink；typed fail closed） |
 | R-04 | cross-platform | Seatbelt/Windows/manual/off 行为不回归 | `cargo test -p future-agent sandbox:: tools:: rpc::commands::settings` | PASS（2026-09-03：sandbox 115 tests；Agent clippy all tests） |
 | H-01 | helper parser | version/size/count/FD/path 输入校验 | `cargo test -p future-agent sandbox::linux::request` | PASS（2026-09-03：version/path/NUL/phase/FD identity 与重复 FD；size/count 常量已强制，边界补测留 L3） |
 | H-02 | helper boundary | helper 绕过 Agent singleton，但非法直接调用失败 | `cargo test -p future-agent --test linux_sandbox_smoke` | PASS（2026-09-03：非法 payload 返回 infrastructure exit 125，未创建 singleton lock） |
 | H-03 | mount smoke | workspace/temp 写成功，workspace 外写失败且 host 无文件 | `cargo test -p future-agent --test linux_sandbox_smoke filesystem_ -- --ignored --test-threads=1` | PASS（2026-09-03：当前 Ubuntu 26.04/system bwrap；workspace 写成功、外部写拒绝、exit 23 原样） |
-| H-04 | secret smoke | 已有 secret 精确/glob 文件读写均失败 | 同上 | NOT RUN（2026-09-03：具体 unreadable mount 已 PASS；glob 展开属于 L3） |
-| H-05 | missing/symlink | missing exact 不能创建；symlink 不越界；host 无临时残留 | 同上 | NOT RUN（L3） |
+| H-04 | secret smoke | 已有 secret 精确/glob 文件读写均失败 | 同上 | ENVIRONMENT LIMIT（2026-09-03：具体 unreadable mount 历史 PASS；本轮 glob 单测 PASS，但当前执行环境 probe=`user_namespace_disabled`，新增真 bwrap smoke 未运行） |
+| H-05 | missing/symlink | missing exact 不能创建；symlink 不越界；host 无临时残留 | 同上 | ENVIRONMENT LIMIT（2026-09-03：CAS inode cleanup 与 symlink 双路径单测 PASS；新增真 bwrap smoke 因当前环境禁用 userns 跳过） |
 | H-06 | network | 未 unshare network；本地 TCP/namespace identity 验证网络保持开放 | 同上 | NOT RUN（argv 单测确认未使用 `--unshare-net`，仍需网络 smoke） |
 | H-07 | lifecycle | 正常 exit/signal 原样；abort/timeout/parent death 无后代残留 | 同上 | NOT RUN（2026-09-03：exit/signal/parent-death smoke 已 PASS；Agent timeout/abort 待补） |
 | H-08 | FD security | 仅 stdio/request/mount FD 可见，Agent listener/db/log FD 不继承 | 同上 | PASS（2026-09-03：mount FD 仅传给 bwrap，inner command smoke 未见 fd > 2） |
-| V-01 | violation | EACCES/EPERM/EROFS 结构化分类；普通失败和 2/126/127 不误判 | `cargo test -p future-agent sandbox::linux::violation tools::` | NOT RUN |
-| V-02 | escalation | Linux policy violation 可审批单次脱沙盒；infra failure 绝不 escalation | `cargo test -p future-agent tools:: rpc::approval` | NOT RUN（L2 已保证 prepare/helper 初始化错误在 post-hoc 分类前直接返回；L3 补完整行为测试） |
-| G-01 | glob | 启动前已有匹配被硬保护；命令中新匹配只报告 detection-only | ignored Linux smoke | NOT RUN |
+| V-01 | violation | EACCES/EPERM/EROFS 结构化分类；普通失败和 2/126/127 不误判 | `cargo test -p future-agent sandbox::linux::violation sandbox::tests::linux_denial` | PASS（2026-09-03：可信 marker 优先、推断 provenance；2/125/126/127 与普通错误排除） |
+| V-02 | escalation | Linux policy violation 可审批单次脱沙盒；infra failure 绝不 escalation | `cargo test -p future-agent tools:: rpc::approval` | PASS（2026-09-03：Linux classifier 接入既有整命令 post-hoc escalation；prepare/helper exit 125 不触发） |
+| G-01 | glob | 启动前已有匹配被硬保护；命令中新匹配只报告 detection-only | ignored Linux smoke | ENVIRONMENT LIMIT（2026-09-03：展开/检测单测 PASS；新增 combined smoke 因当前环境 probe=`user_namespace_disabled` 跳过） |
 | U-01 | RPC/Desktop | Linux availability/retry/reason/manual fallback | `cd desktop && npx vitest run src/integrations/agent/useSandboxAvailability.test.ts`；Rust bridge/settings tests | NOT RUN |
 | U-02 | i18n/UI | Settings/Composer 安装与限制文案中英文齐全 | `cd desktop && npx tsc --noEmit && npx eslint "src/**/*.{ts,tsx}" && npx vitest run` | NOT RUN |
 | C-01 | CLI | machine-readable probe 与 doctor code 一致 | `cargo test -p future-agent --test cli_smoke && cargo test -p future-cli doctor` | NOT RUN |

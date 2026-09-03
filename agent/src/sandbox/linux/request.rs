@@ -2,7 +2,7 @@ use super::probe::BwrapIdentity;
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
 
-pub const REQUEST_VERSION: u16 = 1;
+pub const REQUEST_VERSION: u16 = 2;
 pub const MAX_ENCODED_REQUEST_BYTES: usize = 256 * 1024;
 pub const MAX_MOUNTS: usize = 2048;
 pub const MAX_ARG_BYTES: usize = 128 * 1024;
@@ -20,6 +20,7 @@ pub enum MountKind {
     Writable,
     ReadOnly,
     Unreadable,
+    MissingProtected,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,6 +43,7 @@ pub struct LinuxSandboxRequest {
     pub cwd: PathBuf,
     pub argv: Vec<String>,
     pub mounts: Vec<MountRequest>,
+    pub glob_snapshots: Vec<super::plan::GlobSnapshot>,
     pub policy_digest: String,
 }
 
@@ -105,6 +107,15 @@ impl LinuxSandboxRequest {
         validate_path(&self.bwrap_path)?;
         validate_path(&self.cwd)?;
         if self.mounts.len() > MAX_MOUNTS {
+            return Err(RequestError::TooManyMounts);
+        }
+        if self.glob_snapshots.len() > MAX_MOUNTS
+            || self.glob_snapshots.iter().any(|snapshot| {
+                snapshot.matches.len() > MAX_MOUNTS
+                    || !Path::new(&snapshot.pattern).is_absolute()
+                    || snapshot.matches.iter().any(|path| !path.is_absolute())
+            })
+        {
             return Err(RequestError::TooManyMounts);
         }
         let argv_bytes = self.argv.iter().map(String::len).sum::<usize>();
@@ -188,6 +199,7 @@ mod tests {
                 expected: None,
                 source_fd: None,
             }],
+            glob_snapshots: Vec::new(),
             policy_digest: "a".repeat(64),
         }
     }

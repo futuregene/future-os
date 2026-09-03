@@ -38,6 +38,22 @@ fn run_request(request: LinuxSandboxRequest) -> Result<ExitStatus> {
 }
 
 fn run_outer(mut request: LinuxSandboxRequest) -> Result<ExitStatus> {
+    let mut placeholders = Vec::new();
+    for mount in &request.mounts {
+        if mount.kind == MountKind::MissingProtected {
+            std::fs::create_dir(&mount.source).with_context(|| {
+                format!(
+                    "create missing-path sandbox placeholder {}",
+                    mount.source.display()
+                )
+            })?;
+            let identity = identity_from_metadata(&std::fs::symlink_metadata(&mount.source)?);
+            placeholders.push(MissingPlaceholder {
+                path: mount.source.clone(),
+                identity,
+            });
+        }
+    }
     let bwrap = open_mount_source(&request.bwrap_path).context("open verified bwrap")?;
     if identity_from_metadata(&bwrap.metadata()?) != request.bwrap_identity {
         return Err(anyhow!("verified bwrap identity changed"));
@@ -83,10 +99,15 @@ fn run_outer(mut request: LinuxSandboxRequest) -> Result<ExitStatus> {
         let source = format!("/proc/self/fd/{fd}");
         match mount.kind {
             MountKind::Writable => command.arg("--bind"),
-            MountKind::ReadOnly | MountKind::Unreadable => command.arg("--ro-bind"),
+            MountKind::ReadOnly | MountKind::Unreadable | MountKind::MissingProtected => {
+                command.arg("--ro-bind")
+            }
         };
         command.arg(source).arg(&mount.target);
-        if mount.kind == MountKind::Unreadable {
+        if matches!(
+            mount.kind,
+            MountKind::Unreadable | MountKind::MissingProtected
+        ) {
             command.arg("--chmod").arg("000").arg(&mount.target);
         }
     }
@@ -124,7 +145,47 @@ fn run_outer(mut request: LinuxSandboxRequest) -> Result<ExitStatus> {
     command.process_group(0);
     let mut child = command.spawn().context("start verified bubblewrap")?;
     drop(inherited);
-    wait_forwarding_signals(&mut child)
+    let status = wait_forwarding_signals(&mut child)?;
+    report_dynamic_glob_creations(&request)?;
+    drop(placeholders);
+    Ok(status)
+}
+
+struct MissingPlaceholder {
+    path: std::path::PathBuf,
+    identity: BwrapIdentity,
+}
+
+impl Drop for MissingPlaceholder {
+    fn drop(&mut self) {
+        let unchanged = std::fs::symlink_metadata(&self.path)
+            .map(|metadata| identity_from_metadata(&metadata) == self.identity)
+            .unwrap_or(false);
+        if unchanged {
+            let _ = std::fs::remove_dir(&self.path);
+        }
+    }
+}
+
+fn report_dynamic_glob_creations(request: &LinuxSandboxRequest) -> Result<()> {
+    use std::collections::BTreeSet;
+    let mut created = 0usize;
+    for snapshot in &request.glob_snapshots {
+        let before: BTreeSet<_> = snapshot.matches.iter().collect();
+        let after = super::plan::expand_glob(&snapshot.pattern)?;
+        created += after.iter().filter(|path| !before.contains(path)).count();
+    }
+    if created > 0 {
+        let violation = super::violation::LinuxSandboxViolation {
+            kind: super::violation::LinuxViolationKind::DynamicGlobCreated,
+            path_provenance: "glob_snapshot".into(),
+            policy_digest: request.policy_digest.clone(),
+            detection_only: true,
+            affected_count: created,
+        };
+        println!("{}", super::violation::marker(&violation));
+    }
+    Ok(())
 }
 
 fn run_inner(request: LinuxSandboxRequest) -> Result<ExitStatus> {

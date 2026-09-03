@@ -1,5 +1,6 @@
 #![cfg(target_os = "linux")]
 
+use future_agent::sandbox::linux::plan::GlobSnapshot;
 use future_agent::sandbox::linux::probe::probe_linux_sandbox_host;
 use future_agent::sandbox::linux::request::{
     HelperPhase, LinuxSandboxRequest, MountKind, MountRequest, REQUEST_VERSION,
@@ -10,6 +11,15 @@ fn helper_request(
     command: String,
     workspace: &std::path::Path,
     extra_mounts: Vec<MountRequest>,
+) -> Option<String> {
+    helper_request_with_globs(command, workspace, extra_mounts, Vec::new())
+}
+
+fn helper_request_with_globs(
+    command: String,
+    workspace: &std::path::Path,
+    extra_mounts: Vec<MountRequest>,
+    glob_snapshots: Vec<GlobSnapshot>,
 ) -> Option<String> {
     let probe = probe_linux_sandbox_host();
     if !probe.available {
@@ -33,6 +43,7 @@ fn helper_request(
             })
             .chain(extra_mounts)
             .collect(),
+            glob_snapshots,
             policy_digest: "0".repeat(64),
         }
         .encode()
@@ -150,6 +161,53 @@ fn helper_parent_death_does_not_leave_command_running() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     panic!("sandboxed descendant {pid} survived helper death");
+}
+
+#[test]
+#[ignore = "requires a native Linux host with a working system bwrap"]
+fn missing_path_is_blocked_without_host_residue_and_new_glob_is_reported() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let missing = workspace.join("missing-secret");
+    let generated = workspace.join("generated.pem");
+    let pattern = workspace.join("*.pem").to_string_lossy().into_owned();
+    let mounts = vec![MountRequest {
+        source: missing.clone(),
+        target: missing.clone(),
+        kind: MountKind::MissingProtected,
+        expected: None,
+        source_fd: None,
+    }];
+    let Some(request) = helper_request_with_globs(
+        format!(
+            "if mkdir {} 2>/dev/null; then exit 44; fi; printf secret > {}",
+            missing.display(),
+            generated.display()
+        ),
+        &workspace,
+        mounts,
+        vec![GlobSnapshot {
+            pattern,
+            matches: Vec::new(),
+        }],
+    ) else {
+        return;
+    };
+    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        .args(["--linux-sandbox-helper", &request])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("__FUTURE_SANDBOX_VIOLATION__:"));
+    assert!(stdout.contains("dynamic_glob_created"));
+    assert!(!missing.exists(), "placeholder must be removed from host");
+    assert_eq!(std::fs::read_to_string(generated).unwrap(), "secret");
 }
 
 #[test]

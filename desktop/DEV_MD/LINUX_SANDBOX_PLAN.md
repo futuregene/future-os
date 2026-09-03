@@ -1,6 +1,6 @@
 # FutureOS Linux 沙盒调研与开发计划
 
-状态：**方案已完成第一轮决策收口；开发分支已完成 L0/L1，并完成 L2 的隐藏自重入 helper、版本化请求、FD-backed mount、`no_new_privs`、PID/信号/父进程死亡处理和 shell 执行接缝。当前 Linux probe 成功时后端可被选择，但 L3 glob 展开和 missing-path 保护尚未完成；遇到这些规则时执行链会以 infrastructure error fail closed，不会脱沙盒重跑。主干产品仍只显示“手动审批 / 完全放开”**（2026-09-03）。
+状态：**方案已完成第一轮决策收口；开发分支已完成 L0–L3：system bwrap probe、纯计划、隐藏 helper、FD-backed mount/lifecycle、启动前有界 glob 展开、symlink 双路径、missing-path CAS 清理、窄 allow 重开、结束 detection-only、结构化 violation 与 Linux 整命令 escalation。当前受控执行环境禁用了 user namespace，因此新增真 bwrap smoke 记录为环境限制；主干产品仍只显示“手动审批 / 完全放开”，L4 产品接入待实施**（2026-09-03）。
 
 本文是 [`SANDBOX_PLAN.md`](SANDBOX_PLAN.md) 的 Linux 专项设计稿。审批规则语义仍以 [`APPROVAL_PLAN.md`](APPROVAL_PLAN.md) 为准；本文只讨论如何把现有 `RuleSet` 强制到 Linux shell 子进程，以及产品启用前需要补齐的证据。代码落点、实施波次与逐项验收命令见 [`LINUX_SANDBOX_IMPLEMENTATION.md`](LINUX_SANDBOX_IMPLEMENTATION.md)。
 
@@ -32,8 +32,8 @@
 FutureOS 当前实现：
 
 - `agent/src/sandbox/mod.rs` 的 `platform_sandbox_availability()` 仅让 macOS Seatbelt 和通过完整 host probe 的 Windows RestrictedToken 后端返回可用；Linux 固定为 `false`。
-- Linux 会话即使收到 `tier=sandbox`，`wraps_shell()` 仍为 false，shell 会安全回退到手动审批档，不会裸跑；read/write/edit 的进程内路径规则继续生效。
-- shell OS 包装目前由 `ResolvedSandbox::build_shell_command()` 直接分派 macOS Seatbelt，Windows 在 `tools::spawn_shell()` 走独立 restricted runner；还没有平台中立的“计划生成 -> helper 启动 -> 违规分类”接口。
+- 开发分支的 Linux 会话在 typed probe 成功时选择 Bubblewrap backend；probe 不可用仍安全回退到手动审批档，不会裸跑。read/write/edit 的进程内路径规则继续生效。
+- shell OS 包装已引入平台中立 `PreparedShell`，Linux 走“规则快照 -> `LinuxSandboxPlan` -> 自重入 helper -> Bubblewrap -> structured violation”链路；Windows 仍在 `tools::spawn_shell()` 走专用 restricted runner。
 - 当前网络策略明确为完全开放；Linux 第一版不应偷偷改变为断网。
 - 内置 workspace secret 包含 `.env`、`.env.*`、`**/*.pem`、`**/*.key`、`**/*.p12`、`**/id_rsa*`。这些 glob 是 Linux 设计最难与 Seatbelt 动态匹配完全等价的部分。
 

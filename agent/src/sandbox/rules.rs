@@ -94,8 +94,13 @@ pub enum RuleLayer {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RuleMatcherSnapshot {
-    Subtree { canonical: PathBuf },
-    Glob { pattern: String },
+    Subtree {
+        lexical: PathBuf,
+        canonical: PathBuf,
+    },
+    Glob {
+        pattern: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -125,8 +130,12 @@ pub struct RuleSetSnapshot {
 /// char).
 #[derive(Debug, Clone)]
 enum Matcher {
-    /// Canonicalized base; matches the base or anything under it.
-    Subtree(PathBuf),
+    /// Lexical and canonical forms are both retained so native sandboxes can
+    /// protect a symlink entry as well as its target.
+    Subtree {
+        lexical: PathBuf,
+        canonical: PathBuf,
+    },
     /// Original absolute glob plus its anchored regex.
     Glob { pattern: String, regex: Regex },
 }
@@ -144,7 +153,9 @@ impl PathRule {
             return false;
         }
         match &self.matcher {
-            Matcher::Subtree(base) => paths::path_within(path, base),
+            Matcher::Subtree { lexical, canonical } => {
+                paths::path_within(path, lexical) || paths::path_within(path, canonical)
+            }
             Matcher::Glob { regex, .. } => regex.is_match(&path.to_string_lossy()),
         }
     }
@@ -176,7 +187,11 @@ fn has_glob(pattern: &str) -> bool {
 
 fn compile_matcher(abs_pattern: &str) -> Matcher {
     if !has_glob(abs_pattern) {
-        return Matcher::Subtree(paths::canonicalize_lenient(Path::new(abs_pattern)));
+        let lexical = PathBuf::from(abs_pattern);
+        return Matcher::Subtree {
+            canonical: paths::canonicalize_lenient(&lexical),
+            lexical,
+        };
     }
     // Canonicalize the leading non-glob prefix (symlink-correct), keep the
     // globbed remainder verbatim, then compile to an anchored regex.
@@ -638,7 +653,8 @@ impl RuleSet {
 impl PathRule {
     fn snapshot(&self) -> RuleSnapshot {
         let matcher = match &self.matcher {
-            Matcher::Subtree(canonical) => RuleMatcherSnapshot::Subtree {
+            Matcher::Subtree { lexical, canonical } => RuleMatcherSnapshot::Subtree {
+                lexical: lexical.clone(),
                 canonical: canonical.clone(),
             },
             Matcher::Glob { pattern, .. } => RuleMatcherSnapshot::Glob {
@@ -664,7 +680,7 @@ impl PathRule {
     /// subtree base, or the original glob's compiled regex source.
     pub fn matcher_sbpl(&self) -> MatcherSbpl<'_> {
         match &self.matcher {
-            Matcher::Subtree(base) => MatcherSbpl::Subtree(base),
+            Matcher::Subtree { canonical, .. } => MatcherSbpl::Subtree(canonical),
             Matcher::Glob { regex, .. } => MatcherSbpl::Regex(regex.as_str()),
         }
     }

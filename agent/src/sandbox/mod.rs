@@ -198,6 +198,27 @@ impl ResolvedSandbox {
         };
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_linux_backend_available_for_test(&mut self) {
+        self.backend_receipt = SandboxBackendReceipt::LinuxBubblewrap {
+            probe: linux::probe::LinuxSandboxProbe {
+                available: true,
+                code: linux::probe::LinuxSandboxProbeCode::Available,
+                path: Some(PathBuf::from("/usr/bin/bwrap")),
+                version: Some("test".into()),
+                identity: Some(linux::probe::BwrapIdentity {
+                    device: 1,
+                    inode: 2,
+                    size: 3,
+                    modified_nanos: 4,
+                }),
+                capabilities: None,
+                expires_at_unix_ms: None,
+                diagnostic: None,
+            },
+        };
+    }
+
     /// Read access to the resolved rule set (Seatbelt profile builder).
     pub fn rule_set(&self) -> &RuleSet {
         &self.rules
@@ -219,10 +240,7 @@ impl ResolvedSandbox {
             }
             #[cfg(target_os = "linux")]
             if let SandboxBackendReceipt::LinuxBubblewrap { probe } = &self.backend_receipt {
-                let plan =
-                    linux::plan::LinuxSandboxPlan::compile(&self.rules.snapshot(), &|path| {
-                        path.exists()
-                    })?;
+                let plan = linux::plan::LinuxSandboxPlan::compile(&self.rules.snapshot())?;
                 return Ok(linux::runner::prepare(probe, plan, command, cwd)?);
             }
         }
@@ -330,9 +348,18 @@ impl ResolvedSandbox {
         violation: Option<&str>,
         inside_sandbox: bool,
     ) -> serde_json::Value {
+        let backend = match self.backend_receipt {
+            SandboxBackendReceipt::Unavailable => "none",
+            SandboxBackendReceipt::MacosSeatbelt { .. } => "macos_seatbelt",
+            SandboxBackendReceipt::LinuxBubblewrap { .. } => "linux_bubblewrap",
+            SandboxBackendReceipt::WindowsRestricted => "windows_restricted",
+        };
+        let policy_digest = linux::plan::policy_digest(&self.rules.snapshot()).ok();
         serde_json::json!({
             "inside_sandbox": inside_sandbox,
             "sandbox_available": self.backend_receipt.is_available(),
+            "backend": backend,
+            "policy_digest": policy_digest,
             "tier": self.tier.as_str(),
             "violation": violation,
             "cwd": self.workspace.to_string_lossy(),
@@ -1048,9 +1075,30 @@ pub type EscalationRequester = Arc<dyn Fn(&EscalationRequest) -> EscalationDecis
 /// stopped it? Network is unrestricted in v2, so only filesystem EPERM counts.
 /// False negatives are fine (the model can retry with `escalated: true`);
 /// false positives would nag the user, so match narrowly.
-pub fn looks_like_sandbox_denial(_sandbox: &ResolvedSandbox, exit_code: i32, stderr: &str) -> bool {
+pub fn sandbox_violation(
+    sandbox: &ResolvedSandbox,
+    exit_code: i32,
+    output: &str,
+) -> Option<linux::violation::LinuxSandboxViolation> {
+    if matches!(
+        sandbox.backend_receipt,
+        SandboxBackendReceipt::LinuxBubblewrap { .. }
+    ) {
+        let digest = linux::plan::policy_digest(&sandbox.rules.snapshot()).unwrap_or_default();
+        return linux::violation::classify(exit_code, output, &digest);
+    }
+    None
+}
+
+pub fn looks_like_sandbox_denial(sandbox: &ResolvedSandbox, exit_code: i32, stderr: &str) -> bool {
     if exit_code == 0 {
         return false;
+    }
+    if matches!(
+        sandbox.backend_receipt,
+        SandboxBackendReceipt::LinuxBubblewrap { .. }
+    ) {
+        return sandbox_violation(sandbox, exit_code, stderr).is_some();
     }
     stderr.contains("Operation not permitted") || stderr.contains("sandbox-exec")
 }
@@ -1543,6 +1591,30 @@ mod tests {
             "sandbox-exec: deny(1) file-write"
         ));
         assert!(!looks_like_sandbox_denial(&s, 1, "file not found"));
+    }
+
+    #[test]
+    fn linux_denial_classification_excludes_shell_and_infrastructure_failures() {
+        let ws = temp_workspace("linux-denial-heur");
+        let mut sandbox = enabled(&ws);
+        sandbox.set_linux_backend_available_for_test();
+        assert!(looks_like_sandbox_denial(
+            &sandbox,
+            1,
+            "touch: Permission denied"
+        ));
+        assert!(looks_like_sandbox_denial(
+            &sandbox,
+            1,
+            "write: Read-only file system"
+        ));
+        for code in [2, 125, 126, 127] {
+            assert!(!looks_like_sandbox_denial(
+                &sandbox,
+                code,
+                "Permission denied"
+            ));
+        }
     }
 
     #[cfg(target_os = "macos")]
