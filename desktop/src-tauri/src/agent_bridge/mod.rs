@@ -11,6 +11,7 @@ mod replica;
 mod review;
 mod run_control;
 mod session;
+mod session_events;
 mod skills;
 mod stream;
 #[cfg(test)]
@@ -38,6 +39,7 @@ pub use self::observer::{
 pub use self::run_control::abort_run;
 pub(crate) use self::run_control::{abort_session, wait_for_agent_idle};
 pub use self::session::fork_agent_session;
+pub use self::session_events::spawn_session_events_observer;
 pub use self::skills::{list_installed_skills, refresh_skills, InstalledSkill};
 #[cfg(test)]
 pub use review::capture_before;

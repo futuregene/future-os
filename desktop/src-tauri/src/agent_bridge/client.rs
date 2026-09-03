@@ -211,10 +211,16 @@ pub(super) fn fork_command(
     session_id: String,
     entry_id: String,
     parent_session: String,
+    creator_id: String,
 ) -> RpcCommand {
     RpcCommand {
         entry_id,
         parent_session,
+        // Declare the GUI as the forking client: the agent propagates this to
+        // the forked session's provenance, so the session_created push skips
+        // it (the GUI creates its own thread row for the fork).
+        created_by: "desktop".to_string(),
+        creator_id,
         ..base_command("fork", session_id)
     }
 }
@@ -275,6 +281,7 @@ pub fn new_session_command(
     session_id: String,
     cwd: String,
     created_by: &str,
+    creator_id: String,
     source_meta: serde_json::Value,
     model_id: Option<String>,
     thinking_level: Option<String>,
@@ -284,6 +291,7 @@ pub fn new_session_command(
         // Typed provenance fields (proto created_by/source_meta) — no longer
         // smuggled through custom_instructions, which belongs to compact.
         created_by: created_by.to_string(),
+        creator_id,
         source_meta: source_meta.to_string(),
         model_id: model_id.unwrap_or_default(),
         level: thinking_level.unwrap_or_default(),
@@ -428,6 +436,7 @@ pub(super) fn base_command(command_type: &str, session_id: String) -> RpcCommand
         mode: String::new(),
         custom_instructions: String::new(),
         created_by: String::new(),
+        creator_id: String::new(),
         source_meta: String::new(),
         enabled: false,
         command: String::new(),
@@ -637,10 +646,12 @@ mod tests {
             "sess".to_string(),
             "entry-1".to_string(),
             "parent".to_string(),
+            "desktop-test".to_string(),
         );
         assert_eq!(cmd.r#type, "fork");
         assert_eq!(cmd.entry_id, "entry-1");
         assert_eq!(cmd.parent_session, "parent");
+        assert_eq!(cmd.creator_id, "desktop-test");
 
         assert_eq!(
             delete_session_command("sess".to_string()).r#type,
@@ -673,6 +684,7 @@ mod tests {
             "sess".to_string(),
             "/tmp/ws".to_string(),
             "desktop",
+            "desktop-test".to_string(),
             serde_json::json!({"source": "test"}),
             Some("future/k3".to_string()),
             Some("high".to_string()),
@@ -680,6 +692,7 @@ mod tests {
         assert_eq!(cmd.r#type, "new_session");
         assert_eq!(cmd.cwd, "/tmp/ws");
         assert_eq!(cmd.created_by, "desktop");
+        assert_eq!(cmd.creator_id, "desktop-test");
         assert_eq!(cmd.source_meta, r#"{"source":"test"}"#);
         assert_eq!(cmd.model_id, "future/k3");
         assert_eq!(cmd.level, "high");
@@ -688,6 +701,7 @@ mod tests {
             String::new(),
             String::new(),
             "desktop",
+            String::new(),
             serde_json::Value::Null,
             None,
             None,

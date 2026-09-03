@@ -406,11 +406,11 @@ fn run_falls_back_to_fresh_for_dead_session() {
 }
 
 #[test]
-fn run_transport_error_with_turn_budget() {
+fn run_transport_error_reports_and_returns() {
     let cr = cli_root();
-    let gid = init_goal(&cr, "transport with budget");
-    // A non-DataLoss mid-stream error under a wall-clock turn budget hits the
-    // `Ok(Err(e))` arm of the timeout match (transport stop + resumable mark).
+    let gid = init_goal(&cr, "transport error");
+    // A non-DataLoss mid-stream error hits the transport-failure arm of the
+    // turn await (transport stop + resumable mark, then re-propagates).
     let st = MockState {
         stream_attach_plan: vec![AttachPlan::HardErrorAfter(0)],
         ..Default::default()
@@ -418,16 +418,7 @@ fn run_transport_error_with_turn_budget() {
     let rt = rt();
     let (addr, _shared) = rt.block_on(spawn_mock(st));
     std::env::set_var("FUTURE_LOOP_AGENT_ADDR", &addr);
-    let err = cli_err(&[
-        "run",
-        "--goal",
-        &gid,
-        "--anonymous",
-        "--max-turns",
-        "1",
-        "--max-turn-secs",
-        "5",
-    ]);
+    let err = cli_err(&["run", "--goal", &gid, "--anonymous", "--max-turns", "1"]);
     assert!(err.contains("stream error"), "{err}");
     std::env::remove_var("FUTURE_LOOP_AGENT_ADDR");
 }

@@ -21,7 +21,8 @@ mod workspaces;
 use db::*;
 
 pub use app_settings::{
-    get_app_settings, update_app_settings, AppSettings, UpdateAppSettingsInput,
+    get_app_settings, get_or_create_device_id, update_app_settings, AppSettings,
+    UpdateAppSettingsInput,
 };
 pub use approvals::{
     decide_approval_request, ensure_approval_request, list_approval_requests,
@@ -62,10 +63,10 @@ pub use runs::{
 pub(crate) use runs::{append_run_event, flush_run_event_log_for_test};
 pub use threads::{
     archive_thread, batch_delete_threads, create_thread, delete_thread, delete_thread_with_files,
-    find_thread_by_agent_session, get_recent_thread, get_thread, list_threads, mark_thread_opened,
-    move_thread_to_workspace, pin_thread, purge_soft_deleted_threads, rename_thread,
-    restore_thread, sync_thread_title, update_thread_model, update_thread_session_id,
-    update_thread_thinking_level, ThreadRecord,
+    find_thread_by_agent_session, get_or_create_thread_for_agent_session, get_recent_thread,
+    get_thread, list_threads, mark_thread_opened, move_thread_to_workspace, pin_thread,
+    purge_soft_deleted_threads, rename_thread, restore_thread, sync_thread_title,
+    update_thread_model, update_thread_session_id, update_thread_thinking_level, ThreadRecord,
 };
 pub use util::{create_id, now_millis, take_catalog_dirty};
 pub use workspace_files::{search_workspace_files, WorkspaceFileResult, WorkspaceFileSearchInput};
@@ -153,6 +154,10 @@ fn log_reconcile(result: Result<usize, crate::AppError>, op: &str) {
 /// by Settings ▸ Debug ▸ Reset.
 pub fn clear_all_data() -> Result<(), crate::AppError> {
     let conn = connect()?;
+    // Device identity is installation-scoped control-plane state, not a UI
+    // preference or projection. Preserve it when Debug ▸ Reset clears app
+    // data so creatorId and remote pairing do not silently change identity.
+    let device_id = app_settings::read_device_id(&conn)?;
     // Retain a durable deletion intent even though all display/projection data
     // is being reset. The table is deliberately control-plane state, not user
     // history, and startup will retry it against the Agent.
@@ -174,6 +179,7 @@ pub fn clear_all_data() -> Result<(), crate::AppError> {
     }
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     apply_schema(&conn)?;
+    app_settings::restore_device_id(&conn, device_id.as_deref())?;
     drop(conn);
 
     // Best effort: remove GUI-managed file trees; they're recreated on demand.
@@ -265,7 +271,12 @@ mod tests {
     fn clear_all_data_rebuilds_pristine_schema() {
         let _home = HomeGuard::new("store-clear");
         initialize_app_store().unwrap();
+        let device_id = get_or_create_device_id("desktop-reset-stable").unwrap();
         clear_all_data().unwrap();
+        assert_eq!(
+            get_or_create_device_id("desktop-should-not-win").unwrap(),
+            device_id
+        );
         // The reset re-applies the schema: a fresh query against the core table
         // must succeed and be empty.
         let conn = connect().unwrap();

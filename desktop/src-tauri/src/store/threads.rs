@@ -91,7 +91,10 @@ pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::Ap
     // Only use a pre-existing agent session ID (e.g. from fork). For normal
     // threads leave it empty — the agent generates the ID on first prompt
     // and it's persisted back via update_thread_session_id.
-    let agent_session_id = input.agent_session_id.filter(|id| !id.is_empty());
+    let agent_session_id = input
+        .agent_session_id
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty());
     let title = input.title.unwrap_or_else(|| {
         if mode == "chat" {
             "New Chat".to_string()
@@ -137,6 +140,36 @@ pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::Ap
     tx.commit()?;
     mark_catalog_dirty();
     Ok(thread)
+}
+
+/// Create the sole Desktop projection for an Agent session.
+///
+/// The unique index is the concurrency authority. The optimistic lookup keeps
+/// the common path cheap; if another discovery task wins between that lookup
+/// and the insert, the losing insert rolls back and returns the winner instead
+/// of creating a duplicate thread/workspace pair.
+pub fn get_or_create_thread_for_agent_session(
+    mut input: CreateThreadInput,
+) -> Result<(ThreadRecord, bool), crate::AppError> {
+    let session_id = input
+        .agent_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| "agentSessionId is required for an Agent-backed thread.".to_string())?
+        .to_string();
+    input.agent_session_id = Some(session_id.clone());
+
+    if let Some(thread) = find_thread_by_agent_session(&session_id)? {
+        return Ok((thread, false));
+    }
+    match create_thread(input) {
+        Ok(thread) => Ok((thread, true)),
+        Err(error) => match find_thread_by_agent_session(&session_id)? {
+            Some(thread) => Ok((thread, false)),
+            None => Err(error),
+        },
+    }
 }
 
 pub fn get_thread(thread_id: &str) -> Result<Option<ThreadRecord>, crate::AppError> {
@@ -219,6 +252,10 @@ pub fn update_thread_thinking_level(
 
 /// Persist the agent-generated session id after the first prompt creates it.
 pub fn update_thread_session_id(thread_id: &str, session_id: &str) -> Result<(), crate::AppError> {
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return Err("agentSessionId cannot be empty.".to_string().into());
+    }
     let now = now_millis();
     const SQL: &str = "UPDATE threads SET agent_session_id = ?1, updated_at = ?2
          WHERE id = ?3 AND status != 'deleted'";
@@ -402,9 +439,10 @@ pub(crate) fn delete_thread_inner(
         .map(str::trim)
         .filter(|id| !id.is_empty())
         .unwrap_or(&thread.id);
-    // A session can be represented by more than one GUI thread during import
-    // or migration. Only the last owner is allowed to tombstone its canonical
-    // Agent session.
+    // Non-empty Agent session bindings are unique. Keep the count guard for
+    // the unbound-thread-id fallback: a legacy Agent id could theoretically
+    // equal another local thread id, and only the final effective owner may
+    // tombstone that source session.
     const OWNER_SQL: &str = "SELECT COUNT(*) FROM threads
          WHERE COALESCE(NULLIF(TRIM(agent_session_id), ''), id) = ?1";
     let owner_count: i64 = tx.query_row(OWNER_SQL, [session_id], |row| row.get(0))?;
@@ -818,6 +856,28 @@ mod tests {
     }
 
     #[test]
+    fn agent_session_binding_is_normalized_and_get_or_create_is_idempotent() {
+        let (_home, _conn) = guarded_conn("threads_unique_agent_session");
+        let mut first = chat_input();
+        first.agent_session_id = Some("  sess-one  ".to_string());
+        let (created, was_created) =
+            get_or_create_thread_for_agent_session(first).expect("create binding");
+        assert!(was_created);
+        assert_eq!(created.agent_session_id.as_deref(), Some("sess-one"));
+
+        let mut repeated = chat_input();
+        repeated.agent_session_id = Some("sess-one".to_string());
+        let (existing, was_created) =
+            get_or_create_thread_for_agent_session(repeated).expect("reuse binding");
+        assert!(!was_created);
+        assert_eq!(existing.id, created.id);
+
+        let other = create_thread(chat_input()).expect("create unbound thread");
+        assert!(update_thread_session_id(&other.id, "sess-one").is_err());
+        assert!(update_thread_session_id(&other.id, "   ").is_err());
+    }
+
+    #[test]
     fn thread_field_updates_round_trip() {
         let (_home, conn) = guarded_conn("threads_updates");
         seed_two_threads(&conn);
@@ -947,28 +1007,22 @@ mod tests {
     }
 
     #[test]
-    fn delete_tombstones_only_the_last_owner_of_a_session() {
-        let (_home, conn) = guarded_conn("threads_delete_shared");
+    fn deleting_a_bound_thread_tombstones_its_unique_session() {
+        let (_home, conn) = guarded_conn("threads_delete_bound");
         conn.execute_batch(
             "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
                  VALUES ('ws1', 'W', 'user', '/tmp/ws1', 1, 1);
              INSERT INTO threads (id, workspace_id, mode, title, agent_session_id,
                  created_at, updated_at)
-                 VALUES ('ta', 'ws1', 'chat', 'A', 'sess_shared', 1, 1),
-                        ('tb', 'ws1', 'chat', 'B', 'sess_shared', 1, 1);",
+                 VALUES ('ta', 'ws1', 'chat', 'A', 'sess_unique', 1, 1);",
         )
         .expect("seed");
         drop(conn);
 
-        delete_thread("ta").expect("delete first");
+        delete_thread("ta").expect("delete");
         assert!(
-            !crate::store::is_agent_session_tombstoned("sess_shared").expect("check"),
-            "a surviving owner keeps the session untombstoned"
-        );
-        delete_thread("tb").expect("delete last");
-        assert!(
-            crate::store::is_agent_session_tombstoned("sess_shared").expect("check"),
-            "the last owner tombstones the session"
+            crate::store::is_agent_session_tombstoned("sess_unique").expect("check"),
+            "the sole owner tombstones the session"
         );
     }
 

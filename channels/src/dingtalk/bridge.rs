@@ -43,6 +43,13 @@ impl DingtalkBridge {
         })
     }
 
+    /// Resolve when the Agent connection drops so the channel supervisor can
+    /// rebuild this bridge with a fresh gRPC client.
+    pub async fn wait_for_agent_disconnect(&self) -> Result<()> {
+        let mut agent = self.agent.read().await.clone();
+        agent.wait_for_disconnect().await
+    }
+
     pub async fn handle_event(&self, event: DingtalkEvent) -> Result<()> {
         let sender_id = match &event.sender_id {
             Some(id) => id.clone(),

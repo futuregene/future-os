@@ -3,10 +3,10 @@
 //! keep the latest N runs (plus a TTL window when configured); older files
 //! become retention candidates that compaction ARCHIVES (never deletes).
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Serialize;
 
-use crate::runtime::run_history::{read_index_rows, row_epoch};
+use crate::runtime::run_history::row_epoch;
 
 pub const DEFAULT_RUN_RETENTION_LIMIT: usize = 50;
 
@@ -43,17 +43,8 @@ pub fn retention_report(
     policy: &RetentionPolicy,
     now_epoch: u64,
 ) -> Result<RetentionReport> {
-    let index = crate::runtime::index_path(runtime_root, goal_id);
-    if !index.exists() {
-        return Ok(RetentionReport {
-            goal_id: goal_id.to_string(),
-            policy: policy.clone(),
-            total: 0,
-            retained: 0,
-            candidates: vec![],
-        });
-    }
-    let mut rows = read_index_rows(&index).context("read run index")?;
+    // The index is a pure projection: derive it from the run files on disk.
+    let mut rows = crate::runtime::run_index::load_run_index(runtime_root, goal_id)?;
     rows.sort_by_key(|b| std::cmp::Reverse(row_epoch(b)));
 
     let cutoff_epoch = policy
@@ -91,14 +82,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let runs = dir.path().join("goals").join("g1").join("runs");
         std::fs::create_dir_all(&runs).unwrap();
-        let mut text = String::new();
-        // 5 runs on distinct August days; now = 08-31, TTL = 7d → cutoff 08-24.
+        // 5 run files on distinct August days; now = 08-31, TTL = 7d → cutoff 08-24.
         for day in [20, 25, 26, 27, 28] {
-            text.push_str(&format!(
-                "{{\"goal_id\":\"g1\",\"timestamp\":\"2026-08-{day:02}T00:00:00+00:00\",\"path\":\"goals/g1/runs/d{day}.json\",\"turn\":1,\"classification\":\"run_recorded\"}}\n"
-            ));
+            let payload = format!(
+                "{{\"timestamp\":\"2026-08-{day:02}T00:00:00+00:00\",\"turn\":1,\"terminal_state\":\"run_recorded\"}}"
+            );
+            std::fs::write(runs.join(format!("d{day}.json")), payload).unwrap();
         }
-        std::fs::write(runs.join("index.jsonl"), text).unwrap();
 
         let now = crate::scheduler::state::parse_epoch("2026-08-31T00:00:00+00:00").unwrap();
         let policy = retention_policy(2, Some(7 * 86400));
@@ -111,7 +101,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_index_is_empty_report() {
+    fn missing_run_dir_is_empty_report() {
         let dir = tempfile::tempdir().unwrap();
         let report = retention_report(
             dir.path().to_str().unwrap(),

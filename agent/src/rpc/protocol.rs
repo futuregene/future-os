@@ -46,6 +46,8 @@ pub struct RpcCommand {
     pub created_by: String,
     #[serde(default)]
     pub source_meta: String,
+    #[serde(default)]
+    pub creator_id: String,
 
     // set_auto_compaction / set_auto_retry
     #[serde(default)]

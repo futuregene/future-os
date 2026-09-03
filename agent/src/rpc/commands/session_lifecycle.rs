@@ -401,6 +401,7 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
     if !cmd.created_by.is_empty() {
         new_sess.created_by = cmd.created_by.clone();
     }
+    new_sess.creator_id = cmd.creator_id.clone();
     if !cmd.source_meta.is_empty() {
         if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&cmd.source_meta) {
             new_sess.source_meta = meta;
@@ -895,13 +896,14 @@ pub(crate) fn cmd_fork(
     }
 
     // Extract needed data from session
-    let (session_manager, broadcaster, _cwd, current_session_id) = {
+    let (session_manager, broadcaster, _cwd, current_session_id, parent_created_by) = {
         let sess = session.read();
         (
             sess.session_manager.clone(),
             sess.broadcaster.clone(),
             sess.cwd.clone(),
             sess.session_id.clone(),
+            sess.created_by.clone(),
         )
     };
     // The fork gets its own agent loop — sharing the parent's loop would let
@@ -931,7 +933,13 @@ pub(crate) fn cmd_fork(
     };
 
     // Fork a new session
-    let forked = crate::session::fork_session(&parent, entry_id);
+    let child_created_by = if cmd.created_by.is_empty() {
+        parent_created_by.as_str()
+    } else {
+        cmd.created_by.as_str()
+    };
+    let mut forked = crate::session::fork_session(&parent, entry_id);
+    crate::session::set_creation_provenance(&mut forked, child_created_by, &cmd.creator_id);
     let forked_id = forked.id.clone();
 
     // Save the forked session
@@ -958,6 +966,13 @@ pub(crate) fn cmd_fork(
         state.model_registry.clone(),
         state.queue_budget.clone(),
     );
+    // Category provenance may fall back for legacy callers; creator_id never
+    // inherits because it identifies the client that performed this fork.
+    new_sess.created_by = child_created_by.to_string();
+    // creator_id identifies the client that performed this fork. Never inherit
+    // it from the parent: a TUI/CLI fork of a Desktop session is not owned by
+    // the original Desktop installation.
+    new_sess.creator_id = cmd.creator_id.clone();
     let supports_images = state
         .model_registry
         .read()
@@ -989,10 +1004,11 @@ pub(crate) fn cmd_fork(
 pub(crate) fn cmd_clone(
     state: &AppState,
     session: &Arc<parking_lot::RwLock<ServerSession>>,
+    cmd: &RpcCommand,
     id: &str,
 ) -> String {
     // Extract needed data from session
-    let (session_manager, broadcaster, _cwd, session_id) = {
+    let (session_manager, broadcaster, _cwd, session_id, parent_created_by) = {
         let sess = session.read();
         if sess.messages.read().is_empty() {
             return RpcResponse::build_fail(
@@ -1006,6 +1022,7 @@ pub(crate) fn cmd_clone(
             sess.broadcaster.clone(),
             sess.cwd.clone(),
             sess.session_id.clone(),
+            sess.created_by.clone(),
         )
     };
     // Own agent loop for the clone (same reasoning as fork).
@@ -1039,7 +1056,13 @@ pub(crate) fn cmd_clone(
     }
 
     // Fork from leaf
-    let forked = crate::session::fork_session(&parent, &leaf_id);
+    let child_created_by = if cmd.created_by.is_empty() {
+        parent_created_by.as_str()
+    } else {
+        cmd.created_by.as_str()
+    };
+    let mut forked = crate::session::fork_session(&parent, &leaf_id);
+    crate::session::set_creation_provenance(&mut forked, child_created_by, &cmd.creator_id);
     let forked_id = forked.id.clone();
 
     // Save the forked session
@@ -1064,6 +1087,10 @@ pub(crate) fn cmd_clone(
         state.model_registry.clone(),
         state.queue_budget.clone(),
     );
+    // Match fork provenance: category fallback is legacy compatibility while
+    // creator_id identifies only the client performing this clone.
+    new_sess.created_by = child_created_by.to_string();
+    new_sess.creator_id = cmd.creator_id.clone();
     let supports_images = state
         .model_registry
         .read()

@@ -154,6 +154,34 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
     }
 }
 
+/// Replace the inherited provenance snapshot on a freshly forked session.
+/// Forking copies history, but the child is created by the client performing
+/// the fork; its durable creator identity must therefore not come from the
+/// parent session.
+pub fn set_creation_provenance(session: &mut Session, created_by: &str, creator_id: &str) {
+    let Some(info) = session
+        .entries
+        .iter_mut()
+        .find(|entry| entry.entry_type == ENTRY_TYPE_SESSION_INFO)
+        .and_then(|entry| entry.content.as_mut())
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    info.insert(
+        "created_by".to_string(),
+        serde_json::Value::String(created_by.to_string()),
+    );
+    if creator_id.is_empty() {
+        info.remove("creator_id");
+    } else {
+        info.insert(
+            "creator_id".to_string(),
+            serde_json::Value::String(creator_id.to_string()),
+        );
+    }
+}
+
 fn for_each_entry<'a>(entries: &'a [SessionEntry], from_id: &str) -> Vec<&'a SessionEntry> {
     // Include all entries from the beginning up to and including from_id,
     // skipping the original session_info (fork_session prepends its own) and

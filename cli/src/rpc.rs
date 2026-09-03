@@ -13,7 +13,7 @@
 
 use crate::output::Output;
 use future_rpc::proto::future_agent_client::FutureAgentClient;
-use future_rpc::proto::{AuthUpdate, RpcCommand, StreamEvent, StreamRequest};
+use future_rpc::proto::{AuthUpdate, ProviderUpsert, RpcCommand, StreamEvent, StreamRequest};
 use serde_json::{json, Map, Value};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -119,6 +119,21 @@ impl RunClient {
             "set_auth",
             RpcCommand {
                 auth_update: Some(update),
+                ..Default::default()
+            },
+            None,
+            10,
+        )
+        .await
+    }
+
+    /// Create or update a custom model provider and refresh the running
+    /// agent's provider registry.
+    pub async fn upsert_provider(&self, provider: ProviderUpsert) -> Result<Value, String> {
+        self.execute_command(
+            "upsert_provider",
+            RpcCommand {
+                provider_config: Some(provider),
                 ..Default::default()
             },
             None,
@@ -933,6 +948,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn one_shot_methods_propagate_failures() {
         let fail_all: &[&str] = &[
+            "upsert_provider",
             "set_session_name",
             "delete_session",
             "set_model",
@@ -953,6 +969,13 @@ mod tests {
         let addr = crate::test_server::spawn_mock(agent).await;
         let client = RunClient::new(&addr);
 
+        assert!(client
+            .upsert_provider(ProviderUpsert {
+                id: "acme".to_string(),
+                ..Default::default()
+            })
+            .await
+            .is_err());
         assert!(client.rename_session("s", "n").await.is_err());
         assert!(client.delete_session("s").await.is_err());
         assert!(client.set_model("m", "s").await.is_err());
@@ -1139,6 +1162,9 @@ mod tests {
             .insert("set_auth".into(), "{\"ok\":true}".into());
         agent
             .responses
+            .insert("upsert_provider".into(), "{\"ok\":true}".into());
+        agent
+            .responses
             .insert("notify".into(), "not json at all".into());
         let addr = spawn_mock(agent.clone()).await;
         let client = RunClient::new(&addr);
@@ -1151,6 +1177,26 @@ mod tests {
                 .set_auth(future_rpc::proto::AuthUpdate {
                     provider: "builtin".to_string(),
                     key: "k".to_string(),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()["ok"],
+            true
+        );
+        assert_eq!(
+            client
+                .upsert_provider(ProviderUpsert {
+                    id: "acme".to_string(),
+                    api: "openai-completions".to_string(),
+                    base_url: "https://api.acme.test/v1".to_string(),
+                    replace_models: true,
+                    models: vec![future_rpc::proto::ProviderModel {
+                        id: "m1".to_string(),
+                        name: "Model One".to_string(),
+                        modalities: vec!["text".to_string()],
+                        context_window: 128_000,
+                        max_tokens: 16_384,
+                    }],
                     ..Default::default()
                 })
                 .await
@@ -1207,6 +1253,10 @@ mod tests {
         assert_eq!(by_type("prompt").busy_policy, "enqueue_if_busy");
         assert_eq!(by_type("fork").entry_id, "e1");
         assert_eq!(by_type("new_session").created_by, "cli");
+        let provider = by_type("upsert_provider").provider_config.unwrap();
+        assert_eq!(provider.id, "acme");
+        assert_eq!(provider.models[0].id, "m1");
+        assert!(provider.replace_models);
         assert_eq!(by_type("get_session_entries").session_id, "s1");
         // get_state without a session leaves the field empty.
         let no_session = seen

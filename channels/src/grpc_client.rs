@@ -107,6 +107,30 @@ impl AgentClient {
         })
     }
 
+    /// Keep a lightweight global event stream open so the channel supervisor
+    /// notices when an already-connected Agent goes away. The stream is not
+    /// used for data; returning (with either EOF or an error) tells the caller
+    /// to rebuild the bridge and reconnect.
+    pub async fn wait_for_disconnect(&mut self) -> Result<()> {
+        let request = tonic::Request::new(StreamRequest {
+            global_events: true,
+            ..Default::default()
+        });
+        let mut stream = self
+            .inner
+            .stream_events(request)
+            .await
+            .map_err(|e| anyhow!("Agent connection monitor failed: {e}"))?
+            .into_inner();
+        while stream
+            .message()
+            .await
+            .map_err(|e| anyhow!("Agent connection lost: {e}"))?
+            .is_some()
+        {}
+        Err(anyhow!("Agent connection closed"))
+    }
+
     /// Execute a command and return the parsed JSON response data.
     async fn call(&mut self, cmd_type: &str, session_id: &str, extra: RpcCommand) -> Result<Value> {
         let request = tonic::Request::new(RpcCommand {

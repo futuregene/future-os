@@ -7,6 +7,7 @@ mod auth_store;
 mod build_info;
 mod commands;
 mod config_io;
+mod device_identity;
 mod error;
 mod future_login;
 mod future_platform;
@@ -296,6 +297,16 @@ fn emit_remote_activity_via<R: tauri::Runtime>(
 fn emit_remote_activity_on<R: tauri::Runtime>(handle: &tauri::AppHandle<R>, thread_id: &str) {
     use tauri::Emitter;
     let _ = handle.emit("remote-activity", thread_id.to_string());
+}
+
+/// Notify the frontend that the thread list changed behind its back — sessions
+/// created outside the GUI (TUI/CLI/channels) were imported into the store —
+/// so the sidebar re-lists threads. No payload: a bare invalidation signal.
+pub(crate) fn emit_threads_updated() {
+    if let Some(handle) = APP_HANDLE.get() {
+        use tauri::Emitter;
+        let _ = handle.emit("threads-updated", ());
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -707,9 +718,13 @@ pub fn run() {
             // Global provider/auth completion stream. This is independent of
             // chat observers and fans committed revisions to WebView + Mobile.
             agent_bridge::spawn_provider_config_observer();
-            // Discovery: conversations created by other clients (TUI/CLI) get
-            // a thread stub + an observer — streaming ones within ~1s, idle
-            // ones on the 60s import pass.
+            // Global session lifecycle stream: sessions created by other
+            // clients (TUI/CLI/channels) are imported within milliseconds of
+            // the agent's session_created announcement.
+            agent_bridge::spawn_session_events_observer();
+            // Low-frequency safety reconciliation for lifecycle notifications
+            // missed during outages or emitted by an older Agent. The global
+            // stream is the realtime path and reconciles on every reconnect.
             agent_bridge::spawn_session_discovery();
             // Continuously flush local deletion tombstones. This is independent
             // of the current UI route and makes offline GUI deletes converge.

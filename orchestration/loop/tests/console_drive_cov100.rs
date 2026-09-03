@@ -31,11 +31,13 @@ fn parse_catch_all_arms_reject_unknown_flags() {
 }
 
 #[test]
-fn runs_compact_cutoff_without_index_errors() {
+fn runs_compact_cutoff_without_runs_succeeds() {
+    // The run index is now a pure projection derived from the run files on
+    // disk (no persistent index.jsonl), so compacting a goal with no run
+    // files is a clean no-op report (archived=0), not an error.
     let cr = cli_root();
-    let gid = init_goal(&cr, "compact without index");
-    let err = cli_err(&["runs", "compact", "--goal", &gid, "--cutoff", "0"]);
-    assert!(err.contains("no run index"), "{err}");
+    let gid = init_goal(&cr, "compact without runs");
+    cli_ok(&["runs", "compact", "--goal", &gid, "--cutoff", "0"]);
 }
 
 #[test]

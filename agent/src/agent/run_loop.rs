@@ -923,6 +923,14 @@ impl Loop {
                         }
                     }
                     ModelStreamEvent::Error { message } => {
+                        tracing::error!(
+                            turn,
+                            model = %self.model,
+                            output_len = assistant_text.len(),
+                            tool_calls_so_far = agent_tool_calls.len(),
+                            error = %message,
+                            "LLM model stream failed"
+                        );
                         saw_terminal_event = true;
                         model_stream_failed = true;
                         // A model-stream error always leaves the accumulated

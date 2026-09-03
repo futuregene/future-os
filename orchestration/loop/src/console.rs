@@ -10,7 +10,7 @@
 //!   gate resolve — resolve a user gate with a decision payload
 //!   status       — project the active state (todos, gaps, next action)
 //!   quota should-run — emit the typed ShouldRunPacket (deterministic)
-//!   run          — drive one bounded gRPC turn + writeback (needs agent)
+//!   run          — drive one bounded gRPC turn + writeback (agent-id or anonymous)
 //!
 //! State is project-local under `<cwd>/.future/loop/` (override with the
 //! `FUTURE_LOOP_ROOT` env var), one goal per directory, event-sourced:
@@ -155,9 +155,9 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
     }
     let mut store = Store::open(&root_dir())?;
     match args[0].as_str() {
-        "goal" => cmd_goal(&mut store, &args[1..]),
+        "goal" => cmd_goal(&mut store, &args[1..]).await,
         "agent" => cmd_agent(&mut store, &args[1..]),
-        "todo" => cmd_todo(&mut store, &args[1..]),
+        "todo" => cmd_todo(&mut store, &args[1..]).await,
         "gate" => cmd_gate(&mut store, &args[1..]),
         "backup" => cmd_backup(&store, &args[1..]),
         "authority" => cmd_authority(&mut store, &args[1..]),
@@ -541,8 +541,8 @@ fn build_cli_registry() -> CommandRegistry {
     r.command(
         ops,
         "run",
-        "drive one bounded gRPC turn (requires --agent-id; auto-registers)",
-        "run --goal G --agent-id A [--model M] [--thinking-level L] [--max-turns N] [--max-turn-secs N] [--max-incomplete-retries N] [--lease-secs N] [--force-workspace] [--session-policy auto|fresh|resume] [--resume-session ID] [--anonymous]",
+        "drive one bounded gRPC turn (--agent-id for lease coordination, or --anonymous; auto-registers)",
+        "run --goal G --agent-id A [--model M] [--thinking-level L] [--max-turns N] [--max-incomplete-retries N] [--lease-secs N] [--force-workspace] [--session-policy auto|fresh|resume] [--resume-session ID] [--anonymous]",
     );
 
     let work_items = r.group(
@@ -678,13 +678,13 @@ fn render_subcommand_help(
 
 // ── goal ───────────────────────────────────────────────────────────────────
 
-fn cmd_goal(store: &mut Store, args: &[String]) -> Result<()> {
+async fn cmd_goal(store: &mut Store, args: &[String]) -> Result<()> {
     // goal cancel / goal delete (lifecycle management)
     if args.first().map(|s| s.as_str()) == Some("cancel") {
-        return cmd_goal_cancel(store, &args[1..]);
+        return cmd_goal_cancel(store, &args[1..]).await;
     }
     if args.first().map(|s| s.as_str()) == Some("delete") {
-        return cmd_goal_delete(store, &args[1..]);
+        return cmd_goal_delete(store, &args[1..]).await;
     }
     let mut objective = None;
     let mut cwd = None;
@@ -752,7 +752,7 @@ fn cmd_goal(store: &mut Store, args: &[String]) -> Result<()> {
 
 /// `goal cancel --goal G [--reason ...]` — stop automation while retaining
 /// state (the reference: cancel keeps the goal reviewable; automation stops).
-fn cmd_goal_cancel(store: &mut Store, args: &[String]) -> Result<()> {
+async fn cmd_goal_cancel(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut reason = "cancelled by user".to_string();
     reject_unknown_flags(args, &["--goal", "--reason"])?;
@@ -777,13 +777,23 @@ fn cmd_goal_cancel(store: &mut Store, args: &[String]) -> Result<()> {
     let next_action = "goal cancelled — automation stopped, state retained";
     store.set_next_action(&goal_id, next_action)?;
     sync_compat(store, &goal_id)?;
-    println!("goal {goal_id} cancelled ✔ (automation stopped, state retained — reason: {reason})");
+    // Default-detached runs are real processes: stopping automation means
+    // stopping them (ledger signal + gRPC abort of in-flight turns), not just
+    // flipping the goal status a running client would only see at its next
+    // turn boundary.
+    let stopped = stop_goal_workers(store, &goal_id, None).await?;
+    let workers_note = if stopped > 0 {
+        format!("; {stopped} detached run(s) signalled to stop")
+    } else {
+        String::new()
+    };
+    println!("goal {goal_id} cancelled ✔ (automation stopped, state retained — reason: {reason}){workers_note}");
     Ok(())
 }
 
 /// `goal delete --goal G [--force]` — remove the registry entry + state.
 /// Irreversible; requires --force (tip: `goal cancel` keeps state).
-fn cmd_goal_delete(store: &mut Store, args: &[String]) -> Result<()> {
+async fn cmd_goal_delete(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut force = false;
     reject_unknown_flags(args, &["--force", "--goal"])?;
@@ -801,6 +811,10 @@ fn cmd_goal_delete(store: &mut Store, args: &[String]) -> Result<()> {
              (tip: use `goal cancel` to stop automation while keeping state)"
         );
     }
+    // Stop any live detached run BEFORE removing the state: after deletion the
+    // run client can no longer read the ledger it tails (it would spin on a
+    // missing events file), and its writebacks would target a deleted goal.
+    stop_goal_workers(store, &goal_id, None).await?;
     store.delete_goal(&goal_id)?;
     println!("goal {goal_id} deleted ✔ (registry entry + state removed)");
     Ok(())
@@ -808,7 +822,7 @@ fn cmd_goal_delete(store: &mut Store, args: &[String]) -> Result<()> {
 
 // ── todo ───────────────────────────────────────────────────────────────────
 
-fn cmd_todo(store: &mut Store, args: &[String]) -> Result<()> {
+async fn cmd_todo(store: &mut Store, args: &[String]) -> Result<()> {
     if args.is_empty() {
         bail!("todo requires add|claim|complete");
     }
@@ -817,7 +831,7 @@ fn cmd_todo(store: &mut Store, args: &[String]) -> Result<()> {
         "claim" => todo_claim(store, &args[1..]),
         "complete" => todo_complete(store, &args[1..]),
         "archive" => todo_archive(store, &args[1..]),
-        "supersede" => todo_supersede(store, &args[1..]),
+        "supersede" => todo_supersede(store, &args[1..]).await,
         "update" => todo_update(store, &args[1..]),
         other => bail!("unknown todo subcommand `{other}`"),
     }
@@ -3626,6 +3640,12 @@ async fn cmd_models(args: &[String]) -> Result<()> {
 /// the todo mid-turn once the lease expired).
 const DEFAULT_RUN_LEASE_SECS: u64 = 4 * 3600;
 
+/// Grace window (ms) the detached-run parent waits before probing the child
+/// with `try_wait`. Long enough for a mis-dispatched re-exec to fail at CLI
+/// parse time (e.g. `Unknown option: --goal`), short enough to not delay the
+/// orchestrator returning while a healthy child is still starting up.
+const DETACH_LIVENESS_GRACE_MS: u64 = 120;
+
 /// Resolve run identity (G-27): `run` REQUIRES `--agent-id` so the lease
 /// mechanism actually engages — an anonymous run claims nothing and hides
 /// nothing, so two agentless runs deterministically race on the same todo.
@@ -3681,7 +3701,6 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     let mut model = None;
     let mut thinking = None;
     let mut max_turns = 6u32;
-    let mut max_turn_secs = 0u64;
     let mut max_incomplete_retries = crate::executor::DEFAULT_MAX_INCOMPLETE_RETRIES;
     let mut agent_id = None;
     let mut anonymous = false;
@@ -3701,11 +3720,11 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         &[
             "--agent-id",
             "--anonymous",
+            "--detach",
             "--force-workspace",
             "--goal",
             "--lease-secs",
             "--max-incomplete-retries",
-            "--max-turn-secs",
             "--max-turns",
             "--model",
             "--resume-session",
@@ -3722,8 +3741,6 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
             thinking = Some(v);
         } else if k == "--max-turns" {
             max_turns = v.parse().unwrap_or(6);
-        } else if k == "--max-turn-secs" {
-            max_turn_secs = v.parse().unwrap_or(0);
         } else if k == "--max-incomplete-retries" {
             max_incomplete_retries = v
                 .parse()
@@ -3742,6 +3759,111 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
             resume_session = Some(v);
         }
     });
+    // Detached dispatch (ARCHITECTURE.md "Runs are detached"): by default the
+    // run process re-executes ITSELF in the background so the orchestrating
+    // agent never blocks on a todo. The detached child (`--detach`) writes its
+    // own log under <root>/detached/<goal>/ and runs the foreground turn loop;
+    // the parent exits immediately after printing the child pid (lease+pid
+    // liveness supervises it from there). `--detach` marks the child.
+    // Opt-outs: `FUTURE_LOOP_NO_DETACH=1` (tests / embedders), or any `--detach`
+    // (the child runs foreground). Re-exec only makes sense from the real
+    // CLI binaries — under a test harness `current_exe` is the test binary,
+    // so detach is skipped there too (exe stem check below).
+    let detach_requested = args.iter().any(|a| a == "--detach");
+    let exe_stem = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .unwrap_or_default();
+    let from_cli_binary = exe_stem == "future-loop" || exe_stem == "future";
+    let no_detach_env = std::env::var("FUTURE_LOOP_NO_DETACH").ok().as_deref() == Some("1");
+    let should_detach = !detach_requested && from_cli_binary && !no_detach_env;
+    if should_detach {
+        let goal_for_dir = goal_id
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+        let run_log_dir = std::path::PathBuf::from(store.root_path())
+            .join("detached")
+            .join(&goal_for_dir);
+        std::fs::create_dir_all(&run_log_dir)?;
+        let ts = now_epoch();
+        let who = agent_id.clone().unwrap_or_else(|| "anonymous".to_string());
+        let log_path = run_log_dir.join(format!("{who}-{ts}.log"));
+        let exe = std::env::current_exe()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "future-loop".to_string());
+        let mut cmd = std::process::Command::new(&exe);
+        // The re-executed binary is the same CLI (future-loop / future), so
+        // the child re-enters the dispatcher with the command name prepended.
+        // The child re-enters the CLI dispatcher, which expects the command
+        // name first; our args start at `run`'s flags (we ARE cmd_run), so
+        // re-prepend the command name.
+        //
+        // IMPORTANT: the unified `future` binary dispatches on the FIRST arg
+        // as a group name — `future loop run …` reaches cmd_run, but
+        // `future run …` falls through to the unrelated one-shot `future run`
+        // command (which rejects `--goal` with "Unknown option: --goal" and
+        // exits immediately). The standalone `future-loop` binary has no such
+        // group layer, so only prepend `loop` when re-execing the `future`
+        // binary (detected via `exe_stem` above).
+        let mut child_args: Vec<String> = Vec::with_capacity(args.len() + 3);
+        if exe_stem == "future" {
+            child_args.push("loop".to_string());
+        }
+        child_args.push("run".to_string());
+        child_args.extend(args.iter().cloned());
+        child_args.push("--detach".to_string());
+        cmd.args(&child_args);
+        // Platform-neutral detachment: own process group (POSIX process_group
+        // / Windows CREATE_NEW_PROCESS_GROUP|DETACHED_PROCESS), stdio routed
+        // to the log file so the parent's terminal stays clean.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+            const DETACHED_PROCESS: u32 = 0x0000_0008;
+            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+        }
+        let log = std::fs::File::create(&log_path)?;
+        cmd.stdout(log.try_clone()?)
+            .stderr(log)
+            .stdin(std::process::Stdio::null());
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("spawn detached run (log {}): {e}", log_path.display()))?;
+        // Defensive liveness check: `spawn` succeeding only means the process
+        // was created, not that it re-dispatched correctly. A bad re-exec
+        // (e.g. the child drops a group layer and lands on an unrelated
+        // command) makes the child exit instantly with a usage error while the
+        // parent would otherwise print a fake pid and return success. Give the
+        // child a short grace window, then reject a fast-exit so the
+        // orchestrator sees the failure instead of a dead worker it must
+        // discover later.
+        tokio::time::sleep(std::time::Duration::from_millis(DETACH_LIVENESS_GRACE_MS)).await;
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                bail!(
+                    "detached run exited immediately ({status}) — check {} for the real error; re-exec may have mis-dispatched",
+                    log_path.display()
+                );
+            }
+            Ok(None) => {}
+            Err(_) => {
+                // A try_wait error is not a crash signal; fall through and let
+                // the normal detached supervision own the child from here.
+            }
+        }
+        println!(
+            "⏏ detached run pid={} (agent {who}) — log {}",
+            child.id(),
+            log_path.display()
+        );
+        return Ok(());
+    }
     if !matches!(session_policy.as_str(), "auto" | "fresh" | "resume") {
         bail!("--session-policy must be auto | fresh | resume");
     }
@@ -3838,7 +3960,6 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         max_turns,
         lease_secs,
         agent_id.as_deref(),
-        max_turn_secs,
         max_incomplete_retries,
         force_workspace,
         &mut last_failure_kind,
@@ -3962,19 +4083,40 @@ fn claim_selected_with_lease(
 /// uses it to decide session retention (resume vs fresh), never the kernel.
 ///
 /// Enqueue an intervention report to the registered supervisor session (the
-/// up channel). `dedup_key` doubles as the idempotency key: re-sending the
-/// same key is a no-op on the agent (`knows_request`), so "state transition
-/// only" notification is enforced by keying on the transition (todo id +
-/// failure count, gate ids, …). No supervisor registered → the report is
-/// dropped (the durable user-gate ledger remains the authoritative
-/// intervention channel).
+/// up channel). Dual-mode: the note is FIRST written to the ledger
+/// ([`crate::store::Event::SupervisorNote`]) — durable, replayable, and
+/// visible to `supervisor events` / `status` even when the push is lost or the
+/// supervisor is busy — and THEN pushed to the supervisor session, which only
+/// wakes an IDLE supervisor (an active orchestrator drains it late).
+/// `dedup_key` doubles as the prompt idempotency key (re-sending the same key
+/// is a no-op on the agent) AND is recorded on the ledger note so the two
+/// channels correlate. No supervisor registered → the note is still ledgered
+/// (a later `supervisor register` reads it back); only the push is skipped.
 #[doc(hidden)] // test-visible seam
+#[allow(clippy::too_many_arguments)]
 pub async fn notify_supervisor(
+    store: &mut Store,
     client: &mut crate::agent_client::AgentClient,
+    goal_id: &str,
     supervisor_session_id: Option<&str>,
+    kind: &str,
+    todo_id: &str,
     message: &str,
     dedup_key: &str,
 ) {
+    // ① Durable ledger note — authoritative intervention channel; survives a
+    // lost/delayed push and a busy supervisor.
+    if let Err(e) = store.append(crate::store::Event::SupervisorNote {
+        goal_id: goal_id.to_string(),
+        todo_id: todo_id.to_string(),
+        note_kind: kind.to_string(),
+        message: message.to_string(),
+        dedup_key: dedup_key.to_string(),
+        ts: crate::state::now_epoch(),
+    }) {
+        println!("   ⚠ supervisor note ledger append failed: {e}");
+    }
+    // ② Best-effort push — wakes an idle supervisor only.
     let Some(sid) = supervisor_session_id else {
         return;
     };
@@ -3984,23 +4126,27 @@ pub async fn notify_supervisor(
 }
 
 /// Report a worker stop that never reached a turn-boundary writeback (a
-/// transport failure propagating before writeback, or a wall-clock budget
-/// truncation returning early). Both exits skip the normal ②/③ up-channel
-/// reports, so the supervisor would otherwise be left polling a worker that
-/// already stopped. Idempotency is keyed on `todo_id` + `kind`, so a relaunch
-/// that hits the same stop re-notifies only once.
+/// transport failure propagating before writeback). That exit skips the normal
+/// ②/③ up-channel reports, so the supervisor would otherwise be left polling a
+/// worker that already stopped. Idempotency is keyed on `todo_id` + `kind`, so
+/// a relaunch that hits the same stop re-notifies only once.
 #[doc(hidden)] // test-visible seam
 pub async fn notify_infra_stop(
+    store: &mut Store,
     client: &mut crate::agent_client::AgentClient,
-    supervisor_session_id: Option<&str>,
     goal_id: &str,
+    supervisor_session_id: Option<&str>,
     todo_id: &str,
     kind: &str,
     detail: &str,
 ) {
     notify_supervisor(
+        store,
         client,
+        goal_id,
         supervisor_session_id,
+        "infra_stopped",
+        todo_id,
         &format!(
             "[future-loop] goal {goal_id}: todo {todo_id} stopped before completion ({kind}) — {detail}"
         ),
@@ -4011,7 +4157,7 @@ pub async fn notify_infra_stop(
 
 /// Dead-worker push (the host-died case the recoverable infra stops above
 /// cannot reach): a worker that died mid-slice (SIGKILL / crash / host
-/// failure) executes no code, so the `transport` / `timeout` /
+/// failure) executes no code, so the `transport` /
 /// `incomplete_budget` reports never fire. The scheduler tick is the periodic
 /// trigger that notices a lease whose holder pid is gone and pushes a report
 /// to the registered supervisor, so the orchestrator is prompted to relaunch
@@ -4023,9 +4169,7 @@ pub async fn notify_dead_holders(store: &mut Store, goal_id: &str) -> Result<()>
     let Some(goal) = store.replay(goal_id)? else {
         return Ok(());
     };
-    let Some(supervisor) = goal.supervisor_session_id.clone() else {
-        return Ok(());
-    };
+    let supervisor = goal.supervisor_session_id.clone();
     let dead: Vec<(String, u32)> = crate::work_items::task_lease::dead_holder_todos(&goal)
         .into_iter()
         .filter_map(|t| t.holder_pid.map(|pid| (t.id.clone(), pid)))
@@ -4040,8 +4184,12 @@ pub async fn notify_dead_holders(store: &mut Store, goal_id: &str) -> Result<()>
     };
     for (todo_id, pid) in dead {
         notify_supervisor(
+            store,
             &mut client,
-            Some(supervisor.as_str()),
+            goal_id,
+            supervisor.as_deref(),
+            "host_died",
+            &todo_id,
             &format!(
                 "[future-loop] goal {goal_id}: todo {todo_id} stopped before completion (host_died) — holder pid {pid} is gone (no release); relaunch to reclaim the lease"
             ),
@@ -4061,12 +4209,23 @@ async fn run_turns(
     max_turns: u32,
     lease_secs: u64,
     agent_id: Option<&str>,
-    max_turn_secs: u64,
     max_incomplete_retries: u32,
     force_workspace: bool,
     last_failure_kind: &mut Option<crate::state::FailureKind>,
 ) -> Result<()> {
     let mut turn = 0u32;
+    // P2: goal-monotonic turn counter. `turn` below restarts at 1 on every
+    // `run` process, so a worker relaunched across runs (or resumed after a
+    // timeout) would re-emit `turn-1` heartbeat receipts and decision
+    // summaries, making cross-run provenance unreadable from the ledger. The
+    // number of already-recorded decision summaries equals the count of turns
+    // that have STARTED on this goal (timeout turns included, because the
+    // receipt is written before the turn executes), so offset the local
+    // counter by it to obtain a goal-wide monotonic turn number.
+    let base_turn = store
+        .events(goal_id)
+        .map(|events| crate::quota::decision_summary::decision_summaries(&events).len() as u32)
+        .unwrap_or(0);
     // Continue note for the NEXT turn: set when the previous turn ended
     // incomplete; consumed exactly once by the next execute_turn call.
     let mut next_continue_note: Option<String> = None;
@@ -4106,15 +4265,25 @@ async fn run_turns(
         if turn > max_turns {
             bail!("max-turns ({max_turns}) reached without validated closure");
         }
+        // Goal-wide turn number: `turn` is local to this run process, so every
+        // persisted reference (decision summary, heartbeat receipt, run record,
+        // client_request_id) must use the offset value to stay distinguishable
+        // across runs.
+        let global_turn = base_turn + turn;
         let goal = store
             .replay(goal_id)?
             .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found (deleted while running?)"))?;
-        let packet = decide_for(&goal, SystemTime::now(), agent_id);
+        let mut packet = decide_for(&goal, SystemTime::now(), agent_id);
         // P1-1②③: persist the compact decision projection + the heartbeat
         // receipt for this turn (projection-only; replay ignores both).
-        crate::quota::decision_summary::record_turn_decision(store, &packet, agent_id, turn)?;
+        crate::quota::decision_summary::record_turn_decision(
+            store,
+            &packet,
+            agent_id,
+            global_turn,
+        )?;
         println!(
-            "── turn {turn}: decision={} mode={} | {}",
+            "── turn {global_turn}: decision={} mode={} | {}",
             packet.decision,
             packet.interaction_contract.mode.as_str(),
             packet.reason
@@ -4142,11 +4311,22 @@ async fn run_turns(
                 .unwrap_or_default();
             println!("⟳ USER GATE: {q}");
             // Up-channel ①: a user gate needs the supervisor's decision.
+            // ARCHITECTURE.md "Workers escalate; they never decide whether a
+            // human is needed" cuts both ways: the escalation is a signal to
+            // the orchestrator, not a freeze. The decision kernel already
+            // computed a gate-independent fallback (delivery_allowed =
+            // has_fallback) — run it instead of stopping, so gate-wait costs
+            // no dead time. With no fallback (or an anonymous run, which
+            // cannot claim), stop as before.
             let gate_ids = &packet.interaction_contract.user_channel.todo_ids;
             let key = format!("ask_user:{}", gate_ids.join(","));
             notify_supervisor(
+                store,
                 client,
+                goal_id,
                 goal.supervisor_session_id.as_deref(),
+                "ask_user",
+                &gate_ids.join(","),
                 &format!(
                     "[future-loop] goal {goal_id} needs your decision on user gate(s): {}. Question: {q}",
                     gate_ids.join(", ")
@@ -4154,14 +4334,31 @@ async fn run_turns(
                 &key,
             )
             .await;
-            break;
+            let fallback = packet
+                .interaction_contract
+                .agent_channel
+                .fallback_todo
+                .clone();
+            match fallback {
+                Some(fb) if packet.interaction_contract.agent_channel.delivery_allowed => {
+                    println!(
+                        "   ↳ gate-independent fallback {fb} keeps running while the gate waits"
+                    );
+                    packet.interaction_contract.agent_channel.selected_todo = Some(fb);
+                    // Fall through to the claim/execute path below with the
+                    // fallback selected — this turn still counts as bounded
+                    // delivery on the fallback todo.
+                }
+                _ => break,
+            }
         }
         if mode == crate::contract::TurnMode::WaitMonitor {
             println!("   waiting… (monitor not due)");
             break;
         }
 
-        // bounded_delivery / monitor_poll: execute one turn.
+        // bounded_delivery / monitor_poll: execute one turn (or a gated turn's
+        // gate-independent fallback selected above).
         // Claim with a lease BEFORE executing — atomically (check+append under
         // one lock) so two concurrent `run --agent-id` workers can never both
         // win the same todo; on contention, re-decide against the fresh
@@ -4186,7 +4383,6 @@ async fn run_turns(
             }
             forced_ws = !conflicts.is_empty() && force_workspace;
         }
-        let mut packet = packet;
         let Some(todo_id) =
             claim_selected_with_lease(store, goal_id, &mut packet, agent_id, lease_secs)?
         else {
@@ -4234,6 +4430,22 @@ async fn run_turns(
                 s.instruction
             ))
         });
+        // Persist the consumption BEFORE the turn runs: if this run dies
+        // mid-turn, the next run still must not re-inject the stale steer.
+        if let Some(steer) = goal.pending_steer.as_ref() {
+            if steer_note
+                .as_ref()
+                .is_some_and(|n| n.contains(steer.instruction.as_str()))
+            {
+                store.append(Event::SteerConsumed {
+                    goal_id: goal_id.to_string(),
+                    agent_id: steer.agent_id.clone(),
+                    steer_ts: steer.ts,
+                    ts: now_epoch(),
+                })?;
+                last_steer_ts = steer.ts;
+            }
+        }
         let continue_note = next_continue_note.take();
         let turn_note = steer_note.or(continue_note);
         let turn_future = execute_turn(
@@ -4242,84 +4454,33 @@ async fn run_turns(
             &boundary,
             agent_id,
             &todo,
-            turn,
+            global_turn,
             goal.history.last(),
             true,
             Some(runs_dir),
             Some(&progress),
             turn_note.as_deref(),
         );
-        let record = if max_turn_secs > 0 {
-            // Wall-clock budget per turn: a long turn that never sees new
-            // instructions is an observability hole; bound it so orchestrators
-            // can relaunch on a safe cadence (context replays from the ledger).
-            match tokio::time::timeout(std::time::Duration::from_secs(max_turn_secs), turn_future)
-                .await
-            {
-                Ok(r) => match r {
-                    Ok(rec) => rec,
-                    Err(e) => {
-                        // A gRPC transport failure (h2 reset, stream error,
-                        // connect loss …) never reached a writeback, so the
-                        // ②/③ up-channel reports are skipped. Report the
-                        // infra stop and mark it resumable before
-                        // re-propagating, so the supervisor isn't left
-                        // polling a dead worker.
-                        *last_failure_kind = Some(crate::state::FailureKind::InfraRecoverable);
-                        notify_infra_stop(
-                            client,
-                            goal.supervisor_session_id.as_deref(),
-                            goal_id,
-                            &todo_id,
-                            "transport",
-                            &format!("{e}"),
-                        )
-                        .await;
-                        return Err(e);
-                    }
-                },
-                Err(_) => {
-                    // O3: budget truncation is a turn end — evaluate the
-                    // no-progress window against the observed tool starts
-                    // before stopping the run.
-                    record_no_progress_if_idle(store, goal_id, &todo_id, agent_id, &progress)?;
-                    // A turn that outlives its wall-clock budget is an infra
-                    // stop, not a science result: mark it resumable so the
-                    // session's reasoning state is retained for the next
-                    // launch, and report it up-channel (the early return
-                    // otherwise skips the ②/③ reports).
-                    *last_failure_kind = Some(crate::state::FailureKind::InfraRecoverable);
-                    notify_infra_stop(
-                        client,
-                        goal.supervisor_session_id.as_deref(),
-                        goal_id,
-                        &todo_id,
-                        "timeout",
-                        &format!("turn exceeded --max-turn-secs ({max_turn_secs}s)"),
-                    )
-                    .await;
-                    println!(
-                        "   ⏱ turn exceeded --max-turn-secs ({max_turn_secs}s) — stopping run gracefully; relaunch to continue"
-                    );
-                    return Ok(());
-                }
-            }
-        } else {
-            match turn_future.await {
-                Ok(rec) => rec,
-                Err(e) => {
-                    *last_failure_kind = Some(crate::state::FailureKind::InfraRecoverable);
-                    notify_infra_stop(
-                        client,
-                        goal.supervisor_session_id.as_deref(),
-                        goal_id,
-                        &todo_id,
-                        "transport",
-                        &format!("{e}"),
-                    )
-                    .await;
-                    return Err(e);
-                }
+        let record = match turn_future.await {
+            Ok(rec) => rec,
+            Err(e) => {
+                // A gRPC transport failure (h2 reset, stream error, connect
+                // loss …) never reached a writeback, so the ②/③ up-channel
+                // reports are skipped. Report the infra stop and mark it
+                // resumable before re-propagating, so the supervisor isn't
+                // left polling a dead worker.
+                *last_failure_kind = Some(crate::state::FailureKind::InfraRecoverable);
+                notify_infra_stop(
+                    store,
+                    client,
+                    goal_id,
+                    goal.supervisor_session_id.as_deref(),
+                    &todo_id,
+                    "transport",
+                    &format!("{e}"),
+                )
+                .await;
+                return Err(e);
             }
         };
         println!(
@@ -4458,8 +4619,12 @@ async fn run_turns(
             // transition keyed on the todo id, so re-notification across runs
             // is deduped).
             notify_supervisor(
+                store,
                 client,
+                goal_id,
                 g.supervisor_session_id.as_deref(),
+                "completed",
+                &todo_id,
                 &format!(
                     "[future-loop] goal {goal_id}: todo {todo_id} completed{} — evidence: {}",
                     if is_last {
@@ -4493,15 +4658,39 @@ async fn run_turns(
                     | Some(crate::state::FailureKind::HardError)
             ) {
                 let attempts = g.todo(&todo_id).map(|t| t.failed_attempts).unwrap_or(0);
+                // The failure text must reflect the actual failure, not the
+                // LLM's terminal state. A verify-gate rejection ends the turn
+                // with terminal_state == "completed" and error == None, so a
+                // naive `error.unwrap_or(terminal_state)` fallback misreports
+                // it as "error: completed". Report the failure kind instead:
+                // for a verify-gate rejection include the validator's exit
+                // code; otherwise use the error (or terminal state) as-is.
+                let failure_text = match record.failure_kind {
+                    Some(crate::state::FailureKind::ScienceVerifyFailed) => {
+                        match &record.validation {
+                            Some(v) if !v.ok => format!(
+                                "verify gate rejected (exit {})",
+                                v.exit_code
+                                    .map(|c| c.to_string())
+                                    .unwrap_or_else(|| "-".to_string())
+                            ),
+                            _ => "verify-gate rejected the output".to_string(),
+                        }
+                    }
+                    _ => record
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| record.terminal_state.clone()),
+                };
                 notify_supervisor(
+                    store,
                     client,
+                    goal_id,
                     g.supervisor_session_id.as_deref(),
+                    "failed",
+                    &todo_id,
                     &format!(
-                        "[future-loop] goal {goal_id}: todo {todo_id} failed (attempt {attempts}) — error: {}",
-                        record
-                            .error
-                            .as_deref()
-                            .unwrap_or(record.terminal_state.as_str())
+                        "[future-loop] goal {goal_id}: todo {todo_id} failed (attempt {attempts}) — error: {failure_text}",
                     ),
                     &format!("failed:{todo_id}:{attempts}"),
                 )
@@ -4554,9 +4743,10 @@ async fn run_turns(
                     // Keyed on the streak so a relaunch that re-exhausts
                     // re-notifies at the new streak value.
                     notify_infra_stop(
+                        store,
                         client,
-                        g.supervisor_session_id.as_deref(),
                         goal_id,
+                        g.supervisor_session_id.as_deref(),
                         &todo_id,
                         "incomplete_budget",
                         &format!(
@@ -5413,26 +5603,15 @@ fn auto_register_workspaces(cwd: &str) -> Vec<String> {
     }
 }
 
-/// P1-2③: run the drift self-heal at run start and print the repair summary.
-/// Extracted so the drifted-index projection (and both backup-path variants)
-/// are unit-testable without a live agent client.
-fn run_index_self_heal(store: &mut Store, goal_id: &str) -> Result<()> {
-    if let Some(outcome) = crate::runtime::run_index::repair_index_if_drifted(store, goal_id)? {
-        print_run_index_self_heal(&outcome);
-    }
+/// P1-2③: run-index self-heal seam at run start. The run index is no longer
+/// a persisted append-only file (writers stopped appending it — that was the
+/// cross-process interleave drift source — and readers derive it from the run
+/// files on disk via `run_index::load_run_index`). There is therefore nothing
+/// to self-heal at run start; the seam is kept as a no-op so the run path's
+/// intent stays explicit. The legacy `runs index` / `store verify --repair`
+/// commands still rebuild an index.jsonl on demand for human inspection.
+fn run_index_self_heal(_store: &mut Store, _goal_id: &str) -> Result<()> {
     Ok(())
-}
-
-fn print_run_index_self_heal(outcome: &crate::runtime::run_index::IndexRepairOutcome) {
-    let backup = if outcome.rebuilt.backup_path.is_empty() {
-        "none".to_string()
-    } else {
-        outcome.rebuilt.backup_path.clone()
-    };
-    println!(
-        "⚒ projection self-heal: run_index drifted ({} rows) — rebuilt {} rows (backup {backup})",
-        outcome.drift.drift_count, outcome.rebuilt.rows_written,
-    );
 }
 
 /// P0-2①: a completed advancement todo is a delivery pending verification —
@@ -5576,7 +5755,15 @@ fn parse_pairs(args: &[String], mut f: impl FnMut(&str, String)) {
         let k = args[i].as_str();
         if k.starts_with("--") {
             // boolean flags (no value) are followed by another flag or end.
-            if matches!(k, "--no-follow-up" | "--anonymous" | "--help" | "-h") {
+            if matches!(
+                k,
+                "--no-follow-up"
+                    | "--anonymous"
+                    | "--detach"
+                    | "--force-workspace"
+                    | "--help"
+                    | "-h"
+            ) {
                 f(k, "true".to_string());
                 i += 1;
             } else if i + 1 < args.len() && !args[i + 1].starts_with("--") {
@@ -6079,9 +6266,25 @@ async fn cmd_worker_stop(store: &mut Store, args: &[String]) -> Result<()> {
         );
     }
 
-    let mut client =
-        crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr()).await?;
-    for t in &targets {
+    abort_worker_sessions(&targets, delete).await;
+    Ok(())
+}
+
+/// gRPC abort for the given worker sessions (and optional session reclaim).
+/// The ledger `worker_stopped` event (appended by the caller BEFORE this) is
+/// the durable stop signal the run client exits on at its turn boundary; the
+/// abort interrupts the in-flight turn NOW. Best-effort on unreachable agents.
+async fn abort_worker_sessions(targets: &[WorkerSession], delete: bool) {
+    if targets.is_empty() {
+        return;
+    }
+    let Ok(mut client) =
+        crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr()).await
+    else {
+        println!("⚠ agent unreachable — stop rides the ledger signal alone");
+        return;
+    };
+    for t in targets {
         match client.abort(&t.session_id).await {
             Ok(()) => {
                 println!(
@@ -6103,7 +6306,47 @@ async fn cmd_worker_stop(store: &mut Store, args: &[String]) -> Result<()> {
             }
         }
     }
-    Ok(())
+}
+
+/// Cancel/delete/supersede companion: stop every live worker of `goal_id`
+/// (optionally just one agent) so an in-flight detached run cannot keep
+/// writing back after the board changed under it. Appends the SAME
+/// `worker_stopped` ledger signal `worker stop` uses (the run client exits at
+/// its next turn boundary), then gRPC-aborts the in-flight turns. Returns the
+/// number of workers signalled.
+async fn stop_goal_workers(
+    store: &mut Store,
+    goal_id: &str,
+    agent_id: Option<&str>,
+) -> Result<usize> {
+    let goal = match store.replay(goal_id)? {
+        Some(g) => g,
+        None => return Ok(0),
+    };
+    let runs_dir = std::path::PathBuf::from(store.root_path()).join("runs");
+    let sessions = bound_worker_sessions(&goal, &runs_dir, goal_id);
+    let targets: Vec<WorkerSession> = match agent_id {
+        Some(a) => sessions
+            .iter()
+            .filter(|s| s.agent_id == a)
+            .cloned()
+            .collect(),
+        None => sessions,
+    };
+    if targets.is_empty() {
+        return Ok(0);
+    }
+    store.append(Event::WorkerStopped {
+        goal_id: goal_id.to_string(),
+        agent_id: agent_id.map(str::to_string),
+        ts: crate::state::now_epoch(),
+    })?;
+    println!(
+        "■ stop signal sent to {} worker(s) of {goal_id} — run clients exit at their next turn boundary",
+        targets.len()
+    );
+    abort_worker_sessions(&targets, false).await;
+    Ok(targets.len())
 }
 
 /// `loopx scope --goal G --agent-id A [--exclude X]` — the identity-scoped
@@ -7409,6 +7652,7 @@ fn describe_event(event: &crate::store::Event) -> String {
     use crate::store::Event;
     let kind = match event {
         Event::GoalStarted { .. } => "goal_started",
+        Event::SteerConsumed { .. } => "steer_consumed",
         Event::TodoAdded { .. } => "todo_added",
         Event::TodoCompleted {
             todo_id,
@@ -7713,6 +7957,16 @@ fn describe_event(event: &crate::store::Event) -> String {
                 "progress_reported agent={agent_id} todo={todo_id} message=\"{message}\""
             );
         }
+        Event::SupervisorNote {
+            todo_id,
+            note_kind,
+            message,
+            ..
+        } => {
+            return format!(
+                "supervisor_note kind={note_kind} todo={todo_id} message=\"{message}\""
+            );
+        }
     };
     kind.to_string()
 }
@@ -7854,7 +8108,7 @@ fn todo_archive(store: &mut Store, args: &[String]) -> Result<()> {
 
 /// `todo supersede --goal G --todo-id T [--reason ...]` — mark an unfinished
 /// todo superseded (obsolete; runnable frontier and closure both ignore it).
-fn todo_supersede(store: &mut Store, args: &[String]) -> Result<()> {
+async fn todo_supersede(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut todo_id = None;
     let mut reason = None;
@@ -7887,6 +8141,18 @@ fn todo_supersede(store: &mut Store, args: &[String]) -> Result<()> {
     })?;
     refresh_next_action(store, &goal_id)?;
     sync_compat(store, &goal_id)?;
+    // If a detached run is executing THIS todo, stop it: its in-flight turn is
+    // now wasted work, and a late writeback must not fight the supersede
+    // (replay also guards: a late TodoCompleted never resurrects a superseded
+    // todo). The event-signal + gRPC abort is the same channel `worker stop`
+    // uses; the holder pid probe is not needed here — the ledger signal is
+    // authoritative and pid-less orphans are already handled by liveness.
+    if let Some(holder) = goal.todo(&todo_id).and_then(|t| t.claimed_by.clone()) {
+        let stopped = stop_goal_workers(store, &goal_id, Some(&holder)).await?;
+        if stopped > 0 {
+            println!("  ■ holder {holder} signalled to stop (todo superseded mid-run)");
+        }
+    }
     println!(
         "todo {todo_id} superseded ✔{}",
         reason
@@ -9870,35 +10136,6 @@ mod residual_branch_tests {
         );
     }
 
-    // ── print_run_index_self_heal: empty + non-empty backup ────────────────
-    #[test]
-    fn run_index_self_heal_prints_both_backup_variants() {
-        let drift = crate::runtime::run_index::IndexDriftReport {
-            goal_id: "g".into(),
-            index_path: String::new(),
-            index_rows: 0,
-            run_files: 1,
-            missing_rows: 1,
-            stale_rows: 0,
-            duplicate_rows: 0,
-            drift_count: 1,
-            repair_recommended: true,
-            missing_identities: vec![],
-            stale_identities: vec![],
-        };
-        let mk = |backup: String| crate::runtime::run_index::IndexRepairOutcome {
-            drift: drift.clone(),
-            rebuilt: crate::runtime::run_index::RebuildReport {
-                index_path: String::new(),
-                backup_path: backup,
-                rows_written: 1,
-                non_destructive: true,
-            },
-        };
-        print_run_index_self_heal(&mk(String::new()));
-        print_run_index_self_heal(&mk("index.pre-rebuild-123.jsonl".into()));
-    }
-
     // ── record_delivery_if_advancement: advancement vs non-advancement ─────
     #[test]
     fn record_delivery_only_for_advancement_todos() {
@@ -9919,24 +10156,6 @@ mod residual_branch_tests {
         let goal = store.replay("g").unwrap().unwrap();
         assert!(goal.delivery_state("t1").is_some());
         assert!(goal.delivery_state("m1").is_none());
-    }
-
-    // ── run_index_self_heal: drifted index drives the repair summary ────────
-    #[test]
-    fn run_index_self_heal_detects_and_repairs_drift() {
-        let (_dir, mut store) = tmp_store();
-        registered(&mut store, "g");
-        // Seed a run file (source of truth) with no index row → drift.
-        let runs = store.goal_dir("g").join("runs");
-        std::fs::create_dir_all(&runs).unwrap();
-        std::fs::write(
-            runs.join("a.json"),
-            r#"{"timestamp":"123","turn":1,"terminal_state":"completed"}"#,
-        )
-        .unwrap();
-        run_index_self_heal(&mut store, "g").unwrap();
-        // A clean index now reports no drift (the None arm).
-        run_index_self_heal(&mut store, "g").unwrap();
     }
 
     fn seed_overdue_delivery(store: &mut Store) {

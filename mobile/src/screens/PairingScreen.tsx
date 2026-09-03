@@ -5,8 +5,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
+  AppState,
   Keyboard,
   KeyboardAvoidingView,
+  Linking,
   Modal,
   Platform,
   Pressable,
@@ -61,7 +63,7 @@ function pairingErrorMessage(error: unknown, t: TFunction): string {
 export function PairingScreen({ revoked = false }: { revoked?: boolean }) {
   const { t } = useTranslation();
   const remote = useRemote();
-  const [permission, requestPermission] = useCameraPermissions();
+  const [permission, requestPermission, getPermission] = useCameraPermissions();
   const scanLocked = useRef(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [manualOpen, setManualOpen] = useState(false);
@@ -75,6 +77,13 @@ export function PairingScreen({ revoked = false }: { revoked?: boolean }) {
     },
     [],
   );
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", state => {
+      if (state === "active") void getPermission();
+    });
+    return () => subscription.remove();
+  }, [getPermission]);
 
   const showToast = useCallback((message: string) => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
@@ -170,8 +179,15 @@ export function PairingScreen({ revoked = false }: { revoked?: boolean }) {
             ) : !permission.granted ? (
               <View style={styles.permission}>
                 <ScanLine color={colors.inkSoft} size={40} />
-                <Text style={styles.permissionText}>{t("pairing.permission")}</Text>
-                <Button label={t("pairing.grant")} onPress={() => void requestPermission()} />
+                <Text style={styles.permissionText}>
+                  {t(permission.canAskAgain ? "pairing.permission" : "pairing.permissionDenied")}
+                </Text>
+                <Button
+                  label={t(permission.canAskAgain ? "pairing.continue" : "pairing.openSettings")}
+                  onPress={() =>
+                    void (permission.canAskAgain ? requestPermission() : Linking.openSettings())
+                  }
+                />
               </View>
             ) : (
               <>

@@ -7,8 +7,12 @@ export const resources = {
         title: "Connect to your desktop",
         description:
           "Open Phone Control in FutureOS Desktop, choose Pair & start, then scan the QR code.",
-        permission: "Camera access is required to scan the desktop pairing code.",
-        grant: "Allow camera",
+        permission:
+          "Scan the one-time QR code shown in FutureOS Desktop to connect this device. This scanner does not capture or save photos.",
+        continue: "Continue",
+        permissionDenied:
+          "Camera access is off. Enable it in Settings to scan the QR code, or paste the pairing code below.",
+        openSettings: "Open Settings",
         scanning: "Point the camera at the QR code",
         claiming: "Pairing securely…",
         invalid: "The pairing code has expired. Scan a new code. (PA002)",
@@ -278,8 +282,11 @@ export const resources = {
       pairing: {
         title: "连接桌面端",
         description: "在 FutureOS 桌面端打开“手机遥控”，点击“配对并启动”，然后扫描二维码。",
-        permission: "需要相机权限来扫描桌面端配对二维码。",
-        grant: "允许相机",
+        permission:
+          "扫描 FutureOS 桌面端显示的一次性二维码以连接此设备。扫码过程不会拍摄或保存照片。",
+        continue: "继续",
+        permissionDenied: "相机权限已关闭。你可以前往系统设置开启权限，或在下方粘贴配对码。",
+        openSettings: "打开设置",
         scanning: "将二维码放入取景框",
         claiming: "正在安全配对…",
         invalid: "配对码已失效，请重新扫码（PA002）",

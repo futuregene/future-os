@@ -231,6 +231,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             mode: cmd.mode,
             custom_instructions: cmd.custom_instructions,
             created_by: cmd.created_by,
+            creator_id: cmd.creator_id,
             source_meta: cmd.source_meta,
             enabled: cmd.enabled,
             command: cmd.command,
@@ -383,7 +384,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                     "global_events cannot be combined with session/run attachment fields",
                 ));
             }
-            let broadcaster = crate::rpc::global_config_broadcaster();
+            let broadcaster = crate::rpc::global_events_broadcaster();
             let rx = broadcaster.subscribe();
             let revision = crate::rpc::current_config_revision();
             let mut initial = vec![proto::StreamEvent {
@@ -847,6 +848,43 @@ mod tests {
         let data: serde_json::Value = serde_json::from_str(&event.data).unwrap();
         assert_eq!(data["revision"], revision);
         assert_eq!(data["providerId"], "custom");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn global_stream_delivers_session_created() {
+        let service = FutureAgentService {
+            state: grpc_app_state(false),
+        };
+        // Filtering to session_created also drops the initial ping.
+        let response = service
+            .stream_events(tonic::Request::new(proto::StreamRequest {
+                event_types: vec!["session_created".to_string()],
+                global_events: true,
+                ..Default::default()
+            }))
+            .await
+            .expect("global subscription succeeds");
+        let mut stream = response.into_inner();
+        crate::rpc::publish_session_created_with_creator(
+            "tui-session",
+            "tui",
+            "creator-tui",
+            "/tmp/project",
+        );
+        // Parallel tests publish session_created on the same global stream —
+        // drain until THIS announcement arrives.
+        for _ in 0..32 {
+            let event = stream.next().await.unwrap().unwrap();
+            assert_eq!(event.r#type, "session_created");
+            let data: serde_json::Value = serde_json::from_str(&event.data).unwrap();
+            if data["sessionId"] == "tui-session" {
+                assert_eq!(data["createdBy"], "tui");
+                assert_eq!(data["creatorId"], "creator-tui");
+                assert_eq!(data["cwd"], "/tmp/project");
+                return;
+            }
+        }
+        panic!("session_created for tui-session never arrived on the global stream");
     }
 
     #[tokio::test(flavor = "current_thread")]

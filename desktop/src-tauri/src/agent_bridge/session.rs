@@ -68,6 +68,7 @@ pub(super) async fn ensure_agent_session(
             String::new(),
             cwd.to_string(),
             "desktop",
+            crate::device_identity::device_id_or_empty(),
             serde_json::Value::Null,
             model_id.map(str::to_string),
             thinking_level.map(str::to_string),
@@ -239,6 +240,7 @@ pub async fn fork_agent_session(
             session_id.clone(),
             entry_id.to_string(),
             session_id.clone(),
+            crate::device_identity::device_id_or_empty(),
         ))
         .await
         .map_err(|error| format!("Unable to fork session: {error}"))?

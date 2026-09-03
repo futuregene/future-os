@@ -18,7 +18,7 @@ use anyhow::{bail, Context, Result};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
-use crate::state::{Goal, RunRecord, Todo};
+use crate::state::{Goal, RunRecord, Todo, TodoStatus};
 
 const REGISTRY_FILE: &str = "registry.json";
 const EVENTS_FILE: &str = "events.jsonl";
@@ -417,6 +417,28 @@ pub enum Event {
         message: String,
         ts: u64,
     },
+    /// A supervisor-facing intervention note (todo completed / failed / infra
+    /// stop / user-gate ask / dead-holder). Written to the ledger FIRST and
+    /// THEN pushed to the supervisor session, so an active (busy) supervisor
+    /// that never drains the prompt still sees the note by polling
+    /// `supervisor events` — the notification is durable even when the push
+    /// is lost or delayed. `kind` mirrors the push channel (`completed` /
+    /// `failed` / `infra_stopped` / `ask_user` / `host_died`); `dedup_key` is
+    /// the same idempotency key the prompt push uses, so re-notification
+    /// across runs can be correlated. Projection-only — `apply` ignores it
+    /// (a note never mutates the kanban; consumption is the supervisor
+    /// projection). Distinct notes always append (audit trail); an identical
+    /// note within the same second is a content-derived no-op.
+    SupervisorNote {
+        goal_id: String,
+        #[serde(default)]
+        todo_id: String,
+        note_kind: String,
+        message: String,
+        #[serde(default)]
+        dedup_key: String,
+        ts: u64,
+    },
     /// P0-2②: outcome_followthrough fired — a delivered-but-unverified work
     /// item aged past the turn threshold, so a follow-up todo was
     /// auto-created (the followup itself is the TodoAdded event; this event
@@ -587,6 +609,18 @@ pub enum Event {
         instruction: String,
         ts: u64,
     },
+    /// A run client drained a `WorkerSteered` instruction into a turn
+    /// envelope. Clears the goal's `pending_steer` on replay so a NEW run
+    /// (whose in-memory steer cursor starts at zero) never re-injects the
+    /// stale instruction into its first turn. `agent_id` mirrors the steer's
+    /// targeting; `None` broadcasts consumed every matching broadcast steer.
+    SteerConsumed {
+        goal_id: String,
+        #[serde(default)]
+        agent_id: Option<String>,
+        steer_ts: u64,
+        ts: u64,
+    },
     /// An operator asked a worker to STOP: interrupt any in-flight turn and
     /// exit the run loop at the next turn boundary (unlike `WorkerSteered`,
     /// which drains an instruction and keeps running). `agent_id` `None`
@@ -629,6 +663,7 @@ impl Event {
             | Event::TodoExpired { goal_id, .. }
             | Event::DeliveryOutcomeRecorded { goal_id, .. }
             | Event::ProgressReported { goal_id, .. }
+            | Event::SupervisorNote { goal_id, .. }
             | Event::FollowthroughCreated { goal_id, .. }
             | Event::DecisionSummaryRecorded { goal_id, .. }
             | Event::HeartbeatReceiptRecorded { goal_id, .. }
@@ -644,6 +679,7 @@ impl Event {
             | Event::ReplanRuleSetUpdated { goal_id, .. }
             | Event::SupervisorRegistered { goal_id, .. }
             | Event::WorkerSteered { goal_id, .. }
+            | Event::SteerConsumed { goal_id, .. }
             | Event::WorkerStopped { goal_id, .. }
             | Event::WorkerSessionBound { goal_id, .. } => goal_id,
         }
@@ -1497,14 +1533,23 @@ fn apply(goal: &mut Goal, event: Event) {
                 "completed".to_string()
             };
             if let Some(t) = goal.todo_mut(&todo_id) {
-                t.complete(no_follow_up, successor_ids);
-                // The event ts is authoritative for the completion stamp
-                // (wall-clock replay is second-granular; GateResolved already
-                // applies the same rule).
-                t.completed_at = Some(ts);
-                t.updated_at = ts;
-                if let Some(e) = evidence {
-                    t.evidence = Some(e);
+                // Terminal-state guard: a todo superseded while a detached
+                // run was in flight must not be resurrected to done by the
+                // run's late TodoCompleted writeback (cancel/supersede wins
+                // over an in-flight delivery — the kanban's terminal states
+                // are monotonic). The run record itself is still kept.
+                if t.status == TodoStatus::Superseded {
+                    // Skip the status transition but keep the semantic fold.
+                } else {
+                    t.complete(no_follow_up, successor_ids);
+                    // The event ts is authoritative for the completion stamp
+                    // (wall-clock replay is second-granular; GateResolved already
+                    // applies the same rule).
+                    t.completed_at = Some(ts);
+                    t.updated_at = ts;
+                    if let Some(e) = evidence {
+                        t.evidence = Some(e);
+                    }
                 }
             }
             // G13 ①: completion moves the frontier (segment reset marker).
@@ -1983,12 +2028,32 @@ fn apply(goal: &mut Goal, event: Event) {
                 ts,
             });
         }
+        // A run client drained the steer into a turn envelope — clear it so
+        // a NEW run (whose in-memory cursor starts at zero) never re-injects
+        // the stale instruction into its first turn. Latest-wins: only clear
+        // when the goal still holds the SAME steer episode (a newer steer may
+        // have arrived between the drain and this event's replay).
+        Event::SteerConsumed {
+            agent_id, steer_ts, ..
+        } => {
+            let same_episode = goal
+                .pending_steer
+                .as_ref()
+                .is_some_and(|s| s.ts == steer_ts && s.agent_id == agent_id);
+            if same_episode {
+                goal.pending_steer = None;
+            }
+        }
         // Projection-only: the run client tails the raw ledger for it; replay
         // deliberately ignores it (a stale stop must not kill future runs).
         Event::WorkerStopped { .. } => {}
         // Projection-only: a progress note is a statement, not a claim — it
         // never touches the kanban. Consumption is the supervisor projection.
         Event::ProgressReported { .. } => {}
+        // Projection-only: a supervisor note is already folded into the
+        // supervisor projection (and pushed to the supervisor session); it
+        // never mutates the kanban.
+        Event::SupervisorNote { .. } => {}
     }
 }
 

@@ -59,10 +59,19 @@ function readStoredLanguage(): Language {
 }
 
 const namespaces = Object.keys(resources[DEFAULT_LANGUAGE] ?? {});
+const initialLanguage = readStoredLanguage();
+
+function syncDocumentLanguage(language: string): void {
+  if (typeof document !== "undefined")
+    document.documentElement.lang = language === "en" ? "en" : "zh-CN";
+}
+
+syncDocumentLanguage(initialLanguage);
+i18n.on("languageChanged", syncDocumentLanguage);
 
 void i18n.use(initReactI18next).init({
   resources,
-  lng: readStoredLanguage(),
+  lng: initialLanguage,
   fallbackLng: "en",
   ns: namespaces.length > 0 ? namespaces : ["common"],
   defaultNS: "common",

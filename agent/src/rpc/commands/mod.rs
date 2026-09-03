@@ -155,7 +155,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "abort_retry" => run_control::handle_abort_retry(&session, id),
         "cycle_model" => settings::handle_cycle_model(state, &session, id),
         "cycle_thinking_level" => settings::handle_cycle_thinking_level(&session, id),
-        "clone" => session_lifecycle::cmd_clone(state, &session, id),
+        "clone" => session_lifecycle::cmd_clone(state, &session, &cmd, id),
         "export_html" => observability::handle_export_html(&session, id),
         "reload_config" => settings::cmd_reload_config(state, &session, id),
         "set_cwd" => settings::handle_set_cwd(&session, &cmd, id),
