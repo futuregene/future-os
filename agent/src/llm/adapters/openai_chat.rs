@@ -375,7 +375,11 @@ fn chat_usage(value: &Value) -> Usage {
             .and_then(|x| {
                 x.as_i64()
                     .or_else(|| x.as_f64().map(|f| f as i64))
-                    .or_else(|| x.as_str().and_then(|s| s.parse::<f64>().ok()).map(|f| f as i64))
+                    .or_else(|| {
+                        x.as_str()
+                            .and_then(|s| s.parse::<f64>().ok())
+                            .map(|f| f as i64)
+                    })
             })
             .unwrap_or(0)
     }

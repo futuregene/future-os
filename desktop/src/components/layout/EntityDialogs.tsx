@@ -3,6 +3,7 @@ import { useId } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../ui/Button";
 import { Dialog } from "../ui/Dialog";
+import { TextInput } from "../ui/TextInput";
 
 interface RenameDialogProps {
   open: boolean;
@@ -57,9 +58,9 @@ export function RenameDialog({
       <label className="block text-sm font-medium text-ink-soft" htmlFor={inputId}>
         {label}
       </label>
-      <input
+      <TextInput
         autoFocus
-        className="mt-2 h-10 w-full rounded-md border border-line bg-surface px-3 text-sm text-ink outline-none transition focus:border-focus focus:ring-2 focus:ring-focus"
+        className="mt-2"
         disabled={submitting}
         id={inputId}
         onChange={event => onChange(event.target.value)}
