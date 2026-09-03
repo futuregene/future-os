@@ -114,7 +114,7 @@ Thread 表示用户可恢复、可继续、可管理的一段对话。
 | `status` | `active`、`archived`、`deleted` |
 | `pinned` | 是否置顶 |
 | `readonly` | 是否只读 |
-| `agent_session_id` | GUI Thread ↔ Agent 会话映射；解析 Agent 侧 sessions JSONL、远程控制查会话时用（`store/schema.rs`） |
+| `agent_session_id` | GUI Thread ↔ Agent 会话映射；非空值全局唯一，一个 Agent session 只能绑定一个 Desktop Thread；解析 Agent 侧 sessions JSONL、远程控制查会话时用（`store/schema.rs`） |
 | `last_message_at` | 最近消息时间 |
 | `last_opened_at` | 最近打开时间 |
 | `created_at` | 创建时间 |
@@ -131,6 +131,8 @@ Thread 表示用户可恢复、可继续、可管理的一段对话。
 - 一个 Thread 可以产生多个 Approval Request。
 - 一个 Thread 可以产生多个 Review Changeset。
 - 一个 Thread 可以由另一个 Thread 分叉（fork）产生。
+- 一个 Agent session 最多映射到一个 Thread；数据库唯一索引是并发导入时的最终约束，通知、事件流重连与低频完整 reconciliation 复用同一个 get-or-create 语义。
+- Desktop 的安装级 `device_id` 是 `session_created.creatorId` 的来源；它独立于远程配对并在 Debug Reset 后保留。`createdBy` 只表示客户端类别，未来的 `clientId` 应表示进程或连接实例。
 
 说明：
 

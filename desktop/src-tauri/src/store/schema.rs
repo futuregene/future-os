@@ -236,6 +236,9 @@ CREATE TABLE IF NOT EXISTS agent_delete_outbox (
 
 CREATE INDEX IF NOT EXISTS idx_threads_workspace ON threads(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_threads_recent ON threads(status, pinned, last_message_at, updated_at);
+-- idx_threads_agent_session_unique is applied by a versioned migration after
+-- duplicate legacy bindings are detached; creating it here would make SCHEMA
+-- fail before that repair can run on an upgraded database.
 -- idx_messages_thread removed with messages table
 CREATE INDEX IF NOT EXISTS idx_runs_thread ON runs(thread_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_runs_trigger_message ON runs(trigger_message_id);
@@ -316,6 +319,17 @@ pub(super) const VERSIONED_MIGRATIONS: &[(&str, &str, &str, &str)] = &[(
     "archived_at",
     "ALTER TABLE runs ADD COLUMN archived_at INTEGER",
 )];
+
+/// A Desktop thread is a projection owner for at most one Agent session, and
+/// an Agent session has at most one Desktop projection owner. This index is
+/// installed by a dedicated migration after legacy duplicate bindings have
+/// been detached.
+pub(super) const AGENT_SESSION_BINDING_MIGRATION_VERSION: &str =
+    "v1.1.5-unique-agent-session-binding";
+pub(super) const UNIQUE_AGENT_SESSION_INDEX: &str =
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_threads_agent_session_unique \
+     ON threads(agent_session_id) \
+     WHERE agent_session_id IS NOT NULL AND agent_session_id != ''";
 
 /// Columns renamed after their table's initial creation (N-3 aligned the DB
 /// `type` columns with the Rust `*_type` fields). `CREATE TABLE IF NOT EXISTS`

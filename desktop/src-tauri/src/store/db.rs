@@ -10,8 +10,8 @@ use super::approvals::{
 };
 use super::runs::{run_from_row, RunRecord};
 use super::schema::{
-    ADDED_COLUMNS, ADDED_INDEXES, DROPPED_COLUMNS, DROPPED_TABLES, RENAMED_COLUMNS, SCHEMA,
-    VERSIONED_MIGRATIONS,
+    ADDED_COLUMNS, ADDED_INDEXES, AGENT_SESSION_BINDING_MIGRATION_VERSION, DROPPED_COLUMNS,
+    DROPPED_TABLES, RENAMED_COLUMNS, SCHEMA, UNIQUE_AGENT_SESSION_INDEX, VERSIONED_MIGRATIONS,
 };
 use super::util::now_millis;
 
@@ -167,6 +167,10 @@ pub(super) fn connect() -> Result<PooledConnection, crate::AppError> {
 
 pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
     conn.execute_batch(SCHEMA)?;
+    // This is a required identity invariant: one Agent session may back only
+    // one Desktop thread. Repair legacy duplicate bindings before installing
+    // the unique index, otherwise an upgraded database could not start.
+    apply_agent_session_binding_migration(conn)?;
     // Run archiving is optional UI metadata. A failed upgrade must not block
     // the Agent/file-tool main flow; read paths project its missing column as
     // NULL and the archive action reports its own unavailable error.
@@ -220,6 +224,72 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
                 // or is the last column — log and continue.
                 eprintln!("FutureOS migration: failed to drop {table}.{column}: {error}");
             }
+        }
+    }
+    Ok(())
+}
+
+/// Install the one-Agent-session-to-one-Desktop-thread invariant.
+///
+/// Older databases could contain duplicate bindings because discovery used a
+/// check-then-insert sequence without a database constraint. Preserve every
+/// thread row, but detach all except the most recently active owner. Detached
+/// rows become ordinary local threads and can mint a fresh Agent session if
+/// the user continues them. Normalize the surviving id before adding the
+/// unique index so whitespace variants cannot bypass the invariant.
+fn apply_agent_session_binding_migration(conn: &Connection) -> Result<(), crate::AppError> {
+    let applied = conn
+        .query_row(
+            "SELECT 1 FROM schema_migrations WHERE version = ?1",
+            [AGENT_SESSION_BINDING_MIGRATION_VERSION],
+            |_| Ok(()),
+        )
+        .optional()?;
+    if applied.is_some() {
+        return Ok(());
+    }
+
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = (|| {
+        conn.execute(
+            "WITH ranked AS (
+                 SELECT rowid,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY TRIM(agent_session_id)
+                            ORDER BY
+                                CASE WHEN status != 'deleted' THEN 0 ELSE 1 END,
+                                COALESCE(last_message_at, updated_at, created_at) DESC,
+                                rowid DESC
+                        ) AS binding_rank
+                 FROM threads
+                 WHERE agent_session_id IS NOT NULL
+                   AND TRIM(agent_session_id) != ''
+             )
+             UPDATE threads
+             SET agent_session_id = NULL
+             WHERE rowid IN (
+                 SELECT rowid FROM ranked WHERE binding_rank > 1
+             )",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE threads
+             SET agent_session_id = TRIM(agent_session_id)
+             WHERE agent_session_id IS NOT NULL",
+            [],
+        )?;
+        conn.execute(UNIQUE_AGENT_SESSION_INDEX, [])?;
+        conn.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+            params![AGENT_SESSION_BINDING_MIGRATION_VERSION, now_millis()],
+        )?;
+        Ok::<(), crate::AppError>(())
+    })();
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT")?,
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(error);
         }
     }
     Ok(())
@@ -396,6 +466,70 @@ mod tests {
     fn apply_schema_on_fresh_db_succeeds() {
         let conn = Connection::open_in_memory().unwrap();
         apply_schema(&conn).unwrap();
+    }
+
+    #[test]
+    fn apply_schema_dedupes_and_enforces_unique_agent_session_bindings() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_schema(&conn).unwrap();
+        // Recreate the pre-v1.1.5 state: no index/marker and two bindings that
+        // differ only by surrounding whitespace.
+        conn.execute("DROP INDEX idx_threads_agent_session_unique", [])
+            .unwrap();
+        conn.execute(
+            "DELETE FROM schema_migrations WHERE version = ?1",
+            [AGENT_SESSION_BINDING_MIGRATION_VERSION],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                 VALUES ('ws-bind', 'W', 'user', '/tmp/ws-bind', 1, 1);
+             INSERT INTO threads (
+                 id, workspace_id, mode, title, status, agent_session_id,
+                 created_at, updated_at
+             ) VALUES
+                 ('thread-old', 'ws-bind', 'chat', 'Old', 'active', ' session-1 ', 1, 1),
+                 ('thread-new', 'ws-bind', 'chat', 'New', 'active', 'session-1', 2, 2);",
+        )
+        .unwrap();
+
+        apply_schema(&conn).unwrap();
+        apply_schema(&conn).unwrap();
+
+        let old_binding: Option<String> = conn
+            .query_row(
+                "SELECT agent_session_id FROM threads WHERE id = 'thread-old'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let new_binding: String = conn
+            .query_row(
+                "SELECT agent_session_id FROM threads WHERE id = 'thread-new'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            old_binding, None,
+            "older duplicate is preserved but detached"
+        );
+        assert_eq!(new_binding, "session-1", "survivor id is normalized");
+        assert!(conn
+            .execute(
+                "UPDATE threads SET agent_session_id = 'session-1' WHERE id = 'thread-old'",
+                [],
+            )
+            .is_err());
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1",
+                [AGENT_SESSION_BINDING_MIGRATION_VERSION],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
     }
 
     #[test]
@@ -700,7 +834,9 @@ mod tests {
                  workspace_id TEXT,
                  status TEXT,
                  pinned INTEGER,
+                 agent_session_id TEXT,
                  last_message_at INTEGER,
+                 created_at INTEGER,
                  updated_at INTEGER,
                  model_provider TEXT,
                  model_id TEXT,

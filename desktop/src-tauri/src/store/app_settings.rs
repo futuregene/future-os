@@ -56,6 +56,53 @@ const KEY_AUTO_CONNECT_REMOTE: &str = "auto_connect_remote";
 const KEY_SKILL_GUIDE_DISMISSED: &str = "skill_guide_dismissed";
 const KEY_SKILL_INTRO_DISMISSED: &str = "skill_intro_dismissed";
 const KEY_BELL_ON_COMPLETE: &str = "bell_on_complete";
+const KEY_DEVICE_ID: &str = "device_id";
+
+/// Atomically install the Desktop-wide device identity. The caller supplies a
+/// legacy or freshly generated candidate, but SQLite decides the winner when
+/// multiple Desktop processes start for the first time concurrently.
+pub fn get_or_create_device_id(candidate: &str) -> Result<String, crate::AppError> {
+    let candidate = candidate.trim();
+    if candidate.is_empty() {
+        return Err("device id cannot be empty".to_string().into());
+    }
+    let mut conn = connect()?;
+    // Device identity is needed by early control-plane paths (including remote
+    // pairing tests and reconnects), so do not require the full application
+    // schema initializer to have won the startup race first.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS app_settings (
+             key TEXT PRIMARY KEY,
+             value TEXT NOT NULL,
+             updated_at INTEGER NOT NULL
+         )",
+    )?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    if let Some(existing) = read_value(&tx, KEY_DEVICE_ID)?
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        tx.commit()?;
+        return Ok(existing);
+    }
+    write_value(&tx, KEY_DEVICE_ID, candidate, now_millis())?;
+    tx.commit()?;
+    Ok(candidate.to_string())
+}
+
+pub(super) fn read_device_id(conn: &Connection) -> Result<Option<String>, crate::AppError> {
+    read_value(conn, KEY_DEVICE_ID)
+}
+
+pub(super) fn restore_device_id(
+    conn: &Connection,
+    device_id: Option<&str>,
+) -> Result<(), crate::AppError> {
+    if let Some(device_id) = device_id {
+        write_value(conn, KEY_DEVICE_ID, device_id, now_millis())?;
+    }
+    Ok(())
+}
 
 pub fn get_app_settings() -> Result<AppSettings, crate::AppError> {
     let conn = connect()?;
@@ -210,6 +257,21 @@ mod tests {
         assert!(!settings.auto_connect_remote);
         assert!(!settings.skill_guide_dismissed);
         assert!(!settings.skill_intro_dismissed);
+    }
+
+    #[test]
+    fn device_identity_is_installed_once_and_reused() {
+        let (_home, conn) = guarded_conn("settings_device_id");
+        drop(conn);
+        assert_eq!(
+            get_or_create_device_id("desktop_first").expect("first"),
+            "desktop_first"
+        );
+        assert_eq!(
+            get_or_create_device_id("desktop_second").expect("reuse"),
+            "desktop_first"
+        );
+        assert!(get_or_create_device_id("   ").is_err());
     }
 
     #[test]

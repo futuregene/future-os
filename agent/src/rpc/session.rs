@@ -85,6 +85,9 @@ pub struct ServerSession {
     pub session_name: String,
     /// Source that created this session: "desktop", "tui", "fork", "feishu", "dingtalk", etc.
     pub created_by: String,
+    /// Stable identity of the creator installation/account. This intentionally
+    /// does not identify a particular process or transport connection.
+    pub creator_id: String,
     /// Arbitrary metadata from the source side (JSON). Free-form.
     pub source_meta: serde_json::Value,
     /// Per-session SSE broadcaster.  Each subscriber (`StreamEvents` call)
@@ -223,6 +226,7 @@ impl ServerSession {
             session_name: String::new(),
             parent_session_id: String::new(),
             created_by: String::new(),
+            creator_id: String::new(),
             source_meta: serde_json::Value::Null,
             broadcaster,
             ephemeral: false,
@@ -890,6 +894,15 @@ impl ServerSession {
                 // applied it (the old inner fallback arm was unreachable).
                 if let Some(v) = info.get("auto_compaction").and_then(|v| v.as_bool()) {
                     self.auto_compaction = v;
+                }
+                if let Some(value) = info.get("created_by").and_then(|value| value.as_str()) {
+                    self.created_by = value.to_string();
+                }
+                if let Some(value) = info.get("creator_id").and_then(|value| value.as_str()) {
+                    self.creator_id = value.to_string();
+                }
+                if let Some(value) = info.get("source_meta") {
+                    self.source_meta = value.clone();
                 }
                 // Restore cwd from session_info (previously lost after agent restart)
                 if let Some(saved_cwd) = info.get("cwd").and_then(|v| v.as_str()) {
@@ -2495,6 +2508,9 @@ mod tests {
                 "cwd": cwd,
                 "model": "deepseek/deepseek-chat",
                 "session_name": "restored name",
+                "created_by": "desktop",
+                "creator_id": "desktop-device-1",
+                "source_meta": {"threadId": "thread-1"},
                 "thinking_level": "low",
                 "auto_compaction": false,
                 "tokens_in": 111,
@@ -2536,6 +2552,9 @@ mod tests {
         assert_eq!(session.model, "deepseek/deepseek-chat");
         assert_eq!(session.session_name, "restored name");
         assert_eq!(session.thinking_level, "low");
+        assert_eq!(session.created_by, "desktop");
+        assert_eq!(session.creator_id, "desktop-device-1");
+        assert_eq!(session.source_meta["threadId"], "thread-1");
         assert!(!session.auto_compaction);
         assert_eq!(
             session.tokens_in.load(std::sync::atomic::Ordering::Relaxed),

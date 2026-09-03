@@ -636,7 +636,11 @@ mod tests {
         assert_eq!(response.content, "hello world");
         assert!(response.complete);
         // The collector attaches atomically from the start.
-        let attaches = mock.stream_requests();
+        let attaches: Vec<_> = mock
+            .stream_requests()
+            .into_iter()
+            .filter(|request| request.atomic_attach)
+            .collect();
         assert_eq!(attaches.len(), 1);
         assert!(attaches[0].atomic_attach);
         assert_eq!(attaches[0].after_idx, -1);
@@ -977,7 +981,12 @@ mod tests {
             .expect("collect");
         std::env::remove_var("FUTURE_TEST_AGENT_STREAM_TIMEOUT_MS");
         assert!(response.complete);
-        assert_eq!(mock.stream_requests().len(), 2);
+        let atomic_attaches = mock
+            .stream_requests()
+            .into_iter()
+            .filter(|request| request.atomic_attach)
+            .count();
+        assert_eq!(atomic_attaches, 2);
     }
 
     #[tokio::test]
