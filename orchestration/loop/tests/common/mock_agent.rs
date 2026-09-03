@@ -2,8 +2,8 @@
 //! StreamEvents — the only two RPCs the loop control plane consumes).
 //!
 //! The mock is scripted through `MockState`: per-command failures, invalid
-//! JSON payloads, a never-yielding event stream (for wall-clock timeout
-//! paths), and a scripted event list for `run_turn`.
+//! JSON payloads, a never-yielding event stream, and a scripted event list for
+//! `run_turn`.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -44,10 +44,10 @@ pub struct MockState {
     pub invalid_json: HashSet<String>,
     /// ExecuteCommand fails at the transport level (tonic::Status error).
     pub grpc_error: bool,
-    /// stream_events returns a stream that never yields (timeout tests).
+    /// stream_events returns a stream that never yields.
     pub hang_stream: bool,
     /// Replays the scripted `events` first, then never yields — the
-    /// budget-truncation path WITH observed tool starts (O3 idle detection).
+    /// no-progress path WITH observed tool starts (O3 idle detection).
     pub events_then_hang: bool,
     /// stream_events fails immediately with a tonic status.
     pub stream_error: bool,

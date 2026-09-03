@@ -561,28 +561,6 @@ fn run_with_model_and_thinking_flags() {
     assert!(recorded.contains(&"set_thinking_level".to_string()));
 }
 
-#[test]
-fn run_max_turn_secs_graceful_timeout() {
-    let cr = cli_root();
-    let st = MockState {
-        hang_stream: true,
-        ..Default::default()
-    };
-    let (_rt, _shared) = mock_env(st);
-    let goal = init_goal(&cr, "hanging turn");
-    // The turn stream never yields; the wall-clock budget stops the run gracefully.
-    cli_ok(&[
-        "run",
-        "--goal",
-        &goal,
-        "--anonymous",
-        "--max-turn-secs",
-        "1",
-        "--max-turns",
-        "3",
-    ]);
-}
-
 // ── bidirectional messaging: up-channel turn-boundary reports ────────────────
 
 /// A registered supervisor receives an `enqueue_if_busy` report when a todo
@@ -753,56 +731,6 @@ fn run_notifies_supervisor_on_transport_error() {
             .1
             .contains("stopped before completion (transport)"),
         "transport stop reported: {}",
-        reports[0].1
-    );
-}
-
-/// A registered supervisor receives a report when a turn outlives its
-/// wall-clock budget (--max-turn-secs). The early return previously skipped
-/// the ②/③ reports, leaving the supervisor blind to the stop.
-#[test]
-fn run_notifies_supervisor_on_timeout() {
-    let cr = cli_root();
-    let (_rt, shared) = mock_env(MockState {
-        hang_stream: true,
-        ..Default::default()
-    });
-    let goal = init_goal(&cr, "notify on timeout");
-    cli_ok(&[
-        "supervisor",
-        "register",
-        "--goal",
-        &goal,
-        "--session-id",
-        "sup-sess",
-    ]);
-    cli_ok(&[
-        "run",
-        "--goal",
-        &goal,
-        "--anonymous",
-        "--max-turn-secs",
-        "1",
-        "--max-turns",
-        "3",
-    ]);
-    let st = shared.lock().unwrap();
-    let reports: Vec<_> = st
-        .prompt_calls
-        .iter()
-        .zip(st.prompt_messages.iter())
-        .filter(|((sid, _), _)| sid == "sup-sess")
-        .collect();
-    assert_eq!(
-        reports.len(),
-        1,
-        "one timeout report: {:?}",
-        st.prompt_calls
-    );
-    assert_eq!(reports[0].0 .1, "enqueue_if_busy");
-    assert!(
-        reports[0].1.contains("stopped before completion (timeout)"),
-        "timeout stop reported: {}",
         reports[0].1
     );
 }

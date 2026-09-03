@@ -179,8 +179,8 @@ channel. Both directions ride the same event-sourced state:
   authoritative intervention channel if no supervisor is registered.
 
 - **Infra stops + dead workers:** a worker that exits before reaching a
-  turn-boundary writeback (gRPC transport loss, `--max-turn-secs` timeout,
-  incomplete-retry budget exhaustion) also reports an `infra_stopped` note.
+  turn-boundary writeback (gRPC transport loss, incomplete-retry budget
+  exhaustion) also reports an `infra_stopped` note.
   A worker that dies outright (SIGKILL / crash / host failure) executes no
   code, so the periodic `scheduler tick` detects the orphaned lease (dead
   holder pid) and pushes a `host_died` note to the registered supervisor,
