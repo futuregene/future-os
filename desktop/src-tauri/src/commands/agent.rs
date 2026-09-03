@@ -54,21 +54,10 @@ mod tests {
 
     #[test]
     fn async_command_wrappers_reject_malformed_bodies() {
+        // No-argument probe/reset commands legitimately accept an empty body.
         crate::commands::ipc_harness::assert_all_reject_bad_body(
-            tauri::generate_handler![
-                set_default_model,
-                probe_sandbox,
-                probe_windows_sandbox,
-                reset_windows_sandbox,
-                agent_prompt
-            ],
-            &[
-                "set_default_model",
-                "probe_sandbox",
-                "probe_windows_sandbox",
-                "reset_windows_sandbox",
-                "agent_prompt",
-            ],
+            tauri::generate_handler![set_default_model, agent_prompt],
+            &["set_default_model", "agent_prompt"],
         );
         // Feed the request argument a scalar so its `CommandArg` conversion
         // reaches the wrapper's error arm.
