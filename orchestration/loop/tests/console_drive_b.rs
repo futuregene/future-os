@@ -65,7 +65,8 @@ fn scheduler_surface() {
     cli_ok(&["scheduler", "tick", "--goal", &gid]);
     cli_ok(&["scheduler", "show", "--goal", &gid]);
     cli_ok(&["scheduler", "tick", "--goal", &gid]);
-    // custom progression / cadence class / action on a second agent.
+    // custom progression / action on a second agent (cadence-class is not a
+    // tick flag — it was a dead no-op and was removed).
     cli_ok(&[
         "scheduler",
         "tick",
@@ -73,8 +74,6 @@ fn scheduler_surface() {
         &gid,
         "--agent-id",
         "agent-b",
-        "--cadence-class",
-        "hourly",
         "--progression",
         "15,30,60",
         "--action",
