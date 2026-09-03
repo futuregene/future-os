@@ -26,6 +26,10 @@ pub struct PreparedShell {
     pub args: Vec<String>,
     pub env_delta: BTreeMap<String, Option<String>>,
     pub boundary: SandboxBoundary,
+    /// Linux-only helper JSON. `into_command` copies it to an anonymous file
+    /// and exposes that file as fixed FD 3 in the helper child; other backends
+    /// must leave it unset.
+    pub request_payload: Option<Vec<u8>>,
 }
 
 impl PreparedShell {
@@ -39,10 +43,11 @@ impl PreparedShell {
                 backend: ShellBackend::Plain,
                 policy_digest: None,
             },
+            request_payload: None,
         }
     }
 
-    pub fn into_command(self) -> tokio::process::Command {
+    pub fn into_command(self) -> anyhow::Result<tokio::process::Command> {
         let mut command = tokio::process::Command::new(self.program);
         command.args(self.args);
         for (key, value) in self.env_delta {
@@ -55,7 +60,43 @@ impl PreparedShell {
                 }
             }
         }
-        command
+        #[cfg(target_os = "linux")]
+        if let Some(payload) = self.request_payload {
+            use std::io::{Seek, Write};
+            use std::os::fd::AsRawFd;
+            use std::os::unix::process::CommandExt;
+
+            let mut file = tempfile::tempfile()?;
+            file.write_all(&payload)?;
+            file.rewind()?;
+            let source_fd = file.as_raw_fd();
+            // SAFETY: the closure only performs async-signal-safe fd operations
+            // in the forked child. Capturing `file` keeps the anonymous request
+            // alive until spawn; FD 3 is the fixed private helper input.
+            unsafe {
+                command.as_std_mut().pre_exec(move || {
+                    if source_fd != super::linux::request::HELPER_REQUEST_FD
+                        && libc::dup2(source_fd, super::linux::request::HELPER_REQUEST_FD) < 0
+                    {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    let flags =
+                        libc::fcntl(super::linux::request::HELPER_REQUEST_FD, libc::F_GETFD);
+                    if flags < 0
+                        || libc::fcntl(
+                            super::linux::request::HELPER_REQUEST_FD,
+                            libc::F_SETFD,
+                            flags & !libc::FD_CLOEXEC,
+                        ) < 0
+                    {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    let _keep_alive = &file;
+                    Ok(())
+                });
+            }
+        }
+        Ok(command)
     }
 }
 
@@ -81,7 +122,7 @@ mod tests {
             .env_delta
             .insert("FUTURE_TEST_SET".into(), Some("a b".into()));
         prepared.env_delta.insert("FUTURE_TEST_REMOVE".into(), None);
-        let command = prepared.into_command();
+        let command = prepared.into_command().unwrap();
         let env: Vec<_> = command.as_std().get_envs().collect();
         assert!(env.iter().any(|(key, value)| {
             *key == "FUTURE_TEST_SET" && value.and_then(|v| v.to_str()) == Some("a b")

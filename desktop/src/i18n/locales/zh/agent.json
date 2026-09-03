@@ -148,7 +148,9 @@
       "manual": "每步操作前询问",
       "sandbox": "在沙箱中运行，必要时询问",
       "sandboxWindows": "限制越界写入，必要时询问",
-      "sandboxLinux": "在系统 Bubblewrap 中运行，必要时询问",
+      "sandboxLinux": "在 Linux 系统沙箱中运行，文件越界时询问",
+      "sandboxChecking": "正在检测系统沙箱…",
+      "sandboxUnavailable": "系统沙箱当前不可用，请在设置中查看原因",
       "off": "不经过审批，执行<em>任何</em>命令"
     },
     "attachImageUnsupportedHint": "当前模型不支持图片，可能无法正确理解图片内容",

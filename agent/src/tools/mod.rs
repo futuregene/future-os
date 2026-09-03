@@ -1072,7 +1072,9 @@ async fn spawn_shell(
     let prepared = sandbox
         .prepare_shell_for_cwd(&merged_cmd, escalated, &cwd)
         .map_err(|error| anyhow!("Failed to initialize OS sandbox: {error}"))?;
-    let mut child = prepared.into_command();
+    let mut child = prepared
+        .into_command()
+        .map_err(|error| anyhow!("Failed to initialize OS sandbox request transport: {error}"))?;
     child.current_dir(&cwd).env("PWD", &cwd);
     // Prepend the agent binary's directory to PATH so bundled tools in the
     // same directory are discoverable by shell commands. (map + discard: a
@@ -2848,6 +2850,32 @@ mod tests {
             "bad-helper",
             10,
             "future-linux-sandbox-helper: identity changed\n\n[exit: 125]",
+        )
+        .await
+        .is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let dynamic = crate::sandbox::linux::violation::marker(
+            &crate::sandbox::linux::violation::LinuxSandboxViolation {
+                kind: crate::sandbox::linux::violation::LinuxViolationKind::DynamicGlobCreated,
+                path_provenance: "glob_snapshot".into(),
+                policy_digest: "a".repeat(64),
+                detection_only: true,
+                affected_count: 1,
+            },
+        );
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let call_counter = calls.clone();
+        let requester: crate::sandbox::EscalationRequester = Arc::new(move |_| {
+            call_counter.fetch_add(1, Ordering::SeqCst);
+            crate::sandbox::EscalationDecision::Approved
+        });
+        assert!(post_hoc_escalation(
+            &Some(requester),
+            &sandbox,
+            "created-secret-but-failed",
+            10,
+            &format!("{dynamic}\n\n[exit: 1]"),
         )
         .await
         .is_none());

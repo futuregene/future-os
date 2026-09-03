@@ -3,9 +3,13 @@ use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
 
 pub const REQUEST_VERSION: u16 = 3;
-pub const MAX_ENCODED_REQUEST_BYTES: usize = 256 * 1024;
-pub const MAX_MOUNTS: usize = 2048;
-pub const MAX_ARG_BYTES: usize = 128 * 1024;
+/// Maximum decoded JSON request size. The legacy base64 CLI form is accepted
+/// only by the hidden test/compatibility entry point; production uses an FD.
+pub const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_MOUNTS: usize = 16_384;
+// Leave headroom below Linux's per-string execve limit for `bash -c`.
+pub const MAX_ARG_BYTES: usize = 96 * 1024;
+pub const HELPER_REQUEST_FD: i32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -73,32 +77,41 @@ pub enum RequestError {
 }
 
 impl LinuxSandboxRequest {
-    pub fn encode(&self) -> Result<String, RequestError> {
-        use base64::Engine as _;
+    pub fn to_json_bytes(&self) -> Result<Vec<u8>, RequestError> {
         self.validate()?;
         let json =
             serde_json::to_vec(self).map_err(|e| RequestError::InvalidJson(e.to_string()))?;
-        if json.len() > MAX_ENCODED_REQUEST_BYTES {
+        if json.len() > MAX_REQUEST_BYTES {
             return Err(RequestError::TooLarge);
         }
+        Ok(json)
+    }
+
+    pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, RequestError> {
+        if bytes.len() > MAX_REQUEST_BYTES {
+            return Err(RequestError::TooLarge);
+        }
+        let request: Self =
+            serde_json::from_slice(bytes).map_err(|e| RequestError::InvalidJson(e.to_string()))?;
+        request.validate()?;
+        Ok(request)
+    }
+
+    pub fn encode(&self) -> Result<String, RequestError> {
+        use base64::Engine as _;
+        let json = self.to_json_bytes()?;
         Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json))
     }
 
     pub fn decode(encoded: &str) -> Result<Self, RequestError> {
         use base64::Engine as _;
-        if encoded.len() > MAX_ENCODED_REQUEST_BYTES.saturating_mul(2) {
+        if encoded.len() > MAX_REQUEST_BYTES.saturating_mul(2) {
             return Err(RequestError::TooLarge);
         }
         let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(encoded)
             .map_err(|_| RequestError::InvalidEncoding)?;
-        if bytes.len() > MAX_ENCODED_REQUEST_BYTES {
-            return Err(RequestError::TooLarge);
-        }
-        let request: Self =
-            serde_json::from_slice(&bytes).map_err(|e| RequestError::InvalidJson(e.to_string()))?;
-        request.validate()?;
-        Ok(request)
+        Self::from_json_bytes(&bytes)
     }
 
     pub fn validate(&self) -> Result<(), RequestError> {
@@ -153,11 +166,20 @@ impl LinuxSandboxRequest {
                     return Err(RequestError::DuplicateFd);
                 }
             }
-            match self.phase {
-                HelperPhase::Outer if mount.source_fd.is_some() || mount.expected.is_some() => {
+            match (self.phase, mount.kind) {
+                (HelperPhase::Outer, _)
+                    if mount.source_fd.is_some() || mount.expected.is_some() =>
+                {
                     return Err(RequestError::InvalidFd)
                 }
-                HelperPhase::Inner if mount.source_fd.is_none() || mount.expected.is_none() => {
+                (HelperPhase::Inner, MountKind::MissingProtected) => {
+                    if mount.source_fd.is_some() || mount.expected.is_some() {
+                        return Err(RequestError::InvalidFd);
+                    }
+                }
+                (HelperPhase::Inner, _)
+                    if mount.source_fd.is_none() || mount.expected.is_none() =>
+                {
                     return Err(RequestError::InvalidFd)
                 }
                 _ => {}
@@ -254,12 +276,23 @@ mod tests {
     }
 
     #[test]
+    fn inner_missing_path_mount_requires_no_host_source_fd() {
+        let mut request = request();
+        request.phase = HelperPhase::Inner;
+        request.status_fd = Some(6);
+        request.mounts[0].kind = MountKind::MissingProtected;
+        request.mounts[0].source_fd = None;
+        request.mounts[0].expected = None;
+        assert_eq!(request.validate(), Ok(()));
+    }
+
+    #[test]
     fn request_size_mount_count_and_unknown_fields_are_bounded() {
         let mut invalid = request();
         invalid.mounts = vec![invalid.mounts[0].clone(); MAX_MOUNTS + 1];
         assert_eq!(invalid.validate(), Err(RequestError::TooManyMounts));
 
-        let oversized = "x".repeat(MAX_ENCODED_REQUEST_BYTES * 2 + 1);
+        let oversized = "x".repeat(MAX_REQUEST_BYTES * 2 + 1);
         assert_eq!(
             LinuxSandboxRequest::decode(&oversized),
             Err(RequestError::TooLarge)

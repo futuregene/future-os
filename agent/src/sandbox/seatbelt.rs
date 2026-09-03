@@ -124,6 +124,7 @@ pub fn prepare(sandbox: &ResolvedSandbox, command: &str) -> super::backend::Prep
             backend: super::backend::ShellBackend::MacosSeatbelt,
             policy_digest: None,
         },
+        request_payload: None,
     }
 }
 

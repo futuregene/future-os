@@ -7,6 +7,7 @@ pub const VIOLATION_PREFIX: &str = "__FUTURE_SANDBOX_VIOLATION__:";
 pub enum LinuxViolationKind {
     FilesystemDenied,
     DynamicGlobCreated,
+    DynamicGlobScanFailed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,8 +40,14 @@ pub fn classify(
     policy_digest: &str,
 ) -> Option<LinuxSandboxViolation> {
     if let Some(violation) = parse_marker(output) {
-        return Some(violation);
+        return (violation.kind == LinuxViolationKind::FilesystemDenied
+            && !violation.detection_only
+            && violation.policy_digest == policy_digest)
+            .then_some(violation);
     }
+    // Legacy fallback for bwrap denials that cannot currently be emitted as a
+    // helper marker. Once any structured marker is present it is authoritative:
+    // never reinterpret a detection-only or stale-policy event from its text.
     if exit_code == 0 || matches!(exit_code, 2 | 125 | 126 | 127) {
         return None;
     }
@@ -84,5 +91,36 @@ mod tests {
             affected_count: 2,
         };
         assert_eq!(parse_marker(&marker(&violation)), Some(violation));
+    }
+
+    #[test]
+    fn detection_only_and_wrong_policy_markers_never_trigger_escalation() {
+        let dynamic = LinuxSandboxViolation {
+            kind: LinuxViolationKind::DynamicGlobCreated,
+            path_provenance: "glob_snapshot".into(),
+            policy_digest: "a".repeat(64),
+            detection_only: true,
+            affected_count: 1,
+        };
+        assert!(classify(
+            1,
+            &format!("Permission denied\n{}", marker(&dynamic)),
+            &"a".repeat(64)
+        )
+        .is_none());
+
+        let denied = LinuxSandboxViolation {
+            kind: LinuxViolationKind::FilesystemDenied,
+            path_provenance: "trusted_helper".into(),
+            policy_digest: "b".repeat(64),
+            detection_only: false,
+            affected_count: 1,
+        };
+        assert!(classify(
+            1,
+            &format!("Read-only file system\n{}", marker(&denied)),
+            &"a".repeat(64)
+        )
+        .is_none());
     }
 }

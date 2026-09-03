@@ -202,9 +202,9 @@ pub fn run_from_args(args: &[String]) -> Result<()> {
     let mut argv = vec!["future-agent".to_string()];
     argv.extend_from_slice(args);
     let cli = Cli::parse_from(argv);
-    if let Some(request) = cli.linux_sandbox_helper.as_deref() {
+    if let Some(_request) = cli.linux_sandbox_helper.as_deref() {
         #[cfg(target_os = "linux")]
-        crate::sandbox::linux::helper::run_encoded(request);
+        crate::sandbox::linux::helper::run_helper_request(_request);
         #[cfg(not(target_os = "linux"))]
         anyhow::bail!("Linux sandbox helper is unavailable on this platform");
     }

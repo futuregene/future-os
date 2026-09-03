@@ -1,17 +1,50 @@
 # Linux Bubblewrap 沙盒实施计划与验收矩阵
 
-状态：**开发执行基线；Wave 1–6 的 Rust/Tauri 本地门禁已完成，本机 product probe 与 5 个 ignored Bubblewrap smoke 已实际 PASS；当前非交互 PATH 缺少 Node/npm，明确记为环境限制；等待 L5 目标真机矩阵与安全 review**（2026-09-03）。产品与安全语义以 [`LINUX_SANDBOX_PLAN.md`](LINUX_SANDBOX_PLAN.md) 为准；本文把 L0–L6 转成代码落点、提交顺序、自动化门禁和真机验收项，不改变 L-D1–L-D9。
+状态：**开发执行基线；此前 Linux 开发机的 product probe 与 5 个 ignored Bubblewrap smoke 已实际 PASS；2026-09-03 安全 review 修订后共有 7 项 smoke，需要在 Linux 主机重新执行。当前 macOS 已完成跨平台单测、fmt/clippy；L5 目标真机矩阵与安全 review 复验尚未完成**。产品与安全语义以 [`LINUX_SANDBOX_PLAN.md`](LINUX_SANDBOX_PLAN.md) 为准；本文把 L0–L6 转成代码落点、修订记录、自动化门禁和真机验收项，不改变 L-D1–L-D9。
 
 ## 1. 开发基线
 
-- 开发分支：`claude/linux-bwrap-sandbox`
-- 独立 worktree：`.claude/worktrees/linux-bwrap-sandbox`
+- 当前开发分支：`sandbox`（按维护者要求，review 修订直接落在该分支）
 - 分支基线：`fd3e1771`（`sandbox` / `origin/sandbox`，`docs: plan Linux bubblewrap sandbox`）
-- 本机审计环境：Ubuntu 26.04 LTS、Linux 7.0、x86_64；system bwrap 为 `/usr/bin/bwrap` 0.11.1。
-- 本机最小能力预检：`--new-session --die-with-parent --unshare-user --unshare-pid --unshare-ipc --cap-drop ALL --ro-bind / / --dev /dev --proc /proc -- /bin/true` 返回 0。
-- 上述结果只说明当前开发机具备基础能力。Ubuntu 26.04 不属于 L5 目标发行版，不能替代 Ubuntu 22.04/24.04、Debian stable、Fedora、aarch64 或安装包实测。
+- 主干同步：2026-09-03 已将 `origin/main` 的 `15d7df79` 合并到 `sandbox`，merge commit 为 `0867b0fd`；合并无冲突。
+- 初始实现的历史审计环境：Ubuntu 26.04 LTS、Linux 7.0、x86_64；system bwrap 为 `/usr/bin/bwrap` 0.11.1。
+- 该 Linux 主机当时的最小能力预检：`--new-session --die-with-parent --unshare-user --unshare-pid --unshare-ipc --cap-drop ALL --ro-bind / / --dev /dev --proc /proc -- /bin/true` 返回 0。
+- 上述结果只说明历史开发机具备基础能力。Ubuntu 26.04 不属于 L5 目标发行版，且证据早于本轮修订，不能替代当前 7 项 smoke、目标发行版、aarch64 或安装包实测。
 
-所有实现和修复只在该 worktree/branch 完成。不得直接修改本地 `sandbox` 或 `main`；后续同步只允许把上游分支合入开发分支，不能把用户本地 `main` 合入开发 worktree。
+Linux 初始实现来自 `claude/linux-bwrap-sandbox`，本轮安全修订以 `sandbox` 为唯一交付分支。后续同步继续以 `origin/main` 为主干来源；不得把未确认的本地 `main` 状态当作远端基线。
+
+### 1.1 2026-09-03 安全 review 修订索引
+
+这张表是后续 reviewer 的入口。每一项都同时列出安全语义、实现落点和主要回归证据；真机项尚未执行时不得从单元测试推断为 PASS。
+
+| ID | 修订 | 实现落点 | 主要证据 |
+|---|---|---|---|
+| SR-01 | system `bwrap` 候选必须由 root 所有；明确接受“只查文件 owner、不递归检查父目录和模式位”的阶段性取舍 | `linux/probe.rs` | `rejects_bwrap_not_owned_by_root_before_executing_it`；NEG-02/SEC-03 待真机复核 |
+| SR-02 | Linux mount plan 与 `RuleSet::evaluate()` 一致，跨层及同层均按原始顺序 first-match；被更早规则命中的后续规则不再产生 mount | `linux/plan.rs` | `same_layer_first_match_wins_for_overlapping_write_rules` 及 plan 单测 |
+| SR-03 | 不存在的受保护 host 目标零写入；只在 bwrap mount namespace 中创建 mode-000 tmpfs | `linux/helper.rs`、`linux/request.rs` | request 校验单测；missing-path 真机 smoke 待重跑 |
+| SR-04 | 只有匹配当前 policy digest 的非 detection-only `filesystem_denied` marker 才可直接进入 escalation；检测 marker 不触发脱沙盒重跑 | `linux/violation.rs`、`tools/mod.rs` | classifier 与 post-hoc escalation 单测 |
+| SR-05 | 命令结束后的 glob 复扫失败只发 `dynamic_glob_scan_failed` 检测 marker，保留原命令 exit/signal，避免副作用后二次执行 | `linux/helper.rs` | `glob_rescan_failure_preserves_the_completed_command_status` 待 Linux 重跑 |
+| SR-06 | production helper JSON 通过继承匿名文件 FD 传输，argv 只保留短 `fd:3` 引用；outer→inner 同样使用匿名 FD | `sandbox/backend.rs`、`linux/request.rs`、`linux/runner.rs`、`linux/helper.rs` | payload 单测；`production_request_fd_transport_reaches_both_helper_phases` 待 Linux 重跑 |
+| SR-07 | 可变长 bwrap mount argv 改为 `--args FD` NUL 分隔匿名文件，避免触发 `execve` 总 `ARG_MAX`；FD payload 上限为 16 MiB | `linux/helper.rs`、`linux/probe.rs` | NUL 编码单测；全部真实 bwrap smoke 待 Linux 重跑 |
+| SR-08 | 最低 system bwrap 版本固定为 0.9.0；版本、必需参数与真实 runtime probe 三层均必须通过 | `linux/probe.rs` | 0.8.0 typed failure、0.9.0/更新版本比较单测；目标发行版待真机复核 |
+| SR-09 | inner helper 在 `--cap-drop ALL` 后用 `capget` 复核 effective/permitted capability 均为零；一期不实现 seccomp | `linux/helper.rs`、设计稿 | Linux smoke 待重跑；seccomp 取舍见设计稿 L-D11 |
+| SR-10 | Linux Desktop 始终保留沙箱选项以稳定布局；检测中/不可用时禁用，并按稳定 code 展示“原因 + 方案 + code”，明确修复后重启 FutureOS | `GeneralPage.tsx`、`Composer.tsx`、`linuxSandboxStatus.ts`、中英文 i18n | status mapping、disabled menu 与 availability 测试 |
+
+本轮整理还修复了 SR-03 引入后的一个构造回归：`MissingProtected` 没有 host source FD，生成 bwrap 参数时必须直接走 `--perms 000 --tmpfs <target>`，不能先读取 `source_fd`。该行为由 missing-path 真机 smoke 覆盖。
+
+### 1.2 仍开放的 review 项
+
+以下项目没有混入本轮六项定向修复。优先级以“进入主干并面向真实用户”为基准；开发分支可继续迭代，但不得把开放项写成已完成。
+
+| ID | 优先级 | 开放项 | 风险与建议 |
+|---|---|---|---|
+| OR-01 | P0 / 发布阻断 | 当前 7 项 Linux smoke 与目标发行版矩阵未执行 | helper、FD 和 bwrap mount 路径受 `cfg(target_os = "linux")` 保护，macOS 编译与单测不能覆盖。至少先在一台原生 Linux 跑 7/7，再完成 L5 矩阵。 |
+| OR-03 | P1 | 非结构化 stderr denial heuristic 仍可能误报 | 本轮已禁止 detection-only/digest mismatch marker 触发 escalation；但普通程序自己输出 `Permission denied`/`Read-only file system` 且非零退出，仍可能弹出整命令脱沙盒审批。无法从合并 stdout/stderr 证明 errno 来源；长期应以显式路径能力取代自动整命令重跑，短期至少补负向 corpus 并收窄启发式。 |
+| OR-06 | P2 | glob 限额主要按单 pattern 计算 | 每个 pattern 各有 2 秒/节点/匹配上限，大量 pattern 可累加 CPU、内存和复扫延迟。增加整份 plan 的总 pattern、总 match、总 wall-clock budget。 |
+| OR-07 | P3 / 已接受 | bwrap 仅校验 root owner，不审计父目录和模式位 | 这是维护者明确接受的威胁模型取舍，已记录在代码和设计稿。除非威胁模型扩展，不阻断本期；后续可集中加固完整路径链。 |
+| OR-08 | P1 / 已知版本取舍 | 0.9.0 是产品兼容下限，不是上游安全补丁下限 | Bubblewrap 0.12.0 修复了 setup 阶段在攻击者可控目录内容下创建目标时的绝对 symlink traversal（GHSA-pxhw-h44j-8pfx）；当前 `MissingProtected` 会要求 bwrap 在 sandbox view 创建 mount point。维持 0.9.0 时必须在 L5 做定向安全复核，后续优先升级最低版本或消除受影响的创建路径。参考：https://github.com/containers/bubblewrap/security/advisories/GHSA-pxhw-h44j-8pfx |
+
+已关闭项：OR-02 由 SR-07 的 `--args FD` 和 16 MiB payload 上限关闭；OR-05 由 SR-08 的 0.9.0 版本检查关闭。原 OR-04 经维护者取舍关闭为“不属于一期”：当前明确没有 seccomp，后续若引入必须单独定义 syscall policy、兼容矩阵和 fail-closed 测试，不能把文档记录误读成现有能力。
 
 ## 2. 现状审计
 
@@ -62,10 +95,10 @@
 建议新增 `agent/src/sandbox/linux/{mod.rs,probe.rs}`：
 
 1. 定义 `LinuxSandboxProbe`、`LinuxSandboxProbeCode`、`BwrapIdentity` 和 capability 数据；稳定 code 至少覆盖设计稿 §4.5。
-2. 安全 PATH 查找只接受绝对 PATH 项；拒绝空/相对项、workspace/cwd 及其子路径；候选必须是可执行普通文件，canonicalize 后固定绝对路径。
-3. 对同一固定路径执行有界 `--version`、`--help` 参数检查和真实基线 probe。生产使用参数表必须与 probe 参数表来自同一常量。
+2. 安全 PATH 查找只接受绝对 PATH 项；拒绝空/相对项、workspace/cwd 及其子路径；候选必须是 root-owned 可执行普通文件，canonicalize 后固定绝对路径。本期按产品取舍只校验文件 owner，不递归校验父目录权限，完整路径链加固留待后续。
+3. 对同一固定路径执行有界 `--version`、`--help` 参数检查和真实基线 probe。最低版本固定为 0.9.0；`--args` 属于必需参数，缺失时即使版本足够也 fail closed。
 4. 成功缓存携带 path/version/identity/capabilities/expiry；执行前 identity 不一致或缓存过期必须重新 probe。失败不做进程生命周期永久缓存。
-5. 第一版最低版本不得因未使用的 `--argv0` 或 `--ro-bind-fd` 被抬高；最低版本与目标发行版包版本在 L5 真机矩阵冻结。本波在冻结前以“参数存在 + 真实 probe”为权威，版本仅提供诊断下限。
+5. 第一版最低版本为 0.9.0，不依赖未使用的 `--argv0` 或 `--ro-bind-fd`；目标发行版仍须验证“版本 + 参数存在 + 真实 probe”，任一不满足都不可用。
 6. 增加平台中立 CLI/RPC probe；Linux 返回完整稳定结果，macOS/Windows 映射到同一 product shape。
 
 **硬门禁：** workspace 伪造 bwrap、相对 PATH、超时、不可解析版本、缺参数、identity 改变、userns/proc 失败均在用户命令执行前 fail closed。
@@ -87,20 +120,20 @@
 
 已新增 `agent/src/sandbox/linux/{request.rs,helper.rs,runner.rs}`：
 
-1. 版本化、有长度/数量上限的 request；只接受父 Agent 生成的结构化字段。拒绝未知版本、重复/非法 FD、NUL、非绝对 mount target 和超限 payload。
+1. 版本化、有长度/数量上限的 request；production outer/inner helper 都通过继承匿名文件 FD 读取 JSON，argv 只传固定短 FD 引用。隐藏入口暂保留有界 base64 形式供兼容与负向测试使用；拒绝未知版本、重复/非法 FD、NUL、非绝对 mount target 和超限 payload。
 2. `future agent <hidden-helper-mode>` / `future-agent <hidden-helper-mode>` 在 singleton lock 之前分派，不读取模型配置、不启动 gRPC。
 3. 外层固定 probe 凭据中的 bwrap，构造只读 root、writable roots、保护覆盖、fresh `/proc`、最小 `/dev`、user/PID/IPC namespace、cap drop、parent death；不 unshare network。
-4. mount source 使用继承 FD 和 `/proc/self/fd/<n>`；内层 helper 复核 dev/inode/type/目标身份，设置 `PR_SET_NO_NEW_PRIVS`，再 exec 真实 shell argv。
+4. mount source 使用继承 FD 和 `/proc/self/fd/<n>`；完整 bwrap 参数通过 `--args FD` 传输；内层 helper 复核 dev/inode/type/目标身份及 effective/permitted capability 为零，设置 `PR_SET_NO_NEW_PRIVS`，再 exec 真实 shell argv。一期明确不安装 seccomp。
 5. helper 作为 PID 1 时转发信号、回收后代并保留原始 exit/signal。Agent timeout/abort 后断言无残留后代。
 6. `spawn_shell()` 调用 prepared backend；helper/probe/request/identity 失败作为 infrastructure error 返回，不进入 post-hoc escalation。
 
 ### Wave 4 — L3 完整规则与 violation/escalation（已完成，2026-09-03）
 
 1. 启动前 glob 展开使用内部 walker 作为可信实现；可选 `rg` 只能是优化，缺失/失败必须安全回到内部 walker。固定最大匹配数、节点数、深度和总耗时，任何上限命中 fail closed。
-2. 同时处理 lexical path 与 canonical target；对不存在 exact path 在 sandbox view 中建立保护目标；host 占位对象 cleanup 核对 inode identity/CAS，绝不删除并发用户对象。
+2. 同时处理 lexical path 与 canonical target；对不存在 exact path 只由 bwrap 在 sandbox view 中建立 mode-000 保护目标，绝不在受保护的 host 路径创建占位对象。
 3. 宽保护与窄重开按路径深度排列；read allow 只重开为只读，write allow 若会绕过仍生效的 read deny 则 typed fail closed；不存在的重开目标因无法无歧义创建 file/dir mount source 同样 typed fail closed，hard deny 不可重开。
-4. helper 以稳定 marker 返回 violation kind/path provenance/policy digest/affected count，日志与普通 UI 不输出完整敏感路径集合。glob 新匹配只做命令结束 detection-only，不称为动态硬保护。
-5. Linux 路径拒绝可以触发一期整命令脱沙盒审批；基础设施错误、普通 command error 和 2/125/126/127 不触发。
+4. helper 以稳定 marker 返回 violation kind/path provenance/policy digest/affected count，日志与普通 UI 不输出完整敏感路径集合。glob 新匹配和复扫失败都只做命令结束 detection-only；复扫失败保留已完成命令的原始 status，不称为动态硬保护。
+5. 只有 Linux 文件系统拒绝可以触发一期整命令脱沙盒审批；detection-only marker、digest 不匹配、基础设施错误、普通 command error 和 2/125/126/127 不触发。
 
 ### Wave 5 — L4/L6 产品、诊断与文档（已完成，2026-09-03）
 
@@ -114,7 +147,7 @@
 - Ubuntu/Debian：`sudo apt install bubblewrap`
 - Fedora：`sudo dnf install bubblewrap`
 - 机器可读诊断：`future agent --probe-sandbox`；预期 JSON 至少包含 `available`、`backend`、`code`，Linux 成功时还包含 `path`、`version`、`capabilities`。
-- 汇总诊断：`future doctor`；`binary_missing` 表示未找到可信 system bwrap，`path_rejected` 表示 PATH 候选不安全，`required_feature_missing` 表示系统包缺少必要参数，`user_namespace_disabled` / `proc_mount_restricted` 表示主机策略不允许生产基线，`probe_timeout` / `probe_failed` 表示探测未正常完成。
+- 汇总诊断：`future doctor`；`binary_missing` 表示未找到可信 system bwrap，`path_rejected` 表示 PATH 候选不安全，`version_too_old` 表示版本低于 0.9.0，`required_feature_missing` 表示系统包缺少 `--args` 等必要参数，`user_namespace_disabled` / `proc_mount_restricted` 表示主机策略不允许生产基线，`probe_timeout` / `probe_failed` 表示探测未正常完成。
 - WSL 不受支持；网络保持开放；glob 仅对命令启动时已有匹配提供硬保护，命令中新匹配仅在结束后报告 detection-only violation。
 
 ### Wave 6 — 本地总门禁与 L5 交付
@@ -143,10 +176,10 @@
 | H-02 | helper boundary | helper 绕过 Agent singleton，但非法直接调用失败 | `cargo test -p future-agent --test linux_sandbox_smoke` | PASS（2026-09-03：非法 payload 返回 infrastructure exit 125，未创建 singleton lock） |
 | H-03 | mount smoke | workspace/temp 写成功，workspace 外写失败且 host 无文件 | `cargo test -p future-agent --test linux_sandbox_smoke filesystem_ -- --ignored --test-threads=1` | PASS（2026-09-03：当前 Ubuntu 26.04/system bwrap；workspace 写成功、外部写拒绝、exit 23 原样） |
 | H-04 | secret smoke | 已有 secret 精确/glob 文件读写均失败 | 同上 | PASS（2026-09-03：本机真实 bwrap；unreadable file 由 mode-000 opaque source 覆盖，读写均失败且 inner command 仅见 stdio FD） |
-| H-05 | missing/symlink | missing exact 不能创建；symlink 不越界；host 无临时残留 | 同上 | PASS（2026-09-03：本机真实 bwrap；missing target 以 mode-000 tmpfs 覆盖，CAS placeholder 清理后 host 无残留；symlink 双路径单测 PASS） |
+| H-05 | missing/symlink | missing exact 不能创建；symlink 不越界；host 无临时对象 | 同上 | NEEDS LINUX RE-RUN（实现已改为 sandbox-view mode-000 tmpfs，不再创建 host placeholder；跨平台结构/规则单测 PASS） |
 | H-06 | network | 未 unshare network；本地 TCP/namespace identity 验证网络保持开放 | 同上 | NOT RUN（argv 单测确认未使用 `--unshare-net`，仍需网络 smoke） |
 | H-07 | lifecycle | 正常 exit/signal 原样；abort/timeout/parent death 无后代残留 | 同上 | PARTIAL PASS（2026-09-03：本机真实 bwrap 的 exit、原始 signal 与 parent-death 后代清理均 PASS；Agent timeout/abort 的 Linux 专项集成仍 NOT RUN） |
-| H-08 | FD security | 仅 stdio/request/mount FD 可见，Agent listener/db/log FD 不继承 | 同上 | PASS（2026-09-03：mount FD 仅传给 bwrap，inner command smoke 未见 fd > 2） |
+| H-08 | FD security | request/mount/status FD 只在对应 helper 阶段存活；用户命令仅见 stdio，Agent listener/db/log FD 不继承 | 同上 | NEEDS LINUX RE-RUN（旧 smoke 已证明 inner command 未见 fd > 2；新增 production request-FD 双阶段 smoke 尚未执行） |
 | V-01 | violation | EACCES/EPERM/EROFS 结构化分类；普通失败和 2/126/127 不误判 | `cargo test -p future-agent sandbox::linux::violation sandbox::tests::linux_denial` | PASS（2026-09-03：可信 marker 优先、推断 provenance；2/125/126/127 与普通错误排除） |
 | V-02 | escalation | Linux policy violation 可审批单次脱沙盒；infra failure 绝不 escalation | `cargo test -p future-agent tools:: rpc::approval` | PASS（2026-09-03：Linux classifier 接入既有整命令 post-hoc escalation；prepare/helper exit 125 不触发） |
 | G-01 | glob | 启动前已有匹配被硬保护；命令中新匹配只报告 detection-only | ignored Linux smoke | PASS（2026-09-03：本机真实 bwrap；missing target 保持不可创建，命令中新建 glob 命中并输出 detection-only marker） |
@@ -157,7 +190,7 @@
 | Q-02 | all tests | Rust、Desktop、Mobile 全量单测 | `make test` | PARTIAL PASS / ENVIRONMENT LIMIT（2026-09-03 有界分项执行：`cargo test --workspace -- --test-threads=1` PASS；Tauri 1095 项首次 1094 PASS/1 个 remote runtime 时序测试 FAIL，单测定向重跑 PASS，判定为非本改动 flaky；当前 PATH 无 `node`/`npm`/`npx`，Desktop/Mobile Node 门禁未重跑且未安装。既有记录的 Desktop 687 与 Mobile 551 tests PASS 保留为历史证据） |
 | L5-01 | real hosts | Ubuntu 22.04/24.04、Debian stable、Fedora；x86_64/aarch64 | [`LINUX_SANDBOX_REAL_MACHINE_VALIDATION.md`](LINUX_SANDBOX_REAL_MACHINE_VALIDATION.md) RH/SM 矩阵 | NOT RUN |
 | L5-02 | packages | `.deb` 与 portable tarball 安装、`.deb` 升级/卸载及 system bwrap 引导 | 真机手册 PKG 矩阵 | NOT RUN（本期明确不发布 AppImage/rpm，不属于验收范围） |
-| L5-03 | security review | TOCTOU/FD/setuid/namespace/cleanup/escalation/logging review | 真机手册 SEC-01～SEC-12 + reviewer sign-off | NOT RUN |
+| L5-03 | security review | TOCTOU/FD/setuid/namespace/cleanup/escalation/logging review | 真机手册 SEC-01～SEC-15 + reviewer sign-off | NOT RUN |
 
 ## 5. 提交与完成规则
 
@@ -165,5 +198,5 @@
 - 修改 proto 后运行 `make generate-proto` 并提交两个受影响的生成文件；若平台 probe 仍能使用现有 untyped command/JSON 响应，则不为未来可能性扩 proto。
 - Tauri Rust 检查前运行 `make desktop-sidecar-placeholder`。
 - 集成测试必须默认 ignored，并在缺 bwrap/不支持环境时给出明确 skip 或 stable probe code；单元测试不能依赖开发机 HOME、PATH 或真实用户规则。
-- PR 前按仓库流程合并最新 `origin/main`（若目标仍为 `sandbox`，先由维护者确认最终基线）、执行完整门禁并再次同步。不得把本地用户 `main` 合入开发 worktree。
+- PR 前按仓库流程再次 fetch 并确认 `origin/main` 已是 `sandbox` 的祖先，执行完整门禁。不得用可能滞后的本地 `main` 代替远端基线。
 - “代码完成”不等于“发布验证完成”。L5-01～03 未全部给出真实 PASS 前，交付状态只能是“可供用户真机实测”，不能宣称 Linux sandbox 已满足主干发布门槛。

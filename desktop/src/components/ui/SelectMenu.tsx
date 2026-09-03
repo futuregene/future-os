@@ -61,18 +61,21 @@ interface SelectMenuItemProps {
   onSelect: () => void;
   children: ReactNode;
   className?: string;
+  disabled?: boolean;
   /** Optional native tooltip shown on hover (e.g. a model's description). */
   title?: string;
 }
 
 /** A menu row with a trailing check mark when `selected`. */
-export function SelectMenuItem({ selected, onSelect, children, className, title }: SelectMenuItemProps) {
+export function SelectMenuItem({ selected, onSelect, children, className, disabled = false, title }: SelectMenuItemProps) {
   return (
     <button
       className={cn(
         "flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-surface-subtle",
+        disabled && "cursor-not-allowed opacity-50 hover:bg-transparent",
         className,
       )}
+      disabled={disabled}
       onClick={onSelect}
       title={title}
       type="button"

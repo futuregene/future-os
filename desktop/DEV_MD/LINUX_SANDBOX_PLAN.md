@@ -1,6 +1,6 @@
 # FutureOS Linux 沙盒调研与开发计划
 
-状态：**方案已完成第一轮决策收口；开发分支已完成 L0–L4 及 L6 本地接入：system bwrap probe、执行链与规则强制、结构化 violation/escalation、平台统一 availability、Settings/Composer、doctor 和显式 manual 回退。当前受控执行环境禁用了 user namespace，因此真 bwrap smoke 记录为环境限制；L5 多发行版/架构/安装包真机矩阵与安全 review 尚未完成，本分支仅达到“可供真机实测”，不代表主干发布门槛已满足**（2026-09-03）。
+状态：**方案已完成第一轮决策收口；`sandbox` 分支已完成 L0–L4 及 L6 本地接入，并在 2026-09-03 合并 `origin/main@15d7df79` 后整理安全 review 修订。当前 macOS 不能执行真实 bwrap；最新 7 项 Linux smoke、L5 多发行版/架构/安装包矩阵与独立安全 review 尚未完成，本分支仅达到“可供真机实测”，不代表主干发布门槛已满足**。
 
 本文是 [`SANDBOX_PLAN.md`](SANDBOX_PLAN.md) 的 Linux 专项设计稿。审批规则语义仍以 [`APPROVAL_PLAN.md`](APPROVAL_PLAN.md) 为准；本文只讨论如何把现有 `RuleSet` 强制到 Linux shell 子进程，以及产品启用前需要补齐的证据。代码落点、实施波次与逐项验收命令见 [`LINUX_SANDBOX_IMPLEMENTATION.md`](LINUX_SANDBOX_IMPLEMENTATION.md)，用户安装、稳定诊断码和能力限制见 [`LINUX_SANDBOX_USER_GUIDE.md`](LINUX_SANDBOX_USER_GUIDE.md)。
 
@@ -17,8 +17,10 @@
 | L-D7 | **前置检测分三层：安全 PATH 查找、版本/必需参数检查、真实运行探测。** | 任一层失败都 fail closed，并向 UI 返回稳定原因 code |
 | L-D8 | **不支持 WSL，不实现 WSL1/WSL2 检测或专用分支。** | 官网支持范围和测试矩阵只覆盖原生 Linux |
 | L-D9 | **不增加兼容搜索或 `argv0` 兼容分支。** 只从安全 PATH 选择 system bwrap；FutureOS helper 使用明确子命令，不依赖 `--argv0` | 不扫描额外安装目录，也不为旧包维护另一套 helper 启动链；FD mount identity 复核仍是主路径安全措施 |
+| L-D10 | **system bwrap 最低版本固定为 0.9.0。** | 低版本在执行前返回 `version_too_old`；版本检查之外仍强制 `--help` 能力检查和真实 runtime probe |
+| L-D11 | **一期不安装 seccomp filter。** | 当前网络保持开放；真实边界是 namespace、mount、cap drop、内层 capability 复核和 `PR_SET_NO_NEW_PRIVS`。seccomp 作为后续纵深防御单独设计和做兼容矩阵，不阻断一期 |
 
-剩余工程参数只有 system bwrap 的最低版本和必需参数集合；它们在 L0 根据目标发行版系统包与最终实现实际使用的参数收口，不再作为产品方向问题反复讨论。
+最低版本和一期 seccomp 范围已经收口。必需参数集合必须与生产参数保持同步，并继续由 capability probe 验证，不能仅凭版本号推断可用。
 
 ## 1. 调研范围与当前事实
 
@@ -49,7 +51,7 @@ Linux 主链路如下：
 PermissionProfile
   -> SandboxManager 生成 Linux helper argv
   -> helper 外层构造 bubblewrap 文件系统/namespace
-  -> helper 内层再施加 no_new_privs / seccomp
+  -> helper 内层复核 mount/capability 并设置 no_new_privs
   -> exec 用户命令
 ```
 
@@ -61,7 +63,7 @@ PermissionProfile
 | 真正执行 user namespace probe，而非只看二进制是否存在 | 能识别禁用 unprivileged userns、受限容器等“装了但跑不了”环境 | P0，探测失败时隐藏产品入口并返回稳定 code；FutureOS 不增加 WSL 判断 |
 | 根文件系统默认只读，再叠加 writable roots 和更窄的保护 mount | 与 FutureOS“读默认开、写限 workspace/temp”基本同构 | P0 |
 | `--unshare-user/pid/ipc`、`--cap-drop ALL`、fresh `/proc`、`--die-with-parent` | 降低跨进程观察、残留进程和 capability 风险 | P0；fresh `/proc` 需有受限容器兼容探测 |
-| bwrap 外层之后再施加 `PR_SET_NO_NEW_PRIVS` | 兼容依赖 setuid 的系统 bwrap，同时阻止 sandbox 内提权 | P0 |
+| bwrap 外层之后复核 effective/permitted capability 均为零，再施加 `PR_SET_NO_NEW_PRIVS` | 不只信任 `--cap-drop ALL` 参数构造，并阻止 sandbox 内提权 | P0 |
 | symlink/missing-path fail-closed、FD-backed mount、内层身份复核 | 避免 mount 计划到执行之间的 TOCTOU 与软链接逃逸 | P0，不能只 canonicalize 一次就认为安全 |
 | glob 启动前展开；`rg --files --hidden --no-ignore` 优先，内部 walker 兜底；异常 fail closed | 能把已有敏感文件转成具体 mount | P0，但必须向产品声明它是启动时快照 |
 | 窄 writable child 可重新打开宽 read-only/deny parent | 保留“高优先级窄规则胜出”的表达能力 | P1，纯计划单测必须先覆盖 |
@@ -144,9 +146,11 @@ FutureOS Desktop 目前只打包统一 `future` sidecar，Agent 也可由独立 
 helper 分两阶段：
 
 1. 外层验证请求和 host capability，固定绝对 bwrap 路径，准备 mount source FD/目标，启动 bubblewrap。
-2. bubblewrap 内层核对 FD/mount identity，设置 `no_new_privs` 和最小 seccomp hardening，再 exec shell。
+2. bubblewrap 内层核对 FD/mount identity 与 effective/permitted capability 均为零，设置 `no_new_privs`，再 exec shell。
 
-内部请求应使用版本化、长度有界的序列化 payload 或继承 FD；禁止把不可控路径拼成一段 shell 字符串。helper 只接受父 Agent 生成的结构化 argv，不对外提供任意“以沙盒名义执行”的宽接口。
+一期明确**不安装 seccomp filter**。FutureOS 保持网络开放；参考 Codex 当前实现，full-network 且没有 managed proxy 时也不会启用其网络 seccomp。单独禁止 `ptrace`、`process_vm_*` 或 `io_uring_*` 的兼容收益需要另做评估，因此记录为后续纵深防御，不作为当前能力声明或一期发布门槛。
+
+内部请求使用版本化、长度有界的 JSON payload，并通过继承的匿名文件 FD 传输；outer helper 构造的可变长 bwrap mount 参数也使用 `--args FD` 的 NUL 分隔匿名文件，避免 `execve` 总 `ARG_MAX`。两种 FD payload 都有独立总大小上限。禁止把不可控路径拼成一段 shell 字符串。helper 只接受父 Agent 生成的结构化请求，不对外提供任意“以沙盒名义执行”的宽接口。
 
 ### 4.4 bubblewrap 基线
 
@@ -163,9 +167,11 @@ helper 分两阶段：
 
 可用性不能等价于 `which bwrap`：
 
-1. **安全 PATH 查找**：按 PATH 顺序寻找可执行的 `bwrap`，但忽略空/相对 PATH 项，并排除 canonical workspace/current directory 及其子路径；候选文件 canonicalize 后固定为绝对路径，后续版本检查与执行都使用同一路径，拒绝项目内伪造的 `bwrap`。第一版不自行扫描 PATH 之外的“兼容安装目录”，也不接受 workspace 内显式路径。
-2. **版本与必需参数检查**：对固定路径执行有界的 `bwrap --version`，解析并记录版本；低于支持下限时返回 `version_too_old`。再解析 `bwrap --help`，逐项确认实现实际使用的参数，不能仅靠版本推断，因为发行版可能 backport 功能。最低版本和参数表由 L0 对目标发行版包实测后冻结。
+1. **安全 PATH 查找**：按 PATH 顺序寻找可执行的 `bwrap`，但忽略空/相对 PATH 项，并排除 canonical workspace/current directory 及其子路径；候选文件必须由 root 所有，canonicalize 后固定为绝对路径，后续版本检查与执行都使用同一路径，拒绝项目内或普通用户所有的伪造 `bwrap`。这里是明确的阶段性取舍：本期只强制文件 owner 为 root，假设发行版安装的 root-owned 文件不可被普通账号修改，不递归审计父目录和模式位；如果 AI 已取得能修改该系统二进制的 root 权限，本沙盒不再试图构成安全边界。完整路径链与模式位加固留作后续工作。第一版不自行扫描 PATH 之外的“兼容安装目录”，也不接受 workspace 内显式路径。
+2. **版本与必需参数检查**：对固定路径执行有界的 `bwrap --version`，解析并记录版本；最低支持版本固定为 **0.9.0**，低于该版本返回 `version_too_old`。再解析 `bwrap --help`，逐项确认实现实际使用的参数（包括 `--args`），不能仅靠版本推断，因为发行版可能 backport、裁剪或禁用功能。
 3. **真实运行探测**：用 500ms～1s 有界子进程执行接近生产基线的 bwrap 计划，实际创建 user/PID/IPC namespace、只读 root、fresh `/proc`、最小 `/dev`、capability drop，并由可信内层 helper 验证“root 写失败、probe 临时目录写成功”；最终运行 `/bin/true` 等价动作。已决定网络开放，因此 probe 也不加 `--unshare-net`，避免探测一个生产中并不使用的能力。
+
+0.9.0 是维护者选择的产品兼容下限，不代表包含所有上游安全修复。尤其是 0.12.0 才修复的 setup 阶段绝对 symlink traversal（GHSA-pxhw-h44j-8pfx）仍作为实施文档 OR-08 跟踪；L5 必须针对 `MissingProtected` 的 sandbox-view mount point 创建路径复核风险，不能用版本检查替代安全 review。
 
 三层任一失败都 fail closed。稳定结果至少区分：`available`、`binary_missing`、`path_rejected`、`version_unreadable`、`version_too_old`、`required_feature_missing`、`user_namespace_disabled`、`proc_mount_restricted`、`probe_timeout`、`probe_failed`。UI 和真正执行必须消费同一份带固定绝对路径、版本、能力与过期时间的成功结果；缓存过期或二进制 identity 改变后必须重新完成三层检测。
 
@@ -221,10 +227,10 @@ layer 0 hard deny  >  approved execution_grants  >  secret ask guards  >  sessio
 
 ## 6. 分阶段开发计划
 
-### L0 — Probe 规格与最低版本收口
+### L0 — Probe 规格与最低版本收口（已实现，待真机矩阵复核）
 
 - 固定“安全 PATH → 版本/参数 → 真实运行”三层检测协议、稳定 code、超时、binary identity 和缓存语义。
-- 根据原生 Linux 支持矩阵确定最低 bwrap 版本与必需参数；不为 WSL 增加检测。
+- 最低 bwrap 版本固定为 0.9.0；必需参数包含生产使用的 `--args` FD transport；不为 WSL 增加检测。
 - FutureOS helper 协议不依赖 `argv[0]`，不实现 Codex 的 no-argv0 兼容分支。FD-backed mount 采用标准 `/proc/self/fd/<fd>` + 内层 identity 复核主路径。
 
 完成定义：官网支持范围内通过包管理器可获得的 bwrap 版本与所需参数相容；不支持的版本在执行命令前返回明确错误。
@@ -240,7 +246,7 @@ layer 0 hard deny  >  approved execution_grants  >  secret ask guards  >  sessio
 ### L2 — Linux helper、bwrap 与生命周期
 
 - 实现隐藏自重入 helper、结构化请求、FD 继承白名单和身份复核。
-- 实现只读 root、writable bind、namespace、cap drop、no_new_privs 和 fresh `/proc`。
+- 实现只读 root、writable bind、namespace、cap drop、内层 capability 零值复核、no_new_privs 和 fresh `/proc`。
 - 实现 PID 1 reaping、信号转发、timeout/abort/parent-death，保持原始 exit code/signal。
 - 实现系统 bwrap 搜索与有界真实 probe；任何构造/验证失败 fail closed。
 
@@ -282,16 +288,16 @@ layer 0 hard deny  >  approved execution_grants  >  secret ask guards  >  sessio
 
 完成定义：UI 承诺、Agent 实际 backend、probe 结果和发布文档四者一致；任何失败都不会静默无沙盒执行。
 
-## 7. 实施前剩余收口项
+## 7. 发布前剩余收口项
 
-产品方向已经记录在文首 L-D1–L-D9。开始主体开发前，L0 还需要用原生 Linux 环境冻结以下工程参数：
+产品方向已经记录在文首 L-D1–L-D11。最低 bwrap 版本已经固定为 0.9.0，一期 seccomp 范围也已明确。面向主干发布前仍需要用原生 Linux 环境验证以下工程参数：
 
-1. 支持发行版自带 system bwrap 的最低版本；不能为了一个未使用的 `--argv0` 人为抬高版本线。
-2. 最终 bwrap 必需参数表；版本检查只负责快速诊断，`--help` 参数检查和真实运行 probe 才是能力依据。
+1. 0.9.0 及各目标发行版 system bwrap 的 `--args`、namespace、mount、cap-drop 能力；版本检查只负责快速诊断，`--help` 参数检查和真实运行 probe 才是最终能力依据。
+2. helper→bwrap 的大 mount plan 确实通过 FD 传输，不受宿主 `ARG_MAX` 影响，并且 FD 不泄漏到用户命令。
 3. probe 超时、成功缓存有效期和 binary identity 字段；所有失败映射到 §4.5 的稳定 code。
-4. 设置页安装提示和官网教程覆盖的发行版、包管理器与排障命令。
+4. 设置页安装提示和官网教程覆盖的发行版、包管理器与排障命令；系统包低于 0.9.0 时明确展示升级要求。
 
-这些参数必须随 L0 的发行版矩阵一起提交 review；在冻结前不得让 Linux sandbox availability 返回 `available`。
+这些参数必须随发行版矩阵一起提交 review。当前开发分支只有在版本 `>= 0.9.0`、`--help` 必需参数检查和真实 runtime probe 全部通过时才返回 `available`；`version_too_old` 已是可达的稳定诊断分支。
 
 ## 8. 代码证据索引
 

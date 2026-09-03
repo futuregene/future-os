@@ -5,6 +5,7 @@ import { Select } from "../../components/ui/Select";
 import { getLanguage, LANGUAGE_LABELS, setLanguage, SUPPORTED_LANGUAGES } from "../../i18n";
 import { useSandboxAvailability } from "../../integrations/agent/useSandboxAvailability";
 import { isLinux, isWindows } from "../../lib/platform";
+import { linuxUnavailableReasonKey } from "./linuxSandboxStatus";
 import { SettingsList, SettingsRow, SettingsSection, Switch } from "./SettingsPrimitives";
 
 export function GeneralPage({
@@ -66,13 +67,13 @@ export function GeneralPage({
             onChange={e => onChangeApprovalTier(e.target.value as ApprovalTier)}
           >
             <option value="manual">{t("approvalTier.manual")}</option>
-            {sandboxAvailability.available || (approvalTier === "sandbox" && !sandboxAvailability.definitive)
-              ? (
-                  <option disabled={!sandboxAvailability.available} value="sandbox">
-                    {t("approvalTier.sandbox")}
-                  </option>
-                )
-              : null}
+            <option disabled={!sandboxAvailability.available} value="sandbox">
+              {t(sandboxAvailability.available
+                ? "approvalTier.sandbox"
+                : sandboxAvailability.resolved
+                  ? "approvalTier.sandboxUnavailable"
+                  : "approvalTier.sandboxChecking")}
+            </option>
             <option value="off">{t("approvalTier.off")}</option>
           </Select>
         </SettingsRow>
@@ -80,12 +81,10 @@ export function GeneralPage({
           ? (
               <SettingsRow
                 title={t("approvalTier.linuxUnavailable.title")}
-                description={t("approvalTier.linuxUnavailable.description", {
+                description={t(`approvalTier.linuxUnavailable.reasons.${linuxUnavailableReasonKey(sandboxAvailability.code)}`, {
                   code: sandboxAvailability.code ?? "probe_failed",
                 })}
-              >
-                <code className="text-xs text-ink-muted">{t("approvalTier.linuxUnavailable.install")}</code>
-              </SettingsRow>
+              />
             )
           : null}
         <SettingsRow

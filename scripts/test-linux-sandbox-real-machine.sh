@@ -144,10 +144,10 @@ run_step "Linux Bubblewrap real smoke" smoke.log \
 
 if grep -q "skipping Linux sandbox smoke" "$OUTPUT_DIR/smoke.log"; then
   record "smoke executed (not skipped)" FAIL "skip marker found in smoke.log"
-elif grep -Eq "test result: ok\. 5 passed; 0 failed" "$OUTPUT_DIR/smoke.log"; then
-  record "smoke executed (not skipped)" PASS "5 real smoke tests passed"
+elif grep -Eq "test result: ok\. 7 passed; 0 failed" "$OUTPUT_DIR/smoke.log"; then
+  record "smoke executed (not skipped)" PASS "7 real smoke tests passed"
 else
-  record "smoke executed (not skipped)" FAIL "expected 5-pass result was not found"
+  record "smoke executed (not skipped)" FAIL "expected 7-pass result was not found"
 fi
 
 run_step "Rust formatting" fmt.log cargo fmt --all --check

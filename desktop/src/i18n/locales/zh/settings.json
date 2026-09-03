@@ -7,19 +7,34 @@
     "title": "审批模式",
     "manual": "手动审批",
     "sandbox": "沙箱保护",
+    "sandboxChecking": "沙箱保护（检测中）",
+    "sandboxUnavailable": "沙箱保护（不可用）",
     "off": "完全放开",
     "description": {
       "manual": "读写文件前询问；只读命令直接放行，其余命令需批准。",
       "sandbox": "命令在 macOS 沙箱中运行，越界时申请提权。",
       "sandboxWindows": "命令启用 Windows 写保护；越界写入需要批准。",
-      "sandboxLinux": "命令在系统 Bubblewrap 中运行，网络保持开放。命令启动时硬保护已有敏感 glob 匹配，命令中新匹配仅在结束后检测。",
+      "sandboxLinux": "命令在 Linux 系统沙箱中运行，文件越界时请求批准。",
       "off": "全部放开，不再询问，也不启用沙箱。"
     },
     "fallbackNotice": "沙箱保护不可用（诊断码：{{code}}）。已显式切换为手动审批，命令不会在无沙箱保护下静默运行。",
     "linuxUnavailable": {
       "title": "Linux 沙箱不可用",
-      "description": "FutureOS 已保持为手动审批（诊断码：{{code}}）。请安装系统 Bubblewrap，并确认允许非特权用户命名空间和 /proc 挂载。不支持 WSL。",
-      "install": "Ubuntu/Debian：sudo apt install bubblewrap · Fedora：sudo dnf install bubblewrap"
+      "reasons": {
+        "binaryMissing": "系统未安装 Bubblewrap，请安装 Bubblewrap，安装后重启 FutureOS。（{{code}}）",
+        "pathRejected": "未找到可信的系统 Bubblewrap，请检查 PATH，并确认 bwrap 文件由 root 所有；修复后重启 FutureOS。（{{code}}）",
+        "binaryInvalid": "系统 Bubblewrap 不是有效的可执行文件，请重新安装或修复文件权限，然后重启 FutureOS。（{{code}}）",
+        "versionUnreadable": "无法识别 Bubblewrap 版本，请重新安装或升级 Bubblewrap，然后重启 FutureOS。（{{code}}）",
+        "versionTooOld": "Bubblewrap 版本低于 0.9.0，请升级 Bubblewrap，然后重启 FutureOS。（{{code}}）",
+        "requiredFeatureMissing": "当前 Bubblewrap 缺少 FutureOS 所需功能，请升级或更换系统软件包，然后重启 FutureOS。（{{code}}）",
+        "userNamespaceDisabled": "系统禁止非特权用户命名空间，请启用该功能，然后重启 FutureOS。（{{code}}）",
+        "procMountRestricted": "当前系统不允许沙箱挂载独立的 /proc，请调整系统或容器策略，然后重启 FutureOS。（{{code}}）",
+        "probeTimeout": "检测 Bubblewrap 时超时，请检查系统状态，然后重启 FutureOS 再试。（{{code}}）",
+        "probeFailed": "Bubblewrap 沙箱检测失败，请运行 future doctor 查看详情，修复后重启 FutureOS。（{{code}}）",
+        "binaryIdentityChanged": "检测后 Bubblewrap 文件发生了变化，请确认系统软件包完整，然后重启 FutureOS。（{{code}}）",
+        "probeTransportError": "暂时无法连接 Agent 检测 Linux 沙箱，请稍后再试或重启 FutureOS。（{{code}}）",
+        "unknown": "Linux 沙箱当前不可用，请运行 future doctor 查看详情，修复后重启 FutureOS。（{{code}}）"
+      }
     }
   },
   "showThinking": {

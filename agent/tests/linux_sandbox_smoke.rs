@@ -1,10 +1,12 @@
 #![cfg(target_os = "linux")]
 
+use future_agent::sandbox::backend::{PreparedShell, SandboxBoundary, ShellBackend};
 use future_agent::sandbox::linux::plan::GlobSnapshot;
 use future_agent::sandbox::linux::probe::probe_linux_sandbox_host;
 use future_agent::sandbox::linux::request::{
     HelperPhase, LinuxSandboxRequest, MountKind, MountRequest, REQUEST_VERSION,
 };
+use std::collections::BTreeMap;
 use std::process::Command;
 
 fn helper_request(
@@ -241,8 +243,66 @@ fn missing_path_is_blocked_without_host_residue_and_new_glob_is_reported() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("__FUTURE_SANDBOX_VIOLATION__:"));
     assert!(stdout.contains("dynamic_glob_created"));
-    assert!(!missing.exists(), "placeholder must be removed from host");
+    assert!(
+        !missing.exists(),
+        "protected host target must never be created"
+    );
     assert_eq!(std::fs::read_to_string(generated).unwrap(), "secret");
+}
+
+#[test]
+#[ignore = "requires a native Linux host with a working system bwrap"]
+fn glob_rescan_failure_preserves_the_completed_command_status() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let pattern = workspace.join("*.pem").to_string_lossy().into_owned();
+    let Some(request) = helper_request_with_globs(
+        format!(
+            "i=0; while [ $i -le 2048 ]; do : > {}/$i.pem; i=$((i+1)); done; exit 23",
+            workspace.display()
+        ),
+        &workspace,
+        Vec::new(),
+        vec![GlobSnapshot {
+            pattern,
+            matches: Vec::new(),
+        }],
+    ) else {
+        return;
+    };
+    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        .args(["--linux-sandbox-helper", &request])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(23));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("dynamic_glob_scan_failed"));
+    assert!(stdout.contains("\"detectionOnly\":true"));
+}
+
+#[tokio::test]
+#[ignore = "requires a native Linux host with a working system bwrap"]
+async fn production_request_fd_transport_reaches_both_helper_phases() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let Some(encoded) = helper_request("exit 23".into(), &workspace, Vec::new()) else {
+        return;
+    };
+    let request = LinuxSandboxRequest::decode(&encoded).unwrap();
+    let prepared = PreparedShell {
+        program: env!("CARGO_BIN_EXE_future-agent").into(),
+        args: vec!["--linux-sandbox-helper".into(), "fd:3".into()],
+        env_delta: BTreeMap::new(),
+        boundary: SandboxBoundary {
+            backend: ShellBackend::LinuxBubblewrap,
+            policy_digest: Some(request.policy_digest.clone()),
+        },
+        request_payload: Some(request.to_json_bytes().unwrap()),
+    };
+    let status = prepared.into_command().unwrap().status().await.unwrap();
+    assert_eq!(status.code(), Some(23));
 }
 
 #[test]

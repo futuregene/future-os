@@ -27,7 +27,7 @@ L5 只有在目标发行版/架构、实际发布包和安全 review 的所有�
 ./scripts/test-linux-sandbox-real-machine.sh --full
 ```
 
-脚本会自动收集环境、构建并运行 probe、Linux 沙盒单测、5 个真实 Bubblewrap smoke、fmt 和 clippy；`--full` 额外运行完整 Rust workspace 测试。结束时会打印一个 `linux-sandbox-evidence-*.tar.gz` 路径，把该压缩包发回开发人员即可。脚本会把出现 smoke skip 视为失败，不会将跳过冒充 PASS。脚本不会安装软件或修改系统策略。
+脚本会自动收集环境、构建并运行 probe、Linux 沙盒单测、7 个真实 Bubblewrap smoke、fmt 和 clippy；`--full` 额外运行完整 Rust workspace 测试。结束时会打印一个 `linux-sandbox-evidence-*.tar.gz` 路径，把该压缩包发回开发人员即可。脚本会把出现 smoke skip 视为失败，不会将跳过冒充 PASS。脚本不会安装软件或修改系统策略。
 
 ### 2.1 测试制品与证据头
 
@@ -69,7 +69,7 @@ future agent --probe-sandbox
 future doctor
 ```
 
-预期：`bwrap` 来自系统绝对路径；正常主机 probe JSON 为 `available:true`、`backend:"linux_bubblewrap"`、`code:"available"`，并含 path/version/capabilities。`future doctor` 的 backend/code 与 JSON 一致，且不输出规则内容或受保护文件路径。
+预期：`bwrap` 来自系统绝对路径且版本不低于 0.9.0；正常主机 probe JSON 为 `available:true`、`backend:"linux_bubblewrap"`、`code:"available"`，并含 path/version/capabilities。`future doctor` 的 backend/code 与 JSON 一致，且不输出规则内容或受保护文件路径。低于 0.9.0 必须返回 `version_too_old`，缺少 `--args` 等能力必须返回 `required_feature_missing`。
 
 ## 3. 必需真机矩阵
 
@@ -77,7 +77,7 @@ future doctor
 
 | ID | 原生系统 | 架构 | bwrap 来源 | 状态 | 证据/备注 |
 |---|---|---|---|---|---|
-| RH-01 | Ubuntu 22.04 LTS | x86_64 | 官方 apt | NOT RUN | |
+| RH-01 | Ubuntu 22.04 LTS | x86_64 | 官方 apt | NOT RUN | 仓库包若低于 0.9.0，应验证 `version_too_old`，不能记为正常可用 PASS |
 | RH-02 | Ubuntu 24.04 LTS | x86_64 | 官方 apt | NOT RUN | |
 | RH-03 | Debian stable | x86_64 | 官方 apt | NOT RUN | |
 | RH-04 | Fedora（当前受支持稳定版） | x86_64 | 官方 dnf | NOT RUN | 先记录具体 Fedora 版本 |
@@ -131,7 +131,7 @@ cargo test -p future-agent --test linux_sandbox_smoke \
   -- --ignored --test-threads=1 --nocapture
 ```
 
-预期：5 个 ignored smoke 实际执行并 PASS，输出中**不得**出现 `skipping Linux sandbox smoke`。它们证明：workspace 写入、外部写拒绝、`NoNewPrivs: 1`、exit/signal 保真、secret 不可读写、command 仅见允许 FD、missing path 无 host 残留、运行中新 glob 产生 detection-only marker、helper 父进程死亡后无残留后代。
+预期：7 个 ignored smoke 实际执行并 PASS，输出中**不得**出现 `skipping Linux sandbox smoke`。它们证明：workspace 写入、外部写拒绝、`NoNewPrivs: 1`、exit/signal 保真、secret 不可读写、用户命令仅见 stdio、missing path 无 host 残留、运行中新 glob 产生 detection-only marker、glob 复扫失败保留原命令状态、production request FD 能穿过 outer/inner 两阶段、helper 父进程死亡后无残留后代。
 
 补充产品检查：
 
@@ -152,7 +152,7 @@ printf '%s\n' "network-open"   # 再访问测试者控制的本地 HTTP 服务
 
 | ID | 检查 | 状态 | 证据/备注 |
 |---|---|---|---|
-| SM-01 | ignored smoke 5/5 实际执行、无 skip | NOT RUN | |
+| SM-01 | ignored smoke 7/7 实际执行、无 skip | NOT RUN | |
 | SM-02 | probe/doctor 一致且无敏感路径泄漏 | NOT RUN | |
 | SM-03 | workspace 写成功、外部写被拒绝 | NOT RUN | |
 | SM-04 | violation 才触发 escalation；infra/exit 2/125/126/127 不触发 | NOT RUN | |
@@ -161,7 +161,7 @@ printf '%s\n' "network-open"   # 再访问测试者控制的本地 HTTP 服务
 
 ### 5.1 当前开发机回归证据（不替代目标矩阵）
 
-2026-09-03 在 Ubuntu 26.04、x86_64、`/usr/bin/bwrap` 0.11.1 上执行了上述完整 ignored smoke 命令。结果为 **5/5 PASS、0 skip**：probe 返回 `available:true`；workspace 写入/外部拒绝与 exit 23 通过；mode-000 opaque file 覆盖保证 unreadable mount 不可读写且命令看不到内部 FD；原始 `SIGTERM` 保真；按 host PID/进程身份跟踪确认 helper 父死后后代消失；missing target 无 host 残留且新 glob 输出 detection-only marker。此结果关闭本机回归，但该系统版本不在 RH-01～RH-06 内，因此 SM-01 及 L5 目标真机状态仍为 `NOT RUN`。
+2026-09-03 在 Ubuntu 26.04、x86_64、`/usr/bin/bwrap` 0.11.1 上执行过当时的完整 ignored smoke 命令，结果为 **5/5 PASS、0 skip**。随后安全 review 修改了 missing-path 实现、helper payload transport 和 glob 复扫语义，并把套件扩展为 7 项，因此该 5/5 只保留为历史基线，**不能证明当前候选实现通过**。当前 7/7 以及 SM-01、L5 目标真机状态均为 `NOT RUN`。
 
 实现修复要点：probe 使用独立 mode-0700 tmpfs 验证可写临时目录与只读 root，避免把受控执行环境的 `/tmp` 挂载限制误判为 user namespace 禁用；unreadable file 使用临时 mode-000 opaque source，missing directory 使用 mode-000 tmpfs，避免对 ro-bind 目标执行会失败的 chmod；inner helper 通过专用 close-on-exec 状态 pipe 把原始 wait status 传回 outer helper；parent-death smoke 按 host `/proc` 的真实后代 PID 与进程身份检查，不再把 PID namespace 内的 PID 当作 host PID。
 
@@ -190,16 +190,19 @@ printf '%s\n' "network-open"   # 再访问测试者控制的本地 HTTP 服务
 |---|---|---|---|
 | SEC-01 | mount TOCTOU / symlink | NOT RUN | canonical lexical+target 双检查；source FD 与 dev/inode/type 复核；identity 变化 fail closed |
 | SEC-02 | FD 泄漏 | NOT RUN | stdio/request/mount 白名单；Agent listener/db/log FD 不进入 inner command；smoke 只见 fd 0–2 |
-| SEC-03 | setuid bwrap 与提权边界 | NOT RUN | 只接受可信 system bwrap；外层兼容发行版 bwrap；内层 `PR_SET_NO_NEW_PRIVS`；cap drop 全量 |
+| SEC-03 | setuid bwrap 与提权边界 | NOT RUN | 只接受 root-owned system bwrap >= 0.9.0；内层复核 effective/permitted capability 均为零；设置 `PR_SET_NO_NEW_PRIVS` |
 | SEC-04 | namespace 与网络语义 | NOT RUN | user/PID/IPC 隔离、fresh `/proc`、最小 `/dev`；明确没有 `--unshare-net` |
 | SEC-05 | PID 1 / signal / parent death | NOT RUN | 转发信号、回收后代、exit/signal 保真；timeout/abort/父死无残留 |
-| SEC-06 | missing path / 临时对象 cleanup | NOT RUN | host placeholder 使用 inode identity/CAS 清理；不得删除并发创建的用户对象；失败也清理 |
+| SEC-06 | missing path / host 零写入 | NOT RUN | 保护不存在路径时仅在 sandbox view 创建 mode-000 mount target；host 目标在成功、失败、abort、parent death 下始终不存在 |
 | SEC-07 | 规则编译 fail closed | NOT RUN | 坏规则、unsupported matcher、glob 数量/节点/深度/时限、危险 reopen 全部阻止执行 |
 | SEC-08 | deny/reopen 顺序 | NOT RUN | 宽 writable → 保护覆盖 → 窄 reopen；hard deny 永不可 reopen；read deny 不被 write allow 绕过 |
 | SEC-09 | probe 与执行一致性 | NOT RUN | path/version/features/真实能力/identity/expiry 属于同一 receipt；执行前重验 |
-| SEC-10 | violation 与 escalation | NOT RUN | 可信 marker 优先；infra 和普通 exit 不误判；只有 policy violation 可请求整命令重跑 |
+| SEC-10 | violation 与 escalation | NOT RUN | 可信 marker 优先；digest 必须一致；infra、detection-only 和普通 exit 不误判；只有 filesystem policy violation 可请求整命令重跑 |
 | SEC-11 | 日志与 RPC 脱敏 | NOT RUN | UI/普通日志不输出完整受保护路径集合、规则或 secret；只暴露必要 bwrap path/code/digest/count |
 | SEC-12 | helper 攻击面 | NOT RUN | singleton 前分派但 request 有版本/大小/数量/FD/path/NUL 校验；非法调用 exit 125，不启动 Agent |
+| SEC-13 | seccomp 范围 | NOT RUN | 一期明确未启用 seccomp；确认文档/UI 不宣称 syscall 或网络过滤，后续纵深防御不混入当前验收 |
+| SEC-14 | bwrap 参数 FD | NOT RUN | production 使用 `--args FD`；大 mount plan 不触发 `ARG_MAX`；args/request/mount FD 均不泄漏到用户命令 |
+| SEC-15 | 0.9.0–0.11.x setup symlink 风险 | NOT RUN | 针对 GHSA-pxhw-h44j-8pfx 复核 `MissingProtected` mount point 创建；记录接受、缓解或升级到 0.12.0 的结论 |
 
 Reviewer sign-off：
 
@@ -219,12 +222,12 @@ Evidence/issue URLs:
 |---|---|---|
 | L5-01 目标真机 | NOT RUN | RH-01～RH-06 与 SM-01～SM-06 在对应机器全部 PASS |
 | L5-02 发布包 | NOT RUN | PKG-01～PKG-04 全部 PASS；本期不发布 AppImage/rpm |
-| L5-03 安全 review | NOT RUN | SEC-01～SEC-12 全部 PASS，reviewer 完成 sign-off，阻断问题为零 |
+| L5-03 安全 review | NOT RUN | SEC-01～SEC-15 全部 PASS，reviewer 完成 sign-off，阻断问题为零 |
 
 交付给测试/发布负责人后的剩余 TODO：
 
 1. 提供同一 commit 的 x86_64/arm64 候选 `.deb` 与 portable tarball 及 SHA-256。
 2. 分配 RH-01～RH-06 的原生主机并上传逐机日志；所有 smoke 必须实际运行而不是 skip。
 3. 在隔离 VM 完成 NEG-01～NEG-08；环境限制项重新分配，不视为豁免。
-4. 由非实现者完成 SEC-01～SEC-12 和 sign-off。
+4. 由非实现者完成 SEC-01～SEC-15 和 sign-off。
 5. 把本手册中的状态与证据链接回填后，才可把实施矩阵 L5-01～03 改为 PASS，并宣称满足主干发布门槛。

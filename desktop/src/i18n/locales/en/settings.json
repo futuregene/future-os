@@ -7,19 +7,34 @@
     "title": "Approval mode",
     "manual": "Manual",
     "sandbox": "Sandboxed",
+    "sandboxChecking": "Sandboxed (checking)",
+    "sandboxUnavailable": "Sandboxed (unavailable)",
     "off": "Unrestricted",
     "description": {
       "manual": "Prompts before file reads and writes; read-only commands run automatically.",
       "sandbox": "Commands run in the macOS sandbox; file operations still prompt.",
       "sandboxWindows": "Protects Windows writes and asks before writing outside allowed locations.",
-      "sandboxLinux": "Commands run in system Bubblewrap with an open network. Existing sensitive glob matches are protected at command start; new matches are detected after the command.",
+      "sandboxLinux": "Commands run in the Linux system sandbox and ask for approval when accessing files outside it.",
       "off": "No prompts, no sandbox — everything runs."
     },
     "fallbackNotice": "Sandbox protection is unavailable (diagnostic: {{code}}). Switched to Manual mode; commands will not run without sandbox protection.",
     "linuxUnavailable": {
       "title": "Linux sandbox unavailable",
-      "description": "FutureOS stayed in Manual mode (diagnostic: {{code}}). Install system Bubblewrap and ensure unprivileged user namespaces and /proc mounts are allowed. WSL is not supported.",
-      "install": "Ubuntu/Debian: sudo apt install bubblewrap · Fedora: sudo dnf install bubblewrap"
+      "reasons": {
+        "binaryMissing": "Bubblewrap is not installed. Install Bubblewrap, then restart FutureOS. ({{code}})",
+        "pathRejected": "No trusted system Bubblewrap was found. Check PATH and confirm the bwrap file is owned by root, then restart FutureOS. ({{code}})",
+        "binaryInvalid": "System Bubblewrap is not a valid executable. Reinstall it or repair its permissions, then restart FutureOS. ({{code}})",
+        "versionUnreadable": "The Bubblewrap version could not be recognized. Reinstall or upgrade Bubblewrap, then restart FutureOS. ({{code}})",
+        "versionTooOld": "Bubblewrap is older than version 0.9.0. Upgrade it, then restart FutureOS. ({{code}})",
+        "requiredFeatureMissing": "This Bubblewrap package lacks features required by FutureOS. Upgrade or replace the system package, then restart FutureOS. ({{code}})",
+        "userNamespaceDisabled": "Unprivileged user namespaces are disabled. Enable them, then restart FutureOS. ({{code}})",
+        "procMountRestricted": "The system does not allow the sandbox to mount a private /proc. Adjust the system or container policy, then restart FutureOS. ({{code}})",
+        "probeTimeout": "Bubblewrap detection timed out. Check the system, then restart FutureOS and try again. ({{code}})",
+        "probeFailed": "The Bubblewrap sandbox check failed. Run future doctor for details, fix the issue, then restart FutureOS. ({{code}})",
+        "binaryIdentityChanged": "The Bubblewrap file changed after detection. Verify the system package, then restart FutureOS. ({{code}})",
+        "probeTransportError": "FutureOS could not contact the Agent to check the Linux sandbox. Try again later or restart FutureOS. ({{code}})",
+        "unknown": "The Linux sandbox is unavailable. Run future doctor for details, fix the issue, then restart FutureOS. ({{code}})"
+      }
     }
   },
   "showThinking": {

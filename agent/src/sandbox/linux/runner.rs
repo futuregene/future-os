@@ -60,9 +60,12 @@ pub fn prepare(
         policy_digest: plan.policy_digest.clone(),
         status_fd: None,
     };
-    let encoded = request.encode()?;
+    let payload = request.to_json_bytes()?;
     let executable = std::env::current_exe().map_err(LinuxSandboxRunnerError::CurrentExecutable)?;
-    let args = helper_args(&executable, encoded);
+    let args = helper_args(
+        &executable,
+        format!("fd:{}", super::request::HELPER_REQUEST_FD),
+    );
     Ok(PreparedShell {
         program: executable.to_string_lossy().into_owned(),
         args,
@@ -71,6 +74,7 @@ pub fn prepare(
             backend: ShellBackend::LinuxBubblewrap,
             policy_digest: Some(plan.policy_digest),
         },
+        request_payload: Some(payload),
     })
 }
 
@@ -171,8 +175,9 @@ mod tests {
         policy.reopened_paths = vec![PathBuf::from("/tmp/work/vendor/ok")];
         policy.unreadable_paths = vec![PathBuf::from("/tmp/work/vendor/ok/secret")];
         let prepared = prepare(&probe(), policy, "true", Path::new("/tmp/work")).unwrap();
-        let encoded = prepared.args.last().unwrap();
-        let request = LinuxSandboxRequest::decode(encoded).unwrap();
+        let request =
+            LinuxSandboxRequest::from_json_bytes(prepared.request_payload.as_deref().unwrap())
+                .unwrap();
         let targets: Vec<_> = request.mounts.iter().map(|mount| &mount.target).collect();
         let broad = targets
             .iter()
@@ -193,7 +198,9 @@ mod tests {
         policy.read_only_paths = vec![same.clone()];
         policy.unreadable_paths = vec![same.clone()];
         let prepared = prepare(&probe(), policy, "true", Path::new("/tmp/work")).unwrap();
-        let request = LinuxSandboxRequest::decode(prepared.args.last().unwrap()).unwrap();
+        let request =
+            LinuxSandboxRequest::from_json_bytes(prepared.request_payload.as_deref().unwrap())
+                .unwrap();
         let same_target: Vec<_> = request
             .mounts
             .iter()
@@ -213,5 +220,16 @@ mod tests {
             helper_args(Path::new("/opt/future-agent"), "x".into()),
             ["--linux-sandbox-helper", "x"]
         );
+    }
+
+    #[test]
+    fn large_request_is_carried_out_of_band_instead_of_argv() {
+        let command = "x".repeat(90 * 1024);
+        let prepared = prepare(&probe(), plan(), &command, Path::new("/tmp/work")).unwrap();
+        assert_eq!(prepared.args.last().map(String::as_str), Some("fd:3"));
+        let payload = prepared.request_payload.as_deref().unwrap();
+        assert!(payload.len() > 90 * 1024);
+        let request = LinuxSandboxRequest::from_json_bytes(payload).unwrap();
+        assert_eq!(request.argv.last().map(String::len), Some(command.len()));
     }
 }

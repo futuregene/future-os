@@ -4,7 +4,7 @@
 
 ## 安装
 
-FutureOS 只使用系统提供的 `bwrap`，不会下载或捆绑另一份 Bubblewrap。
+FutureOS 只使用系统提供的 `bwrap`，不会下载或捆绑另一份 Bubblewrap。最低支持版本为 **0.9.0**；发行版命令安装到更旧版本时，仍需要通过该发行版的受信任更新渠道升级。
 
 ```bash
 # Ubuntu / Debian
@@ -36,10 +36,11 @@ future doctor
 |---|---|
 | `available` | 探测通过，可以选择沙箱保护 |
 | `binary_missing` | 安装 `bubblewrap`，并确认绝对系统目录在 PATH 中 |
-| `path_rejected` | PATH 命中了相对目录、当前项目或 workspace 内二进制；移除该项，使用发行版系统包 |
+| `path_rejected` | PATH 命中了相对目录、当前项目/workspace 内二进制，或候选文件不是 root 所有；移除该项，使用发行版系统包 |
 | `binary_invalid` | 候选不是可执行普通文件，或无法安全读取 identity |
-| `version_unreadable` / `version_too_old` | 系统包不可识别或太旧；升级发行版提供的 Bubblewrap |
-| `required_feature_missing` | `bwrap --help` 缺少 FutureOS 所需参数；升级系统包 |
+| `version_unreadable` | 系统包版本输出不可识别；升级发行版提供的 Bubblewrap |
+| `version_too_old` | Bubblewrap 低于最低支持版本 0.9.0；升级系统包后重试 |
+| `required_feature_missing` | `bwrap --help` 缺少 FutureOS 所需参数（包括用于避免 `ARG_MAX` 的 `--args`）；升级系统包 |
 | `user_namespace_disabled` | 主机、容器或安全策略禁止非特权 user namespace；启用后重试 |
 | `proc_mount_restricted` | 当前环境不允许沙箱建立 fresh `/proc`；调整容器/主机策略 |
 | `probe_timeout` / `probe_failed` | 真实运行探测超时或失败；查看 `future doctor`，修复环境后重启 |
@@ -51,6 +52,7 @@ future doctor
 
 - 根文件系统默认只读；workspace、会话临时目录和明确允许的路径按规则开放写入。
 - 网络保持开放，不提供网络隔离。
+- 一期不安装 seccomp syscall filter；当前强制边界是 user/PID/IPC namespace、只读/受控 mount、capability drop 的内层复核和 `PR_SET_NO_NEW_PRIVS`。seccomp 作为后续纵深防御，不应被理解成当前能力。
 - 精确路径和命令启动前已经存在的 glob 匹配由 OS 沙箱硬保护。
 - 命令运行中新产生的 glob 匹配无法由固定 mount view 动态拦截，只在命令结束后报告 `detection_only` violation；这不是动态硬保护。
 - 第一版越界批准会把**整条命令**脱离 Bubblewrap 重跑一次。批准界面会明确提示这一点；路径级临时能力属于后续版本。

@@ -239,6 +239,8 @@ impl ResolvedSandbox {
         escalated: bool,
         cwd: &Path,
     ) -> anyhow::Result<PreparedShell> {
+        #[cfg(not(target_os = "linux"))]
+        let _ = cwd;
         if !escalated && self.wraps_shell() {
             #[cfg(target_os = "macos")]
             {
@@ -260,7 +262,9 @@ impl ResolvedSandbox {
 
     /// Compatibility adapter for callers that need a Tokio command.
     pub fn build_shell_command(&self, command: &str, escalated: bool) -> tokio::process::Command {
-        self.prepare_shell(command, escalated).into_command()
+        self.prepare_shell(command, escalated)
+            .into_command()
+            .expect("prepared shell command construction failed")
     }
 
     /// Convert bash-style escaped double quotes (\") to single-quoted form

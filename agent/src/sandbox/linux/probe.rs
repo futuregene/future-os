@@ -2,10 +2,14 @@ use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::fs::Metadata;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+#[cfg(target_os = "linux")]
+use std::time::Instant;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const REQUIRED_BWRAP_OPTIONS: &[&str] = &[
+    "--args",
     "--new-session",
     "--die-with-parent",
     "--unshare-user",
@@ -20,6 +24,16 @@ pub const REQUIRED_BWRAP_OPTIONS: &[&str] = &[
     "--dev",
     "--proc",
 ];
+
+/// Oldest bubblewrap release supported by the Linux sandbox contract.
+///
+/// This is the product compatibility floor, not a claim that every upstream
+/// security fix is present; tracked upgrade risks belong in the Linux sandbox
+/// implementation review document.
+///
+/// We still probe every option and execute a baseline sandbox: distributions
+/// can backport or disable features independently of the upstream version.
+pub const MINIMUM_BWRAP_VERSION: (u64, u64, u64) = (0, 9, 0);
 
 pub const BASELINE_BWRAP_ARGS: &[&str] = &[
     "--new-session",
@@ -175,10 +189,13 @@ pub trait ProbeHost {
     fn canonicalize(&self, path: &Path) -> std::io::Result<PathBuf>;
     fn run(&self, program: &Path, args: &[&str], timeout: Duration) -> ProbeCommandOutput;
     fn now(&self) -> SystemTime;
+    fn is_root_owned(&self, path: &Path) -> bool;
 }
 
+#[cfg(target_os = "linux")]
 struct SystemProbeHost;
 
+#[cfg(target_os = "linux")]
 impl ProbeHost for SystemProbeHost {
     fn metadata(&self, path: &Path) -> std::io::Result<Metadata> {
         std::fs::metadata(path)
@@ -194,6 +211,19 @@ impl ProbeHost for SystemProbeHost {
 
     fn now(&self) -> SystemTime {
         SystemTime::now()
+    }
+
+    fn is_root_owned(&self, path: &Path) -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            return std::fs::metadata(path).is_ok_and(|metadata| metadata.uid() == 0);
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+            false
+        }
     }
 }
 
@@ -235,10 +265,10 @@ impl LinuxProbeCache {
 pub fn probe_linux_sandbox_host() -> LinuxSandboxProbe {
     #[cfg(not(target_os = "linux"))]
     {
-        return LinuxSandboxProbe::unavailable(
+        LinuxSandboxProbe::unavailable(
             LinuxSandboxProbeCode::PlatformNotLinux,
             "bubblewrap is supported only on native Linux",
-        );
+        )
     }
     #[cfg(target_os = "linux")]
     {
@@ -282,6 +312,12 @@ pub fn probe_with_host(
         return LinuxSandboxProbe::unavailable(
             LinuxSandboxProbeCode::VersionUnreadable,
             "bwrap --version failed",
+        );
+    }
+    if !bwrap_version_is_supported(&version) {
+        return LinuxSandboxProbe::unavailable(
+            LinuxSandboxProbeCode::VersionTooOld,
+            format!("bubblewrap {version} is older than the required 0.9.0"),
         );
     }
 
@@ -376,6 +412,17 @@ fn discover_bwrap(
             rejected = true;
             continue;
         };
+        // Deliberate trust-boundary tradeoff: this release checks only that the
+        // bwrap file is root-owned. It assumes a distribution-installed,
+        // root-owned bwrap is not writable by the unprivileged account; parent
+        // directories and mode bits are not recursively audited yet. If the AI
+        // already has root authority to replace that binary, this sandbox is no
+        // longer intended to be the security boundary. Harden the full path
+        // chain separately if the threat model expands.
+        if !host.is_root_owned(&canonical) {
+            rejected = true;
+            continue;
+        }
         return Ok((canonical, identity));
     }
     if rejected {
@@ -429,6 +476,21 @@ fn parse_bwrap_version(output: &str) -> Option<String> {
     })
 }
 
+fn bwrap_version_is_supported(version: &str) -> bool {
+    let mut parts = version.split('.');
+    let major = parts.next().and_then(|part| part.parse::<u64>().ok());
+    let minor = parts.next().and_then(|part| part.parse::<u64>().ok());
+    let patch = parts
+        .next()
+        .map(|part| part.parse::<u64>().ok())
+        .unwrap_or(Some(0));
+    match (major, minor, patch) {
+        (Some(major), Some(minor), Some(patch)) => (major, minor, patch) >= MINIMUM_BWRAP_VERSION,
+        _ => false,
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn run_bounded(program: &Path, args: &[&str], timeout: Duration) -> ProbeCommandOutput {
     let child = Command::new(program)
         .args(args)
@@ -488,6 +550,7 @@ mod tests {
     struct FakeHost {
         now: SystemTime,
         outputs: Mutex<VecDeque<ProbeCommandOutput>>,
+        root_owned: bool,
     }
 
     impl ProbeHost for FakeHost {
@@ -502,6 +565,9 @@ mod tests {
         }
         fn now(&self) -> SystemTime {
             self.now
+        }
+        fn is_root_owned(&self, _path: &Path) -> bool {
+            self.root_owned
         }
     }
 
@@ -541,6 +607,7 @@ mod tests {
         let host = FakeHost {
             now: UNIX_EPOCH,
             outputs: Mutex::new(VecDeque::new()),
+            root_owned: true,
         };
         let joined =
             std::env::join_paths([PathBuf::from("relative"), workspace.join("bin")]).unwrap();
@@ -558,6 +625,7 @@ mod tests {
         let host = FakeHost {
             now: UNIX_EPOCH + Duration::from_secs(10),
             outputs: Mutex::new(success_outputs()),
+            root_owned: true,
         };
         let probe = probe_with_host(
             &host,
@@ -566,7 +634,10 @@ mod tests {
             &workspace,
         );
         assert!(probe.available);
-        assert_eq!(probe.path.as_deref(), Some(binary.as_path()));
+        assert_eq!(
+            probe.path.as_deref(),
+            Some(std::fs::canonicalize(binary).unwrap().as_path())
+        );
         assert_eq!(probe.version.as_deref(), Some("0.11.1"));
         assert_eq!(probe.expires_at_unix_ms, Some(310_000));
         assert!(!probe.capabilities.unwrap().network_isolation);
@@ -582,6 +653,10 @@ mod tests {
         let path = Some(std::env::join_paths([system]).unwrap());
 
         for (outputs, expected) in [
+            (
+                VecDeque::from([output(true, "bwrap 0.8.0", "")]),
+                LinuxSandboxProbeCode::VersionTooOld,
+            ),
             (
                 VecDeque::from([output(true, "not-a-version", "")]),
                 LinuxSandboxProbeCode::VersionUnreadable,
@@ -606,6 +681,7 @@ mod tests {
             let host = FakeHost {
                 now: UNIX_EPOCH,
                 outputs: Mutex::new(outputs),
+                root_owned: true,
             };
             assert_eq!(
                 probe_with_host(&host, path.clone(), &workspace, &workspace).code,
@@ -629,6 +705,7 @@ mod tests {
                 stderr: String::new(),
                 timed_out: true,
             }])),
+            root_owned: true,
         };
 
         let probe = probe_with_host(
@@ -653,6 +730,7 @@ mod tests {
         let host = FakeHost {
             now: UNIX_EPOCH,
             outputs: Mutex::new(success_outputs()),
+            root_owned: true,
         };
         let mut cache = LinuxProbeCache::default();
         assert!(
@@ -679,11 +757,47 @@ mod tests {
 
     #[test]
     fn production_argument_list_and_help_contract_cannot_drift() {
-        for required in REQUIRED_BWRAP_OPTIONS {
+        // `--args` is the transport used by production itself; the baseline
+        // contents are passed directly by ProbeHost so fake hosts stay simple.
+        for required in REQUIRED_BWRAP_OPTIONS
+            .iter()
+            .filter(|required| **required != "--args")
+        {
             assert!(BASELINE_BWRAP_ARGS.contains(required), "{required}");
         }
+        assert!(REQUIRED_BWRAP_OPTIONS.contains(&"--args"));
         assert!(!BASELINE_BWRAP_ARGS.contains(&"--unshare-net"));
         assert!(!REQUIRED_BWRAP_OPTIONS.contains(&"--argv0"));
         assert!(!REQUIRED_BWRAP_OPTIONS.contains(&"--ro-bind-fd"));
+    }
+
+    #[test]
+    fn minimum_version_comparison_accepts_0_9_0_and_newer() {
+        assert!(!bwrap_version_is_supported("0.8.99"));
+        assert!(bwrap_version_is_supported("0.9.0"));
+        assert!(bwrap_version_is_supported("0.9.1"));
+        assert!(bwrap_version_is_supported("1.0"));
+    }
+
+    #[test]
+    fn rejects_bwrap_not_owned_by_root_before_executing_it() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let system = root.path().join("system");
+        executable(&system);
+        let host = FakeHost {
+            now: UNIX_EPOCH,
+            outputs: Mutex::new(VecDeque::new()),
+            root_owned: false,
+        };
+        let result = probe_with_host(
+            &host,
+            Some(std::env::join_paths([system]).unwrap()),
+            &workspace,
+            &workspace,
+        );
+        assert_eq!(result.code, LinuxSandboxProbeCode::PathRejected);
+        assert!(host.outputs.lock().unwrap().is_empty());
     }
 }

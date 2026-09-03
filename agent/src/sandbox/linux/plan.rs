@@ -24,6 +24,8 @@ pub enum LinuxSandboxPlanError {
     GlobScan { pattern: String, detail: String },
     #[error("sandbox glob scan limit exceeded for {0}")]
     GlobLimit(String),
+    #[error("sandbox mount plan exceeds the bounded helper request limit")]
+    MountLimit,
     #[error("sandbox rule combination cannot be enforced safely at {0}")]
     UnsupportedAccessCombination(PathBuf),
     #[error("sandbox cannot reopen a protected path that does not exist: {0}")]
@@ -80,7 +82,10 @@ impl LinuxSandboxPlan {
         let mut unsupported_dynamic_globs = Vec::new();
         let mut glob_snapshots = Vec::new();
 
-        let flattened: Vec<(usize, RuleLayer, &RuleSnapshot)> = snapshot
+        // Preserve the exact RuleSet evaluation order. Both the layer index and
+        // the rule's index inside that layer participate in first-match; Linux
+        // mount generation must not let a later overlapping rule override it.
+        let flattened: Vec<(usize, usize, RuleLayer, &RuleSnapshot)> = snapshot
             .layers
             .iter()
             .enumerate()
@@ -88,11 +93,12 @@ impl LinuxSandboxPlan {
                 layer
                     .rules
                     .iter()
-                    .map(move |rule| (priority, layer.layer, rule))
+                    .enumerate()
+                    .map(move |(rule_index, rule)| (priority, rule_index, layer.layer, rule))
             })
             .collect();
 
-        for (priority, _layer, rule) in &flattened {
+        for (priority, rule_index, _layer, rule) in &flattened {
             let paths = match &rule.matcher {
                 RuleMatcherSnapshot::Subtree { lexical, canonical } => {
                     validate_absolute(lexical)?;
@@ -117,6 +123,7 @@ impl LinuxSandboxPlan {
                 apply_rule(
                     &flattened,
                     *priority,
+                    *rule_index,
                     rule,
                     &path,
                     &mut writable_roots,
@@ -140,6 +147,16 @@ impl LinuxSandboxPlan {
         glob_snapshots.sort_by(|a, b| a.pattern.cmp(&b.pattern));
         glob_snapshots.dedup_by(|a, b| a.pattern == b.pattern);
 
+        let mount_count = writable_roots.len()
+            + read_only_paths.len()
+            + unreadable_paths.len()
+            + reopened_paths.len()
+            + reopened_read_only_paths.len()
+            + missing_protected_paths.len();
+        if mount_count > super::request::MAX_MOUNTS {
+            return Err(LinuxSandboxPlanError::MountLimit);
+        }
+
         let policy_digest = policy_digest(snapshot)?;
 
         Ok(Self {
@@ -158,8 +175,9 @@ impl LinuxSandboxPlan {
 
 #[allow(clippy::too_many_arguments)]
 fn apply_rule(
-    flattened: &[(usize, RuleLayer, &RuleSnapshot)],
+    flattened: &[(usize, usize, RuleLayer, &RuleSnapshot)],
     priority: usize,
+    rule_index: usize,
     rule: &RuleSnapshot,
     path: &Path,
     writable_roots: &mut Vec<PathBuf>,
@@ -173,7 +191,7 @@ fn apply_rule(
         Decision::Allow => {
             let read_blocked = effective_blocked(flattened, path, Access::Read);
             if rule.access.covers_write()
-                && !blocked_by_higher_priority(flattened, priority, path, Access::Write)
+                && !matched_by_earlier_rule(flattened, priority, rule_index, path, Access::Write)
             {
                 // A mount cannot safely grant write while continuing to deny
                 // read on the same inode. Reject rather than silently widen.
@@ -182,7 +200,7 @@ fn apply_rule(
                         path.to_path_buf(),
                     ));
                 }
-                if protected_by_lower_priority(flattened, priority, path, Access::Write) {
+                if protected_by_later_rule(flattened, priority, rule_index, path, Access::Write) {
                     if !path.exists() {
                         return Err(LinuxSandboxPlanError::MissingReopen(path.to_path_buf()));
                     }
@@ -191,8 +209,8 @@ fn apply_rule(
                     writable_roots.push(path.to_path_buf());
                 }
             } else if rule.access.covers_read()
-                && !blocked_by_higher_priority(flattened, priority, path, Access::Read)
-                && protected_by_lower_priority(flattened, priority, path, Access::Read)
+                && !matched_by_earlier_rule(flattened, priority, rule_index, path, Access::Read)
+                && protected_by_later_rule(flattened, priority, rule_index, path, Access::Read)
             {
                 if !path.exists() {
                     return Err(LinuxSandboxPlanError::MissingReopen(path.to_path_buf()));
@@ -201,13 +219,17 @@ fn apply_rule(
             }
         }
         Decision::Ask | Decision::Deny => {
-            if !path.exists() {
+            let blocks_read = rule.access.covers_read()
+                && !matched_by_earlier_rule(flattened, priority, rule_index, path, Access::Read);
+            let blocks_write = rule.access.covers_write()
+                && !matched_by_earlier_rule(flattened, priority, rule_index, path, Access::Write);
+            if (blocks_read || blocks_write) && !path.exists() {
                 missing_protected_paths.push(path.to_path_buf());
             }
-            if rule.access.covers_read() {
+            if blocks_read {
                 unreadable_paths.push(path.to_path_buf());
             }
-            if rule.access.covers_write() {
+            if blocks_write {
                 read_only_paths.push(path.to_path_buf());
             }
         }
@@ -358,14 +380,14 @@ fn rule_blocks(rule: &RuleSnapshot, path: &Path, access: Access) -> bool {
 }
 
 fn effective_blocked(
-    rules: &[(usize, RuleLayer, &RuleSnapshot)],
+    rules: &[(usize, usize, RuleLayer, &RuleSnapshot)],
     path: &Path,
     access: Access,
 ) -> bool {
     rules
         .iter()
-        .find(|(_, _, rule)| rule_matches(rule, path, access))
-        .is_some_and(|(_, _, rule)| rule.decision != Decision::Allow)
+        .find(|(_, _, _, rule)| rule_matches(rule, path, access))
+        .is_some_and(|(_, _, _, rule)| rule.decision != Decision::Allow)
 }
 
 fn rule_matches(rule: &RuleSnapshot, path: &Path, access: Access) -> bool {
@@ -378,26 +400,34 @@ fn rule_matches(rule: &RuleSnapshot, path: &Path, access: Access) -> bool {
         }
 }
 
-fn blocked_by_higher_priority(
-    rules: &[(usize, RuleLayer, &RuleSnapshot)],
+fn matched_by_earlier_rule(
+    rules: &[(usize, usize, RuleLayer, &RuleSnapshot)],
     priority: usize,
+    rule_index: usize,
     path: &Path,
     access: Access,
 ) -> bool {
-    rules.iter().any(|(candidate_priority, _, rule)| {
-        *candidate_priority < priority && rule_blocks(rule, path, access)
-    })
+    rules
+        .iter()
+        .any(|(candidate_priority, candidate_rule_index, _, rule)| {
+            (*candidate_priority, *candidate_rule_index) < (priority, rule_index)
+                && rule_matches(rule, path, access)
+        })
 }
 
-fn protected_by_lower_priority(
-    rules: &[(usize, RuleLayer, &RuleSnapshot)],
+fn protected_by_later_rule(
+    rules: &[(usize, usize, RuleLayer, &RuleSnapshot)],
     priority: usize,
+    rule_index: usize,
     path: &Path,
     access: Access,
 ) -> bool {
-    rules.iter().any(|(candidate_priority, _, rule)| {
-        *candidate_priority > priority && rule_blocks(rule, path, access)
-    })
+    rules
+        .iter()
+        .any(|(candidate_priority, candidate_rule_index, _, rule)| {
+            (*candidate_priority, *candidate_rule_index) > (priority, rule_index)
+                && rule_blocks(rule, path, access)
+        })
 }
 
 fn access_overlap(left: Access, right: Access) -> bool {
@@ -607,7 +637,7 @@ mod tests {
     }
 
     #[test]
-    fn narrow_glob_allow_reopens_a_lower_glob_protection() {
+    fn narrow_glob_allow_shadows_the_lower_glob_mount() {
         let root = root();
         let allowed = root.join("work/vendor/ok.pem");
         std::fs::write(&allowed, "ok").unwrap();
@@ -642,7 +672,7 @@ mod tests {
             ],
         );
         let plan = LinuxSandboxPlan::compile(&input).unwrap();
-        assert!(plan.read_only_paths.contains(&allowed));
+        assert!(!plan.read_only_paths.contains(&allowed));
         assert!(plan.reopened_paths.contains(&allowed));
     }
 
@@ -727,5 +757,56 @@ mod tests {
             expand_glob(&pattern),
             Err(LinuxSandboxPlanError::GlobLimit(_))
         ));
+    }
+
+    #[test]
+    fn same_layer_first_match_wins_for_overlapping_write_rules() {
+        let root = root();
+        let parent = root.join("outside");
+        let child = parent.join("child");
+        std::fs::create_dir_all(&child).unwrap();
+
+        let deny_then_allow = snapshot(
+            &root,
+            vec![RuleLayerSnapshot {
+                layer: RuleLayer::Workspace,
+                rules: vec![
+                    subtree(&root, "outside", Access::Write, Decision::Deny),
+                    subtree(&root, "outside/child", Access::Write, Decision::Allow),
+                ],
+            }],
+        );
+        let plan = LinuxSandboxPlan::compile(&deny_then_allow).unwrap();
+        assert!(plan.read_only_paths.contains(&parent));
+        assert!(!plan.writable_roots.contains(&child));
+        assert!(!plan.reopened_paths.contains(&child));
+
+        let allow_then_deny = snapshot(
+            &root,
+            vec![RuleLayerSnapshot {
+                layer: RuleLayer::Workspace,
+                rules: vec![
+                    subtree(&root, "outside", Access::Write, Decision::Allow),
+                    subtree(&root, "outside/child", Access::Write, Decision::Deny),
+                ],
+            }],
+        );
+        let plan = LinuxSandboxPlan::compile(&allow_then_deny).unwrap();
+        assert!(plan.writable_roots.contains(&parent));
+        assert!(!plan.read_only_paths.contains(&child));
+
+        let narrow_allow_then_broad_deny = snapshot(
+            &root,
+            vec![RuleLayerSnapshot {
+                layer: RuleLayer::Workspace,
+                rules: vec![
+                    subtree(&root, "outside/child", Access::Write, Decision::Allow),
+                    subtree(&root, "outside", Access::Write, Decision::Deny),
+                ],
+            }],
+        );
+        let plan = LinuxSandboxPlan::compile(&narrow_allow_then_broad_deny).unwrap();
+        assert!(plan.read_only_paths.contains(&parent));
+        assert!(plan.reopened_paths.contains(&child));
     }
 }
