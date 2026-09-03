@@ -150,7 +150,7 @@ root, and only GET endpoints exist (any other method is a 405). Mutations
 - `--acceptance` turns "accepted by an external observable" into a hard check
 - Lease liveness self-heals: dead-process leases are reclaimed automatically — relaunching workers needs no manual release
 - Workspace guard: multi-agent write conflicts degrade to serial automatically
-- Idle turns (15 minutes without writes) are ledgered; correct the worker via `todo update --text` (applies at the next turn)
+- Idle turns (1 hour without writes) are ledgered; correct the worker via `todo update --text` (applies at the next turn)
 
 ## Bidirectional messaging (supervisor ↔ worker)
 
