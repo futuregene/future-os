@@ -13,7 +13,23 @@
 
 L5 只有在目标发行版/架构、实际发布包和安全 review 的所有必需项均为 `PASS` 后才完成。任何 `FAIL` 都阻断发布；任何 `NOT RUN` 或 `ENVIRONMENT LIMIT` 都表示仍需换用满足条件的真机补测。
 
-## 2. 测试制品与证据头
+## 2. 一键测试与证据
+
+在候选分支的仓库根目录执行：
+
+```bash
+./scripts/test-linux-sandbox-real-machine.sh
+```
+
+如需同时运行完整 Rust workspace 测试：
+
+```bash
+./scripts/test-linux-sandbox-real-machine.sh --full
+```
+
+脚本会自动收集环境、构建并运行 probe、Linux 沙盒单测、5 个真实 Bubblewrap smoke、fmt 和 clippy；`--full` 额外运行完整 Rust workspace 测试。结束时会打印一个 `linux-sandbox-evidence-*.tar.gz` 路径，把该压缩包发回开发人员即可。脚本会把出现 smoke skip 视为失败，不会将跳过冒充 PASS。脚本不会安装软件或修改系统策略。
+
+### 2.1 测试制品与证据头
 
 每台机器先复制并填写以下信息。使用同一候选 commit 和同一组发布制品；不要在测试期间从其他分支重建。
 
