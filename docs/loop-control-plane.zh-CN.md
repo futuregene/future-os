@@ -149,7 +149,7 @@ supervisor（运行 `/future-loop` 技能的编排 agent）与其 worker 通过�
   supervisor，持久化用户闸门仍是权威的干预通道。
 
 - **基础设施停止 + 死 worker：** 在到达回合边界写回之前退出的 worker（gRPC 传输丢失、
-  `--max-turn-secs` 超时、不完整重试预算耗尽）也会上报一条 `infra_stopped` 备注。
+  不完整重试预算耗尽）也会上报一条 `infra_stopped` 备注。
   直接死掉的 worker（SIGKILL / 崩溃 / 宿主机故障）不执行任何代码，因此周期性的
   `scheduler tick` 会检测到孤儿租约（持有者 pid 已死），并向已注册的 supervisor 推送
   一条 `host_died` 备注，促使编排者重启，而不是只在下次 `status` 轮询时才发现有 worker
