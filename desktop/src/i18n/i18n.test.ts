@@ -12,6 +12,7 @@ describe("i18n language helpers", () => {
     localStorage.setItem("future.language", "en");
     const mod = await import("./index");
     expect(mod.getLanguage()).toBe("en");
+    expect(document.documentElement.lang).toBe("en");
   });
 
   it("follows the OS language when no preference is stored (first run)", async () => {
@@ -40,6 +41,7 @@ describe("i18n language helpers", () => {
     vi.stubGlobal("navigator", { language: "zh-CN" });
     const mod = await import("./index");
     expect(mod.getLanguage()).toBe("zh");
+    expect(document.documentElement.lang).toBe("zh-CN");
   });
 
   it("falls back to the system language for an unrecognized stored value", async () => {
@@ -55,7 +57,9 @@ describe("i18n language helpers", () => {
     mod.setLanguage("en");
     expect(localStorage.getItem("future.language")).toBe("en");
     expect(mod.getLanguage()).toBe("en");
+    expect(document.documentElement.lang).toBe("en");
     mod.setLanguage("zh");
     expect(mod.getLanguage()).toBe("zh");
+    expect(document.documentElement.lang).toBe("zh-CN");
   });
 });
