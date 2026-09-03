@@ -12,6 +12,7 @@ use parking_lot::RwLock;
 use reqwest::Client as HttpClient;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::info;
@@ -20,6 +21,49 @@ const DEFAULT_TIMEOUT_SECS: u64 = 1800;
 const STREAM_IDLE_TIMEOUT_SECS: u64 = 120;
 const UPSTREAM_DISCONNECTED: &str = "[UPSTREAM_DISCONNECTED]";
 const MODEL_RESPONSE_ERROR: &str = "[MODEL_RESPONSE_ERROR]";
+
+fn reqwest_stream_error_kind(error: &reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connect"
+    } else if error.is_body() {
+        "body"
+    } else if error.is_decode() {
+        "decode"
+    } else if error.is_request() {
+        "request"
+    } else {
+        "unknown"
+    }
+}
+
+fn error_source_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut causes = Vec::new();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        causes.push(cause.to_string());
+        source = cause.source();
+    }
+    if causes.is_empty() {
+        "none".to_string()
+    } else {
+        causes.join(" <- ")
+    }
+}
+
+fn stream_progress(
+    kind: &str,
+    chunks: u64,
+    bytes: u64,
+    frames: u64,
+    started_at: Instant,
+) -> String {
+    format!(
+        "kind={kind}, chunks={chunks}, bytes={bytes}, frames={frames}, elapsed_ms={}",
+        started_at.elapsed().as_millis()
+    )
+}
 
 /// Stream-read idle timeout. Tests override it (a stalled-mock test cannot
 /// wait 120 s of real time) via FUTURE_TEST_STREAM_IDLE_SECS.
@@ -292,8 +336,15 @@ impl crate::types::LLMProvider for Client {
         }
 
         let (tx, rx) = mpsc::channel(32);
+        let response_status = status.as_u16();
+        let protocol = target.protocol.protocol().canonical_name().to_string();
+        let model = request.model.clone();
         let mut stream = resp.bytes_stream();
         tokio::spawn(async move {
+            let started_at = Instant::now();
+            let mut chunks_received = 0_u64;
+            let mut bytes_received = 0_u64;
+            let mut frames_decoded = 0_u64;
             let mut decoder = sse::SseDecoder::default();
             let mut state = adapter.new_stream_state();
             let mut terminal = false;
@@ -306,22 +357,69 @@ impl crate::types::LLMProvider for Client {
                     ) => next,
                 };
                 let bytes = match next {
-                    Ok(Some(Ok(bytes))) => bytes,
+                    Ok(Some(Ok(bytes))) => {
+                        chunks_received = chunks_received.saturating_add(1);
+                        bytes_received = bytes_received.saturating_add(bytes.len() as u64);
+                        bytes
+                    }
                     Ok(Some(Err(error))) => {
+                        let kind = reqwest_stream_error_kind(&error);
+                        let causes = error_source_chain(&error);
+                        let progress = stream_progress(
+                            kind,
+                            chunks_received,
+                            bytes_received,
+                            frames_decoded,
+                            started_at,
+                        );
+                        tracing::error!(
+                            protocol = %protocol,
+                            model = %model,
+                            status = response_status,
+                            error_kind = kind,
+                            chunks_received,
+                            bytes_received,
+                            frames_decoded,
+                            elapsed_ms = started_at.elapsed().as_millis() as u64,
+                            error = %error,
+                            error_debug = ?error,
+                            cause_chain = %causes,
+                            "LLM response stream disconnected"
+                        );
                         let _ = tx
                             .send(schema::ModelStreamEvent::Error {
-                                message: format!("{UPSTREAM_DISCONNECTED} {error:#}"),
+                                message: format!(
+                                    "{UPSTREAM_DISCONNECTED} {error}; {progress}, causes={causes}"
+                                ),
                             })
                             .await;
                         return;
                     }
                     Ok(None) => break,
                     Err(_) => {
+                        let timeout_secs = stream_idle_timeout_secs();
+                        let progress = stream_progress(
+                            "idle_timeout",
+                            chunks_received,
+                            bytes_received,
+                            frames_decoded,
+                            started_at,
+                        );
+                        tracing::error!(
+                            protocol = %protocol,
+                            model = %model,
+                            status = response_status,
+                            timeout_secs,
+                            chunks_received,
+                            bytes_received,
+                            frames_decoded,
+                            elapsed_ms = started_at.elapsed().as_millis() as u64,
+                            "LLM response stream idle timeout"
+                        );
                         let _ = tx
                             .send(schema::ModelStreamEvent::Error {
                                 message: format!(
-                                    "{UPSTREAM_DISCONNECTED} model response stream was idle for {} seconds",
-                                    stream_idle_timeout_secs()
+                                    "{UPSTREAM_DISCONNECTED} model response stream was idle for {timeout_secs} seconds; {progress}"
                                 ),
                             })
                             .await;
@@ -342,6 +440,7 @@ impl crate::types::LLMProvider for Client {
                         return;
                     }
                 };
+                frames_decoded = frames_decoded.saturating_add(frames.len() as u64);
                 for frame in frames {
                     let events = match adapter.decode_frame(&frame, state.as_mut()) {
                         Ok(events) => events,
@@ -383,6 +482,7 @@ impl crate::types::LLMProvider for Client {
                     return;
                 }
             };
+            frames_decoded = frames_decoded.saturating_add(frames.len() as u64);
             for frame in frames {
                 let events = match adapter.decode_frame(&frame, state.as_mut()) {
                     Ok(events) => events,
@@ -409,6 +509,16 @@ impl crate::types::LLMProvider for Client {
                 }
             }
             if !terminal {
+                tracing::warn!(
+                    protocol = %protocol,
+                    model = %model,
+                    status = response_status,
+                    chunks_received,
+                    bytes_received,
+                    frames_decoded,
+                    elapsed_ms = started_at.elapsed().as_millis() as u64,
+                    "LLM response stream reached EOF before a terminal event"
+                );
                 match adapter.finish_stream(state.as_mut()) {
                     Ok(events) => {
                         for event in events {
@@ -1024,6 +1134,61 @@ mod tests {
             Some(schema::ModelStreamEvent::Error { message })
                 if message.starts_with(UPSTREAM_DISCONNECTED)
         ));
+    }
+
+    #[tokio::test]
+    async fn stream_model_transport_disconnect_reports_progress_and_error_chain() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 16 * 1024];
+            let _ = stream.read(&mut request);
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
+                )
+                .unwrap();
+            let frame = b"data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n";
+            stream
+                .write_all(format!("{:X}\r\n", frame.len()).as_bytes())
+                .and_then(|_| stream.write_all(frame))
+                .and_then(|_| stream.write_all(b"\r\n20\r\ntruncated"))
+                .and_then(|_| stream.flush())
+                .unwrap();
+            // Drop before completing the declared chunk to force reqwest's
+            // response-body stream down its transport-error path.
+        });
+
+        let client = Client::from_target(chat_target(
+            &format!("http://127.0.0.1:{port}"),
+            "secret",
+            None,
+            None,
+        ));
+        let events: Vec<_> = client
+            .stream_model(canonical_request())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            schema::ModelStreamEvent::TextDelta { text, .. } if text == "partial"
+        )));
+        let message = match events.last() {
+            Some(schema::ModelStreamEvent::Error { message }) => message,
+            other => panic!("expected terminal stream error, got {other:?}"),
+        };
+        assert!(message.starts_with(UPSTREAM_DISCONNECTED), "{message}");
+        assert!(message.contains("kind=decode"), "{message}");
+        assert!(message.contains("chunks="), "{message}");
+        assert!(message.contains("bytes="), "{message}");
+        assert!(message.contains("frames="), "{message}");
+        assert!(message.contains("elapsed_ms="), "{message}");
+        assert!(message.contains("causes="), "{message}");
     }
 
     #[allow(clippy::await_holding_lock)]
