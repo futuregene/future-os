@@ -4,9 +4,9 @@
 //! path + op to `Ask | Allow | Deny`. That verdict is enforced two ways:
 //!   - read/write/edit tools: the approval layer prompts (Ask) / proceeds
 //!     (Allow) / errors (Deny) before the in-process op runs.
-//!   - shell: the rules compile into a Seatbelt profile (macOS); Ask and Deny
-//!     both become an OS-level read/write denial, and a resulting failure
-//!     surfaces via the escalation flow.
+//!   - shell: the rules compile into a Seatbelt profile (macOS) or Bubblewrap
+//!     mount plan (Linux); Ask and Deny become OS-level read/write denials, and
+//!     a resulting failure surfaces via the escalation flow.
 //!
 //! Network is unrestricted. The whole system is gated by `enabled`: only GUI
 //! sessions opt in; everything else runs fully open.

@@ -17,7 +17,7 @@
 
 ### 2.1 Agent 规则与平台选择
 
-| 接缝 | 当前实现 | Linux 实施影响 |
+| 接缝 | 开工时基线 | Linux 实施影响 |
 |---|---|---|
 | `agent/src/sandbox/mod.rs` | `ResolvedSandbox` 只保存 `available: bool`；macOS 检查 `/usr/bin/sandbox-exec`，Windows 使用完整 probe，Linux固定 `false`；`build_shell_command()` 直接构造 Seatbelt 或普通 shell | 需要把“布尔可用”升级成携带 backend、固定 bwrap 路径、版本、binary identity、能力和过期时间的成功凭据；Linux 不能只做 `which bwrap` |
 | `agent/src/sandbox/rules.rs` | `RuleSet` 是高到低优先级的私有 matcher 层；Seatbelt 通过 `profile_layers()` 获取快照；损坏/不可读规则文件目前记录 warning 后跳过 | Linux plan 需要稳定、纯数据的规则快照接口；sandbox tier 下无法编译或读取安全规则必须 typed fail closed，不能沿用“跳过坏层” |
@@ -107,7 +107,7 @@
 1. Desktop 平台 probe、Settings/Composer 和 remote bridge 已改用统一 `probe_sandbox` 结果；Linux probe 成功直接显示 sandbox，失败展示本地化稳定 code 与安装/排障命令。
 2. 已保存 sandbox 后环境失效时，Agent 会把请求 tier 改为 manual，`ResolvedSandbox` 在执行边界再次强制同一回退；Desktop 仅在 definitive unavailable 时持久化 manual 并显示通知。瞬时 RPC 错误保留设置等待重试，任何路径都不会静默按 off 裸跑。
 3. `future-agent --probe-sandbox`（以及 `future agent --probe-sandbox`）输出 machine-readable JSON；`future doctor` 使用同一 probe 并展示 backend/code/available、system bwrap 路径和版本。probe 只暴露 bwrap 可执行文件路径，不输出规则或受保护文件路径。
-4. Settings/Composer 和中英文文档明确 network open、system bwrap only、no WSL、glob 启动时快照与结束后 detection-only；不随应用打包或下载 bwrap。
+4. Settings/Composer 和中英文文档明确 network open、system bwrap only、no WSL、glob 启动时快照与结束后 detection-only；不随应用打包或下载 bwrap。详细步骤与 code 表见 [`LINUX_SANDBOX_USER_GUIDE.md`](LINUX_SANDBOX_USER_GUIDE.md)。
 
 #### Linux 安装与诊断速查
 
@@ -152,7 +152,7 @@
 | G-01 | glob | 启动前已有匹配被硬保护；命令中新匹配只报告 detection-only | ignored Linux smoke | ENVIRONMENT LIMIT（2026-09-03：展开/检测单测 PASS；新增 combined smoke 因当前环境 probe=`user_namespace_disabled` 跳过） |
 | U-01 | RPC/Desktop | Linux availability/retry/reason/manual fallback | `cd desktop && npx vitest run src/integrations/agent/useSandboxAvailability.test.ts`；Rust bridge/settings tests | PARTIAL PASS（2026-09-03：Agent settings、dispatcher、Tauri bridge targeted tests 与 Tauri check/clippy PASS；TS 测试已补，当前环境无 `node`/`npx`，待 Q-02 执行） |
 | U-02 | i18n/UI | Settings/Composer 安装与限制文案中英文齐全 | `cd desktop && npx tsc --noEmit && npx eslint "src/**/*.{ts,tsx}" && npx vitest run` | IMPLEMENTED / NOT RUN（2026-09-03：中英文文案已同步；当前环境无 `node`/`npx`） |
-| C-01 | CLI | machine-readable probe 与 doctor code 一致 | `cargo test -p future-agent --test cli_smoke && cargo test -p future-cli doctor` | PASS（2026-09-03：Agent machine-readable probe smoke PASS；future-cli doctor 19 tests PASS；本机实测 JSON 为 `linux_bubblewrap/user_namespace_disabled`） |
+| C-01 | CLI | machine-readable probe 与 doctor code 一致 | `cargo test -p future-agent --test cli_smoke && cargo test -p future-cli doctor` | PASS（2026-09-03：Agent machine-readable probe smoke PASS；future-cli doctor 20 tests PASS；本机实测 JSON 为 `linux_bubblewrap/user_namespace_disabled`） |
 | Q-01 | Rust gate | workspace + Tauri fmt/clippy | `make lint-rust` | NOT RUN |
 | Q-02 | all tests | Rust、Desktop、Mobile 全量单测 | `make test` | NOT RUN |
 | L5-01 | real hosts | Ubuntu 22.04/24.04、Debian stable、Fedora；x86_64/aarch64 | 真机手册逐项执行 | NOT RUN |
