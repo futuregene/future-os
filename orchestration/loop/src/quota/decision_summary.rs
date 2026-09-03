@@ -57,7 +57,10 @@ pub struct DecisionSummary {
     pub safe_bypass_kind: Option<String>,
     #[serde(default)]
     pub blocked_action_scope: Option<String>,
-    /// Run-turn counter at record time (0 = recorded outside a run loop).
+    /// Goal-level monotonic turn counter at record time (0 = recorded outside
+    /// a run loop). The caller offsets the run-local turn by the number of
+    /// turns already started on the goal, so receipts stay distinguishable
+    /// across separate `run` processes (timeout turns included).
     #[serde(default)]
     pub turn: u32,
 }
@@ -116,7 +119,9 @@ pub fn latest_decision_summary(events: &[StoredEvent]) -> Option<&DecisionSummar
 /// can never change future decisions.
 ///
 /// `turn_instance_id` anchors the receipt the way LoopX keys heartbeat
-/// receipts on (goal, agent, run/turn instance, todo).
+/// receipts on (goal, agent, run/turn instance, todo). The `turn` argument is
+/// a GOAL-LEVEL monotonic counter (not the run-local turn), so receipts stay
+/// distinguishable across separate `run` processes — the caller offsets it.
 pub fn record_turn_decision(
     store: &mut Store,
     packet: &ShouldRunPacket,

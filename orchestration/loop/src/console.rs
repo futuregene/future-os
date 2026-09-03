@@ -3640,6 +3640,12 @@ async fn cmd_models(args: &[String]) -> Result<()> {
 /// the todo mid-turn once the lease expired).
 const DEFAULT_RUN_LEASE_SECS: u64 = 4 * 3600;
 
+/// Grace window (ms) the detached-run parent waits before probing the child
+/// with `try_wait`. Long enough for a mis-dispatched re-exec to fail at CLI
+/// parse time (e.g. `Unknown option: --goal`), short enough to not delay the
+/// orchestrator returning while a healthy child is still starting up.
+const DETACH_LIVENESS_GRACE_MS: u64 = 120;
+
 /// Resolve run identity (G-27): `run` REQUIRES `--agent-id` so the lease
 /// mechanism actually engages — an anonymous run claims nothing and hides
 /// nothing, so two agentless runs deterministically race on the same todo.
@@ -3830,9 +3836,31 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         cmd.stdout(log.try_clone()?)
             .stderr(log)
             .stdin(std::process::Stdio::null());
-        let child = cmd
+        let mut child = cmd
             .spawn()
             .map_err(|e| anyhow::anyhow!("spawn detached run (log {}): {e}", log_path.display()))?;
+        // Defensive liveness check: `spawn` succeeding only means the process
+        // was created, not that it re-dispatched correctly. A bad re-exec
+        // (e.g. the child drops a group layer and lands on an unrelated
+        // command) makes the child exit instantly with a usage error while the
+        // parent would otherwise print a fake pid and return success. Give the
+        // child a short grace window, then reject a fast-exit so the
+        // orchestrator sees the failure instead of a dead worker it must
+        // discover later.
+        tokio::time::sleep(std::time::Duration::from_millis(DETACH_LIVENESS_GRACE_MS)).await;
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                bail!(
+                    "detached run exited immediately ({status}) — check {} for the real error; re-exec may have mis-dispatched",
+                    log_path.display()
+                );
+            }
+            Ok(None) => {}
+            Err(_) => {
+                // A try_wait error is not a crash signal; fall through and let
+                // the normal detached supervision own the child from here.
+            }
+        }
         println!(
             "⏏ detached run pid={} (agent {who}) — log {}",
             child.id(),
