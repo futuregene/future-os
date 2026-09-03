@@ -126,89 +126,6 @@ fn run_turn_folds_tool_starts_into_tracker() {
     });
 }
 
-// ── budget truncation → ledger event ───────────────────────────────────────
-
-#[test]
-fn budget_truncation_read_only_turn_records_turn_no_progress() {
-    let cr = cli_root();
-    let events = vec![ev(
-        "mock-run-1",
-        0,
-        "tool_start",
-        "{\"tool_name\":\"read\"}",
-    )];
-    let st = MockState {
-        events,
-        events_then_hang: true,
-        ..Default::default()
-    };
-    let (_rt, _shared) = mock_env(st);
-    // Shrink the idle window to 1s so the 2s budget truncation breaches it
-    // (the env hook mirrors FUTURE_LOOP_AGENT_ADDR; default is 15 min).
-    std::env::set_var("FUTURE_LOOP_NO_PROGRESS_SECS", "1");
-    let goal = init_goal(&cr, "read-only hang");
-    cli_ok(&[
-        "run",
-        "--goal",
-        &goal,
-        "--anonymous",
-        "--max-turn-secs",
-        "2",
-        "--max-turns",
-        "3",
-    ]);
-    std::env::remove_var("FUTURE_LOOP_NO_PROGRESS_SECS");
-    let store = open_store(&cr);
-    let g = store.replay(&goal).unwrap().unwrap();
-    assert_eq!(g.turn_no_progress.len(), 1, "{:?}", g.turn_no_progress);
-    let np = &g.turn_no_progress[0];
-    assert!(np.idle_secs >= 1, "idle {np:?}");
-    assert_eq!(np.tool_calls_total, 1, "the read tool_start was observed");
-    assert!(np.agent_id.is_none(), "anonymous run");
-    // The ledger carries the real event (replay folds it, so this must hold).
-    let text = std::fs::read_to_string(store.goal_dir(&goal).join("events.jsonl")).unwrap();
-    assert!(text.contains("\"kind\":\"turn_no_progress\""), "{text}");
-    // Status surfaces the breach (recent-last).
-    cli_ok(&["status", "--goal", &goal]);
-}
-
-#[test]
-fn budget_truncation_after_write_tool_no_event() {
-    let cr = cli_root();
-    let events = vec![ev(
-        "mock-run-1",
-        0,
-        "tool_start",
-        "{\"tool_name\":\"write\"}",
-    )];
-    let st = MockState {
-        events,
-        events_then_hang: true,
-        ..Default::default()
-    };
-    let (_rt, _shared) = mock_env(st);
-    // Window 5s: the 2s budget truncation ends well inside it → no breach.
-    std::env::set_var("FUTURE_LOOP_NO_PROGRESS_SECS", "5");
-    let goal = init_goal(&cr, "write then hang");
-    cli_ok(&[
-        "run",
-        "--goal",
-        &goal,
-        "--anonymous",
-        "--max-turn-secs",
-        "2",
-        "--max-turns",
-        "3",
-    ]);
-    std::env::remove_var("FUTURE_LOOP_NO_PROGRESS_SECS");
-    let store = open_store(&cr);
-    let g = store.replay(&goal).unwrap().unwrap();
-    assert!(g.turn_no_progress.is_empty(), "{:?}", g.turn_no_progress);
-    // Status projections (human + json) render the empty state cleanly.
-    cli_ok(&["status", "--goal", &goal]);
-    cli_ok(&["status", "--format", "json", "--goal", &goal]);
-}
-
 #[test]
 fn normal_completion_inside_window_no_event() {
     let cr = cli_root();
@@ -220,16 +137,7 @@ fn normal_completion_inside_window_no_event() {
     });
     std::env::set_var("FUTURE_LOOP_NO_PROGRESS_SECS", "1");
     let goal = init_goal(&cr, "normal completion");
-    cli_ok(&[
-        "run",
-        "--goal",
-        &goal,
-        "--anonymous",
-        "--max-turn-secs",
-        "600",
-        "--max-turns",
-        "3",
-    ]);
+    cli_ok(&["run", "--goal", &goal, "--anonymous", "--max-turns", "3"]);
     std::env::remove_var("FUTURE_LOOP_NO_PROGRESS_SECS");
     let store = open_store(&cr);
     let g = store.replay(&goal).unwrap().unwrap();

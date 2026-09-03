@@ -542,7 +542,7 @@ fn build_cli_registry() -> CommandRegistry {
         ops,
         "run",
         "drive one bounded gRPC turn (--agent-id for lease coordination, or --anonymous; auto-registers)",
-        "run --goal G --agent-id A [--model M] [--thinking-level L] [--max-turns N] [--max-turn-secs N] [--max-incomplete-retries N] [--lease-secs N] [--force-workspace] [--session-policy auto|fresh|resume] [--resume-session ID] [--anonymous]",
+        "run --goal G --agent-id A [--model M] [--thinking-level L] [--max-turns N] [--max-incomplete-retries N] [--lease-secs N] [--force-workspace] [--session-policy auto|fresh|resume] [--resume-session ID] [--anonymous]",
     );
 
     let work_items = r.group(
@@ -3701,7 +3701,6 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     let mut model = None;
     let mut thinking = None;
     let mut max_turns = 6u32;
-    let mut max_turn_secs = 0u64;
     let mut max_incomplete_retries = crate::executor::DEFAULT_MAX_INCOMPLETE_RETRIES;
     let mut agent_id = None;
     let mut anonymous = false;
@@ -3726,7 +3725,6 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
             "--goal",
             "--lease-secs",
             "--max-incomplete-retries",
-            "--max-turn-secs",
             "--max-turns",
             "--model",
             "--resume-session",
@@ -3743,8 +3741,6 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
             thinking = Some(v);
         } else if k == "--max-turns" {
             max_turns = v.parse().unwrap_or(6);
-        } else if k == "--max-turn-secs" {
-            max_turn_secs = v.parse().unwrap_or(0);
         } else if k == "--max-incomplete-retries" {
             max_incomplete_retries = v
                 .parse()
@@ -3964,7 +3960,6 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         max_turns,
         lease_secs,
         agent_id.as_deref(),
-        max_turn_secs,
         max_incomplete_retries,
         force_workspace,
         &mut last_failure_kind,
@@ -4131,11 +4126,10 @@ pub async fn notify_supervisor(
 }
 
 /// Report a worker stop that never reached a turn-boundary writeback (a
-/// transport failure propagating before writeback, or a wall-clock budget
-/// truncation returning early). Both exits skip the normal ②/③ up-channel
-/// reports, so the supervisor would otherwise be left polling a worker that
-/// already stopped. Idempotency is keyed on `todo_id` + `kind`, so a relaunch
-/// that hits the same stop re-notifies only once.
+/// transport failure propagating before writeback). That exit skips the normal
+/// ②/③ up-channel reports, so the supervisor would otherwise be left polling a
+/// worker that already stopped. Idempotency is keyed on `todo_id` + `kind`, so
+/// a relaunch that hits the same stop re-notifies only once.
 #[doc(hidden)] // test-visible seam
 pub async fn notify_infra_stop(
     store: &mut Store,
@@ -4163,7 +4157,7 @@ pub async fn notify_infra_stop(
 
 /// Dead-worker push (the host-died case the recoverable infra stops above
 /// cannot reach): a worker that died mid-slice (SIGKILL / crash / host
-/// failure) executes no code, so the `transport` / `timeout` /
+/// failure) executes no code, so the `transport` /
 /// `incomplete_budget` reports never fire. The scheduler tick is the periodic
 /// trigger that notices a lease whose holder pid is gone and pushes a report
 /// to the registered supervisor, so the orchestrator is prompted to relaunch
@@ -4215,7 +4209,6 @@ async fn run_turns(
     max_turns: u32,
     lease_secs: u64,
     agent_id: Option<&str>,
-    max_turn_secs: u64,
     max_incomplete_retries: u32,
     force_workspace: bool,
     last_failure_kind: &mut Option<crate::state::FailureKind>,
@@ -4468,80 +4461,26 @@ async fn run_turns(
             Some(&progress),
             turn_note.as_deref(),
         );
-        let record = if max_turn_secs > 0 {
-            // Wall-clock budget per turn: a long turn that never sees new
-            // instructions is an observability hole; bound it so orchestrators
-            // can relaunch on a safe cadence (context replays from the ledger).
-            match tokio::time::timeout(std::time::Duration::from_secs(max_turn_secs), turn_future)
-                .await
-            {
-                Ok(r) => match r {
-                    Ok(rec) => rec,
-                    Err(e) => {
-                        // A gRPC transport failure (h2 reset, stream error,
-                        // connect loss …) never reached a writeback, so the
-                        // ②/③ up-channel reports are skipped. Report the
-                        // infra stop and mark it resumable before
-                        // re-propagating, so the supervisor isn't left
-                        // polling a dead worker.
-                        *last_failure_kind = Some(crate::state::FailureKind::InfraRecoverable);
-                        notify_infra_stop(
-                            store,
-                            client,
-                            goal_id,
-                            goal.supervisor_session_id.as_deref(),
-                            &todo_id,
-                            "transport",
-                            &format!("{e}"),
-                        )
-                        .await;
-                        return Err(e);
-                    }
-                },
-                Err(_) => {
-                    // O3: budget truncation is a turn end — evaluate the
-                    // no-progress window against the observed tool starts
-                    // before stopping the run.
-                    record_no_progress_if_idle(store, goal_id, &todo_id, agent_id, &progress)?;
-                    // A turn that outlives its wall-clock budget is an infra
-                    // stop, not a science result: mark it resumable so the
-                    // session's reasoning state is retained for the next
-                    // launch, and report it up-channel (the early return
-                    // otherwise skips the ②/③ reports).
-                    *last_failure_kind = Some(crate::state::FailureKind::InfraRecoverable);
-                    notify_infra_stop(
-                        store,
-                        client,
-                        goal_id,
-                        goal.supervisor_session_id.as_deref(),
-                        &todo_id,
-                        "timeout",
-                        &format!("turn exceeded --max-turn-secs ({max_turn_secs}s)"),
-                    )
-                    .await;
-                    println!(
-                        "   ⏱ turn exceeded --max-turn-secs ({max_turn_secs}s) — stopping run gracefully; relaunch to continue"
-                    );
-                    return Ok(());
-                }
-            }
-        } else {
-            match turn_future.await {
-                Ok(rec) => rec,
-                Err(e) => {
-                    *last_failure_kind = Some(crate::state::FailureKind::InfraRecoverable);
-                    notify_infra_stop(
-                        store,
-                        client,
-                        goal_id,
-                        goal.supervisor_session_id.as_deref(),
-                        &todo_id,
-                        "transport",
-                        &format!("{e}"),
-                    )
-                    .await;
-                    return Err(e);
-                }
+        let record = match turn_future.await {
+            Ok(rec) => rec,
+            Err(e) => {
+                // A gRPC transport failure (h2 reset, stream error, connect
+                // loss …) never reached a writeback, so the ②/③ up-channel
+                // reports are skipped. Report the infra stop and mark it
+                // resumable before re-propagating, so the supervisor isn't
+                // left polling a dead worker.
+                *last_failure_kind = Some(crate::state::FailureKind::InfraRecoverable);
+                notify_infra_stop(
+                    store,
+                    client,
+                    goal_id,
+                    goal.supervisor_session_id.as_deref(),
+                    &todo_id,
+                    "transport",
+                    &format!("{e}"),
+                )
+                .await;
+                return Err(e);
             }
         };
         println!(

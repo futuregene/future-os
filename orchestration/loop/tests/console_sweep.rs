@@ -1,7 +1,6 @@
 //! Coverage sweep for console.rs remainder: unknown-flag parse arms across
-//! every command, the monitor claim-race re-decide loop, wall-clock-budget
-//! success arm, session-cleanup warning, and assorted print arms unreachable
-//! through the happy paths.
+//! every command, the monitor claim-race re-decide loop, session-cleanup
+//! warning, and assorted print arms unreachable through the happy paths.
 
 mod common;
 
@@ -357,27 +356,7 @@ fn run_monitor_claim_race_stops_without_selection() {
     assert_ne!(m.status, TodoStatus::Done, "raced monitor never executed");
 }
 
-// ── run: wall-clock budget success arm + session cleanup warning ───────────
-
-#[test]
-fn run_with_time_budget_success_path() {
-    let cr = cli_root();
-    let (_rt, _shared) = mock_env(MockState {
-        events: completed_events("mock-run-1"),
-        ..Default::default()
-    });
-    let goal = init_goal(&cr, "budget success");
-    cli_ok(&[
-        "run",
-        "--goal",
-        &goal,
-        "--anonymous",
-        "--max-turn-secs",
-        "600",
-        "--max-turns",
-        "3",
-    ]);
-}
+// ── run: session cleanup warning ───────────────────────────────────────────
 
 #[test]
 fn run_retains_session() {
