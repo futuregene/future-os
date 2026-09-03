@@ -3795,7 +3795,18 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         // The child re-enters the CLI dispatcher, which expects the command
         // name first; our args start at `run`'s flags (we ARE cmd_run), so
         // re-prepend the command name.
-        let mut child_args: Vec<String> = Vec::with_capacity(args.len() + 2);
+        //
+        // IMPORTANT: the unified `future` binary dispatches on the FIRST arg
+        // as a group name — `future loop run …` reaches cmd_run, but
+        // `future run …` falls through to the unrelated one-shot `future run`
+        // command (which rejects `--goal` with "Unknown option: --goal" and
+        // exits immediately). The standalone `future-loop` binary has no such
+        // group layer, so only prepend `loop` when re-execing the `future`
+        // binary (detected via `exe_stem` above).
+        let mut child_args: Vec<String> = Vec::with_capacity(args.len() + 3);
+        if exe_stem == "future" {
+            child_args.push("loop".to_string());
+        }
         child_args.push("run".to_string());
         child_args.extend(args.iter().cloned());
         child_args.push("--detach".to_string());
@@ -4619,15 +4630,35 @@ async fn run_turns(
                     | Some(crate::state::FailureKind::HardError)
             ) {
                 let attempts = g.todo(&todo_id).map(|t| t.failed_attempts).unwrap_or(0);
+                // The failure text must reflect the actual failure, not the
+                // LLM's terminal state. A verify-gate rejection ends the turn
+                // with terminal_state == "completed" and error == None, so a
+                // naive `error.unwrap_or(terminal_state)` fallback misreports
+                // it as "error: completed". Report the failure kind instead:
+                // for a verify-gate rejection include the validator's exit
+                // code; otherwise use the error (or terminal state) as-is.
+                let failure_text = match record.failure_kind {
+                    Some(crate::state::FailureKind::ScienceVerifyFailed) => {
+                        match &record.validation {
+                            Some(v) if !v.ok => format!(
+                                "verify gate rejected (exit {})",
+                                v.exit_code
+                                    .map(|c| c.to_string())
+                                    .unwrap_or_else(|| "-".to_string())
+                            ),
+                            _ => "verify-gate rejected the output".to_string(),
+                        }
+                    }
+                    _ => record
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| record.terminal_state.clone()),
+                };
                 notify_supervisor(
                     client,
                     g.supervisor_session_id.as_deref(),
                     &format!(
-                        "[future-loop] goal {goal_id}: todo {todo_id} failed (attempt {attempts}) — error: {}",
-                        record
-                            .error
-                            .as_deref()
-                            .unwrap_or(record.terminal_state.as_str())
+                        "[future-loop] goal {goal_id}: todo {todo_id} failed (attempt {attempts}) — error: {failure_text}",
                     ),
                     &format!("failed:{todo_id}:{attempts}"),
                 )
