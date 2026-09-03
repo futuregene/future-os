@@ -267,6 +267,9 @@ struct FuturePriceRule {
     output: Option<String>,
     input_cache_read: Option<String>,
     input_cache_write: Option<String>,
+    cached_input: Option<String>,
+    cache_read: Option<String>,
+    cache_write: Option<String>,
 }
 
 /// Fetch models from Future server.
@@ -460,11 +463,27 @@ fn convert_future_model(entry: FutureModelEntry, base_url: &str) -> Model {
                 .and_then(|p| p.price_unit)
                 .unwrap_or(1)
                 .max(1) as f64;
+            // Future Server names passive cache reads `cached_input` and
+            // active cache operations `cache_read` / `cache_write`. The agent
+            // currently exposes one read bucket, populated from
+            // prompt_tokens_details.cached_tokens, so prefer the matching
+            // passive-cache price while preserving the legacy aliases.
+            let cache_read = rule
+                .cached_input
+                .as_ref()
+                .or(rule.cache_read.as_ref())
+                .or(rule.input_cache_read.as_ref())
+                .cloned();
+            let cache_write = rule
+                .cache_write
+                .as_ref()
+                .or(rule.input_cache_write.as_ref())
+                .cloned();
             (
                 parse_price_string(&rule.input, price_unit),
                 parse_price_string(&rule.output, price_unit),
-                parse_price_string(&rule.input_cache_read, price_unit),
-                parse_price_string(&rule.input_cache_write, price_unit),
+                parse_price_string(&cache_read, price_unit),
+                parse_price_string(&cache_write, price_unit),
             )
         })
         .unwrap_or((0.0, 0.0, 0.0, 0.0));
@@ -1032,6 +1051,9 @@ mod tests {
                     output: Some("0.002".to_string()),
                     input_cache_read: Some("0.0005".to_string()),
                     input_cache_write: None,
+                    cached_input: None,
+                    cache_read: None,
+                    cache_write: None,
                 }]),
             }),
             supported_parameters: None,
@@ -1046,6 +1068,32 @@ mod tests {
         assert_eq!(model.cost.output, 2000.0);
         assert_eq!(model.cost.cache_read, 500.0);
         assert_eq!(model.cost.cache_write, 0.0); // None → 0
+    }
+
+    #[test]
+    fn convert_model_pricing_accepts_platform_cache_field_names() {
+        let entry: FutureModelEntry = serde_json::from_value(serde_json::json!({
+            "id": "qwen3.8-max",
+            "pricing": {
+                "currency": "CREDIT",
+                "price_unit": 1_000_000,
+                "prices": [{
+                    "input": "12",
+                    "output": "36",
+                    "cached_input": "1.5",
+                    "cache_read": "1",
+                    "cache_write": "15"
+                }]
+            }
+        }))
+        .unwrap();
+
+        let model = convert_future_model(entry, "https://api.example.com/v1");
+
+        // `prompt_tokens_details.cached_tokens` is passive cache usage, so the
+        // matching `cached_input` rate takes precedence over explicit cache_read.
+        assert_eq!(model.cost.cache_read, 1.5);
+        assert_eq!(model.cost.cache_write, 15.0);
     }
 
     // ─── fetch/cache/refresh against a mock server ─────────────────────────
