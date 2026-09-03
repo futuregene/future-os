@@ -54,7 +54,7 @@ fn help_lists_all_pre_existing_commands_in_groups() {
         "gate resolve --goal G",
         "── agent ──",
         "agent onboard --goal G",
-        "| list|contract|recipe|succession|collective --goal G",
+        "| list --goal G",
         "── ops ──",
         "quota should-run --goal G",
         "scheduler tick|show|record-host-failure",
@@ -268,57 +268,6 @@ fn p3_multi_agent_and_work_item_commands() {
     assert!(
         out_b.contains(&format!("{t_a}  ← outside this frontier")),
         "A's claim is marked outside B's frontier"
-    );
-
-    // Supervisor proposal + receipt + events.
-    let (_, err, code) = run(
-        &root,
-        &[
-            "supervisor",
-            "propose",
-            "--goal",
-            "g1",
-            "--agent-id",
-            "sup-1",
-            "--decision-id",
-            "d1",
-            "--target-agent-id",
-            "agent-b",
-            "--kind",
-            "execute",
-            "--capabilities",
-            "github",
-            "--summary",
-            "merge",
-        ],
-    );
-    assert_eq!(code, 0, "propose: {err}");
-    let (_, err, code) = run(
-        &root,
-        &[
-            "supervisor",
-            "receipt",
-            "--goal",
-            "g1",
-            "--decision-id",
-            "d1",
-            "--receipt-id",
-            "r1",
-            "--adapter-id",
-            "a",
-            "--outcome",
-            "executed",
-            "--authority-ref",
-            "auth",
-            "--host-capabilities",
-            "github",
-        ],
-    );
-    assert_eq!(code, 0, "receipt: {err}");
-    let (out, _, _) = run(&root, &["supervisor", "events", "--goal", "g1"]);
-    assert!(
-        out.contains("\"execution_status\": \"executed\""),
-        "projection: {out}"
     );
 
     // Supervisor register (up-channel target) + steer (down-channel interrupt).

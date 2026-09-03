@@ -174,11 +174,6 @@ run 如何发起、worker 如何触达编排会话，属于架构决策（上述
   随时直接介入（`todo update`、`worker stop`、手动 `todo complete`）：
   下层自动化，顶端是一个人。
 
-在一个多 agent goal 内，**peer worker 互备**：契约的 `backup_for` 边为
-每个 worker 声明一个替补，当 primary 的 lease 过期或心跳静默时替补自动
-晋升（succession）。那是 *worker* 层的冗余——peer 之间的横向互备；它不
-监督或替换编排者。
-
 ## 看板的结构：todo、依赖、worker
 
 三种关系定义了多 worker 工作如何在看板上铺开——关键在于，信息如何在不
@@ -206,8 +201,8 @@ worker 并不是在收消息——那*就是*它的 todo：它被 `--blocks` 排
 **扇出 → 汇总 → 扇出，用这些概念说。** 用不同模型沿不同方向 spawn 若干
 worker（并行 todo，互无边）；一个汇总 todo `--blocks` 它们全部，于是下游
 worker 读它们的产物做综合；第二轮 todo `--blocks` 这个汇总。编组、选模型、
-分方向、定轮次，全是**编排层**的决策（编排者塑形 contract 拓扑、todo
-文本、spawn 配置）；看板只保证顺序（边）与互斥（lease），并不建模*哪个
+分方向、定轮次，全是**编排层**的决策（编排者塑形 todo 文本、`--blocks`
+接线与 spawn 配置）；看板只保证顺序（边）与互斥（lease），并不建模*哪个
 产物流向哪个 todo*——这部分接线由编排者写进 todo 文本和 acceptance 契约。
 
 ## steer 与重配一个运行中的 worker

@@ -294,44 +294,6 @@ fn scope_and_supervisor_flag_branches() {
         "--exclude",
         "a2,a3",
     ]);
-    // supervisor propose (anchors the decision the receipt references).
-    cli_ok(&[
-        "supervisor",
-        "propose",
-        "--goal",
-        &gid,
-        "--agent-id",
-        "sup",
-        "--decision-id",
-        "d1",
-        "--target-agent-id",
-        "worker",
-        "--kind",
-        "execute",
-        "--capabilities",
-        "shell",
-        "--summary",
-        "do it",
-    ]);
-    // supervisor receipt with host-capabilities.
-    cli_ok(&[
-        "supervisor",
-        "receipt",
-        "--goal",
-        &gid,
-        "--decision-id",
-        "d1",
-        "--receipt-id",
-        "r1",
-        "--adapter-id",
-        "ad",
-        "--outcome",
-        "executed",
-        "--authority-ref",
-        "auth",
-        "--host-capabilities",
-        "shell,github",
-    ]);
     // supervisor events projection.
     cli_ok(&["supervisor", "events", "--goal", &gid]);
 }

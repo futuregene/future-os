@@ -103,38 +103,6 @@ fn include_experimental_pass_through_covers_unmatched_key_edges() {
         "a1",
         "--include-experimental",
     ]);
-    // Trailing else-if in cmd_supervisor receipt (host-capabilities last).
-    cli_ok(&[
-        "supervisor",
-        "propose",
-        "--goal",
-        &gid,
-        "--agent-id",
-        "sup",
-        "--decision-id",
-        "d1",
-        "--target-agent-id",
-        "worker",
-        "--kind",
-        "execute",
-    ]);
-    cli_ok(&[
-        "supervisor",
-        "receipt",
-        "--goal",
-        &gid,
-        "--decision-id",
-        "d1",
-        "--receipt-id",
-        "r1",
-        "--adapter-id",
-        "ad",
-        "--outcome",
-        "executed",
-        "--authority-ref",
-        "auth",
-        "--include-experimental",
-    ]);
     // Trailing else-if in todo update (--blocks last).
     cli_ok(&[
         "todo",

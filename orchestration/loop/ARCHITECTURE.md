@@ -215,12 +215,6 @@ Supervision is a stack, and it tops out at a person:
   person may also step in directly at any time (`todo update`, `worker
   stop`, manual `todo complete`): automation below, a person at the top.
 
-Within a multi-agent goal, **peer workers back each other up**: the
-contract's `backup_for` edges declare, per worker, a backup that is
-auto-promoted (succession) when the primary's lease expires or its
-heartbeat goes silent. That is *worker* redundancy — lateral, among peers;
-it does not watch or replace the orchestrator.
-
 ## The kanban's structure: todos, dependencies, workers
 
 Three relations define how multi-worker work is laid out on the board, and
@@ -259,7 +253,7 @@ edges); a synthesis todo `--blocks` them all, so a downstream worker reads
 their artifacts and summarizes; a second wave of todos `--blocks` the
 synthesis. Grouping, model choice, direction assignment, and round
 progression are all **orchestration-layer** decisions (the orchestrator
-shapes the contract topology, todo texts, and spawn configurations); the
+shapes the todo texts, `--blocks` wiring, and spawn configurations); the
 board only guarantees order (edges) and mutual exclusion (leases), and does
 not model *which artifact flows into which todo* — that wiring the
 orchestrator writes into the todo text and acceptance contract.
