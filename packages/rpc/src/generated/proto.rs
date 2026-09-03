@@ -142,7 +142,7 @@ pub struct RpcCommand {
     /// per-client data, not part of the typed contract.
     #[prost(string, tag = "162")]
     pub source_meta: ::prost::alloc::string::String,
-    /// Stable identity of the creator installation/account. Unlike a future
+    /// Stable device identity of the creator installation. Unlike a future
     /// client_id this does not identify one process or transport connection.
     /// Consumers use it to distinguish their own lifecycle announcements from
     /// sessions created by another instance of the same client type.
