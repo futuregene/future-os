@@ -117,7 +117,7 @@ async fn loop_workspace_scope_blocks_unapproved_absolute_write_from_model_tool_c
         },
         workspace.to_string_lossy().as_ref(),
     );
-    sandbox.available = false;
+    sandbox.set_backend_available_for_test(false);
     crate::tools::with_tool_scope(
         crate::tools::ScopeOptions {
             workspace: workspace.to_string_lossy().to_string(),

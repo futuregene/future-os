@@ -124,13 +124,13 @@
 | B-01 | host baseline | system bwrap 可发现并报告版本 | `command -v bwrap && bwrap --version` | PASS：`/usr/bin/bwrap`, 0.11.1 |
 | B-02 | host baseline | 生产基线 namespace/ro-root/dev/proc 参数可运行 | 使用 §1 记录的 `/usr/bin/bwrap ... /bin/true` 命令 | PASS：exit 0 |
 | B-03 | support baseline | 当前机属于目标发行版矩阵 | `cat /etc/os-release; uname -m` | ENVIRONMENT LIMIT：Ubuntu 26.04 x86_64 非目标版本 |
-| P-01 | probe unit | PATH 空项、相对项、cwd/workspace 候选拒绝 | `cargo test -p future-agent sandbox::linux::probe` | NOT RUN |
-| P-02 | probe unit | version/help/timeout/identity code 稳定 | 同上，fake runner/clock/metadata | NOT RUN |
+| P-01 | probe unit | PATH 空项、相对项、cwd/workspace 候选拒绝 | `cargo test -p future-agent sandbox::linux::probe` | PASS（2026-09-03：safe PATH/workspace rejection） |
+| P-02 | probe unit | version/help/timeout/identity code 稳定 | 同上，fake runner/clock/metadata | PASS（2026-09-03：typed failure、timeout、cache identity/expiry） |
 | P-03 | probe integration | missing/old/missing-feature/userns/proc 各返回预期 code | `cargo test -p future-agent --test linux_sandbox_smoke probe_ -- --ignored --test-threads=1` | NOT RUN |
-| R-01 | rules/plan | fallback roots、外部 allow、ask/deny、层级顺序 | `cargo test -p future-agent sandbox::linux::plan` | NOT RUN |
-| R-02 | rules/plan | 窄 allow reopen、hard deny 不可 reopen、根去重 | 同上 | NOT RUN |
+| R-01 | rules/plan | fallback roots、外部 allow、ask/deny、层级顺序 | `cargo test -p future-agent sandbox::linux::plan` | PASS（2026-09-03） |
+| R-02 | rules/plan | 窄 allow reopen、hard deny 不可 reopen、根去重 | 同上 | PASS（2026-09-03） |
 | R-03 | rules/plan | symlink、missing exact、glob 快照/上限/异常 fail closed | 同上 | NOT RUN |
-| R-04 | cross-platform | Seatbelt/Windows/manual/off 行为不回归 | `cargo test -p future-agent sandbox:: tools:: rpc::commands::settings` | NOT RUN |
+| R-04 | cross-platform | Seatbelt/Windows/manual/off 行为不回归 | `cargo test -p future-agent sandbox:: tools:: rpc::commands::settings` | PASS（2026-09-03：sandbox 115 tests；Agent clippy all tests） |
 | H-01 | helper parser | version/size/count/FD/path 输入校验 | `cargo test -p future-agent sandbox::linux::request` | NOT RUN |
 | H-02 | helper boundary | helper 绕过 Agent singleton，但非法直接调用失败 | `cargo test -p future-agent --test cli_smoke linux_helper` | NOT RUN |
 | H-03 | mount smoke | workspace/temp 写成功，workspace 外写失败且 host 无文件 | `cargo test -p future-agent --test linux_sandbox_smoke filesystem_ -- --ignored --test-threads=1` | NOT RUN |

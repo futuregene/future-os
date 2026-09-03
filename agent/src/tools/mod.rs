@@ -1069,7 +1069,8 @@ async fn spawn_shell(
     // itself, so the command passes through unmodified.
     #[cfg(windows)]
     let merged_cmd = command.to_string();
-    let mut child = sandbox.build_shell_command(&merged_cmd, escalated);
+    let prepared = sandbox.prepare_shell(&merged_cmd, escalated);
+    let mut child = prepared.into_command();
     child.current_dir(&cwd).env("PWD", &cwd);
     // Prepend the agent binary's directory to PATH so bundled tools in the
     // same directory are discoverable by shell commands. (map + discard: a
@@ -1923,7 +1924,7 @@ mod tests {
             },
             workspace.to_string_lossy().as_ref(),
         );
-        sandbox.available = false;
+        sandbox.set_backend_available_for_test(false);
         ScopeOptions {
             workspace: workspace.to_string_lossy().to_string(),
             permission_level: "workspace".to_string(),
@@ -2031,7 +2032,7 @@ mod tests {
             },
             workspace.to_string_lossy().as_ref(),
         );
-        sandbox.available = available;
+        sandbox.set_backend_available_for_test(available);
         let requester: EscalationRequester = Arc::new(move |request: &EscalationRequest| {
             calls.lock().push(request.clone());
             decision.clone()
@@ -2761,7 +2762,7 @@ mod tests {
         // (the approved re-run is unsandboxed), not the OS boundary. An
         // early-return guard would be a dead line where Seatbelt exists.
         let mut sandbox = sandbox;
-        sandbox.available = true;
+        sandbox.set_backend_available_for_test(true);
         // Approved pre-execution escalation runs unsandboxed.
         let approve: crate::sandbox::EscalationRequester =
             Arc::new(|_request| crate::sandbox::EscalationDecision::Approved);
@@ -2787,7 +2788,7 @@ mod tests {
             ws.to_string_lossy().as_ref(),
         );
         let mut sandbox = sandbox;
-        sandbox.available = true;
+        sandbox.set_backend_available_for_test(true);
         let deny: crate::sandbox::EscalationRequester =
             Arc::new(|_request| crate::sandbox::EscalationDecision::Denied("no way".to_string()));
         let result = with_tool_scope(
@@ -2823,7 +2824,7 @@ mod tests {
         // This test is cfg(macos): Seatbelt always exists there. Force the
         // flag anyway so an early-return guard (a dead line) isn't needed.
         let mut sandbox = sandbox;
-        sandbox.available = true;
+        sandbox.set_backend_available_for_test(true);
         // A write outside every writable root is denied by Seatbelt; the
         // escalation requester approves, so the command re-runs unsandboxed.
         let target = dirs::home_dir()
@@ -2910,7 +2911,7 @@ mod tests {
         // cfg(macos): Seatbelt always exists; force the flag (see the
         // approved-path sibling test).
         let mut sandbox = sandbox;
-        sandbox.available = true;
+        sandbox.set_backend_available_for_test(true);
         // Seatbelt denies the write; the requester denies the escalation, so
         // the caller gets the original output plus a "not approved" note.
         let target = dirs::home_dir().unwrap().join(format!(
@@ -3041,7 +3042,7 @@ mod tests {
         );
         // cfg(macos): Seatbelt always exists; force the flag (see siblings).
         let mut sandbox = sandbox;
-        sandbox.available = true;
+        sandbox.set_backend_available_for_test(true);
         // escalated=true but NO escalation channel registered: the request
         // can't be approved, so the command runs normally (sandboxed).
         let result = with_tool_scope(
@@ -3074,7 +3075,7 @@ mod tests {
             ws.to_string_lossy().as_ref(),
         );
         let mut sandbox = sandbox;
-        sandbox.available = true;
+        sandbox.set_backend_available_for_test(true);
         // A sandboxed command that fails for an ORDINARY reason (not a
         // sandbox denial) must not even consult the escalation channel.
         let deny: crate::sandbox::EscalationRequester = Arc::new(deny_escalation_fn);

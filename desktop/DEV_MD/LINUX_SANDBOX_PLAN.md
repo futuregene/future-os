@@ -1,6 +1,6 @@
 # FutureOS Linux 沙盒调研与开发计划
 
-状态：**方案已完成第一轮决策收口，等待按 L0–L6 实施；当前代码尚未实现 Linux OS 沙盒，主干产品仍只显示“手动审批 / 完全放开”**（2026-09-02）。
+状态：**方案已完成第一轮决策收口；开发分支已完成 L0/L1 的 typed probe、缓存/identity、平台中立 `PreparedShell` 与纯 `LinuxSandboxPlan`，L2 helper 尚未接入，因此 Linux OS 沙盒仍不会被标记为 available，主干产品仍只显示“手动审批 / 完全放开”**（2026-09-03）。
 
 本文是 [`SANDBOX_PLAN.md`](SANDBOX_PLAN.md) 的 Linux 专项设计稿。审批规则语义仍以 [`APPROVAL_PLAN.md`](APPROVAL_PLAN.md) 为准；本文只讨论如何把现有 `RuleSet` 强制到 Linux shell 子进程，以及产品启用前需要补齐的证据。代码落点、实施波次与逐项验收命令见 [`LINUX_SANDBOX_IMPLEMENTATION.md`](LINUX_SANDBOX_IMPLEMENTATION.md)。
 

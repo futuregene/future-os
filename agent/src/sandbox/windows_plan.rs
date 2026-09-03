@@ -242,7 +242,7 @@ mod tests {
         );
         let sandbox = ResolvedSandbox {
             tier: SandboxTier::Manual,
-            available: crate::sandbox::platform_sandbox_available(),
+            backend_receipt: crate::sandbox::platform_backend_receipt(),
             workspace: rules.workspace.clone(),
             rules,
         };
@@ -278,7 +278,7 @@ mod tests {
         rules.add_session_rule(&allow_read.to_string_lossy(), Access::Read, Decision::Allow);
         let sandbox = ResolvedSandbox {
             tier: SandboxTier::Manual,
-            available: crate::sandbox::platform_sandbox_available(),
+            backend_receipt: crate::sandbox::platform_backend_receipt(),
             workspace: rules.workspace.clone(),
             rules,
         };
@@ -351,7 +351,7 @@ mod tests {
         rules.add_session_rule(&external.to_string_lossy(), Access::Write, Decision::Allow);
         let sandbox = ResolvedSandbox {
             tier: SandboxTier::Manual,
-            available: crate::sandbox::platform_sandbox_available(),
+            backend_receipt: crate::sandbox::platform_backend_receipt(),
             workspace: rules.workspace.clone(),
             rules,
         };
@@ -375,7 +375,7 @@ mod tests {
         rules.add_session_rule(&deny_path.to_string_lossy(), Access::Write, Decision::Deny);
         let sandbox = ResolvedSandbox {
             tier: SandboxTier::Manual,
-            available: crate::sandbox::platform_sandbox_available(),
+            backend_receipt: crate::sandbox::platform_backend_receipt(),
             workspace: rules.workspace.clone(),
             rules,
         };
@@ -397,7 +397,7 @@ mod tests {
         rules.add_session_rule(&parent.to_string_lossy(), Access::Write, Decision::Allow);
         let sandbox = ResolvedSandbox {
             tier: SandboxTier::Manual,
-            available: crate::sandbox::platform_sandbox_available(),
+            backend_receipt: crate::sandbox::platform_backend_receipt(),
             workspace: rules.workspace.clone(),
             rules,
         };

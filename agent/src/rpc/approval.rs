@@ -2107,7 +2107,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
             &ws,
         );
         // Force availability so the wrap check is platform-independent.
-        sandbox.available = true;
+        sandbox.set_backend_available_for_test(true);
         let gate = ApprovalGate::default();
         let broadcaster = SseBroadcaster::new();
         // A command that would ASK under the manual tier runs ungated here:

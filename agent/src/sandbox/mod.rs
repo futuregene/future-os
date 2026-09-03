@@ -11,6 +11,8 @@
 //! Network is unrestricted. The whole system is gated by `enabled`: only GUI
 //! sessions opt in; everything else runs fully open.
 
+pub mod backend;
+pub mod linux;
 pub mod paths;
 pub mod rules;
 mod seatbelt;
@@ -24,7 +26,21 @@ pub(crate) mod windows_request;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use backend::PreparedShell;
 use rules::{Decision, Op, RuleSet};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SandboxBackendReceipt {
+    Unavailable,
+    MacosSeatbelt { executable: PathBuf },
+    WindowsRestricted,
+}
+
+impl SandboxBackendReceipt {
+    pub fn is_available(&self) -> bool {
+        !matches!(self, Self::Unavailable)
+    }
+}
 
 /// The user-selected approval tier (composer / settings).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -68,8 +84,9 @@ pub struct SandboxPolicy {
 #[derive(Debug, Clone)]
 pub struct ResolvedSandbox {
     pub tier: SandboxTier,
-    /// Whether the platform OS sandbox is usable here.
-    pub available: bool,
+    /// Verified backend identity/capability receipt. Availability is derived
+    /// from this receipt rather than maintained as an independent boolean.
+    pub backend_receipt: SandboxBackendReceipt,
     /// Canonicalized workspace directory.
     pub workspace: PathBuf,
     rules: RuleSet,
@@ -81,7 +98,7 @@ impl ResolvedSandbox {
         let rules = RuleSet::resolve(Path::new(workspace));
         Self {
             tier: policy.tier,
-            available: platform_sandbox_available(),
+            backend_receipt: platform_backend_receipt(),
             workspace: rules.workspace.clone(),
             rules,
         }
@@ -97,7 +114,7 @@ impl ResolvedSandbox {
         let rules = RuleSet::resolve_with_session(Path::new(workspace), session);
         Self {
             tier: policy.tier,
-            available: platform_sandbox_available(),
+            backend_receipt: platform_backend_receipt(),
             workspace: rules.workspace.clone(),
             rules,
         }
@@ -128,7 +145,7 @@ impl ResolvedSandbox {
         let rules = RuleSet::resolve(Path::new(workspace));
         Self {
             tier: SandboxTier::Off,
-            available: false,
+            backend_receipt: SandboxBackendReceipt::Unavailable,
             workspace: rules.workspace.clone(),
             rules,
         }
@@ -162,7 +179,18 @@ impl ResolvedSandbox {
     /// Whether shell commands run wrapped in the OS sandbox (Sandbox tier on a
     /// platform where sandbox-exec is available).
     pub fn wraps_shell(&self) -> bool {
-        self.tier == SandboxTier::Sandbox && self.available
+        self.tier == SandboxTier::Sandbox && self.backend_receipt.is_available()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_backend_available_for_test(&mut self, available: bool) {
+        self.backend_receipt = if available {
+            SandboxBackendReceipt::MacosSeatbelt {
+                executable: PathBuf::from("/usr/bin/sandbox-exec"),
+            }
+        } else {
+            SandboxBackendReceipt::Unavailable
+        };
     }
 
     /// Read access to the resolved rule set (Seatbelt profile builder).
@@ -170,20 +198,21 @@ impl ResolvedSandbox {
         &self.rules
     }
 
-    /// Build the shell invocation: Seatbelt-wrapped when enabled+available and
-    /// not escalated; otherwise the platform shell via [`shell_invocation`].
-    /// `escalated` forces an unsandboxed run for one approved command.
-    pub fn build_shell_command(&self, command: &str, escalated: bool) -> tokio::process::Command {
+    /// Prepare a structured shell invocation. Linux execution remains
+    /// unavailable until the L2 helper consumes its probe receipt and plan.
+    pub fn prepare_shell(&self, command: &str, escalated: bool) -> PreparedShell {
         if !escalated && self.wraps_shell() {
             #[cfg(target_os = "macos")]
             {
-                return seatbelt::build_command(self, command);
+                return seatbelt::prepare(self, command);
             }
         }
-        let (program, args) = shell_invocation(command);
-        let mut child = tokio::process::Command::new(program);
-        child.args(&args);
-        child
+        PreparedShell::plain(command)
+    }
+
+    /// Compatibility adapter for callers that need a Tokio command.
+    pub fn build_shell_command(&self, command: &str, escalated: bool) -> tokio::process::Command {
+        self.prepare_shell(command, escalated).into_command()
     }
 
     /// Convert bash-style escaped double quotes (\") to single-quoted form
@@ -279,7 +308,7 @@ impl ResolvedSandbox {
     ) -> serde_json::Value {
         serde_json::json!({
             "inside_sandbox": inside_sandbox,
-            "sandbox_available": self.available,
+            "sandbox_available": self.backend_receipt.is_available(),
             "tier": self.tier.as_str(),
             "violation": violation,
             "cwd": self.workspace.to_string_lossy(),
@@ -798,6 +827,29 @@ pub fn platform_sandbox_available() -> bool {
     platform_sandbox_availability().unwrap_or(false)
 }
 
+fn platform_backend_receipt() -> SandboxBackendReceipt {
+    #[cfg(target_os = "macos")]
+    {
+        if Path::new("/usr/bin/sandbox-exec").exists() {
+            return SandboxBackendReceipt::MacosSeatbelt {
+                executable: PathBuf::from("/usr/bin/sandbox-exec"),
+            };
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if cached_windows_sandbox_probe()
+            .map(|probe| probe.available)
+            .unwrap_or(false)
+        {
+            return SandboxBackendReceipt::WindowsRestricted;
+        }
+    }
+    // Linux probe support lands in L0, but the receipt remains unavailable
+    // until the L2 helper can actually enforce the compiled plan.
+    SandboxBackendReceipt::Unavailable
+}
+
 /// Resolve product sandbox support without collapsing a transient Windows
 /// probe failure into an authoritative unsupported result.
 pub(crate) fn platform_sandbox_availability() -> std::io::Result<bool> {
@@ -1065,7 +1117,9 @@ mod tests {
     fn tier_maps_shell_handling() {
         let ws = temp_workspace("tiers");
         let mut manual = enabled(&ws);
-        manual.available = true;
+        manual.backend_receipt = SandboxBackendReceipt::MacosSeatbelt {
+            executable: PathBuf::from("/usr/bin/sandbox-exec"),
+        };
         // Manual: shell needs approval, never OS-wrapped, even where available.
         assert!(!manual.wraps_shell());
         assert!(manual.shell_needs_approval());
@@ -1076,11 +1130,13 @@ mod tests {
             },
             &ws,
         );
-        sandbox.available = true;
+        sandbox.backend_receipt = SandboxBackendReceipt::MacosSeatbelt {
+            executable: PathBuf::from("/usr/bin/sandbox-exec"),
+        };
         assert!(sandbox.wraps_shell());
         assert!(!sandbox.shell_needs_approval());
         // Sandbox tier without the OS sandbox falls back to shell approval.
-        sandbox.available = false;
+        sandbox.backend_receipt = SandboxBackendReceipt::Unavailable;
         assert!(!sandbox.wraps_shell());
         assert!(sandbox.shell_needs_approval());
 
@@ -1356,7 +1412,9 @@ mod tests {
             },
             &ws,
         );
-        s.available = true;
+        s.backend_receipt = SandboxBackendReceipt::MacosSeatbelt {
+            executable: PathBuf::from("/usr/bin/sandbox-exec"),
+        };
         // Escalated should skip the OS sandbox
         let cmd = s.build_shell_command("echo escalated", true);
         let std_cmd = cmd.as_std();
