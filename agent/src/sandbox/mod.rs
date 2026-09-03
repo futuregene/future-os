@@ -194,6 +194,7 @@ impl ResolvedSandbox {
     #[cfg(test)]
     pub(crate) fn set_backend_available_for_test(&mut self, available: bool) {
         self.backend_receipt = if available {
+            self.tier = SandboxTier::Sandbox;
             SandboxBackendReceipt::MacosSeatbelt {
                 executable: PathBuf::from("/usr/bin/sandbox-exec"),
             }
@@ -204,6 +205,7 @@ impl ResolvedSandbox {
 
     #[cfg(test)]
     pub(crate) fn set_linux_backend_available_for_test(&mut self) {
+        self.tier = SandboxTier::Sandbox;
         self.backend_receipt = SandboxBackendReceipt::LinuxBubblewrap {
             probe: linux::probe::LinuxSandboxProbe {
                 available: true,
