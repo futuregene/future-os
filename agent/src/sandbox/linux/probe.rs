@@ -217,7 +217,7 @@ impl ProbeHost for SystemProbeHost {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
-            return std::fs::metadata(path).is_ok_and(|metadata| metadata.uid() == 0);
+            std::fs::metadata(path).is_ok_and(|metadata| metadata.uid() == 0)
         }
         #[cfg(not(unix))]
         {

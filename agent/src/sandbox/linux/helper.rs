@@ -112,13 +112,7 @@ fn run_outer(mut request: LinuxSandboxRequest) -> Result<ExitStatus> {
     clear_cloexec(request_fd)?;
     let current_exe = std::env::current_exe().context("resolve current helper executable")?;
 
-    let bwrap_args = create_bwrap_args_file(
-        &request,
-        &opaque_directories,
-        empty_fd,
-        &current_exe,
-        request_fd,
-    )?;
+    let bwrap_args = create_bwrap_args_file(&request, &opaque_directories, empty_fd)?;
     let bwrap_args_fd = bwrap_args.as_raw_fd();
     clear_cloexec(bwrap_args_fd)?;
 
@@ -128,6 +122,14 @@ fn run_outer(mut request: LinuxSandboxRequest) -> Result<ExitStatus> {
     // execve call cannot fail merely because the plan exceeds ARG_MAX.
     let mut command = Command::new(format!("/proc/self/fd/{bwrap_fd}"));
     command.arg("--args").arg(bwrap_args_fd.to_string());
+    // COMMAND must be real argv on the bwrap command line: `--args` only
+    // expands OPTIONS from the file, and a `--`/command inside the file is
+    // discarded by bubblewrap's recursive parser, leaving it with no command.
+    command.arg("--").arg(&current_exe);
+    command.args(super::runner::helper_args(
+        &current_exe,
+        format!("fd:{request_fd}"),
+    ));
     command
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
@@ -183,6 +185,17 @@ fn run_outer(mut request: LinuxSandboxRequest) -> Result<ExitStatus> {
         };
         println!("{}", super::violation::marker(&violation));
     }
+    if let Err(error) = report_missing_guard_creations(&request) {
+        eprintln!("future-linux-sandbox-helper: post-command detection failed: {error:#}");
+        let violation = super::violation::LinuxSandboxViolation {
+            kind: super::violation::LinuxViolationKind::DynamicGlobScanFailed,
+            path_provenance: "missing_guard_rescan_failed".into(),
+            policy_digest: request.policy_digest.clone(),
+            detection_only: true,
+            affected_count: 0,
+        };
+        println!("{}", super::violation::marker(&violation));
+    }
     Ok(status)
 }
 
@@ -203,8 +216,6 @@ fn create_bwrap_args_file(
     request: &LinuxSandboxRequest,
     opaque_directories: &std::collections::BTreeSet<std::path::PathBuf>,
     empty_fd: Option<i32>,
-    current_exe: &std::path::Path,
-    request_fd: i32,
 ) -> Result<File> {
     let mut file = tempfile::tempfile().context("create anonymous bubblewrap arguments")?;
     let mut written = 0usize;
@@ -262,11 +273,6 @@ fn create_bwrap_args_file(
     }
     write_bwrap_arg(&mut file, &mut written, OsStr::new("--chdir"))?;
     write_bwrap_arg(&mut file, &mut written, request.cwd.as_os_str())?;
-    write_bwrap_arg(&mut file, &mut written, OsStr::new("--"))?;
-    write_bwrap_arg(&mut file, &mut written, current_exe.as_os_str())?;
-    for arg in super::runner::helper_args(current_exe, format!("fd:{request_fd}")) {
-        write_bwrap_arg(&mut file, &mut written, OsStr::new(&arg))?;
-    }
     file.rewind().context("rewind bubblewrap arguments")?;
     Ok(file)
 }
@@ -308,6 +314,37 @@ fn report_dynamic_glob_creations(request: &LinuxSandboxRequest) -> Result<()> {
         let violation = super::violation::LinuxSandboxViolation {
             kind: super::violation::LinuxViolationKind::DynamicGlobCreated,
             path_provenance: "glob_snapshot".into(),
+            policy_digest: request.policy_digest.clone(),
+            detection_only: true,
+            affected_count: created,
+        };
+        println!("{}", super::violation::marker(&violation));
+    }
+    Ok(())
+}
+
+/// Re-check omitted missing protections after the command. Any path that
+/// came into existence (created by the wrapped command or a concurrent host
+/// process) is reported as a detection-only violation: the policy denied
+/// access, but a missing target could not be masked without host residue.
+fn report_missing_guard_creations(request: &LinuxSandboxRequest) -> Result<()> {
+    let mut created = 0usize;
+    for path in &request.omitted_missing_protected_paths {
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => created += 1,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(anyhow!(
+                    "re-check omitted missing guard {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    if created > 0 {
+        let violation = super::violation::LinuxSandboxViolation {
+            kind: super::violation::LinuxViolationKind::MissingProtectedCreated,
+            path_provenance: "omitted_missing_guard".into(),
             policy_digest: request.policy_digest.clone(),
             detection_only: true,
             affected_count: created,

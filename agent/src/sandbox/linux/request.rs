@@ -48,6 +48,12 @@ pub struct LinuxSandboxRequest {
     pub argv: Vec<String>,
     pub mounts: Vec<MountRequest>,
     pub glob_snapshots: Vec<super::plan::GlobSnapshot>,
+    /// Missing protected targets that the plan omitted instead of mounting
+    /// (bwrap cannot mount onto a missing target without a host-side mkdir).
+    /// The outer helper re-checks them after the command and reports any
+    /// path that came into existence as a detection-only violation.
+    #[serde(default)]
+    pub omitted_missing_protected_paths: Vec<PathBuf>,
     pub policy_digest: String,
     pub status_fd: Option<i32>,
 }
@@ -131,6 +137,12 @@ impl LinuxSandboxRequest {
             })
         {
             return Err(RequestError::TooManyMounts);
+        }
+        if self.omitted_missing_protected_paths.len() > MAX_MOUNTS {
+            return Err(RequestError::TooManyMounts);
+        }
+        for path in &self.omitted_missing_protected_paths {
+            validate_path(path)?;
         }
         let argv_bytes = self.argv.iter().map(String::len).sum::<usize>();
         if self.argv.is_empty()
@@ -230,9 +242,28 @@ mod tests {
                 source_fd: None,
             }],
             glob_snapshots: Vec::new(),
+            omitted_missing_protected_paths: Vec::new(),
             policy_digest: "a".repeat(64),
             status_fd: None,
         }
+    }
+
+    #[test]
+    fn omitted_missing_paths_round_trip_and_are_validated() {
+        let mut request = request();
+        request.omitted_missing_protected_paths = vec![
+            PathBuf::from("/home/user/.aws"),
+            PathBuf::from("/home/user/.aws/creds"),
+        ];
+        assert_eq!(
+            LinuxSandboxRequest::decode(&request.encode().unwrap()).unwrap(),
+            request
+        );
+        request.omitted_missing_protected_paths[0] = PathBuf::from("relative");
+        assert!(matches!(
+            request.to_json_bytes(),
+            Err(RequestError::UnsafePath(_))
+        ));
     }
 
     #[test]

@@ -4,6 +4,19 @@
 
 ## 1. 结论与本轮修复
 
+### 第二轮（同日）：bwrap `--args` 与 missing target 处理
+
+现场第二轮错误 `bwrap: Can't mkdir /home/ace/.aws: Read-only file system`（exit 1，helper 报 `bubblewrap did not report command status`）。两个独立根因都已修复：
+
+1. **`--args` 传输丢了 COMMAND（导致所有命令失败）**：`4de7004d` 引入 `bwrap --args <fd>` 后，helper 把 `--`、helper 路径和 helper 参数也写进了参数文件。bwrap 源码证实 `--args` 只递归解析 OPTIONS，遇到文件内的 `--` 就 `break`，文件内的 COMMAND 被丢弃，外层 argv 为空 → `usage` + exit 1。修复：参数文件只含 OPTIONS（到 `--chdir` 为止），COMMAND（`-- current_exe agent-helper-args`，只有 2–3 个短参数）回到 bwrap 命令行 argv。已用 bwrap 0.11.1 源码（`parse_args_recurse`、`bubblewrap.c:3021 argc<=0`）和最小实验验证。
+2. **missing protected target 挂载设计缺口（上轮 P0）**：bwrap 挂载前必然 `ensure_dir()`（`SETUP_MOUNT_TMPFS`），只读父目录下 EROFS，可写父目录下产生宿主对象。维护者禁止在受保护宿主目标造占位对象，因此本轮改为：**缺失目标一律不挂载**，plan 收集进 `omitted_missing_protected_paths` 随 request 传给 outer helper；命令结束后对每个目标 `symlink_metadata` 重扫，路径出现即输出 detection-only 违规标记（新 kind `MissingProtectedCreated`）。这与既有 glob 语义一致：存在则硬遮罩，运行中出现则事后检测。
+3. **新增生产路径端到端验证**：`production_plan_with_real_default_rules_starts_a_shell` smoke 测试用真实默认规则（真实 HOME guards + workspace globs）走 plan → prepare → helper → bwrap → `pwd; whoami` 全链路，断言请求中无 `MissingProtected` mount、省略列表随请求传递、命令成功。其余 6 个 smoke（RO 根、unreadable mask、信号、父子退出、fd:3 传输、省略后创建检测）在本机真 bwrap 下全部通过。
+4. 顺手修复 `probe.rs::is_root_owned` 的 clippy `needless_return`（本机 clippy 版本比上轮验证环境新）。
+
+**限制（明示）**：可写域内缺失 guard 现在是“省略 + 事后 detection-only 报告”，命令自身创建该路径时不会在运行中被阻止（写保护暂降为事后可见）。只读域内省略则命令本来就无法创建。硬执行仍需 §3 的隔离挂载点设计；本轮不宣称 missing target 已获运行时强保护。
+
+### 第一轮：缺失 guard 重复分类
+
 现场 `pwd; whoami` 返回 `125`、`mount source is unavailable: /home/ace/.aws`，原因已确认：plan 将同一缺失 guard 同时放入 missing/read-only/unreadable，helper 先打开普通 mount 源而失败。
 
 本轮修改：
@@ -20,9 +33,9 @@
 | 阶段 / 情况 | 当前结果与依据 | Review 结论 / 后续动作 |
 |---|---|---|
 | bwrap 缺失、版本旧、PATH 不可信、userns/proc 不可用、probe 超时 | `linux/probe.rs` 给出 code；`effective_tier()` 在解析时将 unavailable sandbox 变成 manual | 基础环境回退已存在；不等于命令级初始化失败也会回退。保留原因与用户可见安全差异，不能变 off |
-| 基础 probe 成功但真实 HOME/workspace mount 不成立 | probe 仅运行固定 `/tmp` 基线，没有完整生产 plan/helper 自重入 | **P0 验收缺口**：需生产路径的最小 `true`/`pwd` 验证，不能只凭 available=true 认为整个仓库可用 |
+| 基础 probe 成功但真实 HOME/workspace mount 不成立 | probe 仅运行固定 `/tmp` 基线，没有完整生产 plan/helper 自重入 | **已补**：`production_plan_with_real_default_rules_starts_a_shell` 真实默认规则全链路 smoke（本机 bwrap 通过）；仍需在更多发行版上重跑 |
 | 缺失 HOME guard 被重复 bind | 普通源 open 先失败为 125 | **本轮已修** plan 分类与去重；真实运行仍受下一行影响 |
-| missing target 位于只读父目录，或宿主可写 bind 下 | helper 输出 `--tmpfs target`；bwrap 先 `ensure_dir()` 再 mount | **P0 未修**：只读父目录可能 EROFS；可写 bind 可能产生宿主残留。详见 §3 |
+| missing target 位于只读父目录，或宿主可写 bind 下 | 旧：helper 输出 `--tmpfs target`，bwrap 先 `ensure_dir()` 再 mount | **第二轮已修（省略 + 检测）**：缺失目标一律不挂载（EROFS/宿主残留都不可能发生）；命令后重扫，出现即 `MissingProtectedCreated` detection-only 标记。硬执行仍依赖 §3 隔离挂载点设计 |
 | 已存在的 read+write guard 重复挂载 | read-only 目标随后被 opaque 覆盖，最终身份不同 | **本轮已修**，同路径仅保留更强 mask；不把这个去重泛化为任意祖先/后代折叠 |
 | 仓库或 `/tmp` 在准备阶段发生正常内容变动 | 原核验把 size/mtime 也视为 mount 身份 | **本轮已修**普通 mount dev/inode 校验；bwrap receipt 仍保留严格核验 |
 | 源在 plan 与 helper 之间删除/替换，权限不足、坏链 | PathInspection / source unavailable / identity changed | 必须 fail closed；允许在确认命令未执行后重新构造一次，不要自动创建源或忽略错误 |
@@ -31,6 +44,7 @@
 | glob 扫描超时、结果/深度/内存预算、I/O、Abort | 前轮已分组扫描和诊断，启动前失败不执行；post scan 只检测 | 保留 fail closed，不再设十万节点上限。30 秒协作式预算不能抢占卡死的文件系统调用 |
 | helper payload/FD/临时盘资源、fd 上限、argv 超限 | request/args 有尺寸界限，但每个 mount 仍占 FD；匿名文件可能 ENOSPC/EMFILE | **P1**：增加 FD 预算预检、资源类 code；不能因 ARG_MAX 已避开而声称资源无限 |
 | helper executable 位于被遮罩/不可执行路径；能力检查失败 | self-reentry / shell spawn / capget / no_new_privs 失败 | 保留诊断，不裸跑；生产路径测试需覆盖 helper 可达性与 capabilities |
+| bwrap `--args` 参数文件同时携带 OPTIONS 与 COMMAND | bwrap 递归解析只接受 OPTIONS，文件内 `--` 后的 COMMAND 被丢弃，外层 argv 为空 → usage + exit 1 | **第二轮已修**：参数文件只含 OPTIONS；COMMAND 回到 bwrap 命令行 argv（短参数不触及 ARG_MAX 初衷）。源码 + 最小实验验证 |
 | 已完成命令返回 125，或 helper 中途丢失状态 | 文本和退出码不足以确定执行阶段 | 用户命令也可自行 exit 125，缺少 completion 不等于没有执行；不能仅据此自动重跑，应先核对可能的副作用 |
 | 命令运行中超时、信号、用户取消 | 按现有进程组与 helper 转发处理 | 不自动重跑。Linux 需验证 outer/bwrap/inner/后代各阶段都能终止，包括复扫阶段 |
 | 命令完成后复扫失败 | 保留原始结果并报告 detection-only | 不把它当初始化故障，不触发自动重跑 |
@@ -88,3 +102,12 @@
 - `cargo test -p future-agent --lib sandbox::linux -- --test-threads=1`：45 PASS、0 FAIL、1 ignored（大目录 fixture 本轮未重跑）。包含真实默认 HOME guards 的 plan → request 回归。
 - `git diff --check`：PASS。
 - Linux helper mount 身份新增测试、真实 bwrap 默认 HOME 启动、缺失目标残留与异常信号矩阵：**NOT RUN**；missing-parent 设计问题尚未修复，不能称为“只差跑测试”。
+
+第二轮验证（本机 Linux，bwrap 0.11.1，真机）：
+
+- `cargo test -p future-agent --lib sandbox::linux -- --test-threads=1`：53 PASS、0 FAIL、1 ignored。新增：只读祖先/嵌套/遮罩父目录/reopen 下的省略回归、request 省略字段往返与校验、violation 新 kind 回归。
+- `cargo test -p future-agent`：1651 PASS、2 FAIL（`models::future::cache_save_and_concurrent_load_never_torn`、`models::tests::registry_injects_future_models_from_disk_cache`，两者单独运行均通过，为共享 `~/.future` 磁盘缓存的并行 flaky，与沙盒无关，待修）。
+- `cargo clippy -p future-agent --all-targets -- -D warnings`：PASS（Linux host target）。
+- `cargo fmt -p future-agent -- --check`：PASS。
+- smoke（`--ignored`，真 bwrap）：`production_plan_with_real_default_rules_starts_a_shell`、`filesystem_no_new_privs_and_exit_status`、`unreadable_mount_and_fd_allowlist_are_enforced`、`command_signal_is_preserved`、`helper_parent_death_does_not_leave_command_running`、`production_request_fd_transport_reaches_both_helper_phases`、`omitted_missing_guard_created_by_command_is_reported_detection_only`：7/7 PASS。
+- 仍未修复/未验证：可写域缺失 guard 的运行时强保护（隔离挂载点设计）、缺失目标并发创建动态拒读、发行版矩阵、信号与超时全阶段终止。

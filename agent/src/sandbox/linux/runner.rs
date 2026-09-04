@@ -32,15 +32,14 @@ pub fn prepare(
     extend_mounts(&mut mounts, &plan.unreadable_paths, MountKind::Unreadable);
     extend_mounts(
         &mut mounts,
-        &plan.missing_protected_paths,
-        MountKind::MissingProtected,
-    );
-    extend_mounts(
-        &mut mounts,
         &plan.reopened_read_only_paths,
         MountKind::ReadOnly,
     );
     extend_mounts(&mut mounts, &plan.reopened_paths, MountKind::Writable);
+    // Missing protections are intentionally NOT mounted: bubblewrap would
+    // create the mount point with a host-visible mkdir or fail with EROFS
+    // under a read-only parent. They travel in the request instead so the
+    // helper can re-check them after the command.
     // Bubblewrap applies mounts in argv order. Broad mounts must precede
     // narrow mounts so alternating deny/allow descendants remain visible;
     // for the same target, protection precedes the effective reopen.
@@ -57,6 +56,7 @@ pub fn prepare(
         argv: shell_argv(command),
         mounts,
         glob_snapshots: plan.glob_snapshots,
+        omitted_missing_protected_paths: plan.omitted_missing_protected_paths,
         policy_digest: plan.policy_digest.clone(),
         status_fd: None,
     };
@@ -137,7 +137,7 @@ mod tests {
             unreadable_paths: Vec::new(),
             reopened_paths: Vec::new(),
             reopened_read_only_paths: Vec::new(),
-            missing_protected_paths: Vec::new(),
+            omitted_missing_protected_paths: Vec::new(),
             unsupported_dynamic_globs: Vec::new(),
             glob_snapshots: Vec::new(),
             policy_digest: "a".repeat(64),
@@ -159,7 +159,7 @@ mod tests {
 
         let mut complete = plan();
         complete
-            .missing_protected_paths
+            .omitted_missing_protected_paths
             .push(PathBuf::from("/tmp/missing"));
         let prepared = prepare(&probe(), complete, "true", Path::new("/tmp/work")).unwrap();
         assert!(prepared
@@ -169,44 +169,47 @@ mod tests {
     }
 
     #[test]
-    fn real_default_home_rules_compile_to_exclusive_missing_mounts() {
+    fn missing_guard_under_read_only_ancestor_is_omitted_not_mounted() {
         let root = tempfile::tempdir().unwrap();
         let home = root.path().join("home");
         let workspace = root.path().join("workspace");
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(&workspace).unwrap();
-        let rules = crate::sandbox::rules::RuleSet::resolve_isolated_with_home(&workspace, &home);
-        let policy = LinuxSandboxPlan::compile(&rules.snapshot()).unwrap();
         let aws = crate::sandbox::paths::canonicalize_lenient(&home.join(".aws"));
-        assert!(policy.missing_protected_paths.contains(&aws));
+        // No temp roots: only the workspace is writable, so the home guard's
+        // ancestor is read-only in the sandbox view. A fixture placed under
+        // /tmp with default temp roots would be covered by the /tmp writable
+        // root and correctly fail closed instead.
+        let snapshot = crate::sandbox::rules::RuleSetSnapshot {
+            workspace: workspace.clone(),
+            temp_roots: Vec::new(),
+            layers: vec![crate::sandbox::rules::RuleLayerSnapshot {
+                layer: crate::sandbox::rules::RuleLayer::Guard,
+                rules: vec![crate::sandbox::rules::RuleSnapshot {
+                    matcher: crate::sandbox::rules::RuleMatcherSnapshot::Subtree {
+                        lexical: aws.clone(),
+                        canonical: aws.clone(),
+                    },
+                    access: crate::sandbox::rules::Access::Both,
+                    decision: crate::sandbox::rules::Decision::Ask,
+                }],
+            }],
+            resolution_errors: Vec::new(),
+        };
+        let policy = LinuxSandboxPlan::compile(&snapshot).unwrap();
+        // The home parent is read-only in the sandbox: the wrapped command
+        // could never create the path, so the tmpfs mask is omitted instead
+        // of mounted (bwrap mkdir would fail with EROFS or leave a host
+        // object behind).
+        assert!(policy.omitted_missing_protected_paths.contains(&aws));
         assert!(!policy.read_only_paths.contains(&aws));
         assert!(!policy.unreadable_paths.contains(&aws));
         let prepared = prepare(&probe(), policy, "pwd; whoami", &workspace).unwrap();
         let request =
             LinuxSandboxRequest::from_json_bytes(prepared.request_payload.as_deref().unwrap())
                 .unwrap();
-        for mount in &request.mounts {
-            if mount.kind == MountKind::MissingProtected {
-                assert_eq!(
-                    request
-                        .mounts
-                        .iter()
-                        .filter(|other| other.target == mount.target)
-                        .count(),
-                    1
-                );
-                assert!(mount.source_fd.is_none());
-            }
-        }
-        assert_eq!(
-            request
-                .mounts
-                .iter()
-                .filter(|mount| mount.target == aws)
-                .map(|mount| mount.kind)
-                .collect::<Vec<_>>(),
-            [MountKind::MissingProtected]
-        );
+        assert!(request.mounts.iter().all(|mount| mount.target != aws));
+        assert!(request.omitted_missing_protected_paths.contains(&aws));
         assert!(!home.join(".aws").exists());
     }
 

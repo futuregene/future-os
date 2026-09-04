@@ -23,6 +23,16 @@ fn helper_request_with_globs(
     extra_mounts: Vec<MountRequest>,
     glob_snapshots: Vec<GlobSnapshot>,
 ) -> Option<String> {
+    helper_request_full(command, workspace, extra_mounts, glob_snapshots, Vec::new())
+}
+
+fn helper_request_full(
+    command: String,
+    workspace: &std::path::Path,
+    extra_mounts: Vec<MountRequest>,
+    glob_snapshots: Vec<GlobSnapshot>,
+    omitted_missing_protected_paths: Vec<std::path::PathBuf>,
+) -> Option<String> {
     let probe = probe_linux_sandbox_host();
     if !probe.available {
         eprintln!("skipping Linux sandbox smoke: {:?}", probe.code);
@@ -46,6 +56,7 @@ fn helper_request_with_globs(
             .chain(extra_mounts)
             .collect(),
             glob_snapshots,
+            omitted_missing_protected_paths,
             policy_digest: "0".repeat(64),
             status_fd: None,
         }
@@ -202,32 +213,29 @@ fn descendant_processes(root: u32) -> Vec<(u32, String)> {
 
 #[test]
 #[ignore = "requires a native Linux host with a working system bwrap"]
-fn missing_path_is_blocked_without_host_residue_and_new_glob_is_reported() {
+fn omitted_missing_guard_created_by_command_is_reported_detection_only() {
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
     let missing = workspace.join("missing-secret");
     let generated = workspace.join("generated.pem");
     let pattern = workspace.join("*.pem").to_string_lossy().into_owned();
-    let mounts = vec![MountRequest {
-        source: missing.clone(),
-        target: missing.clone(),
-        kind: MountKind::MissingProtected,
-        expected: None,
-        source_fd: None,
-    }];
-    let Some(request) = helper_request_with_globs(
+    // Missing guards are never mounted (a bwrap mount would need a host-side
+    // mkdir). The helper re-checks them after the command; creation by the
+    // wrapped command is reported as a detection-only violation.
+    let Some(request) = helper_request_full(
         format!(
-            "if mkdir {} 2>/dev/null; then exit 44; fi; printf secret > {}",
+            "printf secret > {}; printf pem > {}",
             missing.display(),
             generated.display()
         ),
         &workspace,
-        mounts,
+        Vec::new(),
         vec![GlobSnapshot {
             pattern,
             matches: Vec::new(),
         }],
+        vec![missing.clone()],
     ) else {
         return;
     };
@@ -242,12 +250,13 @@ fn missing_path_is_blocked_without_host_residue_and_new_glob_is_reported() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("__FUTURE_SANDBOX_VIOLATION__:"));
+    assert!(stdout.contains("missing_protected_created"));
     assert!(stdout.contains("dynamic_glob_created"));
-    assert!(
-        !missing.exists(),
-        "protected host target must never be created"
-    );
-    assert_eq!(std::fs::read_to_string(generated).unwrap(), "secret");
+    assert!(stdout.contains("\"detectionOnly\":true"));
+    // Provisional semantics: the mask was omitted, so the command's own
+    // creation lands on the host and is reported, not silently blocked.
+    assert_eq!(std::fs::read_to_string(missing).unwrap(), "secret");
+    assert_eq!(std::fs::read_to_string(generated).unwrap(), "pem");
 }
 
 #[test]
@@ -279,6 +288,56 @@ fn glob_rescan_failure_preserves_the_completed_command_status() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("dynamic_glob_scan_failed"));
     assert!(stdout.contains("\"detectionOnly\":true"));
+}
+
+#[tokio::test]
+#[ignore = "requires a native Linux host with a working system bwrap"]
+async fn production_plan_with_real_default_rules_starts_a_shell() {
+    use future_agent::sandbox::linux::plan::LinuxSandboxPlan;
+    use future_agent::sandbox::linux::runner;
+    use future_agent::sandbox::rules::RuleSet;
+
+    let workspace =
+        std::env::temp_dir().join(format!("future-prod-plan-smoke-{}", std::process::id()));
+    std::fs::create_dir_all(&workspace).unwrap();
+    let rules = RuleSet::resolve(&workspace);
+    let plan = LinuxSandboxPlan::compile(&rules.snapshot())
+        .expect("production plan must compile with real default rules");
+    // Missing guards must be omitted, never mounted: bubblewrap cannot
+    // mkdir a mount point under a read-only host parent without leaving a
+    // host object behind. Default rule sets omit both HOME guards and
+    // workspace guards that do not exist yet.
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    for omitted in &plan.omitted_missing_protected_paths {
+        let under_guard_root = omitted.starts_with(&workspace)
+            || home
+                .as_deref()
+                .is_some_and(|home| omitted.starts_with(home));
+        assert!(under_guard_root, "unexpected omitted path {omitted:?}");
+    }
+    let probe = probe_linux_sandbox_host();
+    assert!(probe.available, "bwrap must be available: {:?}", probe.code);
+    let mut prepared = runner::prepare(&probe, plan, "pwd; whoami", &workspace).unwrap();
+    // `prepare` derives the program from `current_exe()`, which inside a test
+    // process is the test harness itself. Point it at the real agent binary
+    // like production does; helper args already use the non-unified form.
+    prepared.program = env!("CARGO_BIN_EXE_future-agent").into();
+    let request =
+        LinuxSandboxRequest::from_json_bytes(prepared.request_payload.as_deref().unwrap()).unwrap();
+    assert!(request
+        .mounts
+        .iter()
+        .all(|mount| mount.kind != MountKind::MissingProtected));
+    assert!(!request.omitted_missing_protected_paths.is_empty());
+    let output = prepared.into_command().unwrap().output().await.unwrap();
+    assert!(
+        output.status.success(),
+        "exit={:?} stdout={} stderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    std::fs::remove_dir_all(&workspace).ok();
 }
 
 #[tokio::test]

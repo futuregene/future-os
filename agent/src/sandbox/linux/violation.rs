@@ -8,6 +8,7 @@ pub enum LinuxViolationKind {
     FilesystemDenied,
     DynamicGlobCreated,
     DynamicGlobScanFailed,
+    MissingProtectedCreated,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

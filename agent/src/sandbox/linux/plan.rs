@@ -45,7 +45,13 @@ pub struct LinuxSandboxPlan {
     pub reopened_paths: Vec<PathBuf>,
     /// Read-only narrow allows that reopen reads while preserving a write deny.
     pub reopened_read_only_paths: Vec<PathBuf>,
-    pub missing_protected_paths: Vec<PathBuf>,
+    /// Missing protections are never mounted: bubblewrap would create the
+    /// mount point with a host-visible mkdir (host residue) or fail with
+    /// EROFS under a read-only parent. They are instead re-checked after the
+    /// command; any path that came into existence is reported as a
+    /// detection-only violation. This is provisional until the isolated
+    /// mount-point design lands.
+    pub omitted_missing_protected_paths: Vec<PathBuf>,
     /// Glob rules are hard-enforced only for `glob_snapshots.matches` found
     /// before launch. These patterns require detection-only rescanning after
     /// the command because bwrap cannot protect future name matches.
@@ -163,6 +169,12 @@ impl LinuxSandboxPlan {
             !unreadable_paths.contains(path) && !missing_protected_paths.contains(path)
         });
         unreadable_paths.retain(|path| !missing_protected_paths.contains(path));
+        // Missing targets cannot be mounted at all: bubblewrap creates the
+        // mount point with a host-visible mkdir (forbidden host residue) or
+        // fails with EROFS under a read-only parent. All of them are omitted
+        // and re-checked after the command; the helper reports any path that
+        // came into existence as a detection-only violation.
+        let omitted_missing_protected_paths = missing_protected_paths;
         unsupported_dynamic_globs.sort();
         unsupported_dynamic_globs.dedup();
         glob_snapshots.sort_by(|a, b| a.pattern.cmp(&b.pattern));
@@ -172,8 +184,7 @@ impl LinuxSandboxPlan {
             + read_only_paths.len()
             + unreadable_paths.len()
             + reopened_paths.len()
-            + reopened_read_only_paths.len()
-            + missing_protected_paths.len();
+            + reopened_read_only_paths.len();
         if mount_count > super::request::MAX_MOUNTS {
             return Err(LinuxSandboxPlanError::MountLimit);
         }
@@ -186,7 +197,7 @@ impl LinuxSandboxPlan {
             unreadable_paths,
             reopened_paths,
             reopened_read_only_paths,
-            missing_protected_paths,
+            omitted_missing_protected_paths,
             unsupported_dynamic_globs,
             glob_snapshots,
             policy_digest,
@@ -492,8 +503,9 @@ mod tests {
     }
 
     #[test]
-    fn roots_reopen_hard_deny_and_missing_are_compiled() {
+    fn roots_reopen_and_hard_deny_are_compiled() {
         let root = root();
+        std::fs::create_dir(root.join("work/.future")).unwrap();
         let input = snapshot(
             &root,
             vec![
@@ -528,11 +540,8 @@ mod tests {
         assert!(!plan
             .reopened_paths
             .contains(&root.join("work/.future/cache")));
-        assert!(plan
-            .missing_protected_paths
-            .contains(&root.join("work/.future")));
-        assert!(!plan.read_only_paths.contains(&root.join("work/.future")));
-        assert!(!plan.unreadable_paths.contains(&root.join("work/.future")));
+        assert!(plan.read_only_paths.contains(&root.join("work/.future")));
+        assert!(plan.omitted_missing_protected_paths.is_empty());
     }
 
     #[test]
@@ -552,16 +561,16 @@ mod tests {
                     rules: vec![subtree(&root, &relative, access, Decision::Ask)],
                 }],
             );
+            // Missing targets are never mounted (bwrap would mkdir the mount
+            // point on the host or fail under a read-only parent); they are
+            // omitted and re-checked after the command.
             let missing = LinuxSandboxPlan::compile(&input).unwrap();
-            assert_eq!(
-                missing.missing_protected_paths.as_slice(),
-                std::slice::from_ref(&path)
-            );
+            assert!(missing.omitted_missing_protected_paths.contains(&path));
             assert!(missing.read_only_paths.is_empty());
             assert!(missing.unreadable_paths.is_empty());
             std::fs::write(&path, "secret").unwrap();
             let existing = LinuxSandboxPlan::compile(&input).unwrap();
-            assert!(existing.missing_protected_paths.is_empty());
+            assert!(existing.omitted_missing_protected_paths.is_empty());
             assert_eq!(
                 existing.unreadable_paths.contains(&path),
                 access.covers_read()
@@ -571,6 +580,101 @@ mod tests {
                 !access.covers_read()
             );
         }
+    }
+
+    #[test]
+    fn missing_guard_under_read_only_home_is_omitted_not_mounted() {
+        let root = root();
+        let home = root.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let aws = home.join(".aws");
+        let creds = home.join(".aws/creds");
+        let azure = home.join(".azure");
+        let input = snapshot(
+            &root,
+            vec![RuleLayerSnapshot {
+                layer: RuleLayer::Guard,
+                rules: vec![
+                    subtree(&home, ".aws/creds", Access::Both, Decision::Ask),
+                    subtree(&home, ".azure", Access::Both, Decision::Ask),
+                ],
+            }],
+        );
+        let plan = LinuxSandboxPlan::compile(&input).unwrap();
+        // Nested missing targets are omitted too; the post-command re-scan
+        // covers the missing `.aws` component if it appears during the run.
+        assert!(plan.omitted_missing_protected_paths.contains(&creds));
+        assert!(plan.omitted_missing_protected_paths.contains(&azure));
+        assert!(!aws.exists());
+    }
+
+    #[test]
+    fn missing_guard_under_read_only_mask_is_omitted() {
+        let root = root();
+        let vendor = root.join("work/vendor");
+        let secret = vendor.join("secret");
+        std::fs::create_dir_all(&vendor).unwrap();
+        let input = snapshot(
+            &root,
+            vec![
+                RuleLayerSnapshot {
+                    layer: RuleLayer::Guard,
+                    rules: vec![subtree(
+                        &root,
+                        "work/vendor/secret",
+                        Access::Both,
+                        Decision::Ask,
+                    )],
+                },
+                RuleLayerSnapshot {
+                    layer: RuleLayer::Workspace,
+                    rules: vec![subtree(&root, "work/vendor", Access::Both, Decision::Deny)],
+                },
+            ],
+        );
+        let plan = LinuxSandboxPlan::compile(&input).unwrap();
+        assert!(plan.unreadable_paths.contains(&vendor));
+        assert!(plan.omitted_missing_protected_paths.contains(&secret));
+    }
+
+    #[test]
+    fn missing_guard_under_writable_reopen_is_omitted_for_post_detection() {
+        let root = root();
+        let ok = root.join("work/vendor/ok");
+        std::fs::create_dir_all(&ok).unwrap();
+        let secret = ok.join("secret");
+        let input = snapshot(
+            &root,
+            vec![
+                RuleLayerSnapshot {
+                    layer: RuleLayer::Guard,
+                    rules: vec![subtree(
+                        &root,
+                        "work/vendor/ok/secret",
+                        Access::Both,
+                        Decision::Ask,
+                    )],
+                },
+                RuleLayerSnapshot {
+                    layer: RuleLayer::Session,
+                    rules: vec![subtree(
+                        &root,
+                        "work/vendor/ok",
+                        Access::Write,
+                        Decision::Allow,
+                    )],
+                },
+                RuleLayerSnapshot {
+                    layer: RuleLayer::Workspace,
+                    rules: vec![subtree(&root, "work/vendor", Access::Write, Decision::Deny)],
+                },
+            ],
+        );
+        // Even under a writable reopened ancestor the target is omitted
+        // rather than mounted (mounting would leave a host object); the
+        // helper re-checks it after the command and reports creation.
+        let plan = LinuxSandboxPlan::compile(&input).unwrap();
+        assert!(plan.omitted_missing_protected_paths.contains(&secret));
     }
 
     #[test]
