@@ -12,8 +12,26 @@ tonic.workspace = true
 prost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tokio.workspace = true
+tokio-stream = { workspace = true, features = ["net"] }
+tower = { version = "0.4", features = ["util"] }
+async-stream = "0.3"
+hyper-util = { version = "0.1", features = ["tokio"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
+tempfile.workspace = true
 tokio.workspace = true
 tokio-stream = { workspace = true, features = ["net"] }
 tonic = { workspace = true, features = ["gzip"] }

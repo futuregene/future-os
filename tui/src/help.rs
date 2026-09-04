@@ -10,7 +10,7 @@ pub fn help_text() -> &'static str {
 Usage: node dist/index.js [options] [@files...] [messages...]
 
 Options:
-  --grpc-addr <addr>    gRPC server address (default: localhost:50051)
+  --grpc-addr <addr>    Explicit TCP gRPC address (default: auto — per-user local IPC)
   --session <id>        Connect to specific session
   --continue, -c        Continue most recent session
   --resume, -r          Resume a session (show picker)

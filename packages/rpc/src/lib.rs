@@ -9,7 +9,10 @@
 //!
 //! Consumers: `future-agent` (server side), `future-channel` and the desktop
 //! Tauri backend (client side). Dependency direction is strictly one-way:
-//! this crate depends only on tonic/prost/serde.
+//! this crate also owns the cross-client local transport so every frontend
+//! discovers the same per-user Agent endpoint.
+
+pub mod transport;
 
 pub mod proto {
     // The typed-payload oneofs deliberately mix large variants (a full

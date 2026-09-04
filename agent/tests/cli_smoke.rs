@@ -73,6 +73,41 @@ fn agent_is_singleton_per_user_even_on_different_ports() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn agent_default_mode_binds_per_user_local_socket() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let home = isolated_home();
+    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        .args(["--profile-seconds", "0"])
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env_remove("FUTURE_AGENT_SOCKET")
+        .output()
+        .expect("spawn future-agent without --grpc-addr");
+    assert!(
+        output.status.success(),
+        "agent exited with {:?}\nstdout: {}\nstderr: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // The socket file is removed on clean shutdown, but the private parent
+    // directory remains and proves local IPC was the default transport.
+    let run_dir = home.path().join(".future/run");
+    assert!(run_dir.is_dir(), "local socket directory was not created");
+    assert_eq!(
+        std::fs::metadata(&run_dir)
+            .expect("stat run dir")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700,
+        "local socket directory must be private to the user"
+    );
+}
+
 #[test]
 fn agent_starts_serves_and_shuts_down_via_profile_timer() {
     let home = isolated_home();

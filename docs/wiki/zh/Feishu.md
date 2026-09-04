@@ -8,7 +8,7 @@
 
 ```
 飞书用户  ──→  飞书服务器  ──→  Channel Bridge (WebSocket)  ──→  Agent (gRPC)
-              (open.feishu.cn)    (你的机器)                     (127.0.0.1:50051)
+              (open.feishu.cn)    (你的机器)                     (local IPC)
 ```
 
 Bridge 与飞书维持一条长连接 WebSocket。当有人给你的机器人发消息，飞书通过 WebSocket 推送消息，Bridge 转发给 Agent，回复通过 CardKit 实时流式更新卡片（支持 Markdown 渲染）返回聊天。
@@ -67,7 +67,7 @@ Bridge 与飞书维持一条长连接 WebSocket。当有人给你的机器人发
 ```json
 {
   "agent": {
-    "grpc_addr": "http://127.0.0.1:50051",
+    "grpc_addr": "auto",
     "cwd": "/home/yourname",
     "model": "future/deepseek-v4-pro",
     "thinking_level": "xhigh",
@@ -84,7 +84,7 @@ Bridge 与飞书维持一条长连接 WebSocket。当有人给你的机器人发
 
 | 字段 | 说明 |
 |---|---|
-| `agent.grpc_addr` | Agent gRPC 地址（默认 `http://127.0.0.1:50051`） |
+| `agent.grpc_addr` | Agent gRPC 地址（默认 `auto`，即按用户隔离的本地 IPC；远程/TCP 时设为 `http://host:port`） |
 | `agent.cwd` | 新会话的默认工作目录 |
 | `agent.model` | Channel 会话默认模型（如 `future/deepseek-v4-pro`） |
 | `agent.thinking_level` | 默认思考级别：`off`、`minimal`、`low`、`medium`、`high`、`xhigh` |

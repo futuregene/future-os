@@ -8,7 +8,7 @@ Connect FutureOS to DingTalk so you can talk to the agent from any DingTalk chat
 
 ```
 DingTalk user  ──→  DingTalk server  ──→  Channel Bridge (Stream Mode)  ──→  Agent (gRPC)
-                    (api.dingtalk.com)    (your machine)                      (127.0.0.1:50051)
+                    (api.dingtalk.com)    (your machine)                      (local IPC)
 ```
 
 The bridge uses **DingTalk Stream Mode** — no public callback URL needed. It opens a WebSocket connection to DingTalk, receives messages in real time, forwards them to the agent, and replies via the `sessionWebhook` URL included in each event.
@@ -53,7 +53,7 @@ Edit `~/.future/channels/config.json`:
 ```json
 {
   "agent": {
-    "grpc_addr": "http://127.0.0.1:50051",
+    "grpc_addr": "auto",
     "cwd": "/home/yourname",
     "model": "future/deepseek-v4-pro",
     "thinking_level": "xhigh",
@@ -70,7 +70,7 @@ Edit `~/.future/channels/config.json`:
 
 | Field | Description |
 |---|---|
-| `agent.grpc_addr` | Agent gRPC address (default: `http://127.0.0.1:50051`) |
+| `agent.grpc_addr` | Agent gRPC address (default: `auto` — per-user local IPC; set `http://host:port` for remote/TCP) |
 | `agent.cwd` | Default working directory for new sessions |
 | `agent.model` | Default model for channel sessions (e.g. `future/deepseek-v4-pro`) |
 | `agent.thinking_level` | Default thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` |
