@@ -909,11 +909,15 @@ fn extract_denial_paths(stderr: &str, include_linux_diagnostics: bool) -> Vec<St
 /// treat URLs as filesystem paths. Localized/arbitrary program output remains
 /// best-effort and may yield no target.
 fn linux_diagnostic_path(line: &str) -> Option<String> {
-    let prefix = ["Permission denied", "Read-only file system"]
-        .iter()
-        .filter_map(|error| line.find(error))
-        .min()
-        .map(|index| &line[..index])?;
+    let prefix = [
+        "Permission denied",
+        "Read-only file system",
+        "Device or resource busy",
+    ]
+    .iter()
+    .filter_map(|error| line.find(error))
+    .min()
+    .map(|index| &line[..index])?;
     for (open, close) in [('\'', '\''), ('"', '"'), ('‘', '’')] {
         let mut rest = prefix;
         while let Some((_, after_open)) = rest.split_once(open) {
@@ -1554,6 +1558,20 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
     fn extract_blocked_paths_raw_no_match() {
         let stderr = "some other error";
         assert!(extract_blocked_paths_raw(stderr).is_empty());
+    }
+
+    #[test]
+    fn busy_mount_absolute_target_is_display_only() {
+        assert_eq!(
+            extract_blocked_paths_raw(
+                "[sandbox] Protected mount target: '/work/.env': Device or resource busy"
+            ),
+            vec!["/work/.env"]
+        );
+        assert!(
+            extract_blocked_paths_raw("rm: cannot remove '.env': Device or resource busy")
+                .is_empty()
+        );
     }
 
     // ─── shorten_home ──────────────────────────────────────────────────────

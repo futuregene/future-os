@@ -120,6 +120,8 @@ Desktop 复用 `ApprovalPrompt`，手机使用原生卡片但共享可信语义�
 
 Windows 不使用此整命令批准，详见 [路径 capability](WINDOWS.md#3-路径-capability-审批)。
 
+Linux 删除保护挂载点出现 EBUSY 时，只有本次真实保护目标匹配且私有完成报告允许重试，才触发同一被动审批；不是把所有“Device or resource busy”都当沙盒拒绝。具体范围与相对路径限制见 [Linux 检测与重试](LINUX.md#34-检测报告与重试可信度)。
+
 ### 4.2 协议与代码索引
 
 `SandboxPolicy` 的 proto 字段 1–6 保留不复用，`string tier = 7`。旧三模式×三策略、命令前缀规则和 SQLite `approval_rules`/`sandbox_config`/`approval_policy_config` 已移除；三表及 `approval_config.rs` 于 2026-07-05 清理。

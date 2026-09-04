@@ -128,6 +128,10 @@ mount source 以 O_PATH FD 固定，bwrap 通过 `/proc/self/fd/N` 挂载；内�
 
 有效空报告之后，普通失败仍使用 `Permission denied`/`Operation not permitted`/`Read-only file system` 文本启发式，排除 0、2、125、126、127。它不是 errno 认证：程序可以伪造普通错误文本；最终仍须用户批准。私有通道不防御已控制宿主同用户 Agent 的攻击者。
 
+删除现存保护文件（如 `.env`）可能返回 `Device or resource busy`（EBUSY）：该对象是沙盒中的挂载点，不代表有程序占用。对此也触发“需要在沙箱外运行此命令”的被动审批，但必须同时满足：有效且无检测事件的私有完成报告、可分类的非零退出码、报错的引号路径精确匹配**本次 launch request 最终 ReadOnly/Unreadable mount**。普通宿主挂载点、writable 根、已重开可写目标、缺失省略目标和保护目录的任意子项不因 EBUSY 自动获得审批入口。
+
+绝对路径直接匹配；相对路径仅对没有复合操作/变量展开的直接 `rm`/`rmdir` 按初始 cwd 匹配，不猜测 `cd ...; rm .env` 或脚本内的 cwd，不事后 canonicalize 可能已被替换的宿主路径。匹配后在诊断附上绝对目标供卡片展示，内部 retry 标志不从输出解析。该机制仍是路径约束的文本推断，不是内核 errno 认证；不支持的本地化/报错格式可由模型另行主动申请。批准后仍是整命令脱沙盒一次，拒绝不删除文件。检测不完整/新目标检测保持禁止被动重试。
+
 ## 4. 平台差异与已接受缺口
 
 以下取舍已经确认，不再保留旧稿“missing target 必须硬保护否则阻断本期”的结论：
@@ -144,6 +148,8 @@ mount source 以 O_PATH FD 固定，bwrap 通过 `/proc/self/fd/N` 挂载；内�
 例如高优先级 allow `private/output` + 较宽 deny `private`，不能只按 mount 深度排序就宣称可重开；外部 allow 根尚不存在时也不能保证 `pwd` 启动。这两类暂不改，用户可调整规则或显式申请整命令审批。
 
 扫描是快照不是审计：“创建→使用→删除”会漏报，其他宿主进程创建可能被检测为出现但无法归因。单项 metadata 失败继续检查后续目标，另报不完整；取消/预算记录未检查数。outer 持续记录 TERM/INT/HUP/QUIT，但 SIGKILL、崩溃、缺 status 或报告写入失败仍可能没有完整结果，**无报告不等于无违规**。
+
+现场澄清：模型先通过一次 shell 调用 `printf ... > .env` 创建缺失文件，随后另一次 shell 调用 `cat .env`；前次创建产生 `missing_protected_created` 检测，后次启动重新扫描，文件已存在而被遮罩，读取失败才触发审批。审批不是创建被拦截，也不是检测标记触发。若 `printf` 与 `cat` 位于同一次 shell 调用，则不会在两者之间重建 mount view，不能套用后次调用的保护结论。
 
 不采用宿主 synthetic placeholder + cleanup。bwrap 的 tmpfs setup 先 ensure_dir/mkdir：只读父目录 EROFS，可写父目录会真的创建宿主对象，mount namespace 本身不隔离这种写入。若将来要求未来名称硬保护，需独立设计父目录隔离视图/broker/FUSE 等并保持写回语义；不能简单 tmpfs 遮父目录导致输出丢失。Codex 对照见 COMMON §6。
 
@@ -204,6 +210,8 @@ cargo test -p future-agent --lib sandbox::linux::glob_scan::tests::large_workspa
 ```
 
 重要smoke：真实默认HOME规则生产链 `production_plan_with_real_default_rules_starts_a_shell`；no_new_privs/exit、unreadable/FD、原signal、parent-death、production request FD、missing创建检测、glob复扫失败；最新 `missing_scan_reports_partial_failure_after_unterminated_command_output` 与 `command_cannot_write_or_forge_private_helper_report` 必须执行。无换行输出不能吞诊断，伪造stdout不能污染私有报告，partial扫描失败后仍发现其他目标，exit23不变。
+
+新增 `removing_existing_env_reports_a_busy_protection_mount`：真实默认 plan/helper/bwrap 删除现存 `.env`，返回EBUSY且私有报告为空，准确匹配保护目标、宿主文件不变。跨平台单测覆盖非保护目标、缺失目标、writable reopen、相对cwd歧义、保留标记、退出码排除、审批拒绝和绝对路径展示。新增用例尚待CI/原生Linux执行，不继承旧smoke的PASS。
 
 证据模板：Tester、UTC日期、Host ID、原生/VM、发行版/内核/架构/glibc、desktop session、candidate commit+dirty diff、应用版本、制品SHA256、bwrap path/version/package version、日志目录、reviewer。采集 `git rev-parse HEAD`、`git status --short`、`cat /etc/os-release`、`uname -a`、`bwrap --version`、probe、doctor；不上传凭据/完整规则/敏感路径清单。
 

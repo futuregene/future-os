@@ -732,10 +732,15 @@ async fn post_hoc_escalation(
     command: &str,
     timeout_secs: u64,
     result: &str,
+    retry: ShellRetry,
 ) -> Option<Result<String>> {
     let requester = escalation.as_ref()?;
     let (exit_code, tail) = parse_result_failure(result);
-    if exit_code == 0 || !crate::sandbox::looks_like_sandbox_denial(sandbox, exit_code, &tail) {
+    if retry == ShellRetry::Blocked
+        || exit_code == 0
+        || (retry != ShellRetry::ProtectedMountBusy
+            && !crate::sandbox::looks_like_sandbox_denial(sandbox, exit_code, &tail))
+    {
         return None;
     }
     let request = EscalationRequest {
@@ -814,23 +819,25 @@ async fn run_shell_with_capability(
             notify(command);
         }
     }
-    let mut allow_post_hoc = true;
+    let mut retry = ShellRetry::ClassifyOutput;
     let result = spawn_shell_with_report(
         command,
         timeout_secs,
         &sandbox,
         false,
         approved_capability,
-        &mut allow_post_hoc,
+        &mut retry,
     )
     .await?;
 
     // Post-hoc escalation: only when the failure narrowly looks like a sandbox
     // denial (conservative heuristic — ordinary failures go back to the model).
-    if sandboxed && allow_post_hoc {
+    if sandboxed && retry != ShellRetry::Blocked {
         #[allow(clippy::single_match)]
         // match keeps each edge's region on its arm line; an if-let whose body always diverges leaves a phantom zero-count region on its closing brace
-        match post_hoc_escalation(&escalation, &sandbox, command, timeout_secs, &result).await {
+        match post_hoc_escalation(&escalation, &sandbox, command, timeout_secs, &result, retry)
+            .await
+        {
             Some(outcome) => return outcome,
             None => {}
         }
@@ -1060,9 +1067,17 @@ async fn spawn_shell(
         sandbox,
         escalated,
         approved_capability,
-        &mut true,
+        &mut ShellRetry::ClassifyOutput,
     )
     .await
+}
+
+/// Internal evidence, never deserialized from command output or model input.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ShellRetry {
+    ClassifyOutput,
+    Blocked,
+    ProtectedMountBusy,
 }
 
 async fn spawn_shell_with_report(
@@ -1071,7 +1086,7 @@ async fn spawn_shell_with_report(
     sandbox: &ResolvedSandbox,
     escalated: bool,
     approved_capability: Option<&crate::sandbox::windows_request::ApprovedWriteCapability>,
-    allow_post_hoc: &mut bool,
+    retry: &mut ShellRetry,
 ) -> Result<String> {
     let cwd = active_workspace()?;
     #[cfg(windows)]
@@ -1133,8 +1148,16 @@ async fn spawn_shell_with_report(
     let expects_report =
         prepared.boundary.backend == crate::sandbox::backend::ShellBackend::LinuxBubblewrap;
     if expects_report {
-        *allow_post_hoc = false;
+        *retry = ShellRetry::Blocked;
     }
+    // Retain the exact launch plan; re-scanning current rules after the command
+    // could mistake a newly created or changed path for a mounted protection.
+    #[cfg(not(windows))]
+    let linux_request = prepared
+        .request_payload
+        .as_deref()
+        .map(crate::sandbox::linux::request::LinuxSandboxRequest::from_json_bytes)
+        .transpose()?;
     let (mut child, mut report_reader) = prepared
         .into_command_with_report()
         .map_err(|error| anyhow!("Failed to initialize OS sandbox request transport: {error}"))?;
@@ -1333,10 +1356,28 @@ async fn spawn_shell_with_report(
                 });
             match report {
                 Ok(report) => {
-                    *allow_post_hoc = report.events.is_empty();
+                    let busy_target = if report.events.is_empty() {
+                        *retry = ShellRetry::ClassifyOutput;
+                        linux_request.as_ref().and_then(|request| {
+                            crate::sandbox::linux::report::busy_protected_mount(
+                                request, command, exit_code, &output,
+                            )
+                        })
+                    } else {
+                        None
+                    };
+                    if busy_target.is_some() {
+                        *retry = ShellRetry::ProtectedMountBusy;
+                    }
                     // Format/truncate command text before appending verified
                     // reports so they cannot be lost to command-output volume.
                     output = format_shell_output(&output, output.len(), exit_code);
+                    if let Some(target) = busy_target {
+                        output.push_str(&format!(
+                            "\n[sandbox] Protected mount target: '{}': Device or resource busy",
+                            target.display(),
+                        ));
+                    }
                     for event in &report.events {
                         output.push('\n');
                         output.push_str(&crate::sandbox::linux::violation::marker(event));
@@ -2921,6 +2962,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn protected_mount_busy_requests_approval_only_with_launch_evidence() {
+        let ws = test_path("linux-busy-approval");
+        std::fs::create_dir_all(&ws).unwrap();
+        let mut sandbox = ResolvedSandbox::resolve(
+            &crate::sandbox::SandboxPolicy {
+                tier: crate::sandbox::SandboxTier::Sandbox,
+            },
+            ws.to_string_lossy().as_ref(),
+        );
+        sandbox.set_linux_backend_available_for_test();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = calls.clone();
+        let requester: crate::sandbox::EscalationRequester = Arc::new(move |request| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(request.command, "rm .env");
+            assert_eq!(
+                request.trigger,
+                crate::sandbox::EscalationTrigger::SandboxFailure
+            );
+            crate::sandbox::EscalationDecision::Denied("keep file".into())
+        });
+        let escalation = Some(requester);
+        let output = "rm: cannot remove '.env': Device or resource busy\n[exit: 1]";
+        for retry in [ShellRetry::ClassifyOutput, ShellRetry::Blocked] {
+            assert!(
+                post_hoc_escalation(&escalation, &sandbox, "rm .env", 10, output, retry)
+                    .await
+                    .is_none()
+            );
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let result = post_hoc_escalation(
+            &escalation,
+            &sandbox,
+            "rm .env",
+            10,
+            output,
+            ShellRetry::ProtectedMountBusy,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(result.contains("not approved: keep file"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        #[cfg(unix)]
+        {
+            let secret = ws.join(".env");
+            std::fs::write(&secret, "test-only-secret").unwrap();
+            let approved: crate::sandbox::EscalationRequester =
+                Arc::new(|_| crate::sandbox::EscalationDecision::Approved);
+            let result = with_tool_scope(
+                ScopeOptions {
+                    workspace: ws.to_string_lossy().into_owned(),
+                    permission_level: "all".into(),
+                    interrupt_flag: Arc::new(AtomicBool::new(false)),
+                    sandbox: Arc::new(sandbox.clone()),
+                    escalation: None,
+                    on_sandboxed: None,
+                },
+                post_hoc_escalation(
+                    &Some(approved),
+                    &sandbox,
+                    "rm .env",
+                    10,
+                    output,
+                    ShellRetry::ProtectedMountBusy,
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(shell_result_exit_code(&result), Some(0));
+            assert!(!secret.exists());
+        }
+    }
+
+    #[tokio::test]
     async fn linux_denial_uses_whole_command_escalation_and_infra_does_not() {
         let ws = test_path("linux-post-hoc");
         std::fs::create_dir_all(&ws).unwrap();
@@ -2945,6 +3064,7 @@ mod tests {
             "touch /protected",
             10,
             "touch: Permission denied\n\n[exit: 1]",
+            ShellRetry::ClassifyOutput,
         )
         .await
         .expect("Linux denial should request whole-command escalation")
@@ -2963,6 +3083,7 @@ mod tests {
             "bad-helper",
             10,
             "future-linux-sandbox-helper: identity changed\n\n[exit: 125]",
+            ShellRetry::ClassifyOutput,
         )
         .await
         .is_none());
@@ -2989,6 +3110,7 @@ mod tests {
             "created-secret-but-failed",
             10,
             &format!("{dynamic}\n\n[exit: 1]"),
+            ShellRetry::Blocked,
         )
         .await
         .is_none());

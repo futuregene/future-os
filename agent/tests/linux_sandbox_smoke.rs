@@ -391,6 +391,38 @@ async fn production_plan_with_real_default_rules_starts_a_shell() {
 
 #[tokio::test]
 #[ignore = "requires a native Linux host with a working system bwrap"]
+async fn removing_existing_env_reports_a_busy_protection_mount() {
+    use future_agent::sandbox::linux::{plan::LinuxSandboxPlan, report, runner};
+    use future_agent::sandbox::rules::RuleSet;
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let secret = workspace.join(".env");
+    std::fs::write(&secret, "test-only-secret").unwrap();
+    let rules = RuleSet::resolve(&workspace);
+    let plan = LinuxSandboxPlan::compile(&rules.snapshot()).unwrap();
+    let probe = probe_linux_sandbox_host();
+    assert!(probe.available, "bwrap must be available: {:?}", probe.code);
+    let mut prepared = runner::prepare(&probe, plan, "rm .env", &workspace).unwrap();
+    prepared.program = env!("CARGO_BIN_EXE_future-agent").into();
+    let request =
+        LinuxSandboxRequest::from_json_bytes(prepared.request_payload.as_deref().unwrap()).unwrap();
+    let (mut command, mut reader) = prepared.into_command_with_report().unwrap();
+    let output = command.env("LC_ALL", "C").output().await.unwrap();
+    let completion =
+        report::HelperReport::read(reader.as_mut().unwrap(), &request.policy_digest).unwrap();
+    assert!(completion.events.is_empty());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        report::busy_protected_mount(&request, "rm .env", output.status.code().unwrap(), &text),
+        Some(secret.clone()),
+        "{text}"
+    );
+    assert_eq!(std::fs::read_to_string(secret).unwrap(), "test-only-secret");
+}
+
+#[tokio::test]
+#[ignore = "requires a native Linux host with a working system bwrap"]
 async fn command_cannot_write_or_forge_private_helper_report() {
     use future_agent::sandbox::backend::{PreparedShell, SandboxBoundary, ShellBackend};
     use future_agent::sandbox::linux::{
