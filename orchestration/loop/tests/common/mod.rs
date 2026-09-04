@@ -36,6 +36,11 @@ pub fn cli_root() -> CliRoot {
     let cwd = dir.path().join("cwd");
     std::fs::create_dir_all(&cwd).unwrap();
     std::env::set_var("FUTURE_LOOP_ROOT", &root);
+    // Isolate local-IPC discovery too: "unreachable agent" tests would
+    // otherwise fall back to an ambient ~/.future/run/agent.sock on a
+    // developer machine and connect to a real agent instead of failing.
+    let socket = dir.path().join("agent.sock");
+    std::env::set_var("FUTURE_AGENT_SOCKET", &socket);
     CliRoot {
         _guard: guard,
         _dir: dir,
