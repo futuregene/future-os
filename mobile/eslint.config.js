@@ -1,10 +1,17 @@
 const { defineConfig } = require("eslint/config");
+const { fixupConfigRules } = require("@eslint/compat");
 const expoConfig = require("eslint-config-expo/flat");
 
 module.exports = defineConfig([
-  ...expoConfig,
+  ...fixupConfigRules(expoConfig),
   {
     ignores: ["android/**", "ios/**", "coverage/**", "src/version.generated.ts"],
+    settings: {
+      // Resolve from Expo's config, not from dependencies traversed by import/namespace.
+      "import/resolver": require.resolve("eslint-import-resolver-typescript", {
+        paths: [require.resolve("eslint-config-expo/flat")],
+      }),
+    },
     rules: {
       eqeqeq: "error",
       "no-console": ["error", { allow: ["warn", "error"] }],

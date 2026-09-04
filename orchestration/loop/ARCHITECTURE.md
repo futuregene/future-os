@@ -215,12 +215,6 @@ Supervision is a stack, and it tops out at a person:
   person may also step in directly at any time (`todo update`, `worker
   stop`, manual `todo complete`): automation below, a person at the top.
 
-Within a multi-agent goal, **peer workers back each other up**: the
-contract's `backup_for` edges declare, per worker, a backup that is
-auto-promoted (succession) when the primary's lease expires or its
-heartbeat goes silent. That is *worker* redundancy — lateral, among peers;
-it does not watch or replace the orchestrator.
-
 ## The kanban's structure: todos, dependencies, workers
 
 Three relations define how multi-worker work is laid out on the board, and
@@ -259,7 +253,7 @@ edges); a synthesis todo `--blocks` them all, so a downstream worker reads
 their artifacts and summarizes; a second wave of todos `--blocks` the
 synthesis. Grouping, model choice, direction assignment, and round
 progression are all **orchestration-layer** decisions (the orchestrator
-shapes the contract topology, todo texts, and spawn configurations); the
+shapes the todo texts, `--blocks` wiring, and spawn configurations); the
 board only guarantees order (edges) and mutual exclusion (leases), and does
 not model *which artifact flows into which todo* — that wiring the
 orchestrator writes into the todo text and acceptance contract.
@@ -364,9 +358,10 @@ is now — new todos, fresh evidence, current gauges, gate verdicts.
 - `HardError` — the turn errored without a recoverable infra cause: **fresh**.
 
 The kernel only provides this classification (observation data); the caller
-decides resume-vs-fresh explicitly via `--session-policy` /
-`--resume-session`, and the default `auto` resumes only sessions the kernel
-judged resumable (`InfraRecoverable`). The kernel stays a pure tool: it
+decides resume-vs-fresh explicitly. **Fresh is the default — there is no
+`--session-policy` flag.** The only resume path is an explicit pin
+(`--resume-session <id>`), because the goal-level retention holds a single id
+and is ambiguous with parallel workers. The kernel stays a pure tool: it
 provides state and signals, but never makes the decision.
 
 Two scoping rules keep the lifecycle simple: parking happens at **turn

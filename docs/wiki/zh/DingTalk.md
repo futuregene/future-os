@@ -8,7 +8,7 @@
 
 ```
 钉钉用户  ──→  钉钉服务器  ──→  Channel Bridge (Stream Mode)  ──→  Agent (gRPC)
-              (api.dingtalk.com)  (你的机器)                        (127.0.0.1:50051)
+              (api.dingtalk.com)  (你的机器)                        (local IPC)
 ```
 
 Bridge 使用**钉钉 Stream Mode**——无需公网回调 URL。它通过 WebSocket 连接钉钉，实时接收消息，转发给 Agent，再通过每条事件中附带 `sessionWebhook` 地址回复。
@@ -53,7 +53,7 @@ Bridge 使用**钉钉 Stream Mode**——无需公网回调 URL。它通过 WebS
 ```json
 {
   "agent": {
-    "grpc_addr": "http://127.0.0.1:50051",
+    "grpc_addr": "auto",
     "cwd": "/home/yourname",
     "model": "future/deepseek-v4-pro",
     "thinking_level": "xhigh",
@@ -70,7 +70,7 @@ Bridge 使用**钉钉 Stream Mode**——无需公网回调 URL。它通过 WebS
 
 | 字段 | 说明 |
 |---|---|
-| `agent.grpc_addr` | Agent gRPC 地址（默认 `http://127.0.0.1:50051`） |
+| `agent.grpc_addr` | Agent gRPC 地址（默认 `auto`，即按用户隔离的本地 IPC；远程/TCP 时设为 `http://host:port`） |
 | `agent.cwd` | 新会话的默认工作目录 |
 | `agent.model` | Channel 会话默认模型（如 `future/deepseek-v4-pro`） |
 | `agent.thinking_level` | 默认思考级别：`off`、`minimal`、`low`、`medium`、`high`、`xhigh` |

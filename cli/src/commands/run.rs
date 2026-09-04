@@ -105,8 +105,8 @@ Examples:
 // ── Arg Parser ────────────────────────────────────────────────────────
 
 fn parse_run_args(args: &[String], out: &Output) -> Option<RunArgs> {
-    let default_addr =
-        std::env::var("FUTURE_AGENT_GRPC_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".to_string());
+    let default_addr = std::env::var("FUTURE_AGENT_GRPC_ADDR")
+        .unwrap_or_else(|_| future_rpc::transport::AUTO_ENDPOINT.to_string());
 
     let mut result = RunArgs {
         grpc_addr: default_addr,
@@ -398,7 +398,7 @@ mod tests {
         let parsed = parse(&["hello", "world"]).unwrap();
         assert_eq!(parsed.messages, vec!["hello", "world"]);
         assert_eq!(parsed.mode, "text");
-        assert_eq!(parsed.grpc_addr, "127.0.0.1:50051");
+        assert_eq!(parsed.grpc_addr, "auto");
     }
 
     #[test]
@@ -567,7 +567,7 @@ mod tests {
         let parsed = parse(&["hi", "--cwd"]).unwrap();
         assert!(parsed.cwd.is_none());
         let parsed = parse(&["hi", "--grpc-addr"]).unwrap();
-        assert!(parsed.grpc_addr.ends_with("50051") || parsed.grpc_addr.contains(':'));
+        assert_eq!(parsed.grpc_addr, "auto");
         let parsed = parse(&["hi", "--tools"]).unwrap();
         assert!(parsed.tools.is_none());
         let parsed = parse(&["hi", "--mode"]).unwrap();

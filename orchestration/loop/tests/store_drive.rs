@@ -794,30 +794,6 @@ fn apply_matrix() {
         })
         .unwrap();
     // Supervisor events (apply arms).
-    store
-        .append(Event::SupervisorProposed {
-            goal_id: "g1".into(),
-            supervisor_agent_id: "sup".into(),
-            decision_id: "d1".into(),
-            decision_kind: "observe".into(),
-            target_agent_id: "a".into(),
-            required_host_capabilities: vec![],
-            decision: "watch".into(),
-            ts: now_epoch(),
-        })
-        .unwrap();
-    store
-        .append(Event::SupervisorReceiptRecorded {
-            goal_id: "g1".into(),
-            decision_id: "d1".into(),
-            receipt_id: "r1".into(),
-            adapter_id: "ad".into(),
-            outcome: "rejected".into(),
-            authority_ref: None,
-            rollback_ref: None,
-            ts: now_epoch(),
-        })
-        .unwrap();
     // GoalCancelled + GapSatisfied.
     store
         .append(Event::GapSatisfied {

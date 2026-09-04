@@ -17,7 +17,6 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
-use tonic::transport::Endpoint;
 
 const GRPC_DEADLINE_SEC: u64 = 30;
 
@@ -75,7 +74,8 @@ fn split_csv(s: &str) -> Vec<String> {
 /// Port of `parseArgs` from index.ts — `--help` exits during scanning.
 pub fn parse_args(args: &[String]) -> ParseOutcome {
     let mut result = CliArgs {
-        grpc_addr: "localhost:50051".to_string(),
+        grpc_addr: std::env::var("FUTURE_AGENT_GRPC_ADDR")
+            .unwrap_or_else(|_| future_rpc::transport::AUTO_ENDPOINT.to_string()),
         ..Default::default()
     };
 
@@ -280,11 +280,14 @@ async fn execute_unary(
     cmd: RpcCommand,
     timeout_secs: u64,
 ) -> Result<RpcResponse, String> {
-    let endpoint = Endpoint::from_shared(format!("http://{addr}"))
-        .map_err(|e| e.to_string())?
-        .timeout(Duration::from_secs(timeout_secs));
-    let channel = endpoint.connect().await.map_err(|e| e.to_string())?;
-    let mut client = FutureAgentClient::new(channel);
+    let connected = future_rpc::transport::connect_channel(
+        Some(addr),
+        Duration::from_secs(timeout_secs.min(5)),
+        Duration::from_secs(timeout_secs),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut client = FutureAgentClient::new(connected.channel);
     client
         .execute_command(cmd)
         .await
@@ -447,8 +450,14 @@ async fn apply_cli_options(addr: &str, session_id: &str, args: &CliArgs) -> Resu
 
 /// Dial a channel for the event-stream subscription (print mode).
 async fn dial_channel(addr: &str) -> Result<tonic::transport::Channel, String> {
-    let endpoint = Endpoint::from_shared(format!("http://{addr}")).map_err(|e| e.to_string())?;
-    endpoint.connect().await.map_err(|e| e.to_string())
+    future_rpc::transport::connect_channel(
+        Some(addr),
+        Duration::from_secs(5),
+        Duration::from_secs(GRPC_DEADLINE_SEC),
+    )
+    .await
+    .map(|connected| connected.channel)
+    .map_err(|e| e.to_string())
 }
 
 /// `runPrintMode` — connect, apply CLI options, stream events, prompt, output.
@@ -924,6 +933,18 @@ pub fn run(args: &[String]) -> ExitCode {
         .build()
         .expect("failed to start tokio runtime");
 
+    // Desktop-style ownership: attach to an existing Agent when possible;
+    // otherwise launch a sidecar and keep it alive for the TUI lifetime.
+    let _owned_agent = match runtime.block_on(crate::agent_supervisor::ensure_agent_running(
+        &args.grpc_addr,
+    )) {
+        Ok(guard) => guard,
+        Err(error) => {
+            eprintln!("future-tui: {error}");
+            return ExitCode::from(1);
+        }
+    };
+
     // Handle --list-models.
     if let Some(search) = &args.list_models {
         eprintln!("Connecting to gRPC server at {}", args.grpc_addr);
@@ -1086,7 +1107,7 @@ mod tests {
         let a = args(&["--grpc-addr", "10.0.0.5:50051"]);
         assert_eq!(a.grpc_addr, "10.0.0.5:50051");
         let a = args(&[]);
-        assert_eq!(a.grpc_addr, "localhost:50051");
+        assert_eq!(a.grpc_addr, "auto");
     }
 
     #[test]
@@ -1188,7 +1209,7 @@ mod tests {
         let a = args(&["--model"]);
         assert!(a.model.is_none());
         let a = args(&["--grpc-addr"]);
-        assert_eq!(a.grpc_addr, "localhost:50051");
+        assert_eq!(a.grpc_addr, "auto");
     }
 
     #[test]

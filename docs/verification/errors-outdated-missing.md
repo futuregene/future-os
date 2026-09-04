@@ -342,7 +342,7 @@ README.md L105-118（zh L100-113）列出 12 个命令，源码（tui/src/app.ts
 ### H2. 核验无误（供后继跳过）
 
 - loop 注册表「10 组 43 命令」、`quota should-run/usage/spend/decisions`、`scheduler tick|show|record-host-failure|ack|liveness`、`delivery status|record|followthrough`、`agent onboard|list|contract|recipe|succession|collective`、`lease claim|renew|release|expire|status`、`frontier show`、`run --goal/--agent-id/--model/--thinking-level/--max-turns` 与实测 registry 输出一致。
-- 语义历史 N=50（goal_frontier/semantic_history.rs `SEMANTIC_HISTORY_CAP`）；交付 3 回合未验证派生跟进（work_items/delivery_outcome.rs）；空转 15 分钟记账（state.rs `TURN_NO_PROGRESS_IDLE_SECS_DEFAULT = 15 * 60`）；租约 pid 活性回收（state.rs claim → compat::pid_alive）。
+- 语义历史 N=50（goal_frontier/semantic_history.rs `SEMANTIC_HISTORY_CAP`）；交付 3 回合未验证派生跟进（work_items/delivery_outcome.rs）；空转 1 小时记账（state.rs `TURN_NO_PROGRESS_IDLE_SECS_DEFAULT = 60 * 60`）；租约 pid 活性回收（state.rs claim → compat::pid_alive）。
 - channels-config.md 全部字段与默认值 ↔ channels/src/config.rs 逐字段一致。
 - TUI 斜杠命令 19 个（17 可用 + /export /import stub）与 tui.md/README 一致；9 个快捷键与 help_screen.rs 一致；README 沙箱三档与 future.proto L251 注释一致；Models.md 3826/143 与 README「3800+/140+」一致；`future init` 链接 future + future-agent 到 ~/.future/bin 与 init.rs 一致。
 - wiki CLI.md 命令组与 `future --help` 实测一致（init/auth/account/run/skills/tools/models/session/doctor + agent/tui/channel/loop）。

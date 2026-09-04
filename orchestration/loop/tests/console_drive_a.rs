@@ -1304,6 +1304,15 @@ fn agent_registry_surface() {
     .contains("not found"));
     assert!(cli_err(&["agent", "list"]).contains("--goal required"));
     assert!(cli_err(&["agent", "list", "--goal", "goal_nope"]).contains("not found"));
+    // Removed multi-host subcommands must NOT silently fall through to
+    // `agent register` (which would register an agent named after the word).
+    for sub in ["contract", "recipe", "succession", "collective"] {
+        assert!(
+            cli_err(&["agent", sub, "--goal", &gid, "--agent-id", "x"])
+                .contains(&format!("unknown agent subcommand `{sub}`")),
+            "agent {sub} must report unknown subcommand"
+        );
+    }
 }
 
 // ── backup ─────────────────────────────────────────────────────────────────
@@ -1433,6 +1442,28 @@ fn replan_ack_and_obligations() {
     .contains("not found"));
     assert!(cli_err(&["replan", "obligations"]).contains("--goal required"));
     assert!(cli_err(&["replan", "obligations", "--goal", "goal_nope"]).contains("not found"));
+    // Ghost flags removed: `replan ack` no longer accepts --format/--json,
+    // `replan obligations` no longer accepts --delta-kind.
+    assert!(cli_err(&[
+        "replan",
+        "ack",
+        "--goal",
+        &gid,
+        "--delta-kind",
+        "vision_patch",
+        "--format",
+        "json"
+    ])
+    .contains("unknown flag `--format`"));
+    assert!(cli_err(&[
+        "replan",
+        "obligations",
+        "--goal",
+        &gid,
+        "--delta-kind",
+        "vision_patch"
+    ])
+    .contains("unknown flag `--delta-kind`"));
 }
 
 // ── top-level dispatch quirks ──────────────────────────────────────────────

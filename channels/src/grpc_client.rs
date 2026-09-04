@@ -88,19 +88,14 @@ fn expand_projection_snapshot(event: proto::StreamEvent) -> VecDeque<proto::Stre
 
 impl AgentClient {
     pub async fn connect(addr: &str) -> Result<Self> {
-        let addr = format!(
-            "http://{}",
-            addr.trim_start_matches("http://")
-                .trim_start_matches("https://")
-        );
-        let endpoint = tonic::transport::Endpoint::new(addr.clone())?
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .timeout(std::time::Duration::from_secs(60));
-        let channel = endpoint
-            .connect()
-            .await
-            .map_err(|e| anyhow!("Failed to connect to agent at {}: {}", addr, e))?;
-        let inner = FutureAgentClient::new(channel);
+        let connected = future_rpc::transport::connect_channel(
+            Some(addr),
+            std::time::Duration::from_secs(10),
+            std::time::Duration::from_secs(60),
+        )
+        .await
+        .map_err(|e| anyhow!("Failed to connect to agent: {e}"))?;
+        let inner = FutureAgentClient::new(connected.channel);
         Ok(Self {
             inner,
             active_runs: Arc::new(Mutex::new(HashMap::new())),

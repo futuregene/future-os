@@ -30,7 +30,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, watch, Notify};
-use tonic::transport::Endpoint;
 use uuid::Uuid;
 
 /// Default gRPC deadline (seconds) for unary calls (grpc-client.ts
@@ -74,9 +73,10 @@ fn is_transport_error(msg: &str) -> bool {
         || msg.contains("ECONNREFUSED")
 }
 
-/// `grpcAddr()` — env override, then localhost default.
+/// Explicit TCP override, otherwise automatic per-user local IPC discovery.
 pub fn grpc_addr() -> String {
-    std::env::var("FUTURE_AGENT_GRPC_ADDR").unwrap_or_else(|_| "localhost:50051".to_string())
+    std::env::var("FUTURE_AGENT_GRPC_ADDR")
+        .unwrap_or_else(|_| future_rpc::transport::AUTO_ENDPOINT.to_string())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -589,11 +589,14 @@ impl GrpcClient {
 /// One-shot `ExecuteCommand` with a deadline (mirrors the CLI port; the TS
 /// client reuses a channel, per-call connect is equivalent for our use).
 async fn execute_unary(addr: &str, cmd: RpcCommand, timeout_secs: u64) -> Result<Value, String> {
-    let endpoint = Endpoint::from_shared(format!("http://{addr}"))
-        .map_err(|e| e.to_string())?
-        .timeout(Duration::from_secs(timeout_secs));
-    let channel = endpoint.connect().await.map_err(|e| e.to_string())?;
-    let mut client = FutureAgentClient::new(channel);
+    let connected = future_rpc::transport::connect_channel(
+        Some(addr),
+        Duration::from_secs(timeout_secs.min(5)),
+        Duration::from_secs(timeout_secs),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut client = FutureAgentClient::new(connected.channel);
     let response = client
         .execute_command(cmd)
         .await
@@ -822,15 +825,17 @@ enum StreamExit {
 /// errors, the 5 s first-data watchdog fires, the session changes, or a
 /// poke arrives.
 async fn subscribe_stream(inner: &Arc<Inner>, session: &str) -> StreamExit {
-    let endpoint = match Endpoint::from_shared(format!("http://{}", inner.addr)) {
-        Ok(e) => e,
+    let connected = match future_rpc::transport::connect_channel(
+        Some(&inner.addr),
+        Duration::from_secs(TRY_CONNECT_TIMEOUT_SEC),
+        Duration::from_secs(GRPC_DEADLINE_SEC),
+    )
+    .await
+    {
+        Ok(connected) => connected,
         Err(_) => return StreamExit::Lost,
     };
-    let channel = match endpoint.connect().await {
-        Ok(c) => c,
-        Err(_) => return StreamExit::Lost,
-    };
-    let mut client = FutureAgentClient::new(channel);
+    let mut client = FutureAgentClient::new(connected.channel);
     let request = StreamRequest {
         session_id: session.to_string(),
         ..Default::default()
@@ -1353,14 +1358,14 @@ mod tests {
         }
         let old = std::env::var_os("FUTURE_AGENT_GRPC_ADDR");
         std::env::remove_var("FUTURE_AGENT_GRPC_ADDR");
-        assert_eq!(grpc_addr(), "localhost:50051");
+        assert_eq!(grpc_addr(), "auto");
         std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "example:1234");
         assert_eq!(grpc_addr(), "example:1234");
         // Both restore arms.
         restore("FUTURE_AGENT_GRPC_ADDR", Some("ambient".into()));
         assert_eq!(grpc_addr(), "ambient");
         restore("FUTURE_AGENT_GRPC_ADDR", None);
-        assert_eq!(grpc_addr(), "localhost:50051");
+        assert_eq!(grpc_addr(), "auto");
         restore("FUTURE_AGENT_GRPC_ADDR", old);
     }
 

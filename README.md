@@ -147,8 +147,11 @@ workflows. `uninstall` / `update` and friends are in the
 
 ### Run the agent
 
-The terminal and CLI clients are thin gRPC clients. **The agent must be running
-first**, listening on `127.0.0.1:50051`:
+The terminal and CLI clients are thin gRPC clients. They connect over
+**per-user local IPC** by default (a Unix-domain socket under
+`~/.future/run/agent.sock` on macOS/Linux, a current-user-only named pipe on
+Windows). The TUI and desktop app start the agent automatically as a sidecar
+when none is running; you can also start it yourself:
 
 ```bash
 future agent     # start the agent in the terminal (logs to stdout; Ctrl-C to stop)
@@ -158,6 +161,12 @@ Then launch the terminal UI from the same `future` command:
 
 ```bash
 future tui       # terminal UI
+```
+
+> **Remote / development mode:** pass `--grpc-addr 127.0.0.1:50051` to
+> `future agent` to serve plain TCP instead, and point clients at it with
+> `FUTURE_AGENT_GRPC_ADDR=127.0.0.1:50051`. TCP is opt-in — never expose it
+> beyond a trusted interface.
 ```
 
 <p align="center">
@@ -212,7 +221,7 @@ future tui       # terminal UI
 
 | Symptom | Fix |
 |---|---|
-| Client exits with a connection / gRPC error | The agent isn't running. Start it (`future agent`) and check nothing else holds the port: `lsof -i :50051`. |
+| Client exits with a connection / gRPC error | The agent isn't running. Start it (`future agent`). If you configured TCP mode (`FUTURE_AGENT_GRPC_ADDR`), check nothing else holds the port: `lsof -i :<port>`. |
 | Agent replies with an auth / "no model" error | No model configured yet. Run `future config` — see [Configure a model](#configure-a-model). |
 | Build / install problems | See [Build & Install](docs/build-and-install.md) (platform toolchains, linker, GUI packaging). |
 
