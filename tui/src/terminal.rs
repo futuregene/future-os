@@ -822,6 +822,10 @@ mod tests {
     #[test]
     fn columns_rows_read_cached_size() {
         let _guard = crate::test_env::lock();
+        // Another test may have tripped the one-shot FORCE_NEW_FAILURE seam
+        // without consuming it; drain it so this construction never unwraps
+        // the injected error (observed as a flake in CI).
+        FORCE_NEW_FAILURE.swap(false, Ordering::SeqCst);
         let t = Terminal::new().unwrap();
         *t.size.lock() = (111, 44);
         assert_eq!(t.columns(), 111);

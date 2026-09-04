@@ -374,8 +374,10 @@ fn create_protected_pipe(
     use std::ptr;
     use tokio::net::windows::named_pipe::ServerOptions;
     use windows_sys::Win32::Foundation::LocalFree;
-    use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
-    use windows_sys::Win32::Security::{SDDL_REVISION_1, SECURITY_ATTRIBUTES};
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 
     let sid = current_user_sid_string()?;
     let sddl: Vec<u16> = format!("D:P(A;;GA;;;SY)(A;;GA;;;{sid})")
