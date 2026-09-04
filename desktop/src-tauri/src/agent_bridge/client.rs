@@ -7,7 +7,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::Channel;
 
 use crate::agent_proto::{Attachment, FutureAgentClient, RpcCommand, RpcResponse};
 
@@ -21,19 +21,11 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// path — so this need not accommodate base64 payloads. Matches the server.
 const MAX_GRPC_MESSAGE_SIZE: usize = 32 * 1024 * 1024;
 
-/// Bare `host:port` the GUI talks to (env override or the default). The single
-/// source of the default address, shared with the bundled-agent supervisor.
+/// Explicit TCP override or `auto` for per-user local IPC. Shared with the
+/// bundled-agent supervisor.
 pub(crate) fn raw_agent_addr() -> String {
-    std::env::var("FUTURE_AGENT_GRPC_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".to_string())
-}
-
-fn agent_endpoint() -> String {
-    let raw = raw_agent_addr();
-    if raw.starts_with("http://") || raw.starts_with("https://") {
-        raw
-    } else {
-        format!("http://{raw}")
-    }
+    std::env::var("FUTURE_AGENT_GRPC_ADDR")
+        .unwrap_or_else(|_| future_rpc::transport::AUTO_ENDPOINT.to_string())
 }
 
 /// Process-lifetime runtime that owns the shared agent channel. tonic spawns
@@ -97,51 +89,44 @@ static AGENT_CHANNEL: tokio::sync::Mutex<Option<(String, Channel)>> =
 /// to `AppError::AgentUnavailable` so callers can tolerate a down agent (e.g.
 /// `abort_run` still cancels the run locally).
 pub async fn connect_agent() -> Result<FutureAgentClient<Channel>, crate::AppError> {
-    let endpoint_str = agent_endpoint();
-    // A cached channel already targeting this endpoint is reused as-is.
+    let configured = raw_agent_addr();
+    // A cached channel already targeting this discovery configuration is
+    // reused as-is.
     {
         let cached = AGENT_CHANNEL.lock().await;
         if let Some((addr, channel)) = cached.as_ref() {
-            if addr == &endpoint_str {
+            if addr == &configured {
                 return Ok(FutureAgentClient::new(channel.clone())
                     .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
                     .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE));
             }
         }
     }
-    let unavailable = |error: tonic::transport::Error| {
-        crate::AppError::AgentUnavailable(format!(
-            "Unable to connect to Future Agent at {endpoint_str}: {error}"
-        ))
-    };
-    let endpoint = Endpoint::from_shared(endpoint_str.clone())
-        .map_err(unavailable)?
-        .connect_timeout(CONNECT_TIMEOUT);
-    let health_endpoint = endpoint_str.clone();
-    // Shared, lazily-established HTTP/2 channel. Previously every command
-    // opened a fresh TCP connection (incl. the per-second status polls), so a
-    // fully idle GUI burnt ~0.25 core in backend just on connect/teardown.
-    // Cloning a Channel is cheap — every clone shares one underlying h2
-    // connection. The channel is created and first used on the pinned
-    // process-lifetime runtime (see agent_channel_runtime) so its connection
-    // driver outlives any caller's runtime. A one-shot health check validates
-    // reachability on first init so callers see a friendly error.
+    let configured_for_connect = configured.clone();
     let channel = agent_channel_runtime()
         .spawn(async move {
-            let ch = endpoint.connect_lazy();
+            let connected = future_rpc::transport::connect_channel(
+                Some(&configured_for_connect),
+                CONNECT_TIMEOUT,
+                CONNECT_TIMEOUT,
+            )
+            .await
+            .map_err(|error| {
+                crate::AppError::AgentUnavailable(format!(
+                    "Unable to connect to Future Agent: {error}"
+                ))
+            })?;
+            let label = connected.endpoint.label();
+            let ch = connected.channel;
             let mut client = FutureAgentClient::new(ch.clone())
                 .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
                 .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE);
-            health_check(&mut client, &health_endpoint).await?;
+            health_check(&mut client, &label).await?;
             Ok::<Channel, crate::AppError>(ch)
         })
         .await
-        // The pinned runtime is process-lifetime (parked forever) and the
-        // task body returns every failure as a value — no panic/abort path.
         .expect("agent channel task: pinned runtime outlives the process")?;
-    // Remember the freshly connected channel for this endpoint; a later call
-    // to a different endpoint overwrites it (and drops the old connection).
-    *AGENT_CHANNEL.lock().await = Some((endpoint_str, channel.clone()));
+    *AGENT_CHANNEL.lock().await = Some((configured, channel.clone()));
     Ok(FutureAgentClient::new(channel)
         .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
         .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE))
@@ -544,20 +529,20 @@ mod tests {
     }
 
     #[test]
-    fn raw_agent_addr_defaults_and_endpoint_adds_scheme() {
+    fn raw_agent_addr_defaults_to_auto_discovery() {
         let _mock = mock_agent();
         // The mock sets FUTURE_AGENT_GRPC_ADDR to a bare host:port.
         let raw = raw_agent_addr();
         assert!(!raw.is_empty());
-        assert_eq!(agent_endpoint(), format!("http://{raw}"));
+        assert_ne!(raw, future_rpc::transport::AUTO_ENDPOINT);
     }
 
     #[test]
-    fn agent_endpoint_keeps_an_explicit_scheme() {
+    fn raw_agent_addr_defaults_to_auto_without_env() {
         let _mock = mock_agent();
         let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock sets the addr");
-        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "https://agent.example:9443");
-        assert_eq!(agent_endpoint(), "https://agent.example:9443");
+        std::env::remove_var("FUTURE_AGENT_GRPC_ADDR");
+        assert_eq!(raw_agent_addr(), future_rpc::transport::AUTO_ENDPOINT);
         std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
     }
 

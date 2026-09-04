@@ -92,7 +92,7 @@ impl Default for DingtalkChannelConfig {
 // ─── Defaults ──────────────────────────────────────────────────────────────
 
 fn default_grpc_addr() -> String {
-    "http://127.0.0.1:50051".into()
+    future_rpc::transport::AUTO_ENDPOINT.into()
 }
 fn default_cwd() -> String {
     dirs::home_dir()
@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn agent_config_defaults() {
         let c = AgentConfig::default();
-        assert_eq!(c.grpc_addr, "http://127.0.0.1:50051");
+        assert_eq!(c.grpc_addr, "auto");
         assert_eq!(c.model, "future/deepseek-v4-pro");
         assert_eq!(c.thinking_level, "xhigh");
         assert_eq!(c.permission_level, "all");
@@ -255,7 +255,7 @@ mod tests {
     #[test]
     fn channel_config_default() {
         let c = ChannelConfig::default();
-        assert_eq!(c.agent.grpc_addr, "http://127.0.0.1:50051");
+        assert_eq!(c.agent.grpc_addr, "auto");
         assert!(c.feishu.is_none());
         assert!(c.dingtalk.is_none());
     }
@@ -265,7 +265,7 @@ mod tests {
     #[test]
     fn deserialize_empty_json() {
         let c: ChannelConfig = serde_json::from_str("{}").unwrap();
-        assert_eq!(c.agent.grpc_addr, "http://127.0.0.1:50051");
+        assert_eq!(c.agent.grpc_addr, "auto");
         assert!(c.feishu.is_none());
         assert!(c.dingtalk.is_none());
     }

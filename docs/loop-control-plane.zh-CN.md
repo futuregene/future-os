@@ -191,7 +191,7 @@ usage 即可发现参数。
 
 ## 与 FutureOS 其他部件的关系
 
-- **Agent 服务**（`future agent`，gRPC 127.0.0.1:50051）：`run` 通过它执行每个回合
+- **Agent 服务**（`future agent`，默认按用户隔离的本地 IPC，`--grpc-addr` 可切 TCP）：`run` 通过它执行每个回合
 - **任何客户端都可经技能驱动**（TUI、桌面、移动端、飞书 / 钉钉）：loop 目标由 `/future-loop` 技能编排 `future loop` 命令驱动——桥与 loop 之间没有原生集成；门禁以 agent 消息形式提出一个具体问题
 - **技能 `/future-loop`**：编排 Agent 使用本控制面的驾驶手册（v3.x 与本文档同步维护）
 - **状态位置**：`<cwd>/.future/loop/`（加入项目 `.gitignore`）

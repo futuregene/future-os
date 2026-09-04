@@ -3,7 +3,7 @@
 //! TypeScript CLI exactly (golden-tested in P4).
 
 /// `printHelp()` from cli/src/help.ts.
-pub const MAIN_HELP: &str = r#"Future OS CLI — agent gateway for the Future Agent gRPC server (default 127.0.0.1:50051).
+pub const MAIN_HELP: &str = r#"Future OS CLI — agent gateway for the Future Agent gRPC server (per-user local IPC by default).
 
 Usage:
   future <group> <command> [options] [args...]
@@ -202,5 +202,5 @@ Usage:
             supportsImages, thinkingLevel, and isDefault fields.
   --help    Show this help.
 
-Requires a running agent (connects to 127.0.0.1:50051 by default).
-Override with FUTURE_AGENT_GRPC_ADDR environment variable."#;
+Requires a running agent (connects over per-user local IPC by default).
+Set FUTURE_AGENT_GRPC_ADDR to an explicit TCP address for remote/development use."#;

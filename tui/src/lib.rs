@@ -34,6 +34,7 @@
 //!   - `rpc`              — full types + tonic `GrpcClient` (wire types via
 //!     the future-rpc crate — the single proto codegen owner, PR #112)
 
+pub mod agent_supervisor;
 pub mod app;
 pub mod components;
 pub mod crash;

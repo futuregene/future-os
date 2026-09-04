@@ -8,7 +8,7 @@ Connect FutureOS to Feishu (Lark) so you can talk to the agent from any Feishu c
 
 ```
 Feishu user  ──→  Feishu server  ──→  Channel Bridge (WebSocket)  ──→  Agent (gRPC)
-                  (open.feishu.cn)     (your machine)                   (127.0.0.1:50051)
+                  (open.feishu.cn)     (your machine)                   (local IPC)
 ```
 
 The bridge opens a long-lived WebSocket connection to Feishu. When someone sends a message to your bot, Feishu pushes it over the WebSocket, the bridge forwards it to the agent, and the response is streamed back to the chat via CardKit (real-time card updates with markdown rendering).
@@ -67,7 +67,7 @@ Edit `~/.future/channels/config.json`:
 ```json
 {
   "agent": {
-    "grpc_addr": "http://127.0.0.1:50051",
+    "grpc_addr": "auto",
     "cwd": "/home/yourname",
     "model": "future/deepseek-v4-pro",
     "thinking_level": "xhigh",
@@ -84,7 +84,7 @@ Edit `~/.future/channels/config.json`:
 
 | Field | Description |
 |---|---|
-| `agent.grpc_addr` | Agent gRPC address (default: `http://127.0.0.1:50051`) |
+| `agent.grpc_addr` | Agent gRPC address (default: `auto` — per-user local IPC; set `http://host:port` for remote/TCP) |
 | `agent.cwd` | Default working directory for new sessions |
 | `agent.model` | Default model for channel sessions (e.g. `future/deepseek-v4-pro`) |
 | `agent.thinking_level` | Default thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` |

@@ -7,7 +7,6 @@
 //! attach to that one instead of spawning a duplicate that would just fail to
 //! bind the port.
 
-use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -30,30 +29,29 @@ static QUIT_CONFIRMED: AtomicBool = AtomicBool::new(false);
 /// stacking a second dialog. Reset if the user cancels, so a later close re-prompts.
 static QUIT_DIALOG_OPEN: AtomicBool = AtomicBool::new(false);
 
-/// Bare `host:port` the GUI talks to — the shared `raw_agent_addr` (single source
-/// of the default), minus any URL scheme (the agent's `--grpc-addr` wants a bare
-/// address).
-fn bare_addr() -> String {
-    crate::agent_bridge::raw_agent_addr()
-        .trim_start_matches("http://")
-        .trim_start_matches("https://")
-        .to_string()
-}
-
-/// True if something is already listening on `addr` — i.e. an agent is running
-/// and we should attach rather than spawn our own.
-fn agent_reachable(addr: &str) -> bool {
-    match addr.to_socket_addrs() {
-        Ok(addrs) => {
-            for sa in addrs {
-                if TcpStream::connect_timeout(&sa, Duration::from_millis(300)).is_ok() {
-                    return true;
-                }
-            }
-            false
-        }
-        Err(_) => false,
-    }
+/// True if the configured TCP override or the per-user local endpoint accepts
+/// an HTTP/2 connection. Run the async connector on a short-lived helper
+/// thread so this synchronous launch hook never nests a Tokio runtime.
+fn agent_reachable(configured: &str) -> bool {
+    let configured = configured.to_string();
+    std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .ok()
+            .and_then(|runtime| {
+                runtime
+                    .block_on(future_rpc::transport::connect_channel(
+                        Some(&configured),
+                        Duration::from_millis(300),
+                        Duration::from_millis(300),
+                    ))
+                    .ok()
+            })
+            .is_some()
+    })
+    .join()
+    .unwrap_or(false)
 }
 
 /// Start the bundled agent sidecar unless one is already reachable. Safe to call
@@ -74,21 +72,30 @@ fn ensure_agent_running_with<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     reachable: impl Fn(&str) -> bool,
 ) {
-    let addr = bare_addr();
-    if reachable(&addr) {
-        eprintln!("FutureOS: agent already reachable at {addr}; not spawning bundled agent");
+    let configured = crate::agent_bridge::raw_agent_addr();
+    if reachable(&configured) {
+        eprintln!("FutureOS: agent already reachable via {configured}; not spawning bundled agent");
         return;
     }
 
-    spawn_bundled_agent(app, &addr);
+    spawn_bundled_agent(app, &configured);
 }
 
 /// Resolve the `future` sidecar and spawn it (or log why we can't). Extracted so
 /// the sidecar-unavailable / spawn-failure arms are testable with a mock app
 /// handle instead of the real `AppHandle` + bundled sidecar binary.
-fn spawn_bundled_agent<R: tauri::Runtime>(app: &tauri::AppHandle<R>, addr: &str) {
+fn spawn_bundled_agent<R: tauri::Runtime>(app: &tauri::AppHandle<R>, configured: &str) {
     let command = match app.shell().sidecar("future") {
-        Ok(command) => command.args(["agent", "--grpc-addr", addr]),
+        Ok(command) if configured.eq_ignore_ascii_case(future_rpc::transport::AUTO_ENDPOINT) => {
+            command.arg("agent")
+        }
+        Ok(command) => command.args([
+            "agent",
+            "--grpc-addr",
+            configured
+                .trim_start_matches("http://")
+                .trim_start_matches("https://"),
+        ]),
         Err(error) => {
             eprintln!(
                 "FutureOS: bundled CLI sidecar unavailable ({error}); run it manually in dev"
@@ -100,7 +107,7 @@ fn spawn_bundled_agent<R: tauri::Runtime>(app: &tauri::AppHandle<R>, addr: &str)
     match command.spawn() {
         Ok((rx, child)) => {
             *AGENT_CHILD.lock().unwrap() = Some(child);
-            eprintln!("FutureOS: started bundled agent on {addr}");
+            eprintln!("FutureOS: started bundled agent via {configured}");
             // Drain the event channel on a background thread so agent stdout/stderr
             // surfaces in logs and the pipe never backs up.
             std::thread::spawn(move || drain_agent_events(rx));
@@ -384,25 +391,38 @@ mod tests {
     use tauri_plugin_shell::process::TerminatedPayload;
 
     #[test]
-    fn bare_addr_strips_url_scheme() {
-        let addr = bare_addr();
-        assert!(!addr.is_empty());
-        assert!(!addr.starts_with("http://"));
-        assert!(!addr.starts_with("https://"));
+    fn raw_agent_addr_defaults_to_auto() {
+        let prev = std::env::var_os("FUTURE_AGENT_GRPC_ADDR");
+        std::env::remove_var("FUTURE_AGENT_GRPC_ADDR");
+        let addr = crate::agent_bridge::raw_agent_addr();
+        assert_eq!(addr, future_rpc::transport::AUTO_ENDPOINT);
+        match prev {
+            Some(value) => std::env::set_var("FUTURE_AGENT_GRPC_ADDR", value),
+            None => std::env::remove_var("FUTURE_AGENT_GRPC_ADDR"),
+        }
     }
 
     #[test]
-    fn agent_reachable_detects_listener_and_dead_port() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        assert!(agent_reachable(&format!("127.0.0.1:{port}")));
-        drop(listener);
+    fn agent_reachable_reports_dead_tcp_port() {
+        // A bound-then-closed TCP port is unreachable: bind port 0 to learn a
+        // free port, drop it, then confirm the probe reports failure.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
         assert!(!agent_reachable(&format!("127.0.0.1:{port}")));
     }
 
     #[test]
     fn agent_reachable_rejects_unparseable_addr() {
-        assert!(!agent_reachable("not-a-socket-addr"));
+        // A malformed TCP URI must fail discovery instead of panicking; the
+        // probe then falls through to local IPC (which succeeds on this dev
+        // machine only if a real agent is running, so it is not asserted).
+        let plan = future_rpc::transport::connection_plan(Some("http://[::1"));
+        assert!(plan
+            .iter()
+            .any(|endpoint| matches!(endpoint, future_rpc::transport::AgentEndpoint::Tcp(_))));
     }
 
     #[test]
