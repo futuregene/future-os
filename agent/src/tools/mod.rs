@@ -738,8 +738,7 @@ async fn post_hoc_escalation(
     let (exit_code, tail) = parse_result_failure(result);
     if retry == ShellRetry::Blocked
         || exit_code == 0
-        || (retry != ShellRetry::ProtectedMountBusy
-            && !crate::sandbox::looks_like_sandbox_denial(sandbox, exit_code, &tail))
+        || !crate::sandbox::looks_like_sandbox_denial(sandbox, exit_code, &tail)
     {
         return None;
     }
@@ -1077,7 +1076,6 @@ async fn spawn_shell(
 enum ShellRetry {
     ClassifyOutput,
     Blocked,
-    ProtectedMountBusy,
 }
 
 async fn spawn_shell_with_report(
@@ -1150,14 +1148,6 @@ async fn spawn_shell_with_report(
     if expects_report {
         *retry = ShellRetry::Blocked;
     }
-    // Retain the exact launch plan; re-scanning current rules after the command
-    // could mistake a newly created or changed path for a mounted protection.
-    #[cfg(not(windows))]
-    let linux_request = prepared
-        .request_payload
-        .as_deref()
-        .map(crate::sandbox::linux::request::LinuxSandboxRequest::from_json_bytes)
-        .transpose()?;
     let (mut child, mut report_reader) = prepared
         .into_command_with_report()
         .map_err(|error| anyhow!("Failed to initialize OS sandbox request transport: {error}"))?;
@@ -1356,28 +1346,14 @@ async fn spawn_shell_with_report(
                 });
             match report {
                 Ok(report) => {
-                    let busy_target = if report.events.is_empty() {
-                        *retry = ShellRetry::ClassifyOutput;
-                        linux_request.as_ref().and_then(|request| {
-                            crate::sandbox::linux::report::busy_protected_mount(
-                                request, command, exit_code, &output,
-                            )
-                        })
+                    *retry = if report.events.is_empty() {
+                        ShellRetry::ClassifyOutput
                     } else {
-                        None
+                        ShellRetry::Blocked
                     };
-                    if busy_target.is_some() {
-                        *retry = ShellRetry::ProtectedMountBusy;
-                    }
                     // Format/truncate command text before appending verified
                     // reports so they cannot be lost to command-output volume.
                     output = format_shell_output(&output, output.len(), exit_code);
-                    if let Some(target) = busy_target {
-                        output.push_str(&format!(
-                            "\n[sandbox] Protected mount target: '{}': Device or resource busy",
-                            target.display(),
-                        ));
-                    }
                     for event in &report.events {
                         output.push('\n');
                         output.push_str(&crate::sandbox::linux::violation::marker(event));
@@ -2962,7 +2938,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn protected_mount_busy_requests_approval_only_with_launch_evidence() {
+    async fn linux_busy_requests_approval_without_command_or_path_constraints() {
         let ws = test_path("linux-busy-approval");
         std::fs::create_dir_all(&ws).unwrap();
         let mut sandbox = ResolvedSandbox::resolve(
@@ -2976,7 +2952,6 @@ mod tests {
         let counter = calls.clone();
         let requester: crate::sandbox::EscalationRequester = Arc::new(move |request| {
             counter.fetch_add(1, Ordering::SeqCst);
-            assert_eq!(request.command, "rm .env");
             assert_eq!(
                 request.trigger,
                 crate::sandbox::EscalationTrigger::SandboxFailure
@@ -2985,27 +2960,39 @@ mod tests {
         });
         let escalation = Some(requester);
         let output = "rm: cannot remove '.env': Device or resource busy\n[exit: 1]";
-        for retry in [ShellRetry::ClassifyOutput, ShellRetry::Blocked] {
-            assert!(
-                post_hoc_escalation(&escalation, &sandbox, "rm .env", 10, output, retry)
-                    .await
-                    .is_none()
-            );
+        for command in ["rm .env", "cd /work && rm .env", "python cleanup.py"] {
+            assert!(post_hoc_escalation(
+                &escalation,
+                &sandbox,
+                command,
+                10,
+                output,
+                ShellRetry::Blocked
+            )
+            .await
+            .is_none());
         }
         assert_eq!(calls.load(Ordering::SeqCst), 0);
-        let result = post_hoc_escalation(
-            &escalation,
-            &sandbox,
+        for command in [
             "rm .env",
-            10,
-            output,
-            ShellRetry::ProtectedMountBusy,
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        assert!(result.contains("not approved: keep file"));
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
+            "cd /work && rm .env",
+            "rm \"$TARGET\"",
+            "python cleanup.py",
+        ] {
+            let result = post_hoc_escalation(
+                &escalation,
+                &sandbox,
+                command,
+                10,
+                output,
+                ShellRetry::ClassifyOutput,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert!(result.contains("not approved: keep file"));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
 
         #[cfg(unix)]
         {
@@ -3028,7 +3015,7 @@ mod tests {
                     "rm .env",
                     10,
                     output,
-                    ShellRetry::ProtectedMountBusy,
+                    ShellRetry::ClassifyOutput,
                 ),
             )
             .await

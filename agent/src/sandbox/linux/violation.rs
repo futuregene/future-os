@@ -102,6 +102,12 @@ pub fn classify(
     if lower.contains("permission denied")
         || lower.contains("operation not permitted")
         || lower.contains("read-only file system")
+        // Removing/renaming a bind-mounted protection can return EBUSY.
+        // Like the other diagnostics, infer denial without constraining the
+        // command or requiring a parseable path: scripts and cwd changes are
+        // valid callers too. Ordinary EBUSY may also match; approval remains
+        // mandatory, and the private completion report still gates retries.
+        || lower.contains("device or resource busy")
     {
         return Some(LinuxSandboxViolation {
             kind: LinuxViolationKind::FilesystemDenied,
@@ -162,6 +168,27 @@ mod tests {
             assert!(classify(code, "Permission denied", "abc").is_none());
         }
         assert!(classify(1, "ordinary compiler error", "abc").is_none());
+    }
+
+    #[test]
+    fn busy_diagnostics_do_not_require_a_command_or_parseable_path() {
+        for output in [
+            "rm: cannot remove '.env': Device or resource busy",
+            "unlink /work/.env: Device or resource busy",
+            "OSError: [Errno 16] Device or resource busy",
+            "DEVICE OR RESOURCE BUSY",
+        ] {
+            assert!(classify(1, output, "abc").is_some(), "{output}");
+            for code in [0, 2, 125, 126, 127] {
+                assert!(classify(code, output, "abc").is_none());
+            }
+        }
+        for output in [
+            format!("{VIOLATION_PREFIX}Device or resource busy"),
+            "[untrusted command text; not a sandbox report] Device or resource busy".into(),
+        ] {
+            assert!(classify(1, &output, "abc").is_none());
+        }
     }
 
     #[test]

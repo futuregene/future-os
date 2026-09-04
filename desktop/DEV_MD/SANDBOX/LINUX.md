@@ -128,9 +128,9 @@ mount source 以 O_PATH FD 固定，bwrap 通过 `/proc/self/fd/N` 挂载；内�
 
 有效空报告之后，普通失败仍使用 `Permission denied`/`Operation not permitted`/`Read-only file system` 文本启发式，排除 0、2、125、126、127。它不是 errno 认证：程序可以伪造普通错误文本；最终仍须用户批准。私有通道不防御已控制宿主同用户 Agent 的攻击者。
 
-删除现存保护文件（如 `.env`）可能返回 `Device or resource busy`（EBUSY）：该对象是沙盒中的挂载点，不代表有程序占用。对此也触发“需要在沙箱外运行此命令”的被动审批，但必须同时满足：有效且无检测事件的私有完成报告、可分类的非零退出码、报错的引号路径精确匹配**本次 launch request 最终 ReadOnly/Unreadable mount**。普通宿主挂载点、writable 根、已重开可写目标、缺失省略目标和保护目录的任意子项不因 EBUSY 自动获得审批入口。
+删除现存保护文件（如 `.env`）可能返回 `Device or resource busy`（EBUSY）：该对象是沙盒中的挂载点，不代表有程序占用。该文本与上述权限错误共用被动审批识别：必须有有效且无检测事件的私有完成报告和可分类的非零退出码，但不再要求路径精确匹配 launch request，也不要求命令是简单 `rm`/`rmdir`。
 
-绝对路径直接匹配；相对路径仅对没有复合操作/变量展开的直接 `rm`/`rmdir` 按初始 cwd 匹配，不猜测 `cd ...; rm .env` 或脚本内的 cwd，不事后 canonicalize 可能已被替换的宿主路径。匹配后在诊断附上绝对目标供卡片展示，内部 retry 标志不从输出解析。该机制仍是路径约束的文本推断，不是内核 errno 认证；不支持的本地化/报错格式可由模型另行主动申请。批准后仍是整命令脱沙盒一次，拒绝不删除文件。检测不完整/新目标检测保持禁止被动重试。
+相对路径、绝对路径、变量展开、切换 cwd、脚本和其他程序均走同一错误输出分类；路径提取仅用于审批展示，失败不阻止审批，也不凭初始 cwd 猜测脚本的绝对目标。不再合成“已确认保护挂载目标”的诊断。普通设备忙或伪造文本也可能触发审批；输出被吞掉、本地化、未识别格式或被排除的退出码可能漏判，不承诺所有程序的失败都能被动识别。模型仍可主动申请。批准后是整命令脱沙盒一次，拒绝不删除文件；检测不完整/新目标检测保持禁止被动重试。
 
 ## 4. 平台差异与已接受缺口
 
@@ -211,7 +211,7 @@ cargo test -p future-agent --lib sandbox::linux::glob_scan::tests::large_workspa
 
 重要smoke：真实默认HOME规则生产链 `production_plan_with_real_default_rules_starts_a_shell`；no_new_privs/exit、unreadable/FD、原signal、parent-death、production request FD、missing创建检测、glob复扫失败；最新 `missing_scan_reports_partial_failure_after_unterminated_command_output` 与 `command_cannot_write_or_forge_private_helper_report` 必须执行。无换行输出不能吞诊断，伪造stdout不能污染私有报告，partial扫描失败后仍发现其他目标，exit23不变。
 
-新增 `removing_existing_env_reports_a_busy_protection_mount`：真实默认 plan/helper/bwrap 删除现存 `.env`，返回EBUSY且私有报告为空，准确匹配保护目标、宿主文件不变。跨平台单测覆盖非保护目标、缺失目标、writable reopen、相对cwd歧义、保留标记、退出码排除、审批拒绝和绝对路径展示。新增用例尚待CI/原生Linux执行，不继承旧smoke的PASS。
+新增 `removing_existing_env_reports_a_busy_protection_mount`：真实默认 plan/helper/bwrap 删除现存 `.env`，返回 EBUSY 且私有报告为空，命中文本分类、宿主文件不变。单测覆盖不依赖路径格式的 EBUSY 分类、保留标记、退出码排除，以及不同命令形式下的审批拒绝和报告门禁；Unix 用例覆盖批准后删除。新增/调整用例尚待 CI/原生 Linux 执行，不继承旧 smoke 的 PASS。
 
 证据模板：Tester、UTC日期、Host ID、原生/VM、发行版/内核/架构/glibc、desktop session、candidate commit+dirty diff、应用版本、制品SHA256、bwrap path/version/package version、日志目录、reviewer。采集 `git rev-parse HEAD`、`git status --short`、`cat /etc/os-release`、`uname -a`、`bwrap --version`、probe、doctor；不上传凭据/完整规则/敏感路径清单。
 

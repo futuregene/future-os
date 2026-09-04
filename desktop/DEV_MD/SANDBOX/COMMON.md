@@ -120,7 +120,7 @@ Desktop 复用 `ApprovalPrompt`，手机使用原生卡片但共享可信语义�
 
 Windows 不使用此整命令批准，详见 [路径 capability](WINDOWS.md#3-路径-capability-审批)。
 
-Linux 删除保护挂载点出现 EBUSY 时，只有本次真实保护目标匹配且私有完成报告允许重试，才触发同一被动审批；不是把所有“Device or resource busy”都当沙盒拒绝。具体范围与相对路径限制见 [Linux 检测与重试](LINUX.md#34-检测报告与重试可信度)。
+Linux 将 `Device or resource busy`（EBUSY）与其他权限错误一样作为被动审批的文本启发式，不以命令形式或成功解析路径为前提；私有完成报告仍须允许重试。这不是内核拒绝认证，普通设备忙也可能误触发审批，吞掉错误输出则可能漏判。见 [Linux 检测与重试](LINUX.md#34-检测报告与重试可信度)。
 
 ### 4.2 协议与代码索引
 

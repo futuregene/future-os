@@ -413,9 +413,14 @@ async fn removing_existing_env_reports_a_busy_protection_mount() {
         report::HelperReport::read(reader.as_mut().unwrap(), &request.policy_digest).unwrap();
     assert!(completion.events.is_empty());
     let text = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(
-        report::busy_protected_mount(&request, "rm .env", output.status.code().unwrap(), &text),
-        Some(secret.clone()),
+    assert!(text.contains("Device or resource busy"), "{text}");
+    assert!(
+        future_agent::sandbox::linux::violation::classify(
+            output.status.code().unwrap(),
+            &text,
+            &request.policy_digest,
+        )
+        .is_some(),
         "{text}"
     );
     assert_eq!(std::fs::read_to_string(secret).unwrap(), "test-only-secret");
