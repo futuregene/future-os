@@ -347,7 +347,11 @@ impl crate::types::LLMProvider for Client {
             let mut frames_decoded = 0_u64;
             let mut decoder = sse::SseDecoder::default();
             let mut state = adapter.new_stream_state();
-            let mut terminal = false;
+            // The model's protocol-level Finish only ends its text/tool stream.
+            // OpenAI-compatible providers can legally send a usage-only frame
+            // after that finish_reason, and token accounting would be lost if
+            // the byte-stream pump stopped at Finish instead of `[DONE]`.
+            let mut protocol_terminal = false;
             loop {
                 let next = tokio::select! {
                     _ = tx.closed() => return,
@@ -456,7 +460,7 @@ impl crate::types::LLMProvider for Client {
                         }
                     };
                     for event in events {
-                        terminal |= matches!(
+                        protocol_terminal |= matches!(
                             event,
                             schema::ModelStreamEvent::Finish { .. }
                                 | schema::ModelStreamEvent::Error { .. }
@@ -464,9 +468,6 @@ impl crate::types::LLMProvider for Client {
                         if tx.send(event).await.is_err() {
                             return;
                         }
-                    }
-                    if terminal {
-                        return;
                     }
                 }
             }
@@ -498,7 +499,7 @@ impl crate::types::LLMProvider for Client {
                     }
                 };
                 for event in events {
-                    terminal |= matches!(
+                    protocol_terminal |= matches!(
                         event,
                         schema::ModelStreamEvent::Finish { .. }
                             | schema::ModelStreamEvent::Error { .. }
@@ -508,7 +509,7 @@ impl crate::types::LLMProvider for Client {
                     }
                 }
             }
-            if !terminal {
+            if !protocol_terminal {
                 tracing::warn!(
                     protocol = %protocol,
                     model = %model,
@@ -1189,6 +1190,65 @@ mod tests {
         assert!(message.contains("frames="), "{message}");
         assert!(message.contains("elapsed_ms="), "{message}");
         assert!(message.contains("causes="), "{message}");
+    }
+
+    #[tokio::test]
+    async fn stream_model_processes_usage_frames_after_finish_reason() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 16 * 1024];
+            let _ = stream.read(&mut request);
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
+                )
+                .unwrap();
+            let finish = b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\",\"index\":0}],\"usage\":null}\n\n";
+            let usage = b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":62,\"completion_tokens\":29,\"total_tokens\":91,\"credit_cost\":\"0.00186\"}}\n\n";
+            stream
+                .write_all(format!("{:X}\r\n", finish.len()).as_bytes())
+                .and_then(|_| stream.write_all(finish))
+                .and_then(|_| stream.write_all(b"\r\n"))
+                .and_then(|_| stream.write_all(format!("{:X}\r\n", usage.len()).as_bytes()))
+                .and_then(|_| stream.write_all(usage))
+                .and_then(|_| stream.write_all(b"\r\n0\r\n\r\n"))
+                .and_then(|_| stream.flush())
+                .unwrap();
+        });
+
+        let client = Client::from_target(chat_target(
+            &format!("http://127.0.0.1:{port}"),
+            "secret",
+            None,
+            None,
+        ));
+        let events: Vec<_> = client
+            .stream_model(canonical_request())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+
+        let usage = events
+            .iter()
+            .find_map(|event| match event {
+                schema::ModelStreamEvent::Usage(usage) => Some(usage),
+                _ => None,
+            })
+            .expect("usage event after finish_reason should be preserved");
+        assert_eq!(usage.prompt_tokens, 62);
+        assert_eq!(usage.completion_tokens, 29);
+        assert_eq!(usage.credit_cost, Some(0.00186));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            schema::ModelStreamEvent::Finish {
+                reason: schema::FinishReason::Stop,
+                ..
+            }
+        )));
     }
 
     #[allow(clippy::await_holding_lock)]
