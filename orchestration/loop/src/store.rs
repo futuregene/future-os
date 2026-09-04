@@ -512,32 +512,6 @@ pub enum Event {
         consecutive: u32,
         ts: u64,
     },
-    /// G-16: a supervisor proposed a decision for a target agent (LoopX
-    /// SUPERVISOR_PROPOSED). Projection-only — supervisor state is read from
-    /// the event log, not folded into goal state.
-    SupervisorProposed {
-        goal_id: String,
-        supervisor_agent_id: String,
-        decision_id: String,
-        decision_kind: String,
-        target_agent_id: String,
-        required_host_capabilities: Vec<String>,
-        decision: String,
-        ts: u64,
-    },
-    /// G-16: a host execution receipt recorded against a supervisor proposal
-    /// (reference SUPERVISOR_RECEIPT_RECORDED). An `executed` receipt requires an
-    /// authority ref (validated by the supervisor domain before append).
-    SupervisorReceiptRecorded {
-        goal_id: String,
-        decision_id: String,
-        receipt_id: String,
-        adapter_id: String,
-        outcome: String,
-        authority_ref: Option<String>,
-        rollback_ref: Option<String>,
-        ts: u64,
-    },
     /// P1-2③: projection self-healing audit — a read model drifted past
     /// the repair threshold and was rebuilt from its source of truth
     /// (`projection` = `run_index`: rescan of the run files on disk,
@@ -554,30 +528,6 @@ pub enum Event {
         duplicate_rows: usize,
         rows_written: usize,
         backup_path: String,
-        ts: u64,
-    },
-    MultiAgentContractSet {
-        goal_id: String,
-        contract: crate::agents::multi_agent::MultiAgentContract,
-        ts: u64,
-    },
-    /// G12: named agent recipe added (capabilities / workspaces / default
-    /// priority). Re-adding a name is allowed — lookups resolve the latest
-    /// event. Projection-only.
-    AgentRecipeAdded {
-        goal_id: String,
-        recipe: crate::agents::multi_agent::AgentRecipe,
-        ts: u64,
-    },
-    /// G12: role succession occurred — a primary's lease expired or its
-    /// heartbeat went silent past the threshold, so the declared backup was
-    /// promoted. Projection-only: the succession read model and the
-    /// attention hint read the ledger.
-    SuccessionOccurred {
-        goal_id: String,
-        primary: String,
-        backup: String,
-        reason: String,
         ts: u64,
     },
     /// G13 ②: replan rule set updated — the goal's explicit rule set (full
@@ -670,12 +620,7 @@ impl Event {
             | Event::SchedulerAcked { goal_id, .. }
             | Event::SchedulerTicked { goal_id, .. }
             | Event::AutomationLivenessAlert { goal_id, .. }
-            | Event::SupervisorProposed { goal_id, .. }
-            | Event::SupervisorReceiptRecorded { goal_id, .. }
             | Event::ProjectionRepaired { goal_id, .. }
-            | Event::MultiAgentContractSet { goal_id, .. }
-            | Event::AgentRecipeAdded { goal_id, .. }
-            | Event::SuccessionOccurred { goal_id, .. }
             | Event::ReplanRuleSetUpdated { goal_id, .. }
             | Event::SupervisorRegistered { goal_id, .. }
             | Event::WorkerSteered { goal_id, .. }
@@ -1994,25 +1939,7 @@ fn apply(goal: &mut Goal, event: Event) {
         Event::DecisionSummaryRecorded { .. }
         | Event::HeartbeatReceiptRecorded { .. }
         | Event::SchedulerAcked { .. }
-        | Event::SupervisorProposed { .. }
-        | Event::SupervisorReceiptRecorded { .. }
-        | Event::ProjectionRepaired { .. }
-        | Event::MultiAgentContractSet { .. }
-        | Event::AgentRecipeAdded { .. } => {}
-        Event::SuccessionOccurred {
-            primary,
-            backup,
-            reason,
-            ts,
-            ..
-        } => {
-            goal.record_semantic_event(
-                crate::decision::goal_frontier::semantic_history::KIND_ROLE_SUCCESSION,
-                None,
-                &format!("{primary}→{backup} ({reason})"),
-                ts,
-            );
-        }
+        | Event::ProjectionRepaired { .. } => {}
         Event::SupervisorRegistered { session_id, .. } => {
             goal.supervisor_session_id = Some(session_id);
         }

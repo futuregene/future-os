@@ -73,12 +73,26 @@ impl Journey {
     }
 }
 
+/// One flag's help entry. `flag` is the exact token (value placeholder
+/// included, e.g. `--max-turns N`); `what` describes what the flag does;
+/// `notes` carries defaults / constraints / gotchas (empty string when none).
+#[derive(Debug, Clone)]
+pub struct FlagHelp {
+    pub flag: String,
+    pub what: String,
+    pub notes: String,
+}
+
 /// One registered command.
 #[derive(Debug, Clone)]
 pub struct CommandDef {
     pub name: String,
     pub summary: String,
     pub usage: String,
+    /// Per-flag help (defaults / constraints / gotchas) rendered by
+    /// `<command> --help` so a caller understands each flag without reading
+    /// the source. Empty when the command has no flags.
+    pub flags: Vec<FlagHelp>,
     /// True for commands surfaced only with `--include-experimental`.
     pub experimental: bool,
     /// Operator journey (P1-9). Defaults to maintainer; the CLI builder
@@ -164,6 +178,7 @@ impl CommandRegistry {
                     name: name.to_string(),
                     summary: summary.to_string(),
                     usage: usage.to_string(),
+                    flags: Vec::new(),
                     experimental,
                     journey: Journey::Maintainer,
                     subcommands: Vec::new(),
@@ -190,10 +205,57 @@ impl CommandRegistry {
                     name: name.to_string(),
                     summary: summary.to_string(),
                     usage: usage.to_string(),
+                    flags: Vec::new(),
                     experimental: false,
                     journey: Journey::Maintainer,
                     subcommands: Vec::new(),
                 });
+            }
+        }
+        self
+    }
+
+    /// Attach per-flag help to an already-registered command. Each entry is
+    /// `(flag, what, notes)`; `notes` may be empty. No-op for unknown command
+    /// names. Replaces any previously attached flags for that command.
+    pub fn flags(&mut self, command: &str, flags: &[(&str, &str, &str)]) -> &mut Self {
+        for (_, c) in &mut self.commands {
+            if c.name == command {
+                c.flags = flags
+                    .iter()
+                    .map(|(f, w, n)| FlagHelp {
+                        flag: f.to_string(),
+                        what: w.to_string(),
+                        notes: n.to_string(),
+                    })
+                    .collect();
+            }
+        }
+        self
+    }
+
+    /// Attach per-flag help to a subcommand (verb) under an already-
+    /// registered command. No-op for unknown parent/sub names.
+    pub fn subcommand_flags(
+        &mut self,
+        command: &str,
+        sub: &str,
+        flags: &[(&str, &str, &str)],
+    ) -> &mut Self {
+        for (_, c) in &mut self.commands {
+            if c.name == command {
+                for s in &mut c.subcommands {
+                    if s.name == sub {
+                        s.flags = flags
+                            .iter()
+                            .map(|(f, w, n)| FlagHelp {
+                                flag: f.to_string(),
+                                what: w.to_string(),
+                                notes: n.to_string(),
+                            })
+                            .collect();
+                    }
+                }
             }
         }
         self
@@ -408,6 +470,45 @@ mod tests {
         assert!(r.find_subcommand("goal", "cancel", false).is_some());
         assert!(r.find_subcommand("goal", "missing", false).is_none());
         assert!(r.find_subcommand("backup", "init", false).is_none());
+    }
+
+    #[test]
+    fn flags_and_subcommand_flags_attach_and_replace() {
+        let mut r = sample();
+        r.flags(
+            "backup",
+            &[
+                ("--goal G", "goal id", "required"),
+                ("--list", "list backups", "optional"),
+            ],
+        );
+        // command-level flags are findable through find()
+        let (_, c) = r.find("backup", false).unwrap();
+        assert_eq!(c.flags.len(), 2);
+        assert_eq!(c.flags[0].flag, "--goal G");
+        assert_eq!(c.flags[0].what, "goal id");
+        assert_eq!(c.flags[0].notes, "required");
+        // re-attaching replaces (no accumulation)
+        r.flags("backup", &[("--goal G", "goal id", "required")]);
+        let (_, c) = r.find("backup", false).unwrap();
+        assert_eq!(c.flags.len(), 1);
+        // unknown command → no-op
+        r.flags("nope", &[("--x", "y", "z")]);
+        assert!(r.find("nope", false).is_none());
+
+        // subcommand flags
+        r.subcommand("goal", "init", "create a goal", "init --objective");
+        r.subcommand_flags(
+            "goal",
+            "init",
+            &[("--objective TEXT", "goal objective", "required")],
+        );
+        let (_, _, sub) = r.find_subcommand("goal", "init", false).unwrap();
+        assert_eq!(sub.flags.len(), 1);
+        assert_eq!(sub.flags[0].flag, "--objective TEXT");
+        // unknown subcommand → no-op
+        r.subcommand_flags("goal", "missing", &[("--x", "y", "z")]);
+        assert!(r.find_subcommand("goal", "missing", false).is_none());
     }
 
     #[test]

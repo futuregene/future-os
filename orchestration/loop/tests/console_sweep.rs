@@ -243,44 +243,6 @@ fn unknown_flags_hard_error_everywhere() {
         "--zz",
         "1",
     ]);
-    assert_unknown_flag(&[
-        "supervisor",
-        "propose",
-        "--goal",
-        &gid,
-        "--agent-id",
-        "s",
-        "--decision-id",
-        "dz",
-        "--target-agent-id",
-        "w1",
-        "--kind",
-        "execute",
-        "--capabilities",
-        "shell",
-        "--zz",
-        "1",
-    ]);
-    assert_unknown_flag(&[
-        "supervisor",
-        "receipt",
-        "--goal",
-        &gid,
-        "--decision-id",
-        "dz",
-        "--receipt-id",
-        "rz",
-        "--adapter-id",
-        "a",
-        "--outcome",
-        "executed",
-        "--host-capabilities",
-        "shell",
-        "--authority-ref",
-        "auth-1",
-        "--zz",
-        "1",
-    ]);
     let md = std::path::Path::new(&cr.cwd).join("bf.md");
     std::fs::write(&md, "## Agent Todo\n\n- [ ] Task one\n").unwrap();
     assert_unknown_flag(&[
