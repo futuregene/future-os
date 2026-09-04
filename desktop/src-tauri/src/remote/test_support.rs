@@ -320,6 +320,22 @@ fn default_answer(
 ) -> (bool, String, String) {
     match cmd.r#type.as_str() {
         "list_streaming_sessions" => ok(json!({ "sessions": [] })),
+        "probe_sandbox" => ok(json!({
+            "available": cfg!(target_os = "macos"),
+            "code": if cfg!(target_os = "macos") {
+                "available"
+            } else {
+                "unsupported_platform"
+            },
+            "backend": if cfg!(target_os = "macos") {
+                "macos_seatbelt"
+            } else {
+                "none"
+            },
+            "path": null,
+            "version": null,
+            "capabilities": null,
+        })),
         "list_models" => ok(json!({
             "models": [],
             "defaultModel": "",

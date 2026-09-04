@@ -145,8 +145,11 @@
     },
     "approvalTierDesc": {
       "manual": "Asks before each action",
-      "sandbox": "Asks when needed",
+      "sandbox": "Runs sandboxed and asks when needed",
       "sandboxWindows": "Restricts out-of-scope writes and asks when needed",
+      "sandboxLinux": "Runs sandboxed and asks when needed",
+      "sandboxChecking": "Checking the system sandbox…",
+      "sandboxUnavailable": "The system sandbox is unavailable; see Settings for details",
       "off": "<em>ANY</em> command, no approval"
     },
     "attachImageUnsupportedHint": "The current model doesn't support images and may not read this image correctly",
@@ -211,6 +214,8 @@
     "viewCommand": "View command",
     "invalidRequest": "This approval request is incomplete and cannot be safely approved.",
     "escalationTitle": "Run this command outside the sandbox",
+    "escalationRequestTitle": "The model requests to run this command outside the sandbox",
+    "escalationRetryTitle": "This command needs to run outside the sandbox",
     "blockedPaths": "Files blocked by the sandbox",
     "unsandboxedNote": "If allowed, this command runs once without sandbox restrictions.",
     "denying": "Denying",

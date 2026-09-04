@@ -94,11 +94,18 @@ export function useAppSettings(): UseAppSettingsResult {
     if (sandboxFallbackRef.current)
       return;
     sandboxFallbackRef.current = true;
+    emitFutureEvent("toast", {
+      message: i18n.t("settings:approvalTier.fallbackNotice", {
+        code: sandboxAvailability.code ?? "probe_failed",
+      }),
+      tone: "info",
+    });
     void changeSettings({ approvalTier: "manual" }).finally(() => {
       sandboxFallbackRef.current = false;
     });
   }, [
     appSettings.approvalTier,
+    sandboxAvailability.code,
     sandboxFallbackRequired,
   ]);
 

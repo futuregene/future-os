@@ -1,16 +1,20 @@
-//! OS-level sandbox + path-based approval rules (APPROVAL_PLAN.md / SANDBOX_PLAN.md).
+//! OS-level sandbox + path-based approval rules.
+//! Shared contract: desktop/DEV_MD/SANDBOX/COMMON.md; backend details live in
+//! MACOS.md, LINUX.md and WINDOWS.md in the same directory.
 //!
 //! Every approval is about a file-path access: [`rules::RuleSet`] resolves a
 //! path + op to `Ask | Allow | Deny`. That verdict is enforced two ways:
 //!   - read/write/edit tools: the approval layer prompts (Ask) / proceeds
 //!     (Allow) / errors (Deny) before the in-process op runs.
-//!   - shell: the rules compile into a Seatbelt profile (macOS); Ask and Deny
-//!     both become an OS-level read/write denial, and a resulting failure
-//!     surfaces via the escalation flow.
+//!   - shell: the rules compile into a Seatbelt profile (macOS) or Bubblewrap
+//!     mount plan (Linux); Ask and Deny become OS-level read/write denials, and
+//!     a resulting failure surfaces via the escalation flow.
 //!
 //! Network is unrestricted. The whole system is gated by `enabled`: only GUI
 //! sessions opt in; everything else runs fully open.
 
+pub mod backend;
+pub mod linux;
 pub mod paths;
 pub mod rules;
 mod seatbelt;
@@ -24,7 +28,26 @@ pub(crate) mod windows_request;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use backend::PreparedShell;
 use rules::{Decision, Op, RuleSet};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SandboxBackendReceipt {
+    Unavailable,
+    MacosSeatbelt {
+        executable: PathBuf,
+    },
+    LinuxBubblewrap {
+        probe: linux::probe::LinuxSandboxProbe,
+    },
+    WindowsRestricted,
+}
+
+impl SandboxBackendReceipt {
+    pub fn is_available(&self) -> bool {
+        !matches!(self, Self::Unavailable)
+    }
+}
 
 /// The user-selected approval tier (composer / settings).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -68,8 +91,9 @@ pub struct SandboxPolicy {
 #[derive(Debug, Clone)]
 pub struct ResolvedSandbox {
     pub tier: SandboxTier,
-    /// Whether the platform OS sandbox is usable here.
-    pub available: bool,
+    /// Verified backend identity/capability receipt. Availability is derived
+    /// from this receipt rather than maintained as an independent boolean.
+    pub backend_receipt: SandboxBackendReceipt,
     /// Canonicalized workspace directory.
     pub workspace: PathBuf,
     rules: RuleSet,
@@ -79,9 +103,11 @@ impl ResolvedSandbox {
     /// Resolve rules for `workspace`. The tier comes from the session policy.
     pub fn resolve(policy: &SandboxPolicy, workspace: &str) -> Self {
         let rules = RuleSet::resolve(Path::new(workspace));
+        let backend_receipt = platform_backend_receipt();
+        let tier = effective_tier(policy.tier, &backend_receipt);
         Self {
-            tier: policy.tier,
-            available: platform_sandbox_available(),
+            tier,
+            backend_receipt,
             workspace: rules.workspace.clone(),
             rules,
         }
@@ -95,9 +121,11 @@ impl ResolvedSandbox {
         session: rules::SessionRules,
     ) -> Self {
         let rules = RuleSet::resolve_with_session(Path::new(workspace), session);
+        let backend_receipt = platform_backend_receipt();
+        let tier = effective_tier(policy.tier, &backend_receipt);
         Self {
-            tier: policy.tier,
-            available: platform_sandbox_available(),
+            tier,
+            backend_receipt,
             workspace: rules.workspace.clone(),
             rules,
         }
@@ -128,7 +156,7 @@ impl ResolvedSandbox {
         let rules = RuleSet::resolve(Path::new(workspace));
         Self {
             tier: SandboxTier::Off,
-            available: false,
+            backend_receipt: SandboxBackendReceipt::Unavailable,
             workspace: rules.workspace.clone(),
             rules,
         }
@@ -159,10 +187,44 @@ impl ResolvedSandbox {
             .add_session_rule(abs_pattern, access, Decision::Allow);
     }
 
-    /// Whether shell commands run wrapped in the OS sandbox (Sandbox tier on a
-    /// platform where sandbox-exec is available).
+    /// Whether shell commands use the resolved OS sandbox backend (Sandbox
+    /// tier with an available backend receipt).
     pub fn wraps_shell(&self) -> bool {
-        self.tier == SandboxTier::Sandbox && self.available
+        self.tier == SandboxTier::Sandbox && self.backend_receipt.is_available()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_backend_available_for_test(&mut self, available: bool) {
+        self.backend_receipt = if available {
+            self.tier = SandboxTier::Sandbox;
+            SandboxBackendReceipt::MacosSeatbelt {
+                executable: PathBuf::from("/usr/bin/sandbox-exec"),
+            }
+        } else {
+            SandboxBackendReceipt::Unavailable
+        };
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_linux_backend_available_for_test(&mut self) {
+        self.tier = SandboxTier::Sandbox;
+        self.backend_receipt = SandboxBackendReceipt::LinuxBubblewrap {
+            probe: linux::probe::LinuxSandboxProbe {
+                available: true,
+                code: linux::probe::LinuxSandboxProbeCode::Available,
+                path: Some(PathBuf::from("/usr/bin/bwrap")),
+                version: Some("test".into()),
+                identity: Some(linux::probe::BwrapIdentity {
+                    device: 1,
+                    inode: 2,
+                    size: 3,
+                    modified_nanos: 4,
+                }),
+                capabilities: None,
+                expires_at_unix_ms: None,
+                diagnostic: None,
+            },
+        };
     }
 
     /// Read access to the resolved rule set (Seatbelt profile builder).
@@ -170,20 +232,54 @@ impl ResolvedSandbox {
         &self.rules
     }
 
-    /// Build the shell invocation: Seatbelt-wrapped when enabled+available and
-    /// not escalated; otherwise the platform shell via [`shell_invocation`].
-    /// `escalated` forces an unsandboxed run for one approved command.
-    pub fn build_shell_command(&self, command: &str, escalated: bool) -> tokio::process::Command {
+    /// Prepare a structured shell invocation. Backend construction failures
+    /// are infrastructure errors: callers must return them directly rather
+    /// than feeding them into sandbox-denial escalation.
+    pub fn prepare_shell_for_cwd(
+        &self,
+        command: &str,
+        escalated: bool,
+        cwd: &Path,
+    ) -> anyhow::Result<PreparedShell> {
+        self.prepare_shell_for_cwd_with_cancel(command, escalated, cwd, &|| false)
+    }
+
+    pub(crate) fn prepare_shell_for_cwd_with_cancel(
+        &self,
+        command: &str,
+        escalated: bool,
+        cwd: &Path,
+        cancelled: &dyn Fn() -> bool,
+    ) -> anyhow::Result<PreparedShell> {
+        #[cfg(not(target_os = "linux"))]
+        let _ = (cwd, cancelled);
         if !escalated && self.wraps_shell() {
             #[cfg(target_os = "macos")]
             {
-                return seatbelt::build_command(self, command);
+                return Ok(seatbelt::prepare(self, command));
+            }
+            #[cfg(target_os = "linux")]
+            if let SandboxBackendReceipt::LinuxBubblewrap { probe } = &self.backend_receipt {
+                let plan = linux::plan::LinuxSandboxPlan::compile_with_cancel(
+                    &self.rules.snapshot(),
+                    cancelled,
+                )?;
+                return Ok(linux::runner::prepare(probe, plan, command, cwd)?);
             }
         }
-        let (program, args) = shell_invocation(command);
-        let mut child = tokio::process::Command::new(program);
-        child.args(&args);
-        child
+        Ok(PreparedShell::plain(command))
+    }
+
+    pub fn prepare_shell(&self, command: &str, escalated: bool) -> PreparedShell {
+        self.prepare_shell_for_cwd(command, escalated, &self.workspace)
+            .expect("sandbox backend preparation failed")
+    }
+
+    /// Compatibility adapter for callers that need a Tokio command.
+    pub fn build_shell_command(&self, command: &str, escalated: bool) -> tokio::process::Command {
+        self.prepare_shell(command, escalated)
+            .into_command()
+            .expect("prepared shell command construction failed")
     }
 
     /// Convert bash-style escaped double quotes (\") to single-quoted form
@@ -277,13 +373,33 @@ impl ResolvedSandbox {
         violation: Option<&str>,
         inside_sandbox: bool,
     ) -> serde_json::Value {
+        let backend = match self.backend_receipt {
+            SandboxBackendReceipt::Unavailable => "none",
+            SandboxBackendReceipt::MacosSeatbelt { .. } => "macos_seatbelt",
+            SandboxBackendReceipt::LinuxBubblewrap { .. } => "linux_bubblewrap",
+            SandboxBackendReceipt::WindowsRestricted => "windows_restricted",
+        };
+        let policy_digest = linux::plan::policy_digest(&self.rules.snapshot()).ok();
         serde_json::json!({
             "inside_sandbox": inside_sandbox,
-            "sandbox_available": self.available,
+            "sandbox_available": self.backend_receipt.is_available(),
+            "backend": backend,
+            "policy_digest": policy_digest,
             "tier": self.tier.as_str(),
             "violation": violation,
             "cwd": self.workspace.to_string_lossy(),
         })
+    }
+}
+
+fn effective_tier(requested: SandboxTier, receipt: &SandboxBackendReceipt) -> SandboxTier {
+    if requested == SandboxTier::Sandbox && !receipt.is_available() {
+        tracing::warn!(
+            "OS sandbox requested but unavailable; explicitly falling back to manual approval"
+        );
+        SandboxTier::Manual
+    } else {
+        requested
     }
 }
 
@@ -798,21 +914,115 @@ pub fn platform_sandbox_available() -> bool {
     platform_sandbox_availability().unwrap_or(false)
 }
 
-/// Resolve product sandbox support without collapsing a transient Windows
-/// probe failure into an authoritative unsupported result.
-pub(crate) fn platform_sandbox_availability() -> std::io::Result<bool> {
+fn platform_backend_receipt() -> SandboxBackendReceipt {
     #[cfg(target_os = "macos")]
     {
-        Ok(Path::new("/usr/bin/sandbox-exec").exists())
+        if Path::new("/usr/bin/sandbox-exec").exists() {
+            return SandboxBackendReceipt::MacosSeatbelt {
+                executable: PathBuf::from("/usr/bin/sandbox-exec"),
+            };
+        }
     }
     #[cfg(target_os = "windows")]
     {
-        cached_windows_sandbox_probe().map(|probe| probe.available)
+        if cached_windows_sandbox_probe()
+            .map(|probe| probe.available)
+            .unwrap_or(false)
+        {
+            return SandboxBackendReceipt::WindowsRestricted;
+        }
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
     {
-        Ok(false)
+        let probe = linux::probe::probe_linux_sandbox_host();
+        if probe.available {
+            return SandboxBackendReceipt::LinuxBubblewrap { probe };
+        }
     }
+    SandboxBackendReceipt::Unavailable
+}
+
+/// Stable, product-facing sandbox diagnostic shared by RPC, CLI doctor, and
+/// execution availability. Optional fields are omitted on backends where they
+/// do not apply; `diagnostic` details never cross this boundary.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxProbeResult {
+    pub available: bool,
+    pub code: String,
+    pub backend: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<linux::probe::LinuxSandboxCapabilities>,
+}
+
+/// Resolve product sandbox support without collapsing a transient Windows
+/// probe failure into an authoritative unsupported result.
+#[allow(clippy::needless_return)] // Each target compiles a different cfg branch.
+pub fn platform_sandbox_probe_product() -> std::io::Result<SandboxProbeResult> {
+    #[cfg(target_os = "macos")]
+    {
+        let path = PathBuf::from("/usr/bin/sandbox-exec");
+        let available = path.exists();
+        Ok(SandboxProbeResult {
+            available,
+            code: if available {
+                "available"
+            } else {
+                "binary_missing"
+            }
+            .to_string(),
+            backend: "macos_seatbelt".to_string(),
+            path: available.then_some(path),
+            version: None,
+            capabilities: None,
+        })
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let probe = probe_windows_sandbox_product()?;
+        Ok(SandboxProbeResult {
+            available: probe.available,
+            code: probe.code.to_string(),
+            backend: "windows_restricted".to_string(),
+            path: None,
+            version: None,
+            capabilities: None,
+        })
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let probe = linux::probe::probe_linux_sandbox_host();
+        Ok(SandboxProbeResult {
+            available: probe.available,
+            code: serde_json::to_value(probe.code)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_else(|| "probe_failed".to_string()),
+            backend: "linux_bubblewrap".to_string(),
+            path: probe.path,
+            version: probe.version,
+            capabilities: probe.capabilities,
+        })
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        Ok(SandboxProbeResult {
+            available: false,
+            code: "platform_unsupported".to_string(),
+            backend: "none".to_string(),
+            path: None,
+            version: None,
+            capabilities: None,
+        })
+    }
+}
+
+pub(crate) fn platform_sandbox_availability() -> std::io::Result<bool> {
+    platform_sandbox_probe_product().map(|probe| probe.available)
 }
 
 #[cfg(target_os = "windows")]
@@ -936,12 +1146,22 @@ pub fn seatbelt_profile(sandbox: &ResolvedSandbox) -> String {
     seatbelt::build_profile(sandbox)
 }
 
-// ─── Escalation (post-hoc approval, carried into the tools layer) ──────────
+// ─── Escalation (explicit or post-hoc approval) ───────────────────────────
+
+/// Set by the execution branch, not inferred from model text or stderr.
+/// Presentation metadata only; both variants require the same approval.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EscalationTrigger {
+    ModelRequest,
+    SandboxFailure,
+}
 
 /// A request to re-run a command outside the sandbox, raised from inside the
 /// shell tool after a sandbox denial or when the model asks for it explicitly.
 #[derive(Debug, Clone)]
 pub struct EscalationRequest {
+    pub trigger: EscalationTrigger,
     pub command: String,
     pub justification: String,
     pub failure_summary: String,
@@ -959,13 +1179,35 @@ pub type EscalationRequester = Arc<dyn Fn(&EscalationRequest) -> EscalationDecis
 
 // ─── Sandbox-denial heuristic ───────────────────────────────────────────────
 
-/// Conservative check: does this failed sandboxed run look like the *sandbox*
-/// stopped it? Network is unrestricted in v2, so only filesystem EPERM counts.
-/// False negatives are fine (the model can retry with `escalated: true`);
-/// false positives would nag the user, so match narrowly.
-pub fn looks_like_sandbox_denial(_sandbox: &ResolvedSandbox, exit_code: i32, stderr: &str) -> bool {
+/// Infer a Linux filesystem restriction from command diagnostics, not from
+/// authenticated kernel events. The tools layer separately gates passive
+/// retries using the private helper report; this result grants no permission.
+pub fn sandbox_violation(
+    sandbox: &ResolvedSandbox,
+    exit_code: i32,
+    output: &str,
+) -> Option<linux::violation::LinuxSandboxViolation> {
+    if matches!(
+        sandbox.backend_receipt,
+        SandboxBackendReceipt::LinuxBubblewrap { .. }
+    ) {
+        let digest = linux::plan::policy_digest(&sandbox.rules.snapshot()).unwrap_or_default();
+        return linux::violation::classify(exit_code, output, &digest);
+    }
+    None
+}
+
+/// Backend-specific output heuristic. A successful overall exit can hide a
+/// failed operation (for example with `|| true`) and does not trigger a retry.
+pub fn looks_like_sandbox_denial(sandbox: &ResolvedSandbox, exit_code: i32, stderr: &str) -> bool {
     if exit_code == 0 {
         return false;
+    }
+    if matches!(
+        sandbox.backend_receipt,
+        SandboxBackendReceipt::LinuxBubblewrap { .. }
+    ) {
+        return sandbox_violation(sandbox, exit_code, stderr).is_some();
     }
     stderr.contains("Operation not permitted") || stderr.contains("sandbox-exec")
 }
@@ -973,6 +1215,18 @@ pub fn looks_like_sandbox_denial(_sandbox: &ResolvedSandbox, exit_code: i32, std
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unavailable_backend_explicitly_falls_back_to_manual() {
+        assert_eq!(
+            effective_tier(SandboxTier::Sandbox, &SandboxBackendReceipt::Unavailable),
+            SandboxTier::Manual
+        );
+        assert_eq!(
+            effective_tier(SandboxTier::Off, &SandboxBackendReceipt::Unavailable),
+            SandboxTier::Off
+        );
+    }
 
     #[test]
     fn windows_probe_response_hides_internal_diagnostics() {
@@ -1065,7 +1319,9 @@ mod tests {
     fn tier_maps_shell_handling() {
         let ws = temp_workspace("tiers");
         let mut manual = enabled(&ws);
-        manual.available = true;
+        manual.backend_receipt = SandboxBackendReceipt::MacosSeatbelt {
+            executable: PathBuf::from("/usr/bin/sandbox-exec"),
+        };
         // Manual: shell needs approval, never OS-wrapped, even where available.
         assert!(!manual.wraps_shell());
         assert!(manual.shell_needs_approval());
@@ -1076,11 +1332,14 @@ mod tests {
             },
             &ws,
         );
-        sandbox.available = true;
+        sandbox.backend_receipt = SandboxBackendReceipt::MacosSeatbelt {
+            executable: PathBuf::from("/usr/bin/sandbox-exec"),
+        };
+        sandbox.tier = SandboxTier::Sandbox;
         assert!(sandbox.wraps_shell());
         assert!(!sandbox.shell_needs_approval());
         // Sandbox tier without the OS sandbox falls back to shell approval.
-        sandbox.available = false;
+        sandbox.backend_receipt = SandboxBackendReceipt::Unavailable;
         assert!(!sandbox.wraps_shell());
         assert!(sandbox.shell_needs_approval());
 
@@ -1356,7 +1615,9 @@ mod tests {
             },
             &ws,
         );
-        s.available = true;
+        s.backend_receipt = SandboxBackendReceipt::MacosSeatbelt {
+            executable: PathBuf::from("/usr/bin/sandbox-exec"),
+        };
         // Escalated should skip the OS sandbox
         let cmd = s.build_shell_command("echo escalated", true);
         let std_cmd = cmd.as_std();
@@ -1439,7 +1700,8 @@ mod tests {
     #[test]
     fn sandbox_denial_heuristic_variants() {
         let ws = temp_workspace("denial-heur");
-        let s = enabled(&ws);
+        let mut s = enabled(&ws);
+        s.set_backend_available_for_test(true);
         assert!(!looks_like_sandbox_denial(&s, 0, "Operation not permitted"));
         assert!(looks_like_sandbox_denial(
             &s,
@@ -1452,6 +1714,30 @@ mod tests {
             "sandbox-exec: deny(1) file-write"
         ));
         assert!(!looks_like_sandbox_denial(&s, 1, "file not found"));
+    }
+
+    #[test]
+    fn linux_denial_classification_excludes_shell_and_infrastructure_failures() {
+        let ws = temp_workspace("linux-denial-heur");
+        let mut sandbox = enabled(&ws);
+        sandbox.set_linux_backend_available_for_test();
+        assert!(looks_like_sandbox_denial(
+            &sandbox,
+            1,
+            "touch: Permission denied"
+        ));
+        assert!(looks_like_sandbox_denial(
+            &sandbox,
+            1,
+            "write: Read-only file system"
+        ));
+        for code in [2, 125, 126, 127] {
+            assert!(!looks_like_sandbox_denial(
+                &sandbox,
+                code,
+                "Permission denied"
+            ));
+        }
     }
 
     #[cfg(target_os = "macos")]

@@ -96,7 +96,7 @@ fn test_path(name: &str) -> PathBuf {
 async fn loop_workspace_scope_blocks_unapproved_absolute_write_from_model_tool_call() {
     let workspace = test_path("workspace");
     // Outside must be outside every writable root — temp dirs are
-    // writable roots now (SANDBOX_PLAN.md §2.2), so use home.
+    // writable roots now (desktop/DEV_MD/SANDBOX/COMMON.md), so use home.
     let outside = dirs::home_dir().unwrap().join(format!(
         "futureos-session-outside-{}.txt",
         std::process::id()
@@ -117,7 +117,7 @@ async fn loop_workspace_scope_blocks_unapproved_absolute_write_from_model_tool_c
         },
         workspace.to_string_lossy().as_ref(),
     );
-    sandbox.available = false;
+    sandbox.set_backend_available_for_test(false);
     crate::tools::with_tool_scope(
         crate::tools::ScopeOptions {
             workspace: workspace.to_string_lossy().to_string(),

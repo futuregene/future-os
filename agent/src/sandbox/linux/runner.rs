@@ -1,0 +1,281 @@
+use super::probe::LinuxSandboxProbe;
+use super::request::{HelperPhase, LinuxSandboxRequest, MountKind, MountRequest, REQUEST_VERSION};
+use crate::sandbox::backend::{PreparedShell, SandboxBoundary, ShellBackend};
+use crate::sandbox::linux::plan::LinuxSandboxPlan;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, thiserror::Error)]
+pub enum LinuxSandboxRunnerError {
+    #[error("Linux sandbox probe did not provide a verified backend receipt")]
+    InvalidProbeReceipt,
+    #[error("current FutureOS executable could not be resolved: {0}")]
+    CurrentExecutable(std::io::Error),
+    #[error(transparent)]
+    InvalidRequest(#[from] super::request::RequestError),
+}
+
+pub fn prepare(
+    probe: &LinuxSandboxProbe,
+    plan: LinuxSandboxPlan,
+    command: &str,
+    cwd: &Path,
+) -> Result<PreparedShell, LinuxSandboxRunnerError> {
+    let (Some(bwrap_path), Some(bwrap_identity)) = (&probe.path, &probe.identity) else {
+        return Err(LinuxSandboxRunnerError::InvalidProbeReceipt);
+    };
+    if !probe.available {
+        return Err(LinuxSandboxRunnerError::InvalidProbeReceipt);
+    }
+    let mut mounts = Vec::new();
+    extend_mounts(&mut mounts, &plan.writable_roots, MountKind::Writable);
+    extend_mounts(&mut mounts, &plan.read_only_paths, MountKind::ReadOnly);
+    extend_mounts(&mut mounts, &plan.unreadable_paths, MountKind::Unreadable);
+    extend_mounts(
+        &mut mounts,
+        &plan.reopened_read_only_paths,
+        MountKind::ReadOnly,
+    );
+    extend_mounts(&mut mounts, &plan.reopened_paths, MountKind::Writable);
+    // Missing protections are intentionally NOT mounted: bubblewrap would
+    // create the mount point with a host-visible mkdir or fail with EROFS
+    // under a read-only parent. They travel in the request instead so the
+    // helper can re-check them after the command.
+    // Bubblewrap applies mounts in argv order. Broad mounts must precede
+    // narrow mounts so alternating deny/allow descendants remain visible;
+    // for the same target, protection precedes the effective reopen.
+    // `sort_by_key` is stable, so equal targets retain the construction order:
+    // writable root, write protection, read protection, then effective reopen.
+    mounts.sort_by_key(|mount| mount.target.components().count());
+
+    let request = LinuxSandboxRequest {
+        version: REQUEST_VERSION,
+        phase: HelperPhase::Outer,
+        bwrap_path: bwrap_path.clone(),
+        bwrap_identity: bwrap_identity.clone(),
+        cwd: cwd.to_path_buf(),
+        argv: shell_argv(command),
+        mounts,
+        glob_snapshots: plan.glob_snapshots,
+        omitted_missing_protected_paths: plan.omitted_missing_protected_paths,
+        policy_digest: plan.policy_digest.clone(),
+        status_fd: None,
+        report_fd: None,
+    };
+    let payload = request.to_json_bytes()?;
+    let executable = std::env::current_exe().map_err(LinuxSandboxRunnerError::CurrentExecutable)?;
+    let args = helper_args(
+        &executable,
+        format!("fd:{}", super::request::HELPER_REQUEST_FD),
+    );
+    Ok(PreparedShell {
+        program: executable.to_string_lossy().into_owned(),
+        args,
+        env_delta: std::collections::BTreeMap::new(),
+        boundary: SandboxBoundary {
+            backend: ShellBackend::LinuxBubblewrap,
+            policy_digest: Some(plan.policy_digest),
+        },
+        request_payload: Some(payload),
+    })
+}
+
+fn extend_mounts(mounts: &mut Vec<MountRequest>, paths: &[PathBuf], kind: MountKind) {
+    mounts.extend(paths.iter().cloned().map(|path| MountRequest {
+        source: path.clone(),
+        target: path,
+        kind,
+        expected: None,
+        source_fd: None,
+    }));
+}
+
+pub(crate) fn helper_args(executable: &Path, encoded: String) -> Vec<String> {
+    let mut args = Vec::new();
+    let is_unified = executable
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("future"));
+    if is_unified {
+        args.push("agent".into());
+    }
+    args.push("--linux-sandbox-helper".into());
+    args.push(encoded);
+    args
+}
+
+fn shell_argv(command: &str) -> Vec<String> {
+    let (program, args) = crate::sandbox::shell_invocation(command);
+    std::iter::once(program.to_string()).chain(args).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sandbox::linux::probe::{BwrapIdentity, LinuxSandboxProbeCode};
+
+    fn probe() -> LinuxSandboxProbe {
+        LinuxSandboxProbe {
+            available: true,
+            code: LinuxSandboxProbeCode::Available,
+            path: Some(PathBuf::from("/usr/bin/bwrap")),
+            version: Some("1.0.0".into()),
+            identity: Some(BwrapIdentity {
+                device: 1,
+                inode: 2,
+                size: 3,
+                modified_nanos: 4,
+            }),
+            capabilities: None,
+            expires_at_unix_ms: None,
+            diagnostic: None,
+        }
+    }
+
+    fn plan() -> LinuxSandboxPlan {
+        LinuxSandboxPlan {
+            writable_roots: vec![PathBuf::from("/tmp/work")],
+            read_only_paths: Vec::new(),
+            unreadable_paths: Vec::new(),
+            reopened_paths: Vec::new(),
+            reopened_read_only_paths: Vec::new(),
+            omitted_missing_protected_paths: Vec::new(),
+            unsupported_dynamic_globs: Vec::new(),
+            glob_snapshots: Vec::new(),
+            policy_digest: "a".repeat(64),
+        }
+    }
+
+    #[test]
+    fn preparation_is_structured_and_includes_complete_policy() {
+        let prepared = prepare(&probe(), plan(), "echo ok", Path::new("/tmp/work")).unwrap();
+        assert_eq!(prepared.boundary.backend, ShellBackend::LinuxBubblewrap);
+        assert_eq!(
+            prepared.boundary.policy_digest.as_deref(),
+            Some(&*"a".repeat(64))
+        );
+        assert!(prepared
+            .args
+            .iter()
+            .any(|arg| arg == "--linux-sandbox-helper"));
+
+        let mut complete = plan();
+        complete
+            .omitted_missing_protected_paths
+            .push(PathBuf::from("/tmp/missing"));
+        let prepared = prepare(&probe(), complete, "true", Path::new("/tmp/work")).unwrap();
+        assert!(prepared
+            .args
+            .iter()
+            .any(|arg| arg == "--linux-sandbox-helper"));
+    }
+
+    #[test]
+    fn missing_guard_under_read_only_ancestor_is_omitted_not_mounted() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        let aws = crate::sandbox::paths::canonicalize_lenient(&home.join(".aws"));
+        // No temp roots: only the workspace is writable, so the home guard's
+        // ancestor is read-only in the sandbox view. A fixture placed under
+        // /tmp with default temp roots would be covered by the /tmp writable
+        // root and correctly fail closed instead.
+        let snapshot = crate::sandbox::rules::RuleSetSnapshot {
+            workspace: workspace.clone(),
+            temp_roots: Vec::new(),
+            layers: vec![crate::sandbox::rules::RuleLayerSnapshot {
+                layer: crate::sandbox::rules::RuleLayer::Guard,
+                rules: vec![crate::sandbox::rules::RuleSnapshot {
+                    matcher: crate::sandbox::rules::RuleMatcherSnapshot::Subtree {
+                        lexical: aws.clone(),
+                        canonical: aws.clone(),
+                    },
+                    access: crate::sandbox::rules::Access::Both,
+                    decision: crate::sandbox::rules::Decision::Ask,
+                }],
+            }],
+            resolution_errors: Vec::new(),
+        };
+        let policy = LinuxSandboxPlan::compile(&snapshot).unwrap();
+        // The home parent is read-only in the sandbox: the wrapped command
+        // could never create the path, so the tmpfs mask is omitted instead
+        // of mounted (bwrap mkdir would fail with EROFS or leave a host
+        // object behind).
+        assert!(policy.omitted_missing_protected_paths.contains(&aws));
+        assert!(!policy.read_only_paths.contains(&aws));
+        assert!(!policy.unreadable_paths.contains(&aws));
+        let prepared = prepare(&probe(), policy, "pwd; whoami", &workspace).unwrap();
+        let request =
+            LinuxSandboxRequest::from_json_bytes(prepared.request_payload.as_deref().unwrap())
+                .unwrap();
+        assert!(request.mounts.iter().all(|mount| mount.target != aws));
+        assert!(request.omitted_missing_protected_paths.contains(&aws));
+        assert!(!home.join(".aws").exists());
+    }
+
+    #[test]
+    fn mount_order_preserves_alternating_broad_and_narrow_rules() {
+        let mut policy = plan();
+        policy.read_only_paths = vec![PathBuf::from("/tmp/work/vendor")];
+        policy.reopened_paths = vec![PathBuf::from("/tmp/work/vendor/ok")];
+        policy.unreadable_paths = vec![PathBuf::from("/tmp/work/vendor/ok/secret")];
+        let prepared = prepare(&probe(), policy, "true", Path::new("/tmp/work")).unwrap();
+        let request =
+            LinuxSandboxRequest::from_json_bytes(prepared.request_payload.as_deref().unwrap())
+                .unwrap();
+        let targets: Vec<_> = request.mounts.iter().map(|mount| &mount.target).collect();
+        let broad = targets
+            .iter()
+            .position(|path| path.as_path() == Path::new("/tmp/work/vendor"))
+            .unwrap();
+        let reopen = targets
+            .iter()
+            .position(|path| path.as_path() == Path::new("/tmp/work/vendor/ok"))
+            .unwrap();
+        let narrow = targets
+            .iter()
+            .position(|path| path.as_path() == Path::new("/tmp/work/vendor/ok/secret"))
+            .unwrap();
+        assert!(broad < reopen && reopen < narrow);
+
+        let mut policy = plan();
+        let same = PathBuf::from("/tmp/work/secret");
+        policy.read_only_paths = vec![same.clone()];
+        policy.unreadable_paths = vec![same.clone()];
+        let prepared = prepare(&probe(), policy, "true", Path::new("/tmp/work")).unwrap();
+        let request =
+            LinuxSandboxRequest::from_json_bytes(prepared.request_payload.as_deref().unwrap())
+                .unwrap();
+        let same_target: Vec<_> = request
+            .mounts
+            .iter()
+            .filter(|mount| mount.target == same)
+            .map(|mount| mount.kind)
+            .collect();
+        assert_eq!(same_target, [MountKind::ReadOnly, MountKind::Unreadable]);
+    }
+
+    #[test]
+    fn helper_dispatch_supports_unified_and_standalone_binaries() {
+        assert_eq!(
+            helper_args(Path::new("/opt/future"), "x".into()),
+            ["agent", "--linux-sandbox-helper", "x"]
+        );
+        assert_eq!(
+            helper_args(Path::new("/opt/future-agent"), "x".into()),
+            ["--linux-sandbox-helper", "x"]
+        );
+    }
+
+    #[test]
+    fn large_request_is_carried_out_of_band_instead_of_argv() {
+        let command = "x".repeat(90 * 1024);
+        let prepared = prepare(&probe(), plan(), &command, Path::new("/tmp/work")).unwrap();
+        assert_eq!(prepared.args.last().map(String::as_str), Some("fd:3"));
+        let payload = prepared.request_payload.as_deref().unwrap();
+        assert!(payload.len() > 90 * 1024);
+        let request = LinuxSandboxRequest::from_json_bytes(payload).unwrap();
+        assert_eq!(request.argv.last().map(String::len), Some(command.len()));
+    }
+}

@@ -199,11 +199,11 @@ fn shell_schema() -> serde_json::Value {
             },
             "escalated": {
                 "type": "boolean",
-                "description": "Request to run this command outside the sandbox (requires user approval). Set only after a command failed due to sandbox restrictions (blocked network or a write outside the workspace) and it genuinely needs those permissions."
+                "description": "Request user approval to run this command outside the sandbox. Run inside the sandbox first by default; do not request approval merely because you suspect a restriction. Set escalated to true only when execution results indicate that a sandbox restriction blocked an operation required to complete the task. Preserve the actual failure status and error output of required operations: do not hide failures with || true, force a successful exit, or suppress error output, as this can prevent sandbox restriction detection. Tolerate only failures that are explicitly safe to ignore, and never treat those operations as successful. An overall exit code of 0 does not mean every operation succeeded. When requesting a retry, include only the blocked necessary operations where possible to avoid repeating steps that already succeeded."
             },
             "justification": {
                 "type": "string",
-                "description": "One-sentence reason why escalated permissions are needed. Required when escalated is true."
+                "description": "Explain in one sentence why this command needs to run outside the sandbox. Required when escalated is true."
             },
             "additional_permissions": {
                 "type": "object",
@@ -706,6 +706,7 @@ async fn pre_execution_escalation(
 ) -> Option<Result<String>> {
     let requester = escalation.as_ref()?;
     let request = EscalationRequest {
+        trigger: crate::sandbox::EscalationTrigger::ModelRequest,
         command: command.to_string(),
         justification: justification.to_string(),
         failure_summary: String::new(),
@@ -731,13 +732,18 @@ async fn post_hoc_escalation(
     command: &str,
     timeout_secs: u64,
     result: &str,
+    retry: ShellRetry,
 ) -> Option<Result<String>> {
     let requester = escalation.as_ref()?;
     let (exit_code, tail) = parse_result_failure(result);
-    if exit_code == 0 || !crate::sandbox::looks_like_sandbox_denial(sandbox, exit_code, &tail) {
+    if retry == ShellRetry::Blocked
+        || exit_code == 0
+        || !crate::sandbox::looks_like_sandbox_denial(sandbox, exit_code, &tail)
+    {
         return None;
     }
     let request = EscalationRequest {
+        trigger: crate::sandbox::EscalationTrigger::SandboxFailure,
         command: command.to_string(),
         justification: String::new(),
         failure_summary: tail,
@@ -812,14 +818,25 @@ async fn run_shell_with_capability(
             notify(command);
         }
     }
-    let result = spawn_shell(command, timeout_secs, &sandbox, false, approved_capability).await?;
+    let mut retry = ShellRetry::ClassifyOutput;
+    let result = spawn_shell_with_report(
+        command,
+        timeout_secs,
+        &sandbox,
+        false,
+        approved_capability,
+        &mut retry,
+    )
+    .await?;
 
     // Post-hoc escalation: only when the failure narrowly looks like a sandbox
     // denial (conservative heuristic — ordinary failures go back to the model).
-    if sandboxed {
+    if sandboxed && retry != ShellRetry::Blocked {
         #[allow(clippy::single_match)]
         // match keeps each edge's region on its arm line; an if-let whose body always diverges leaves a phantom zero-count region on its closing brace
-        match post_hoc_escalation(&escalation, &sandbox, command, timeout_secs, &result).await {
+        match post_hoc_escalation(&escalation, &sandbox, command, timeout_secs, &result, retry)
+            .await
+        {
             Some(outcome) => return outcome,
             None => {}
         }
@@ -1043,6 +1060,32 @@ async fn spawn_shell(
     escalated: bool,
     approved_capability: Option<&crate::sandbox::windows_request::ApprovedWriteCapability>,
 ) -> Result<String> {
+    spawn_shell_with_report(
+        command,
+        timeout_secs,
+        sandbox,
+        escalated,
+        approved_capability,
+        &mut ShellRetry::ClassifyOutput,
+    )
+    .await
+}
+
+/// Internal evidence, never deserialized from command output or model input.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ShellRetry {
+    ClassifyOutput,
+    Blocked,
+}
+
+async fn spawn_shell_with_report(
+    command: &str,
+    timeout_secs: u64,
+    sandbox: &ResolvedSandbox,
+    escalated: bool,
+    approved_capability: Option<&crate::sandbox::windows_request::ApprovedWriteCapability>,
+    retry: &mut ShellRetry,
+) -> Result<String> {
     let cwd = active_workspace()?;
     #[cfg(windows)]
     if !escalated && sandbox.wraps_shell() {
@@ -1069,15 +1112,57 @@ async fn spawn_shell(
     // itself, so the command passes through unmodified.
     #[cfg(windows)]
     let merged_cmd = command.to_string();
-    let mut child = sandbox.build_shell_command(&merged_cmd, escalated);
+    // Preparation can scan a large workspace before a child exists. Let Abort
+    // cancel that scan as well as the process execution below.
+    let interrupt_flag = TOOL_SCOPE
+        .try_with(|scope| scope.interrupt_flag.clone())
+        .unwrap_or_else(|_| Arc::new(AtomicBool::new(false)));
+    // Keep directory I/O off the async executor so it can process the Abort
+    // request even on a single-worker runtime. The worker only prepares a
+    // request: dropping this future can never launch the user command later.
+    #[cfg(target_os = "linux")]
+    let preparation = {
+        let sandbox = sandbox.clone();
+        let cwd = cwd.clone();
+        let cancelled = interrupt_flag.clone();
+        tokio::task::spawn_blocking(move || {
+            sandbox.prepare_shell_for_cwd_with_cancel(&merged_cmd, escalated, &cwd, &|| {
+                cancelled.load(Ordering::Relaxed)
+            })
+        })
+        .await
+        .map_err(|error| anyhow!("Failed to initialize OS sandbox worker: {error}"))?
+    };
+    #[cfg(not(target_os = "linux"))]
+    let preparation = sandbox.prepare_shell_for_cwd(&merged_cmd, escalated, &cwd);
+    let prepared =
+        preparation.map_err(|error| anyhow!("Failed to initialize OS sandbox: {error}"))?;
+    if interrupt_flag.load(Ordering::Relaxed) {
+        return Err(anyhow!(
+            "Shell command interrupted by abort before execution"
+        ));
+    }
+    let report_digest = prepared.boundary.policy_digest.clone();
+    let expects_report =
+        prepared.boundary.backend == crate::sandbox::backend::ShellBackend::LinuxBubblewrap;
+    if expects_report {
+        *retry = ShellRetry::Blocked;
+    }
+    let (mut child, mut report_reader) = prepared
+        .into_command_with_report()
+        .map_err(|error| anyhow!("Failed to initialize OS sandbox request transport: {error}"))?;
+    #[cfg(windows)]
+    let _ = (&report_digest, &mut report_reader);
     child.current_dir(&cwd).env("PWD", &cwd);
     // Prepend the agent binary's directory to PATH so bundled tools in the
     // same directory are discoverable by shell commands. (map + discard: a
     // lone if-let closing brace here collected a phantom zero-count region.)
     let _ = path_with_own_dir(std::env::current_exe()).map(|path| child.env("PATH", path));
     child.stdout(std::process::Stdio::piped());
-    // Unix: the subshell already merged stderr into stdout, so the outer pipe
-    // carries nothing. Windows: PowerShell's own failures (a parse error in the
+    // Plain Unix shells merge in the subshell. Linux sandbox helpers instead
+    // dup stderr to stdout before exec (PreparedShell::into_command), preserving
+    // initialization errors emitted before that subshell even exists.
+    // Windows: PowerShell's own failures (a parse error in the
     // -Command string never executes the 2>&1 merge) surface only on the
     // process's stderr — capture it so those errors aren't silently dropped.
     #[cfg(not(windows))]
@@ -1091,11 +1176,6 @@ async fn spawn_shell(
     // sandbox-exec execs its child, so the group covers the wrapped tree too.
     #[cfg(unix)]
     child.process_group(0);
-
-    // Get interrupt flag from task-local scope
-    let interrupt_flag = TOOL_SCOPE
-        .try_with(|scope| scope.interrupt_flag.clone())
-        .unwrap_or_else(|_| Arc::new(AtomicBool::new(false)));
 
     let mut spawned = child
         .spawn()
@@ -1174,6 +1254,13 @@ async fn spawn_shell(
             Ok(Err(e)) => Err(e),
             Err(_elapsed) => {
                 let combined = String::from_utf8_lossy(&output_buf);
+                let combined = if expects_report {
+                    std::borrow::Cow::Owned(crate::sandbox::linux::report::untrusted_output(
+                        &combined,
+                    ))
+                } else {
+                    combined
+                };
                 let total = combined.len();
                 if total == 0 {
                     Err(anyhow!(
@@ -1217,6 +1304,13 @@ async fn spawn_shell(
                 // Drain whatever the process wrote before the kill took effect.
                 drain_shell_output(&mut stdout, &mut output_buf, &mut read_buf).await;
                 let combined = String::from_utf8_lossy(&output_buf);
+                let combined = if expects_report {
+                    std::borrow::Cow::Owned(crate::sandbox::linux::report::untrusted_output(
+                        &combined,
+                    ))
+                } else {
+                    combined
+                };
                 let total = combined.len();
                 if total == 0 {
                     return Err(anyhow!(
@@ -1239,6 +1333,39 @@ async fn spawn_shell(
         drain_shell_output(&mut stdout, &mut output_buf, &mut read_buf).await;
         let combined = String::from_utf8_lossy(&output_buf);
         let exit_code = status.code().unwrap_or(-1);
+        if expects_report {
+            // Never parse command-printed markers as helper evidence. Only the
+            // per-spawn anonymous channel may suppress post-hoc escalation.
+            let mut output = crate::sandbox::linux::report::untrusted_output(&combined);
+            let report = report_reader
+                .as_mut()
+                .zip(report_digest.as_deref())
+                .ok_or_else(|| anyhow!("missing helper report channel"))
+                .and_then(|(file, digest)| {
+                    crate::sandbox::linux::report::HelperReport::read(file, digest)
+                });
+            match report {
+                Ok(report) => {
+                    *retry = if report.events.is_empty() {
+                        ShellRetry::ClassifyOutput
+                    } else {
+                        ShellRetry::Blocked
+                    };
+                    // Format/truncate command text before appending verified
+                    // reports so they cannot be lost to command-output volume.
+                    output = format_shell_output(&output, output.len(), exit_code);
+                    for event in &report.events {
+                        output.push('\n');
+                        output.push_str(&crate::sandbox::linux::violation::marker(event));
+                    }
+                }
+                Err(_) => {
+                    output = format_shell_output(&output, output.len(), exit_code);
+                    output.push_str("\n[sandbox] Helper report unavailable or invalid. Detection results are unknown; automatic unsandboxed retry is disabled. The command's exit status is unchanged.");
+                }
+            }
+            return Ok(output);
+        }
         Ok(format_shell_output(&combined, combined.len(), exit_code))
     }
 }
@@ -1923,7 +2050,7 @@ mod tests {
             },
             workspace.to_string_lossy().as_ref(),
         );
-        sandbox.available = false;
+        sandbox.set_backend_available_for_test(false);
         ScopeOptions {
             workspace: workspace.to_string_lossy().to_string(),
             permission_level: "workspace".to_string(),
@@ -1975,7 +2102,7 @@ mod tests {
     #[tokio::test]
     async fn active_policy_scope_allows_temp_dir_writes() {
         // With an active sandbox policy (GUI opt-in), temp dirs are writable
-        // roots (SANDBOX_PLAN.md §2.2).
+        // roots (desktop/DEV_MD/SANDBOX/COMMON.md).
         let workspace = test_path("ws-tmp");
         std::fs::create_dir_all(&workspace).unwrap();
         let tmp_target = test_path("tmp-write.txt");
@@ -2031,7 +2158,7 @@ mod tests {
             },
             workspace.to_string_lossy().as_ref(),
         );
-        sandbox.available = available;
+        sandbox.set_backend_available_for_test(available);
         let requester: EscalationRequester = Arc::new(move |request: &EscalationRequest| {
             calls.lock().push(request.clone());
             decision.clone()
@@ -2077,6 +2204,10 @@ mod tests {
         let recorded = calls.lock();
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].justification, "test needs it");
+        assert_eq!(
+            recorded[0].trigger,
+            crate::sandbox::EscalationTrigger::ModelRequest
+        );
     }
 
     #[tokio::test]
@@ -2761,7 +2892,7 @@ mod tests {
         // (the approved re-run is unsandboxed), not the OS boundary. An
         // early-return guard would be a dead line where Seatbelt exists.
         let mut sandbox = sandbox;
-        sandbox.available = true;
+        sandbox.set_backend_available_for_test(true);
         // Approved pre-execution escalation runs unsandboxed.
         let approve: crate::sandbox::EscalationRequester =
             Arc::new(|_request| crate::sandbox::EscalationDecision::Approved);
@@ -2787,7 +2918,7 @@ mod tests {
             ws.to_string_lossy().as_ref(),
         );
         let mut sandbox = sandbox;
-        sandbox.available = true;
+        sandbox.set_backend_available_for_test(true);
         let deny: crate::sandbox::EscalationRequester =
             Arc::new(|_request| crate::sandbox::EscalationDecision::Denied("no way".to_string()));
         let result = with_tool_scope(
@@ -2804,6 +2935,174 @@ mod tests {
         .await;
         let error = result.unwrap_err().to_string();
         assert!(error.contains("not approved: no way"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn linux_busy_requests_approval_without_command_or_path_constraints() {
+        let ws = test_path("linux-busy-approval");
+        std::fs::create_dir_all(&ws).unwrap();
+        let mut sandbox = ResolvedSandbox::resolve(
+            &crate::sandbox::SandboxPolicy {
+                tier: crate::sandbox::SandboxTier::Sandbox,
+            },
+            ws.to_string_lossy().as_ref(),
+        );
+        sandbox.set_linux_backend_available_for_test();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = calls.clone();
+        let requester: crate::sandbox::EscalationRequester = Arc::new(move |request| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(
+                request.trigger,
+                crate::sandbox::EscalationTrigger::SandboxFailure
+            );
+            crate::sandbox::EscalationDecision::Denied("keep file".into())
+        });
+        let escalation = Some(requester);
+        let output = "rm: cannot remove '.env': Device or resource busy\n[exit: 1]";
+        for command in ["rm .env", "cd /work && rm .env", "python cleanup.py"] {
+            assert!(post_hoc_escalation(
+                &escalation,
+                &sandbox,
+                command,
+                10,
+                output,
+                ShellRetry::Blocked
+            )
+            .await
+            .is_none());
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        for command in [
+            "rm .env",
+            "cd /work && rm .env",
+            "rm \"$TARGET\"",
+            "python cleanup.py",
+        ] {
+            let result = post_hoc_escalation(
+                &escalation,
+                &sandbox,
+                command,
+                10,
+                output,
+                ShellRetry::ClassifyOutput,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert!(result.contains("not approved: keep file"));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+
+        #[cfg(unix)]
+        {
+            let secret = ws.join(".env");
+            std::fs::write(&secret, "test-only-secret").unwrap();
+            let approved: crate::sandbox::EscalationRequester =
+                Arc::new(|_| crate::sandbox::EscalationDecision::Approved);
+            let result = with_tool_scope(
+                ScopeOptions {
+                    workspace: ws.to_string_lossy().into_owned(),
+                    permission_level: "all".into(),
+                    interrupt_flag: Arc::new(AtomicBool::new(false)),
+                    sandbox: Arc::new(sandbox.clone()),
+                    escalation: None,
+                    on_sandboxed: None,
+                },
+                post_hoc_escalation(
+                    &Some(approved),
+                    &sandbox,
+                    "rm .env",
+                    10,
+                    output,
+                    ShellRetry::ClassifyOutput,
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(shell_result_exit_code(&result), Some(0));
+            assert!(!secret.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn linux_denial_uses_whole_command_escalation_and_infra_does_not() {
+        let ws = test_path("linux-post-hoc");
+        std::fs::create_dir_all(&ws).unwrap();
+        let mut sandbox = ResolvedSandbox::resolve(
+            &crate::sandbox::SandboxPolicy {
+                tier: crate::sandbox::SandboxTier::Sandbox,
+            },
+            ws.to_string_lossy().as_ref(),
+        );
+        sandbox.set_linux_backend_available_for_test();
+        let deny: crate::sandbox::EscalationRequester = Arc::new(|request| {
+            assert_eq!(request.command, "touch /protected");
+            assert_eq!(
+                request.trigger,
+                crate::sandbox::EscalationTrigger::SandboxFailure
+            );
+            crate::sandbox::EscalationDecision::Denied("linux policy".into())
+        });
+        let denied = post_hoc_escalation(
+            &Some(deny),
+            &sandbox,
+            "touch /protected",
+            10,
+            "touch: Permission denied\n\n[exit: 1]",
+            ShellRetry::ClassifyOutput,
+        )
+        .await
+        .expect("Linux denial should request whole-command escalation")
+        .unwrap();
+        assert!(denied.contains("not approved: linux policy"));
+
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let call_counter = calls.clone();
+        let requester: crate::sandbox::EscalationRequester = Arc::new(move |_| {
+            call_counter.fetch_add(1, Ordering::SeqCst);
+            crate::sandbox::EscalationDecision::Approved
+        });
+        assert!(post_hoc_escalation(
+            &Some(requester),
+            &sandbox,
+            "bad-helper",
+            10,
+            "future-linux-sandbox-helper: identity changed\n\n[exit: 125]",
+            ShellRetry::ClassifyOutput,
+        )
+        .await
+        .is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let dynamic = crate::sandbox::linux::violation::marker(
+            &crate::sandbox::linux::violation::LinuxSandboxViolation {
+                kind: crate::sandbox::linux::violation::LinuxViolationKind::DynamicGlobCreated,
+                path_provenance: "glob_snapshot".into(),
+                policy_digest: "a".repeat(64),
+                detection_only: true,
+                affected_count: 1,
+            },
+        );
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let call_counter = calls.clone();
+        let requester: crate::sandbox::EscalationRequester = Arc::new(move |_| {
+            call_counter.fetch_add(1, Ordering::SeqCst);
+            crate::sandbox::EscalationDecision::Approved
+        });
+        assert!(post_hoc_escalation(
+            &Some(requester),
+            &sandbox,
+            "created-secret-but-failed",
+            10,
+            &format!("{dynamic}\n\n[exit: 1]"),
+            ShellRetry::Blocked,
+        )
+        .await
+        .is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let _ = std::fs::remove_dir_all(ws);
     }
 
     #[cfg(target_os = "macos")]
@@ -2823,7 +3122,7 @@ mod tests {
         // This test is cfg(macos): Seatbelt always exists there. Force the
         // flag anyway so an early-return guard (a dead line) isn't needed.
         let mut sandbox = sandbox;
-        sandbox.available = true;
+        sandbox.set_backend_available_for_test(true);
         // A write outside every writable root is denied by Seatbelt; the
         // escalation requester approves, so the command re-runs unsandboxed.
         let target = dirs::home_dir()
@@ -2910,7 +3209,7 @@ mod tests {
         // cfg(macos): Seatbelt always exists; force the flag (see the
         // approved-path sibling test).
         let mut sandbox = sandbox;
-        sandbox.available = true;
+        sandbox.set_backend_available_for_test(true);
         // Seatbelt denies the write; the requester denies the escalation, so
         // the caller gets the original output plus a "not approved" note.
         let target = dirs::home_dir().unwrap().join(format!(
@@ -2999,6 +3298,7 @@ mod tests {
     #[test]
     fn deny_escalation_fn_denies() {
         let request = crate::sandbox::EscalationRequest {
+            trigger: crate::sandbox::EscalationTrigger::ModelRequest,
             command: "x".to_string(),
             justification: String::new(),
             failure_summary: String::new(),
@@ -3041,7 +3341,7 @@ mod tests {
         );
         // cfg(macos): Seatbelt always exists; force the flag (see siblings).
         let mut sandbox = sandbox;
-        sandbox.available = true;
+        sandbox.set_backend_available_for_test(true);
         // escalated=true but NO escalation channel registered: the request
         // can't be approved, so the command runs normally (sandboxed).
         let result = with_tool_scope(
@@ -3074,7 +3374,7 @@ mod tests {
             ws.to_string_lossy().as_ref(),
         );
         let mut sandbox = sandbox;
-        sandbox.available = true;
+        sandbox.set_backend_available_for_test(true);
         // A sandboxed command that fails for an ORDINARY reason (not a
         // sandbox denial) must not even consult the escalation channel.
         let deny: crate::sandbox::EscalationRequester = Arc::new(deny_escalation_fn);

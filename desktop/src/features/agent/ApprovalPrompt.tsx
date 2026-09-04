@@ -1,6 +1,7 @@
 import type { ApprovalAction } from "@future-os/thread-projection";
 import type { StoredApprovalRequest } from "../../integrations/storage/types";
 import {
+  escalationTitleKey,
   formatRequestedAction,
   parseAction,
   parseSaveSuggestion,
@@ -61,7 +62,7 @@ export function ApprovalPrompt({
   const titleText = capabilityTargets
     ? t("approval.capabilityTitle")
     : kindI18n
-      ? t(kindI18n.title)
+      ? t(approval.kind === "sandbox_escalation" ? escalationTitleKey(action) : kindI18n.title)
       : approval.title;
   const saveSuggestion = useMemo(
     () => parseSaveSuggestion(approval.saveSuggestion),

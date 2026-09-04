@@ -28,6 +28,7 @@ export interface ApprovalAction {
   // sandbox_escalation: model-provided reason and the file paths the sandbox
   // blocked (extracted from the failed run — no raw stderr dump).
   justification?: string;
+  escalationTrigger?: "model_request" | "sandbox_failure";
   blockedPaths?: string[];
   targets?: Array<{ path: string; scope: "file" | "subtree" }>;
   scope?: {
@@ -128,6 +129,12 @@ export function parseAction(payload: unknown): ApprovalAction | null {
     category: parsed.category,
     command: typeof parsed.command === "string" ? parsed.command : undefined,
     deletes: isPathEntryArray(parsed.deletes) ? parsed.deletes : undefined,
+    escalationTrigger:
+      parsed.category === "sandbox_escalation" &&
+      (parsed.escalation_trigger === "model_request" ||
+        parsed.escalation_trigger === "sandbox_failure")
+        ? parsed.escalation_trigger
+        : undefined,
     justification:
       typeof parsed.justification === "string" &&
       parsed.justification.length > 0
@@ -140,6 +147,17 @@ export function parseAction(payload: unknown): ApprovalAction | null {
     tool: parsed.tool,
     writes: isPathEntryArray(parsed.writes) ? parsed.writes : undefined,
   };
+}
+
+/** Old/unknown payloads keep the neutral title; never guess from justification. */
+export function escalationTitleKey(action: ApprovalAction | null): string {
+  if (action?.category === "sandbox_escalation") {
+    if (action.escalationTrigger === "model_request")
+      return "approval.escalationRequestTitle";
+    if (action.escalationTrigger === "sandbox_failure")
+      return "approval.escalationRetryTitle";
+  }
+  return "approval.escalationTitle";
 }
 
 export function parseSaveSuggestion(

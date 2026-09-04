@@ -49,6 +49,7 @@ rand = "0.8"
 sha2 = "0.10"
 base32 = "0.5"
 base64.workspace = true
+tempfile.workspace = true
 # Decode/resize/re-encode user-attached images before sending them to a vision
 # model (downscale oversized images so they don't blow up the LLM request).
 image = { version = "0.25", default-features = false, features = [
@@ -82,9 +83,8 @@ libc = "0.2"
 pprof = { version = "0.15", features = ["flamegraph"] }
 
 # Windows: Job Object for process-tree kill; restricted token + ACLs for the
-# bash sandbox (SANDBOX_PLAN §11). Feature set grows with W1b.
+# Windows shell write protection (desktop/DEV_MD/SANDBOX/WINDOWS.md).
 [target.'cfg(windows)'.dependencies]
-tempfile.workspace = true
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Globalization",

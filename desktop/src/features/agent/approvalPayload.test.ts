@@ -1,4 +1,5 @@
 import {
+  escalationTitleKey,
   formatRequestedAction,
   parseAction,
   parseSaveSuggestion,
@@ -7,6 +8,33 @@ import {
 import { describe, expect, it } from "vitest";
 
 describe("parseAction", () => {
+  it("uses the explicit escalation trigger for titles with a neutral legacy fallback", () => {
+    for (const [trigger, key] of [
+      ["model_request", "approval.escalationRequestTitle"],
+      ["sandbox_failure", "approval.escalationRetryTitle"],
+      [undefined, "approval.escalationTitle"],
+      ["unknown", "approval.escalationTitle"],
+      [42, "approval.escalationTitle"],
+    ] as const) {
+      const action = parseAction({
+        category: "sandbox_escalation",
+        tool: "shell",
+        escalation_trigger: trigger,
+        // Presence of a model reason must not turn a passive/legacy request active.
+        justification: "need access",
+      });
+      expect(escalationTitleKey(action)).toBe(key);
+    }
+    expect(escalationTitleKey(null)).toBe("approval.escalationTitle");
+    const other = parseAction({
+      category: "shell_command",
+      tool: "shell",
+      escalation_trigger: "model_request",
+    });
+    expect(other?.escalationTrigger).toBeUndefined();
+    expect(escalationTitleKey(other)).toBe("approval.escalationTitle");
+  });
+
   it("returns null for null/undefined/empty payloads", () => {
     expect(parseAction(null)).toBeNull();
     expect(parseAction(undefined)).toBeNull();
@@ -40,6 +68,7 @@ describe("parseAction", () => {
       category: "shell_command",
       command: undefined,
       deletes: undefined,
+      escalationTrigger: undefined,
       justification: undefined,
       paths: undefined,
       scope: undefined,
@@ -75,6 +104,7 @@ describe("parseAction", () => {
       category: "file_write",
       command: undefined,
       deletes: undefined,
+      escalationTrigger: undefined,
       justification: undefined,
       paths: undefined,
       scope: undefined,

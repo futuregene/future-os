@@ -13,3 +13,7 @@ export const isMacOS
  */
 export const isWindows
   = typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent);
+
+/** Native Linux desktop detection for sandbox availability and guidance. */
+export const isLinux
+  = typeof navigator !== "undefined" && /Linux/i.test(navigator.userAgent) && !/Android/i.test(navigator.userAgent);

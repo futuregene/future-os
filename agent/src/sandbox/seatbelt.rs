@@ -1,7 +1,7 @@
 //! macOS Seatbelt (sandbox-exec) profile compiled from the approval rules.
 //!
 //! The rule engine is first-match-wins with the highest-priority layer first
-//! (SANDBOX_PLAN.md). SBPL is last-match-wins. So we emit a permissive base
+//! (desktop/DEV_MD/SANDBOX/COMMON.md). SBPL is last-match-wins. So we emit a permissive base
 //! (reads open, writes to workspace+temp) and then every rule from
 //! **lowest** priority to **highest** (layers reversed, and reversed within
 //! each layer) — the last SBPL match then equals the engine's first match.
@@ -108,12 +108,24 @@ pub fn build_profile(sandbox: &ResolvedSandbox) -> String {
     profile
 }
 
-/// `sandbox-exec -p <profile> bash -c <cmd>`.
-pub fn build_command(sandbox: &ResolvedSandbox, command: &str) -> tokio::process::Command {
-    let profile = build_profile(sandbox);
-    let mut child = tokio::process::Command::new("/usr/bin/sandbox-exec");
-    child.args(["-p", &profile, "bash", "-c", command]);
-    child
+/// `sandbox-exec -p <profile> bash -c <cmd>` as a structured invocation.
+pub fn prepare(sandbox: &ResolvedSandbox, command: &str) -> super::backend::PreparedShell {
+    super::backend::PreparedShell {
+        program: "/usr/bin/sandbox-exec".into(),
+        args: vec![
+            "-p".into(),
+            build_profile(sandbox),
+            "bash".into(),
+            "-c".into(),
+            command.into(),
+        ],
+        env_delta: std::collections::BTreeMap::new(),
+        boundary: super::backend::SandboxBoundary {
+            backend: super::backend::ShellBackend::MacosSeatbelt,
+            policy_digest: None,
+        },
+        request_payload: None,
+    }
 }
 
 #[cfg(test)]
@@ -163,7 +175,7 @@ mod tests {
         let rules = crate::sandbox::rules::RuleSet::resolve_isolated_with_home(&ws, &home);
         let s = ResolvedSandbox {
             tier: crate::sandbox::SandboxTier::Sandbox,
-            available: crate::sandbox::platform_sandbox_available(),
+            backend_receipt: crate::sandbox::platform_backend_receipt(),
             workspace: rules.workspace.clone(),
             rules,
         };

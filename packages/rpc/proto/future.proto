@@ -257,11 +257,12 @@ message Attachment {
 
 // ── SandboxPolicy ────────────────────────────────────────────────────────────
 // OS-sandbox boundary + approval policy for a session. The agent enforces the
-// sandbox on spawned shell commands (Seatbelt on macOS) and uses the approval
-// policy to decide when to raise approval requests. See desktop/SANDBOX_PLAN.md.
+// sandbox on spawned shell commands via the platform backend and uses the
+// approval policy to decide when to raise approval requests.
+// See desktop/DEV_MD/SANDBOX/COMMON.md for the different platform guarantees.
 
 message SandboxPolicy {
-  // Rules live in on-disk files the agent reads directly (desktop/APPROVAL_PLAN.md);
+  // Rules live in on-disk files the agent reads directly (desktop/DEV_MD/SANDBOX/COMMON.md);
   // only the approval tier travels over the wire.
   reserved 1 to 5;  // v1: sandbox_mode / writable_roots / network_access / approval_policy / rules
   reserved 6;        // v2a: bool enabled (superseded by tier)

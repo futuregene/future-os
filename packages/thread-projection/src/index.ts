@@ -37,6 +37,7 @@ export {
   approvalCommand,
   approvalDeletes,
   approvalPaths,
+  escalationTitleKey,
   formatRequestedAction,
   parseAction,
   parseSaveSuggestion,

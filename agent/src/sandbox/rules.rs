@@ -1,4 +1,4 @@
-//! Path-based approval rules (APPROVAL_PLAN.md).
+//! Path-based approval rules (desktop/DEV_MD/SANDBOX/COMMON.md).
 //!
 //! Every approval decision is about a file-path access: given a path and an
 //! operation (read/write), walk the rule layers top-to-bottom and return the
@@ -37,7 +37,8 @@ pub enum Op {
     Write,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Access {
     Read,
     Write,
@@ -61,7 +62,8 @@ impl Access {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Decision {
     Ask,
     Allow,
@@ -79,16 +81,63 @@ impl Decision {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleLayer {
+    Override,
+    Guard,
+    Session,
+    Workspace,
+    User,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RuleMatcherSnapshot {
+    Subtree {
+        lexical: PathBuf,
+        canonical: PathBuf,
+    },
+    Glob {
+        pattern: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct RuleSnapshot {
+    pub matcher: RuleMatcherSnapshot,
+    pub access: Access,
+    pub decision: Decision,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct RuleLayerSnapshot {
+    pub layer: RuleLayer,
+    pub rules: Vec<RuleSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct RuleSetSnapshot {
+    pub workspace: PathBuf,
+    pub temp_roots: Vec<PathBuf>,
+    pub layers: Vec<RuleLayerSnapshot>,
+    pub resolution_errors: Vec<String>,
+}
+
 /// A compiled path matcher. No-wildcard patterns match the path itself and its
 /// whole subtree (`~/.ssh` covers `~/.ssh` and everything under it); wildcard
 /// patterns match by glob (`*` within a segment, `**` across segments, `?` one
 /// char).
 #[derive(Debug, Clone)]
 enum Matcher {
-    /// Canonicalized base; matches the base or anything under it.
-    Subtree(PathBuf),
-    /// Anchored regex over the canonicalized path string.
-    Glob(Regex),
+    /// Lexical and canonical forms are both retained so native sandboxes can
+    /// protect a symlink entry as well as its target.
+    Subtree {
+        lexical: PathBuf,
+        canonical: PathBuf,
+    },
+    /// Original absolute glob plus its anchored regex.
+    Glob { pattern: String, regex: Regex },
 }
 
 #[derive(Debug, Clone)]
@@ -104,8 +153,10 @@ impl PathRule {
             return false;
         }
         match &self.matcher {
-            Matcher::Subtree(base) => paths::path_within(path, base),
-            Matcher::Glob(re) => re.is_match(&path.to_string_lossy()),
+            Matcher::Subtree { lexical, canonical } => {
+                paths::path_within(path, lexical) || paths::path_within(path, canonical)
+            }
+            Matcher::Glob { regex, .. } => regex.is_match(&path.to_string_lossy()),
         }
     }
 
@@ -136,7 +187,11 @@ fn has_glob(pattern: &str) -> bool {
 
 fn compile_matcher(abs_pattern: &str) -> Matcher {
     if !has_glob(abs_pattern) {
-        return Matcher::Subtree(paths::canonicalize_lenient(Path::new(abs_pattern)));
+        let lexical = PathBuf::from(abs_pattern);
+        return Matcher::Subtree {
+            canonical: paths::canonicalize_lenient(&lexical),
+            lexical,
+        };
     }
     // Canonicalize the leading non-glob prefix (symlink-correct), keep the
     // globbed remainder verbatim, then compile to an anchored regex.
@@ -159,7 +214,10 @@ fn compile_matcher(abs_pattern: &str) -> Matcher {
         canon_prefix.to_string_lossy().trim_end_matches('/'),
         rest
     );
-    Matcher::Glob(build_glob_regex(&full))
+    Matcher::Glob {
+        pattern: full.clone(),
+        regex: build_glob_regex(&full),
+    }
 }
 
 /// Convert a glob to an anchored regex. `**` matches across `/`, `*` within a
@@ -292,10 +350,12 @@ pub fn builtin_overrides(workspace: &Path, home: Option<&Path>) -> Vec<PathRule>
         // or `future` reverse-requests the key from the agent over a socket
         // with peer-credential verification), not a path allow-hole. This is
         // the tracked auth.json follow-up, intentionally not scheduled yet;
-        // see APPROVAL_PLAN.md §3.1.
+        // see desktop/DEV_MD/SANDBOX/COMMON.md §3.1.
         //
-        // NOTE: while auth.json is allowed, any shell command can read/write it
-        // — acceptable for local testing only. models.json stays denied.
+        // Omitting this override can expose auth.json to arbitrary reads; it
+        // does not add an unconditional write allow (other rules/roots still
+        // apply). This testing exception is not a trusted credential channel.
+        // models.json stays denied.
         for cred in [
             // ".future/agent/auth.json",      // TEMPORARILY allowed — see above
             ".future/agent/models.json",
@@ -316,8 +376,8 @@ pub fn builtin_overrides(workspace: &Path, home: Option<&Path>) -> Vec<PathRule>
 /// rule files, so a broad allow (`src/config/*`) can never silently un-gate a
 /// secret that lands in that directory. Secrets are therefore "allow once"
 /// only — never persistently allowed (a deliberate safety/simplicity choice,
-/// APPROVAL_PLAN.md §3). Temp dirs are NOT here — they're part of the writable
-/// fallback, so they never shadow a secret.
+/// desktop/DEV_MD/SANDBOX/COMMON.md). Temp dirs are NOT here — they're part of
+/// the writable fallback, so they never shadow a secret.
 pub fn builtin_guards(workspace: &Path, home: Option<&Path>) -> Vec<PathRule> {
     let mut rules = Vec::new();
 
@@ -405,6 +465,7 @@ pub struct RuleSet {
     session: SessionRules,
     workspace_rules: Vec<PathRule>,
     user_rules: Vec<PathRule>,
+    resolution_errors: Vec<String>,
 }
 
 impl RuleSet {
@@ -467,17 +528,25 @@ impl RuleSet {
     ) -> Self {
         let workspace = paths::canonicalize_lenient(workspace);
 
+        let mut resolution_errors = Vec::new();
         let workspace_rules =
-            load_rule_file(&workspace.join(".future/approval_rule.json"), &workspace)
-                .unwrap_or_else(|error| {
+            match load_rule_file(&workspace.join(".future/approval_rule.json"), &workspace) {
+                Ok(rules) => rules,
+                Err(error) => {
                     tracing::warn!("{error}");
+                    resolution_errors.push(error);
                     vec![]
-                });
+                }
+            };
         let user_rules = match user_rule_file {
-            Some(file) => load_rule_file(file, &workspace).unwrap_or_else(|error| {
-                tracing::warn!("{error}");
-                vec![]
-            }),
+            Some(file) => match load_rule_file(file, &workspace) {
+                Ok(rules) => rules,
+                Err(error) => {
+                    tracing::warn!("{error}");
+                    resolution_errors.push(error);
+                    vec![]
+                }
+            },
             None => vec![],
         };
 
@@ -488,6 +557,7 @@ impl RuleSet {
             session,
             workspace_rules,
             user_rules,
+            resolution_errors,
             workspace,
         }
     }
@@ -552,9 +622,54 @@ impl RuleSet {
             self.user_rules.clone(),
         ]
     }
+
+    /// Stable, read-only data consumed by native sandbox compilers. A sandbox
+    /// compiler must reject `resolution_errors`; manual/off evaluation keeps
+    /// the historical log-and-skip behavior.
+    pub fn snapshot(&self) -> RuleSetSnapshot {
+        let names = [
+            RuleLayer::Override,
+            RuleLayer::Guard,
+            RuleLayer::Session,
+            RuleLayer::Workspace,
+            RuleLayer::User,
+        ];
+        let layers = self
+            .profile_layers()
+            .into_iter()
+            .zip(names)
+            .map(|(rules, layer)| RuleLayerSnapshot {
+                layer,
+                rules: rules.iter().map(PathRule::snapshot).collect(),
+            })
+            .collect();
+        RuleSetSnapshot {
+            workspace: self.workspace.clone(),
+            temp_roots: self.temp_roots.clone(),
+            layers,
+            resolution_errors: self.resolution_errors.clone(),
+        }
+    }
 }
 
 impl PathRule {
+    fn snapshot(&self) -> RuleSnapshot {
+        let matcher = match &self.matcher {
+            Matcher::Subtree { lexical, canonical } => RuleMatcherSnapshot::Subtree {
+                lexical: lexical.clone(),
+                canonical: canonical.clone(),
+            },
+            Matcher::Glob { pattern, .. } => RuleMatcherSnapshot::Glob {
+                pattern: pattern.clone(),
+            },
+        };
+        RuleSnapshot {
+            matcher,
+            access: self.access,
+            decision: self.decision,
+        }
+    }
+
     pub fn access(&self) -> Access {
         self.access
     }
@@ -567,8 +682,8 @@ impl PathRule {
     /// subtree base, or the original glob's compiled regex source.
     pub fn matcher_sbpl(&self) -> MatcherSbpl<'_> {
         match &self.matcher {
-            Matcher::Subtree(base) => MatcherSbpl::Subtree(base),
-            Matcher::Glob(re) => MatcherSbpl::Regex(re.as_str()),
+            Matcher::Subtree { canonical, .. } => MatcherSbpl::Subtree(canonical),
+            Matcher::Glob { regex, .. } => MatcherSbpl::Regex(regex.as_str()),
         }
     }
 }
@@ -852,6 +967,7 @@ mod tests {
             session: Arc::new(Mutex::new(vec![])),
             workspace_rules: rules,
             user_rules: vec![],
+            resolution_errors: vec![],
             workspace: workspace.clone(),
         };
         assert_eq!(

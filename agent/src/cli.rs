@@ -105,12 +105,26 @@ fn abort_all_sessions(sessions: &SessionsMap) {
 #[command(name = "future-agent")]
 #[command(version = crate::utils::VERSION)]
 pub struct Cli {
+    /// Internal Linux sandbox helper request. This is intentionally hidden and
+    /// dispatched before singleton/config/runtime initialization.
+    #[arg(long, hide = true, value_name = "REQUEST")]
+    linux_sandbox_helper: Option<String>,
+
+    /// Probe the current platform sandbox and print a stable JSON result
+    /// without starting the agent server.
+    #[arg(
+        long,
+        default_value_t = false,
+        conflicts_with_all = ["probe_windows_sandbox", "reset_windows_sandbox"]
+    )]
+    probe_sandbox: bool,
+
     /// Verify the complete Windows unelevated sandbox pipeline and print a
     /// machine-readable result without starting the agent server.
     #[arg(
         long,
         default_value_t = false,
-        conflicts_with = "reset_windows_sandbox"
+        conflicts_with_all = ["probe_sandbox", "reset_windows_sandbox"]
     )]
     probe_windows_sandbox: bool,
 
@@ -119,7 +133,7 @@ pub struct Cli {
     #[arg(
         long,
         default_value_t = false,
-        conflicts_with = "probe_windows_sandbox"
+        conflicts_with_all = ["probe_sandbox", "probe_windows_sandbox"]
     )]
     reset_windows_sandbox: bool,
 
@@ -189,6 +203,17 @@ pub fn run_from_args(args: &[String]) -> Result<()> {
     let mut argv = vec!["future-agent".to_string()];
     argv.extend_from_slice(args);
     let cli = Cli::parse_from(argv);
+    if let Some(_request) = cli.linux_sandbox_helper.as_deref() {
+        #[cfg(target_os = "linux")]
+        crate::sandbox::linux::helper::run_helper_request(_request);
+        #[cfg(not(target_os = "linux"))]
+        anyhow::bail!("Linux sandbox helper is unavailable on this platform");
+    }
+    if cli.probe_sandbox {
+        let result = crate::sandbox::platform_sandbox_probe_product()?;
+        println!("{}", serde_json::to_string(&result)?);
+        return Ok(());
+    }
     if cli.probe_windows_sandbox {
         let result = crate::sandbox::probe_windows_sandbox_host()?;
         if result.diagnostic().is_some() {

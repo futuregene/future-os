@@ -8,6 +8,7 @@ import { Button } from "./Button";
 import { IconButton } from "./IconButton";
 import { MenuPanel } from "./MenuPanel";
 import { Overlay } from "./Overlay";
+import { SelectMenuItem } from "./SelectMenu";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -58,6 +59,25 @@ describe("menuPanel", () => {
     expect(html).toContain("w-40");
     expect(html).toContain("top:4px");
     expect(html).toContain("menu");
+  });
+});
+
+describe("selectMenuItem", () => {
+  it("keeps an unavailable option visible but non-interactive", () => {
+    const onSelect = vi.fn();
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    act(() => {
+      root.render(<SelectMenuItem disabled onSelect={onSelect} selected={false}>Sandbox unavailable</SelectMenuItem>);
+    });
+    const button = container.querySelector("button")!;
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toContain("Sandbox unavailable");
+    act(() => button.click());
+    expect(onSelect).not.toHaveBeenCalled();
+    act(() => root.unmount());
+    container.remove();
   });
 });
 

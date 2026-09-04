@@ -420,6 +420,29 @@ pub async fn get_available_models() -> Result<serde_json::Value, crate::AppError
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SandboxProbeResult {
+    pub available: bool,
+    pub code: String,
+    pub backend: String,
+    pub path: Option<String>,
+    pub version: Option<String>,
+    pub capabilities: Option<serde_json::Value>,
+}
+
+pub async fn probe_sandbox() -> Result<SandboxProbeResult, crate::AppError> {
+    let mut client = connect_agent().await?;
+    let response = client
+        .execute_command(base_command("probe_sandbox", String::new()))
+        .await
+        .map_err(|status| format!("probe_sandbox failed: {status}"))?
+        .into_inner()
+        .ok_or_rpc_error("Future Agent could not check sandbox availability.")?;
+    serde_json::from_value(future_rpc::decode::response_data(&response))
+        .map_err(|error| format!("Invalid sandbox probe response: {error}").into())
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WindowsSandboxProbeResult {
     pub available: bool,
     pub code: String,

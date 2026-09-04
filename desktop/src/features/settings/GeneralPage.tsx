@@ -4,7 +4,8 @@ import { useTranslation } from "react-i18next";
 import { Select } from "../../components/ui/Select";
 import { getLanguage, LANGUAGE_LABELS, setLanguage, SUPPORTED_LANGUAGES } from "../../i18n";
 import { useSandboxAvailability } from "../../integrations/agent/useSandboxAvailability";
-import { isWindows } from "../../lib/platform";
+import { isLinux, isWindows } from "../../lib/platform";
+import { linuxUnavailableReasonKey } from "./linuxSandboxStatus";
 import { SettingsList, SettingsRow, SettingsSection, Switch } from "./SettingsPrimitives";
 
 export function GeneralPage({
@@ -54,7 +55,9 @@ export function GeneralPage({
           description={t(
             approvalTier === "sandbox" && isWindows
               ? "approvalTier.description.sandboxWindows"
-              : `approvalTier.description.${approvalTier}`,
+              : approvalTier === "sandbox" && isLinux
+                ? "approvalTier.description.sandboxLinux"
+                : `approvalTier.description.${approvalTier}`,
           )}
         >
           <Select
@@ -64,16 +67,26 @@ export function GeneralPage({
             onChange={e => onChangeApprovalTier(e.target.value as ApprovalTier)}
           >
             <option value="manual">{t("approvalTier.manual")}</option>
-            {sandboxAvailability.available || (approvalTier === "sandbox" && !sandboxAvailability.definitive)
-              ? (
-                  <option disabled={!sandboxAvailability.available} value="sandbox">
-                    {t("approvalTier.sandbox")}
-                  </option>
-                )
-              : null}
+            <option disabled={!sandboxAvailability.available} value="sandbox">
+              {t(sandboxAvailability.available
+                ? "approvalTier.sandbox"
+                : sandboxAvailability.resolved
+                  ? "approvalTier.sandboxUnavailable"
+                  : "approvalTier.sandboxChecking")}
+            </option>
             <option value="off">{t("approvalTier.off")}</option>
           </Select>
         </SettingsRow>
+        {isLinux && sandboxAvailability.resolved && !sandboxAvailability.available
+          ? (
+              <SettingsRow
+                title={t("approvalTier.linuxUnavailable.title")}
+                description={t(`approvalTier.linuxUnavailable.reasons.${linuxUnavailableReasonKey(sandboxAvailability.code)}`, {
+                  code: sandboxAvailability.code ?? "probe_failed",
+                })}
+              />
+            )
+          : null}
         <SettingsRow
           title={t("showThinking.title")}
           description={t("showThinking.description")}

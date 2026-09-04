@@ -49,6 +49,7 @@ fn sessionless_commands_do_not_require_session_id() {
         "get_fork_messages",
         "get_commands",
         "refresh_skills",
+        "probe_sandbox",
         "probe_windows_sandbox",
         "reset_windows_sandbox",
         "set_enabled_models",
