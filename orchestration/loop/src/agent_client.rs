@@ -11,11 +11,13 @@ use future_rpc::proto::future_agent_client::FutureAgentClient;
 use future_rpc::proto::{RpcCommand, StreamEvent, StreamRequest};
 use serde_json::Value;
 
-/// Agent gRPC address (`host:port`). Defaults to the local agent; overridable
-/// via FUTURE_LOOP_AGENT_ADDR so tests can point the control plane at a mock
-/// server (mirrors the BROWSER_LAUNCHER_OVERRIDE test-hook precedent in cli).
+/// Agent transport selector, mirroring the TUI/CLI clients: the per-user local
+/// IPC endpoint by default (the `auto` sentinel), or an explicit TCP address
+/// via FUTURE_LOOP_AGENT_ADDR — which tests use to point the control plane at
+/// a mock server (mirrors the BROWSER_LAUNCHER_OVERRIDE test-hook precedent).
 pub fn agent_addr() -> String {
-    std::env::var("FUTURE_LOOP_AGENT_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".to_string())
+    std::env::var("FUTURE_LOOP_AGENT_ADDR")
+        .unwrap_or_else(|_| future_rpc::transport::AUTO_ENDPOINT.to_string())
 }
 
 /// What the agent reported at the end of one bounded turn (agent_end).
@@ -115,21 +117,20 @@ pub struct AgentClient {
 }
 
 impl AgentClient {
+    /// Connect through the shared per-user transport discovery: an explicit
+    /// TCP address (FUTURE_LOOP_AGENT_ADDR, or a test mock addr) is tried
+    /// first with local IPC as fallback; the `auto` sentinel selects only the
+    /// local endpoint. Same socket-first boundary as the TUI/CLI clients.
     pub async fn connect(addr: &str) -> Result<Self> {
-        let addr = format!(
-            "http://{}",
-            addr.trim_start_matches("http://")
-                .trim_start_matches("https://")
-        );
-        let endpoint = tonic::transport::Endpoint::new(addr.clone())?
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .timeout(std::time::Duration::from_secs(120));
-        let channel = endpoint
-            .connect()
-            .await
-            .map_err(|e| anyhow!("Failed to connect to agent at {addr}: {e}"))?;
+        let connected = future_rpc::transport::connect_channel(
+            Some(addr),
+            std::time::Duration::from_secs(10),
+            std::time::Duration::from_secs(120),
+        )
+        .await
+        .map_err(|e| anyhow!("Failed to connect to agent: {e}"))?;
         Ok(Self {
-            inner: FutureAgentClient::new(channel),
+            inner: FutureAgentClient::new(connected.channel),
         })
     }
 

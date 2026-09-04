@@ -229,7 +229,7 @@ parsing a merged top-level line.
 
 ## How it fits FutureOS
 
-- **Agent service** (`future agent`, gRPC 127.0.0.1:50051): `run` executes every turn through it
+- **Agent service** (`future agent`, per-user local IPC by default, `--grpc-addr` to switch to TCP): `run` executes every turn through it, discovered socket-first like the TUI/CLI clients (`FUTURE_LOOP_AGENT_ADDR` overrides with an explicit TCP address)
 - **Any client through the skill** (TUI, desktop, mobile, Feishu / DingTalk): loop goals are driven by the `/future-loop` skill orchestrating `future loop` commands — there is no native bridge↔loop integration; gates surface as agent messages asking one concrete question
 - **The `/future-loop` skill**: the driving manual for agents (v3.x, kept in sync with this doc)
 - **State location**: `<cwd>/.future/loop/` (add to the project `.gitignore`)

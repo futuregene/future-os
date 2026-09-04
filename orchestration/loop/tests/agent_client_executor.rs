@@ -48,6 +48,12 @@ fn sample_record(state: &str) -> RunRecord {
 #[test]
 fn connect_failure_is_wrapped() {
     rt().block_on(async {
+        // Point local-IPC discovery at a path that never resolves so the
+        // fallback after the TCP dial fails too — an ambient agent socket
+        // would otherwise make the port-1 dial succeed via fallback.
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("nonexistent/agent.sock");
+        std::env::set_var("FUTURE_AGENT_SOCKET", &socket);
         // Port 1 is never listenable.
         let err = match AgentClient::connect("127.0.0.1:1").await {
             Ok(_) => panic!("connect to port 1 should fail"),
@@ -60,6 +66,8 @@ fn connect_failure_is_wrapped() {
             Err(e) => e,
         };
         assert!(format!("{err:#}").contains("Failed to connect"));
+        std::env::remove_var("FUTURE_AGENT_SOCKET");
+        drop(dir);
     });
 }
 
