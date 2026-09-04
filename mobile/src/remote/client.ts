@@ -1,5 +1,6 @@
-import type { NatsConnection } from "nats.ws";
-import { connect, ErrorCode, jwtAuthenticator } from "nats.ws";
+import type { NatsConnection } from "@nats-io/nats-core";
+import { wsconnect, jwtAuthenticator } from "@nats-io/nats-core";
+import { classifyNatsError } from "./natsErrors";
 import { fromSeed } from "nkeys.js";
 import { ensureFreshCredentials, refreshCredentials } from "./pairing";
 import { jwtExpiry, randomId, encodeBase64Url } from "./codec";
@@ -375,7 +376,7 @@ export class RemoteClient {
     const seed = encoder.encode(this.credentials.seed);
     let connection: NatsConnection;
     try {
-      connection = await connect({
+      connection = await wsconnect({
         servers: this.credentials.natsWsUrl,
         inboxPrefix: `p.${this.credentials.pairId}.rep.${this.credentials.deviceId}`,
         authenticator: jwtAuthenticator(this.credentials.userJwt, seed),
@@ -815,18 +816,16 @@ export class RemoteClient {
               return;
             }
           } else if (status.type === "error") {
-            const code = String(status.data);
-            if (code === ErrorCode.AuthenticationExpired || code === ErrorCode.AccountExpired) {
+            const code = status.error.message;
+            const kind = classifyNatsError(status.error);
+            if (kind === "expired") {
               this.recordFailure("credential_expired", code);
               if (this.state !== "refreshing") void this.refreshToken();
-            } else if (
-              code === ErrorCode.PermissionsViolation ||
-              code === ErrorCode.AuthorizationViolation
-            ) {
+            } else if (kind === "authorization") {
               this.recordFailure("service_authorization", code);
               this.handleFailure(new Error(`nats_authorization_rejected: ${code}`));
               return;
-            } else if (code === ErrorCode.ProtocolError) {
+            } else if (kind === "protocol") {
               this.recordFailure("protocol", code);
               this.failGeneration(new Error(`nats_protocol_error: ${code}`), generation);
               return;
@@ -1062,18 +1061,7 @@ class RemoteResponseError extends Error {
 export function isTransientNatsRequestError(error: unknown): boolean {
   if (error instanceof RemoteResponseError) return false;
   if (error instanceof Error && error.message === "not_connected") return true;
-  const code =
-    typeof error === "object" && error !== null && "code" in error
-      ? (error as { code?: unknown }).code
-      : undefined;
-  if (typeof code !== "string") return false;
-  return new Set<string>([
-    ErrorCode.Timeout,
-    ErrorCode.NoResponders,
-    ErrorCode.ConnectionClosed,
-    ErrorCode.Disconnect,
-    ErrorCode.RequestError,
-  ]).has(code);
+  return classifyNatsError(error) === "transport";
 }
 
 function asError(value: unknown): Error {

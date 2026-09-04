@@ -1,3 +1,5 @@
+import { classifyNatsError } from "./natsErrors";
+
 /**
  * Connection lifecycle state machine (audit P2 — kills H4/M1/M7/M10).
  *
@@ -115,6 +117,8 @@ export function classifyError(error: unknown): "authTerminal" | "auth" | "fatal"
     // desktop's generic "server" category.
     return "transport";
   }
+  const natsFailure = classifyNatsError(error);
+  if (natsFailure === "expired" || natsFailure === "authorization") return "auth";
   const message = error instanceof Error ? error.message : String(error);
   // A JWT with no readable exp is permanently malformed — refreshing can't
   // fix it, only re-pairing can (mirrors the desktop's hard reject).
