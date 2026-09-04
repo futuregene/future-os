@@ -120,7 +120,7 @@ mount source 以 O_PATH FD 固定，bwrap 通过 `/proc/self/fd/N` 挂载；内�
 | `dynamic_glob_created` | 新的敏感规则匹配数，多条规则可能命中同一路径 |
 | `dynamic_glob_scan_failed` | 检测不完整，0 不表示无违规 |
 
-`message` 由后端按 kind/count 生成英文说明，明确“detection only / creation was not blocked / no changes were undone / does not authorize a retry”。收到的 message 不参与可信判定，旧记录缺 message 仍可解析。信息附在 shell 工具输出中给用户和模型看，不新增弹窗/通知。
+`message` 由后端按 kind 生成英文说明，结构化 count 等字段保持不变。创建类明确未阻止、未回滚且创建来源未知；检查失败类明确结果未知，不等于命令失败，也不能视为检查通过。四类事后检查默认仅供模型内部判断，只有影响任务结论、需要用户操作或用户询问时才简述实际影响和下一步，不复述内部字段、计数和扫描机制；访问受限类只在必要操作被阻止时引导申请审批。说明不改变退出码或授予脱沙箱权限。收到的 message 不参与可信判定，旧记录缺 message 仍可解析。信息仍附在 shell 工具输出中，不隐藏原始报告，不新增弹窗/通知；这是模型表达指导，不保证模型绝不复述。
 
 生产每次 spawn 创建独立匿名 report 文件，writer 只给 outer helper；outer 从 inner request 移除 `report_fd`，设 CLOEXEC 且不加入 bwrap keep-list。命令与后代不能继承 writer。命令完成、后代回收、复扫后 outer 才写完整报告，Agent reader 校验长度/version/digest/事件类型，不信任 stdout marker。
 
