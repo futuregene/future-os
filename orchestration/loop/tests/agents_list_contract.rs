@@ -82,31 +82,7 @@ fn agent_list_shows_registered_ids_only() {
     assert_eq!(code, 0, "{err}");
     let (_o, err, code) = run(
         &root,
-        &[
-            "agent",
-            "recipe",
-            "add",
-            "--goal",
-            "g1",
-            "--name",
-            "scientist",
-            "--capabilities",
-            "lammps,abacus",
-        ],
-    );
-    assert_eq!(code, 0, "{err}");
-    let (_o, err, code) = run(
-        &root,
-        &[
-            "agent",
-            "onboard",
-            "--goal",
-            "g1",
-            "--agent-id",
-            "bob",
-            "--recipe",
-            "scientist",
-        ],
+        &["agent", "onboard", "--goal", "g1", "--agent-id", "bob"],
     );
     assert_eq!(code, 0, "{err}");
 
@@ -114,7 +90,6 @@ fn agent_list_shows_registered_ids_only() {
     assert_eq!(code, 0);
     assert!(out.contains("alice"), "{out}");
     assert!(out.contains("bob"), "{out}");
-    assert!(out.contains("lammps,abacus"), "capabilities shown: {out}");
     // Both registered but holding no lease → idle, nothing running.
     assert!(out.contains("idle"), "idle status shown: {out}");
     assert!(!out.contains("running"), "no live leases yet: {out}");
