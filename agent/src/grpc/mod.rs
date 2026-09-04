@@ -22,14 +22,39 @@ use tokio_stream::StreamExt;
 // sites keep their `proto::...` paths.
 pub use future_rpc::proto;
 
-/// Start a gRPC-only server (no HTTP). Runs until process exit.
-pub async fn serve(state: AppState, host: &str, port: u16) -> Result<()> {
-    serve_with(state, host, port, std::future::pending()).await
+const MAX_GRPC_MESSAGE_SIZE: usize = 32 * 1024 * 1024;
+
+fn configure_service(
+    service: FutureAgentService,
+) -> proto::future_agent_server::FutureAgentServer<FutureAgentService> {
+    proto::future_agent_server::FutureAgentServer::new(service)
+        .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE)
+        .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
+}
+
+/// Start an explicitly requested TCP gRPC server. Native local IPC is the
+/// production default; TCP remains available for remote development and
+/// compatibility only.
+pub async fn serve_tcp(state: AppState, host: &str, port: u16) -> Result<()> {
+    serve_tcp_with(state, host, port, std::future::pending()).await
+}
+
+/// Start the per-user local IPC server (Unix-domain socket / Windows named
+/// pipe). Runs until process exit.
+pub async fn serve_local(state: AppState) -> Result<()> {
+    tracing::info!(endpoint = %future_rpc::transport::local_endpoint_label(), "gRPC server listening on local IPC");
+    let incoming = future_rpc::transport::bind_local().await?;
+    let grpc_service = FutureAgentService { state };
+    tonic::transport::Server::builder()
+        .add_service(configure_service(grpc_service))
+        .serve_with_incoming_shutdown(incoming, std::future::pending())
+        .await?;
+    Ok(())
 }
 
 /// `serve` with an injectable shutdown trigger so tests can drive the server
 /// to a clean `Ok(())` completion (production never exits).
-async fn serve_with(
+async fn serve_tcp_with(
     state: AppState,
     host: &str,
     port: u16,
@@ -46,14 +71,8 @@ async fn serve_with(
     // Raise the message-size limits above tonic's 4MB default. Image bytes no
     // longer cross the wire (the agent reads them from the path), but a large
     // session's get_session_entries / export_html response can still exceed 4MB.
-    const MAX_GRPC_MESSAGE_SIZE: usize = 32 * 1024 * 1024;
-
     tonic::transport::Server::builder()
-        .add_service(
-            proto::future_agent_server::FutureAgentServer::new(grpc_service)
-                .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE)
-                .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE),
-        )
+        .add_service(configure_service(grpc_service))
         .serve_with_shutdown(grpc_addr, shutdown)
         .await?;
 
@@ -996,7 +1015,7 @@ mod tests {
     async fn serve_with_shutdown_completes_cleanly() {
         let state = grpc_app_state(false);
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-        let server = tokio::spawn(serve_with(state, "127.0.0.1", 0, async move {
+        let server = tokio::spawn(serve_tcp_with(state, "127.0.0.1", 0, async move {
             let _ = rx.await;
         }));
         // Give the server a moment to bind, then trigger shutdown.

@@ -17,9 +17,10 @@ use future_rpc::proto::{AuthUpdate, ProviderUpsert, RpcCommand, StreamEvent, Str
 use serde_json::{json, Map, Value};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// `grpcAddr()` from agent.ts/session.ts — env override, then localhost default.
+/// Explicit TCP override, otherwise automatic per-user local IPC discovery.
 pub fn grpc_addr() -> String {
-    std::env::var("FUTURE_AGENT_GRPC_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".to_string())
+    std::env::var("FUTURE_AGENT_GRPC_ADDR")
+        .unwrap_or_else(|_| future_rpc::transport::AUTO_ENDPOINT.to_string())
 }
 
 /// `String(Date.now())` — millisecond epoch, used as the request correlation id.
@@ -61,11 +62,14 @@ impl RunClient {
             cmd.session_id = sid.to_string();
         }
 
-        let endpoint = tonic::transport::Endpoint::from_shared(format!("http://{}", self.addr))
-            .map_err(|e| e.to_string())?
-            .timeout(Duration::from_secs(timeout_secs));
-        let channel = endpoint.connect().await.map_err(|e| e.to_string())?;
-        let mut client = FutureAgentClient::new(channel);
+        let connected = future_rpc::transport::connect_channel(
+            Some(&self.addr),
+            Duration::from_secs(timeout_secs.min(5)),
+            Duration::from_secs(timeout_secs),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        let mut client = FutureAgentClient::new(connected.channel);
         let response = client
             .execute_command(cmd)
             .await
@@ -368,12 +372,15 @@ impl RunClient {
         verbose: bool,
         out: &Output,
     ) -> Result<(Vec<Value>, String), String> {
-        let endpoint = tonic::transport::Endpoint::from_shared(format!("http://{}", self.addr))
-            .map_err(|e| e.to_string())?
+        let connected = future_rpc::transport::connect_channel(
+            Some(&self.addr),
+            Duration::from_secs(5),
             // TS: 5-minute setTimeout — the whole stream is bounded by it.
-            .timeout(Duration::from_secs(300));
-        let channel = endpoint.connect().await.map_err(|e| e.to_string())?;
-        let mut client = FutureAgentClient::new(channel);
+            Duration::from_secs(300),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        let mut client = FutureAgentClient::new(connected.channel);
         let request = StreamRequest {
             session_id: session_id.to_string(),
             ..Default::default()
@@ -918,8 +925,8 @@ mod tests {
     async fn grpc_addr_default_and_env_override() {
         let _guard = crate::test_env::lock_env().await;
         let _env = crate::test_env::EnvGuard::remove(&["FUTURE_AGENT_GRPC_ADDR"]);
-        assert_eq!(grpc_addr(), "127.0.0.1:50051");
-        assert_eq!(grpc_addr_env(), "127.0.0.1:50051");
+        assert_eq!(grpc_addr(), "auto");
+        assert_eq!(grpc_addr_env(), "auto");
         let _env = crate::test_env::EnvGuard::set(&[(
             "FUTURE_AGENT_GRPC_ADDR",
             std::ffi::OsString::from("10.0.0.1:1234"),

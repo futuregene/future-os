@@ -123,9 +123,10 @@ pub struct Cli {
     )]
     reset_windows_sandbox: bool,
 
-    /// gRPC server address (host:port, e.g., 127.0.0.1:50051)
-    #[arg(long, default_value = "127.0.0.1:50051")]
-    grpc_addr: String,
+    /// Explicit TCP gRPC address for remote/development compatibility.
+    /// Omit this option to use secure per-user local IPC.
+    #[arg(long)]
+    grpc_addr: Option<String>,
 
     /// Enable verbose logging (show gRPC requests, LLM calls, tool execution)
     #[arg(long, default_value_t = false)]
@@ -601,21 +602,20 @@ async fn async_main(
     };
     let mut engine = engine.with_tools(crate::coding_tools());
 
-    // Always run gRPC server mode
-    let (grpc_host, grpc_port) = if cli.grpc_addr.starts_with(':') {
-        let port_str = &cli.grpc_addr[1..];
-        ("127.0.0.1", port_str.parse().unwrap_or(50051))
-    } else if cli.grpc_addr.contains(':') {
-        let parts: Vec<&str> = cli.grpc_addr.split(':').collect();
-        let host = parts.first().copied().unwrap_or("127.0.0.1");
-        let port: u16 = parts.get(1).and_then(|p| p.parse().ok()).unwrap_or(50051);
-        (host, port)
-    } else {
-        match cli.grpc_addr.parse::<u16>() {
-            Ok(port) => ("127.0.0.1", port),
-            Err(_) => ("127.0.0.1", 50051),
+    // Native per-user IPC is the default. Supplying --grpc-addr explicitly
+    // opts into TCP compatibility mode.
+    let tcp_bind = cli.grpc_addr.as_deref().map(|addr| {
+        if let Some(port_str) = addr.strip_prefix(':') {
+            ("127.0.0.1".to_string(), port_str.parse().unwrap_or(50051))
+        } else if let Some((host, port)) = addr.rsplit_once(':') {
+            (host.to_string(), port.parse::<u16>().unwrap_or(50051))
+        } else {
+            match addr.parse::<u16>() {
+                Ok(port) => ("127.0.0.1".to_string(), port),
+                Err(_) => ("127.0.0.1".to_string(), 50051),
+            }
         }
-    };
+    });
     // Discover skills (global user-level dirs only — project/cwd-relative
     // skill dirs are intentionally not scanned).
     let skill_dirs = crate::global_skill_dirs();
@@ -692,7 +692,13 @@ async fn async_main(
     let shutting_down = app_state.shutting_down.clone();
     let sessions = app_state.sessions.clone();
 
-    let server = crate::grpc::serve(app_state, grpc_host, grpc_port);
+    let server: std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send>> =
+        match tcp_bind {
+            Some((host, port)) => {
+                Box::pin(async move { crate::grpc::serve_tcp(app_state, &host, port).await })
+            }
+            None => Box::pin(crate::grpc::serve_local(app_state)),
+        };
 
     // If --profile-seconds is set, spawn a task that signals shutdown after N
     // seconds via a oneshot so the flamegraph gets written by run().

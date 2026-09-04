@@ -1,14 +1,20 @@
 # FutureOS Terminal UI (TUI)
 
-The TUI is the terminal client: `future-tui`. It is a thin gRPC client — the
-**agent must be running first** (`future agent`, listening on
-`127.0.0.1:50051`). A client that exits with a connection / gRPC error almost
-always means the agent isn't running yet.
+The TUI is the terminal client: `future-tui`. It is a thin gRPC client that
+connects over **per-user local IPC** by default (Unix-domain socket
+`~/.future/run/agent.sock` on macOS/Linux, a current-user-only named pipe on
+Windows). If no agent is reachable, the TUI launches one as a sidecar and
+shuts it down on exit — no manual startup needed. You can still run the
+agent yourself:
 
 ```bash
 future agent      # terminal 1: the agent
 future tui        # terminal 2: the terminal UI
 ```
+
+For remote/development setups pass `--grpc-addr <host:port>` to the agent to
+serve TCP instead, and set `FUTURE_AGENT_GRPC_ADDR=<host:port>` on clients
+(explicit TCP is tried first, local IPC remains the fallback).
 
 `future tui <args>` runs the TUI in-process; the standalone `future-tui`
 binary is equivalent but no longer installed by default (build it with
@@ -77,7 +83,7 @@ screen writes to `~/.future/tui/write.log`.
 
 | Symptom | Fix |
 |---|---|
-| Connection / gRPC error on startup | The agent isn't running. Start `future agent` and check nothing else holds the port: `lsof -i :50051`. |
+| Connection / gRPC error on startup | No agent could be found or started. Check the sidecar error, or start `future agent` yourself. In TCP mode, check nothing else holds the port: `lsof -i :<port>`. |
 | Auth / "no model" error | No model configured. Run `future auth login`, or add a provider to `~/.future/agent/models.json` — see the repo README "Configure a model". |
 
 See also: [Directory layout](directory-layout.md) for what lives under
