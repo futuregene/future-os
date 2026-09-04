@@ -706,6 +706,7 @@ async fn pre_execution_escalation(
 ) -> Option<Result<String>> {
     let requester = escalation.as_ref()?;
     let request = EscalationRequest {
+        trigger: crate::sandbox::EscalationTrigger::ModelRequest,
         command: command.to_string(),
         justification: justification.to_string(),
         failure_summary: String::new(),
@@ -738,6 +739,7 @@ async fn post_hoc_escalation(
         return None;
     }
     let request = EscalationRequest {
+        trigger: crate::sandbox::EscalationTrigger::SandboxFailure,
         command: command.to_string(),
         justification: String::new(),
         failure_summary: tail,
@@ -2106,6 +2108,10 @@ mod tests {
         let recorded = calls.lock();
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].justification, "test needs it");
+        assert_eq!(
+            recorded[0].trigger,
+            crate::sandbox::EscalationTrigger::ModelRequest
+        );
     }
 
     #[tokio::test]
@@ -2848,6 +2854,10 @@ mod tests {
         sandbox.set_linux_backend_available_for_test();
         let deny: crate::sandbox::EscalationRequester = Arc::new(|request| {
             assert_eq!(request.command, "touch /protected");
+            assert_eq!(
+                request.trigger,
+                crate::sandbox::EscalationTrigger::SandboxFailure
+            );
             crate::sandbox::EscalationDecision::Denied("linux policy".into())
         });
         let denied = post_hoc_escalation(
@@ -3100,6 +3110,7 @@ mod tests {
     #[test]
     fn deny_escalation_fn_denies() {
         let request = crate::sandbox::EscalationRequest {
+            trigger: crate::sandbox::EscalationTrigger::ModelRequest,
             command: "x".to_string(),
             justification: String::new(),
             failure_summary: String::new(),

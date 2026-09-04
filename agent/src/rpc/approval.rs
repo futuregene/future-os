@@ -301,6 +301,7 @@ impl ApprovalGate {
         let action = serde_json::json!({
             "tool": "shell",
             "category": "sandbox_escalation",
+            "escalation_trigger": request.trigger,
             "summary": command_summary(&request.command),
             "command": request.command,
             "justification": request.justification,
@@ -2094,6 +2095,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
             &broadcaster,
             "s1",
             &crate::sandbox::EscalationRequest {
+                trigger: crate::sandbox::EscalationTrigger::SandboxFailure,
                 command: "touch /System/x".to_string(),
                 justification: "need it".to_string(),
                 failure_summary: "touch: /System/x: Operation not permitted".to_string(),
@@ -2120,6 +2122,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
             &broadcaster,
             "s1",
             &crate::sandbox::EscalationRequest {
+                trigger: crate::sandbox::EscalationTrigger::ModelRequest,
                 command: "touch /System/x".to_string(),
                 justification: "need it".to_string(),
                 failure_summary: String::new(),
@@ -2296,6 +2299,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
         let sandbox = enabled(&ws);
         let broadcaster = SseBroadcaster::new();
         let request = crate::sandbox::EscalationRequest {
+            trigger: crate::sandbox::EscalationTrigger::ModelRequest,
             command: "touch /System/x".to_string(),
             justification: String::new(),
             failure_summary: String::new(),

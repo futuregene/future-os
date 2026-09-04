@@ -1144,12 +1144,22 @@ pub fn seatbelt_profile(sandbox: &ResolvedSandbox) -> String {
     seatbelt::build_profile(sandbox)
 }
 
-// ─── Escalation (post-hoc approval, carried into the tools layer) ──────────
+// ─── Escalation (explicit or post-hoc approval) ───────────────────────────
+
+/// Set by the execution branch, not inferred from model text or stderr.
+/// Presentation metadata only; both variants require the same approval.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EscalationTrigger {
+    ModelRequest,
+    SandboxFailure,
+}
 
 /// A request to re-run a command outside the sandbox, raised from inside the
 /// shell tool after a sandbox denial or when the model asks for it explicitly.
 #[derive(Debug, Clone)]
 pub struct EscalationRequest {
+    pub trigger: EscalationTrigger,
     pub command: String,
     pub justification: String,
     pub failure_summary: String,

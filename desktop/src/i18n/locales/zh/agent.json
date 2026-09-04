@@ -215,6 +215,8 @@
     "viewCommand": "查看命令",
     "invalidRequest": "这项审批信息不完整，无法安全批准。",
     "escalationTitle": "在沙箱外运行此命令",
+    "escalationRequestTitle": "模型请求在沙箱外运行此命令",
+    "escalationRetryTitle": "需要在沙箱外运行此命令",
     "blockedPaths": "被沙箱拦截的文件",
     "unsandboxedNote": "允许后，本条命令将不受沙箱限制运行一次。",
     "denying": "拒绝中",

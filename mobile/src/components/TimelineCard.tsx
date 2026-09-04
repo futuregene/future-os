@@ -20,6 +20,7 @@ import {
   approvalCommand,
   approvalDeletes,
   approvalPaths,
+  escalationTitleKey,
   parseAction,
 } from "@future-os/thread-projection";
 import { friendlyRunError, friendlyRunErrorTitle } from "./errorMessage";
@@ -176,7 +177,7 @@ export function PendingApprovalCard({
         )
       : t("approval.capabilityMultiTitle", { count: capabilityTargets.length })
     : kindI18n
-      ? t(kindI18n.title)
+      ? t(payload.kind === "sandbox_escalation" ? escalationTitleKey(action) : kindI18n.title)
       : payload.title || payload.tool_name || t("approval.title");
   const summaryText = capabilityTargets
     ? null
