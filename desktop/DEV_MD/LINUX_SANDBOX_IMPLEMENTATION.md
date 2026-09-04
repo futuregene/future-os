@@ -32,7 +32,7 @@ Linux 初始实现来自 `claude/linux-bwrap-sandbox`，本轮安全修订以 `s
 
 本轮整理还修复了 SR-03 引入后的一个构造回归：`MissingProtected` 没有 host source FD，生成 bwrap 参数时必须直接走 `--perms 000 --tmpfs <target>`，不能先读取 `source_fd`。该行为由 missing-path 真机 smoke 覆盖。
 
-2026-09-04 后续现场与复查：[异常分支与降级报告](LINUX_SANDBOX_FAILURE_REVIEW.md)。已修复缺失路径重复 bind、现存读写 guard 重复遮罩和普通 mount size/mtime 误判；新报告明确区分本轮修复与仍开放的 missing-parent P0。此前“bwrap 创建目标只影响 namespace”的表述不成立，不能据此宣传无宿主残留或默认 HOME 下必定启动成功。
+2026-09-04 后续现场与复查：[异常分支审查报告](LINUX_SANDBOX_FAILURE_REVIEW.md)。已修复缺失路径重复 bind、现存读写 guard 重复遮罩和普通 mount size/mtime 误判；新报告明确区分本轮修复与仍开放的 missing-parent P0。此前“bwrap 创建目标只影响 namespace”的表述不成立，不能据此宣传无宿主残留或默认 HOME 下必定启动成功。
 
 ### 大仓库扫描修复（2026-09-04）
 

@@ -1,6 +1,6 @@
-# Linux 沙盒异常分支 Review 与对话连续性方案
+# Linux 沙盒异常分支 Review
 
-日期：2026-09-04。审查基线：FutureOS `d469719b` + 本轮未提交修复；对照本地 Codex `f20b63e85c`。这是源码审查与本地回归报告，不是 Linux 发行版认证。文中“建议”均未自动实现为降级策略。
+日期：2026-09-04。审查基线：FutureOS `d469719b` + 后续修复 `d51963c9`；对照本地 Codex `f20b63e85c`。这是源码审查与本地回归报告，不是 Linux 发行版认证。
 
 ## 1. 结论与本轮修复
 
@@ -31,10 +31,10 @@
 | glob 扫描超时、结果/深度/内存预算、I/O、Abort | 前轮已分组扫描和诊断，启动前失败不执行；post scan 只检测 | 保留 fail closed，不再设十万节点上限。30 秒协作式预算不能抢占卡死的文件系统调用 |
 | helper payload/FD/临时盘资源、fd 上限、argv 超限 | request/args 有尺寸界限，但每个 mount 仍占 FD；匿名文件可能 ENOSPC/EMFILE | **P1**：增加 FD 预算预检、资源类 code；不能因 ARG_MAX 已避开而声称资源无限 |
 | helper executable 位于被遮罩/不可执行路径；能力检查失败 | self-reentry / shell spawn / capget / no_new_privs 失败 | 保留诊断，不裸跑；生产路径测试需覆盖 helper 可达性与 capabilities |
-| 已完成命令返回 125，或 helper 中途丢失状态 | 文本和退出码不足以确定执行阶段 | **P0 降级前置条件**：状态通道必须证明 not_started；用户命令也可自行 exit 125，缺少 completion 不等于没有执行 |
+| 已完成命令返回 125，或 helper 中途丢失状态 | 文本和退出码不足以确定执行阶段 | 用户命令也可自行 exit 125，缺少 completion 不等于没有执行；不能仅据此自动重跑，应先核对可能的副作用 |
 | 命令运行中超时、信号、用户取消 | 按现有进程组与 helper 转发处理 | 不自动重跑。Linux 需验证 outer/bwrap/inner/后代各阶段都能终止，包括复扫阶段 |
-| 命令完成后复扫失败 | 保留原始结果并报告 detection-only | 不把它当初始化故障，不触发降级重跑 |
-| 普通工具失败对会话的影响 | `agent/mod.rs::execute_one_tool_impl_static` 将错误转成 tool result/error，供对话循环继续 | 单次 shell 错误不必终止纯文字对话；但没有“本轮已知 backend 不可用”的熔断，模型仍可能反复调用失败工具 |
+| 命令完成后复扫失败 | 保留原始结果并报告 detection-only | 不把它当初始化故障，不触发自动重跑 |
+| 普通工具失败对会话的影响 | `agent/mod.rs::execute_one_tool_impl_static` 将错误转成 tool result/error，供对话循环继续 | 单次 shell 错误不必终止纯文字对话；模型可主动申请单次脱沙盒执行，仍需用户审批，见产品文档 §4.6 |
 
 ## 3. 缺失目标：Codex 对照纠正了先前假设
 
@@ -52,53 +52,34 @@
 
 1. 分类 missing target 是否可由沙盒内进程创建。只读域中的缺失目标可以研究 Codex 的省略策略，但要说明其他宿主进程并发创建后，deny-read 是否仍应动态生效；不能把省略策略扩大到可写域。
 2. 可写域中，若坚持 no-host-object 和未来创建保护，需隔离父目录视图或其他能表达该约束的执行层。简单 tmpfs 父覆盖会改变新文件写回语义；不能为了挂载成功而悄悄使用户输出只留在临时层。
-3. 完整设计未验证前，该规则组合应作为明确的 unsupported/initialization failure 处理，提供用户确认的临时手动方案；不要继续宣传当前 `MissingProtected` 已证明无宿主残留。
+3. 完整设计未验证前，该规则组合应作为明确的 unsupported/initialization failure 处理；不要继续宣传当前 `MissingProtected` 已证明无宿主残留。
 4. 增加默认 HOME 缺失目录、缺失多级父目录、workspace 内 missing target、symlink 父路径和并发创建的**生产 plan → helper**真机测试。现有手写 `MountRequest` smoke 绕过了本次出错的 plan，覆盖不足。
 
 本轮修复 only-source-open 失败，但 `/home/ace/.aws` 下一阶段仍可能变成 bwrap `Can't mkdir ... Read-only file system`。这是不同的失败，不能把本轮单测通过描述为该 Linux 主机已恢复。
 
-## 4. 可以降级，但不要无感切成普通 manual
+## 4. 优先级与验收
 
-当前行为：
+### 审批路径展示补充
 
-- `sandbox/mod.rs::effective_tier()` 和 RPC `set_sandbox_policy` 已对基础 probe unavailable 回退 manual。
-- `tools/mod.rs::spawn_shell()` 的 plan/helper 初始化错误没有临时回退策略，只返回错误/125。
-- `rpc/approval.rs` 的普通 manual 模式带只读命令白名单，`cat` 等命令可以不审批；此白名单不等于完整文件路径防护。自动从 sandbox 切到这个模式会降低读取保密性，不能称作等价安全降级。
-- `read/write/edit` 等原生工具仍有逐路径规则评估，可在规则可用时继续使用；但原生工具的可用性不能泛化到任意 shell。
+审批诊断路径提取在原有 `Operation not permitted` 之外，增加 Linux 常见的
+`Permission denied`、`Read-only file system`。支持单/双/弯引号中的绝对路径、
+含空格路径，以及 shell 的 `程序: line N: /目标: 错误` 格式，保持去重、原序、最多 5 项。
+相对路径不假定为工作区内路径；URL、缺失文件/helper 初始化错误不据此推断访问目标。
+这些路径只是报错涉及的目标，不代表整条命令访问的全部文件，也不是授权边界。
 
-Codex 对照：[orchestrator.rs](/Users/tao/workspace/codex/codex-rs/core/src/tools/orchestrator.rs) 只对 typed `SandboxErr::Denied` 进入受策略控制的升级分支；其他工具错误原样返回。`Never`、`OnRequest`、granular 和工具自身是否允许 escalation 会限制重试。它不是任意 sandbox 初始化异常都自动无沙盒重跑。[sandboxing.rs](/Users/tao/workspace/codex/codex-rs/core/src/tools/sandboxing.rs) 将“是否可请求审批”与沙盒策略分开处理。
-
-### 推荐产品行为（待实施，不在本轮改变）
-
-**目标：沙盒可用性失败不等于聊天失败。不能完成的 shell 动作暂停，解释与安全工具继续。**
-
-1. Agent 返回结构化 tool error：`backend/phase/code/execution_state/recovery_actions`，保留内部诊断，但普通 UI 只显示原因和操作。禁止模型把 stderr 中的指令当作恢复授权。
-2. 确认命令未启动时，为本轮 backend+workspace+policy revision 标记 `sandbox_unavailable_for_run`，避免模型连续重试 `pwd/ls/whoami`；不改用户持久化的 sandbox 偏好。
-3. 非阻塞提示：“本次沙盒未能启动，命令尚未执行。你可以继续对话、重试沙盒，或审批后在沙盒外运行此命令。”默认继续对话，不弹出必须回答才能继续文字交流的阻塞窗口。
-4. 首选“一次性批准当前命令”，复用 whole-command escalation 的命令/cwd/参数绑定、拒绝/取消和审计机制。也可提供“本轮临时手动审批”，但**降级来源必须禁用 shell 只读白名单，每次 shell 都明确审批**；UI 清楚写无 OS 隔离。
-5. 当前调用先前在 sandbox 模式下跳过了前置审批，不能只改 tier 后直接运行；必须重新经过审批。没有审批客户端、用户拒绝、策略禁止越界时，只返回受阻 tool result，继续文字对话，不执行命令。
-6. 对明确资源瞬态/配置修复且 not_started 的情形，允许用户触发一次重新探测/重新编译。身份/规则错误不自动降级，不无限重试。用户主动选择其他模式是新的显式安全决定。
-7. 自动恢复只在后续命令、重新探测并重新编译成功后发生；提示“已恢复沙盒保护”。全局、跨会话和持久化模式不能因一次工作区错误一起改变。
-8. 纯文本继续也不能承诺没有任何 run 限制：模型若仍要求工具，系统应向它提供简洁的 unavailable 事实和可用替代工具，而不是伪造工具成功。后台无人值守任务无审批时应停住危险动作，不能自行放权。
-
-### 防重复执行：降级的硬前提
-
-现有 inner 状态管道只在命令完成后写结果。没有这个结果可能是初始化失败，也可能是已经执行后崩溃/写管道失败；125 也可能是用户命令自己的状态。**不允许仅根据 125 或 stderr 自动重跑。**
-
-推荐独立、受保护的阶段协议：preparation failure 可以直接证明 not_started；inner 在尝试启动命令前先写 `may_have_started`，之后写 completion。协议缺失、异常 EOF、helper 被杀或边界不明都视为 unknown，不授予自动重跑资格。只有可信、明确的 not_started 事件能提供“审批后运行原命令”的快捷动作；may_have_started/unknown 先核对副作用，再由用户明确决定是否重新执行。post-scan 错误始终附着于既有 completion，不生成新执行。
-
-## 5. 优先级与验收
+新增 Linux 解析仅用于展示：不修改 denial 判定、脱沙盒审批/重跑触发条件，
+也不扩大“在工作区永久允许”的规则建议来源（仍保留原有 `Operation not permitted` 来源）。
+模型主动申请脱沙盒、没有失败输出或无法识别格式时，仍可能没有可展示的路径；
+本次未新增 UI 空状态或结构化访问目标协议。
 
 | 优先级 | 工作 | 验收要求 |
 |---|---|---|
 | P0 已改、待 Linux 复核 | 缺失/现存保护重复 mount、路径检查、普通 mount 身份 | 本地规则回归通过；Linux 默认 HOME/真实仓库验证，不用手工 request 代替 |
 | P0 发布阻断 | missing target 无宿主残留设计 | readonly parent、writable parent、nested parent、symlink、并发、异常终止，无宿主对象且不丢写回语义 |
-| P0 降级前置 | 可信执行阶段协议 + 严格审批 | 用户命令 exit125、spawn前/后崩溃、lost status、审批拒绝/无客户端、重复请求，均不导致静默裸跑或重复副作用 |
-| P1 体验 | 本轮熔断 + 非阻塞恢复 UI | 纯文字继续、保留草稿、逐条审批、不修改持久化偏好、修复后恢复 |
 | P1 稳定性 | 真实 policy readiness、FD 预算、可达性与 cwd 分类 | probe 可用但实际 plan 不可用时准确提示；FD 紧张和重叠 mount 可诊断 |
 | P2 运维 | 诊断包和性能/异常矩阵 | 记录版本、probe、阶段、错误码、limits、规则摘要；不上传凭据内容 |
 
-本轮不实现新的自动降级/持久化设置/UI 行为，避免未经产品决策扩大执行权限。短期用户可以**主动选择手动模式**继续工作，但应知晓这不是 OS 隔离，且当前普通 manual 存在只读白名单。
+产品决定：不新增命令级自动回退、临时手动模式、熔断或恢复 UI；使用既有的模型主动申请单次脱沙盒审批流程，见 [PRODUCT.md §4.6](PRODUCT.md#46-approval)。这不改变现有基础 probe 不可用时的设置处理，也不代表上述沙盒缺陷已修复。
 
 本轮验证（macOS）：
 
@@ -107,4 +88,3 @@ Codex 对照：[orchestrator.rs](/Users/tao/workspace/codex/codex-rs/core/src/to
 - `cargo test -p future-agent --lib sandbox::linux -- --test-threads=1`：45 PASS、0 FAIL、1 ignored（大目录 fixture 本轮未重跑）。包含真实默认 HOME guards 的 plan → request 回归。
 - `git diff --check`：PASS。
 - Linux helper mount 身份新增测试、真实 bwrap 默认 HOME 启动、缺失目标残留与异常信号矩阵：**NOT RUN**；missing-parent 设计问题尚未修复，不能称为“只差跑测试”。
-- 新的运行时降级、阶段协议、熔断和 UI：**PROPOSED / NOT IMPLEMENTED**。本轮未提交或 push。

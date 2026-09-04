@@ -293,7 +293,11 @@ impl ApprovalGate {
         // are non-secret — a persisted rule then makes that dir writable in the
         // sandbox, so future shell runs there don't re-escalate. Secrets stay
         // one-time-only (None → GUI shows only "allow once").
-        let save_suggestion = escalation_save_suggestion(&raw_blocked, sandbox);
+        // Linux EACCES/EROFS diagnostics improve display only: they do not prove
+        // a write was blocked by policy and must not create new persistent-rule
+        // suggestions. Keep the historical suggestion input unchanged.
+        let suggestion_paths = extract_denial_paths(&request.failure_summary, false);
+        let save_suggestion = escalation_save_suggestion(&suggestion_paths, sandbox);
         let action = serde_json::json!({
             "tool": "shell",
             "category": "sandbox_escalation",
@@ -868,16 +872,24 @@ fn command_summary(command: &str) -> String {
     }
 }
 
-/// Raw (absolute) file paths a sandbox denial mentions. Reads lines with
-/// "Operation not permitted" and pulls the path from quotes (`'…'` / `"…"`) or
-/// the first absolute-path token. Deduped, capped, order-preserving.
+/// Best-effort paths mentioned by denial diagnostics, not an inventory of all
+/// files the command accesses. Linux EACCES/EROFS are included for approval
+/// display only; this parser must never decide whether to retry unsandboxed.
 fn extract_blocked_paths_raw(stderr: &str) -> Vec<String> {
+    extract_denial_paths(stderr, true)
+}
+
+fn extract_denial_paths(stderr: &str, include_linux_diagnostics: bool) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for line in stderr.lines() {
-        if !line.contains("Operation not permitted") {
-            continue;
-        }
-        let Some(raw) = quoted_path(line).or_else(|| absolute_path_token(line)) else {
+        let path = if line.contains("Operation not permitted") {
+            quoted_path(line).or_else(|| absolute_path_token(line))
+        } else if include_linux_diagnostics {
+            linux_diagnostic_path(line)
+        } else {
+            None
+        };
+        let Some(raw) = path else {
             continue;
         };
         if !out.contains(&raw) {
@@ -888,6 +900,34 @@ fn extract_blocked_paths_raw(stderr: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// Common coreutils/shell diagnostics: quoted targets (including spaces), or
+/// `program: [line N:] /absolute/target: error`. Do not report `/bin/bash`
+/// instead of the target, resolve relative names against an assumed cwd, or
+/// treat URLs as filesystem paths. Localized/arbitrary program output remains
+/// best-effort and may yield no target.
+fn linux_diagnostic_path(line: &str) -> Option<String> {
+    let prefix = ["Permission denied", "Read-only file system"]
+        .iter()
+        .filter_map(|error| line.find(error))
+        .min()
+        .map(|index| &line[..index])?;
+    for (open, close) in [('\'', '\''), ('"', '"'), ('‘', '’')] {
+        let mut rest = prefix;
+        while let Some((_, after_open)) = rest.split_once(open) {
+            let Some((target, after_close)) = after_open.split_once(close) else {
+                break;
+            };
+            if target.starts_with('/') {
+                return Some(target.to_string());
+            }
+            rest = after_close;
+        }
+    }
+    let target = prefix.trim().strip_suffix(':')?.trim();
+    let target = target.rsplit(": ").next()?.trim();
+    target.starts_with('/').then(|| target.to_string())
 }
 
 /// Shorten `$HOME` to `~` for display.
@@ -1152,6 +1192,58 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
         );
         // Non-denial lines are ignored.
         assert!(extract_blocked_paths("error[E0308]: mismatched types").is_empty());
+    }
+
+    #[test]
+    fn extract_blocked_paths_linux_diagnostics() {
+        let stderr = "cat: /home/ace/.aws/config: Permission denied\n\
+            touch: cannot touch '/etc/test file': Read-only file system\n\
+            mkdir: cannot create directory ‘/opt/new dir’: Permission denied\n\
+            /bin/bash: line 1: /etc/shell target: Read-only file system\n\
+            cat: \"/home/ace/.ssh/config\": Permission denied\n\
+            cat: /home/ace/.aws/config: Permission denied";
+        assert_eq!(
+            extract_blocked_paths_raw(stderr),
+            vec![
+                "/home/ace/.aws/config",
+                "/etc/test file",
+                "/opt/new dir",
+                "/etc/shell target",
+                "/home/ace/.ssh/config",
+            ]
+        );
+        // Display improvements do not broaden persistent write-rule suggestions.
+        assert!(extract_denial_paths(stderr, false).is_empty());
+    }
+
+    #[test]
+    fn extract_blocked_paths_linux_ignores_unknown_targets_and_other_failures() {
+        for line in [
+            "cat: config: Permission denied",
+            "cat: '../config': Permission denied",
+            "curl: https://example.com/private: Permission denied",
+            "sandbox: Permission denied",
+            "cat: /tmp/missing: No such file or directory",
+            "future-linux-sandbox-helper: mount source is unavailable: /home/ace/.aws: No such file or directory (os error 2)",
+        ] {
+            assert!(extract_blocked_paths_raw(line).is_empty(), "{line}");
+        }
+    }
+
+    #[test]
+    fn extract_blocked_paths_mixed_errors_deduplicate_and_preserve_suggestion_scope() {
+        let stderr = "touch: /etc/one: Operation not permitted\n\
+            touch: /etc/one: Read-only file system\n\
+            cat: /etc/two: Permission denied\n\
+            touch: /etc/three: Operation not permitted";
+        assert_eq!(
+            extract_blocked_paths_raw(stderr),
+            vec!["/etc/one", "/etc/two", "/etc/three"]
+        );
+        assert_eq!(
+            extract_denial_paths(stderr, false),
+            vec!["/etc/one", "/etc/three"]
+        );
     }
 
     fn temp_ws(name: &str) -> String {
