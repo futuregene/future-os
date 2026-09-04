@@ -138,6 +138,15 @@ fi
 run_step "Linux sandbox unit tests" unit-tests.log \
   cargo test -p future-agent sandbox::linux -- --test-threads=1
 
+run_step "Large-workspace glob acceptance" large-workspace-glob.log \
+  cargo test -p future-agent --lib \
+    sandbox::linux::glob_scan::tests::large_workspace_exceeds_old_node_limit_without_failing -- \
+    --ignored --test-threads=1 --nocapture
+
+run_step "Helper initialization stderr capture" helper-stderr.log \
+  cargo test -p future-agent --lib \
+    sandbox::backend::tests::helper_stderr_is_captured_before_user_shell_redirection
+
 run_step "Linux Bubblewrap real smoke" smoke.log \
   cargo test -p future-agent --test linux_sandbox_smoke -- \
     --ignored --test-threads=1 --nocapture

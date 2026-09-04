@@ -75,6 +75,13 @@ impl PreparedShell {
             // alive until spawn; FD 3 is the fixed private helper input.
             unsafe {
                 command.as_std_mut().pre_exec(move || {
+                    // The user's `(command) 2>&1` starts too late to capture
+                    // helper/bwrap initialization errors. Share the stdout pipe
+                    // at the OS boundary; no extra pipe reader or buffering is
+                    // needed, and the existing timeout/output handling applies.
+                    if libc::dup2(libc::STDOUT_FILENO, libc::STDERR_FILENO) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
                     if source_fd != super::linux::request::HELPER_REQUEST_FD
                         && libc::dup2(source_fd, super::linux::request::HELPER_REQUEST_FD) < 0
                     {
@@ -103,6 +110,30 @@ impl PreparedShell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn helper_stderr_is_captured_before_user_shell_redirection() {
+        let mut prepared = PreparedShell::plain("true");
+        prepared.program = "/bin/sh".into();
+        prepared.args = vec![
+            "-c".into(),
+            "echo 'helper initialization diagnostic' >&2; exit 125".into(),
+        ];
+        prepared.request_payload = Some(b"{}".to_vec());
+        let output = prepared
+            .into_command()
+            .unwrap()
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .await
+            .unwrap();
+        assert_eq!(output.status.code(), Some(125));
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("helper initialization diagnostic")
+        );
+    }
 
     #[test]
     fn plain_preparation_preserves_structured_argv() {

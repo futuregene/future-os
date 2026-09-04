@@ -123,6 +123,22 @@ portable tarball 按制品内 README 解压和启动；记录 `find <extract-roo
 
 ## 5. 每台正常主机的功能与安全 smoke
 
+### 2026-09-04 大仓库 glob 回归（待验收）
+
+`scripts/test-linux-sandbox-real-machine.sh` 已增加独立的大夹具与 helper stderr 检查。大夹具创建超过 100,000 项，验证 `.env.*` 只看第一层及默认递归 glob 一次合并扫描不再触发旧节点限制；运行后自动清理临时夹具。该项不是完整 bwrap `pwd` 测试，也不自动证明冷缓存性能。
+
+```bash
+cargo test -p future-agent --lib \
+  sandbox::linux::glob_scan::tests::large_workspace_exceeds_old_node_limit_without_failing \
+  -- --ignored --test-threads=1 --nocapture
+cargo test -p future-agent --lib \
+  sandbox::backend::tests::helper_stderr_is_captured_before_user_shell_redirection
+```
+
+另在已安装依赖且已构建的本仓库启动 Linux Desktop，选择 sandbox 连续执行 `pwd`，记录首次/重复运行的扫描耗时；若未实际控制系统缓存，只能称 first/repeat，不称 cold/warm。验证命令开始前不再出现 `.env.*` 全仓库扫描错误，且隐藏/ignored 路径中的 secret 仍被保护。扫描失败必须包含 phase、具体 code 和预算统计；复扫失败不改变原命令状态。以上 Linux 现场项目：**NOT RUN**。
+
+### 基础 smoke
+
 在候选 commit 的干净 checkout 中运行，确保测试二进制与待审 commit 一致：
 
 ```bash

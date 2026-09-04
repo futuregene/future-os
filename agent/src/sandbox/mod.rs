@@ -239,8 +239,18 @@ impl ResolvedSandbox {
         escalated: bool,
         cwd: &Path,
     ) -> anyhow::Result<PreparedShell> {
+        self.prepare_shell_for_cwd_with_cancel(command, escalated, cwd, &|| false)
+    }
+
+    pub(crate) fn prepare_shell_for_cwd_with_cancel(
+        &self,
+        command: &str,
+        escalated: bool,
+        cwd: &Path,
+        cancelled: &dyn Fn() -> bool,
+    ) -> anyhow::Result<PreparedShell> {
         #[cfg(not(target_os = "linux"))]
-        let _ = cwd;
+        let _ = (cwd, cancelled);
         if !escalated && self.wraps_shell() {
             #[cfg(target_os = "macos")]
             {
@@ -248,7 +258,10 @@ impl ResolvedSandbox {
             }
             #[cfg(target_os = "linux")]
             if let SandboxBackendReceipt::LinuxBubblewrap { probe } = &self.backend_receipt {
-                let plan = linux::plan::LinuxSandboxPlan::compile(&self.rules.snapshot())?;
+                let plan = linux::plan::LinuxSandboxPlan::compile_with_cancel(
+                    &self.rules.snapshot(),
+                    cancelled,
+                )?;
                 return Ok(linux::runner::prepare(probe, plan, command, cwd)?);
             }
         }

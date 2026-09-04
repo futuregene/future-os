@@ -1,3 +1,4 @@
+mod glob_scan;
 #[cfg(target_os = "linux")]
 pub mod helper;
 pub mod plan;

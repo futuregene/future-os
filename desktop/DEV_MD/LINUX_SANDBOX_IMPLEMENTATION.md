@@ -32,6 +32,25 @@ Linux 初始实现来自 `claude/linux-bwrap-sandbox`，本轮安全修订以 `s
 
 本轮整理还修复了 SR-03 引入后的一个构造回归：`MissingProtected` 没有 host source FD，生成 bwrap 参数时必须直接走 `--perms 000 --tmpfs <target>`，不能先读取 `source_fd`。该行为由 missing-path 真机 smoke 覆盖。
 
+### 大仓库扫描修复（2026-09-04）
+
+现场 `.env.*` 报 `sandbox glob scan limit exceeded`：旧实现每条规则递归遍历整个静态根，即使 `.env.*` 只匹配第一层；每个目录项还会重新构造匹配状态。仓库的 `node_modules`/`target` 因而能使 `pwd` 在启动前失败。
+
+实现入口：`linux/glob_scan.rs`；`plan.rs` 启动前与 `helper.rs` 结束后共同调用。参考本地 Codex `f20b63e85c` 的扫描根分组和预编译思想，但不照搬外部 `rg`、files-only 结果或 globset 语法。
+
+- 相同静态根只遍历一次，保留每个 pattern 的独立结果，随后按原规则层级/顺序生成 mount；`.env.*` 只扫描根目录，`pkg-*/secrets/*.key` 剪掉不可能匹配的目录，`**` 才允许递归。语义上不需下探时正常完成，不误报深度上限。
+- 隐藏文件、被 gitignore 忽略的内容、匹配的目录都包含；不跳过 `node_modules`、`target`、`.git`。不跟随目录 symlink，匹配到的 symlink 同时保留 lexical 和 canonical target；坏链/读取失败 fail closed。不存在的静态根可为空，其他 metadata 错误不得当成不存在。
+- 取消 100,000 节点硬上限，节点数仅作统计。启动前/结束后分别共享 **30 秒**预算（初始值，待 Linux 性能校准），最多 **256 个唯一 pattern、2,048 个唯一结果路径、4 MiB 结果关联字节估算、64 层递归深度**；后续 request 的 8 MiB、mount 数量和 bwrap args 限制保持。全局结果限制比旧的逐 pattern 限制更保守，不直接提升到 Codex 的 8,192，因为 helper 还要为 mount 打开 FD。
+- 30 秒是协作式 wall-clock 预算：目录 I/O 与匹配之间检查，不保证抢占卡死的内核文件系统调用。启动前接入 Abort 原子标志；执行前扫描预算与命令执行 timeout 分开。结束后由 helper 重新扫描，不复用旧文件集合；该复扫受命令整体生命周期/timeout 管理。
+- Linux 启动前准备在 `spawn_blocking` 中执行，避免扫描占住异步事件循环导致 Abort 无法处理；worker 只返回 prepared request，不启动用户命令，主任务返回后再次检查 Abort。
+- 错误携带 `phase`（`pre_launch`/`post_command`）、root、相关 pattern、visited/matches/elapsed 和上限；code 区分 `glob_scan_timeout`、`glob_scan_match_limit`、`glob_scan_result_bytes_limit`、`glob_scan_pattern_limit`、`glob_scan_depth_limit`、`glob_scan_io_error`、`glob_scan_cancelled`、`glob_scan_pattern_invalid`。日志不输出完整敏感文件清单。
+- helper 在 exec 前将 stderr 合并到已捕获的 stdout，保留 bwrap/inner 初始化诊断。bwrap 未返回 inner command status 且非信号终止时作为基础设施失败退出 125，不把其 stderr 中的 EPERM 误认作用户命令拒绝并邀请脱沙盒重跑。
+- 复扫失败仅报告检测失败与原始诊断，仍保留已经完成的命令 exit/signal，不重跑；运行中新匹配仍只是 detection-only，不宣称动态硬保护。
+
+新增回归覆盖单层/有限前缀剪枝、合并遍历、隐藏/忽略/目录匹配、symlink、共享结果和 pattern 预算、超时/取消、matcher 对照、stderr 捕获及超过十万目录项的显式大夹具。后者为 ignored 验收，已接入真机脚本。完整 Linux sandbox `pwd`、冷/热缓存以及 helper Linux-only 测试当前仍为 **NOT RUN**，以真机证据更新，不继承下文历史 PASS。
+
+本轮 macOS 本地结果：`cargo test -p future-agent --lib sandbox::linux -- --test-threads=1` 为 40 PASS、1 ignored；另行显式运行大夹具 1 PASS。夹具的完整默认 glob 遍历 100,013 项，first/repeat 约 777/783 ms；单独 `.env.*` 仅访问 3 项。未清理操作系统缓存，因此这些数字不是 cold-cache 基准，更不是 Linux bwrap 全链路性能。`cargo fmt --all --check`、future-agent all-targets Clippy 与脚本语法/diff 检查用于静态验证。
+
 ### 1.2 仍开放的 review 项
 
 以下项目没有混入本轮六项定向修复。优先级以“进入主干并面向真实用户”为基准；开发分支可继续迭代，但不得把开放项写成已完成。
@@ -40,7 +59,7 @@ Linux 初始实现来自 `claude/linux-bwrap-sandbox`，本轮安全修订以 `s
 |---|---|---|---|
 | OR-01 | P0 / 发布阻断 | 当前 7 项 Linux smoke 与目标发行版矩阵未执行 | helper、FD 和 bwrap mount 路径受 `cfg(target_os = "linux")` 保护，macOS 编译与单测不能覆盖。至少先在一台原生 Linux 跑 7/7，再完成 L5 矩阵。 |
 | OR-03 | P1 | 非结构化 stderr denial heuristic 仍可能误报 | 本轮已禁止 detection-only/digest mismatch marker 触发 escalation；但普通程序自己输出 `Permission denied`/`Read-only file system` 且非零退出，仍可能弹出整命令脱沙盒审批。无法从合并 stdout/stderr 证明 errno 来源；长期应以显式路径能力取代自动整命令重跑，短期至少补负向 corpus 并收窄启发式。 |
-| OR-06 | P2 | glob 限额主要按单 pattern 计算 | 每个 pattern 各有 2 秒/节点/匹配上限，大量 pattern 可累加 CPU、内存和复扫延迟。增加整份 plan 的总 pattern、总 match、总 wall-clock budget。 |
+| OR-06 | P0 / 修复待真机验收 | 大仓库 glob 扫描与预算 | 2026-09-04 改为同根合并、有限深度剪枝、共享预算；详见下方“大仓库扫描修复”。Linux 大仓库 `pwd` 和冷热缓存性能仍需验收，不以 macOS 静态检查代替。 |
 | OR-07 | P3 / 已接受 | bwrap 仅校验 root owner，不审计父目录和模式位 | 这是维护者明确接受的威胁模型取舍，已记录在代码和设计稿。除非威胁模型扩展，不阻断本期；后续可集中加固完整路径链。 |
 | OR-08 | P1 / 已知版本取舍 | 0.9.0 是产品兼容下限，不是上游安全补丁下限 | Bubblewrap 0.12.0 修复了 setup 阶段在攻击者可控目录内容下创建目标时的绝对 symlink traversal（GHSA-pxhw-h44j-8pfx）；当前 `MissingProtected` 会要求 bwrap 在 sandbox view 创建 mount point。维持 0.9.0 时必须在 L5 做定向安全复核，后续优先升级最低版本或消除受影响的创建路径。参考：https://github.com/containers/bubblewrap/security/advisories/GHSA-pxhw-h44j-8pfx |
 
@@ -129,7 +148,7 @@ Linux 初始实现来自 `claude/linux-bwrap-sandbox`，本轮安全修订以 `s
 
 ### Wave 4 — L3 完整规则与 violation/escalation（已完成，2026-09-03）
 
-1. 启动前 glob 展开使用内部 walker 作为可信实现；可选 `rg` 只能是优化，缺失/失败必须安全回到内部 walker。固定最大匹配数、节点数、深度和总耗时，任何上限命中 fail closed。
+1. 启动前 glob 展开使用内部 no-follow walker；2026-09-04 起同根合并扫描，规则预编译并按匹配范围剪枝。取消节点数硬上限，采用整次扫描预算，详见“大仓库扫描修复”。暂不调用外部 `rg`，不引入额外 PATH 信任边界或两套 glob 语义。
 2. 同时处理 lexical path 与 canonical target；对不存在 exact path 只由 bwrap 在 sandbox view 中建立 mode-000 保护目标，绝不在受保护的 host 路径创建占位对象。
 3. 宽保护与窄重开按路径深度排列；read allow 只重开为只读，write allow 若会绕过仍生效的 read deny 则 typed fail closed；不存在的重开目标因无法无歧义创建 file/dir mount source 同样 typed fail closed，hard deny 不可重开。
 4. helper 以稳定 marker 返回 violation kind/path provenance/policy digest/affected count，日志与普通 UI 不输出完整敏感路径集合。glob 新匹配和复扫失败都只做命令结束 detection-only；复扫失败保留已完成命令的原始 status，不称为动态硬保护。
@@ -170,7 +189,7 @@ Linux 初始实现来自 `claude/linux-bwrap-sandbox`，本轮安全修订以 `s
 | P-03 | probe integration | missing/old/missing-feature/userns/proc 各返回预期 code | `cargo test -p future-agent --test linux_sandbox_smoke probe_ -- --ignored --test-threads=1` | NOT RUN |
 | R-01 | rules/plan | fallback roots、外部 allow、ask/deny、层级顺序 | `cargo test -p future-agent sandbox::linux::plan` | PASS（2026-09-03） |
 | R-02 | rules/plan | 窄 allow reopen、hard deny 不可 reopen、根去重 | 同上 | PASS（2026-09-03） |
-| R-03 | rules/plan | symlink、missing exact、glob 快照/上限/异常 fail closed | 同上 | PASS（2026-09-03：内部 no-follow walker、2048 match/100000 node/64 depth/2s 上限；lexical+canonical symlink；typed fail closed） |
+| R-03 | rules/plan | symlink、missing exact、glob 快照/上限/异常 fail closed | 同上 | 历史 PASS（2026-09-03：旧逐 pattern walker）。2026-09-04 扫描实现与预算已替换，当前验证见“大仓库扫描修复”，不沿用旧 PASS 证明新 Linux 真机状态。 |
 | R-04 | cross-platform | Seatbelt/Windows/manual/off 行为不回归 | `cargo test -p future-agent sandbox:: tools:: rpc::commands::settings` | PASS（2026-09-03：sandbox 115 tests；Agent clippy all tests） |
 | H-01 | helper parser | version/size/count/FD/path 输入校验 | `cargo test -p future-agent sandbox::linux::request` | PASS（2026-09-03：version/path/NUL/phase/FD identity 与重复 FD；size/count 常量已强制，边界补测留 L3） |
 | H-02 | helper boundary | helper 绕过 Agent singleton，但非法直接调用失败 | `cargo test -p future-agent --test linux_sandbox_smoke` | PASS（2026-09-03：非法 payload 返回 infrastructure exit 125，未创建 singleton lock） |

@@ -5,12 +5,6 @@ use crate::sandbox::rules::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Component, Path, PathBuf};
-use std::time::{Duration, Instant};
-
-const MAX_GLOB_MATCHES: usize = 2_048;
-const MAX_GLOB_NODES: usize = 100_000;
-const MAX_GLOB_DEPTH: usize = 64;
-const MAX_GLOB_SCAN_TIME: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LinuxSandboxPlanError {
@@ -20,10 +14,8 @@ pub enum LinuxSandboxPlanError {
     UnsafePath(PathBuf),
     #[error("sandbox rule matcher is unsupported: {0}")]
     UnsupportedMatcher(String),
-    #[error("sandbox glob scan failed for {pattern}: {detail}")]
-    GlobScan { pattern: String, detail: String },
-    #[error("sandbox glob scan limit exceeded for {0}")]
-    GlobLimit(String),
+    #[error(transparent)]
+    GlobScan(Box<super::glob_scan::ScanError>),
     #[error("sandbox mount plan exceeds the bounded helper request limit")]
     MountLimit,
     #[error("sandbox rule combination cannot be enforced safely at {0}")]
@@ -64,6 +56,13 @@ impl LinuxSandboxPlan {
     /// Compile a deterministic mount policy. Glob expansion is a bounded,
     /// no-follow walk performed immediately before each command is prepared.
     pub fn compile(snapshot: &RuleSetSnapshot) -> Result<Self, LinuxSandboxPlanError> {
+        Self::compile_with_cancel(snapshot, &|| false)
+    }
+
+    pub fn compile_with_cancel(
+        snapshot: &RuleSetSnapshot,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Self, LinuxSandboxPlanError> {
         if let Some(error) = snapshot.resolution_errors.first() {
             return Err(LinuxSandboxPlanError::RuleLayerUnavailable(error.clone()));
         }
@@ -98,6 +97,20 @@ impl LinuxSandboxPlan {
             })
             .collect();
 
+        // Expand all patterns together, then replay the original rule order.
+        // Grouping filesystem reads must not merge or reorder access decisions.
+        let patterns: Vec<_> = flattened
+            .iter()
+            .filter_map(|(_, _, _, rule)| {
+                if let RuleMatcherSnapshot::Glob { pattern } = &rule.matcher {
+                    Some(pattern.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let expanded = expand_globs(&patterns, "pre_launch", cancelled)?;
+
         for (priority, rule_index, _layer, rule) in &flattened {
             let paths = match &rule.matcher {
                 RuleMatcherSnapshot::Subtree { lexical, canonical } => {
@@ -108,8 +121,7 @@ impl LinuxSandboxPlan {
                     paths
                 }
                 RuleMatcherSnapshot::Glob { pattern } => {
-                    validate_glob(pattern)?;
-                    let matches = expand_glob(pattern)?;
+                    let matches = expanded[pattern].clone();
                     unsupported_dynamic_globs.push(pattern.clone());
                     glob_snapshots.push(GlobSnapshot {
                         pattern: pattern.clone(),
@@ -262,69 +274,22 @@ fn validate_glob(pattern: &str) -> Result<(), LinuxSandboxPlanError> {
     Ok(())
 }
 
-pub(crate) fn expand_glob(pattern: &str) -> Result<Vec<PathBuf>, LinuxSandboxPlanError> {
-    validate_glob(pattern)?;
-    let root = glob_root(pattern);
-    if !root.exists() {
-        return Ok(Vec::new());
+pub(crate) fn expand_globs(
+    patterns: &[String],
+    phase: &'static str,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<std::collections::BTreeMap<String, Vec<PathBuf>>, LinuxSandboxPlanError> {
+    for pattern in patterns {
+        validate_glob(pattern)?;
     }
-    let started = Instant::now();
-    let mut nodes = 0usize;
-    let mut matches = Vec::new();
-    for entry in walkdir::WalkDir::new(&root)
-        .follow_links(false)
-        .max_depth(MAX_GLOB_DEPTH)
-    {
-        if started.elapsed() > MAX_GLOB_SCAN_TIME {
-            return Err(LinuxSandboxPlanError::GlobLimit(pattern.into()));
-        }
-        nodes += 1;
-        if nodes > MAX_GLOB_NODES {
-            return Err(LinuxSandboxPlanError::GlobLimit(pattern.into()));
-        }
-        let entry = entry.map_err(|error| LinuxSandboxPlanError::GlobScan {
-            pattern: pattern.into(),
-            detail: error.to_string(),
-        })?;
-        if entry.depth() == MAX_GLOB_DEPTH && entry.file_type().is_dir() {
-            return Err(LinuxSandboxPlanError::GlobLimit(pattern.into()));
-        }
-        let lexical = entry.path();
-        if glob_matches(pattern, lexical) {
-            matches.push(lexical.to_path_buf());
-            if entry.file_type().is_symlink() {
-                let canonical = std::fs::canonicalize(lexical).map_err(|error| {
-                    LinuxSandboxPlanError::GlobScan {
-                        pattern: pattern.into(),
-                        detail: error.to_string(),
-                    }
-                })?;
-                validate_absolute(&canonical)?;
-                matches.push(canonical);
-            }
-            if matches.len() > MAX_GLOB_MATCHES {
-                return Err(LinuxSandboxPlanError::GlobLimit(pattern.into()));
-            }
-        }
-    }
-    normalize_exact(&mut matches);
-    Ok(matches)
+    super::glob_scan::scan(patterns, phase, cancelled).map_err(LinuxSandboxPlanError::GlobScan)
 }
 
-fn glob_root(pattern: &str) -> PathBuf {
-    let mut root = PathBuf::new();
-    for component in Path::new(pattern).components() {
-        let text = component.as_os_str().to_string_lossy();
-        if text.contains(['*', '?']) {
-            break;
-        }
-        root.push(component.as_os_str());
-    }
-    if root.as_os_str().is_empty() {
-        PathBuf::from("/")
-    } else {
-        root
-    }
+#[cfg(test)]
+fn expand_glob(pattern: &str) -> Result<Vec<PathBuf>, LinuxSandboxPlanError> {
+    Ok(expand_globs(&[pattern.into()], "test", &|| false)?
+        .remove(pattern)
+        .unwrap())
 }
 
 fn glob_matches(pattern: &str, path: &Path) -> bool {
@@ -679,13 +644,13 @@ mod tests {
     #[test]
     fn glob_match_limit_fails_closed() {
         let root = root();
-        for index in 0..=MAX_GLOB_MATCHES {
+        for index in 0..=super::super::glob_scan::MAX_MATCHES {
             std::fs::write(root.join("work").join(format!("{index}.pem")), "x").unwrap();
         }
         let pattern = root.join("work/*.pem").to_string_lossy().into_owned();
         assert!(matches!(
             expand_glob(&pattern),
-            Err(LinuxSandboxPlanError::GlobLimit(_))
+            Err(LinuxSandboxPlanError::GlobScan(error)) if error.code == "glob_scan_match_limit"
         ));
     }
 
@@ -745,17 +710,49 @@ mod tests {
     }
 
     #[test]
+    fn compiled_scanner_matches_existing_linux_glob_semantics() {
+        for pattern in [
+            "/a/*.pem",
+            "/a/**/x?.pem",
+            "/a/prefix**suffix",
+            "/a/***/x",
+            "/a/密?.pem",
+            "/a/[x].pem",
+            "/a/*/x.pem",
+        ] {
+            let compiled = super::super::glob_scan::compile_matcher(pattern).unwrap();
+            for path in [
+                "/a/x.pem",
+                "/a/xx.pem",
+                "/a/d/x1.pem",
+                "/a/prefix/x/suffix",
+                "/a/密钥.pem",
+                "/a/[x].pem",
+                "/a/d\n/x.pem",
+                "/a/x.pem\n",
+                "/a//x.pem",
+            ] {
+                assert_eq!(
+                    compiled.is_match(path),
+                    glob_matches(pattern, Path::new(path)),
+                    "pattern={pattern}, path={path}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn reaching_glob_depth_limit_fails_closed() {
         let root = root();
         let mut deep = root.join("work");
-        for _ in 0..MAX_GLOB_DEPTH {
+        for _ in 0..super::super::glob_scan::MAX_DEPTH {
             deep.push("d");
         }
         std::fs::create_dir_all(&deep).unwrap();
         let pattern = root.join("work/**/*.pem").to_string_lossy().into_owned();
         assert!(matches!(
             expand_glob(&pattern),
-            Err(LinuxSandboxPlanError::GlobLimit(_))
+            Err(LinuxSandboxPlanError::GlobScan(error)) if error.code == "glob_scan_depth_limit"
         ));
     }
 

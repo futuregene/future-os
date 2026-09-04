@@ -164,8 +164,12 @@ fn run_outer(mut request: LinuxSandboxRequest) -> Result<ExitStatus> {
     let mut child = command.spawn().context("start verified bubblewrap")?;
     drop(inherited);
     let bwrap_status = wait_forwarding_signals(&mut child)?;
-    let status = read_raw_status(&mut status_read).unwrap_or(bwrap_status);
-    if report_dynamic_glob_creations(&request).is_err() {
+    // Missing inner status means initialization never completed. Do not let
+    // newly captured bwrap stderr (e.g. EPERM with exit 1) invite an unsandboxed
+    // retry. Signals retain their cancellation semantics.
+    let status = command_status(read_raw_status(&mut status_read), bwrap_status)?;
+    if let Err(error) = report_dynamic_glob_creations(&request) {
+        eprintln!("future-linux-sandbox-helper: post-command detection failed: {error:#}");
         // Detection happens after the command has completed. Never replace the
         // real command outcome with an infrastructure error or invite a retry
         // after side effects may already have occurred.
@@ -179,6 +183,14 @@ fn run_outer(mut request: LinuxSandboxRequest) -> Result<ExitStatus> {
         println!("{}", super::violation::marker(&violation));
     }
     Ok(status)
+}
+
+fn command_status(inner: Option<ExitStatus>, bwrap: ExitStatus) -> Result<ExitStatus> {
+    match inner {
+        Some(status) => Ok(status),
+        None if bwrap.signal().is_some() => Ok(bwrap),
+        None => Err(anyhow!("bubblewrap did not report command status: {bwrap}")),
+    }
 }
 
 fn mount_source_fd_path(mount: &super::request::MountRequest) -> Result<String> {
@@ -279,9 +291,15 @@ fn write_bwrap_arg(file: &mut File, written: &mut usize, arg: &OsStr) -> Result<
 fn report_dynamic_glob_creations(request: &LinuxSandboxRequest) -> Result<()> {
     use std::collections::BTreeSet;
     let mut created = 0usize;
+    let patterns = request
+        .glob_snapshots
+        .iter()
+        .map(|snapshot| snapshot.pattern.clone())
+        .collect::<Vec<_>>();
+    let expanded = super::plan::expand_globs(&patterns, "post_command", &|| false)?;
     for snapshot in &request.glob_snapshots {
         let before: BTreeSet<_> = snapshot.matches.iter().collect();
-        let after = super::plan::expand_glob(&snapshot.pattern)?;
+        let after = &expanded[&snapshot.pattern];
         created += after.iter().filter(|path| !before.contains(path)).count();
     }
     if created > 0 {
@@ -576,6 +594,27 @@ fn mirror_status(status: ExitStatus) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_inner_status_is_infrastructure_not_a_command_denial() {
+        assert!(command_status(None, ExitStatus::from_raw(1 << 8)).is_err());
+        assert!(command_status(None, ExitStatus::from_raw(0)).is_err());
+        assert_eq!(
+            command_status(None, ExitStatus::from_raw(libc::SIGTERM))
+                .unwrap()
+                .signal(),
+            Some(libc::SIGTERM)
+        );
+        assert_eq!(
+            command_status(
+                Some(ExitStatus::from_raw(23 << 8)),
+                ExitStatus::from_raw(1 << 8)
+            )
+            .unwrap()
+            .code(),
+            Some(23)
+        );
+    }
 
     #[test]
     fn no_new_privs_can_be_applied_in_a_test_process() {

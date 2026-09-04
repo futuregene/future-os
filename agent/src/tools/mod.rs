@@ -1069,9 +1069,36 @@ async fn spawn_shell(
     // itself, so the command passes through unmodified.
     #[cfg(windows)]
     let merged_cmd = command.to_string();
-    let prepared = sandbox
-        .prepare_shell_for_cwd(&merged_cmd, escalated, &cwd)
-        .map_err(|error| anyhow!("Failed to initialize OS sandbox: {error}"))?;
+    // Preparation can scan a large workspace before a child exists. Let Abort
+    // cancel that scan as well as the process execution below.
+    let interrupt_flag = TOOL_SCOPE
+        .try_with(|scope| scope.interrupt_flag.clone())
+        .unwrap_or_else(|_| Arc::new(AtomicBool::new(false)));
+    // Keep directory I/O off the async executor so it can process the Abort
+    // request even on a single-worker runtime. The worker only prepares a
+    // request: dropping this future can never launch the user command later.
+    #[cfg(target_os = "linux")]
+    let preparation = {
+        let sandbox = sandbox.clone();
+        let cwd = cwd.clone();
+        let cancelled = interrupt_flag.clone();
+        tokio::task::spawn_blocking(move || {
+            sandbox.prepare_shell_for_cwd_with_cancel(&merged_cmd, escalated, &cwd, &|| {
+                cancelled.load(Ordering::Relaxed)
+            })
+        })
+        .await
+        .map_err(|error| anyhow!("Failed to initialize OS sandbox worker: {error}"))?
+    };
+    #[cfg(not(target_os = "linux"))]
+    let preparation = sandbox.prepare_shell_for_cwd(&merged_cmd, escalated, &cwd);
+    let prepared =
+        preparation.map_err(|error| anyhow!("Failed to initialize OS sandbox: {error}"))?;
+    if interrupt_flag.load(Ordering::Relaxed) {
+        return Err(anyhow!(
+            "Shell command interrupted by abort before execution"
+        ));
+    }
     let mut child = prepared
         .into_command()
         .map_err(|error| anyhow!("Failed to initialize OS sandbox request transport: {error}"))?;
@@ -1081,8 +1108,10 @@ async fn spawn_shell(
     // lone if-let closing brace here collected a phantom zero-count region.)
     let _ = path_with_own_dir(std::env::current_exe()).map(|path| child.env("PATH", path));
     child.stdout(std::process::Stdio::piped());
-    // Unix: the subshell already merged stderr into stdout, so the outer pipe
-    // carries nothing. Windows: PowerShell's own failures (a parse error in the
+    // Plain Unix shells merge in the subshell. Linux sandbox helpers instead
+    // dup stderr to stdout before exec (PreparedShell::into_command), preserving
+    // initialization errors emitted before that subshell even exists.
+    // Windows: PowerShell's own failures (a parse error in the
     // -Command string never executes the 2>&1 merge) surface only on the
     // process's stderr — capture it so those errors aren't silently dropped.
     #[cfg(not(windows))]
@@ -1096,11 +1125,6 @@ async fn spawn_shell(
     // sandbox-exec execs its child, so the group covers the wrapped tree too.
     #[cfg(unix)]
     child.process_group(0);
-
-    // Get interrupt flag from task-local scope
-    let interrupt_flag = TOOL_SCOPE
-        .try_with(|scope| scope.interrupt_flag.clone())
-        .unwrap_or_else(|_| Arc::new(AtomicBool::new(false)));
 
     let mut spawned = child
         .spawn()

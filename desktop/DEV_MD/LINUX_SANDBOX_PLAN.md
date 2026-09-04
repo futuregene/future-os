@@ -65,7 +65,7 @@ PermissionProfile
 | `--unshare-user/pid/ipc`、`--cap-drop ALL`、fresh `/proc`、`--die-with-parent` | 降低跨进程观察、残留进程和 capability 风险 | P0；fresh `/proc` 需有受限容器兼容探测 |
 | bwrap 外层之后复核 effective/permitted capability 均为零，再施加 `PR_SET_NO_NEW_PRIVS` | 不只信任 `--cap-drop ALL` 参数构造，并阻止 sandbox 内提权 | P0 |
 | symlink/missing-path fail-closed、FD-backed mount、内层身份复核 | 避免 mount 计划到执行之间的 TOCTOU 与软链接逃逸 | P0，不能只 canonicalize 一次就认为安全 |
-| glob 启动前展开；`rg --files --hidden --no-ignore` 优先，内部 walker 兜底；异常 fail closed | 能把已有敏感文件转成具体 mount | P0，但必须向产品声明它是启动时快照 |
+| glob 启动前展开；参考 Codex 的同根分组与预编译，内部 no-follow walker 合并扫描；异常 fail closed | 能把已有敏感文件转成具体 mount | P0，启动时快照；2026-09-04 暂不采用外部 `rg`，避免额外 PATH 信任与语义差异 |
 | 窄 writable child 可重新打开宽 read-only/deny parent | 保留“高优先级窄规则胜出”的表达能力 | P1，纯计划单测必须先覆盖 |
 | helper 作为 PID 1 转发信号、回收子进程并保留原始 exit 语义 | abort/timeout 不遗留孙进程 | P0 |
 | structured violation、doctor/capability diagnostics | UI、日志和 escalation 不靠一条模糊 stderr 猜测 | P1 |
@@ -254,7 +254,7 @@ layer 0 hard deny  >  approved execution_grants  >  secret ask guards  >  sessio
 
 ### L3 — 完整规则覆盖与 escalation
 
-- 按已确认的有界 glob 方案加入启动前展开（rg + 内部 walker）、匹配数/深度上限、symlink 双路径和结束检测；所有扫描/计划异常必须 fail closed。
+- 按已确认的有界 glob 方案加入启动前展开（内部合并 walker）、共享耗时/结果预算、深度上限、symlink 双路径和结束检测；所有扫描/计划异常必须 fail closed。2026-09-04 起取消节点数硬上限；有限规则按语义剪枝，参数和资源取舍见实施文档“大仓库扫描修复”。
 - 加入不存在精确路径保护；证明 host 不留临时对象，或清理使用 inode identity/CAS，不删除用户并发创建的对象。
 - 接入 structured violation、Linux denial 分类和审批卡片；一期实现与 macOS 相同的整命令脱沙盒重跑。
 - 对运行中新敏感 glob 做结束检测并明确标注 detection-only。
