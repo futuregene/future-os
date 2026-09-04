@@ -1304,6 +1304,15 @@ fn agent_registry_surface() {
     .contains("not found"));
     assert!(cli_err(&["agent", "list"]).contains("--goal required"));
     assert!(cli_err(&["agent", "list", "--goal", "goal_nope"]).contains("not found"));
+    // Removed multi-host subcommands must NOT silently fall through to
+    // `agent register` (which would register an agent named after the word).
+    for sub in ["contract", "recipe", "succession", "collective"] {
+        assert!(
+            cli_err(&["agent", sub, "--goal", &gid, "--agent-id", "x"])
+                .contains(&format!("unknown agent subcommand `{sub}`")),
+            "agent {sub} must report unknown subcommand"
+        );
+    }
 }
 
 // ── backup ─────────────────────────────────────────────────────────────────

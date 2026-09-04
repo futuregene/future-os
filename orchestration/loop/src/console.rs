@@ -2183,6 +2183,18 @@ fn cmd_agent(store: &mut Store, args: &[String]) -> Result<()> {
     match args.first().map(|s| s.as_str()) {
         Some("onboard") => return cmd_agent_onboard(store, &args[1..]),
         Some("list") => return cmd_agent_list(store, &args[1..]),
+        // `agent register` is the legacy spelled-out form of bare `agent`
+        // (the positional word is ignored); keep it as a no-op passthrough.
+        Some("register") => {}
+        // Any other bare word (not a flag) is an unknown subcommand — it must
+        // NOT silently fall through to register (which would register an agent
+        // named after the subcommand).
+        Some(word) if !word.starts_with('-') => {
+            bail!(
+                "unknown agent subcommand `{word}` (try `{} agent --help`)",
+                prog()
+            )
+        }
         _ => {}
     }
     let mut goal_id = None;
