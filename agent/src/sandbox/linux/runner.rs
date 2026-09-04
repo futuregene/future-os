@@ -59,6 +59,7 @@ pub fn prepare(
         omitted_missing_protected_paths: plan.omitted_missing_protected_paths,
         policy_digest: plan.policy_digest.clone(),
         status_fd: None,
+        report_fd: None,
     };
     let payload = request.to_json_bytes()?;
     let executable = std::env::current_exe().map_err(LinuxSandboxRunnerError::CurrentExecutable)?;

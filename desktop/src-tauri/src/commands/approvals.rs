@@ -54,7 +54,7 @@ pub struct SaveApprovalRuleEntry {
 
 /// "Allow in this workspace/chat": append an allow rule to the workspace's
 /// `.future/approval_rule.json` (persist, read next prompt) AND inject it into
-/// the live agent session (same-run effect — APPROVAL_PLAN.md §6).
+/// the live agent session (same-run effect — desktop/DEV_MD/SANDBOX/COMMON.md).
 #[tauri::command]
 pub async fn save_approval_rule(input: SaveApprovalRuleInput) -> Result<(), crate::AppError> {
     let workspace_id = store::get_thread(&input.thread_id)?

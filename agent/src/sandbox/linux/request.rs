@@ -56,6 +56,9 @@ pub struct LinuxSandboxRequest {
     pub omitted_missing_protected_paths: Vec<PathBuf>,
     pub policy_digest: String,
     pub status_fd: Option<i32>,
+    /// Private outer-helper report channel; removed before entering bwrap.
+    #[serde(default)]
+    pub report_fd: Option<i32>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -70,6 +73,8 @@ pub enum RequestError {
     UnsupportedVersion(u16),
     #[error("Linux sandbox helper request has too many mounts")]
     TooManyMounts,
+    #[error("Linux sandbox helper no longer accepts missing-target mounts")]
+    UnsupportedMissingMount,
     #[error("Linux sandbox helper request argv is empty or too large")]
     InvalidArgv,
     #[error("Linux sandbox helper request contains an unsafe path: {0}")]
@@ -160,6 +165,12 @@ impl LinuxSandboxRequest {
             return Err(RequestError::InvalidDigest);
         }
         let mut fds = std::collections::BTreeSet::new();
+        if let Some(fd) = self.report_fd {
+            if self.phase != HelperPhase::Outer || fd < 5 {
+                return Err(RequestError::InvalidFd);
+            }
+            fds.insert(fd);
+        }
         match (self.phase, self.status_fd) {
             (HelperPhase::Outer, None) => {}
             (HelperPhase::Inner, Some(fd)) if fd >= 3 => {
@@ -168,6 +179,12 @@ impl LinuxSandboxRequest {
             _ => return Err(RequestError::InvalidFd),
         }
         for mount in &self.mounts {
+            // Retain the wire variant only to reject old requests explicitly.
+            // Production uses post-scan entries; bwrap must never mkdir a
+            // protected missing target as a side effect of mounting it.
+            if mount.kind == MountKind::MissingProtected {
+                return Err(RequestError::UnsupportedMissingMount);
+            }
             validate_path(&mount.source)?;
             validate_path(&mount.target)?;
             if let Some(fd) = mount.source_fd {
@@ -183,11 +200,6 @@ impl LinuxSandboxRequest {
                     if mount.source_fd.is_some() || mount.expected.is_some() =>
                 {
                     return Err(RequestError::InvalidFd)
-                }
-                (HelperPhase::Inner, MountKind::MissingProtected) => {
-                    if mount.source_fd.is_some() || mount.expected.is_some() {
-                        return Err(RequestError::InvalidFd);
-                    }
                 }
                 (HelperPhase::Inner, _)
                     if mount.source_fd.is_none() || mount.expected.is_none() =>
@@ -245,6 +257,7 @@ mod tests {
             omitted_missing_protected_paths: Vec::new(),
             policy_digest: "a".repeat(64),
             status_fd: None,
+            report_fd: None,
         }
     }
 
@@ -307,14 +320,34 @@ mod tests {
     }
 
     #[test]
-    fn inner_missing_path_mount_requires_no_host_source_fd() {
+    fn legacy_missing_mounts_are_rejected_in_both_phases() {
         let mut request = request();
+        request.mounts[0].kind = MountKind::MissingProtected;
+        assert_eq!(
+            request.validate(),
+            Err(RequestError::UnsupportedMissingMount)
+        );
         request.phase = HelperPhase::Inner;
         request.status_fd = Some(6);
-        request.mounts[0].kind = MountKind::MissingProtected;
-        request.mounts[0].source_fd = None;
-        request.mounts[0].expected = None;
-        assert_eq!(request.validate(), Ok(()));
+        assert_eq!(
+            request.validate(),
+            Err(RequestError::UnsupportedMissingMount)
+        );
+    }
+
+    #[test]
+    fn report_fd_is_outer_only_and_cannot_overlap_mount_fds() {
+        let mut r = request();
+        r.report_fd = Some(3);
+        assert_eq!(r.validate(), Err(RequestError::InvalidFd));
+        r.report_fd = Some(5);
+        assert!(r.validate().is_ok());
+        r.mounts[0].source_fd = Some(5);
+        assert_eq!(r.validate(), Err(RequestError::DuplicateFd));
+        r.mounts[0].source_fd = None;
+        r.phase = HelperPhase::Inner;
+        r.status_fd = Some(6);
+        assert_eq!(r.validate(), Err(RequestError::InvalidFd));
     }
 
     #[test]

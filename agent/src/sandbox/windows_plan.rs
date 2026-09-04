@@ -1,12 +1,12 @@
 //! Platform-independent derivation of the Windows shell-sandbox enforcement plan
-//! from the resolved rule set (SANDBOX_PLAN.md §11).
+//! from the resolved rule set (desktop/DEV_MD/SANDBOX/WINDOWS.md).
 //!
 //! The Win32 executor (`windows.rs`, `#[cfg(windows)]`) turns this plan into a
 //! restricted token + a set of NTFS ACEs + a job object. Keeping the derivation
 //! pure lets it be unit-tested on any platform — the same split as
 //! `seatbelt::build_profile` (pure) vs `seatbelt::build_command` (syscalls).
 //!
-//! Two NTFS limitations shape what lands in the plan (see §11.3/§11.6):
+//! Two NTFS limitations shape what lands in the plan (see WINDOWS.md §4):
 //!   - `WRITE_RESTRICTED` provides a compatible write boundary but does not make
 //!     capability-SID deny-read ACEs participate in read access checks. Read
 //!     `ask`/`deny` rules are therefore diagnostics, not claimed enforcement.
@@ -38,8 +38,9 @@ pub struct UnenforcedWindowsRule {
 }
 
 /// A literal/subtree write denial that can be projected to an NTFS ACE. `Ask`
-/// is retained separately from `Deny` because W4 may reopen only approved ask
-/// carveouts; deny rules are never approval-overridable.
+/// is retained separately from `Deny` for rule diagnostics. The current runner
+/// rejects explicit ask carveout grants too: NTFS deny-wins prevents reopening
+/// them with a narrower capability. See desktop/DEV_MD/SANDBOX/WINDOWS.md §3.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowsWriteCarveout {
     pub path: PathBuf,

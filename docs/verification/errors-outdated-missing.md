@@ -387,7 +387,7 @@ README.md L105-118（zh L100-113）列出 12 个命令，源码（tui/src/app.ts
 - wiki 13 页（en+zh）命令组/技能数/模型数/Feishu-DingTalk 口径与 `future --help`、分组帮助、源码一致；无 stale 命令引用。
 - dist 6 readme、wiki-prompt（15 技能、无 Hand-drawn/Subagent、`future` 非 `future-cli`）准确。
 - 模块 README：mobile（bundleIdentifier `cn.futureos.mobile`、deploymentTarget 16.4）、packages（4 包）、loop README/NOTICE、tui tests（golden-diff + tmux-diff harness）、tui/RESEARCH（P0/P1 决策日志）准确。
-- DEV_MD：CONNECTION.md 支持码与 remote/mod.rs 一致；COLOR.md token 与 tailwind.config.js 一致；plan 文档（APPROVAL_PLAN/SANDBOX_PLAN/CONTEXT_COMPACTION/PRODUCT/ER）按约定标注为 plan-vs-current 不重写。
+- DEV_MD：CONNECTION.md 支持码与 remote/mod.rs 一致；COLOR.md token 与 tailwind.config.js 一致；plan 文档（SANDBOX/{COMMON,MACOS,LINUX,WINDOWS}/CONTEXT_COMPACTION/PRODUCT/ER）按约定标注为 plan-vs-current 不重写。
 
 ### I3. 范围说明（本轮）
 

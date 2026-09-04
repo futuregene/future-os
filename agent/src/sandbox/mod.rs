@@ -1,4 +1,6 @@
-//! OS-level sandbox + path-based approval rules (APPROVAL_PLAN.md / SANDBOX_PLAN.md).
+//! OS-level sandbox + path-based approval rules.
+//! Shared contract: desktop/DEV_MD/SANDBOX/COMMON.md; backend details live in
+//! MACOS.md, LINUX.md and WINDOWS.md in the same directory.
 //!
 //! Every approval is about a file-path access: [`rules::RuleSet`] resolves a
 //! path + op to `Ask | Allow | Deny`. That verdict is enforced two ways:

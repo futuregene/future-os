@@ -1,4 +1,4 @@
-//! Path-based approval rules (APPROVAL_PLAN.md).
+//! Path-based approval rules (desktop/DEV_MD/SANDBOX/COMMON.md).
 //!
 //! Every approval decision is about a file-path access: given a path and an
 //! operation (read/write), walk the rule layers top-to-bottom and return the
@@ -350,10 +350,12 @@ pub fn builtin_overrides(workspace: &Path, home: Option<&Path>) -> Vec<PathRule>
         // or `future` reverse-requests the key from the agent over a socket
         // with peer-credential verification), not a path allow-hole. This is
         // the tracked auth.json follow-up, intentionally not scheduled yet;
-        // see APPROVAL_PLAN.md §3.1.
+        // see desktop/DEV_MD/SANDBOX/COMMON.md §3.1.
         //
-        // NOTE: while auth.json is allowed, any shell command can read/write it
-        // — acceptable for local testing only. models.json stays denied.
+        // Omitting this override can expose auth.json to arbitrary reads; it
+        // does not add an unconditional write allow (other rules/roots still
+        // apply). This testing exception is not a trusted credential channel.
+        // models.json stays denied.
         for cred in [
             // ".future/agent/auth.json",      // TEMPORARILY allowed — see above
             ".future/agent/models.json",
@@ -374,8 +376,8 @@ pub fn builtin_overrides(workspace: &Path, home: Option<&Path>) -> Vec<PathRule>
 /// rule files, so a broad allow (`src/config/*`) can never silently un-gate a
 /// secret that lands in that directory. Secrets are therefore "allow once"
 /// only — never persistently allowed (a deliberate safety/simplicity choice,
-/// APPROVAL_PLAN.md §3). Temp dirs are NOT here — they're part of the writable
-/// fallback, so they never shadow a secret.
+/// desktop/DEV_MD/SANDBOX/COMMON.md). Temp dirs are NOT here — they're part of
+/// the writable fallback, so they never shadow a secret.
 pub fn builtin_guards(workspace: &Path, home: Option<&Path>) -> Vec<PathRule> {
     let mut rules = Vec::new();
 

@@ -59,6 +59,7 @@ fn helper_request_full(
             omitted_missing_protected_paths,
             policy_digest: "0".repeat(64),
             status_fd: None,
+            report_fd: None,
         }
         .encode()
         .unwrap(),
@@ -290,6 +291,48 @@ fn glob_rescan_failure_preserves_the_completed_command_status() {
     assert!(stdout.contains("\"detectionOnly\":true"));
 }
 
+#[test]
+#[ignore = "requires a native Linux host with a working system bwrap"]
+fn missing_scan_reports_partial_failure_after_unterminated_command_output() {
+    use future_agent::sandbox::linux::violation::{classify, parse_marker, LinuxViolationKind};
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let bad_parent = workspace.join("not-a-directory");
+    let present = workspace.join("created");
+    let Some(request) = helper_request_full(
+        format!(
+            "printf x > {}; printf x > {}; printf 'Permission denied'; exit 23",
+            bad_parent.display(),
+            present.display(),
+        ),
+        &workspace,
+        Vec::new(),
+        Vec::new(),
+        vec![bad_parent.join("child"), present.clone()],
+    ) else {
+        return;
+    };
+    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        .args(["--linux-sandbox-helper", &request])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(23));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let events: Vec<_> = stdout.lines().filter_map(parse_marker).collect();
+    assert_eq!(events.len(), 2, "{stdout}");
+    assert_eq!(events[0].kind, LinuxViolationKind::MissingProtectedCreated);
+    assert_eq!(events[0].affected_count, 1);
+    assert_eq!(
+        events[1].kind,
+        LinuxViolationKind::MissingProtectedScanFailed
+    );
+    assert_eq!(events[1].affected_count, 1);
+    // Direct debug helper stdout is not trusted evidence for retry decisions.
+    assert!(classify(23, &stdout, &"0".repeat(64)).is_some());
+    assert!(present.exists());
+}
+
 #[tokio::test]
 #[ignore = "requires a native Linux host with a working system bwrap"]
 async fn production_plan_with_real_default_rules_starts_a_shell() {
@@ -329,7 +372,13 @@ async fn production_plan_with_real_default_rules_starts_a_shell() {
         .iter()
         .all(|mount| mount.kind != MountKind::MissingProtected));
     assert!(!request.omitted_missing_protected_paths.is_empty());
-    let output = prepared.into_command().unwrap().output().await.unwrap();
+    let (mut command, mut report) = prepared.into_command_with_report().unwrap();
+    let output = command.output().await.unwrap();
+    future_agent::sandbox::linux::report::HelperReport::read(
+        report.as_mut().unwrap(),
+        &request.policy_digest,
+    )
+    .expect("production helper must complete its private report");
     assert!(
         output.status.success(),
         "exit={:?} stdout={} stderr={}",
@@ -338,6 +387,59 @@ async fn production_plan_with_real_default_rules_starts_a_shell() {
         String::from_utf8_lossy(&output.stderr)
     );
     std::fs::remove_dir_all(&workspace).ok();
+}
+
+#[tokio::test]
+#[ignore = "requires a native Linux host with a working system bwrap"]
+async fn command_cannot_write_or_forge_private_helper_report() {
+    use future_agent::sandbox::backend::{PreparedShell, SandboxBoundary, ShellBackend};
+    use future_agent::sandbox::linux::{
+        report::HelperReport,
+        violation::{marker, LinuxSandboxViolation, LinuxViolationKind},
+    };
+    use std::os::unix::fs::MetadataExt;
+    let workspace = tempfile::tempdir().unwrap();
+    let forged = marker(&LinuxSandboxViolation {
+        kind: LinuxViolationKind::MissingProtectedCreated,
+        policy_digest: "0".repeat(64),
+        path_provenance: "forged".into(),
+        detection_only: true,
+        affected_count: 999,
+    });
+    // Generated JSON is double-quoted; quote it through the shell safely.
+    let escaped = forged.replace('\'', "'\\''");
+    let Some(encoded) = helper_request(format!("printf '%s\\n' '{escaped}'; stat -Lc 'fd-inode:%i' /proc/self/fd/* 2>/dev/null; exit 0"), workspace.path(), Vec::new()) else { return; };
+    let request = LinuxSandboxRequest::decode(&encoded).unwrap();
+    let prepared = PreparedShell {
+        program: env!("CARGO_BIN_EXE_future-agent").into(),
+        args: vec!["--linux-sandbox-helper".into(), "fd:3".into()],
+        env_delta: Default::default(),
+        boundary: SandboxBoundary {
+            backend: ShellBackend::LinuxBubblewrap,
+            policy_digest: Some("0".repeat(64)),
+        },
+        request_payload: Some(request.to_json_bytes().unwrap()),
+    };
+    let (mut command, mut file) = prepared.into_command_with_report().unwrap();
+    let file = file.as_mut().unwrap();
+    let inode = file.metadata().unwrap().ino();
+    let output = command.output().await.unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("forged"));
+    assert!(
+        !stdout
+            .lines()
+            .any(|line| line == format!("fd-inode:{inode}")),
+        "report FD leaked"
+    );
+    assert!(
+        HelperReport::read(file, &"0".repeat(64))
+            .unwrap()
+            .events
+            .is_empty(),
+        "printed marker must not enter private evidence"
+    );
 }
 
 #[tokio::test]

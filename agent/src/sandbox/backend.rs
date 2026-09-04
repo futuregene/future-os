@@ -48,6 +48,42 @@ impl PreparedShell {
     }
 
     pub fn into_command(self) -> anyhow::Result<tokio::process::Command> {
+        self.into_command_with_report().map(|(command, _)| command)
+    }
+
+    pub fn into_command_with_report(
+        mut self,
+    ) -> anyhow::Result<(tokio::process::Command, Option<std::fs::File>)> {
+        #[cfg(not(target_os = "linux"))]
+        let _ = &mut self;
+        let mut report_reader = None;
+        #[cfg(not(target_os = "linux"))]
+        let _ = &mut report_reader;
+        #[cfg(target_os = "linux")]
+        let report_writer = if self.boundary.backend == ShellBackend::LinuxBubblewrap {
+            use std::os::fd::{AsRawFd, FromRawFd};
+            let file = tempfile::tempfile()?;
+            // Keep the writer away from fixed request FD 3 and stdio. The
+            // child can safely dup the request without clobbering this FD.
+            // SAFETY: fcntl duplicates a live FD; successful result is owned below.
+            let fd = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 5) };
+            if fd < 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            // SAFETY: fd is the fresh, uniquely owned duplicate from fcntl.
+            let writer = unsafe { std::fs::File::from_raw_fd(fd) };
+            let mut request = super::linux::request::LinuxSandboxRequest::from_json_bytes(
+                self.request_payload
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("missing helper payload"))?,
+            )?;
+            request.report_fd = Some(fd);
+            self.request_payload = Some(request.to_json_bytes()?);
+            report_reader = Some(file);
+            Some(writer)
+        } else {
+            None
+        };
         let mut command = tokio::process::Command::new(self.program);
         command.args(self.args);
         for (key, value) in self.env_delta {
@@ -75,6 +111,15 @@ impl PreparedShell {
             // alive until spawn; FD 3 is the fixed private helper input.
             unsafe {
                 command.as_std_mut().pre_exec(move || {
+                    if let Some(writer) = &report_writer {
+                        let fd = writer.as_raw_fd();
+                        let flags = libc::fcntl(fd, libc::F_GETFD);
+                        if flags < 0
+                            || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0
+                        {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    }
                     // The user's `(command) 2>&1` starts too late to capture
                     // helper/bwrap initialization errors. Share the stdout pipe
                     // at the OS boundary; no extra pipe reader or buffering is
@@ -103,7 +148,7 @@ impl PreparedShell {
                 });
             }
         }
-        Ok(command)
+        Ok((command, report_reader))
     }
 }
 

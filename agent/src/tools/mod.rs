@@ -814,11 +814,20 @@ async fn run_shell_with_capability(
             notify(command);
         }
     }
-    let result = spawn_shell(command, timeout_secs, &sandbox, false, approved_capability).await?;
+    let mut allow_post_hoc = true;
+    let result = spawn_shell_with_report(
+        command,
+        timeout_secs,
+        &sandbox,
+        false,
+        approved_capability,
+        &mut allow_post_hoc,
+    )
+    .await?;
 
     // Post-hoc escalation: only when the failure narrowly looks like a sandbox
     // denial (conservative heuristic — ordinary failures go back to the model).
-    if sandboxed {
+    if sandboxed && allow_post_hoc {
         #[allow(clippy::single_match)]
         // match keeps each edge's region on its arm line; an if-let whose body always diverges leaves a phantom zero-count region on its closing brace
         match post_hoc_escalation(&escalation, &sandbox, command, timeout_secs, &result).await {
@@ -1045,6 +1054,25 @@ async fn spawn_shell(
     escalated: bool,
     approved_capability: Option<&crate::sandbox::windows_request::ApprovedWriteCapability>,
 ) -> Result<String> {
+    spawn_shell_with_report(
+        command,
+        timeout_secs,
+        sandbox,
+        escalated,
+        approved_capability,
+        &mut true,
+    )
+    .await
+}
+
+async fn spawn_shell_with_report(
+    command: &str,
+    timeout_secs: u64,
+    sandbox: &ResolvedSandbox,
+    escalated: bool,
+    approved_capability: Option<&crate::sandbox::windows_request::ApprovedWriteCapability>,
+    allow_post_hoc: &mut bool,
+) -> Result<String> {
     let cwd = active_workspace()?;
     #[cfg(windows)]
     if !escalated && sandbox.wraps_shell() {
@@ -1101,9 +1129,17 @@ async fn spawn_shell(
             "Shell command interrupted by abort before execution"
         ));
     }
-    let mut child = prepared
-        .into_command()
+    let report_digest = prepared.boundary.policy_digest.clone();
+    let expects_report =
+        prepared.boundary.backend == crate::sandbox::backend::ShellBackend::LinuxBubblewrap;
+    if expects_report {
+        *allow_post_hoc = false;
+    }
+    let (mut child, mut report_reader) = prepared
+        .into_command_with_report()
         .map_err(|error| anyhow!("Failed to initialize OS sandbox request transport: {error}"))?;
+    #[cfg(windows)]
+    let _ = (&report_digest, &mut report_reader);
     child.current_dir(&cwd).env("PWD", &cwd);
     // Prepend the agent binary's directory to PATH so bundled tools in the
     // same directory are discoverable by shell commands. (map + discard: a
@@ -1205,6 +1241,13 @@ async fn spawn_shell(
             Ok(Err(e)) => Err(e),
             Err(_elapsed) => {
                 let combined = String::from_utf8_lossy(&output_buf);
+                let combined = if expects_report {
+                    std::borrow::Cow::Owned(crate::sandbox::linux::report::untrusted_output(
+                        &combined,
+                    ))
+                } else {
+                    combined
+                };
                 let total = combined.len();
                 if total == 0 {
                     Err(anyhow!(
@@ -1248,6 +1291,13 @@ async fn spawn_shell(
                 // Drain whatever the process wrote before the kill took effect.
                 drain_shell_output(&mut stdout, &mut output_buf, &mut read_buf).await;
                 let combined = String::from_utf8_lossy(&output_buf);
+                let combined = if expects_report {
+                    std::borrow::Cow::Owned(crate::sandbox::linux::report::untrusted_output(
+                        &combined,
+                    ))
+                } else {
+                    combined
+                };
                 let total = combined.len();
                 if total == 0 {
                     return Err(anyhow!(
@@ -1270,6 +1320,35 @@ async fn spawn_shell(
         drain_shell_output(&mut stdout, &mut output_buf, &mut read_buf).await;
         let combined = String::from_utf8_lossy(&output_buf);
         let exit_code = status.code().unwrap_or(-1);
+        if expects_report {
+            // Never parse command-printed markers as helper evidence. Only the
+            // per-spawn anonymous channel may suppress post-hoc escalation.
+            let mut output = crate::sandbox::linux::report::untrusted_output(&combined);
+            let report = report_reader
+                .as_mut()
+                .zip(report_digest.as_deref())
+                .ok_or_else(|| anyhow!("missing helper report channel"))
+                .and_then(|(file, digest)| {
+                    crate::sandbox::linux::report::HelperReport::read(file, digest)
+                });
+            match report {
+                Ok(report) => {
+                    *allow_post_hoc = report.events.is_empty();
+                    // Format/truncate command text before appending verified
+                    // reports so they cannot be lost to command-output volume.
+                    output = format_shell_output(&output, output.len(), exit_code);
+                    for event in &report.events {
+                        output.push('\n');
+                        output.push_str(&crate::sandbox::linux::violation::marker(event));
+                    }
+                }
+                Err(_) => {
+                    output = format_shell_output(&output, output.len(), exit_code);
+                    output.push_str("\n[sandbox] Helper report unavailable or invalid. Detection results are unknown; automatic unsandboxed retry is disabled. The command's exit status is unchanged.");
+                }
+            }
+            return Ok(output);
+        }
         Ok(format_shell_output(&combined, combined.len(), exit_code))
     }
 }
@@ -2006,7 +2085,7 @@ mod tests {
     #[tokio::test]
     async fn active_policy_scope_allows_temp_dir_writes() {
         // With an active sandbox policy (GUI opt-in), temp dirs are writable
-        // roots (SANDBOX_PLAN.md §2.2).
+        // roots (desktop/DEV_MD/SANDBOX/COMMON.md).
         let workspace = test_path("ws-tmp");
         std::fs::create_dir_all(&workspace).unwrap();
         let tmp_target = test_path("tmp-write.txt");

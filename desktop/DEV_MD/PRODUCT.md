@@ -121,20 +121,21 @@ GUI 中的工具调用应展示短标题、状态、耗时、路径或命令摘�
 
 Approval 解决“是否允许执行”。它发生在高风险操作真正执行之前。
 
-常规文件审批以**文件路径访问**（读 / 写）为对象；手动模式的 shell 审批以及 macOS / Linux 的单次脱沙盒审批以**整条命令**为对象，不能将卡片列出的路径理解成命令的完整权限边界。设计与实现细节见 [`APPROVAL_PLAN.md`](APPROVAL_PLAN.md)（规则模型、分层、规则文件、三档）与 [`SANDBOX_PLAN.md`](SANDBOX_PLAN.md)（各平台 OS 强制、escalation、回退）；Linux Bubblewrap 的实现边界与发布前真机门槛见 [`LINUX_SANDBOX_PLAN.md`](LINUX_SANDBOX_PLAN.md)。要点：
+常规文件审批以**文件路径访问**（读 / 写）为对象；手动模式的 shell 审批以及 macOS / Linux 的单次脱沙盒审批以**整条命令**为对象，不能将卡片列出的路径理解成命令的完整权限边界。共享规则、协议与审批见 [SANDBOX/COMMON.md](SANDBOX/COMMON.md)；平台实现、差异与验收分别见 [macOS](SANDBOX/MACOS.md)、[Linux](SANDBOX/LINUX.md)、[Windows](SANDBOX/WINDOWS.md)。要点：
 
 - **按路径的分层规则**得出 `ask / allow / deny`，首个匹配即返回：内置安全覆盖（不可改）→ 敏感文件守卫（不可改）→ 本对话/工作区临时规则 → 规则文件（`${WS}/.future/approval_rule.json`、`~/.future/approval_rule.json`）→ 兜底（读放开、写限 workspace/temp）。
 - **审批分三档**（输入框下拉 / 设置页切换，全局生效）：
   - **手动审批**（默认，全平台）：read/write/edit 按规则弹审批；shell 的只读命令（`ls/cat/grep/git status` 等）免问直跑，其余命令弹卡片确认；不启用 OS 沙盒。
   - **沙箱保护**（macOS）：shell 在 Seatbelt 沙盒里自动跑，越界失败后走升级审批；read/write/edit 仍按规则弹审批。
-  - **写保护**（Windows）：shell 在 unelevated RestrictedToken + NTFS ACL 写边界内运行；默认只允许 workspace/session temp，额外外部写路径走前置审批。普通路径的 workspace 外读取与网络不拦截；敏感路径读取仍受敏感文件守卫控制。它也不能用普通目录 ACL 完整保护 workspace 内尚不存在的未来文件名或 glob，不宣称与 macOS 等价。
-  - **沙箱保护**（Linux 开发分支，发布前真机矩阵待完成）：shell 在 system Bubblewrap 中运行，网络开放；精确路径和启动时已有 glob 匹配硬保护，命令中新匹配仅结束后检测。完整 probe 失败显式回退手动审批，绝不裸跑。安装与限制见 [`LINUX_SANDBOX_USER_GUIDE.md`](LINUX_SANDBOX_USER_GUIDE.md)。
+  - **写保护**（Windows）：shell 在 unelevated RestrictedToken + NTFS ACL 写边界内运行，开放 workspace、实际临时根与已允许路径，额外外部写路径走前置审批。**shell 读取（包括敏感文件）和网络不由写保护拦截**；原生 read/write/edit 仍按敏感守卫判定。普通目录 ACL 无法完整保护未来文件名或 glob；当前用户既有父目录删除权限及宽 ACL 也可能削弱边界，不能把单文件批准理解成绝对禁止删除，不宣称与 macOS 等价。
+  - **沙箱保护**（Linux 开发分支，发布前真机矩阵待完成）：shell 在 system Bubblewrap 中运行，网络开放；启动时已存在的精确保护目标和 glob 匹配由 OS 沙箱保护。缺失精确目标及命令中新 glob 匹配目前仅结束后检测，不能阻止可写域内创建，也不构成完整访问审计；缺失 Deny 目标不承诺硬保护，属于下述已接受限制。完整 probe 失败显式回退手动审批，绝不裸跑。安装与限制见 [`SANDBOX/LINUX.md`](SANDBOX/LINUX.md)。
   - **完全放开**：全部放行，不再询问，也不启用沙箱。
 - **网络完全放开、不审批**。
-- **敏感文件**（`.env`、`*.pem`、`*.key`、`~/.ssh`、凭证等）默认 ask 且**不可被规则覆盖**——只能“允许一次”，不能持久放行；应用自身配置（`~/.future/agent/models.json` 等）与规则文件的写硬 deny，跳过用户意愿。
-- Windows 只有完整 host probe 通过才显示“写保护”；Linux 只有 system Bubblewrap 完整 host probe 通过才显示“沙箱保护”。Linux probe 明确失败时回退并持久化为“手动审批”，同时显示稳定诊断码与安装提示；瞬时连接错误不会改写设置。TUI / CLI / channels 走各自 `permission_level`，不参与本套审批。
+- **Linux shell 的明确限制（已接受，不承诺与 macOS 等价）**：启动时不存在的保护目标（包括两个 `approval_rule.json` 和用户自定义 `deny` 路径）不承诺禁止创建，仅结束时做存在性检测；若最终位于可写域，创建可能成功。已有规则文件仍按只读挂载保护，但缺失时创建可写入后续生效的规则，这是已接受的安全取舍，不等于没有风险。原生 `read/write/edit` 的规则检查不变。复杂“宽禁止、窄允许”组合及尚不存在的 writable allow 目标不承诺一定可用，可能访问失败或初始化失败。本期不为这些场景新增父目录只读、占位对象或自动降级；macOS 原有路径强制不变。
+- **规则语义**：敏感文件（`.env`、`*.pem`、`*.key`、`~/.ssh`、凭证等）默认 ask 且不可被用户规则覆盖，只能“允许一次”，不能持久放行；models.json 读写 deny、规则文件写 deny。原生工具执行该判定；shell 的平台差异以上述边界为准，macOS/Linux 已批准的整命令脱沙盒也不受 OS 规则限制。
+- Windows 完整 host probe 通过才显示“写保护”；Linux 保留“沙箱保护”选项以稳定布局，检测中或不可用时禁用，完整 probe 通过才可选。Linux probe 明确失败时回退并持久化为“手动审批”，显示“原因 + 方案 + code”与安装后完全重启 FutureOS 的提示；瞬时连接错误不会改写设置。TUI / CLI / channels 走各自 `permission_level`，不参与本套审批。
 - 桌面端的 macOS、Windows 和手动审批复用同一个审批卡片；移动端原生卡片消费同一份可信语义。普通用户首先看到由可信后端生成的“行为 + 目标”标题；单目标不重复显示字段，命令/文件预览折叠为“查看命令 / 查看详情”，ACL、SID、backend、hash、规则层等技术数据不展示。
-- 审批按场景提供三个语义：**不允许 / 仅允许这一次 / 此项目以后都允许**（具体文案可继续调整）。“此项目以后都允许”把卡片表达的同一行为和目标保存为该 workspace 的 allow 规则并即时对本轮生效；敏感文件、macOS 整命令 escalation 和不可持久化请求不提供此选项。
+- 审批按场景提供三个语义：**不允许 / 仅允许这一次 / 此项目以后都允许**（具体文案可继续调整）。“此项目以后都允许”把卡片表达的同一行为和目标保存为该 workspace 的 allow 规则并即时对本轮生效；敏感文件、macOS/Linux 整命令 escalation 和不可持久化请求不提供此选项。
 - 多目标审批完整列出全部目标、最多 8 项并按整组决策；无法生成可信行为/目标或 payload 解析失败时 fail closed，不显示批准按钮。
 
 **模型主动申请单次脱沙盒（macOS / Linux，现有能力）**：

@@ -11,14 +11,82 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::Arc;
 
 const HELPER_INFRA_EXIT: i32 = 125;
 // `--args FD` removes the mount plan from execve's ARG_MAX accounting, but the
 // FD payload still needs a deterministic resource ceiling of its own.
 const MAX_BWRAP_ARGS_BYTES: usize = 16 * 1024 * 1024;
+// Both upstream v0.9.0 and v0.11.1 count real argv plus --args entries.
+const MAX_BWRAP_ARGS: usize = 9000;
 const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
+
+fn emit_violation(violation: &super::violation::LinuxSandboxViolation) {
+    // Reporting must not panic on a closed output pipe and replace the command
+    // status. A missing report is not evidence of a clean scan.
+    let _ = super::violation::write_marker(&mut std::io::stdout().lock(), violation);
+}
+
+#[derive(Default)]
+struct ScanCancellation {
+    stopped: Arc<AtomicBool>,
+    registrations: Vec<signal_hook::SigId>,
+}
+
+impl ScanCancellation {
+    fn register() -> Result<Self> {
+        let mut result = Self::default();
+        // Keep these registered through both waiting and rescanning, avoiding
+        // a cancellation gap after the child exits. Forwarding remains owned
+        // by wait_forwarding_signals; the flag only stops post-command work.
+        for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP, libc::SIGQUIT] {
+            result
+                .registrations
+                .push(signal_hook::flag::register(signal, result.stopped.clone())?);
+        }
+        Ok(result)
+    }
+}
+
+impl Drop for ScanCancellation {
+    fn drop(&mut self) {
+        for registration in self.registrations.drain(..) {
+            signal_hook::low_level::unregister(registration);
+        }
+    }
+}
+
+fn preflight_mount_fds(mounts: usize) -> Result<()> {
+    let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+    // SAFETY: getrlimit initializes the provided rlimit on success.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("inspect sandbox FD limit");
+    }
+    let limit = unsafe { limit.assume_init() }.rlim_cur;
+    // Include the directory reader conservatively. This dedicated helper has
+    // no concurrent mount opens yet; subsequent OS failures still fail closed.
+    let open = std::fs::read_dir("/proc/self/fd")
+        .context("inspect sandbox open FDs")?
+        .collect::<std::io::Result<Vec<_>>>()?
+        .len();
+    check_fd_budget(open, mounts, limit)
+}
+
+fn check_fd_budget(open: usize, mounts: usize, soft_limit: u64) -> Result<()> {
+    // bwrap, status pipe, request, args, opaque file and spawn/signal machinery.
+    const INTERNAL_RESERVE: usize = 16;
+    let required = open
+        .checked_add(mounts)
+        .and_then(|n| n.checked_add(INTERNAL_RESERVE))
+        .context("sandbox FD budget overflow")?;
+    if required as u64 > soft_limit {
+        return Err(anyhow!(
+            "sandbox file descriptor budget exhausted: need {required}, soft limit {soft_limit}"
+        ));
+    }
+    Ok(())
+}
 
 /// Hidden helper entry point. It intentionally terminates the helper process
 /// with the wrapped process status, so it must be dispatched before the Agent
@@ -54,6 +122,19 @@ fn run_request(request: LinuxSandboxRequest) -> Result<ExitStatus> {
 }
 
 fn run_outer(mut request: LinuxSandboxRequest) -> Result<ExitStatus> {
+    // Consume and remove this FD before serializing the inner request. It is
+    // CLOEXEC and never part of bwrap's keep-list or the command's FD set.
+    // SAFETY: validated outer request owns this inherited FD, distinct from
+    // request/stdin/out/err; take transfers ownership exactly once.
+    let mut report_file = request
+        .report_fd
+        .take()
+        .map(|fd| unsafe { File::from_raw_fd(fd) });
+    if let Some(file) = &report_file {
+        set_cloexec(file.as_raw_fd())?;
+    }
+    let cancellation = ScanCancellation::register()?;
+    preflight_mount_fds(request.mounts.len())?;
     let bwrap = open_mount_source(&request.bwrap_path).context("open verified bwrap")?;
     if identity_from_metadata(&bwrap.metadata()?) != request.bwrap_identity {
         return Err(anyhow!("verified bwrap identity changed"));
@@ -70,11 +151,7 @@ fn run_outer(mut request: LinuxSandboxRequest) -> Result<ExitStatus> {
     let mut needs_empty_file = false;
     for mount in &mut request.mounts {
         if mount.kind == MountKind::MissingProtected {
-            // No host source exists for this mask. Do not open/create one here.
-            // IMPORTANT: bwrap itself may mkdir the destination before mounting
-            // tmpfs. This needs an isolated parent view to guarantee zero host
-            // residue; see LINUX_SANDBOX_FAILURE_REVIEW.md (P0, still open).
-            continue;
+            return Err(anyhow!("unsupported legacy missing-target mount"));
         }
         let file = open_mount_source(&mount.source)
             .with_context(|| format!("mount source is unavailable: {}", mount.source.display()))?;
@@ -83,10 +160,7 @@ fn run_outer(mut request: LinuxSandboxRequest) -> Result<ExitStatus> {
         let metadata = file.metadata()?;
         mount.expected = Some(identity_from_metadata(&metadata));
         mount.source_fd = Some(fd);
-        if matches!(
-            mount.kind,
-            MountKind::Unreadable | MountKind::MissingProtected
-        ) {
+        if mount.kind == MountKind::Unreadable {
             if metadata.is_dir() {
                 opaque_directories.insert(mount.target.clone());
             } else {
@@ -112,7 +186,14 @@ fn run_outer(mut request: LinuxSandboxRequest) -> Result<ExitStatus> {
     clear_cloexec(request_fd)?;
     let current_exe = std::env::current_exe().context("resolve current helper executable")?;
 
-    let bwrap_args = create_bwrap_args_file(&request, &opaque_directories, empty_fd)?;
+    let helper_args = super::runner::helper_args(&current_exe, format!("fd:{request_fd}"));
+    // Include argv[0] conservatively, --args FD, --, and executable itself.
+    let bwrap_args = create_bwrap_args_file(
+        &request,
+        &opaque_directories,
+        empty_fd,
+        5 + helper_args.len(),
+    )?;
     let bwrap_args_fd = bwrap_args.as_raw_fd();
     clear_cloexec(bwrap_args_fd)?;
 
@@ -126,10 +207,7 @@ fn run_outer(mut request: LinuxSandboxRequest) -> Result<ExitStatus> {
     // expands OPTIONS from the file, and a `--`/command inside the file is
     // discarded by bubblewrap's recursive parser, leaving it with no command.
     command.arg("--").arg(&current_exe);
-    command.args(super::runner::helper_args(
-        &current_exe,
-        format!("fd:{request_fd}"),
-    ));
+    command.args(helper_args);
     command
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
@@ -167,12 +245,21 @@ fn run_outer(mut request: LinuxSandboxRequest) -> Result<ExitStatus> {
     let mut child = command.spawn().context("start verified bubblewrap")?;
     drop(inherited);
     let bwrap_status = wait_forwarding_signals(&mut child)?;
-    // Missing inner status means initialization never completed. Do not let
+    // Missing inner status does NOT prove the command never started. Do not let
     // newly captured bwrap stderr (e.g. EPERM with exit 1) invite an unsandboxed
     // retry. Signals retain their cancellation semantics.
     let status = command_status(read_raw_status(&mut status_read), bwrap_status)?;
-    if let Err(error) = report_dynamic_glob_creations(&request) {
-        eprintln!("future-linux-sandbox-helper: post-command detection failed: {error:#}");
+    let started = std::time::Instant::now();
+    let stop = || {
+        cancellation.stopped.load(Ordering::Relaxed)
+            || started.elapsed() >= std::time::Duration::from_secs(30)
+    };
+    let mut events = Vec::new();
+    if let Err(error) = report_dynamic_glob_creations(&request, &stop, &mut events) {
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "future-linux-sandbox-helper: post-command detection failed: {error:#}"
+        );
         // Detection happens after the command has completed. Never replace the
         // real command outcome with an infrastructure error or invite a retry
         // after side effects may already have occurred.
@@ -183,18 +270,24 @@ fn run_outer(mut request: LinuxSandboxRequest) -> Result<ExitStatus> {
             detection_only: true,
             affected_count: 0,
         };
-        println!("{}", super::violation::marker(&violation));
+        events.push(violation);
     }
-    if let Err(error) = report_missing_guard_creations(&request) {
-        eprintln!("future-linux-sandbox-helper: post-command detection failed: {error:#}");
-        let violation = super::violation::LinuxSandboxViolation {
-            kind: super::violation::LinuxViolationKind::DynamicGlobScanFailed,
-            path_provenance: "missing_guard_rescan_failed".into(),
+    report_missing_guard_creations(&request, &stop, &mut events);
+    if let Some(file) = &mut report_file {
+        // Written only after command completion and scans; an empty/corrupt
+        // file is unknown evidence, never a clean report. Preserve exit status
+        // even if report transport fails; the parent will reject the report.
+        let report = super::report::HelperReport {
+            version: 1,
             policy_digest: request.policy_digest.clone(),
-            detection_only: true,
-            affected_count: 0,
+            events,
         };
-        println!("{}", super::violation::marker(&violation));
+        let _ = report.write(file);
+    } else {
+        // Legacy direct helper smoke/debug calls remain human-readable only.
+        for event in &events {
+            emit_violation(event);
+        }
     }
     Ok(status)
 }
@@ -216,9 +309,13 @@ fn create_bwrap_args_file(
     request: &LinuxSandboxRequest,
     opaque_directories: &std::collections::BTreeSet<std::path::PathBuf>,
     empty_fd: Option<i32>,
+    real_argv_count: usize,
 ) -> Result<File> {
     let mut file = tempfile::tempfile().context("create anonymous bubblewrap arguments")?;
-    let mut written = 0usize;
+    let mut written = ArgumentBudget {
+        bytes: 0,
+        count: real_argv_count,
+    };
     for arg in [
         "--new-session",
         "--die-with-parent",
@@ -259,15 +356,14 @@ fn create_bwrap_args_file(
                 write_bwrap_arg(&mut file, &mut written, OsStr::new(&source))?;
                 write_bwrap_arg(&mut file, &mut written, mount.target.as_os_str())?;
             }
-            MountKind::Unreadable | MountKind::MissingProtected => {
-                // MissingProtected has no host source FD. This argument alone
-                // does NOT guarantee namespace-only target creation: a writable
-                // host bind underneath can be mutated by bwrap's mkdir. The
-                // isolated-parent design remains a release blocker (review doc).
+            MountKind::Unreadable => {
                 for arg in ["--perms", "000", "--tmpfs"] {
                     write_bwrap_arg(&mut file, &mut written, OsStr::new(arg))?;
                 }
                 write_bwrap_arg(&mut file, &mut written, mount.target.as_os_str())?;
+            }
+            MountKind::MissingProtected => {
+                return Err(anyhow!("unsupported legacy missing-target mount"));
             }
         }
     }
@@ -277,12 +373,28 @@ fn create_bwrap_args_file(
     Ok(file)
 }
 
-fn write_bwrap_arg(file: &mut File, written: &mut usize, arg: &OsStr) -> Result<()> {
+#[derive(Default)]
+struct ArgumentBudget {
+    bytes: usize,
+    count: usize,
+}
+
+fn write_bwrap_arg(file: &mut File, written: &mut ArgumentBudget, arg: &OsStr) -> Result<()> {
     let bytes = arg.as_bytes();
     if bytes.contains(&0) {
         return Err(anyhow!("NUL in bubblewrap argument"));
     }
+    let next_count = written
+        .count
+        .checked_add(1)
+        .context("bubblewrap argument count overflow")?;
+    if next_count > MAX_BWRAP_ARGS {
+        return Err(anyhow!(
+            "bubblewrap argument count exceeds {MAX_BWRAP_ARGS}"
+        ));
+    }
     let next = written
+        .bytes
         .checked_add(bytes.len() + 1)
         .context("bubblewrap argument size overflow")?;
     if next > MAX_BWRAP_ARGS_BYTES {
@@ -292,11 +404,16 @@ fn write_bwrap_arg(file: &mut File, written: &mut usize, arg: &OsStr) -> Result<
     }
     file.write_all(bytes)?;
     file.write_all(&[0])?;
-    *written = next;
+    written.bytes = next;
+    written.count = next_count;
     Ok(())
 }
 
-fn report_dynamic_glob_creations(request: &LinuxSandboxRequest) -> Result<()> {
+fn report_dynamic_glob_creations(
+    request: &LinuxSandboxRequest,
+    stop: &dyn Fn() -> bool,
+    events: &mut Vec<super::violation::LinuxSandboxViolation>,
+) -> Result<()> {
     use std::collections::BTreeSet;
     let mut created = 0usize;
     let patterns = request
@@ -304,7 +421,7 @@ fn report_dynamic_glob_creations(request: &LinuxSandboxRequest) -> Result<()> {
         .iter()
         .map(|snapshot| snapshot.pattern.clone())
         .collect::<Vec<_>>();
-    let expanded = super::plan::expand_globs(&patterns, "post_command", &|| false)?;
+    let expanded = super::plan::expand_globs(&patterns, "post_command", stop)?;
     for snapshot in &request.glob_snapshots {
         let before: BTreeSet<_> = snapshot.matches.iter().collect();
         let after = &expanded[&snapshot.pattern];
@@ -318,7 +435,7 @@ fn report_dynamic_glob_creations(request: &LinuxSandboxRequest) -> Result<()> {
             detection_only: true,
             affected_count: created,
         };
-        println!("{}", super::violation::marker(&violation));
+        events.push(violation);
     }
     Ok(())
 }
@@ -327,48 +444,51 @@ fn report_dynamic_glob_creations(request: &LinuxSandboxRequest) -> Result<()> {
 /// came into existence (created by the wrapped command or a concurrent host
 /// process) is reported as a detection-only violation: the policy denied
 /// access, but a missing target could not be masked without host residue.
-fn report_missing_guard_creations(request: &LinuxSandboxRequest) -> Result<()> {
-    let mut created = 0usize;
-    for path in &request.omitted_missing_protected_paths {
-        match std::fs::symlink_metadata(path) {
-            Ok(_) => created += 1,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(anyhow!(
-                    "re-check omitted missing guard {}: {error}",
-                    path.display()
-                ));
-            }
-        }
-    }
-    if created > 0 {
+fn report_missing_guard_creations(
+    request: &LinuxSandboxRequest,
+    stop: &dyn Fn() -> bool,
+    events: &mut Vec<super::violation::LinuxSandboxViolation>,
+) {
+    let report = super::post_scan::scan(&request.omitted_missing_protected_paths, stop, |path| {
+        std::fs::symlink_metadata(path).map(|_| ())
+    });
+    if report.present > 0 {
         let violation = super::violation::LinuxSandboxViolation {
             kind: super::violation::LinuxViolationKind::MissingProtectedCreated,
             path_provenance: "omitted_missing_guard".into(),
             policy_digest: request.policy_digest.clone(),
             detection_only: true,
-            affected_count: created,
+            affected_count: report.present,
         };
-        println!("{}", super::violation::marker(&violation));
+        events.push(violation);
     }
-    Ok(())
+    if report.failed + report.unchecked > 0 {
+        let _ = writeln!(std::io::stderr().lock(), "future-linux-sandbox-helper: missing guard detection incomplete: {} failed, {} unchecked", report.failed, report.unchecked);
+        events.push(super::violation::LinuxSandboxViolation {
+            kind: super::violation::LinuxViolationKind::MissingProtectedScanFailed,
+            path_provenance: "missing_guard_rescan_incomplete".into(),
+            policy_digest: request.policy_digest.clone(),
+            detection_only: true,
+            affected_count: report.failed + report.unchecked,
+        });
+    }
 }
 
 fn run_inner(request: LinuxSandboxRequest) -> Result<ExitStatus> {
     for mount in &request.mounts {
         let actual = std::fs::metadata(&mount.target)
             .with_context(|| format!("verify mounted target {}", mount.target.display()))?;
-        if matches!(
-            mount.kind,
-            MountKind::Unreadable | MountKind::MissingProtected
-        ) {
+        if mount.kind == MountKind::MissingProtected {
+            return Err(anyhow!("unsupported legacy missing-target mount"));
+        }
+        if mount.kind == MountKind::Unreadable {
             if actual.permissions().mode() & 0o777 != 0 {
                 return Err(anyhow!(
                     "protected target permissions are not empty: {}",
                     mount.target.display()
                 ));
             }
-        } else if mount.kind != MountKind::MissingProtected {
+        } else {
             let expected = mount.expected.as_ref().context("missing mount identity")?;
             // Source O_PATH FDs pin these inodes through this verification.
             // Mutable directory size/mtime (notably /tmp and an active repo)
@@ -716,18 +836,36 @@ mod tests {
     #[test]
     fn bwrap_argument_writer_uses_nul_separators_and_enforces_nul_free_input() {
         let mut file = tempfile::tempfile().unwrap();
-        let mut written = 0;
+        let mut written = ArgumentBudget::default();
         write_bwrap_arg(&mut file, &mut written, OsStr::new("--ro-bind")).unwrap();
         write_bwrap_arg(&mut file, &mut written, OsStr::new("/a path")).unwrap();
         file.rewind().unwrap();
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).unwrap();
         assert_eq!(bytes, b"--ro-bind\0/a path\0");
-        assert_eq!(written, bytes.len());
+        assert_eq!(written.bytes, bytes.len());
+        assert_eq!(written.count, 2);
 
         assert!(write_bwrap_arg(&mut file, &mut written, OsStr::from_bytes(b"bad\0arg")).is_err());
 
-        let mut exhausted = MAX_BWRAP_ARGS_BYTES;
+        let mut exhausted = ArgumentBudget {
+            bytes: MAX_BWRAP_ARGS_BYTES,
+            count: 0,
+        };
         assert!(write_bwrap_arg(&mut file, &mut exhausted, OsStr::new("x")).is_err());
+        let mut count = ArgumentBudget {
+            bytes: 0,
+            count: MAX_BWRAP_ARGS - 1,
+        };
+        write_bwrap_arg(&mut file, &mut count, OsStr::new("x")).unwrap();
+        assert!(write_bwrap_arg(&mut file, &mut count, OsStr::new("x")).is_err());
+    }
+
+    #[test]
+    fn fd_budget_reserves_internal_descriptors_and_handles_overflow() {
+        assert!(check_fd_budget(3, 5, 24).is_ok());
+        assert!(check_fd_budget(3, 5, 23).is_err());
+        assert!(check_fd_budget(1000, 2000, u64::MAX).is_ok());
+        assert!(check_fd_budget(usize::MAX, 1, u64::MAX).is_err());
     }
 }
