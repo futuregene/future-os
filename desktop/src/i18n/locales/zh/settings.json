@@ -12,9 +12,9 @@
     "off": "完全放开",
     "description": {
       "manual": "读写文件前询问；只读命令直接放行，其余命令需批准。",
-      "sandbox": "命令在 macOS 沙箱中运行，越界时申请提权。",
-      "sandboxWindows": "命令启用 Windows 写保护；越界写入需要批准。",
-      "sandboxLinux": "命令在 Linux 系统沙箱中运行，文件越界时请求批准。",
+      "sandbox": "命令在 macOS 沙箱中运行，必要时请求批准。",
+      "sandboxWindows": "命令启用 Windows 写保护，必要时请求批准。",
+      "sandboxLinux": "命令在 Linux 沙箱中运行，必要时请求批准。",
       "off": "全部放开，不再询问，也不启用沙箱。"
     },
     "fallbackNotice": "沙箱保护不可用（诊断码：{{code}}）。已显式切换为手动审批，命令不会在无沙箱保护下静默运行。",

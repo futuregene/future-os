@@ -145,9 +145,9 @@
     },
     "approvalTierDesc": {
       "manual": "Asks before each action",
-      "sandbox": "Asks when needed",
+      "sandbox": "Runs sandboxed and asks when needed",
       "sandboxWindows": "Restricts out-of-scope writes and asks when needed",
-      "sandboxLinux": "Runs in the Linux system sandbox and asks when accessing files outside it",
+      "sandboxLinux": "Runs sandboxed and asks when needed",
       "sandboxChecking": "Checking the system sandbox…",
       "sandboxUnavailable": "The system sandbox is unavailable; see Settings for details",
       "off": "<em>ANY</em> command, no approval"

@@ -116,7 +116,9 @@ Desktop 复用 `ApprovalPrompt`，手机使用原生卡片但共享可信语义�
 
 批准的是**整条命令脱离 OS 沙箱执行一次**，不是只访问卡片路径；不改变全局 tier。拒绝则不执行该次脱沙箱命令。首次失败可能已有副作用，重跑前需核对结果。
 
-诊断路径仅为展示推断：提取 `Operation not permitted`、Linux `Permission denied`/`Read-only file system` 中的绝对路径，支持引号、空格、`program: line N: /path: error`；去重保序最多 5 项。不猜相对 cwd、不把 URL/helper 初始化错误当目标，不保证所有语言/程序报错可解析。主动申请没有失败输出时可以没有路径。展示解析不改变 escalation 判定或授权范围，也不扩展持久规则建议来源。
+模型提示默认先在沙箱内尝试，不凭猜测申请；仅在执行结果表明必要操作被沙箱阻止时请求批准，并尽量仅重试被阻止的操作。必要操作须保留真实失败状态和错误输出，不用 `|| true`、强制成功或吞掉输出掩盖失败；明确可忽略的失败允许容错，但不视为成功。这是提示词约束，不是新的执行门禁：整体退出码为 0 仍不触发被动审批，也未新增成功退出后的权限错误提示。
+
+诊断路径仅为展示推断：提取 `Operation not permitted`、Linux `Permission denied`/`Read-only file system`/`Device or resource busy` 中的绝对路径，支持引号、空格、`program: line N: /path: error`；去重保序最多 5 项。不猜相对 cwd、不把 URL/helper 初始化错误当目标，不保证所有语言/程序报错可解析。主动申请没有失败输出时可以没有路径。展示解析不改变 escalation 判定或授权范围，也不扩展持久规则建议来源。
 
 Windows 不使用此整命令批准，详见 [路径 capability](WINDOWS.md#3-路径-capability-审批)。
 

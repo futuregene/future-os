@@ -1563,9 +1563,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
     #[test]
     fn busy_mount_absolute_target_is_display_only() {
         assert_eq!(
-            extract_blocked_paths_raw(
-                "[sandbox] Protected mount target: '/work/.env': Device or resource busy"
-            ),
+            extract_blocked_paths_raw("rm: cannot remove '/work/.env': Device or resource busy"),
             vec!["/work/.env"]
         );
         assert!(

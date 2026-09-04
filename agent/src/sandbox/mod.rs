@@ -187,8 +187,8 @@ impl ResolvedSandbox {
             .add_session_rule(abs_pattern, access, Decision::Allow);
     }
 
-    /// Whether shell commands run wrapped in the OS sandbox (Sandbox tier on a
-    /// platform where sandbox-exec is available).
+    /// Whether shell commands use the resolved OS sandbox backend (Sandbox
+    /// tier with an available backend receipt).
     pub fn wraps_shell(&self) -> bool {
         self.tier == SandboxTier::Sandbox && self.backend_receipt.is_available()
     }
@@ -1179,10 +1179,9 @@ pub type EscalationRequester = Arc<dyn Fn(&EscalationRequest) -> EscalationDecis
 
 // ─── Sandbox-denial heuristic ───────────────────────────────────────────────
 
-/// Conservative check: does this failed sandboxed run look like the *sandbox*
-/// stopped it? Network is unrestricted in v2, so only filesystem EPERM counts.
-/// False negatives are fine (the model can retry with `escalated: true`);
-/// false positives would nag the user, so match narrowly.
+/// Infer a Linux filesystem restriction from command diagnostics, not from
+/// authenticated kernel events. The tools layer separately gates passive
+/// retries using the private helper report; this result grants no permission.
 pub fn sandbox_violation(
     sandbox: &ResolvedSandbox,
     exit_code: i32,
@@ -1198,6 +1197,8 @@ pub fn sandbox_violation(
     None
 }
 
+/// Backend-specific output heuristic. A successful overall exit can hide a
+/// failed operation (for example with `|| true`) and does not trigger a retry.
 pub fn looks_like_sandbox_denial(sandbox: &ResolvedSandbox, exit_code: i32, stderr: &str) -> bool {
     if exit_code == 0 {
         return false;

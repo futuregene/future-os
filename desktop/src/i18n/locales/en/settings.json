@@ -12,9 +12,9 @@
     "off": "Unrestricted",
     "description": {
       "manual": "Prompts before file reads and writes; read-only commands run automatically.",
-      "sandbox": "Commands run in the macOS sandbox; file operations still prompt.",
-      "sandboxWindows": "Protects Windows writes and asks before writing outside allowed locations.",
-      "sandboxLinux": "Commands run in the Linux system sandbox and ask for approval when accessing files outside it.",
+      "sandbox": "Commands run in the macOS sandbox and ask for approval when needed.",
+      "sandboxWindows": "Commands run with Windows write protection and ask for approval when needed.",
+      "sandboxLinux": "Commands run in the Linux sandbox and ask for approval when needed.",
       "off": "No prompts, no sandbox — everything runs."
     },
     "fallbackNotice": "Sandbox protection is unavailable (diagnostic: {{code}}). Switched to Manual mode; commands will not run without sandbox protection.",

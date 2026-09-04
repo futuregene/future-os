@@ -199,11 +199,11 @@ fn shell_schema() -> serde_json::Value {
             },
             "escalated": {
                 "type": "boolean",
-                "description": "Request to run this command outside the sandbox (requires user approval). Set only after a command failed due to sandbox restrictions (blocked network or a write outside the workspace) and it genuinely needs those permissions."
+                "description": "Request user approval to run this command outside the sandbox. Run inside the sandbox first by default; do not request approval merely because you suspect a restriction. Set escalated to true only when execution results indicate that a sandbox restriction blocked an operation required to complete the task. Preserve the actual failure status and error output of required operations: do not hide failures with || true, force a successful exit, or suppress error output, as this can prevent sandbox restriction detection. Tolerate only failures that are explicitly safe to ignore, and never treat those operations as successful. An overall exit code of 0 does not mean every operation succeeded. When requesting a retry, include only the blocked necessary operations where possible to avoid repeating steps that already succeeded."
             },
             "justification": {
                 "type": "string",
-                "description": "One-sentence reason why escalated permissions are needed. Required when escalated is true."
+                "description": "Explain in one sentence why this command needs to run outside the sandbox. Required when escalated is true."
             },
             "additional_permissions": {
                 "type": "object",
