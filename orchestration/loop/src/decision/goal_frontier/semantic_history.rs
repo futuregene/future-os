@@ -41,7 +41,6 @@ pub const KIND_REPLAN_ACKED: &str = "replan_acked";
 pub const KIND_MONITOR_POLL: &str = "monitor_poll";
 pub const KIND_GATE_RESOLVED: &str = "gate_resolved";
 pub const KIND_DELIVERY_OUTCOME: &str = "delivery_outcome";
-pub const KIND_ROLE_SUCCESSION: &str = "role_succession";
 pub const KIND_TURN_NO_PROGRESS: &str = "turn_no_progress";
 
 /// Truncate a summary to the public-safe bound.

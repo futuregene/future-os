@@ -174,11 +174,6 @@ run 如何发起、worker 如何触达编排会话，属于架构决策（上述
   随时直接介入（`todo update`、`worker stop`、手动 `todo complete`）：
   下层自动化，顶端是一个人。
 
-在一个多 agent goal 内，**peer worker 互备**：契约的 `backup_for` 边为
-每个 worker 声明一个替补，当 primary 的 lease 过期或心跳静默时替补自动
-晋升（succession）。那是 *worker* 层的冗余——peer 之间的横向互备；它不
-监督或替换编排者。
-
 ## 看板的结构：todo、依赖、worker
 
 三种关系定义了多 worker 工作如何在看板上铺开——关键在于，信息如何在不
@@ -206,8 +201,8 @@ worker 并不是在收消息——那*就是*它的 todo：它被 `--blocks` 排
 **扇出 → 汇总 → 扇出，用这些概念说。** 用不同模型沿不同方向 spawn 若干
 worker（并行 todo，互无边）；一个汇总 todo `--blocks` 它们全部，于是下游
 worker 读它们的产物做综合；第二轮 todo `--blocks` 这个汇总。编组、选模型、
-分方向、定轮次，全是**编排层**的决策（编排者塑形 contract 拓扑、todo
-文本、spawn 配置）；看板只保证顺序（边）与互斥（lease），并不建模*哪个
+分方向、定轮次，全是**编排层**的决策（编排者塑形 todo 文本、`--blocks`
+接线与 spawn 配置）；看板只保证顺序（边）与互斥（lease），并不建模*哪个
 产物流向哪个 todo*——这部分接线由编排者写进 todo 文本和 acceptance 契约。
 
 ## steer 与重配一个运行中的 worker
@@ -292,10 +287,10 @@ ACTIVE 或 PARKED 中的会话都可能被中断（parked 会话不会撞 429，
   污染：**应 fresh**。
 - `HardError` — 回合出错且无可恢复的基础设施原因：**应 fresh**。
 
-内核只提供这个分类（观察数据）；resume-vs-fresh 由调用方经
-`--session-policy` / `--resume-session` 显式决策，默认 `auto` 只 resume
-内核判定「可恢复」（`InfraRecoverable`）的会话。内核依然是纯工具——
-提供状态和信号，但**从不替 agent 做决策**。
+内核只提供这个分类（观察数据）；resume-vs-fresh 由调用方显式决策。
+**默认即 fresh —— 没有 `--session-policy` 标志。** 唯一恢复路径是显式 pin
+（`--resume-session <id>`），因为 goal 级 retention 只存单个 id，并行 worker
+下有歧义。内核依然是纯工具——提供状态和信号，但**从不替 agent 做决策**。
 
 两条界定让生命周期保持简单：泊车发生在 **turn 边界**（不做 turn 中途的
 抢占式挂起或检查点），会话绑定**一个 goal**（不跨 goal 复用——上下文

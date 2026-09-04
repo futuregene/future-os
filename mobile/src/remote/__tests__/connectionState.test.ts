@@ -10,7 +10,13 @@ import {
 } from "../connectionState";
 import { RemoteClient, type RemoteClientCallbacks } from "../client";
 import type { RemoteCredentials } from "../types";
-import { ErrorCode, NatsError } from "nats.ws";
+import {
+  AuthorizationError,
+  PermissionViolationError,
+  ProtocolError,
+  TimeoutError,
+  UserAuthenticationExpiredError,
+} from "@nats-io/nats-core";
 
 const ALL_STATES: ConnectionState[] = [
   "stopped",
@@ -361,6 +367,30 @@ describe("RemoteClient terminal iterator recovery", () => {
     }
   });
 
+  test.each([
+    new UserAuthenticationExpiredError("user authentication expired"),
+    new AuthorizationError("account authentication expired"),
+  ])("an expired status refreshes credentials: %s", async error => {
+    const { client } = recoveryClient();
+    const refreshToken = jest.fn();
+    const testClient = client as unknown as {
+      watchStatus(connection: unknown, generation: number): void;
+      refreshToken(): Promise<void>;
+      failGeneration(error: unknown, generation: number): void;
+      recordFailure(category: string, error: unknown): void;
+    };
+    testClient.refreshToken = refreshToken;
+    testClient.failGeneration = jest.fn();
+    testClient.recordFailure = jest.fn();
+    async function* statuses() {
+      yield { type: "error", error };
+    }
+    testClient.watchStatus({ status: statuses }, 0);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(refreshToken).toHaveBeenCalledTimes(1);
+    expect(testClient.recordFailure).toHaveBeenCalledWith("credential_expired", error.message);
+  });
+
   test("a permission status becomes a terminal service failure", async () => {
     const { client } = recoveryClient();
     const recovery = jest.fn();
@@ -373,7 +403,10 @@ describe("RemoteClient terminal iterator recovery", () => {
     testClient.handleFailure = recovery;
     testClient.recordFailure = recordFailure;
     async function* statuses() {
-      yield { type: "error", data: ErrorCode.PermissionsViolation };
+      yield {
+        type: "error",
+        error: new PermissionViolationError("permission denied", "subscription", "events"),
+      };
     }
     testClient.watchStatus({ status: statuses }, 0);
     await new Promise(resolve => setTimeout(resolve, 0));
@@ -381,10 +414,7 @@ describe("RemoteClient terminal iterator recovery", () => {
       expect.objectContaining({ message: expect.stringContaining("nats_authorization_rejected") }),
     );
     expect(recovery).toHaveBeenCalledTimes(1);
-    expect(recordFailure).toHaveBeenCalledWith(
-      "service_authorization",
-      ErrorCode.PermissionsViolation,
-    );
+    expect(recordFailure).toHaveBeenCalledWith("service_authorization", "permission denied");
   });
 
   test("a protocol status fails its generation once without exhaustion fallback", async () => {
@@ -396,7 +426,7 @@ describe("RemoteClient terminal iterator recovery", () => {
     };
     testClient.failGeneration = failGeneration;
     async function* statuses() {
-      yield { type: "error", data: ErrorCode.ProtocolError };
+      yield { type: "error", error: new ProtocolError("invalid protocol") };
     }
     testClient.watchStatus({ status: statuses }, 0);
     await new Promise(resolve => setTimeout(resolve, 0));
@@ -601,7 +631,7 @@ describe("RemoteClient request retry classification", () => {
       const { client } = recoveryClient();
       const request = jest
         .fn()
-        .mockRejectedValueOnce(new NatsError("timeout", ErrorCode.Timeout))
+        .mockRejectedValueOnce(new TimeoutError())
         .mockResolvedValueOnce({ data: response({ success: true, data: { ok: true } }) });
       (client as unknown as { connection: { request: jest.Mock } | null }).connection = { request };
       const recover = jest.spyOn(client, "recoverAfterTransientRequest").mockResolvedValue(true);
@@ -636,9 +666,7 @@ describe("RemoteClient request retry classification", () => {
     const { client } = recoveryClient();
     const recoverNow = jest.spyOn(client, "recoverNow").mockResolvedValue(undefined);
 
-    await expect(
-      client.recoverAfterTransientRequest(new NatsError("timeout", ErrorCode.Timeout)),
-    ).resolves.toBe(true);
+    await expect(client.recoverAfterTransientRequest(new TimeoutError())).resolves.toBe(true);
     await expect(client.recoverAfterTransientRequest(new Error("business_error"))).resolves.toBe(
       false,
     );

@@ -881,7 +881,7 @@ pub struct Goal {
     /// Session retention: the last run's agent session that MAY be resumable.
     /// The loop kernel never decides resume-vs-fresh itself — it only records
     /// WHY the session was interrupted (the failure classification) and keeps
-    /// the session id on disk; the CALLER (orchestrator / `run --session-policy`)
+    /// the session id on disk; the CALLER (orchestrator / `run --resume-session`)
     /// decides whether to resume it or start fresh. Written at run exit.
     #[serde(default)]
     pub session_retention: Option<SessionRetention>,
@@ -971,14 +971,14 @@ pub struct TurnNoProgressRecord {
     pub ts: u64,
 }
 
-/// O3: default idle-turn no-progress window (15 minutes). A turn that ends
+/// O3: default idle-turn no-progress window (1 hour). A turn that ends
 /// without any write-class tool (write/edit/shell) starting inside this
 /// window is ledgered as `TurnNoProgress`.
-pub const TURN_NO_PROGRESS_IDLE_SECS_DEFAULT: u64 = 15 * 60;
+pub const TURN_NO_PROGRESS_IDLE_SECS_DEFAULT: u64 = 60 * 60;
 
 /// O3: effective no-progress window (secs). The `FUTURE_LOOP_NO_PROGRESS_SECS`
 /// env var shrinks it in tests (mirrors the FUTURE_LOOP_AGENT_ADDR hook);
-/// invalid or non-positive values fall back to the 15-minute default.
+/// invalid or non-positive values fall back to the 1-hour default.
 pub fn no_progress_idle_secs() -> u64 {
     std::env::var("FUTURE_LOOP_NO_PROGRESS_SECS")
         .ok()

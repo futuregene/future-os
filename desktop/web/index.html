@@ -169,7 +169,7 @@
 </div>
 
 <script type="module">
-import { connect, jwtAuthenticator } from "https://cdn.jsdelivr.net/npm/nats.ws@1/+esm";
+import { wsconnect, jwtAuthenticator } from "https://cdn.jsdelivr.net/npm/@nats-io/nats-core@3.4.0/+esm";
 import { createUser, fromPublic, fromSeed } from "https://cdn.jsdelivr.net/npm/nkeys.js@1/+esm";
 
 const $ = (id) => document.getElementById(id);
@@ -425,7 +425,7 @@ async function connectWithCredentials(creds) {
     inboxPrefix: `p.${pair}.rep.${creds.deviceId}`,
     authenticator: jwtAuthenticator(creds.userJwt, seed),
   };
-  nc = await connect(opts);
+  nc = await wsconnect(opts);
   const confirmation = await ensureHandshake(creds);
   storeCredentials(creds);
   onPresenceUpdate(confirmation.presence);
@@ -628,7 +628,7 @@ function updateStreamingState(streaming) {
   }
 }
 
-// core pub/sub 在断连期间的事件会丢；nats.ws 会自动重连并恢复订阅，但那段空窗的
+// core pub/sub 在断连期间的事件会丢；NATS 会自动重连并恢复订阅，但那段空窗的
 // 事件追不回来。重连后若已选会话，重跑一次 selectSession（拉历史 + 回放当前轮），
 // seenEvents 去重保证不重复。
 async function watchConnStatus() {

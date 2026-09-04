@@ -325,36 +325,18 @@ fn replay_folds_semantic_events_from_the_ledger() {
             ts: 12,
         })
         .unwrap();
-    store
-        .append(Event::SuccessionOccurred {
-            goal_id: "g".into(),
-            primary: "p".into(),
-            backup: "b".into(),
-            reason: "offline".into(),
-            ts: 13,
-        })
-        .unwrap();
     let goal = store.replay("g").unwrap().unwrap();
     let kinds: Vec<&str> = goal
         .semantic_history
         .iter()
         .map(|e| e.kind.as_str())
         .collect();
-    assert_eq!(
-        kinds,
-        vec![
-            "run_landed",
-            "todo_completed",
-            "replan_acked",
-            "role_succession"
-        ]
-    );
+    assert_eq!(kinds, vec!["run_landed", "todo_completed", "replan_acked"]);
     assert_eq!(
         goal.semantic_history[0].summary, "completed — artifact one",
         "run summary = terminal state + evidence excerpt"
     );
     assert_eq!(goal.semantic_history[1].todo_id.as_deref(), Some("T1"));
-    assert_eq!(goal.semantic_history[3].summary, "p→b (offline)");
 }
 
 #[test]

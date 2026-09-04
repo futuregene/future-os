@@ -20,12 +20,12 @@ use std::collections::HashMap;
 use std::time::SystemTime;
 
 use crate::agent_client::TurnProgressTracker;
-use crate::cli::registry::{CommandRegistry, Journey};
+use crate::cli::registry::{CommandRegistry, FlagHelp, Journey};
 use crate::decision::{complete_todo, decide_for};
 use crate::executor::{execute_turn, writeback};
 use crate::state::{now_epoch, Goal, TaskClass, Todo, TodoStatus};
 use crate::store::{Event, Store};
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 
 /// Materialize the project-local active-state projection for one goal:
 /// `<cwd>/.future/loop/goals/<id>/ACTIVE_GOAL_STATE.md`.
@@ -358,8 +358,20 @@ fn build_cli_registry() -> CommandRegistry {
     r.command(
         agent,
         "agent",
-        "register/onboard agents + multi-agent contract/recipe/succession/collective surface (G12)",
-        "agent onboard --goal G --agent-id A [--recipe N] | list|contract|recipe|succession|collective --goal G",
+        "register/onboard agents (parallel-worker identity)",
+        "agent onboard --goal G --agent-id A | list --goal G",
+    );
+    r.subcommand(
+        "agent",
+        "onboard",
+        "register a peer + declare the workspace-guard write set",
+        "onboard --goal G --agent-id A [--workspace p1,p2]",
+    );
+    r.subcommand(
+        "agent",
+        "list",
+        "registered agents + live lease status",
+        "list --goal G [--format json]",
     );
     r.command(
         agent,
@@ -376,8 +388,8 @@ fn build_cli_registry() -> CommandRegistry {
     r.command(
         agent,
         "supervisor",
-        "supervisor register|steer|proposal/receipt events (G-16)",
-        "supervisor register|steer|propose|receipt|events --goal G ...",
+        "supervisor register|steer|events (G-16)",
+        "supervisor register|steer|events --goal G ...",
     );
     r.subcommand(
         "supervisor",
@@ -390,18 +402,6 @@ fn build_cli_registry() -> CommandRegistry {
         "steer",
         "interrupt the in-flight worker turn and inject an instruction",
         "steer --goal G [--agent-id A] --instruction \"...\"",
-    );
-    r.subcommand(
-        "supervisor",
-        "propose",
-        "record a supervisor proposal event",
-        "propose --goal G [--agent-id A] ...",
-    );
-    r.subcommand(
-        "supervisor",
-        "receipt",
-        "record a proposal receipt event",
-        "receipt --goal G [--agent-id A] ...",
     );
     r.subcommand(
         "supervisor",
@@ -542,7 +542,7 @@ fn build_cli_registry() -> CommandRegistry {
         ops,
         "run",
         "drive one bounded gRPC turn (--agent-id for lease coordination, or --anonymous; auto-registers)",
-        "run --goal G --agent-id A [--model M] [--thinking-level L] [--max-turns N] [--max-incomplete-retries N] [--lease-secs N] [--force-workspace] [--session-policy auto|fresh|resume] [--resume-session ID] [--anonymous]",
+        "run --goal G --agent-id A [--model M] [--thinking-level L] [--max-turns N] [--max-incomplete-retries N] [--lease-secs N] [--force-workspace] [--resume-session ID] [--anonymous]",
     );
 
     let work_items = r.group(
@@ -590,6 +590,864 @@ fn build_cli_registry() -> CommandRegistry {
         "canary smoke [--profile core-control-plane|release-gate|premerge] [--json] | canary premerge [--json]",
     );
 
+    // ── per-flag help (rendered by `<command> --help` / `<command> <sub>
+    //    --help`) — defaults, constraints, and gotchas sourced from each
+    //    handler so the help text can never drift from the code. ──────────
+
+    r.flags(
+        "goal",
+        &[
+            (
+                "--objective TEXT",
+                "goal objective",
+                "required; this is the durable goal statement",
+            ),
+            (
+                "--cwd DIR",
+                "working directory for the goal",
+                "defaults to the process cwd",
+            ),
+            (
+                "--goal-doc TEXT",
+                "seed the GOAL.md workbench",
+                "written to <cwd>/GOAL.md when given",
+            ),
+            (
+                "--goal-id ID",
+                "pin the goal id",
+                "defaults to an auto-generated id; re-init with the same id is idempotent",
+            ),
+        ],
+    );
+
+    r.flags(
+        "status",
+        &[
+            (
+                "--goal G",
+                "limit the projection to one goal",
+                "omitted → every registered goal",
+            ),
+            (
+                "--format json",
+                "machine-readable projection",
+                "goal + todos with priority/class/status/blocks + terminal flag",
+            ),
+        ],
+    );
+
+    r.flags(
+        "ui",
+        &[
+            (
+                "--port N",
+                "listen port",
+                "default 7717; 0 picks a free port",
+            ),
+            (
+                "--root DIR",
+                "state root to serve",
+                "defaults to the loop state root",
+            ),
+            (
+                "--no-open",
+                "do not open the browser",
+                "the dashboard is strictly read-only (GET only)",
+            ),
+        ],
+    );
+
+    r.flags(
+        "models",
+        &[(
+            "--format json",
+            "machine-readable model list",
+            "auth.json/models.json merged with the built-in catalog",
+        )],
+    );
+
+    r.flags(
+        "diagnose",
+        &[
+            ("--goal G", "goal to diagnose", "required"),
+            (
+                "--format json",
+                "machine-readable diagnostic",
+                "decision + open todos/gates + projection gap + recent runs",
+            ),
+        ],
+    );
+
+    r.subcommand_flags(
+        "todo",
+        "add",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--text TEXT", "todo text", "required; must be non-empty"),
+            ("--priority P0|P1|P2", "priority (P0 urgent)", "defaults to P1; also prefixes the text with [P0]/[P1]/[P2]"),
+            ("--blocks T", "blocking todo ids", "comma-separated; a bare `--blocks` reads as `true` and is rejected"),
+            ("--verify CMD", "validator command", "e.g. `cargo check -p ...`; advisory for code-like todos so uncompilable work can't be marked done"),
+            ("--acceptance a,b", "completion contract tokens", "evidence must contain every token (case-insensitive) before `todo complete` accepts"),
+            ("--owner A", "pin the todo to agent A", "absent → shared pool any worker may claim"),
+            ("--class C", "task class", "see --role; combo is validated (advancement|monitor|blocker|coordination|user_gate|user_action)"),
+            ("--role R", "actor role", "agent|user; valid combos: agent+advancement/monitor/blocker/coordination, any+user_gate, user+user_action"),
+            ("--gate-question Q", "gate question", "for user_gate; defaults to the text"),
+            ("--action-kind K", "free-form action tag", "optional"),
+            ("--defer-secs N", "defer N seconds from now", "marks the todo Deferred with a real resume_when deadline"),
+            ("--resume-when N", "defer N seconds or text hint", "numeric N = real deadline (same as --defer-secs); non-numeric = text hint with a 1h placeholder"),
+            ("--title T", "short title", "optional"),
+            ("--task-repository R", "task repository label", "optional"),
+            ("--continuation-policy P", "continuation policy", "optional"),
+            ("--required-write-scope P", "write scopes", "comma-separated"),
+            ("--goal-bound", "goal-bound flag", "boolean"),
+            ("--global-gate", "global gate flag", "boolean; a user_gate + global_gate implies goal_bound"),
+            ("--note TEXT", "free-form note", "optional"),
+            ("--monitor-target T", "monitor target", "G-12 monitor metadata"),
+            ("--monitor-policy P", "monitor policy", "G-12 monitor metadata"),
+            ("--cadence C", "monitor cadence", "e.g. 15m/1h/2d; drives the first due time"),
+            ("--max-validation-attempts N", "validation retry cap", "clamped to >= 1"),
+        ],
+    );
+
+    r.subcommand_flags(
+        "todo",
+        "update",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--todo-id T", "todo id", "required"),
+            ("--text TEXT", "replace the text", "optional"),
+            (
+                "--status S",
+                "status",
+                "open|blocked|deferred|superseded; `done` is rejected (use `todo complete`)",
+            ),
+            (
+                "--priority P0|P1|P2",
+                "priority",
+                "validated against P0|P1|P2",
+            ),
+            (
+                "--blocks T",
+                "replace the blocking set",
+                "comma-separated; `--blocks \"\"` clears it; absent → untouched",
+            ),
+            (
+                "--acceptance a,b",
+                "replace the acceptance contract",
+                "optional",
+            ),
+            ("--owner A", "reassign the owner", "optional"),
+            ("--evidence E", "attach evidence", "optional"),
+            ("--note TEXT", "note", "optional"),
+            (
+                "--resume-when N",
+                "defer or text hint",
+                "numeric N = defer N seconds; non-numeric = text hint (no deadline) with a warning",
+            ),
+        ],
+    );
+
+    r.subcommand_flags(
+        "todo",
+        "complete",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--todo-id T", "todo id", "required"),
+            (
+                "--no-follow-up",
+                "declare no successor",
+                "advancement todos need this OR --successor",
+            ),
+            (
+                "--successor T2",
+                "declare the successor todo",
+                "alternative to --no-follow-up",
+            ),
+            (
+                "--evidence E",
+                "what actually landed",
+                "advancement todos require non-empty evidence unless --force",
+            ),
+            (
+                "--force",
+                "override evidence/acceptance/gate checks",
+                "explicit operator closeout only",
+            ),
+        ],
+    );
+
+    r.subcommand_flags(
+        "todo",
+        "supersede",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--todo-id T",
+                "todo id",
+                "required; must be unfinished (done todos refuse)",
+            ),
+            (
+                "--reason R",
+                "why it is obsolete",
+                "optional; also stops any detached run holding this todo",
+            ),
+        ],
+    );
+
+    r.flags(
+        "gate",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--todo-id G1",
+                "the user_gate todo id",
+                "required; fails closed on non-gate todos",
+            ),
+            (
+                "--decision D",
+                "the operator decision",
+                "required; recorded and flows into blocked todos' packets",
+            ),
+            ("--note N", "decision note", "optional"),
+        ],
+    );
+
+    r.flags(
+        "replan",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--delta-kind K", "frontier-changing delta kind", "ack requires at least one frontier-changing kind (vision_patch|no_followup|successor_or_supersede|runnable_todo_set|...)"),
+            ("--format json", "machine-readable output", "for `replan obligations` / `replan rules show`"),
+            ("--rule-ids R1,R2", "explicit rule set for `replan rules set`", "full replace; `--rule-ids \"\"` resets to the default set"),
+        ],
+    );
+
+    r.flags(
+        "frontier",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--format json",
+                "machine-readable frontier projection",
+                "outcome segments + replan rule + terminal judgement + semantic history",
+            ),
+        ],
+    );
+
+    r.flags(
+        "lease",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--todo-id T", "todo id", "required"),
+            ("--agent-id A", "agent id", "defaults to `default-agent`"),
+            (
+                "--lease-secs N",
+                "lease length in seconds",
+                "claim/renew only",
+            ),
+            (
+                "--force",
+                "override the workspace conflict guard",
+                "claim only; degrades parallel claims to serial",
+            ),
+            (
+                "--format json",
+                "machine-readable status",
+                "for `lease status`",
+            ),
+        ],
+    );
+
+    r.flags(
+        "task-graph",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--format json",
+                "machine-readable graph",
+                "nodes + edges + topological order; cycles fail closed",
+            ),
+        ],
+    );
+
+    r.flags(
+        "agent",
+        &[
+            ("--goal G", "goal id", "required for `agent register`"),
+            (
+                "--agent-id A",
+                "agent id",
+                "required; auto-registered on first `run` use",
+            ),
+            (
+                "--workspace P",
+                "declared write set",
+                "comma-separated paths; drives the P0-1 workspace guard",
+            ),
+        ],
+    );
+
+    r.subcommand_flags(
+        "agent",
+        "onboard",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--agent-id A", "agent id", "required"),
+            (
+                "--workspace P",
+                "declared write set",
+                "comma-separated paths",
+            ),
+        ],
+    );
+
+    r.subcommand_flags(
+        "agent",
+        "list",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--format json",
+                "machine-readable agent list",
+                "agent → status + workspaces + capabilities + last-active",
+            ),
+        ],
+    );
+
+    r.flags(
+        "scope",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--agent-id A", "agent id", "required"),
+            ("--exclude X", "todo ids to exclude", "comma-separated"),
+        ],
+    );
+
+    r.flags(
+        "lane",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--agent-id A", "agent id", "required"),
+        ],
+    );
+
+    r.subcommand_flags(
+        "supervisor",
+        "register",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--session-id S",
+                "supervisor agent session id",
+                "required; the up-channel target workers push intervention reports to",
+            ),
+        ],
+    );
+
+    r.subcommand_flags(
+        "supervisor",
+        "steer",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--agent-id A",
+                "target worker",
+                "omitted → broadcast to all workers",
+            ),
+            (
+                "--instruction TEXT",
+                "the mid-turn redirect",
+                "required; interrupts the in-flight turn and injects the instruction",
+            ),
+        ],
+    );
+
+    r.subcommand_flags(
+        "supervisor",
+        "events",
+        &[("--goal G", "goal id", "required")],
+    );
+
+    r.flags(
+        "report",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--agent-id A",
+                "reporting worker",
+                "optional; truncated to 128 chars",
+            ),
+            (
+                "--todo-id T",
+                "related todo",
+                "optional; truncated to 128 chars",
+            ),
+            (
+                "--message TEXT",
+                "the milestone note",
+                "required; truncated to 500 chars; projection-only (never a push)",
+            ),
+        ],
+    );
+
+    r.subcommand_flags(
+        "worker",
+        "list",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--format json",
+                "machine-readable worker list",
+                "agent → backing session + running/ended/idle status",
+            ),
+        ],
+    );
+
+    r.subcommand_flags(
+        "worker",
+        "stop",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--agent-id A",
+                "one worker to stop",
+                "either --agent-id or --all is required",
+            ),
+            (
+                "--all",
+                "stop every worker with a live session",
+                "broadcast stop signal",
+            ),
+            (
+                "--delete",
+                "also reclaim the backing agent session",
+                "a later `run` then starts fresh",
+            ),
+        ],
+    );
+
+    r.subcommand_flags(
+        "worker",
+        "tail",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--agent-id A",
+                "one worker's latest run",
+                "omitted → latest run across all workers",
+            ),
+            ("--lines N", "how many events to show", "default 20"),
+            (
+                "--raw",
+                "dump the .live.jsonl verbatim",
+                "condensed tool/usage view is the default",
+            ),
+            ("--format json", "machine-readable", "same as --raw"),
+        ],
+    );
+
+    r.flags(
+        "doctor",
+        &[
+            (
+                "--goal G",
+                "limit ledger/decision checks to one goal",
+                "omitted → every registered goal",
+            ),
+            (
+                "--agent-addr ADDR",
+                "probe agent gRPC reachability",
+                "omitted → the agent probe is skipped",
+            ),
+        ],
+    );
+
+    r.flags(
+        "history",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--format json",
+                "machine-readable run history",
+                "ledger-derived RunRecord list",
+            ),
+        ],
+    );
+
+    r.flags(
+        "turn",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--todo-id T", "todo id", "required"),
+            ("--agent-id A", "agent id", "optional; scopes the decision"),
+        ],
+    );
+
+    r.flags(
+        "todo-event",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--todo-id T", "todo id", "required"),
+            (
+                "--format json",
+                "machine-readable event history",
+                "events touching this todo",
+            ),
+        ],
+    );
+
+    r.flags(
+        "evidence-log",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--todo-id T", "limit to one todo", "omitted → all todos"),
+            (
+                "--format json",
+                "machine-readable evidence trail",
+                "attached + run + completion evidence",
+            ),
+        ],
+    );
+
+    r.flags(
+        "backup",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--list",
+                "list existing backups",
+                "mutually exclusive with --restore",
+            ),
+            (
+                "--restore DIR",
+                "restore a point-in-time snapshot",
+                "replaces current state",
+            ),
+        ],
+    );
+
+    r.flags(
+        "authority",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--write-scope P",
+                "declared write scope",
+                "comma-separated paths",
+            ),
+            (
+                "--require-approval K",
+                "approval-gated action kinds",
+                "comma-separated",
+            ),
+        ],
+    );
+
+    r.flags(
+        "profile",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--outcome-floor N",
+                "outcome floor streak threshold",
+                "must be a number",
+            ),
+        ],
+    );
+
+    r.flags(
+        "quota",
+        &[
+            (
+                "--goal G",
+                "goal id",
+                "required for should-run/usage/spend/decisions",
+            ),
+            (
+                "--agent-id A",
+                "scope the decision",
+                "`quota should-run` only",
+            ),
+            (
+                "--all",
+                "aggregate across every goal",
+                "`quota usage` only; alternative to --goal",
+            ),
+            (
+                "--limit N",
+                "how many decisions to show",
+                "`quota decisions` only; default 10",
+            ),
+            (
+                "--format json",
+                "machine-readable output",
+                "should-run/usage/decisions",
+            ),
+        ],
+    );
+
+    r.flags(
+        "scheduler",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--agent-id A", "agent id", "defaults to `codex-app`"),
+            (
+                "--progression 15,30,60",
+                "backoff progression minutes",
+                "tick only; bootstrap only — sets the sequence on the FIRST tick, ignored once state exists",
+            ),
+            ("--action A", "tick action", "tick/ack; default tick_next"),
+            (
+                "--threshold-secs N",
+                "liveness threshold",
+                "liveness only; default 2h (7200s)",
+            ),
+            (
+                "--target-rrule R",
+                "target RRULE",
+                "record-host-failure only; required",
+            ),
+            (
+                "--observed-rrule R",
+                "observed host RRULE",
+                "record-host-failure only",
+            ),
+            (
+                "--failure-kind K",
+                "failure kind",
+                "record-host-failure only; required",
+            ),
+            (
+                "--failure-count N",
+                "failure count",
+                "record-host-failure only; default 1",
+            ),
+            ("--rrule R", "RRULE for the ack", "ack only"),
+            (
+                "--source S",
+                "ack source",
+                "ack only; default scheduler_cli",
+            ),
+            ("--format json", "machine-readable output", "show/liveness"),
+        ],
+    );
+
+    r.flags(
+        "store",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--format json",
+                "machine-readable verify report",
+                "verify only",
+            ),
+            (
+                "--repair",
+                "rebuild a drifted run index",
+                "verify only; non-destructive",
+            ),
+        ],
+    );
+
+    r.flags(
+        "backfill",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--from PATH",
+                "source markdown workbench",
+                "omitted → the active state markdown is derived",
+            ),
+            (
+                "--privacy L",
+                "public_safe|local_private|private_pointer",
+                "default local_private",
+            ),
+            (
+                "--dry-run",
+                "print the events without appending",
+                "read-only preview",
+            ),
+        ],
+    );
+
+    r.flags(
+        "privacy",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--level L", "privacy tier", "default public_safe"),
+            (
+                "--format json",
+                "machine-readable projections",
+                "includes the privacy report + public-safe markdown + status cache",
+            ),
+        ],
+    );
+
+    r.flags(
+        "runs",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--keep N",
+                "how many latest runs to keep",
+                "compact/retention; default 50",
+            ),
+            (
+                "--cutoff TS",
+                "archive runs before this epoch",
+                "compact only",
+            ),
+            (
+                "--rebuild",
+                "rebuild the index from run files",
+                "index only",
+            ),
+            ("--format json", "machine-readable output", "history only"),
+        ],
+    );
+
+    r.flags(
+        "heartbeat-prompt",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--agent-id A", "agent id", "optional; scopes the decision"),
+        ],
+    );
+
+    r.flags(
+        "worker-bridge",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--agent-id A", "agent id", "optional"),
+            ("--max-turns N", "max turn iterations", "default 6"),
+        ],
+    );
+
+    r.flags(
+        "run",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--agent-id A", "worker identity for lease coordination", "REQUIRED for coordinated runs; auto-registered on first use; use a unique id per concurrent worker"),
+            ("--anonymous", "legacy uncoordinated one-shot", "claims nothing and hides nothing — two agentless runs deterministically race on the same todo"),
+            ("--model M", "model override", "sets the session model before the turn loop"),
+            ("--thinking-level L", "thinking level override", "sets the session thinking level before the turn loop"),
+            ("--max-turns N", "max turn iterations", "default 6"),
+            ("--max-incomplete-retries N", "incomplete retry cap", "default 3"),
+            ("--lease-secs N", "task lease length", "default 4h (14400s)"),
+            ("--force-workspace", "force workspace override", "boolean"),
+            ("--resume-session ID", "resume this exact agent session", "fresh is the default; a dead id falls back to fresh automatically"),
+            ("--detach", "internal: marks the detached child", "the run re-executes itself detached by default; set FUTURE_LOOP_NO_DETACH=1 to run foreground"),
+        ],
+    );
+
+    r.flags(
+        "attention",
+        &[
+            (
+                "--goal G",
+                "one goal's attention item",
+                "alternative to --all",
+            ),
+            ("--all", "every registered goal", "alternative to --goal"),
+            (
+                "--format json",
+                "machine-readable attention queue",
+                "includes role-succession hints",
+            ),
+        ],
+    );
+
+    r.flags(
+        "inbox",
+        &[
+            (
+                "--project DIR",
+                "project directory",
+                "defaults to the process cwd",
+            ),
+            (
+                "--scope S",
+                "addressed_only|configured_chat_all",
+                "default addressed_only",
+            ),
+            ("--name NAME", "operator display name", "default operator"),
+            (
+                "--format json",
+                "machine-readable urgency",
+                "content is never returned",
+            ),
+        ],
+    );
+
+    r.flags(
+        "delivery",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--todo-id T", "todo id", "record only; required"),
+            (
+                "--outcome O",
+                "delivered|verified|failed|rework",
+                "record only; required; transition validated against current state",
+            ),
+            ("--note N", "outcome note", "record only"),
+            (
+                "--turns N",
+                "follow-through threshold",
+                "followthrough only; default 3",
+            ),
+            ("--format json", "machine-readable output", "status only"),
+        ],
+    );
+
+    r.flags(
+        "registry",
+        &[
+            (
+                "--format json",
+                "machine-readable registry",
+                "groups + commands",
+            ),
+            (
+                "--include-experimental",
+                "include experimental commands",
+                "hidden by default",
+            ),
+        ],
+    );
+
+    r.flags(
+        "commands",
+        &[
+            (
+                "--format json",
+                "machine-readable journey view",
+                "five operator journeys",
+            ),
+            (
+                "--include-experimental",
+                "include experimental commands",
+                "hidden by default",
+            ),
+        ],
+    );
+
+    r.flags(
+        "canary",
+        &[
+            (
+                "--profile P",
+                "smoke profile",
+                "core-control-plane|release-gate|premerge; default release-gate",
+            ),
+            (
+                "--json",
+                "machine-readable result",
+                "fails closed (non-zero exit) on any check failure",
+            ),
+        ],
+    );
+
     // P1-9: journey metadata overlay (presentation only — the registry
     // itself stays the flat machine catalog).
     for (name, journey) in JOURNEY_ASSIGNMENTS {
@@ -615,7 +1473,8 @@ fn cli_help(registry: &CommandRegistry, include_experimental: bool) -> Result<()
 }
 
 /// P0-3②: render the per-command help for `<command> --help` — the command's
-/// summary + usage from the registry (pure, unit-testable; the caller prints).
+/// summary + usage + per-flag details from the registry (pure, unit-testable;
+/// the caller prints).
 fn render_command_help(
     registry: &CommandRegistry,
     command: &str,
@@ -631,6 +1490,10 @@ fn render_command_help(
             "{} — {}{}\n\nusage: {}\n\ngroup: {} — {}\n",
             def.name, def.summary, mark, def.usage, group.name, group.summary
         );
+        if !def.flags.is_empty() {
+            out.push_str("\nflags:\n");
+            out.push_str(&render_flags(&def.flags));
+        }
         if !def.subcommands.is_empty() {
             out.push_str("\nsubcommands:\n");
             for sub in &def.subcommands {
@@ -648,6 +1511,27 @@ fn render_command_help(
     }
 }
 
+/// Render one flag list: `<flag>  what` per line, `notes` (defaults /
+/// constraints / gotchas) indented on the following line. Over-long flag
+/// tokens wrap onto their own line; `what` and `notes` align to the same
+/// column.
+fn render_flags(flags: &[FlagHelp]) -> String {
+    const WIDTH: usize = 24;
+    let mut out = String::new();
+    for f in flags {
+        if f.flag.len() >= WIDTH {
+            out.push_str(&format!("  {}\n", f.flag));
+            out.push_str(&format!("  {:<WIDTH$} {}\n", "", f.what));
+        } else {
+            out.push_str(&format!("  {:<WIDTH$} {}\n", f.flag, f.what));
+        }
+        if !f.notes.is_empty() {
+            out.push_str(&format!("  {:<WIDTH$} {}\n", "", f.notes));
+        }
+    }
+    out
+}
+
 /// Render `<command> <sub> --help` — the exact usage of one verb (steer /
 /// update / stop / …) so an AI orchestrator discovers its flags directly
 /// instead of parsing a merged top-level usage line.
@@ -658,17 +1542,24 @@ fn render_subcommand_help(
     include_experimental: bool,
 ) -> String {
     match registry.find_subcommand(command, sub, include_experimental) {
-        Some((group, parent, def)) => format!(
-            "{} {} — {}\n\nusage: {} {}\n\ngroup: {} — {}\n\nfull command list: {} --help\n",
-            parent.name,
-            def.name,
-            def.summary,
-            parent.name,
-            def.usage,
-            group.name,
-            group.summary,
-            prog()
-        ),
+        Some((group, parent, def)) => {
+            let mut out = format!(
+                "{} {} — {}\n\nusage: {} {}\n\ngroup: {} — {}\n",
+                parent.name,
+                def.name,
+                def.summary,
+                parent.name,
+                def.usage,
+                group.name,
+                group.summary,
+            );
+            if !def.flags.is_empty() {
+                out.push_str("\nflags:\n");
+                out.push_str(&render_flags(&def.flags));
+            }
+            out.push_str(&format!("\nfull command list: {} --help\n", prog()));
+            out
+        }
         None => format!(
             "unknown subcommand `{sub}` for `{command}` (try `{} {command} --help`)\n",
             prog()
@@ -1292,10 +2183,18 @@ fn cmd_agent(store: &mut Store, args: &[String]) -> Result<()> {
     match args.first().map(|s| s.as_str()) {
         Some("onboard") => return cmd_agent_onboard(store, &args[1..]),
         Some("list") => return cmd_agent_list(store, &args[1..]),
-        Some("contract") => return cmd_agent_contract(store, &args[1..]),
-        Some("recipe") => return cmd_agent_recipe(store, &args[1..]),
-        Some("succession") => return cmd_agent_succession(store, &args[1..]),
-        Some("collective") => return cmd_agent_collective(store, &args[1..]),
+        // `agent register` is the legacy spelled-out form of bare `agent`
+        // (the positional word is ignored); keep it as a no-op passthrough.
+        Some("register") => {}
+        // Any other bare word (not a flag) is an unknown subcommand — it must
+        // NOT silently fall through to register (which would register an agent
+        // named after the subcommand).
+        Some(word) if !word.starts_with('-') => {
+            bail!(
+                "unknown agent subcommand `{word}` (try `{} agent --help`)",
+                prog()
+            )
+        }
         _ => {}
     }
     let mut goal_id = None;
@@ -1330,18 +2229,13 @@ fn cmd_agent(store: &mut Store, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// `loopx agent onboard --goal G --agent-id A [--workspace p1,p2]
-/// [--recipe NAME]` — register a peer and declare the P0-1 workspace-guard
-/// write set. `--recipe NAME` applies a recorded G12 agent recipe
-/// (capabilities + workspaces + default priority, capabilities kept as
-/// descriptive metadata) — when given, an explicit `--workspace` flag is
-/// rejected (the recipe is the single source).
+/// `loopx agent onboard --goal G --agent-id A [--workspace p1,p2]` —
+/// register a peer and declare the P0-1 workspace-guard write set.
 fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut agent_id = None;
     let mut workspaces = vec![];
-    let mut recipe_name = None;
-    reject_unknown_flags(args, &["--agent-id", "--goal", "--recipe", "--workspace"])?;
+    reject_unknown_flags(args, &["--agent-id", "--goal", "--workspace"])?;
     parse_pairs(args, |k, v| {
         if k == "--goal" {
             goal_id = Some(v);
@@ -1349,8 +2243,6 @@ fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
             agent_id = Some(v);
         } else if k == "--workspace" {
             workspaces = parse_workspaces(&v);
-        } else if k == "--recipe" {
-            recipe_name = Some(v);
         }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
@@ -1358,25 +2250,6 @@ fn cmd_agent_onboard(store: &mut Store, args: &[String]) -> Result<()> {
     store
         .replay(&goal_id)?
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
-    if let Some(name) = recipe_name {
-        if !workspaces.is_empty() {
-            bail!(
-                "--recipe {name} conflicts with an explicit --workspace flag \
-                 (the recipe owns the onboarding profile)"
-            );
-        }
-        let recipe = crate::agents::multi_agent::recipe_named(store, &goal_id, &name)?
-            .ok_or_else(|| {
-                anyhow::anyhow!("no agent recipe named `{name}` for {goal_id} (add one first: agent recipe add)")
-            })?;
-        crate::agents::multi_agent::apply_recipe_onboard(store, &goal_id, &agent_id, &recipe)?;
-        println!(
-            "agent `{agent_id}` onboarded via recipe `{name}` \
-             (capabilities={:?} workspaces={:?} priority={}) ✔",
-            recipe.capabilities, recipe.workspaces, recipe.priority
-        );
-        return Ok(());
-    }
     store.append(Event::AgentOnboarded {
         goal_id: goal_id.clone(),
         agent_id: agent_id.clone(),
@@ -1565,456 +2438,6 @@ fn agent_list_rows(goal: &Goal, last_active: &HashMap<String, u64>, now: u64) ->
             }
         })
         .collect()
-}
-
-/// `agent contract set --goal G --contract '<json>' | --contract-file PATH`
-/// and `agent contract show --goal G [--format json]` — the G12 multi-agent
-/// topology surface. Set validates fail-closed before appending
-/// (`MultiAgentContractSet`, latest event wins); show projects the current
-/// contract plus its validation issues (a drifted on-disk contract that was
-/// never re-validated would surface here).
-fn cmd_agent_contract(store: &mut Store, args: &[String]) -> Result<()> {
-    let sub = args.first().map(|s| s.as_str()).unwrap_or("");
-    match sub {
-        "set" => {
-            let mut goal_id = None;
-            let mut inline = None;
-            let mut file = None;
-            reject_unknown_flags(&args[1..], &["--contract", "--contract-file", "--goal"])?;
-            parse_pairs(&args[1..], |k, v| match k {
-                "--goal" => goal_id = Some(v),
-                "--contract" => inline = Some(v),
-                "--contract-file" => file = Some(v),
-                _ => {}
-            });
-            let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
-            let raw = match (inline, file) {
-                (Some(v), _) => v,
-                (None, Some(path)) => std::fs::read_to_string(&path)
-                    .with_context(|| format!("read contract file {path}"))?,
-                (None, None) => {
-                    bail!("contract required: --contract '<json>' or --contract-file PATH")
-                }
-            };
-            let contract: crate::agents::multi_agent::MultiAgentContract =
-                serde_json::from_str(&raw).context("parse contract JSON")?;
-            store
-                .replay(&goal_id)?
-                .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
-            let event_id = crate::agents::multi_agent::record_contract(store, &goal_id, &contract)?;
-            println!(
-                "multi-agent contract set for {goal_id}: {} peer(s), {} handoff rule(s), {} collective(s) (event {event_id}) ✔",
-                contract.peers.len(),
-                contract.handoff_rules.len(),
-                contract.collectives.len()
-            );
-        }
-        "show" => {
-            let mut goal_id = None;
-            reject_unknown_flags(&args[1..], &["--format", "--goal", "--json"])?;
-            parse_pairs(&args[1..], |k, v| {
-                if k == "--goal" {
-                    goal_id = Some(v);
-                }
-            });
-            let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
-            store
-                .replay(&goal_id)?
-                .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
-            match crate::agents::multi_agent::latest_contract(store, &goal_id)? {
-                None => println!("no multi-agent contract set for {goal_id}"),
-                Some(contract) => {
-                    let issues = crate::agents::multi_agent::contract_issues(&contract);
-                    if wants_json(&args[1..]) {
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(&serde_json::json!({
-                                "ok": true,
-                                "goal_id": goal_id,
-                                "contract": contract,
-                                "validation_issues": issues,
-                            }))?
-                        );
-                    } else {
-                        println!(
-                            "multi-agent contract for {goal_id}: {} peer(s), {} handoff rule(s), {} collective(s){}",
-                            contract.peers.len(),
-                            contract.handoff_rules.len(),
-                            contract.collectives.len(),
-                            if issues.is_empty() {
-                                String::new()
-                            } else {
-                                format!(" — ⚠ validation issues: {}", issues.join("; "))
-                            }
-                        );
-                        for (id, role) in &contract.peers {
-                            let backup = role
-                                .backup_for
-                                .as_deref()
-                                .map(|b| format!(" backups {b}"))
-                                .unwrap_or_default();
-                            let caps = if role.capabilities.is_empty() {
-                                "-".to_string()
-                            } else {
-                                role.capabilities.join(",")
-                            };
-                            let ws = if role.workspaces.is_empty() {
-                                "-".to_string()
-                            } else {
-                                role.workspaces.join(",")
-                            };
-                            println!("  peer {id}{backup} capabilities={caps} workspaces={ws}");
-                        }
-                        for rule in &contract.handoff_rules {
-                            println!("  handoff: {} → {}", rule.from_event, rule.to_role);
-                        }
-                        for (name, members) in &contract.collectives {
-                            println!("  collective {name}: {}", members.join(","));
-                        }
-                    }
-                }
-            }
-        }
-        other => bail!("unknown agent contract subcommand `{other}` (set|show)"),
-    }
-    Ok(())
-}
-
-/// `agent recipe add --goal G --name N [--capabilities c1,c2] [--workspace p]
-/// [--priority P0]` and `agent recipe show --goal G [--name N] [--format json]`
-/// — the G12 named-recipe surface consumed by `agent onboard --recipe N`.
-fn cmd_agent_recipe(store: &mut Store, args: &[String]) -> Result<()> {
-    let sub = args.first().map(|s| s.as_str()).unwrap_or("");
-    match sub {
-        "add" => {
-            let mut goal_id = None;
-            let mut name = None;
-            let mut capabilities = vec![];
-            let mut workspaces = vec![];
-            let mut priority = crate::state::Priority::P1;
-            reject_unknown_flags(
-                &args[1..],
-                &[
-                    "--capabilities",
-                    "--capability",
-                    "--goal",
-                    "--name",
-                    "--priority",
-                    "--workspace",
-                ],
-            )?;
-            parse_pairs(&args[1..], |k, v| match k {
-                "--goal" => goal_id = Some(v),
-                "--name" => name = Some(v),
-                "--capability" | "--capabilities" => {
-                    capabilities = v.split(',').map(|s| s.trim().to_string()).collect()
-                }
-                "--workspace" => workspaces = parse_workspaces(&v),
-                "--priority" => {
-                    priority = match v.to_uppercase().as_str() {
-                        "P0" => crate::state::Priority::P0,
-                        "P2" => crate::state::Priority::P2,
-                        _ => crate::state::Priority::P1,
-                    }
-                }
-                _ => {}
-            });
-            let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
-            let name = name.ok_or_else(|| anyhow::anyhow!("--name required"))?;
-            store
-                .replay(&goal_id)?
-                .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
-            let recipe = crate::agents::multi_agent::AgentRecipe {
-                schema_version: crate::agents::multi_agent::MULTI_AGENT_RECIPE_SCHEMA_VERSION
-                    .to_string(),
-                name: name.clone(),
-                capabilities: capabilities.clone(),
-                workspaces: workspaces.clone(),
-                priority,
-            };
-            let event_id = crate::agents::multi_agent::record_recipe(store, &goal_id, &recipe)?;
-            println!(
-                "agent recipe `{name}` added for {goal_id} \
-                 (capabilities={capabilities:?} workspaces={workspaces:?} priority={priority}) \
-                 (event {event_id}) ✔"
-            );
-        }
-        "show" => {
-            let mut goal_id = None;
-            let mut name = None;
-            reject_unknown_flags(&args[1..], &["--format", "--goal", "--json", "--name"])?;
-            parse_pairs(&args[1..], |k, v| match k {
-                "--goal" => goal_id = Some(v),
-                "--name" => name = Some(v),
-                _ => {}
-            });
-            let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
-            let recipes = crate::agents::multi_agent::recipes(store, &goal_id)?;
-            let shown: Vec<_> = recipes
-                .iter()
-                .filter(|r| name.as_deref().is_none_or(|n| r.name == n))
-                .collect();
-            if wants_json(&args[1..]) {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "ok": true,
-                        "goal_id": goal_id,
-                        "recipe_count": shown.len(),
-                        "recipes": shown,
-                    }))?
-                );
-            } else {
-                if shown.is_empty() {
-                    let label = name.map(|n| format!(" named `{n}`")).unwrap_or_default();
-                    println!("no agent recipes{label} for {goal_id}");
-                } else {
-                    println!("agent recipes for {goal_id} ({}):", shown.len());
-                    for r in &shown {
-                        println!(
-                            "  {:<20} priority={:<3} capabilities={} workspaces={}",
-                            r.name,
-                            r.priority,
-                            if r.capabilities.is_empty() {
-                                "-".to_string()
-                            } else {
-                                r.capabilities.join(",")
-                            },
-                            if r.workspaces.is_empty() {
-                                "-".to_string()
-                            } else {
-                                r.workspaces.join(",")
-                            }
-                        );
-                    }
-                }
-            }
-        }
-        other => bail!("unknown agent recipe subcommand `{other}` (add|show)"),
-    }
-    Ok(())
-}
-
-/// `agent succession show|apply --goal G ...` — the G12 role-succession
-/// surface. `show` projects recorded successions plus the currently-met
-/// (unrecorded) triggers; `apply` records them (`SuccessionOccurred`, one
-/// per trigger episode — idempotent).
-fn cmd_agent_succession(store: &mut Store, args: &[String]) -> Result<()> {
-    let sub = args.first().map(|s| s.as_str()).unwrap_or("");
-    let mut goal_id = None;
-    let mut primary = None;
-    let mut reason = None;
-    reject_unknown_flags(
-        &args[1..],
-        &["--format", "--goal", "--json", "--primary", "--reason"],
-    )?;
-    parse_pairs(&args[1..], |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--primary" => primary = Some(v),
-        "--reason" => reason = Some(v),
-        _ => {}
-    });
-    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
-    let goal = store
-        .replay(&goal_id)?
-        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
-    let contract =
-        crate::agents::multi_agent::latest_contract(store, &goal_id)?.ok_or_else(|| {
-            anyhow::anyhow!(
-                "no multi-agent contract set for {goal_id} (set one first: agent contract set)"
-            )
-        })?;
-    let now = crate::state::now_epoch();
-    let mut candidates = crate::agents::multi_agent::succession_candidates(&goal, &contract, now);
-    if let Some(p) = &primary {
-        candidates.retain(|c| &c.primary == p);
-    }
-    if let Some(r) = &reason {
-        candidates.retain(|c| &c.reason == r);
-    }
-    let recorded = crate::agents::multi_agent::successions(store, &goal_id)?;
-    match sub {
-        "show" => {
-            if wants_json(&args[1..]) {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "ok": true,
-                        "schema_version": crate::agents::multi_agent::ROLE_SUCCESSOR_PROJECTION_SCHEMA_VERSION,
-                        "goal_id": goal_id,
-                        "offline_threshold_secs": crate::agents::multi_agent::successor_offline_threshold_secs(),
-                        "candidates": candidates,
-                        "recorded": recorded,
-                    }))?
-                );
-            } else {
-                println!("role succession for {goal_id}:");
-                if recorded.is_empty() && candidates.is_empty() {
-                    println!("  no succession triggers met, no successions recorded");
-                }
-                for r in &recorded {
-                    println!(
-                        "  recorded: primary `{}` → backup `{}` ({}) [event {}]",
-                        r.primary, r.backup, r.reason, r.event_id
-                    );
-                }
-                for c in &candidates {
-                    println!(
-                        "  pending: primary `{}` → backup `{}` ({}) — run `agent succession apply` to record",
-                        c.primary, c.backup, c.reason
-                    );
-                }
-            }
-        }
-        "apply" => {
-            if candidates.is_empty() {
-                println!(
-                    "no succession triggers met for {goal_id}{}",
-                    primary
-                        .map(|p| format!(" (primary {p})"))
-                        .unwrap_or_default()
-                );
-                return Ok(());
-            }
-            for candidate in &candidates {
-                let already = recorded.iter().any(|r| {
-                    r.primary == candidate.primary
-                        && r.backup == candidate.backup
-                        && r.reason == candidate.reason
-                });
-                let event_id =
-                    crate::agents::multi_agent::record_succession(store, &goal_id, candidate)?;
-                println!(
-                    "succession {}: primary `{}` → backup `{}` ({}) (event {event_id}) ✔",
-                    if already {
-                        "already recorded"
-                    } else {
-                        "recorded"
-                    },
-                    candidate.primary,
-                    candidate.backup,
-                    candidate.reason
-                );
-            }
-        }
-        other => bail!("unknown agent succession subcommand `{other}` (show|apply)"),
-    }
-    Ok(())
-}
-
-/// `agent collective show --goal G [--collective NAME] [--format json]` —
-/// the G12 collective projection: per-agent turn counts (claims) plus the
-/// round-robin wake roster for the next collective turn.
-fn cmd_agent_collective(store: &Store, args: &[String]) -> Result<()> {
-    let sub = args.first().map(|s| s.as_str()).unwrap_or("");
-    if sub != "show" {
-        bail!("unknown agent collective subcommand `{sub}` (show)");
-    }
-    let mut goal_id = None;
-    let mut collective = None;
-    reject_unknown_flags(
-        &args[1..],
-        &["--collective", "--format", "--goal", "--json"],
-    )?;
-    parse_pairs(&args[1..], |k, v| match k {
-        "--goal" => goal_id = Some(v),
-        "--collective" => collective = Some(v),
-        _ => {}
-    });
-    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
-    let contract =
-        crate::agents::multi_agent::latest_contract(store, &goal_id)?.ok_or_else(|| {
-            anyhow::anyhow!(
-                "no multi-agent contract set for {goal_id} (set one first: agent contract set)"
-            )
-        })?;
-    let names: Vec<String> = match &collective {
-        Some(name) => {
-            if !contract.collectives.contains_key(name) {
-                bail!("collective `{name}` is not part of the contract for {goal_id}");
-            }
-            vec![name.clone()]
-        }
-        None => contract.collectives.keys().cloned().collect(),
-    };
-    let mut ledgers = vec![];
-    for name in &names {
-        if let Some(ledger) =
-            crate::agents::multi_agent::collective_turn_ledger(store, &goal_id, &contract, name)?
-        {
-            let roster = crate::agents::multi_agent::wake_roster(
-                &contract,
-                name,
-                ledger.full_participation_rounds,
-            );
-            ledgers.push(serde_json::json!({
-                "collective": name,
-                "agents": ledger.agents,
-                "per_agent": ledger.per_agent,
-                "full_participation_rounds": ledger.full_participation_rounds,
-                "total_claims": ledger.total_claims,
-                "wake_roster": roster,
-            }));
-        }
-    }
-    if wants_json(&args[1..]) {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "ok": true,
-                "schema_version": crate::agents::multi_agent::COLLECTIVE_TURN_LEDGER_SCHEMA_VERSION,
-                "goal_id": goal_id,
-                "collective_count": ledgers.len(),
-                "collectives": ledgers,
-            }))?
-        );
-    } else {
-        if ledgers.is_empty() {
-            println!("no collectives in the contract for {goal_id}");
-            return Ok(());
-        }
-        for entry in &ledgers {
-            let name = entry["collective"].as_str().unwrap_or("");
-            let agents = entry["agents"]
-                .as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|x| x.as_str())
-                        .collect::<Vec<_>>()
-                        .join(",")
-                })
-                .unwrap_or_default();
-            let rounds = entry["full_participation_rounds"].as_u64().unwrap_or(0);
-            let total = entry["total_claims"].as_u64().unwrap_or(0);
-            println!(
-                "collective `{name}`: agents={agents} full_participation_rounds={rounds} total_claims={total}"
-            );
-            if let Some(per) = entry["per_agent"].as_object() {
-                for (agent, row) in per {
-                    let turns = row["turns"].as_u64().unwrap_or(0);
-                    let last = row["last_turn_ts"]
-                        .as_u64()
-                        .map(|ts| format!(" (last {ts})"))
-                        .unwrap_or_default();
-                    println!("    {agent}: {turns} turn(s){last}");
-                }
-            }
-            if let Some(roster) = entry["wake_roster"].as_object() {
-                let current = roster["current"].as_str().unwrap_or("-");
-                let order = roster["order"]
-                    .as_array()
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|x| x.as_str())
-                            .collect::<Vec<_>>()
-                            .join(" → ")
-                    })
-                    .unwrap_or_default();
-                println!("    next wake: {current} (roster: {order})");
-            }
-        }
-    }
-    Ok(())
 }
 
 /// P0-3③: JSON projection of one todo's lease state
@@ -2356,10 +2779,7 @@ fn cmd_replan(store: &mut Store, args: &[String]) -> Result<()> {
     }
     if args.first().map(|s| s.as_str()) == Some("obligations") {
         let mut goal_id = None;
-        reject_unknown_flags(
-            &args[1..],
-            &["--delta-kind", "--format", "--goal", "--json"],
-        )?;
+        reject_unknown_flags(&args[1..], &["--format", "--goal", "--json"])?;
         parse_pairs(&args[1..], |k, v| {
             if k == "--goal" {
                 goal_id = Some(v)
@@ -2386,7 +2806,7 @@ fn cmd_replan(store: &mut Store, args: &[String]) -> Result<()> {
     }
     let mut goal_id = None;
     let mut delta_kinds: Vec<String> = vec![];
-    reject_unknown_flags(args, &["--delta-kind", "--format", "--goal", "--json"])?;
+    reject_unknown_flags(args, &["--delta-kind", "--goal"])?;
     parse_pairs(args, |k, v| {
         if k == "--goal" {
             goal_id = Some(v);
@@ -3173,23 +3593,11 @@ fn scheduler_scope(
 /// P1-3: each tick also lands a `SchedulerTicked` heartbeat (liveness), the
 /// monitor poll plan, and a dead-worker push (see [`notify_dead_holders`]).
 async fn scheduler_tick(store: &mut Store, args: &[String]) -> Result<()> {
-    let mut cadence_class = "monitor_backoff".to_string();
     let mut progression: Vec<i64> = vec![];
     let mut action = "tick_next".to_string();
-    reject_unknown_flags(
-        args,
-        &[
-            "--action",
-            "--agent-id",
-            "--cadence-class",
-            "--goal",
-            "--progression",
-        ],
-    )?;
+    reject_unknown_flags(args, &["--action", "--agent-id", "--goal", "--progression"])?;
     parse_pairs(args, |k, v| {
-        if k == "--cadence-class" {
-            cadence_class = v;
-        } else if k == "--progression" {
+        if k == "--progression" {
             progression = v
                 .split(',')
                 .filter_map(|s| s.trim().parse::<i64>().ok())
@@ -3241,11 +3649,19 @@ async fn scheduler_tick(store: &mut Store, args: &[String]) -> Result<()> {
         record_tick_heartbeat(store, &goal_id, &agent, &action, &state)?;
         print_monitor_poll_plan(store, &goal_id)?;
         notify_dead_holders(store, &goal_id).await?;
-        crate::agents::multi_agent::auto_promote_successions(store, &goal_id, now)?;
         return Ok(());
     }
 
     let mut state = state.unwrap();
+    // `--progression` only shapes the bootstrap state (the first tick). Once
+    // state exists the persisted cursor owns the sequence, so a progression
+    // flag here is a silent no-op — warn instead of pretending it applied.
+    if !progression.is_empty() {
+        eprintln!(
+            "note: --progression only applies on the FIRST tick (bootstrap); \
+             scheduler state already exists for {goal_id} — progression unchanged"
+        );
+    }
     let rrule = st::apply_next_progression(&mut state, now);
     st::write_scheduler_state(&goal_dir, &state)?;
     print!("{}", crate::cli_projection::render_scheduler_state(&state));
@@ -3256,7 +3672,6 @@ async fn scheduler_tick(store: &mut Store, args: &[String]) -> Result<()> {
     record_tick_heartbeat(store, &goal_id, &agent, &action, &state)?;
     print_monitor_poll_plan(store, &goal_id)?;
     notify_dead_holders(store, &goal_id).await?;
-    crate::agents::multi_agent::auto_promote_successions(store, &goal_id, now)?;
     Ok(())
 }
 
@@ -3707,13 +4122,12 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     let mut lease_secs = DEFAULT_RUN_LEASE_SECS;
     let mut force_workspace = false;
     // Session retention: the CALLER decides resume-vs-fresh, never the kernel.
-    // `--resume-session <id>` pins the exact session to resume;
-    // `--session-policy <auto|fresh|resume>` sets the default policy:
-    //   auto   → resume the retained session only when the kernel marked it
-    //            resumable (InfraRecoverable), else fresh (default);
-    //   fresh  → always start a new session (the pre-retention behavior);
-    //   resume → resume the retained session whenever one exists.
-    let mut session_policy = "auto".to_string();
+    // The default is ALWAYS a fresh session; the ONLY way to resume is an
+    // explicit pin `--resume-session <id>` (goal-level `session_retention` is
+    // a single field written by whichever run finished last, so an implicit
+    // "resume the retained session" would hand one worker's session to
+    // another under parallel workers). A pinned id that is no longer alive
+    // falls back to a fresh session.
     let mut resume_session: Option<String> = None;
     reject_unknown_flags(
         args,
@@ -3728,7 +4142,6 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
             "--max-turns",
             "--model",
             "--resume-session",
-            "--session-policy",
             "--thinking-level",
         ],
     )?;
@@ -3753,8 +4166,6 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
             anonymous = true;
         } else if k == "--force-workspace" {
             force_workspace = true;
-        } else if k == "--session-policy" {
-            session_policy = v;
         } else if k == "--resume-session" {
             resume_session = Some(v);
         }
@@ -3864,9 +4275,6 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         );
         return Ok(());
     }
-    if !matches!(session_policy.as_str(), "auto" | "fresh" | "resume") {
-        bail!("--session-policy must be auto | fresh | resume");
-    }
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
 
     // Identity gate BEFORE any gRPC/session work — fail fast with a hint
@@ -3880,34 +4288,18 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
 
     // ── Session retention: the CALLER decides resume-vs-fresh, never the
-    //    kernel. The kernel only recorded WHY the last session was interrupted
-    //    (`session_retention` on the goal) and kept its id on disk. Resolution
-    //    order:
-    //      1. `--resume-session <id>` (explicit pin) → use it if alive;
-    //      2. `--session-policy resume` → use the retained id if alive;
-    //      3. `--session-policy auto` (default) → use the retained id only
-    //         when the kernel marked it resumable (InfraRecoverable);
-    //      4. `--session-policy fresh` → always new;
-    //      5. a retained id that is no longer alive falls back to new.
-    let retained = goal0.session_retention.clone();
-    let want_session: Option<String> = if let Some(id) = resume_session.clone() {
-        Some(id)
-    } else {
-        match session_policy.as_str() {
-            "resume" => retained.as_ref().map(|r| r.session_id.clone()),
-            "fresh" => None,
-            _ /* auto */ => retained
-                .as_ref()
-                .filter(|r| r.resumable)
-                .map(|r| r.session_id.clone()),
-        }
-    };
+    //    kernel. The kernel records WHY the last run was interrupted
+    //    (`session_retention` on the goal, advisory) and keeps the session id
+    //    on disk. Fresh is the default; the only resume path is an explicit
+    //    `--resume-session <id>` pin, which falls back to fresh when the
+    //    pinned id is no longer alive.
+    let want_session: Option<String> = resume_session.clone();
     // Human-readable session title for agent session lists: the goal
     // objective, bounded so long objectives don't produce unwieldy names.
     let session_title = crate::decision::truncate(&goal0.objective, 60);
     let session_id = match want_session {
         Some(id) if client.session_alive(&id).await => {
-            println!("   ⤺ resuming session {id} (policy {session_policy})");
+            println!("   ⤺ resuming session {id}");
             id
         }
         Some(id) => {
@@ -3941,7 +4333,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     // Run the turn loop. Session lifecycle: the session is never deleted —
     // the kernel records the retention state (id + failure classification +
     // resumable advisory) on the goal and lets the NEXT caller decide
-    // resume-vs-fresh via --session-policy / --resume-session.
+    // resume-vs-fresh via --resume-session.
     let mut last_failure_kind: Option<crate::state::FailureKind> = None;
     // Down-channel steering: watch the ledger for supervisor steering
     // instructions targeting THIS worker and abort the session mid-turn so the
@@ -3966,6 +4358,10 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     )
     .await;
     steer_handle.abort();
+
+    // Post-run supervision: sweep dead holders (best-effort — the run's own
+    // writeback already landed; a lost notification must not fail it).
+    let _ = supervise_after_run(store, &goal_id).await;
 
     // Record the retention state (the kernel's advisory, not a directive).
     let resumable = matches!(
@@ -4002,16 +4398,17 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
 
     // Session retention: never delete the agent session. The session (and its
     // accumulated exploration) stays on the agent; the NEXT caller decides
-    // resume-vs-fresh. A resumable session (infra interruption) is also picked
-    // up by the default `auto` policy; a non-resumable one must be resumed
-    // explicitly.
+    // resume-vs-fresh explicitly. The default is a fresh session; the only
+    // resume path is an explicit pin (`--resume-session <id>`), so this
+    // resumable classification is advisory data for the orchestrator's own
+    // judgment, not a directive.
     if resumable {
         println!(
-            "   ⤺ session {session_id} retained (resumable) — next `run` with default policy will resume it"
+            "   ⤺ session {session_id} retained (resumable) — resume it with --resume-session {session_id}"
         );
     } else {
         println!(
-            "   ⤺ session {session_id} retained — resume it with --session-policy resume or --resume-session"
+            "   ⤺ session {session_id} retained — resume it with --resume-session {session_id}"
         );
     }
     result
@@ -4197,6 +4594,25 @@ pub async fn notify_dead_holders(store: &mut Store, goal_id: &str) -> Result<()>
         )
         .await;
     }
+    Ok(())
+}
+
+/// Best-effort post-run supervision — the run process itself is a live actor,
+/// so its exit is a natural point to run the dead-holder sweep without
+/// depending on an explicit `scheduler tick` (which no orchestrator actually
+/// runs). The single side effect is idempotent and a no-op on failure, so it
+/// can never fail the run's own writeback:
+///
+/// - **Dead-holder sweep** — `notify_dead_holders` pushes `host_died` to the
+///   registered supervisor for any lease whose holder pid is gone (a
+///   SIGKILL'd/crashed worker executes no code, so it cannot self-report).
+///   This is the single supervision signal the single-process model needs:
+///   the orchestrator is the only live actor, and this sweep is what lets a
+///   dead worker surface without a cron.
+async fn supervise_after_run(store: &mut Store, goal_id: &str) -> Result<()> {
+    // Dead-holder sweep is best-effort: a lost notification must never fail
+    // the run that already wrote back.
+    let _ = notify_dead_holders(store, goal_id).await;
     Ok(())
 }
 
@@ -6192,7 +6608,7 @@ async fn cmd_worker_list(store: &Store, args: &[String]) -> Result<()> {
 /// boundary — NOT `pkill`), then aborting any in-flight agent session over
 /// gRPC so the current turn ends promptly instead of running to completion.
 /// The run client exits its loop at the next turn boundary and retains the
-/// session (resumable per `--session-policy`); `--delete` also reclaims the
+/// session (resumable per `--resume-session`); `--delete` also reclaims the
 /// backing agent session afterwards so a later `run` starts fresh. `--all`
 /// broadcasts the stop to every worker with a live session for this goal.
 async fn cmd_worker_stop(store: &mut Store, args: &[String]) -> Result<()> {
@@ -6438,167 +6854,9 @@ fn cmd_lane(store: &Store, args: &[String]) -> Result<()> {
 fn cmd_supervisor(store: &mut Store, args: &[String]) -> Result<()> {
     let sub = args.first().map(|s| s.as_str()).unwrap_or("");
     match sub {
-        "propose" => {
-            let mut goal_id = None;
-            let mut supervisor_id = None;
-            let mut decision_id = None;
-            let mut target_agent_id = None;
-            let mut kind = "observe".to_string();
-            let mut capabilities: Vec<String> = vec![];
-            let mut summary = None;
-            reject_unknown_flags(
-                &args[1..],
-                &[
-                    "--adapter-id",
-                    "--agent-id",
-                    "--authority-ref",
-                    "--capabilities",
-                    "--decision-id",
-                    "--goal",
-                    "--host-capabilities",
-                    "--kind",
-                    "--outcome",
-                    "--receipt-id",
-                    "--summary",
-                    "--target-agent-id",
-                ],
-            )?;
-            parse_pairs(&args[1..], |k, v| {
-                if k == "--goal" {
-                    goal_id = Some(v);
-                } else if k == "--agent-id" {
-                    supervisor_id = Some(v);
-                } else if k == "--decision-id" {
-                    decision_id = Some(v);
-                } else if k == "--target-agent-id" {
-                    target_agent_id = Some(v);
-                } else if k == "--kind" {
-                    kind = v;
-                } else if k == "--capabilities" {
-                    capabilities = v.split(',').map(|s| s.to_string()).collect();
-                } else if k == "--summary" {
-                    summary = Some(v);
-                }
-            });
-            let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
-            let supervisor_id =
-                supervisor_id.ok_or_else(|| anyhow::anyhow!("--agent-id (supervisor) required"))?;
-            let decision_id =
-                decision_id.ok_or_else(|| anyhow::anyhow!("--decision-id required"))?;
-            let target_agent_id =
-                target_agent_id.ok_or_else(|| anyhow::anyhow!("--target-agent-id required"))?;
-            let summary = summary.unwrap_or_default();
-            let decision = if kind == "execute" {
-                crate::agents::supervisor::SupervisorDecision::execute(
-                    &decision_id,
-                    &target_agent_id,
-                    capabilities,
-                    &summary,
-                )
-            } else {
-                crate::agents::supervisor::SupervisorDecision::observe(
-                    &decision_id,
-                    &target_agent_id,
-                    &summary,
-                )
-            };
-            let event_id = crate::agents::supervisor::record_supervisor_proposal(
-                store,
-                &goal_id,
-                &supervisor_id,
-                &decision,
-            )?;
-            println!("supervisor proposal recorded (event {event_id})");
-        }
-        "receipt" => {
-            let mut goal_id = None;
-            let mut decision_id = None;
-            let mut receipt_id = None;
-            let mut adapter_id = None;
-            let mut outcome = "rejected".to_string();
-            let mut authority_ref = None;
-            let mut host_capabilities: Vec<String> = vec![];
-            reject_unknown_flags(
-                &args[1..],
-                &[
-                    "--adapter-id",
-                    "--agent-id",
-                    "--authority-ref",
-                    "--capabilities",
-                    "--decision-id",
-                    "--goal",
-                    "--host-capabilities",
-                    "--kind",
-                    "--outcome",
-                    "--receipt-id",
-                    "--summary",
-                    "--target-agent-id",
-                ],
-            )?;
-            parse_pairs(&args[1..], |k, v| {
-                if k == "--goal" {
-                    goal_id = Some(v);
-                } else if k == "--decision-id" {
-                    decision_id = Some(v);
-                } else if k == "--receipt-id" {
-                    receipt_id = Some(v);
-                } else if k == "--adapter-id" {
-                    adapter_id = Some(v);
-                } else if k == "--outcome" {
-                    outcome = v;
-                } else if k == "--authority-ref" {
-                    authority_ref = Some(v);
-                } else if k == "--host-capabilities" {
-                    host_capabilities = v.split(',').map(|s| s.to_string()).collect();
-                }
-            });
-            let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
-            let decision_id =
-                decision_id.ok_or_else(|| anyhow::anyhow!("--decision-id required"))?;
-            let receipt_id = receipt_id.ok_or_else(|| anyhow::anyhow!("--receipt-id required"))?;
-            let adapter_id = adapter_id.ok_or_else(|| anyhow::anyhow!("--adapter-id required"))?;
-            let outcome_enum = match outcome.as_str() {
-                "executed" => crate::agents::supervisor::SupervisorReceiptOutcome::Executed,
-                "failed" => crate::agents::supervisor::SupervisorReceiptOutcome::Failed,
-                _ => crate::agents::supervisor::SupervisorReceiptOutcome::Rejected,
-            };
-            let receipt = crate::agents::supervisor::SupervisorReceipt {
-                receipt_id,
-                decision_id,
-                adapter_id,
-                outcome: outcome_enum,
-                authority_ref,
-                rollback_ref: None,
-                evidence_refs: vec![],
-                reason_codes: vec![],
-            };
-            let event_id = crate::agents::supervisor::record_supervisor_receipt(
-                store,
-                &goal_id,
-                &receipt,
-                &host_capabilities,
-            )?;
-            println!("supervisor receipt recorded (event {event_id})");
-        }
         "events" => {
             let mut goal_id = None;
-            reject_unknown_flags(
-                &args[1..],
-                &[
-                    "--adapter-id",
-                    "--agent-id",
-                    "--authority-ref",
-                    "--capabilities",
-                    "--decision-id",
-                    "--goal",
-                    "--host-capabilities",
-                    "--kind",
-                    "--outcome",
-                    "--receipt-id",
-                    "--summary",
-                    "--target-agent-id",
-                ],
-            )?;
+            reject_unknown_flags(&args[1..], &["--goal"])?;
             parse_pairs(&args[1..], |k, v| {
                 if k == "--goal" {
                     goal_id = Some(v);
@@ -6662,7 +6920,7 @@ fn cmd_supervisor(store: &mut Store, args: &[String]) -> Result<()> {
             let target = target.as_deref().unwrap_or("all workers");
             println!("steer issued → {target}: {instruction}");
         }
-        _ => bail!("supervisor subcommand must be propose|receipt|events|register|steer"),
+        _ => bail!("supervisor subcommand must be events|register|steer"),
     }
     Ok(())
 }
@@ -6773,11 +7031,6 @@ fn cmd_attention(store: &Store, args: &[String]) -> Result<()> {
             if let Some(item) = crate::work_items::attention::goal_attention_item(&goal) {
                 items.push(item);
             }
-            // G12: role-succession hints join the queue (one per succeeded
-            // role slot; a fresh primary heartbeat recovers/suppresses).
-            items.extend(crate::agents::multi_agent::succession_attention_items(
-                store, &goal,
-            )?);
         }
     } else if all {
         for entry in store.registry() {
@@ -7860,20 +8113,6 @@ fn describe_event(event: &crate::store::Event) -> String {
                 "liveness_alert agent={agent_id} silent={elapsed_secs}s threshold={threshold_secs}s alert#{consecutive}"
             );
         }
-        Event::SupervisorProposed {
-            decision_id,
-            target_agent_id,
-            ..
-        } => {
-            return format!("supervisor_proposed decision={decision_id} target={target_agent_id}");
-        }
-        Event::SupervisorReceiptRecorded {
-            decision_id,
-            outcome,
-            ..
-        } => {
-            return format!("supervisor_receipt decision={decision_id} outcome={outcome}");
-        }
         Event::ProjectionRepaired {
             projection,
             drift_count,
@@ -7882,32 +8121,6 @@ fn describe_event(event: &crate::store::Event) -> String {
         } => {
             return format!(
                 "projection_repaired projection={projection} drift={drift_count} rows_written={rows_written}"
-            );
-        }
-        Event::MultiAgentContractSet { contract, .. } => {
-            return format!(
-                "multi_agent_contract_set peers={} handoff_rules={} collectives={}",
-                contract.peers.len(),
-                contract.handoff_rules.len(),
-                contract.collectives.len()
-            );
-        }
-        Event::AgentRecipeAdded { recipe, .. } => {
-            return format!(
-                "agent_recipe_added name={} capabilities={} priority={}",
-                recipe.name,
-                recipe.capabilities.join(","),
-                recipe.priority
-            );
-        }
-        Event::SuccessionOccurred {
-            primary,
-            backup,
-            reason,
-            ..
-        } => {
-            return format!(
-                "succession_occurred primary={primary} backup={backup} reason={reason}"
             );
         }
         Event::ReplanRuleSetUpdated {
@@ -8508,26 +8721,6 @@ mod coverage_tests {
                 todo_id: todo_id.into(),
                 ts: 1,
             },
-            Event::SupervisorProposed {
-                goal_id: "g".into(),
-                supervisor_agent_id: "sup".into(),
-                decision_id: "d1".into(),
-                decision_kind: "observe".into(),
-                target_agent_id: "w1".into(),
-                required_host_capabilities: vec![],
-                decision: "watch".into(),
-                ts: 1,
-            },
-            Event::SupervisorReceiptRecorded {
-                goal_id: "g".into(),
-                decision_id: "d1".into(),
-                receipt_id: "r1".into(),
-                adapter_id: "ad".into(),
-                outcome: "executed".into(),
-                authority_ref: Some("auth".into()),
-                rollback_ref: None,
-                ts: 1,
-            },
             Event::FollowthroughCreated {
                 goal_id: "g".into(),
                 source_todo_id: todo_id.into(),
@@ -8599,45 +8792,6 @@ mod coverage_tests {
                 agent_id: Some("a".into()),
                 idle_secs: 60,
                 tool_calls_total: 3,
-                ts: 1,
-            },
-            Event::MultiAgentContractSet {
-                goal_id: "g".into(),
-                contract: crate::agents::multi_agent::MultiAgentContract {
-                    schema_version: crate::agents::multi_agent::MULTI_AGENT_CONTRACT_SCHEMA_VERSION
-                        .to_string(),
-                    peers: [(
-                        "p".to_string(),
-                        crate::agents::multi_agent::PeerRole {
-                            backup_for: None,
-                            capabilities: vec![],
-                            workspaces: vec![],
-                        },
-                    )]
-                    .into_iter()
-                    .collect(),
-                    handoff_rules: vec![],
-                    collectives: Default::default(),
-                },
-                ts: 1,
-            },
-            Event::AgentRecipeAdded {
-                goal_id: "g".into(),
-                recipe: crate::agents::multi_agent::AgentRecipe {
-                    schema_version: crate::agents::multi_agent::MULTI_AGENT_RECIPE_SCHEMA_VERSION
-                        .to_string(),
-                    name: "r".into(),
-                    capabilities: vec!["shell".into()],
-                    workspaces: vec![],
-                    priority: crate::state::Priority::P1,
-                },
-                ts: 1,
-            },
-            Event::SuccessionOccurred {
-                goal_id: "g".into(),
-                primary: "p".into(),
-                backup: "b".into(),
-                reason: "offline".into(),
                 ts: 1,
             },
             Event::ReplanRuleSetUpdated {
@@ -9124,6 +9278,29 @@ mod cli_quirks_tests {
     }
 
     #[test]
+    fn render_command_help_lists_per_flag_details() {
+        let registry = build_cli_registry();
+        // `run` carries the richest flag surface: defaults + constraints.
+        let help = render_command_help(&registry, "run", false);
+        assert!(help.contains("flags:"), "got: {help}");
+        assert!(help.contains("--max-turns N"), "got: {help}");
+        assert!(help.contains("default 6"), "got: {help}");
+        assert!(help.contains("--resume-session ID"), "got: {help}");
+        // a command without flags (version) renders no `flags:` section.
+        let vhelp = render_command_help(&registry, "version", false);
+        assert!(!vhelp.contains("\nflags:\n"), "got: {vhelp}");
+    }
+
+    #[test]
+    fn render_subcommand_help_lists_per_flag_details() {
+        let registry = build_cli_registry();
+        let help = render_subcommand_help(&registry, "worker", "stop", false);
+        assert!(help.contains("flags:"), "got: {help}");
+        assert!(help.contains("--all"), "got: {help}");
+        assert!(help.contains("--delete"), "got: {help}");
+    }
+
+    #[test]
     fn render_subcommand_help_shows_exact_verb_usage() {
         let registry = build_cli_registry();
         let help = render_subcommand_help(&registry, "supervisor", "steer", false);
@@ -9515,6 +9692,19 @@ mod cli_quirks_tests {
         assert_eq!(todo.status, crate::state::TodoStatus::Deferred);
         let deadline = todo.resume_when.expect("numeric sets a deadline");
         assert!(deadline >= before + std::time::Duration::from_secs(120));
+    }
+
+    #[tokio::test]
+    async fn supervise_after_run_is_best_effort() {
+        let mut store = tmp_store("supervise");
+        open_goal_with_todo(&mut store, "g_sup");
+
+        // A goal with no supervisor and no dead holders is a clean no-op.
+        supervise_after_run(&mut store, "g_sup").await.unwrap();
+
+        // An unknown goal (replay returns None) and an unreachable agent are
+        // both absorbed — the supervision step never fails the run's writeback.
+        supervise_after_run(&mut store, "goal_nope").await.unwrap();
     }
 }
 
