@@ -123,6 +123,8 @@ portable tarball 按制品内 README 解压和启动；记录 `find <extract-roo
 
 ## 5. 每台正常主机的功能与安全 smoke
 
+> 2026-09-04 Review 警告：missing target 的 namespace-only 创建假设已被 bwrap 源码审查推翻，见 [异常报告 §3](LINUX_SANDBOX_FAILURE_REVIEW.md)。现有 7 个手工 request smoke 不足以证明默认 HOME guards → plan → helper 可启动；必须增加该全链路矩阵。不得删除/放宽“无宿主残留”断言使测试变绿。
+
 ### 2026-09-04 大仓库 glob 回归（待验收）
 
 `scripts/test-linux-sandbox-real-machine.sh` 已增加独立的大夹具与 helper stderr 检查。大夹具创建超过 100,000 项，验证 `.env.*` 只看第一层及默认递归 glob 一次合并扫描不再触发旧节点限制；运行后自动清理临时夹具。该项不是完整 bwrap `pwd` 测试，也不自动证明冷缓存性能。

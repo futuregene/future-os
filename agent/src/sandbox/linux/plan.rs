@@ -22,6 +22,8 @@ pub enum LinuxSandboxPlanError {
     UnsupportedAccessCombination(PathBuf),
     #[error("sandbox cannot reopen a protected path that does not exist: {0}")]
     MissingReopen(PathBuf),
+    #[error("sandbox path inspection failed at {path}: {detail}")]
+    PathInspection { path: PathBuf, detail: String },
     #[error("sandbox policy could not be serialized: {0}")]
     PolicySerialization(String),
 }
@@ -154,6 +156,13 @@ impl LinuxSandboxPlan {
         normalize_exact(&mut reopened_paths);
         normalize_exact(&mut reopened_read_only_paths);
         normalize_exact(&mut missing_protected_paths);
+        // An opaque/missing mask also denies writes. Never bind the same
+        // target read-only first: it either has no host inode at all or its
+        // identity will be hidden by the final opaque mount.
+        read_only_paths.retain(|path| {
+            !unreadable_paths.contains(path) && !missing_protected_paths.contains(path)
+        });
+        unreadable_paths.retain(|path| !missing_protected_paths.contains(path));
         unsupported_dynamic_globs.sort();
         unsupported_dynamic_globs.dedup();
         glob_snapshots.sort_by(|a, b| a.pattern.cmp(&b.pattern));
@@ -213,7 +222,7 @@ fn apply_rule(
                     ));
                 }
                 if protected_by_later_rule(flattened, priority, rule_index, path, Access::Write) {
-                    if !path.exists() {
+                    if !mount_path_exists(path)? {
                         return Err(LinuxSandboxPlanError::MissingReopen(path.to_path_buf()));
                     }
                     reopened_paths.push(path.to_path_buf());
@@ -224,7 +233,7 @@ fn apply_rule(
                 && !matched_by_earlier_rule(flattened, priority, rule_index, path, Access::Read)
                 && protected_by_later_rule(flattened, priority, rule_index, path, Access::Read)
             {
-                if !path.exists() {
+                if !mount_path_exists(path)? {
                     return Err(LinuxSandboxPlanError::MissingReopen(path.to_path_buf()));
                 }
                 reopened_read_only_paths.push(path.to_path_buf());
@@ -235,18 +244,48 @@ fn apply_rule(
                 && !matched_by_earlier_rule(flattened, priority, rule_index, path, Access::Read);
             let blocks_write = rule.access.covers_write()
                 && !matched_by_earlier_rule(flattened, priority, rule_index, path, Access::Write);
-            if (blocks_read || blocks_write) && !path.exists() {
+            if !blocks_read && !blocks_write {
+                return Ok(());
+            }
+            if !mount_path_exists(path)? {
                 missing_protected_paths.push(path.to_path_buf());
-            }
-            if blocks_read {
+            } else if blocks_read {
                 unreadable_paths.push(path.to_path_buf());
-            }
-            if blocks_write {
+            } else if blocks_write {
                 read_only_paths.push(path.to_path_buf());
             }
         }
     }
     Ok(())
+}
+
+fn mount_path_exists(path: &Path) -> Result<bool, LinuxSandboxPlanError> {
+    inspect_mount_path(
+        path,
+        |path| std::fs::symlink_metadata(path),
+        |path| std::fs::metadata(path),
+    )
+}
+
+fn inspect_mount_path(
+    path: &Path,
+    lstat: impl FnOnce(&Path) -> std::io::Result<std::fs::Metadata>,
+    stat: impl FnOnce(&Path) -> std::io::Result<std::fs::Metadata>,
+) -> Result<bool, LinuxSandboxPlanError> {
+    let error = |error: std::io::Error| LinuxSandboxPlanError::PathInspection {
+        path: path.into(),
+        detail: error.to_string(),
+    };
+    match lstat(path) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(error(err)),
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            // A dangling/inaccessible link is not an absent mount target.
+            // Do not turn EACCES/ELOOP/ENOTDIR or a link race into MissingProtected.
+            stat(path).map(|_| true).map_err(error)
+        }
+        Ok(_) => Ok(true),
+    }
 }
 
 pub(crate) fn policy_digest(snapshot: &RuleSetSnapshot) -> Result<String, LinuxSandboxPlanError> {
@@ -492,6 +531,102 @@ mod tests {
         assert!(plan
             .missing_protected_paths
             .contains(&root.join("work/.future")));
+        assert!(!plan.read_only_paths.contains(&root.join("work/.future")));
+        assert!(!plan.unreadable_paths.contains(&root.join("work/.future")));
+    }
+
+    #[test]
+    fn missing_and_existing_secret_masks_are_exclusive() {
+        let root = root();
+        for (access, name) in [
+            (Access::Read, "read"),
+            (Access::Write, "write"),
+            (Access::Both, "both"),
+        ] {
+            let relative = format!("work/{name}");
+            let path = root.join(&relative);
+            let input = snapshot(
+                &root,
+                vec![RuleLayerSnapshot {
+                    layer: RuleLayer::Guard,
+                    rules: vec![subtree(&root, &relative, access, Decision::Ask)],
+                }],
+            );
+            let missing = LinuxSandboxPlan::compile(&input).unwrap();
+            assert_eq!(
+                missing.missing_protected_paths.as_slice(),
+                std::slice::from_ref(&path)
+            );
+            assert!(missing.read_only_paths.is_empty());
+            assert!(missing.unreadable_paths.is_empty());
+            std::fs::write(&path, "secret").unwrap();
+            let existing = LinuxSandboxPlan::compile(&input).unwrap();
+            assert!(existing.missing_protected_paths.is_empty());
+            assert_eq!(
+                existing.unreadable_paths.contains(&path),
+                access.covers_read()
+            );
+            assert_eq!(
+                existing.read_only_paths.contains(&path),
+                !access.covers_read()
+            );
+        }
+    }
+
+    #[test]
+    fn separate_read_and_write_rules_use_only_the_opaque_mask() {
+        let root = root();
+        std::fs::write(root.join("work/secret"), "secret").unwrap();
+        let input = snapshot(
+            &root,
+            vec![RuleLayerSnapshot {
+                layer: RuleLayer::Guard,
+                rules: vec![
+                    subtree(&root, "work/secret", Access::Write, Decision::Ask),
+                    subtree(&root, "work/secret", Access::Read, Decision::Ask),
+                ],
+            }],
+        );
+        let plan = LinuxSandboxPlan::compile(&input).unwrap();
+        assert!(plan.read_only_paths.is_empty());
+        assert_eq!(plan.unreadable_paths, [root.join("work/secret")]);
+    }
+
+    #[test]
+    fn path_inspection_errors_are_not_missing_paths() {
+        let path = Path::new("/unreadable/secret");
+        for kind in [
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::NotADirectory,
+        ] {
+            let result = inspect_mount_path(
+                path,
+                |_| Err(std::io::Error::from(kind)),
+                |_| unreachable!(),
+            );
+            assert!(matches!(
+                result,
+                Err(LinuxSandboxPlanError::PathInspection { .. })
+            ));
+        }
+        assert!(!inspect_mount_path(
+            path,
+            |_| Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+            |_| unreachable!()
+        )
+        .unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_secret_symlink_is_not_treated_as_absent() {
+        let root = root();
+        let path = root.join("work/secret");
+        std::os::unix::fs::symlink(root.join("not-present"), &path).unwrap();
+        assert!(matches!(
+            mount_path_exists(&path),
+            Err(LinuxSandboxPlanError::PathInspection { .. })
+        ));
     }
 
     #[test]

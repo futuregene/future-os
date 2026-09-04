@@ -21,7 +21,7 @@ Linux 初始实现来自 `claude/linux-bwrap-sandbox`，本轮安全修订以 `s
 |---|---|---|---|
 | SR-01 | system `bwrap` 候选必须由 root 所有；明确接受“只查文件 owner、不递归检查父目录和模式位”的阶段性取舍 | `linux/probe.rs` | `rejects_bwrap_not_owned_by_root_before_executing_it`；NEG-02/SEC-03 待真机复核 |
 | SR-02 | Linux mount plan 与 `RuleSet::evaluate()` 一致，跨层及同层均按原始顺序 first-match；被更早规则命中的后续规则不再产生 mount | `linux/plan.rs` | `same_layer_first_match_wins_for_overlapping_write_rules` 及 plan 单测 |
-| SR-03 | 不存在的受保护 host 目标零写入；只在 bwrap mount namespace 中创建 mode-000 tmpfs | `linux/helper.rs`、`linux/request.rs` | request 校验单测；missing-path 真机 smoke 待重跑 |
+| SR-03 | 目标要求为受保护 host 路径零写入；helper 不直接创建源，但 bwrap 自身 mkdir 尚未隔离 | `linux/helper.rs`、`linux/request.rs` | **2026-09-04 Review 更正：P0 设计缺口**，`--tmpfs` 不保证 namespace-only 创建，见异常报告 §3 |
 | SR-04 | 只有匹配当前 policy digest 的非 detection-only `filesystem_denied` marker 才可直接进入 escalation；检测 marker 不触发脱沙盒重跑 | `linux/violation.rs`、`tools/mod.rs` | classifier 与 post-hoc escalation 单测 |
 | SR-05 | 命令结束后的 glob 复扫失败只发 `dynamic_glob_scan_failed` 检测 marker，保留原命令 exit/signal，避免副作用后二次执行 | `linux/helper.rs` | `glob_rescan_failure_preserves_the_completed_command_status` 待 Linux 重跑 |
 | SR-06 | production helper JSON 通过继承匿名文件 FD 传输，argv 只保留短 `fd:3` 引用；outer→inner 同样使用匿名 FD | `sandbox/backend.rs`、`linux/request.rs`、`linux/runner.rs`、`linux/helper.rs` | payload 单测；`production_request_fd_transport_reaches_both_helper_phases` 待 Linux 重跑 |
@@ -31,6 +31,8 @@ Linux 初始实现来自 `claude/linux-bwrap-sandbox`，本轮安全修订以 `s
 | SR-10 | Linux Desktop 始终保留沙箱选项以稳定布局；检测中/不可用时禁用，并按稳定 code 展示“原因 + 方案 + code”，明确修复后重启 FutureOS | `GeneralPage.tsx`、`Composer.tsx`、`linuxSandboxStatus.ts`、中英文 i18n | status mapping、disabled menu 与 availability 测试 |
 
 本轮整理还修复了 SR-03 引入后的一个构造回归：`MissingProtected` 没有 host source FD，生成 bwrap 参数时必须直接走 `--perms 000 --tmpfs <target>`，不能先读取 `source_fd`。该行为由 missing-path 真机 smoke 覆盖。
+
+2026-09-04 后续现场与复查：[异常分支与降级报告](LINUX_SANDBOX_FAILURE_REVIEW.md)。已修复缺失路径重复 bind、现存读写 guard 重复遮罩和普通 mount size/mtime 误判；新报告明确区分本轮修复与仍开放的 missing-parent P0。此前“bwrap 创建目标只影响 namespace”的表述不成立，不能据此宣传无宿主残留或默认 HOME 下必定启动成功。
 
 ### 大仓库扫描修复（2026-09-04）
 
@@ -149,7 +151,7 @@ Linux 初始实现来自 `claude/linux-bwrap-sandbox`，本轮安全修订以 `s
 ### Wave 4 — L3 完整规则与 violation/escalation（已完成，2026-09-03）
 
 1. 启动前 glob 展开使用内部 no-follow walker；2026-09-04 起同根合并扫描，规则预编译并按匹配范围剪枝。取消节点数硬上限，采用整次扫描预算，详见“大仓库扫描修复”。暂不调用外部 `rg`，不引入额外 PATH 信任边界或两套 glob 语义。
-2. 同时处理 lexical path 与 canonical target；对不存在 exact path 只由 bwrap 在 sandbox view 中建立 mode-000 保护目标，绝不在受保护的 host 路径创建占位对象。
+2. 同时处理 lexical path 与 canonical target；对不存在 exact path 使用 MissingProtected，不直接打开或创建源。受保护 host 路径零占位对象是目标要求，但 bwrap mkdir 的父目录隔离尚未解决（2026-09-04 异常报告 P0），不能将参数构造视为该要求已实现。
 3. 宽保护与窄重开按路径深度排列；read allow 只重开为只读，write allow 若会绕过仍生效的 read deny 则 typed fail closed；不存在的重开目标因无法无歧义创建 file/dir mount source 同样 typed fail closed，hard deny 不可重开。
 4. helper 以稳定 marker 返回 violation kind/path provenance/policy digest/affected count，日志与普通 UI 不输出完整敏感路径集合。glob 新匹配和复扫失败都只做命令结束 detection-only；复扫失败保留已完成命令的原始 status，不称为动态硬保护。
 5. 只有 Linux 文件系统拒绝可以触发一期整命令脱沙盒审批；detection-only marker、digest 不匹配、基础设施错误、普通 command error 和 2/125/126/127 不触发。
@@ -195,7 +197,7 @@ Linux 初始实现来自 `claude/linux-bwrap-sandbox`，本轮安全修订以 `s
 | H-02 | helper boundary | helper 绕过 Agent singleton，但非法直接调用失败 | `cargo test -p future-agent --test linux_sandbox_smoke` | PASS（2026-09-03：非法 payload 返回 infrastructure exit 125，未创建 singleton lock） |
 | H-03 | mount smoke | workspace/temp 写成功，workspace 外写失败且 host 无文件 | `cargo test -p future-agent --test linux_sandbox_smoke filesystem_ -- --ignored --test-threads=1` | PASS（2026-09-03：当前 Ubuntu 26.04/system bwrap；workspace 写成功、外部写拒绝、exit 23 原样） |
 | H-04 | secret smoke | 已有 secret 精确/glob 文件读写均失败 | 同上 | PASS（2026-09-03：本机真实 bwrap；unreadable file 由 mode-000 opaque source 覆盖，读写均失败且 inner command 仅见 stdio FD） |
-| H-05 | missing/symlink | missing exact 不能创建；symlink 不越界；host 无临时对象 | 同上 | NEEDS LINUX RE-RUN（实现已改为 sandbox-view mode-000 tmpfs，不再创建 host placeholder；跨平台结构/规则单测 PASS） |
+| H-05 | missing/symlink | missing exact 不能创建；symlink 不越界；host 无临时对象 | 同上 | **P0 BLOCKED BY DESIGN GAP**：helper 不直接创建 host placeholder，但 bwrap 自身 mkdir 仍可能修改宿主或因只读父目录失败；详见异常报告，待设计修复和 Linux 重跑 |
 | H-06 | network | 未 unshare network；本地 TCP/namespace identity 验证网络保持开放 | 同上 | NOT RUN（argv 单测确认未使用 `--unshare-net`，仍需网络 smoke） |
 | H-07 | lifecycle | 正常 exit/signal 原样；abort/timeout/parent death 无后代残留 | 同上 | PARTIAL PASS（2026-09-03：本机真实 bwrap 的 exit、原始 signal 与 parent-death 后代清理均 PASS；Agent timeout/abort 的 Linux 专项集成仍 NOT RUN） |
 | H-08 | FD security | request/mount/status FD 只在对应 helper 阶段存活；用户命令仅见 stdio，Agent listener/db/log FD 不继承 | 同上 | NEEDS LINUX RE-RUN（旧 smoke 已证明 inner command 未见 fd > 2；新增 production request-FD 双阶段 smoke 尚未执行） |

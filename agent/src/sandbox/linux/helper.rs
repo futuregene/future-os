@@ -70,9 +70,10 @@ fn run_outer(mut request: LinuxSandboxRequest) -> Result<ExitStatus> {
     let mut needs_empty_file = false;
     for mount in &mut request.mounts {
         if mount.kind == MountKind::MissingProtected {
-            // The destination intentionally does not exist on the host. bwrap
-            // creates the sandbox-view mount point for this mode-000 tmpfs; do
-            // not create a placeholder at the protected host path.
+            // No host source exists for this mask. Do not open/create one here.
+            // IMPORTANT: bwrap itself may mkdir the destination before mounting
+            // tmpfs. This needs an isolated parent view to guarantee zero host
+            // residue; see LINUX_SANDBOX_FAILURE_REVIEW.md (P0, still open).
             continue;
         }
         let file = open_mount_source(&mount.source)
@@ -248,9 +249,10 @@ fn create_bwrap_args_file(
                 write_bwrap_arg(&mut file, &mut written, mount.target.as_os_str())?;
             }
             MountKind::Unreadable | MountKind::MissingProtected => {
-                // MissingProtected has no host source by design. bwrap creates
-                // only the sandbox-view mount point; no host placeholder is
-                // opened or created here.
+                // MissingProtected has no host source FD. This argument alone
+                // does NOT guarantee namespace-only target creation: a writable
+                // host bind underneath can be mutated by bwrap's mkdir. The
+                // isolated-parent design remains a release blocker (review doc).
                 for arg in ["--perms", "000", "--tmpfs"] {
                     write_bwrap_arg(&mut file, &mut written, OsStr::new(arg))?;
                 }
@@ -331,7 +333,12 @@ fn run_inner(request: LinuxSandboxRequest) -> Result<ExitStatus> {
             }
         } else if mount.kind != MountKind::MissingProtected {
             let expected = mount.expected.as_ref().context("missing mount identity")?;
-            if identity_from_metadata(&actual) != *expected {
+            // Source O_PATH FDs pin these inodes through this verification.
+            // Mutable directory size/mtime (notably /tmp and an active repo)
+            // are not mount identity; unrelated host writes must not reject
+            // an otherwise correct bind. The bwrap executable check above
+            // deliberately retains its stricter full identity comparison.
+            if !same_mount_inode(expected, &identity_from_metadata(&actual)) {
                 return Err(anyhow!(
                     "mounted target identity changed: {}",
                     mount.target.display()
@@ -556,6 +563,10 @@ fn open_max() -> i32 {
     }
 }
 
+fn same_mount_inode(expected: &BwrapIdentity, actual: &BwrapIdentity) -> bool {
+    expected.device == actual.device && expected.inode == actual.inode
+}
+
 fn identity_from_metadata(metadata: &std::fs::Metadata) -> BwrapIdentity {
     use std::os::unix::fs::MetadataExt;
     let modified_nanos = metadata
@@ -594,6 +605,36 @@ fn mirror_status(status: ExitStatus) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mount_identity_ignores_mutation_but_rejects_inode_replacement() {
+        let expected = BwrapIdentity {
+            device: 1,
+            inode: 2,
+            size: 3,
+            modified_nanos: 4,
+        };
+        let mutated = BwrapIdentity {
+            size: 99,
+            modified_nanos: 100,
+            ..expected.clone()
+        };
+        assert!(same_mount_inode(&expected, &mutated));
+        assert!(!same_mount_inode(
+            &expected,
+            &BwrapIdentity {
+                inode: 5,
+                ..mutated.clone()
+            }
+        ));
+        assert!(!same_mount_inode(
+            &expected,
+            &BwrapIdentity {
+                device: 5,
+                ..mutated
+            }
+        ));
+    }
 
     #[test]
     fn missing_inner_status_is_infrastructure_not_a_command_denial() {

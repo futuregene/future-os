@@ -169,6 +169,48 @@ mod tests {
     }
 
     #[test]
+    fn real_default_home_rules_compile_to_exclusive_missing_mounts() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        let rules = crate::sandbox::rules::RuleSet::resolve_isolated_with_home(&workspace, &home);
+        let policy = LinuxSandboxPlan::compile(&rules.snapshot()).unwrap();
+        let aws = crate::sandbox::paths::canonicalize_lenient(&home.join(".aws"));
+        assert!(policy.missing_protected_paths.contains(&aws));
+        assert!(!policy.read_only_paths.contains(&aws));
+        assert!(!policy.unreadable_paths.contains(&aws));
+        let prepared = prepare(&probe(), policy, "pwd; whoami", &workspace).unwrap();
+        let request =
+            LinuxSandboxRequest::from_json_bytes(prepared.request_payload.as_deref().unwrap())
+                .unwrap();
+        for mount in &request.mounts {
+            if mount.kind == MountKind::MissingProtected {
+                assert_eq!(
+                    request
+                        .mounts
+                        .iter()
+                        .filter(|other| other.target == mount.target)
+                        .count(),
+                    1
+                );
+                assert!(mount.source_fd.is_none());
+            }
+        }
+        assert_eq!(
+            request
+                .mounts
+                .iter()
+                .filter(|mount| mount.target == aws)
+                .map(|mount| mount.kind)
+                .collect::<Vec<_>>(),
+            [MountKind::MissingProtected]
+        );
+        assert!(!home.join(".aws").exists());
+    }
+
+    #[test]
     fn mount_order_preserves_alternating_broad_and_narrow_rules() {
         let mut policy = plan();
         policy.read_only_paths = vec![PathBuf::from("/tmp/work/vendor")];
