@@ -66,10 +66,10 @@ fn no_progress_pure_boundary_and_skew() {
 
 #[test]
 fn write_class_tool_matrix() {
-    for t in ["write", "edit", "shell"] {
+    for t in ["write", "edit"] {
         assert!(is_write_class_tool(t), "{t} is write-class");
     }
-    for t in ["read", "grep", "todo_update", "list", ""] {
+    for t in ["shell", "read", "grep", "todo_update", "list", ""] {
         assert!(!is_write_class_tool(t), "{t} is not write-class");
     }
 }
@@ -122,7 +122,10 @@ fn run_turn_folds_tool_starts_into_tracker() {
         assert_eq!(summary.terminal_state, "completed");
         let snap = progress.snapshot();
         assert_eq!(snap.tool_calls_total, 2);
-        assert!(snap.last_write_tool_at.is_some(), "shell is write-class");
+        assert!(
+            snap.last_write_tool_at.is_none(),
+            "shell activity alone is not a known artifact write"
+        );
     });
 }
 

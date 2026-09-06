@@ -1123,6 +1123,18 @@ impl Goal {
     /// Unknown predecessor ids do NOT block here (liveness); the
     /// `task-graph` projection fails closed on them instead.
     pub fn is_blocked(&self, t: &Todo) -> bool {
+        // Gates/blockers may declare outgoing edges; advancement todos declare
+        // incoming edges. Honor both forms, consistently with task-graph.
+        if self.open_blocking_sources().any(|source| {
+            source.id != t.id
+                && (source.global_gate
+                    || source
+                        .blocked_by_gate
+                        .as_deref()
+                        .is_some_and(|ids| ids.split(',').any(|id| id.trim() == t.id)))
+        }) {
+            return true;
+        }
         let Some(ids) = t.blocked_by_gate.as_deref() else {
             return false;
         };

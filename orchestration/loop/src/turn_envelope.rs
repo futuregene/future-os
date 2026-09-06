@@ -4,7 +4,8 @@
 //! implement the minimal deterministic core the host needs).
 //!
 //! The envelope is a plain-text prompt for a policy-free agent: one bounded
-//! turn, no loop policy embedded (all policy stays in the decision kernel).
+//! turn, with evidence/contracts/signals but no strategy policy (strategy is
+//! the agent's responsibility; the kernel only enforces consistency floors).
 //! [`compose_turn_message`] keeps the P0 signature used by the gRPC executor
 //! and delegates to [`compose_turn_envelope`]. The kernel's scheduling
 //! internals (the should-run verdict, mode, reason, arbitration) are
@@ -29,8 +30,8 @@ pub const TURN_ENVELOPE_SCHEMA_VERSION: &str = "future_loop_turn_envelope_v0";
 const GOAL_MEMORY_SEMANTIC_EVENTS: usize = 5;
 /// Cap the failure-cause text so a runaway error never bloats the prompt.
 const GOAL_MEMORY_ERROR_CHARS: usize = 200;
-/// Cap the combined upstream-evidence summary a fan-in todo's envelope
-/// injects (a wide fan-in must not bloat the prompt).
+/// Summary byte budget shared across all upstream sources. Source index entries
+/// are retained separately, even when a wide fan-in exhausts summary space.
 const UPSTREAM_EVIDENCE_CHARS: usize = 1_200;
 
 /// Compose the goal-memory block fed to the orchestrating agent every turn.
@@ -68,9 +69,10 @@ pub fn compose_goal_memory(goal: &Goal, todo: &Todo) -> String {
         } else if let Some(v) = &last.validation {
             if !v.ok {
                 line.push_str(&format!(
-                    ": verify gate {} rejected (exit {})",
+                    ": verify gate {} rejected (exit {}): {}",
                     v.validator_kind,
-                    v.exit_code.unwrap_or(-1)
+                    v.exit_code.unwrap_or(-1),
+                    crate::executor::truncate_evidence(&v.summary, 1600)
                 ));
             }
         }
@@ -165,6 +167,14 @@ pub fn compose_turn_envelope(goal: &Goal, todo: &Todo, prev: Option<&RunRecord>)
     // Instruction.
     out.push_str(&format!("TODO {}: {}\n", todo.id, todo.text));
 
+    if let Some(acceptance) = &todo.acceptance {
+        out.push_str(&format!(
+            "Acceptance contract (do not silently weaken): {acceptance}\n"
+        ));
+    }
+    if let Some(validator) = &todo.validator {
+        out.push_str(&format!("Machine verification: {validator}\nA manual completion is a reviewed override, not a machine pass.\n"));
+    }
     // Context: resolved gate decisions flow into blocked todos' packets.
     if let Some(gate_ids) = todo.blocked_by_gate.as_deref() {
         let decisions: Vec<String> = gate_ids
@@ -209,6 +219,7 @@ pub fn compose_turn_envelope(goal: &Goal, todo: &Todo, prev: Option<&RunRecord>)
     // Completion contract footer (LoopX: completion must declare closure intent).
     out.push_str("\n\nComplete the todo and report what you did and observed.");
     out.push_str("\nOn completion, declare the successor todo or --no-follow-up.");
+    out.push_str("\nHandoff: identify artifacts and paths, new evidence versus the previous attempt, rejected approaches, uncertainties and the next useful check. Activity alone is not progress; budget exhaustion is not successful completion.");
     out
 }
 
@@ -226,35 +237,38 @@ pub fn compose_upstream_evidence(goal: &Goal, todo: &Todo) -> String {
     let Some(ids) = todo.blocked_by_gate.as_deref() else {
         return String::new();
     };
+    let predecessors: Vec<&Todo> = ids
+        .split(',')
+        .map(str::trim)
+        .filter_map(|id| goal.todo(id))
+        .filter(|pred| matches!(pred.status, TodoStatus::Done | TodoStatus::Superseded))
+        .collect();
+    // Every predecessor gets an index entry; summaries share the budget fairly.
+    // The index is O(fan-in), intentionally never silently dropping a source.
+    let per_source = UPSTREAM_EVIDENCE_CHARS / predecessors.len().max(1);
     let mut entries: Vec<String> = Vec::new();
-    let mut used = 0usize;
-    for gid in ids.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-        let Some(pred) = goal.todo(gid) else {
-            continue;
+    for pred in predecessors {
+        let evidence = pred
+            .evidence
+            .as_deref()
+            .unwrap_or("[no evidence recorded]")
+            .trim();
+        let snippet = if per_source >= 12 {
+            crate::executor::truncate_evidence(evidence, per_source)
+        } else {
+            String::new()
         };
-        if !matches!(pred.status, TodoStatus::Done | TodoStatus::Superseded) {
-            continue;
-        }
-        let Some(evidence) = pred.evidence.as_deref() else {
-            continue;
-        };
-        let evidence = evidence.trim();
-        if evidence.is_empty() {
-            continue;
-        }
-        let remaining = UPSTREAM_EVIDENCE_CHARS.saturating_sub(used);
-        if remaining == 0 {
-            break;
-        }
-        let snippet = truncate(evidence, remaining);
-        used += snippet.chars().count();
-        entries.push(format!("upstream {}: {}", pred.id, snippet));
+        entries.push(format!(
+            "upstream {}: {} [status={:?}]",
+            pred.id, snippet, pred.status
+        ));
     }
     if entries.is_empty() {
         return String::new();
     }
     let mut out = String::new();
-    out.push_str("\nUpstream evidence:\n");
+    out.push_str("\nUpstream evidence: (summaries only; read referenced artifacts, not just these snippets)\n");
+    out.push_str(&format!("Full source evidence: future loop status --goal {} --format json (source IDs below). Superseded sources are not verified results.\n", goal.goal_id));
     for e in entries {
         out.push_str(&e);
         out.push('\n');

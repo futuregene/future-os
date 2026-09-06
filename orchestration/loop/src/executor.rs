@@ -8,10 +8,7 @@ use anyhow::{Context, Result};
 
 use crate::agent_client::{AgentClient, RunSummary, TurnProgressTracker};
 use crate::decision::{compose_goal_boundary, compose_turn_envelope};
-use crate::state::{
-    now_epoch, task_validation_receipt, Goal, RecoveryKind, RunRecord, TaskValidation, Todo,
-    ValidationStatus,
-};
+use crate::state::{now_epoch, Goal, RunRecord, TaskValidation, Todo};
 
 /// Evidence is a summary the orchestrator reads to decide what a worker
 /// actually landed — it is NOT a full transcript. Truncating head-only loses
@@ -118,8 +115,14 @@ pub fn classify_failure(record: &crate::state::RunRecord) -> crate::state::Failu
     use crate::state::{FailureKind, ValidationStatus};
     // A verify-gate failure is the science failure regardless of terminal_state.
     if let Some(v) = &record.validation {
-        if v.status == ValidationStatus::Failed && !v.ok {
-            return FailureKind::ScienceVerifyFailed;
+        if !v.ok {
+            return if v.status == ValidationStatus::Failed {
+                FailureKind::ScienceVerifyFailed
+            } else {
+                // A checker timeout/spawn failure says nothing about the
+                // scientific validity of the artifact, but it is not success.
+                FailureKind::InfraRecoverable
+            };
         }
     }
     if record.terminal_state == "error" {
@@ -144,7 +147,7 @@ pub fn turn_succeeded(record: &RunRecord) -> bool {
 }
 
 /// O3: evaluate turn-end progress. Returns `Some(idle_secs)` when the last
-/// write-class tool (write/edit/shell) start — or the turn start when no
+/// artifact-tool (write/edit) execution start — or the turn start when no
 /// write-class tool started at all — is at least `threshold_secs` before
 /// `now`; `None` otherwise. Pure so tests exercise it without wall-clock
 /// waits.
@@ -195,44 +198,15 @@ pub fn validator_tautology(cmd: &str) -> Option<&'static str> {
 /// `todo add --verify "cmd"` attaches a validator; the kernel runs it in the
 /// goal cwd and only completes the todo when it exits 0. No validator ⇒
 /// `None` (validation not required ⇒ material results default to ok).
-fn run_validator(goal: &Goal, todo: &Todo) -> Option<TaskValidation> {
+async fn run_validator(goal: &Goal, todo: &Todo) -> Option<TaskValidation> {
     let cmd = todo.validator.as_deref()?;
-    let status = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(cmd)
-        .current_dir(&goal.cwd)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .status();
-    match status {
-        Ok(s) => {
-            let code = s.code().unwrap_or(-1);
-            if code == 0 {
-                Some(task_validation_receipt(
-                    ValidationStatus::Passed,
-                    cmd,
-                    "validator passed (exit 0)",
-                    None,
-                    Some(code),
-                ))
-            } else {
-                Some(task_validation_receipt(
-                    ValidationStatus::Failed,
-                    cmd,
-                    &format!("validator exited {code} — repair required"),
-                    Some(RecoveryKind::RepairRequired),
-                    Some(code),
-                ))
-            }
-        }
-        Err(e) => Some(task_validation_receipt(
-            ValidationStatus::Inconclusive,
-            cmd,
-            &format!("validator failed to run: {e}"),
-            Some(RecoveryKind::RepairRequired),
-            None,
-        )),
-    }
+    let timeout = std::env::var("FUTURE_LOOP_VALIDATOR_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .map(std::time::Duration::from_secs)
+        .unwrap_or(crate::validator::DEFAULT_TIMEOUT);
+    Some(crate::validator::validate(std::path::Path::new(&goal.cwd), cmd, timeout).await)
 }
 
 /// Consecutive trailing `incomplete` records for `todo_id` (the just-written
@@ -388,7 +362,7 @@ pub async fn execute_turn(
     // Independent validator (if any) runs after a completed turn; a failed or
     // interrupted turn never runs the validator (no material result to check).
     record.validation = if terminal_state == "completed" {
-        run_validator(goal, todo)
+        run_validator(goal, todo).await
     } else {
         None
     };

@@ -542,7 +542,7 @@ fn todo_complete_contract() {
         assert_eq!(t.successor_ids, vec![s.clone()]);
         assert_eq!(t.evidence.as_deref(), Some("did the thing"));
     }
-    // Gate freeze: an open user gate blocks completing other todos.
+    // An explicitly global gate blocks completion of every work item.
     cli_ok(&[
         "todo",
         "add",
@@ -552,6 +552,7 @@ fn todo_complete_contract() {
         "approval",
         "--class",
         "user_gate",
+        "--global-gate",
         "--gate-question",
         "ok?",
     ]);

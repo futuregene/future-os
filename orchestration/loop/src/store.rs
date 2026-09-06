@@ -571,6 +571,32 @@ pub enum Event {
         steer_ts: u64,
         ts: u64,
     },
+    /// Recipient-scoped steering, replacing the legacy single-slot projection.
+    ControlIssued {
+        goal_id: String,
+        instruction: crate::agents::control::Instruction,
+        ts: u64,
+    },
+    ControlAcknowledged {
+        goal_id: String,
+        instruction_id: String,
+        agent_id: Option<String>,
+        ts: u64,
+    },
+    /// Immutable outbox batch: retries reuse exactly the same key and payload.
+    SupervisorBatchPrepared {
+        goal_id: String,
+        batch_id: String,
+        session_id: String,
+        note_keys: Vec<String>,
+        message: String,
+        ts: u64,
+    },
+    SupervisorBatchDelivered {
+        goal_id: String,
+        batch_id: String,
+        ts: u64,
+    },
     /// An operator asked a worker to STOP: interrupt any in-flight turn and
     /// exit the run loop at the next turn boundary (unlike `WorkerSteered`,
     /// which drains an instruction and keeps running). `agent_id` `None`
@@ -625,6 +651,10 @@ impl Event {
             | Event::SupervisorRegistered { goal_id, .. }
             | Event::WorkerSteered { goal_id, .. }
             | Event::SteerConsumed { goal_id, .. }
+            | Event::ControlIssued { goal_id, .. }
+            | Event::ControlAcknowledged { goal_id, .. }
+            | Event::SupervisorBatchPrepared { goal_id, .. }
+            | Event::SupervisorBatchDelivered { goal_id, .. }
             | Event::WorkerStopped { goal_id, .. }
             | Event::WorkerSessionBound { goal_id, .. } => goal_id,
         }
@@ -1980,7 +2010,11 @@ fn apply(goal: &mut Goal, event: Event) {
         // Projection-only: a supervisor note is already folded into the
         // supervisor projection (and pushed to the supervisor session); it
         // never mutates the kanban.
-        Event::SupervisorNote { .. } => {}
+        Event::SupervisorNote { .. }
+        | Event::ControlIssued { .. }
+        | Event::ControlAcknowledged { .. }
+        | Event::SupervisorBatchPrepared { .. }
+        | Event::SupervisorBatchDelivered { .. } => {}
     }
 }
 

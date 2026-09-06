@@ -7,7 +7,7 @@
 mod common;
 
 use common::mock_agent::{completed_events, spawn_mock, MockState};
-use common::{cli, cli_err, cli_ok, cli_root, first_todo_id, init_goal, open_store};
+use common::{cli_err, cli_ok, cli_root, first_todo_id, init_goal, open_store};
 use future_loop::state::now_epoch;
 use future_loop::store::{Event, Store};
 
@@ -369,12 +369,24 @@ fn run_validator_inconclusive_print() {
         "--max-validation-attempts",
         "1",
     ]);
-    // With an empty PATH the validator's `sh` cannot spawn → Inconclusive.
-    let saved = std::env::var_os("PATH");
-    std::env::set_var("PATH", "/nonexistent-dir-xyz");
-    let result = cli(&["run", "--goal", &gid, "--anonymous", "--max-turns", "2"]);
-    if let Some(p) = saved {
-        std::env::set_var("PATH", p);
-    }
-    result.unwrap();
+    // Missing cwd makes either platform's checker fail to spawn. This is
+    // inconclusive infrastructure, not a science failure or successful closure.
+    std::fs::remove_dir_all(&cr.cwd).unwrap();
+    let error = cli_err(&["run", "--goal", &gid, "--anonymous", "--max-turns", "1"]);
+    assert!(error.contains("max-turns"), "{error}");
+    let goal = open_store(&cr).replay(&gid).unwrap().unwrap();
+    assert_eq!(
+        goal.history.last().unwrap().failure_kind,
+        Some(future_loop::state::FailureKind::InfraRecoverable)
+    );
+    assert_eq!(
+        goal.history
+            .last()
+            .unwrap()
+            .validation
+            .as_ref()
+            .unwrap()
+            .status,
+        future_loop::state::ValidationStatus::Inconclusive
+    );
 }
