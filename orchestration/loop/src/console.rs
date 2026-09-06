@@ -181,7 +181,7 @@ async fn main_from_args(prog: &str, args: Vec<String>) -> Result<()> {
         // ── P3 commands ──────────────────────────────────────────────────
         "scope" => cmd_scope(&store, &args[1..]),
         "lane" => cmd_lane(&store, &args[1..]),
-        "supervisor" => cmd_supervisor(&mut store, &args[1..]),
+        "supervisor" => cmd_supervisor(&mut store, &args[1..]).await,
         "report" => cmd_report(&mut store, &args[1..]),
         "worker" => cmd_worker(&mut store, &args[1..]).await,
         "task-graph" => cmd_task_graph(&store, &args[1..]),
@@ -388,8 +388,8 @@ fn build_cli_registry() -> CommandRegistry {
     r.command(
         agent,
         "supervisor",
-        "supervisor register|steer|events (G-16)",
-        "supervisor register|steer|events --goal G ...",
+        "supervisor register|steer|events|watch (G-16)",
+        "supervisor register|steer|events|watch --goal G ...",
     );
     r.subcommand(
         "supervisor",
@@ -400,14 +400,32 @@ fn build_cli_registry() -> CommandRegistry {
     r.subcommand(
         "supervisor",
         "steer",
-        "interrupt the in-flight worker turn and inject an instruction",
-        "steer --goal G [--agent-id A] --instruction \"...\"",
+        "durable next-boundary guidance; --interrupt for urgent redirection",
+        "steer --goal G [--agent-id A] [--interrupt] --instruction \"...\"",
     );
     r.subcommand(
         "supervisor",
         "events",
         "read the supervisor event projection (gates / completions / failures / progress)",
         "events --goal G [--format json]",
+    );
+    r.subcommand(
+        "supervisor",
+        "watch",
+        "non-LLM watchdog: death detection and durable batched notification delivery",
+        "watch --goal G [--once]",
+    );
+    r.subcommand_flags(
+        "supervisor",
+        "watch",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--once",
+                "one reconciliation instead of a persistent watcher",
+                "boolean",
+            ),
+        ],
     );
     r.command(
         agent,
@@ -956,8 +974,13 @@ fn build_cli_registry() -> CommandRegistry {
             ),
             (
                 "--instruction TEXT",
-                "the mid-turn redirect",
-                "required; interrupts the in-flight turn and injects the instruction",
+                "idempotent guidance",
+                "required; delivered at next boundary, acknowledged after writeback",
+            ),
+            (
+                "--interrupt",
+                "abort in-flight turn for urgent guidance",
+                "boolean; default false",
             ),
         ],
     );
@@ -2547,7 +2570,11 @@ fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
     // closes the manual `todo complete` bypass. Resolving the gate itself is
     // the gate's own path (`gate resolve`) — gates are never completed here.
     if t.class != TaskClass::UserGate && t.class != TaskClass::Blocker {
-        let open_gates: Vec<String> = goal.open_gates().map(|g| g.id.clone()).collect();
+        let open_gates: Vec<String> = if goal.is_blocked(t) {
+            goal.open_gates().map(|g| g.id.clone()).collect()
+        } else {
+            Vec::new()
+        };
         if !open_gates.is_empty() {
             bail!(
                 "todo {todo_id} cannot be completed while open gate(s) [{}] are pending — \
@@ -2557,6 +2584,13 @@ fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
         }
     }
     let is_advancement = t.class == TaskClass::Advancement;
+    let completion_basis = if force {
+        "operator_override"
+    } else if t.validator.is_some() {
+        "manual_review; machine validator NOT executed"
+    } else {
+        "manual_review"
+    };
     // O6: completion evidence contract (retrospective: 11/33 completions
     // shipped <60-char evidence, several fully empty, and every one of those
     // todos had to be reopened by hand). Advancement todos must carry real,
@@ -2618,7 +2652,7 @@ fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
             goal_id: goal_id.clone(),
             todo_id: todo_id.clone(),
             outcome: crate::work_items::delivery_outcome::OUTCOME_DELIVERED.to_string(),
-            note: None,
+            note: Some(format!("completion_basis={completion_basis}")),
             delivered_turn,
             seq,
             ts: now_epoch(),
@@ -4192,6 +4226,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         let goal_for_dir = goal_id
             .clone()
             .ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+        crate::agents::supervision::ensure_watchdog(store, &goal_for_dir)?;
         let run_log_dir = std::path::PathBuf::from(store.root_path())
             .join("detached")
             .join(&goal_for_dir);
@@ -4501,24 +4536,18 @@ pub async fn notify_supervisor(
     message: &str,
     dedup_key: &str,
 ) {
-    // ① Durable ledger note — authoritative intervention channel; survives a
-    // lost/delayed push and a busy supervisor.
-    if let Err(e) = store.append(crate::store::Event::SupervisorNote {
-        goal_id: goal_id.to_string(),
-        todo_id: todo_id.to_string(),
-        note_kind: kind.to_string(),
-        message: message.to_string(),
-        dedup_key: dedup_key.to_string(),
-        ts: crate::state::now_epoch(),
-    }) {
-        println!("   ⚠ supervisor note ledger append failed: {e}");
-    }
-    // ② Best-effort push — wakes an idle supervisor only.
-    let Some(sid) = supervisor_session_id else {
+    if let Err(e) =
+        crate::agents::supervision::queue(store, goal_id, kind, todo_id, message, dedup_key)
+    {
+        eprintln!("supervisor note persistence failed: {e}");
         return;
-    };
-    if let Err(e) = client.prompt(sid, message, dedup_key).await {
-        println!("   ⚠ supervisor notify failed (best-effort): {e}");
+    }
+    // A production watchdog coalesces concurrent notes. Foreground embedders
+    // without one retain immediate delivery, with the same durable retry path.
+    if supervisor_session_id.is_some() && !crate::agents::supervision::running(store, goal_id) {
+        if let Err(e) = crate::agents::supervision::flush(store, goal_id, client).await {
+            eprintln!("supervisor outbox retained for retry: {e}");
+        }
     }
 }
 
@@ -4547,7 +4576,7 @@ pub async fn notify_infra_stop(
         &format!(
             "[future-loop] goal {goal_id}: todo {todo_id} stopped before completion ({kind}) — {detail}"
         ),
-        &format!("infra_stopped:{todo_id}:{kind}"),
+        &format!("infra_stopped:{todo_id}:{kind}:{}", std::process::id()),
     )
     .await;
 }
@@ -4563,36 +4592,15 @@ pub async fn notify_infra_stop(
 /// no-op (the tick itself never fails over a lost notification).
 #[doc(hidden)] // test-visible seam
 pub async fn notify_dead_holders(store: &mut Store, goal_id: &str) -> Result<()> {
-    let Some(goal) = store.replay(goal_id)? else {
-        return Ok(());
-    };
-    let supervisor = goal.supervisor_session_id.clone();
-    let dead: Vec<(String, u32)> = crate::work_items::task_lease::dead_holder_todos(&goal)
-        .into_iter()
-        .filter_map(|t| t.holder_pid.map(|pid| (t.id.clone(), pid)))
-        .collect();
-    if dead.is_empty() {
-        return Ok(());
-    }
-    let Ok(mut client) =
-        crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr()).await
-    else {
-        return Ok(());
-    };
-    for (todo_id, pid) in dead {
-        notify_supervisor(
-            store,
-            &mut client,
-            goal_id,
-            supervisor.as_deref(),
-            "host_died",
-            &todo_id,
-            &format!(
-                "[future-loop] goal {goal_id}: todo {todo_id} stopped before completion (host_died) — holder pid {pid} is gone (no release); relaunch to reclaim the lease"
-            ),
-            &format!("infra_stopped:{todo_id}:host_died:{pid}"),
-        )
-        .await;
+    // Persist before attempting any connection: agent downtime must not erase
+    // the very observation needed to recover once it comes back.
+    crate::agents::supervision::record_dead_holders(store, goal_id)?;
+    if !crate::agents::supervision::running(store, goal_id) {
+        if let Ok(mut client) =
+            crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr()).await
+        {
+            let _ = crate::agents::supervision::flush(store, goal_id, &mut client).await;
+        }
     }
     Ok(())
 }
@@ -4846,24 +4854,34 @@ async fn run_turns(
                 s.instruction
             ))
         });
-        // Persist the consumption BEFORE the turn runs: if this run dies
-        // mid-turn, the next run still must not re-inject the stale steer.
-        if let Some(steer) = goal.pending_steer.as_ref() {
-            if steer_note
-                .as_ref()
-                .is_some_and(|n| n.contains(steer.instruction.as_str()))
-            {
-                store.append(Event::SteerConsumed {
-                    goal_id: goal_id.to_string(),
-                    agent_id: steer.agent_id.clone(),
-                    steer_ts: steer.ts,
-                    ts: now_epoch(),
-                })?;
-                last_steer_ts = steer.ts;
-            }
-        }
-        let continue_note = next_continue_note.take();
-        let turn_note = steer_note.or(continue_note);
+        let controls = crate::agents::control::pending(store, goal_id, agent_id)?;
+        let mut notes: Vec<String> = steer_note.into_iter().collect();
+        notes.extend(controls.iter().map(|c| {
+            format!(
+                "SUPERVISOR STEERING [{}] (idempotent guidance; a retry may repeat it):\n{}",
+                c.id, c.text
+            )
+        }));
+        notes.extend(
+            store
+                .events(goal_id)?
+                .iter()
+                .rev()
+                .filter_map(|entry| match &entry.event {
+                    Event::ProgressReported {
+                        todo_id: reported,
+                        message,
+                        ..
+                    } if reported == &todo_id => Some(format!(
+                        "Reported milestone (claim, verify against artifacts): {}",
+                        crate::decision::truncate(message, 600)
+                    )),
+                    _ => None,
+                })
+                .take(2),
+        );
+        notes.extend(next_continue_note.take());
+        let turn_note = (!notes.is_empty()).then(|| notes.join("\n\n"));
         let turn_future = execute_turn(
             client,
             session_id,
@@ -4983,6 +5001,28 @@ async fn run_turns(
             record: record.clone(),
             ts: now_epoch(),
         })?;
+        // Ack only after durable writeback. A transport failure/crash before
+        // this point must leave the instruction available to a restarted run.
+        if record.terminal_state == "completed" {
+            for instruction in &controls {
+                store.append(Event::ControlAcknowledged {
+                    goal_id: goal_id.to_string(),
+                    instruction_id: instruction.id.clone(),
+                    agent_id: agent_id.map(str::to_owned),
+                    ts: now_epoch(),
+                })?;
+            }
+            if let Some(steer) = &goal.pending_steer {
+                if steer.ts == last_steer_ts {
+                    store.append(Event::SteerConsumed {
+                        goal_id: goal_id.to_string(),
+                        agent_id: steer.agent_id.clone(),
+                        steer_ts: steer.ts,
+                        ts: now_epoch(),
+                    })?;
+                }
+            }
+        }
         // O3: normal turn end — evaluate the no-progress window and ledger
         // the breach (detection + bookkeeping; no auto-injection).
         record_no_progress_if_idle(store, goal_id, &todo_id, agent_id, &progress)?;
@@ -5261,17 +5301,32 @@ pub async fn steer_worker_poll_once(
     if read.is_err() {
         return offset;
     }
-    let new_offset = meta.len();
-    for line in buf.lines() {
+    let Some(complete_bytes) = buf.rfind('\n').map(|i| i + 1) else {
+        return offset;
+    };
+    let new_offset = offset + complete_bytes as u64;
+    for line in buf[..complete_bytes].lines() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
-        if v.get("kind").and_then(|k| k.as_str()) != Some("worker_steered") {
+        let kind = v.get("kind").and_then(|k| k.as_str());
+        let instruction = if kind == Some("control_issued") {
+            let instruction = &v["instruction"];
+            if instruction["interrupt"] != true {
+                continue;
+            }
+            instruction
+        } else if kind == Some("worker_steered") {
+            &v
+        } else {
             continue;
-        }
+        };
         // Broadcast (agent_id absent) targets every worker; a specific
         // agent_id targets only the matching worker.
-        let targets_this_worker = match (agent_id, v.get("agent_id").and_then(|a| a.as_str())) {
+        let targets_this_worker = match (
+            agent_id,
+            instruction.get("agent_id").and_then(|a| a.as_str()),
+        ) {
             (Some(me), Some(target)) => me == target,
             (_, None) => true,
             (None, Some(_)) => false,
@@ -5286,8 +5341,11 @@ pub async fn steer_worker_poll_once(
         }
         if let Some(c) = client.as_mut() {
             if c.abort(session_id).await.is_err() {
-                *client = None; // reconnect on the next event
+                *client = None;
+                return offset; // retry undelivered interrupt; never lose the event
             }
+        } else {
+            return offset;
         }
     }
     new_offset
@@ -6176,6 +6234,8 @@ fn parse_pairs(args: &[String], mut f: impl FnMut(&str, String)) {
                 "--no-follow-up"
                     | "--anonymous"
                     | "--detach"
+                    | "--interrupt"
+                    | "--once"
                     | "--force-workspace"
                     | "--help"
                     | "-h"
@@ -6851,9 +6911,21 @@ fn cmd_lane(store: &Store, args: &[String]) -> Result<()> {
 /// supervisor proposal/receipt events (projection-only) plus the bidirectional
 /// messaging primitives: `register` binds the supervisor's session id (the
 /// up-channel target), `steer` issues a mid-turn interrupt (the down-channel).
-fn cmd_supervisor(store: &mut Store, args: &[String]) -> Result<()> {
+async fn cmd_supervisor(store: &mut Store, args: &[String]) -> Result<()> {
     let sub = args.first().map(|s| s.as_str()).unwrap_or("");
     match sub {
+        "watch" => {
+            reject_unknown_flags(&args[1..], &["--goal", "--once"])?;
+            let mut goal = None;
+            parse_pairs(&args[1..], |k, v| {
+                if k == "--goal" {
+                    goal = Some(v);
+                }
+            });
+            let goal = goal.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+            crate::agents::supervision::watch(store, &goal, args.iter().any(|a| a == "--once"))
+                .await?;
+        }
         "events" => {
             let mut goal_id = None;
             reject_unknown_flags(&args[1..], &["--goal"])?;
@@ -6888,6 +6960,7 @@ fn cmd_supervisor(store: &mut Store, args: &[String]) -> Result<()> {
                 session_id: session_id.to_string(),
                 ts: now_epoch(),
             })?;
+            crate::agents::supervision::ensure_watchdog(store, &goal_id)?;
             println!("supervisor registered (session {session_id})");
         }
         // `supervisor steer --goal G [--agent-id A] --instruction <text>` —
@@ -6897,7 +6970,11 @@ fn cmd_supervisor(store: &mut Store, args: &[String]) -> Result<()> {
             let mut goal_id = None;
             let mut agent_id = None;
             let mut instruction = None;
-            reject_unknown_flags(&args[1..], &["--agent-id", "--goal", "--instruction"])?;
+            reject_unknown_flags(
+                &args[1..],
+                &["--agent-id", "--goal", "--instruction", "--interrupt"],
+            )?;
+            let interrupt = args.iter().any(|a| a == "--interrupt");
             parse_pairs(&args[1..], |k, v| {
                 if k == "--goal" {
                     goal_id = Some(v);
@@ -6911,16 +6988,20 @@ fn cmd_supervisor(store: &mut Store, args: &[String]) -> Result<()> {
             let instruction =
                 instruction.ok_or_else(|| anyhow::anyhow!("--instruction required"))?;
             let target = agent_id.clone();
-            store.append(Event::WorkerSteered {
+            store.append(Event::ControlIssued {
                 goal_id: goal_id.clone(),
-                agent_id: target.clone(),
-                instruction: instruction.to_string(),
+                instruction: crate::agents::control::Instruction {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    agent_id: target.clone(),
+                    text: instruction.clone(),
+                    interrupt,
+                },
                 ts: now_epoch(),
             })?;
             let target = target.as_deref().unwrap_or("all workers");
             println!("steer issued → {target}: {instruction}");
         }
-        _ => bail!("supervisor subcommand must be events|register|steer"),
+        _ => bail!("supervisor subcommand must be events|register|steer|watch"),
     }
     Ok(())
 }
@@ -7906,6 +7987,10 @@ fn describe_event(event: &crate::store::Event) -> String {
     let kind = match event {
         Event::GoalStarted { .. } => "goal_started",
         Event::SteerConsumed { .. } => "steer_consumed",
+        Event::ControlIssued { .. } => "control_issued",
+        Event::ControlAcknowledged { .. } => "control_acknowledged",
+        Event::SupervisorBatchPrepared { .. } => "supervisor_batch_prepared",
+        Event::SupervisorBatchDelivered { .. } => "supervisor_batch_delivered",
         Event::TodoAdded { .. } => "todo_added",
         Event::TodoCompleted {
             todo_id,

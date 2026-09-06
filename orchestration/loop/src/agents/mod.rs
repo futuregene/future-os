@@ -3,7 +3,9 @@
 //! supervisor event projection (supervisor), and the workspace guard
 //! against shared-workspace write conflicts (workspace_guard).
 
+pub mod control;
 pub mod lane;
 pub mod scope;
+pub mod supervision;
 pub mod supervisor;
 pub mod workspace_guard;

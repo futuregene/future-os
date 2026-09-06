@@ -53,7 +53,7 @@ pub fn todo_signals(goal: &Goal, todo: &Todo) -> Vec<String> {
     }
     if let Some(signal) = oscillation_replan_reason(goal) {
         advisories.push(format!(
-            "[signal: {signal} — consider a different validator or splitting the todo]"
+            "[signal: {signal} — inspect artifacts and split work if useful; do not weaken acceptance criteria to obtain a pass]"
         ));
     }
     if todo.failed_attempts > 0 {
@@ -72,7 +72,7 @@ pub fn todo_signals(goal: &Goal, todo: &Todo) -> Vec<String> {
         .count() as u32;
     if no_progress_turns >= LLM_ZOMBIE_TURN_THRESHOLD {
         advisories.push(format!(
-            "[signal: {no_progress_turns} turns with no write-class tool (write/edit/shell) — the worker may be stuck; consider restarting with a fresh session]"
+            "[signal: {no_progress_turns} turns with no write-class tool (write/edit) — activity is not progress; shell/read-only research may be productive. Inspect evidence, validation and reported milestones before deciding whether to restart]"
         ));
     }
     advisories

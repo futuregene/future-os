@@ -52,10 +52,11 @@ pub struct SessionTotals {
     pub cost: f64,
 }
 
-/// O3: write-class tools — a `tool_start` of any of these resets the idle
-/// clock. Everything else (read, grep, todo, …) is observation-only.
+/// Artifact-activity proxy: write/edit execution resets the idle clock. Shell
+/// may mutate files OR merely poll; do not infer material progress from its name.
+/// Reading and computation may be productive without invoking these tools.
 pub fn is_write_class_tool(name: &str) -> bool {
-    matches!(name, "write" | "edit" | "shell")
+    matches!(name, "write" | "edit")
 }
 
 /// O3: per-turn progress signals observed on the event stream. Shared between
@@ -566,7 +567,8 @@ async fn consume_run_stream(
         }
         // O3: fold tool_start into the progress tracker (write-class
         // starts reset the idle clock; all starts count).
-        if ev.r#type == "tool_start" {
+        if ev.r#type == "tool_start" && data.get("phase").and_then(|p| p.as_str()) != Some("input")
+        {
             if let (Some(progress), Some(name)) =
                 (progress, data.get("tool_name").and_then(|v| v.as_str()))
             {
@@ -574,7 +576,7 @@ async fn consume_run_stream(
             }
         }
         match ev.r#type.as_str() {
-            "tool_start" => {
+            "tool_start" if data.get("phase").and_then(|p| p.as_str()) != Some("input") => {
                 if let Some(name) = data.get("tool_name").and_then(|v| v.as_str()) {
                     summary.tools.push(name.to_string());
                 }

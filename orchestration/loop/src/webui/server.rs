@@ -775,7 +775,7 @@ mod tests {
         assert!(run_server(root, port, false).await.is_err());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn run_server_serves_and_broadcaster_ticks() {
         let (root, _dir) = store_root();
         let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -803,6 +803,11 @@ mod tests {
         client.read_to_end(&mut buf).await.unwrap();
         assert!(String::from_utf8_lossy(&buf).contains("200 OK"));
 
+        // Keep real time for the TCP exchange above: auto-advancing a paused
+        // clock can expire the server's header-read timeout before the OS
+        // reports client bytes ready (ConnectionReset on Linux CI). Only the
+        // deterministic broadcaster assertions below need a paused clock.
+        tokio::time::pause();
         // First broadcaster tick: computes the initial fingerprint.
         tokio::time::advance(std::time::Duration::from_millis(1300)).await;
         // Append a todo → the projection changes → the next tick's fingerprint

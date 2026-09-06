@@ -85,6 +85,11 @@ pub fn build_supervisor_event_projection(
         "progress": progress_items,
         "note_count": note_items.len(),
         "notes": note_items,
+        "delivery_pending": crate::agents::supervision::pending_delivery(store, goal_id)?,
+        "control_events": events.iter().filter(|e| matches!(e.event,
+            Event::ControlIssued { .. } | Event::ControlAcknowledged { .. }
+            | Event::SupervisorBatchPrepared { .. } | Event::SupervisorBatchDelivered { .. }
+        )).map(|e| &e.event).collect::<Vec<_>>(),
     }))
 }
 

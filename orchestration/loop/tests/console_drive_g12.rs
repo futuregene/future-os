@@ -156,8 +156,12 @@ fn supervisor_steer_records_and_renders() {
         "re-check",
     ]);
     let store = open_store(&cr);
-    let g = store.replay(&gid).unwrap().unwrap();
-    assert_eq!(g.pending_steer.as_ref().unwrap().instruction, "re-check");
+    let controls = future_loop::agents::control::pending(&store, &gid, Some("worker-a")).unwrap();
+    assert_eq!(controls[0].text, "re-check");
+    assert!(
+        !controls[0].interrupt,
+        "ordinary guidance waits for a boundary"
+    );
 }
 
 // ── remaining error arms ───────────────────────────────────────────────────

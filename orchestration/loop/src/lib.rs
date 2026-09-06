@@ -30,6 +30,7 @@ pub mod scheduler;
 pub mod state;
 pub mod store;
 pub mod turn_envelope;
+pub mod validator;
 pub mod webui;
 pub mod work_items;
 pub mod worker_bridge;

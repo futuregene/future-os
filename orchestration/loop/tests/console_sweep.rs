@@ -558,6 +558,14 @@ fn notify_supervisor_enqueues_to_registered_session_only() {
         .await;
         assert!(shared.lock().unwrap().prompt_calls.is_empty());
 
+        // The ledger, not a stale caller parameter, is registration authority.
+        store
+            .append(future_loop::store::Event::SupervisorRegistered {
+                goal_id: gid.clone(),
+                session_id: "sup-sess".into(),
+                ts: 1,
+            })
+            .unwrap();
         // Registered → ledgered AND enqueued to that session (enqueue_if_busy).
         future_loop::console::notify_supervisor(
             &mut store,
