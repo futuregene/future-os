@@ -1,337 +1,114 @@
-# Loop 架构：一个 kanban 工具，不是一个规则引擎
-
-本文档阐述 loop 控制平面的设计原则。运维模型（概念、命令、多 agent 编排）见
-`docs/loop-control-plane.zh-CN.md`；面向 agent 的驾驶手册见 `future-loop`
-SKILL.md。
-
-## 设计原则
-
-1. **kanban，不是规则引擎。** 内核提供确定性工具——todo 状态、verify 门、
-   acceptance 契约、evidence、lease——从不替 agent 判断「你卡住了，停下来重新
-   规划」。它计算信号（outcome floor、振荡、失败次数、monitor 停滞、无进展回合），
-   并以 **advisory（提示）** 的形式放进 turn envelope（回合信封）；如何处理信号是决策，
-   而决策不留在内核里。
-
-2. **agent 是编排者——要有可观测性和控制杆。** 决策者是大模型，不是内核。
-   内核只守住**正确性底线**——保证 goal 状态合法的硬约束（verify 门、
-   acceptance 契约、终局判定、lease）——从不判断一个*探索性*
-   结果*对不对*。但「agent 决策」只有当 agent 能*看见*、能*动手*时才有意义。
-   所以 loop 交给编排者的不只是状态，还有控制杆：
-
-   - **观测** — 四个面，不只是 `tail`：
-     - **行为流（过程）** — `worker tail` 实时流式查看 worker 的回合日志
-       （压缩的工具/用量视图）：看 worker 的*手*；
-     - **产物（结果）** — 读 evidence 指向的文件（报告、数据）：这是编排者
-       判断*探索性*结果的方式——不是盯过程，而是读*活*；
-     - **账本（状态与历史）** — `status` / `diagnose` 按需暴露 todo 状态、
-       信号、gate、lease：权威看板；
-     - **推送（事件）** — supervisor 通知送达状态转换点（见「run 生命周期与
-       编排者通知」）；
-   - **steer** — `supervisor steer` 打断/纠正正在运行的 worker，
-     `todo update` 在看板上中途调整；
-   - **停止** — `worker stop` 由编排者判断后停下 worker；
-   - **关闭** — 手动 `todo complete` **有意不**重跑机器 `--verify` 门：
-     对探索性交付物，编排者读产物就是判定，内核不做二次猜测。
-
-   因此可观测性和可 steer 性是架构的一部分，不是便利功能：它们让「编排者」
-   真正成立。
-
-   **worker 只上浮，从不判断要不要找人。** worker 遇到自己解决不了的事，
-   不会去开一个「user gate」、也不判断「这事该人来做」——它**上浮给编排者**
-   （一个信号/消息，不是冻结），自己那条道照常。*这件事到底要不要人*，是
-   编排者的判断：它可以直接答、调整 todo、换策略，或者——只有到这一步——
-   才提给那个人。编排者怎么找到人（以及那要不要冻结什么）**loop 不约束**——
-   那是编排层行为，在内核之外。所以内核没有 `blocked_by: human` 概念、也没有
-   worker 开启的 gate：只有依赖边（`--blocks`，工作必须等待）和一条可靠的
-   worker→编排者上浮通道。人位于监督栈的顶端（见「监督的层级」），*经由*
-   编排者触达，worker 从不直接找人。
-
-3. **用户通过 skill 使用 loop。** 用户不直接编排内核；他们说出目标
-   （`/future-loop <任务>`），由 agent——在 `future-loop` SKILL.md 的指导下——
-   拆解目标、驱动 run、读取信号、上浮决策点。SKILL.md 负责「什么时候做什么、
-   怎么拆解、怎么 steer」（编排层）；CLI/内核是底层机制（状态 + 硬检查）。决策
-   指引放在 SKILL.md，正因为那才是决策者（大模型）会读的地方。
-
-4. **一切能力经 CLI 暴露。** `future loop <cmd>` 是控制平面唯一的机器接口：
-   每一次状态变更——goal/todo 变更、gate 裁决、lease、steer、停止、完成——都是
-   一次 CLI 调用，确定性、可在事件账本中审计。skill 代表 agent 驱动 CLI；人类
-   operator 敲同样的命令；dashboard（`ui`）**有意只读**（变更留在 CLI）。一个
-   接口，没有旁门：loop 能做的任何事，CLI 都能表达。
-
-5. **状态持久化，上下文可重放。** goal、todo、evidence、信号都持久化在对话之外
-   （event-sourced、可重放）。**账本（含 evidence）是状态与历史的权威**；session
-   连续性是有价值的**缓存**，当封存期间世界变了、缓存失效时，以账本为准、经增量
-   信封刷新（见下文「worker 会话生命周期」）。是否 resume 一个会话，始终是调用方
-   的选择，不是内核的。
-
-## 内核行为的两类划分
-
-内核只做两类事，用一个问题区分：**违反它，goal 的状态是否就非法了？**
-
-- **底线（floors）** —— 强制执行；违反就让 goal 陷入非法状态。内核唯一
-  的强制力。
-- **仪表（gauges）** —— 算好递给 agent；*拿它怎么办从来不是内核的事*。
-  有的供策略参考、有的掐断预算，但都是信息，不是强制。
-
-### A. 底线（强制：kanban 的确定性语义）
-
-这些是状态一致性的硬约束，弱化它们会让 goal 陷入非法状态：
-
-| 底线 | 为什么必须保留 |
-|---|---|
-| succession closure missing | 完成必须声明 successor / no-follow-up，否则 goal 永远无法关闭 |
-| acceptance gap | 硬契约：acceptance token 必须满足 |
-| 终局判定 | kanban 确定性状态：所有 todo done + gaps 满足才关闭 |
-| blocker | 阻塞器 |
-| work leased to others | 并发正确性 |
-| verify 门 | 正确性：exit 0 才 complete |
-| lease | 并发互斥 |
-
-机器验证有一个有意的互补面：**编排者判断，经交付闭环记录**。完成先落到
-`delivered` 待决态；编排者（或 operator）读产物后裁决为
-`verified / failed / rework`——内核记录这个判断，不做二次猜测（手动
-`todo complete` 不重跑 `--verify`）。
-
-### B. 仪表（信息：永远不强制 replan）
-
-内核算出并浮现的一切，agent 读了自行处置——或忽略。策略提示与花费封顶
-都是内核算好递出的量，区别只在 agent 怎么用，不在种类。没有一个决定
-「你卡住了 → replan」。
-
-*软仪表（策略提示）* —— 以 advisory 形式浮现在 turn envelope，也可经
-`status` / `diagnose` 查询：
-
-| 仪表 | 检测条件 | agent 看到的提示 |
-|---|---|---|
-| outcome floor | `surface_streak >= threshold` | 连续 N 个回合无实质产出 |
-| 振荡（oscillation） | A→V→A→V 交替 | 交付在 accept/reject 之间反复 |
-| repair budget | `failed_attempts > MAX` | 失败 todo 仍 runnable（不再过滤），提示「已失败 N 次」 |
-| monitor 停滞 | `consecutive_no_change >= 3` | quiet wait + 「考虑让 watch lane 过期」 |
-| 无进展（no-progress） | `no_progress_turns >= 2` | 「考虑用全新会话重启」 |
-
-*硬仪表（花费封顶）* —— 封顶消耗；某个触发后 goal 等待，接下来怎么办
-由编排者（或用户）决定——同样永远不是内核强制的 replan：
-
-| 仪表 | 封顶什么 |
-|---|---|
-| validation budget | `--verify` 门一直失败仍限制 run loop 的回合数 |
-| quota（配额） | should-run 判定、调度拒绝、花费 |
-| turn 超时 | 一次一个有界回合 |
-
-唯一重要的区分：底线说*这个状态非法*；仪表说*这有个数*——而对一个数
-的回应永远是决策，决策在 agent，不在内核。
-
-## run 生命周期与编排者通知
-
-run 如何发起、worker 如何触达编排会话，属于架构决策（上述原则的实现
-机制），在此固定：
-
-1. **run 是 detached（异步）的。** 编排者从不被 run 阻塞：它把 run
-   作为独立进程派发出去，立即拿回控制权，继续盯其他 worker、读信号、
-   响应 gate。同步 run 会把编排者在 run 的整个生命周期内降级成「又一个
-   worker」。
-
-   **这是调用方契约，不是内核机制。** `run` 是一个前台 CLI 调用；内核不
-   提供服务端 spawn 或 job handle。分离靠编排者怎么启动它（shell 后台 /
-   nohup / setsid / 调度器）达成，靠纪律维持：**编排 agent 绝不能同步地
-   跑 `future loop run` 并原地等某个 todo 完成**——阻塞期间没有 worker
-   被盯、没有 gate 被应答、没有信号被读，goal 的死时间就是编排者的过错
-   （见 skill 的 drive playbook）。下文的 liveness 路径（lease + pid +
-   scheduler tick）之所以存在，正是因为 detached run 不能指望一个阻塞的
-   调用者会注意到什么。
-
-2. **账本是权威状态。** worker 每次 writeback 落在事件账本里——可重放、
-   可审计、崩溃不丢。即使其他所有通道都失败，账本也永远不会丢「发生过
-   什么」。
-
-3. **编排者感知 = push 触发 + 账本拉取。** 因为编排者是 LLM 会话（只有
-   轮询、没有中断），状态*转换点*——完成、失败、gate 打开、worker 死亡——
-   以及信号在连续 N 个回合未被响应后的升级——
-   以消息形式 push 给 supervisor 会话。push 是**易失的触发器，不是记录**：
-   幂等（按转换去重，重发即 no-op）、可丢弃（未注册 supervisor 或 agent
-   不可达 → 丢弃，账本仍是权威）。编排者的账本读取（`status`、
-   `worker tail`、下一个 turn envelope）总会收敛到真相，所以丢消息只损失
-   延迟，永不损失正确性。push 有两条路径：worker 自己的转换报告，以及
-   scheduler 对死得来不及报告的 worker 的 dead-holder 清扫。
-
-4. **detached run 由 lease + pid 活性监督，而不是父进程。** 同步 run 免费
-   获得崩溃监督（被阻塞的调用方会在 run 死掉时立刻感知）。detach 拿掉了
-   这层隐式监督，所以要正式接管：scheduler 的 dead-holder 检查
-   （`notify_dead_holders`）发现持有进程 pid 已消失的 lease，向 supervisor
-   push 重启提示。因此 detach 成为默认的前提是这条活性路径可靠——它是
-   主监督，不是兜底。
-
-### 监督的层级：人来监督编排者
-
-监督是一个栈，顶端是人：
-
-- **编排者（supervisor）监督 worker** —— 通过上面的 lease + pid 活性，
-  以及 `worker tail` 做实时查看；
-- **人监督编排者。** 编排者是自动化监督链的顶端；loop 里没有任何东西
-  监督它。当它停滞、走错、或判断某事需要人时，人是上浮的终点。worker
-  只能*经由*编排者触达人（它上浮，从不直接找人）；编排者之后如何让人
-  参与——以及那要不要冻结任何工作——是编排层行为，内核不约束。人也可以
-  随时直接介入（`todo update`、`worker stop`、手动 `todo complete`）：
-  下层自动化，顶端是一个人。
-
-## 看板的结构：todo、依赖、worker
-
-三种关系定义了多 worker 工作如何在看板上铺开——关键在于，信息如何在不
-存在 worker 间直接消息的情况下流动。
-
-**todo↔todo：依赖 DAG 是看板的骨架。** `--blocks` 边是*唯一*的排序机制——
-没有全局优先级队列，也没有 worker 层面的先后，只有 todo 之间的边。扇出
-是一个 todo 阻塞多个下游 todo；汇总（综合）是一个 todo 被多个上游 todo
-阻塞。图只表达*什么必须先于什么*，别无其它。
-
-**todo↔worker：弱绑定、运行时撮合。** todo 不专属于任何 worker——它摆在
-看板上谁都能认领（lease）。实际「谁干哪个」在运行时两步撮合：编排者
-spawn worker 时的意图（它知道该让哪个模型探哪个方向），以及 worker 认领
-时的匹配（专精、lease 空闲）。关系是多对多、动态解析的；**lease** 是它的
-「当前占用」快照，提供互斥与活性，而不是指派。内核不把 todo 指派给
-worker——编排者塑形看板，worker 从看板认领。
-
-**worker↔worker：没有直接消息——看板即共享状态。** worker 之间从不互相
-说话。信息只经由三个载体流动，全部由账本中转：**evidence**（落地什么的
-持久声明）、它指向的**产物文件**（报告、数据）、以及 **turn envelope 的
-上下文层**（下一回合从账本重算注入）。一个「查看上游结果并总结」的
-worker 并不是在收消息——那*就是*它的 todo：它被 `--blocks` 排在上游 todo
-之后，它的信封注入上游的 evidence 和产物路径，它去读那些产物。
-
-**扇出 → 汇总 → 扇出，用这些概念说。** 用不同模型沿不同方向 spawn 若干
-worker（并行 todo，互无边）；一个汇总 todo `--blocks` 它们全部，于是下游
-worker 读它们的产物做综合；第二轮 todo `--blocks` 这个汇总。编组、选模型、
-分方向、定轮次，全是**编排层**的决策（编排者塑形 todo 文本、`--blocks`
-接线与 spawn 配置）；看板只保证顺序（边）与互斥（lease），并不建模*哪个
-产物流向哪个 todo*——这部分接线由编排者写进 todo 文本和 acceptance 契约。
-
-## steer 与重配一个运行中的 worker
-
-编排者可以在 goal 中途改变 worker 的两类东西，它们走不同机制，因为区别
-在于会话是否存活：
-
-- **改「做什么」（指令/目标）→ steer。** `supervisor steer` 记录一个
-  `WorkerSteered` 事件（latest wins），worker 的 steer 监听中止当前回合，
-  让下一回合把该指令排进信封。这是*打断*式——不是悄悄附加：进行中的推理
-  被放弃，worker 在新指令下继续。会话（它积累的上下文）存活。
-
-- **改「用什么跑」（模型/思考等级）→ 退役 + 重开。** 模型和思考等级是会话
-  的属性，spawn 时固定，不能经 steer 热更新。改它们意味着 worker 的*配置*
-  变了，而配置即身份：退役该会话、用新配置 spawn 一个全新会话，上下文从
-  账本冷启动（这正是「上下文超限/方向调整」退役本就在做的事）。所以重配
-  不是第三条通道——它就是普通的退役-重开转移，应用到配置变更上。
-
-经验法则：**steer 改任务，respawn 改 worker。** 两者都是编排者的决策，
-内核只记录事件。
-
-## worker 会话生命周期
-
-worker 会话是一个**一等生命周期对象**，不是 run 的附属物：编排者创建它、
-往它身上挂工作、泊车它、恢复它、最终退役它。resume-vs-fresh 只是这个
-生命周期里的一个转移，不是全部。
-
-### 状态与转移
-
-```
-   spawn ──► ACTIVE（在岗，持 lease 执行 turn）
-                │   ▲
-        中断    │   │ resume（InfraRecoverable → 回到中断前状态）
-                ▼   │
-           INTERRUPTED（FailureKind 已记录）
-                │
-                ├── InfraRecoverable → resume
-                ├── ContextCorrupted → RETIRE + spawn fresh
-                └── HardError        → RETIRE + spawn fresh
-
-   ACTIVE ──泊车──► PARKED（无匹配工作/成本/配额；上下文封存）
-   ACTIVE ◄─resume + 增量── PARKED
-
-   任意状态 ──► RETIRE（退役）：goal 完成 / 方向调整（大面积 supersede）/
-              上下文超限 / 显式 fresh。退役 ≠ 删除——账本永存。
-```
-
-ACTIVE 或 PARKED 中的会话都可能被中断（parked 会话不会撞 429，但它的
-宿主会死）——INTERRUPTED 记录中断，`InfraRecoverable` 的 resume 回到
-会话中断前所处的状态。
-
-**何时泊车（PARKED）**：
-
-- 没有 runnable todo 匹配这个 worker 的专精（model、thinking level、已
-  积累的 todo 上下文）——不让它空转轮询；
-- 成本控制：等 monitor/gate 期间保活一个会话不值得；
-- 配额压力：把会话资源让给更高优先级的 goal。
-
-**恢复的会话需要什么** —— 泊车会话的*推理链*（为什么选这条路、试过什么
-失败了）是它真正的价值，原样保留；但封存期间*世界*变了，带着陈旧的世界
-模型继续干活是 resume 最大的坑。刷新就是 resume 那个回合从账本重算的
-普通 turn envelope（见下文「turn envelope」）：因为信封的上下文层永远从
-账本实时推导，恢复的会话自动看到此刻的世界——新 todo、新 evidence、当前
-仪表、gate 裁决。
-
-**何时必须 fresh（RETIRE + spawn，绝不 resume）**：
-
-- `ContextCorrupted`：verify 门拒绝了输出——推理链已被污染，续它会带着
-  错误前提继续；
-- 方向调整：大面积 supersede / replan 后，旧上下文全是作废路线的残留；
-- 上下文超限：在撞到 token 上限*之前*退役，安排一次交接——旧 worker 把
-  「学到什么、坑在哪」写进账本（这正是 evidence 强制非空的价值），fresh
-  会话从账本冷启动。
-
-### FailureKind：中断的分类
-
-`FailureKind` 对中断分类，决定 INTERRUPTED →（resume | RETIRE）的分支：
-
-- `InfraRecoverable` — 事故在*外面*（429 / 限流 / 连接重置 / agent 崩溃 /
-  流间隙），推理状态完好：**可 resume**。
-- `ContextCorrupted` — 事故在*推理里*：verify 门拒绝了输出，推理状态已
-  污染：**应 fresh**。
-- `HardError` — 回合出错且无可恢复的基础设施原因：**应 fresh**。
-
-内核只提供这个分类（观察数据）；resume-vs-fresh 由调用方显式决策。
-**默认即 fresh —— 没有 `--session-policy` 标志。** 唯一恢复路径是显式 pin
-（`--resume-session <id>`），因为 goal 级 retention 只存单个 id，并行 worker
-下有歧义。内核依然是纯工具——提供状态和信号，但**从不替 agent 做决策**。
-
-两条界定让生命周期保持简单：泊车发生在 **turn 边界**（不做 turn 中途的
-抢占式挂起或检查点），会话绑定**一个 goal**（不跨 goal 复用——上下文
-污染风险大于收益）。
-
-## turn envelope：编排者给 worker 注入什么
-
-turn envelope 是编排者/内核与 worker 之间唯一的信息接口——worker 执行的
-每回合 prompt。它携带**两层**，并有意不含第三层：
-
-- **指令层（每回合）** —— TODO 文本和完成契约（「报告你做了什么、观察
-  到什么；声明 successor 或 `--no-follow-up`」）。没有这两个，worker 既
-  不知道干什么、也不知道什么叫完成。
-- **上下文层（每回合从账本重算）** —— goal 与 objective、上一回合的
-  evidence、本 todo 的失败史（已分类）、近期语义历史、已裁决的 gate。这
-  让 worker 不重复劳动、不再踩已知的坑——「持久产物而非 session 记忆」
-  正落在这里。
-
-**不在信封里：内核的调度内部状态。** should-run 判定、mode、arbitration
-处置是内核*自己的*决策状态，是给编排者和 operator 看的——不是给 worker
-的。把它们放进 worker 的 prompt，等于把调度器的犹豫泄漏进执行者（worker
-该关心的是怎么干活，不是内核觉得该不该跑），也模糊了观察/决策的分离。信封
-告诉 worker *做什么、以及做好它所需的上下文*；不告诉 worker 内核在想什么。
-
-**在信封里：可观察信号。** 信号（outcome floor、oscillation、失败计数、
-无进展）是另一类量：它们是对*工作本身*的观察、从账本重算——不是调度器的
-犹豫。原则 1 承诺信号以 advisory 形式进 turn envelope，它们确实在那里：
-信封的上下文层携带一个 `signals` 块，由与 delivery reason 的 advisory
-相同的内核检测器重算（一套检测器、两个消费者——编排者从 packet reason 读，
-worker 从信封读）。对信号如何处置，一如全程，是决策而非内核指令。
-
-**一个信封，没有特例。** 第一回合、resume 的回合、普通回合用同一个信封，
-差异完全由账本此刻装着什么自然产生。第一回合的信封自然短（没有失败史、
-没有上一回合 evidence）；resume 回合的信封自然读起来像「你泊车以来的
-世界」——因为上下文层永远从账本实时算。
-
-## 信任与授权边界
-
-worker 以**用户的完整信任域**运行：它执行任意 shell（一个 `--verify` 门就是
-一条命令）、写它的 workspace，steer 消息能向它注入指令。loop 本身没有沙箱层；
-隔离靠 **workspace 边界**（worker 留在自己的 workspace，除非 `--force-workspace`
-另有指定）。当 worker 碰到处于或超出这条边界的事——不可逆、昂贵、需凭据——
-它不判断「这要找人」，而是上浮给编排者，由编排者决定是继续、换路、还是让人
-参与。信任域内自主，编排者就是边界处的那道门。
+# Loop 架构：持久看板、可靠控制、基于证据的 Agent
+
+操作指南：[Loop 控制面](../../docs/loop-control-plane.zh-CN.md)。编排驾驶手册：
+`skills/builtin/future-loop/SKILL.md`；研究方法：`skills/builtin/future-research/SKILL.md`。
+两份 skill 都由 skills 子模块分发。英文详细契约见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+
+## 边界
+
+模型选择策略、解释科学证据、向人请求判断。内核提供确定性的状态、依赖、租约、证据、
+验证器和提示信号，不因为启发式认为“卡住了”就强制重规划。智能的主要增益来自正确投喂
+证据，而不是继续增加规则。
+
+账本是权威，session 是缓存。能力统一经 CLI 暴露，仪表盘严格只读。人监督编排者的判断；
+无需 LLM 的 watchdog 监督进程活性和通知传输，不监督科学推理、更不自动选模型或重规划。
+
+## 底线、信号、预算
+
+- **底线**：合法状态转移、完成意图、验收缺口、依赖约束、租约、验证式终局。
+- **信号**：失败次数、成果连续段、振荡、缺少产物活动、monitor 状态、worker 里程碑。
+  信号描述事实，不替 Agent 做策略判断。
+- **预算**：外层回合数、验证尝试次数、验证命令独立墙钟上限。`--max-turns` 不是
+  token/金额上限，也不是 Agent 内层推理和工具调用的总超时。
+
+手动完成有意不重跑机器验证，但记录其依据为人工审阅或显式覆盖，不伪造机器通过。
+`delivered` 不等于 verified；`delivery record` 记录审阅者的判断。token 出现、文件存在、
+脚本 exit 0 都不能单独证明探索性结论正确。修改验收标准必须有明确理由。
+
+## 依赖与归属
+
+推进任务的 `--blocks` 指向前置；gate/blocker 的 `--blocks` 指向下游。调度与手动完成
+采用相同依赖语义。普通 gate 只阻塞相关任务，`--global-gate` 才全局冻结；无关工作可以
+继续执行和完成。决策用 `gate resolve`，不能用 `todo complete` 代替。
+
+`--owner` 是持久指派，租约到期不会取消归属。无 owner 才进入共享池。并行 run 必须使用
+不同 agent ID；coordination 任务属于编排者，不进入 worker 前沿。工作区守卫避免写冲突。
+依赖决定可执行性，priority 只排序可执行候选。
+
+worker 通过账本 evidence 和产物文件交接，不引入额外协商协议。扇出、汇总、下一轮扇出
+由普通 todo 和依赖边表达。
+
+## 可靠 steer
+
+新指令用 `ControlIssued`：UUID、目标 worker/广播、文本、interrupt 标志。
+普通指导在下一回合边界注入，`--interrupt` 才额外中断当前会话。latest-wins 仅限同一
+目标范围；A 的新指令不覆盖 B 的，广播与定向指导可同时按账本顺序注入。
+
+`ControlAcknowledged` 按接收者落账，且必须晚于完成回合的持久写回。一个 worker 不会替
+其他 worker 消费广播。传输失败、中断不会提前消费；崩溃可能导致重投，因此这是
+**至少一次指导**，不是外部副作用“恰好一次”。指导必须幂等，不可逆操作另行审批。
+
+中断 watcher 不越过不完整 JSONL 行，也不把失败的中断当送达。旧 `WorkerSteered` /
+`SteerConsumed` 账本仍兼容，但新 CLI 不再写单槽指令。模型/思考级改变需要新配置的
+会话，不能靠 steer 热切换。
+
+## 异步执行与独立活性监督
+
+生产 `run` 默认 re-exec detached child，检测立即退出的启动失败。`--detach` 是内部
+前台子进程标记，`FUTURE_LOOP_NO_DETACH=1` 用于前台嵌入/测试。统一 `future` 二进制
+重启自身时保留 `loop` 分组前缀。
+
+detached 派发或 supervisor 注册会确保独立 `supervisor watch --goal G` 进程存在。
+每个 goal 的 OS 文件锁保证单实例。它每两秒检查死租约持有者、超过五分钟仍未验证的交付、
+待送通知；即使最后一个 worker 死亡，也不依赖下一次付费 run 或 LLM 轮询来发现。
+`scheduler tick` 和回合结束检查保留为补充。
+
+goal 删除/取消，或终局且无待送通知时 watcher 退出。它不是开机服务；宿主重启后需重新
+运行该 CLI、重新注册 supervisor，或由操作系统服务管理器托管。没有宿主重启机制就不能
+承诺跨断电自动恢复。
+
+生命周期命令先停止失效 worker，再删状态；晚到完成不能复活 superseded 任务。
+这与指导性中断不同，后者保留任务以继续工作。
+
+## 持久、合批的通知队列
+
+1. **先记录** `SupervisorNote`，不依赖 Agent 可达或 supervisor 已注册；同 episode 去重。
+2. **准备不可变批次** `SupervisorBatchPrepared`：会话、note keys、消息、UUID。
+   每批最多 32 条，每条有界并指向完整账本；watchdog 自然合并两个 tick 之间的消息。
+3. **推送**使用 `enqueue_if_busy`，不打断编排者。失败重试使用相同请求 key 和相同正文。
+4. **送达回执** `SupervisorBatchDelivered` 只在远端接收后写入。接收不代表编排者已执行。
+
+OS 锁串行化并发 flusher。掉线保留批次，恢复补送；换 supervisor 可从账本恢复通知。
+旧通知只触发当前状态核对，不能直接变成“重启这个 worker”的命令。无 watcher 的前台
+嵌入者可立即 flush，但同样遵守持久化和重放语义。
+
+## 有界验证器
+
+验证器异步执行，独立默认 120 秒超时，可用正数 `FUTURE_LOOP_VALIDATOR_TIMEOUT_SECS`
+配置。stdout/stderr 持续排空，仅保留有界诊断尾部；命令或继承管道挂住都会超时。
+取消/超时清理子进程树（Unix process group；Windows process-tree termination）。
+
+Unix 用 `sh -c`，Windows 用 `cmd.exe /D /S /C`，不是跨平台通用 shell 语言；可移植
+任务应调用可移植校验程序。失败附带诊断，启动失败/超时记 inconclusive，不伪装通过。
+
+## 投喂与真实进展
+
+每轮信封包含目标、todo、验收/验证器契约、已决 gate、上游 evidence、上一轮 evidence、
+相关失败、少量近期历史、提示信号。近期里程碑报告也会注入，但明确标为待核实声明。
+
+fan-in 为每个已结束前置保留索引，摘要预算公平分配，不让第一个长报告吞掉后面的来源。
+索引随前置数量增长，摘要总量仍受限；完整 evidence 用 `status --format json` 读取。
+superseded 来源有明确标记。编排者仍须在下游 todo 写出产物路径，不把摘要当完整知识交接。
+
+区分 **存活、活动、进展**。`write/edit` 执行开始只是产物活动代理；shell 不自动算写入，
+provider input/execution 阶段不重复计数。真实进展来自新产物、验证结果、指标改善或假设
+被排除。读论文可能有进展，反复写进度文件也可能没有。
+
+## 适度编排与诚实停止
+
+根据不确定性和风险选择轻量、标准、重型流程。一次代码复盘不强制固定引用数量或多 worker。
+仅在预期收益超过通信成本时并行不同方法族。确认配置、预算，不擅自改变用户约束。
+
+检查点比较新增证据、剩余差距与下一步成本。允许达标、限定不可行、预算耗尽、低收益停止、
+受阻等结果；只有达标才能称成功闭环。保留阶段成果和验收缺口，扩预算先问人。开放研究
+不需要“证明所有可能方法都失败”才允许诚实停止。

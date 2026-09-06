@@ -47,12 +47,12 @@ agent executes one bounded turn (gRPC) → writes evidence → kernel decides th
 | Concept | Command | What it does |
 |---|---|---|
 | Goal | `goal init` | Project-local state at `<cwd>/.future/loop/`, event-sourced and replayable |
-| Todo | `todo add/update/complete/supersede` | Five classes: advancement / user-gate / user-action / monitor (external-state watch) / blocker; `--blocks` dependency chains; `--priority` |
+| Todo | `todo add/update/complete/supersede` | Classes: advancement / user-gate / user-action / monitor / blocker / coordination; `--blocks` dependency chains; `--priority` |
 | Evidence | `todo complete --evidence` | **Non-empty, enforced**: closing a todo must state what actually landed (paths, attempt ids, measurements); `--force` is the explicit operator override |
 | Acceptance contract | `todo add --acceptance "tok1,tok2"` | Completion evidence must contain every token (case-insensitive) — the hard form of "done ≠ delivered" |
 | Verifier | `todo add --verify "cmd"` | The kernel runs the command after each **run turn boundary**; only exit 0 lets that turn's todo complete (bounded by `--max-validation-attempts`). A machine-checkable gate for deterministic deliverables. **Not** for exploratory todos (research/report) whose correctness the kernel cannot judge — the orchestrator judges those by reading the artifact, and a manual `todo complete` deliberately does not re-run `--verify` |
 | Lease | `lease claim/renew/release/status` | Who holds a todo and until when. **Lease liveness**: the holder's pid is recorded; a dead process's leases are auto-reclaimed — no manual cleanup after killing a worker |
-| Gate | `gate resolve` | Any open user gate freezes all work until resolved. Gates are decision points, not work items: `todo complete` on a gate **bails and points at `gate resolve`** (the decision is recorded, never silently marked "done"). user-actions (non-blocking human to-dos) surface to the user without freezing the agent |
+| Gate | `gate resolve` | An open gate blocks its dependents; independent work can run and complete. `--global-gate` explicitly freezes all work. Gates are decision points, not work items: `todo complete` on a gate **bails and points at `gate resolve`** (the decision is recorded, never silently marked "done"). user-actions (non-blocking human to-dos) surface to the user without freezing the agent |
 | Delivery closure | `delivery status/record` | Completion lands in a pending `delivered` state; an operator resolves it as `verified/failed/rework`; unverified deliveries auto-derive a follow-up after 3 turns |
 | Terminal | `frontier show` | Validated closure: todos done/superseded + closure intent + no acceptance gaps + no pending deferred work; `frontier` gives the terminal judgement with gap detail |
 | Dashboard | `ui` | Local read-only web dashboard on 127.0.0.1: goal cards, attention queue, kernel decision, todo DAG, workers/cost, run/event ledgers — live over SSE; mutations stay in the CLI |
@@ -71,20 +71,20 @@ and let the agent drive**:
 You say "/future-loop keep an eye on X for a week"
    │
    ▼
-Agent loads the future-loop skill (v3.x driving manual)
+Agent loads the future-loop skill (v4 driving manual)
    ├─ 1. `future loop status` first — continue an existing goal, never duplicate it
    ├─ 2. Confirm the plan with you (steps/model/thinking level) — unless your message already carries the full objective + constraints
    ├─ 3. `goal init` + decompose todos (dependencies via --blocks, hard checks via --verify/--acceptance)
-   ├─ 4. Drive turns: `run --max-turns 1 --agent-id <unique>`, relaunching the moment a turn exits
+   ├─ 4. Dispatch detached turns; watchdog notifications trigger evidence/budget review before relaunch
    ├─ 5. Correct a drifting worker via `todo update --text` (picked up at the next turn)
-   ├─ 6. Interrupt a stuck worker mid-turn via `supervisor steer --goal G --instruction "..."`
-   ├─ 7. Irreversible/expensive/user-only decisions → open a user gate and wait (gates freeze everything)
+   ├─ 6. Routine steer waits for a boundary; add `--interrupt` only for urgent correction
+   ├─ 7. Irreversible/expensive/user-only decisions → open a user gate and wait (scoped gates freeze dependents; global gates freeze everything)
    └─ 8. Close out: acceptance todo copies artifacts to the project root → validated closure (terminal)
 ```
 
 **Skill vs CLI**: the skill owns "what to do when, how to decompose, how to
 drive" (the orchestration layer); the CLI is the underlying mechanism (state
-kernel + hard checks + decisions). The skill is a maintained v3.x manual, kept
+kernel + hard checks + decisions). The skill is a maintained v4 manual, kept
 in sync with this page. Its source of truth lives in the **`skills` git
 submodule** at `skills/builtin/future-loop/SKILL.md` (repo
 [future-skills](https://github.com/futuregene/future-skills)); editing the
@@ -95,15 +95,16 @@ to ship a doc change.
 ## User workflow (zero to closure)
 
 ```bash
-# 1. Create the goal
-future loop goal init --objective "..." --cwd DIR
+# 1. Run from the project directory (or set FUTURE_LOOP_ROOT), then create
+future loop goal init --objective "..."
+future loop supervisor register --goal G --session-id YOUR_CURRENT_SESSION_ID
 
 # 2. Decompose — dependencies and hard checks together
 future loop todo add --goal G --text "..." --priority P0 --verify "cargo check -p X"
 future loop todo add --goal G --text "..." --blocks T1 --acceptance "attempt,scored"
 future loop todo add --goal G --role user --class user_gate --text "Release gate" --gate-question "Ship it?"
 
-# 3. Drive turns (one worker per --agent-id; relaunch as soon as a turn exits)
+# 3. Dispatch (one unique --agent-id per concurrent worker; review before relaunch)
 future loop run --goal G --agent-id mac-worker --model M --thinking-level L --max-turns 1
 
 # 4. Human decisions
@@ -150,7 +151,9 @@ root, and only GET endpoints exist (any other method is a 405). Mutations
 - `--acceptance` turns "accepted by an external observable" into a hard check
 - Lease liveness self-heals: dead-process leases are reclaimed automatically — relaunching workers needs no manual release
 - Workspace guard: multi-agent write conflicts degrade to serial automatically
-- Idle turns (1 hour without writes) are ledgered; correct the worker via `todo update --text` (applies at the next turn)
+- Missing `write/edit` activity is advisory, not proof of no progress; shell calls and provider input phases do not inflate this proxy. Inspect artifacts and validation before intervening.
+- Validators are asynchronous, drain both pipes, retain bounded diagnostic tails and time out independently (120s default; positive `FUTURE_LOOP_VALIDATOR_TIMEOUT_SECS` override). Unix uses `sh -c`, Windows uses `cmd.exe /D /S /C`.
+- Manual completion records `completion_basis` in the delivery note: manual review or explicit operator override, never an implied machine pass.
 
 ## Bidirectional messaging (supervisor ↔ worker)
 
@@ -163,29 +166,32 @@ channel. Both directions ride the same event-sourced state:
   This binds the supervisor's agent session id to the goal; workers read it on
   `replay` and target their reports at it.
 
-- **Down (supervisor → worker, an interrupt):**
-  `future loop supervisor steer --goal G [--agent-id A] --instruction "..."`
-  A `WorkerSteered` event lands in the ledger; the running worker's watch task
-  sees it and aborts the in-flight run (a real interrupt, `supersede_session`
-  semantics — not a system-prompt note). The next turn drains the instruction
-  into its envelope and follows it.
+- **Down (supervisor → worker, durable guidance):**
+  `future loop supervisor steer --goal G [--agent-id A] [--interrupt] --instruction "..."`.
+  Routine guidance waits for a boundary; `--interrupt` additionally aborts the
+  in-flight session. `ControlIssued` UUIDs and recipient-specific acknowledgments
+  prevent cross-worker overwrite and broadcast loss. Acknowledgment follows
+  durable completed-turn writeback; interrupted guidance may replay, so make it
+  idempotent. Legacy single-slot steer events remain readable.
 
-- **Up (worker → supervisor, a report):**
-  At a turn boundary the worker enqueues a report (`enqueue_if_busy`, so it
-  never interrupts the supervisor) to the registered session for exactly three
-  state transitions: a user gate opens (①), a todo completes (②), or a todo
-  fails on a science/hard error (③). Each report is idempotent-keyed on the
-  transition, so re-sends across runs dedup. The durable user gate remains the
-  authoritative intervention channel if no supervisor is registered.
+- **Up (worker → supervisor, persistent batched reports):**
+  Gate/completion/failure/infra notes are ledgered first, including while the agent
+  is offline. An independent watchdog coalesces up to 32 notes into an immutable
+  batch and sends with `enqueue_if_busy`. Failed pushes retry the same request key
+  and payload. Queue acceptance is not proof of supervisor action; reconcile current
+  state before reacting to old notifications. `supervisor events` includes delivery
+  pending state and control/batch receipts.
 
 - **Infra stops + dead workers:** a worker that exits before reaching a
   turn-boundary writeback (gRPC transport loss, incomplete-retry budget
   exhaustion) also reports an `infra_stopped` note.
   A worker that dies outright (SIGKILL / crash / host failure) executes no
-  code, so the periodic `scheduler tick` detects the orphaned lease (dead
-  holder pid) and pushes a `host_died` note to the registered supervisor,
-  prompting the orchestrator to relaunch rather than only discovering the dead
-  worker on its next `status` poll.
+  code. The independent watchdog started by detached run/registration detects
+  dead lease holders even when the last worker dies. It also flags verification
+  pending for five minutes without requiring more paid turns. `scheduler tick`
+  remains a supplemental check. After host restart, re-register or run
+  `supervisor watch --goal G` under the host service manager (`--once` for one
+  reconciliation); this is not an automatically installed boot service.
 
 - **Watch a worker mid-turn:** the messaging above is turn-boundary driven.
   To see what a worker is doing *right now* (which tools it is calling, its
@@ -231,7 +237,7 @@ parsing a merged top-level line.
 
 - **Agent service** (`future agent`, per-user local IPC by default, `--grpc-addr` to switch to TCP): `run` executes every turn through it, discovered socket-first like the TUI/CLI clients (`FUTURE_LOOP_AGENT_ADDR` overrides with an explicit TCP address)
 - **Any client through the skill** (TUI, desktop, mobile, Feishu / DingTalk): loop goals are driven by the `/future-loop` skill orchestrating `future loop` commands — there is no native bridge↔loop integration; gates surface as agent messages asking one concrete question
-- **The `/future-loop` skill**: the driving manual for agents (v3.x, kept in sync with this doc)
+- **The `/future-loop` skill**: the driving manual for agents (v4, kept in sync with this doc)
 - **State location**: `<cwd>/.future/loop/` (add to the project `.gitignore`)
 
 ## Further reading
