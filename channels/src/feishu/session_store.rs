@@ -2,7 +2,7 @@
 //! Persisted as JSON file.
 
 use anyhow::Result;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -25,6 +25,9 @@ pub struct SessionStore {
     path: PathBuf,
     /// In-memory lookup: "chat_id:thread_id" → session_id
     data: RwLock<HashMap<String, SessionEntry>>,
+    save_lock: Mutex<()>,
+    // Do not overwrite an unreadable/corrupt source with a fresh empty mapping.
+    load_error: Option<String>,
 }
 
 impl SessionStore {
@@ -32,6 +35,8 @@ impl SessionStore {
         let mut store = Self {
             path,
             data: RwLock::new(HashMap::new()),
+            save_lock: Mutex::new(()),
+            load_error: None,
         };
         store.load_from_disk();
         store
@@ -86,7 +91,9 @@ impl SessionStore {
             let mut data = self.data.write();
             data.insert(key, entry);
         }
-        let _ = self.save_to_disk();
+        if let Err(error) = self.save_to_disk() {
+            tracing::warn!(path = %self.path.display(), %error, "Session mapping was not persisted");
+        }
     }
 
     /// Get session_id for a chat.
@@ -103,7 +110,9 @@ impl SessionStore {
             let mut data = self.data.write();
             data.remove(&key);
         } // write lock dropped before save_to_disk acquires read lock
-        let _ = self.save_to_disk();
+        if let Err(error) = self.save_to_disk() {
+            tracing::warn!(path = %self.path.display(), %error, "Session mapping was not persisted");
+        }
     }
 
     /// Update last active timestamp.
@@ -117,29 +126,49 @@ impl SessionStore {
     }
 
     fn load_from_disk(&mut self) {
-        if let Ok(content) = std::fs::read_to_string(&self.path) {
-            if let Ok(store) = serde_json::from_str::<StoreData>(&content) {
+        let result = std::fs::read_to_string(&self.path)
+            .map_err(anyhow::Error::from)
+            .and_then(|content| Ok(serde_json::from_str::<StoreData>(&content)?));
+        match result {
+            Ok(store) => {
                 let mut data = self.data.write();
                 for entry in store.sessions {
                     let key = Self::session_key(&entry.chat_id, entry.thread_id.as_deref());
                     data.insert(key, entry);
                 }
             }
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) => {}
+            Err(error) => {
+                tracing::warn!(path = %self.path.display(), %error, "Cannot load session mappings; repair the file and restart before persisting changes");
+                self.load_error = Some(error.to_string());
+            }
         }
     }
 
     fn save_to_disk(&self) -> Result<()> {
-        // Map-chain, not if-let: rustfmt explodes single-line if-lets and
-        // the false-edge brace is unreachable (the path always has a parent).
-        self.path
+        let _save = self.save_lock.lock();
+        if let Some(error) = &self.load_error {
+            anyhow::bail!("Refusing to overwrite unreadable session store: {error}");
+        }
+        let parent = self
+            .path
             .parent()
-            .map(std::fs::create_dir_all)
-            .transpose()?;
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."));
+        std::fs::create_dir_all(parent)?;
         let data = self.data.read();
         let store = StoreData {
             sessions: data.values().cloned().collect(),
         };
-        std::fs::write(&self.path, serde_json::to_string_pretty(&store)?)?;
+        // Unique, owner-only temporary file on the destination volume. Readers
+        // observe either complete JSON version; failed writes leave the old one.
+        let mut pending = tempfile::NamedTempFile::new_in(parent)?;
+        serde_json::to_writer_pretty(pending.as_file_mut(), &store)?;
+        pending.as_file().sync_all()?;
+        pending.persist(&self.path)?;
         Ok(())
     }
 }
@@ -232,6 +261,58 @@ mod tests {
         std::fs::write(&path, "not json {{{").unwrap();
         let store = SessionStore::new(path);
         assert_eq!(store.get("oc_1", None), None);
+    }
+
+    #[test]
+    fn corrupt_source_is_preserved_when_memory_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.json");
+        std::fs::write(&path, "{truncated").unwrap();
+        let store = SessionStore::new(path.clone());
+        store.set_session_id("chat", None, "new-session");
+        assert!(store.save_to_disk().is_err());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "{truncated");
+        assert_eq!(store.get("chat", None).as_deref(), Some("new-session"));
+    }
+
+    #[test]
+    fn concurrent_saves_always_publish_complete_json_and_retain_all_mappings() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.json");
+        let store = Arc::new(SessionStore::new(path.clone()));
+        store.set_session_id("initial", None, "initial");
+        let done = Arc::new(AtomicBool::new(false));
+        let reader_done = done.clone();
+        let reader_path = path.clone();
+        let reader = std::thread::spawn(move || {
+            while !reader_done.load(Ordering::Acquire) {
+                let text = std::fs::read_to_string(&reader_path).unwrap();
+                serde_json::from_str::<StoreData>(&text).unwrap();
+                std::thread::yield_now();
+            }
+        });
+        let writers: Vec<_> = (0..4)
+            .map(|worker| {
+                let store = store.clone();
+                std::thread::spawn(move || {
+                    for n in 0..20 {
+                        store.set_session_id(&format!("chat-{worker}-{n}"), None, "session");
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        done.store(true, Ordering::Release);
+        reader.join().unwrap();
+        let reloaded = SessionStore::new(path);
+        assert_eq!(reloaded.data.read().len(), 81);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]
