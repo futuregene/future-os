@@ -6,7 +6,7 @@ import { RemoteClient } from "./client";
 import type { ConnectionState } from "./connectionState";
 import { classifyError } from "./connectionState";
 import { attemptPendingRevoke, claimPairingCode, serverRevoke } from "./pairing";
-import { clearPendingPrompt, loadPendingPrompt } from "./pendingPromptStorage";
+import { discardPendingPrompt } from "./pendingPromptStorage";
 import { discardPendingContinuation } from "./pendingContinuationStorage";
 import {
   INITIAL_PRESENCE_STATE,
@@ -133,6 +133,7 @@ export function useRemoteConnection({
             void clientRef.current?.close("Unpair");
             clientRef.current = null;
             void clearCredentials();
+            void discardPendingPrompt();
             void discardPendingContinuation();
             setCredentials(null);
             setPresence(null);
@@ -170,9 +171,12 @@ export function useRemoteConnection({
           if (state === "ready") {
             setPhase("ready");
             setError(null);
-          } else if (state === "revoked") setPhase("revoked");
-          else if (state === "unpaired") setPhase("unpaired");
-          else if (state === "refreshing") setPhase("refreshing");
+          } else if (state === "revoked" || state === "unpaired") {
+            credentialsRef.current = null;
+            void discardPendingPrompt();
+            void discardPendingContinuation();
+            setPhase(state);
+          } else if (state === "refreshing") setPhase("refreshing");
           else if (state === "failed") setPhase("failed");
           else if (state === "connecting") setPhase("connecting");
           else setPhase("reconnecting");
@@ -373,6 +377,8 @@ export function useRemoteConnection({
       if (message === "invalid_jwt") {
         credentialsRef.current = null;
         await clearCredentials();
+        await discardPendingPrompt();
+        await discardPendingContinuation();
         setCredentials(null);
         setPhase("unpaired");
         setError(null);
@@ -405,8 +411,7 @@ export function useRemoteConnection({
       }
     }
     await clearCredentials();
-    const pendingPrompt = await loadPendingPrompt();
-    if (pendingPrompt) await clearPendingPrompt(pendingPrompt.commandId);
+    await discardPendingPrompt();
     await discardPendingContinuation();
     setCredentials(null);
     setPresence(null);

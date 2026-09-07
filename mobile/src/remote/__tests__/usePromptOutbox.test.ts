@@ -155,7 +155,9 @@ describe("usePromptOutbox recovery", () => {
 
   it("reconciles a prompt while an existing conversation and draft are active", async () => {
     await savePendingPrompt({
-      version: 1,
+      version: 2,
+      pairId: credentials.pairId,
+      expectedDesktopId: credentials.expectedDesktopId,
       commandId: "prompt-1",
       draftKey: "session-1",
       sessionId: "session-1",
@@ -176,6 +178,31 @@ describe("usePromptOutbox recovery", () => {
     expect(reconcileSession).toHaveBeenCalledWith("session-1", "reconnect");
     expect(refreshSessions).toHaveBeenCalledTimes(1);
 
+    await act(async () => renderer.unmount());
+  });
+
+  it.each([
+    { pairId: "other-pair", expectedDesktopId: credentials.expectedDesktopId },
+    { pairId: credentials.pairId, expectedDesktopId: "other-desktop" },
+  ])("never queries or uploads a prompt from another pairing: %j", async identity => {
+    await savePendingPrompt({
+      version: 2,
+      ...identity,
+      commandId: "foreign-prompt",
+      draftKey: "draft:new",
+      sessionId: "",
+      text: "private draft for another desktop",
+      attachments: [attachment],
+      modelId: "provider/model",
+      thinkingLevel: "medium",
+      mode: "chat",
+      workspaceId: "",
+      createdAt: 1,
+    });
+    const { requestRetry, renderer } = await mountOutbox();
+    expect(requestRetry).not.toHaveBeenCalled();
+    expect(mockedUploadAttachments).not.toHaveBeenCalled();
+    await expect(loadPendingPrompt()).resolves.toBeNull();
     await act(async () => renderer.unmount());
   });
 
@@ -277,6 +304,7 @@ describe("usePromptOutbox sendMessage", () => {
       renderer,
       requestRetry,
       clientRef,
+      credentialsRef,
       selectedRef,
       streamingRef,
       conversationEpochRef,
@@ -307,7 +335,9 @@ describe("usePromptOutbox sendMessage", () => {
 
   it("rejects a concurrent send while one is already in flight", async () => {
     await savePendingPrompt({
-      version: 1,
+      version: 2,
+      pairId: credentials.pairId,
+      expectedDesktopId: credentials.expectedDesktopId,
       commandId: "prompt-busy",
       draftKey: "session-1",
       sessionId: "session-1",
@@ -380,6 +410,24 @@ describe("usePromptOutbox sendMessage", () => {
     await expect(h.result.sendMessage("hi")).rejects.toThrow("send_streaming");
   });
 
+  it("stops delivery when pairing changes during an attachment upload", async () => {
+    const upload = deferred<MobileAttachment[]>();
+    mockedUploadAttachments.mockReturnValue(upload.promise);
+    const h = await mountSend();
+    let sending!: Promise<void>;
+    act(() => {
+      sending = h.result.sendMessage("private", [attachment]);
+    });
+    const rejected = expect(sending).rejects.toThrow("pairing_changed");
+    await flush();
+    h.credentialsRef.current = { ...credentials, pairId: "new-pair" };
+    upload.resolve([]);
+    await act(async () => {
+      await rejected;
+    });
+    expect(h.requestRetry).not.toHaveBeenCalled();
+  });
+
   it("delivers a prompt with attachments and mutates the target timeline", async () => {
     mockedUploadAttachments.mockResolvedValue([{ ...attachment, uploadId: "u1" }]);
     const h = await mountSend({ engine: fakeEngine() });
@@ -397,7 +445,9 @@ describe("usePromptOutbox sendMessage", () => {
 
   it("acknowledges a matching pending prompt via its receipt", async () => {
     await savePendingPrompt({
-      version: 1,
+      version: 2,
+      pairId: credentials.pairId,
+      expectedDesktopId: credentials.expectedDesktopId,
       commandId: "prompt-match",
       draftKey: "session-1",
       sessionId: "session-1",
@@ -423,9 +473,38 @@ describe("usePromptOutbox sendMessage", () => {
     expect(engine.mutate).toHaveBeenCalled();
   });
 
+  it("does not receipt-check a foreign prompt when the user sends a new message", async () => {
+    await savePendingPrompt({
+      version: 2,
+      pairId: "other-pair",
+      expectedDesktopId: "other-desktop",
+      commandId: "foreign",
+      draftKey: "session-1",
+      sessionId: "session-1",
+      text: "hello",
+      attachments: [],
+      modelId: "provider/model",
+      thinkingLevel: "medium",
+      mode: "chat",
+      workspaceId: "",
+      createdAt: 1,
+    });
+    const h = await mountSend();
+    await act(async () => {
+      await h.result.sendMessage("hello");
+    });
+    expect(h.requestRetry).toHaveBeenCalledTimes(1);
+    expect(h.requestRetry).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "prompt", message: "hello" }),
+      "session-1",
+    );
+  });
+
   it("replaces a stale pending prompt before delivering a new one", async () => {
     await savePendingPrompt({
-      version: 1,
+      version: 2,
+      pairId: credentials.pairId,
+      expectedDesktopId: credentials.expectedDesktopId,
       commandId: "prompt-old",
       draftKey: "session-1",
       sessionId: "session-1",
@@ -468,7 +547,9 @@ describe("usePromptOutbox sendMessage", () => {
 
   it("clears the pending prompt and rethrows a non-transient send failure", async () => {
     await savePendingPrompt({
-      version: 1,
+      version: 2,
+      pairId: credentials.pairId,
+      expectedDesktopId: credentials.expectedDesktopId,
       commandId: "prompt-fail",
       draftKey: "session-1",
       sessionId: "session-1",
@@ -718,7 +799,9 @@ describe("usePromptOutbox recovery error handling", () => {
 
   it("clears and records a non-transient prompt recovery failure", async () => {
     await savePendingPrompt({
-      version: 1,
+      version: 2,
+      pairId: credentials.pairId,
+      expectedDesktopId: credentials.expectedDesktopId,
       commandId: "prompt-err",
       draftKey: "session-1",
       sessionId: "session-1",

@@ -5,7 +5,7 @@ import { AppState } from "react-native";
 import type { ConnectionState } from "../connectionState";
 import { attemptPendingRevoke, claimPairingCode, serverRevoke } from "../pairing";
 import { discardPendingContinuation } from "../pendingContinuationStorage";
-import { clearPendingPrompt, loadPendingPrompt } from "../pendingPromptStorage";
+import { discardPendingPrompt } from "../pendingPromptStorage";
 import {
   clearCredentials,
   clearPendingRevoke,
@@ -43,8 +43,7 @@ jest.mock("../pairing", () => ({
 
 jest.mock("../pendingPromptStorage", () => ({
   __esModule: true,
-  clearPendingPrompt: jest.fn(async () => {}),
-  loadPendingPrompt: jest.fn(async () => null),
+  discardPendingPrompt: jest.fn(async () => {}),
 }));
 
 jest.mock("../pendingContinuationStorage", () => ({
@@ -224,7 +223,6 @@ describe("useRemoteConnection", () => {
     renderer = null;
     cast<jest.Mock>(loadPendingRevoke).mockResolvedValue(null);
     cast<jest.Mock>(loadCredentials).mockResolvedValue(null);
-    cast<jest.Mock>(loadPendingPrompt).mockResolvedValue(null);
     cast<jest.Mock>(claimPairingCode).mockResolvedValue(credentials);
     cast<jest.Mock>(Network.getNetworkStateAsync).mockResolvedValue(wifiState);
     cast<{ currentState: string }>(AppState).currentState = "active";
@@ -339,6 +337,7 @@ describe("useRemoteConnection", () => {
       act(() => c.callbacks.onPresence({ ...presence, unpaired: true }));
       expect(clearCredentials).toHaveBeenCalled();
       expect(discardPendingContinuation).toHaveBeenCalled();
+      expect(discardPendingPrompt).toHaveBeenCalled();
       expect(options.resetCatalog).toHaveBeenCalled();
       expect(options.resetConversation).toHaveBeenCalled();
       expect(options.resetTimeline).toHaveBeenCalled();
@@ -579,7 +578,7 @@ describe("useRemoteConnection", () => {
       expect(options.resetTimeline).toHaveBeenCalled();
       expect(serverRevoke).toHaveBeenCalledWith(credentials);
       expect(clearCredentials).toHaveBeenCalled();
-      expect(loadPendingPrompt).toHaveBeenCalled();
+      expect(discardPendingPrompt).toHaveBeenCalled();
       expect(options.resetCatalog).toHaveBeenCalled();
       expect(options.resetConversation).toHaveBeenCalled();
       expect(result.current.phase).toBe("unpaired");
@@ -603,11 +602,10 @@ describe("useRemoteConnection", () => {
 
     test("unpair clears a pending prompt", async () => {
       await mountConnected();
-      cast<jest.Mock>(loadPendingPrompt).mockResolvedValue({ commandId: "c1" });
       await act(async () => {
         await result.current.unpair();
       });
-      expect(clearPendingPrompt).toHaveBeenCalledWith("c1");
+      expect(discardPendingPrompt).toHaveBeenCalled();
     });
 
     test("clearError resets the error", async () => {

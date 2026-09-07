@@ -64,13 +64,17 @@ async function deliverPendingPrompt(
   pending: PendingPrompt,
   checkReceipt: boolean,
   receiptSupported: boolean,
+  assertCurrentPairing: () => void,
   onUploadProgress?: (completedBytes: number, totalBytes: number) => void,
 ): Promise<PromptAck> {
+  assertCurrentPairing();
   if (checkReceipt && receiptSupported) {
     const receipt = await pendingPromptReceipt(client, pending.commandId);
+    assertCurrentPairing();
     if (receipt) return receipt;
   }
   const uploaded = await uploadAttachments(client, pending.attachments, onUploadProgress);
+  assertCurrentPairing();
   return (
     await client.requestRetry<PromptAck>(
       {
@@ -116,8 +120,8 @@ async function deliverPendingContinuation(
   ).data;
 }
 
-function continuationMatchesCredentials(
-  pending: PendingContinuation,
+function pendingMatchesCredentials(
+  pending: Pick<PendingPrompt, "pairId" | "expectedDesktopId">,
   credentials: RemoteCredentials,
 ): boolean {
   return (
@@ -189,8 +193,19 @@ export function usePromptOutbox({
       onUploadProgress?: (completedBytes: number, totalBytes: number) => void,
     ) => {
       const client = clientRef.current;
+      const credentials = credentialsRef.current;
       if (!text.trim() && attachments.length === 0) return;
-      if (!client) throw new Error("not_connected");
+      if (!client || !credentials) throw new Error("not_connected");
+      const assertCurrentPairing = () => {
+        const current = credentialsRef.current;
+        if (
+          clientRef.current !== client ||
+          !current ||
+          !pendingMatchesCredentials(credentials, current)
+        ) {
+          throw new Error("pairing_changed");
+        }
+      };
       if (sendingRef.current) throw new Error("send_busy");
       if (attachments.length > 0 && !fileTransferSupported) {
         throw new Error("attachment_unsupported_desktop");
@@ -204,6 +219,8 @@ export function usePromptOutbox({
       const conversationEpoch = conversationEpochRef.current;
       const engine = syncEngineRef.current;
       const candidate = {
+        pairId: credentials.pairId,
+        expectedDesktopId: credentials.expectedDesktopId,
         draftKey: targetSessionId || "draft:new",
         sessionId: targetSessionId,
         text,
@@ -221,6 +238,11 @@ export function usePromptOutbox({
       setSending(true);
       try {
         let pending = await loadPendingPrompt();
+        assertCurrentPairing();
+        if (pending && !pendingMatchesCredentials(pending, credentials)) {
+          await clearPendingPrompt(pending.commandId);
+          pending = null;
+        }
         let checkReceipt = false;
         if (pending && samePendingPrompt(pending, candidate)) {
           checkReceipt = true;
@@ -229,11 +251,13 @@ export function usePromptOutbox({
             const previousReceipt = promptReceiptSupported
               ? await pendingPromptReceipt(client, pending.commandId)
               : null;
+            assertCurrentPairing();
             if (previousReceipt) await clearSessionDraftIfMatches(pending.draftKey, pending);
             await clearPendingPrompt(pending.commandId);
           }
+          assertCurrentPairing();
           pending = {
-            version: 1,
+            version: 2,
             commandId: randomId("prompt"),
             ...candidate,
             createdAt: Date.now(),
@@ -246,6 +270,7 @@ export function usePromptOutbox({
             pending,
             checkReceipt,
             promptReceiptSupported,
+            assertCurrentPairing,
             onUploadProgress,
           );
           await clearPendingPrompt(pending.commandId);
@@ -296,6 +321,7 @@ export function usePromptOutbox({
     },
     [
       clientRef,
+      credentialsRef,
       conversationEpochRef,
       draft,
       draftMode,
@@ -319,15 +345,36 @@ export function usePromptOutbox({
     if (sendingRef.current) return;
     if (pendingRecoveryRef.current) return pendingRecoveryRef.current;
     const client = clientRef.current;
-    if (!client || !credentialsRef.current) return;
+    const credentials = credentialsRef.current;
+    if (!client || !credentials) return;
+    const assertCurrentPairing = () => {
+      const current = credentialsRef.current;
+      if (
+        clientRef.current !== client ||
+        !current ||
+        !pendingMatchesCredentials(credentials, current)
+      ) {
+        throw new Error("pairing_changed");
+      }
+    };
     // Publish ownership synchronously, before loadPendingPrompt yields.
     sendingRef.current = true;
     setSending(true);
     const recovery = (async () => {
       const pending = await loadPendingPrompt();
       if (!pending) return;
+      if (!pendingMatchesCredentials(pending, credentials)) {
+        await clearPendingPrompt(pending.commandId);
+        return;
+      }
       try {
-        const receipt = await deliverPendingPrompt(client, pending, true, promptReceiptSupported);
+        const receipt = await deliverPendingPrompt(
+          client,
+          pending,
+          true,
+          promptReceiptSupported,
+          assertCurrentPairing,
+        );
         await clearPendingPrompt(pending.commandId);
         await clearSessionDraftIfMatches(pending.draftKey, pending);
         void refreshSessions();
@@ -369,7 +416,7 @@ export function usePromptOutbox({
         const credentials = credentialsRef.current;
         if (!client || !credentials) throw new Error("not_connected");
         let pending = await loadPendingContinuation();
-        if (pending && !continuationMatchesCredentials(pending, credentials)) {
+        if (pending && !pendingMatchesCredentials(pending, credentials)) {
           await discardPendingContinuation();
           pending = null;
         }
@@ -425,7 +472,7 @@ export function usePromptOutbox({
     if (!client || !credentials || continuationInFlightRef.current) return;
     const pending = await loadPendingContinuation();
     if (!pending || continuationInFlightRef.current) return;
-    if (!continuationMatchesCredentials(pending, credentials)) {
+    if (!pendingMatchesCredentials(pending, credentials)) {
       await discardPendingContinuation();
       return;
     }
