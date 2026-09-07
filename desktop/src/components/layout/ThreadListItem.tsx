@@ -1,6 +1,6 @@
 import type { StoredThread } from "../../integrations/storage/threadStore";
 import type { ThreadRunInfo } from "./hooks/useThreadStore";
-import { CircleAlert, MoreHorizontal } from "lucide-react";
+import { ChevronDown, ChevronRight, CircleAlert, MoreHorizontal } from "lucide-react";
 import { memo } from "react";
 import { useTranslation } from "react-i18next";
 import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
@@ -21,6 +21,10 @@ function ThreadListItemImpl({
   active,
   archived,
   compact,
+  depth = 0,
+  hasChildren = false,
+  expanded = false,
+  onToggleExpanded,
   isStreaming,
   menuOpen,
   pendingApprovalCount,
@@ -40,6 +44,10 @@ function ThreadListItemImpl({
   active: boolean;
   archived?: boolean;
   compact?: boolean;
+  depth?: number;
+  hasChildren?: boolean;
+  expanded?: boolean;
+  onToggleExpanded?: (thread: StoredThread) => void;
   /** Whether the agent reports this session is streaming (e.g. TUI-initiated). */
   isStreaming?: boolean;
   menuOpen: boolean;
@@ -92,9 +100,10 @@ function ThreadListItemImpl({
         // Full-width row; workspace threads (compact) indent their content via
         // padding so the highlight still spans the full width (req 2).
         "group/thread relative flex w-full items-center gap-1 rounded-md pr-2 text-left transition-colors hover:bg-surface-subtle",
-        compact ? "h-7 pl-7" : "h-8 gap-2 pl-2",
+        compact ? "h-7" : "h-8",
         active && "bg-surface-subtle text-ink",
       )}
+      style={{ paddingLeft: (compact ? 28 : 8) + depth * 16 }}
       // Right-click anywhere on the row opens the same actions menu as the
       // `...` button.
       onContextMenu={(event) => {
@@ -113,9 +122,19 @@ function ThreadListItemImpl({
         title={displayTitle}
         type="button"
       />
-      {/* Spacer keeps the non-compact title indent after dropping the (uniform,
-          meaningless) chat-bubble icon. */}
-      {!compact ? <span className="pointer-events-none size-4 shrink-0" /> : null}
+      {hasChildren
+        ? (
+            <button
+              aria-expanded={expanded}
+              aria-label={t(expanded ? "activityRail.collapseThread" : "activityRail.expandThread", { title: displayTitle })}
+              className="relative z-10 inline-flex size-4 shrink-0 items-center justify-center rounded text-ink-muted hover:text-ink-soft"
+              onClick={() => onToggleExpanded?.(thread)}
+              type="button"
+            >
+              {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+            </button>
+          )
+        : <span className="pointer-events-none size-4 shrink-0" />}
       <span
         className={cn(
           "pointer-events-none min-w-0 flex-1 truncate text-sm font-medium",

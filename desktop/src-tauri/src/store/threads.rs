@@ -20,6 +20,7 @@ pub struct ThreadRecord {
     pub readonly: bool,
     // model_provider, model_id, thinking_level — dropped, now from agent
     pub agent_session_id: Option<String>,
+    pub parent_session_id: Option<String>,
     pub last_message_at: Option<i64>,
     pub last_opened_at: Option<i64>,
     pub created_at: i64,
@@ -32,7 +33,7 @@ pub struct ThreadRecord {
 // stored 0/1 integers (same as the prior explicit `i64 != 0`).
 sql_record!(pub(super) THREAD_COLUMNS, thread_from_row -> ThreadRecord {
     id, workspace_id, mode, title, status, pinned, readonly,
-    agent_session_id, last_message_at, last_opened_at,
+    agent_session_id, parent_session_id, last_message_at, last_opened_at,
     created_at, updated_at, archived_at, deleted_at,
 });
 
@@ -257,12 +258,35 @@ pub fn update_thread_session_id(thread_id: &str, session_id: &str) -> Result<(),
         return Err("agentSessionId cannot be empty.".to_string().into());
     }
     let now = now_millis();
-    const SQL: &str = "UPDATE threads SET agent_session_id = ?1, updated_at = ?2
+    const SQL: &str = "UPDATE threads SET
+         parent_session_id = CASE WHEN agent_session_id = ?1 THEN parent_session_id ELSE NULL END,
+         agent_session_id = ?1, updated_at = ?2
          WHERE id = ?3 AND status != 'deleted'";
     let conn = connect()?;
     conn.execute(SQL, params![session_id, now, thread_id])?;
     mark_catalog_dirty();
     Ok(())
+}
+
+/// Project Agent lineage by session id, not local thread id: parents may be
+/// imported later, live in another workspace, or have been deleted. No FK and
+/// no cascade; surviving children remain accessible as roots in the UI.
+pub fn sync_thread_parent_session(
+    session_id: &str,
+    parent_session_id: &str,
+) -> Result<bool, crate::AppError> {
+    let parent = parent_session_id.trim();
+    let parent = (!parent.is_empty() && parent != session_id).then_some(parent);
+    let conn = connect()?;
+    let changed = conn.execute(
+        "UPDATE threads SET parent_session_id = ?1
+         WHERE agent_session_id = ?2 AND parent_session_id IS NOT ?1",
+        params![parent, session_id],
+    )?;
+    if changed > 0 {
+        mark_catalog_dirty();
+    }
+    Ok(changed > 0)
 }
 
 /// Record that a thread was opened without treating the visit as message
@@ -740,6 +764,40 @@ mod tests {
                  ('t3', 'ws1', 'chat', 'Gone', 'deleted', 0, 'sess3', 400, 400, 1, 1);",
         )
         .expect("seed threads");
+    }
+
+    #[test]
+    fn parent_session_projection_survives_reload_and_preserves_recency() {
+        let (_home, conn) = guarded_conn("thread_parent");
+        seed_two_threads(&conn);
+        sync_thread_parent_session("sess1", " parent-not-yet-imported ").unwrap();
+        let thread = get_thread("t1").unwrap().unwrap();
+        assert_eq!(
+            thread.parent_session_id.as_deref(),
+            Some("parent-not-yet-imported")
+        );
+        assert_eq!(thread.updated_at, 1);
+        assert_eq!(
+            list_threads().unwrap()[0].parent_session_id,
+            thread.parent_session_id
+        );
+        update_thread_session_id("t1", "sess1").unwrap();
+        assert_eq!(
+            get_thread("t1").unwrap().unwrap().parent_session_id,
+            thread.parent_session_id
+        );
+        update_thread_session_id("t1", "replacement").unwrap();
+        assert!(get_thread("t1")
+            .unwrap()
+            .unwrap()
+            .parent_session_id
+            .is_none());
+        sync_thread_parent_session("replacement", "replacement").unwrap();
+        assert!(get_thread("t1")
+            .unwrap()
+            .unwrap()
+            .parent_session_id
+            .is_none());
     }
 
     #[test]

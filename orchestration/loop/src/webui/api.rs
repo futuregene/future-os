@@ -22,6 +22,7 @@ fn epoch_secs(t: Option<SystemTime>) -> Option<u64> {
 #[derive(Debug, Clone, Serialize)]
 pub struct TodoView {
     pub id: String,
+    pub parent_id: Option<String>,
     pub index: u32,
     pub title: String,
     pub text: String,
@@ -102,6 +103,7 @@ fn todo_view(goal: &Goal, t: &Todo) -> TodoView {
     }
     TodoView {
         id: t.id.clone(),
+        parent_id: t.parent_id.clone(),
         index: t.index,
         title: t.title.clone(),
         text: t.text.clone(),

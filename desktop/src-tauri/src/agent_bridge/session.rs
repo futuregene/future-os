@@ -320,6 +320,8 @@ pub async fn fork_agent_session(
         agent_session_id: Some(new_session_id.clone()),
     })?;
 
+    store::sync_thread_parent_session(&new_session_id, &session_id)?;
+
     // Now that the thread (and its workspace) exist, set the forked
     // session's cwd to match so ensure_agent_session can find it
     // instead of creating a brand-new empty session.
@@ -887,6 +889,7 @@ mod tests {
             .expect("exists");
         assert_eq!(new_thread.title, "Forked Chat");
         assert_eq!(new_thread.agent_session_id.as_deref(), Some("sess-fork"));
+        assert_eq!(new_thread.parent_session_id.as_deref(), Some("sess-1"));
 
         // One assistant reply in the forked history → one completed run with
         // the session model split into provider/id.

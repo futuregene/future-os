@@ -70,6 +70,7 @@ pub struct MockState {
     pub recorded: Vec<String>,
     /// `name` field of every new_session command seen (wire-level title).
     pub new_session_names: Vec<String>,
+    pub new_session_parents: Vec<String>,
     /// (session_id, busy_policy) of every prompt command, in order.
     pub prompt_calls: Vec<(String, String)>,
     /// The `message` text of every prompt command, in order.
@@ -143,6 +144,7 @@ impl FutureAgent for MockAgent {
             "new_session" => {
                 st.sessions_created += 1;
                 st.new_session_names.push(cmd.name.clone());
+                st.new_session_parents.push(cmd.parent_session.clone());
                 let id = format!("mock-session-{}", st.sessions_created);
                 st.live_sessions.insert(id.clone());
                 format!("{{\"sessionId\":\"{}\"}}", id)

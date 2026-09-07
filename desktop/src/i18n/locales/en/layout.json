@@ -6,6 +6,9 @@
     "updateFailed": "Couldn't save the setting: {{message}}"
   },
   "activityRail": {
+    "expandThread": "Expand child conversations of {{title}}",
+    "collapseThread": "Collapse child conversations of {{title}}",
+    "resizeSidebar": "Resize sidebar",
     "settings": "Settings",
     "newChat": "New Chat",
     "models": "Models",

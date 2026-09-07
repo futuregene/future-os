@@ -43,7 +43,6 @@ pub struct AgentSessionSummary {
     pub cwd: String,
     pub model: String,
     pub first_message: Option<String>,
-    #[allow(dead_code)]
     pub parent_session_id: String,
     /// Whether the agent is currently streaming a response for this session.
     #[allow(dead_code)]
@@ -351,6 +350,11 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
     // workspace directory name. Re-sync when the stored title is clearly
     // stale and a better one is available.
     if let Some(existing) = store::find_thread_by_agent_session(&summary.id)? {
+        if store::sync_thread_parent_session(&summary.id, &summary.parent_session_id)? {
+            // Upgrade/backfill can change an already-rendered tree without
+            // importing any new rows. Do not wait for a restart to reveal it.
+            crate::emit_threads_updated();
+        }
         // Converge the DB title to the agent's session_name — the name shared
         // with every client (TUI `/name`, CLI, channels). Renames made outside
         // the GUI never reach the GUI DB, and the sidebar falls back to that
@@ -410,6 +414,7 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
             workspace_name,
             agent_session_id: Some(summary.id.clone()),
         })?;
+    store::sync_thread_parent_session(&summary.id, &summary.parent_session_id)?;
     if !created {
         return Ok(0);
     }
@@ -509,7 +514,11 @@ pub(crate) async fn import_discovered_session(session_id: &str) -> Result<bool, 
             .unwrap_or_default()
             .to_string(),
         first_message: None,
-        parent_session_id: String::new(),
+        parent_session_id: state
+            .get("parentSessionId")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string(),
         is_streaming: true,
     };
     let title = session_title(&summary);
@@ -522,6 +531,7 @@ pub(crate) async fn import_discovered_session(session_id: &str) -> Result<bool, 
         workspace_name,
         agent_session_id: Some(session_id.to_string()),
     })?;
+    store::sync_thread_parent_session(session_id, &summary.parent_session_id)?;
     Ok(created)
 }
 
@@ -956,11 +966,13 @@ mod tests {
 
         let mut s = summary("sess-name", &workspace.path);
         s.name = Some("Renamed elsewhere".to_string());
+        s.parent_session_id = "late-parent".to_string();
         assert_eq!(import_one(&s).await.expect("sync"), 0);
         let updated = crate::store::get_thread(&thread.id)
             .expect("get")
             .expect("some");
         assert_eq!(updated.title, "Renamed elsewhere");
+        assert_eq!(updated.parent_session_id.as_deref(), Some("late-parent"));
     }
 
     #[tokio::test]
@@ -1211,6 +1223,7 @@ mod tests {
             serde_json::json!({
                 "sessionId": "sess-live",
                 "sessionName": "Live Session",
+                "parentSessionId": "supervisor",
                 "cwd": "",
                 "model": "future/k3"
             }),
@@ -1222,6 +1235,7 @@ mod tests {
             .expect("find")
             .expect("some");
         assert_eq!(thread.title, "Live Session");
+        assert_eq!(thread.parent_session_id.as_deref(), Some("supervisor"));
 
         // Already-known session → no-op Ok(false).
         assert!(!import_discovered_session("sess-live")

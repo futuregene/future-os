@@ -186,6 +186,17 @@ impl AgentClient {
     /// human-readable session name (the goal objective, truncated) surfaced in
     /// agent session lists instead of an empty/default name.
     pub async fn new_session(&mut self, cwd: &str, title: &str) -> Result<String> {
+        self.new_child_session(cwd, title, None).await
+    }
+
+    /// Start an isolated worker context while retaining its conversation
+    /// lineage for clients such as the Desktop sidebar.
+    pub async fn new_child_session(
+        &mut self,
+        cwd: &str,
+        title: &str,
+        parent_session: Option<&str>,
+    ) -> Result<String> {
         let resp = self
             .call(
                 "new_session",
@@ -193,6 +204,7 @@ impl AgentClient {
                 RpcCommand {
                     cwd: cwd.to_string(),
                     name: title.to_string(),
+                    parent_session: parent_session.unwrap_or_default().to_string(),
                     ..Default::default()
                 },
             )
