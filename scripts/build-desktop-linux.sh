@@ -89,6 +89,8 @@ if [[ "$SKIP_DEPS" != true ]]; then
 fi
 
 
+# Unlike official CI's static musl release, this local build uses the host target.
+# The shared portable Readme.txt describes both variants; do not promise static linkage here.
 echo "==> Building CLI (release) and staging as Tauri sidecar"
 cargo build --release --manifest-path cli/Cargo.toml
 mkdir -p desktop/src-tauri/binaries

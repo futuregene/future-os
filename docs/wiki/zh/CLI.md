@@ -14,6 +14,8 @@ FutureOS 附带一个**可选的**命令行工具,叫 `future`。它随每个下
 |---|---|
 | **macOS**(`.dmg`) | 应用内:`/Applications/FutureOS.app/Contents/MacOS/future` |
 | **Windows**(安装版或便携 `.zip`) | 应用目录里的 `future.exe` |
+| **Linux**（`.deb`） | PATH 中的 `future` |
+| **Linux**（portable / CLI-only tarball） | 解压目录中的 `future`；加入 PATH 前用 `./future` |
 
 CLI **随每个下载包一起附带** —— 安装版和便携版里都有,就装在应用旁边。
 
@@ -37,7 +39,7 @@ alias future="/Applications/FutureOS.app/Contents/MacOS/future"
 
 大部分命令都要连接 FutureOS 的 agent(后台服务)。如果**桌面应用已打开**,agent 就已经在运行。否则,用 `future agent` 启动 agent(或直接运行 `future-agent` 二进制,二者是同一套代码;打开桌面应用也会自动拉起 agent)。
 
-`future config`、`future auth login` 和 `future auth logout` 是例外：agent 未运行时也能直接使用，配置会写入 `~/.future/agent/`，agent 下次启动时自动读取。
+`future config`、`future auth login` 和 `future auth logout` 在 Agent 未运行时也能直接使用，配置写入 `~/.future/agent/`。技能目录/安装命令也不要求 Agent 在线。TUI 与桌面一样可以自动启动自己的 Agent sidecar。`future doctor` 可诊断连接；默认通过每用户本地 IPC 发现，不是始终开放的 TCP 端口。
 
 ---
 
@@ -96,7 +98,8 @@ future run "介绍一下这个项目"
 | `--continue`、`-c` | 继续最近的会话。 |
 | `--session <id>` | 连接指定 ID 的已有会话。 |
 | `--fork <entry-id>` | 从当前会话的某个条目分叉出新会话。 |
-| `--permission <level>` | 文件访问权限:`all`、`workspace`(仅工作区+临时目录)、`none`(工作区外只读)。 |
+| `--permission <level>` | `all`（新会话默认，不受限）、`workspace`（审批门控访问）、`none`（拒绝所有工具调用）。这不是 OS 沙箱选择器，见 [[审批与沙箱|Sandbox]]。 |
+| `--steer` | 中断当前会话正在运行的任务；不传时，新 prompt 排在忙碌任务之后。 |
 | `--cwd <dir>` | 设置工作目录。 |
 | `--mode json` | 以 JSON 而非文本打印回答。 |
 | `--no-session` | 本次不保存为会话。 |
@@ -142,7 +145,8 @@ future models --json     # 机器可读输出
 
 ```bash
 future agent              # 启动 agent gRPC 服务
-future agent --help       # 查看 agent 选项（gRPC 地址、日志、profiling）
+future agent --help       # 查看 Agent 选项（连接覆盖、日志、profiling）
+future agent --probe-sandbox # 一次性 OS 沙箱诊断，不启动常驻服务
 ```
 
 `future agent <args>` 直接运行 agent 后端——参数与独立二进制 `future-agent`
@@ -176,14 +180,14 @@ future session delete <id>
 future doctor
 ```
 
-一次检查登录状态、组件安装、agent 连通性、配置、provider/模型、会话与技能。
+一次检查登录状态、组件安装、Agent 连通性、OS 沙箱可用性、配置、provider/模型、会话与技能。
 
 ---
 
 ## 小贴士
 
-- **macOS 首次被拦?** 先用右键 →「打开」把 FutureOS 应用打开一次以清除拦截,之后命令行工具也能运行。
-- **提示「Connection refused」?** 说明 agent 没运行。打开桌面应用,或直接运行 `future agent`。
+- **macOS 被拦？** 先核对下载来源和签名；可信未签名测试包有单独首次启动说明，见 [[常见问题|FAQ]]。
+- **连接失败？** 运行 `future doctor`，检查 sidecar 错误、用户和 IPC 环境是否一致；按需打开桌面或运行 `future agent`。
 
 ---
 

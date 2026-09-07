@@ -42,7 +42,7 @@ Agent 执行一个有界回合（gRPC）→ 写证据 → 内核据此决定下�
 | 终局 terminal | `frontier show` | 验证式闭环：todos 完成/被取代 + 闭环意图 + 无验收缺口 + 无待决 deferred 工作；`frontier` 给出终局判定与缺口明细 |
 | 配额 quota | `quota should-run/usage/spend/decisions` | 确定性 should-run 内核：每个回合的调度、拒绝原因、花费全部可审计 |
 | 调度器 scheduler | `scheduler tick/show/liveness` | 监视器节奏、宿主故障记录、活性心跳 |
-| 多 agent | `agent contract/recipe/succession/collective` | 一个目标多个 worker：契约（替补关系/交接规则）、命名配方一键上车、离线超时自动替补晋升、唤醒轮值表、集体回合账本 |
+| 多 agent | `agent onboard/list` | 注册并行 worker 身份与 workspace 写集合，通过 owner、依赖和租约协作。已移除的多宿主 contract/recipe/succession/collective 不是公开命令。 |
 | worker 可观测 | `worker tail` | 把 worker 的实时回合日志（`.live.jsonl`）渲染成浓缩 tool/用量视图（`--raw` 看原始）——编排者观察 worker 实际在做什么的窗口，据此 steer / stop / 放行 |
 | 前端面 frontier | `frontier show` | 成果连续段（outcome segments）、结构化 replan 规则、有界语义历史（N=50）、终局判定 |
 
@@ -200,7 +200,7 @@ usage 即可发现参数。
 
 - **goal 组**（5）：`goal` `status` `ui` `models` `diagnose`
 - **todo 组**（6）：`todo` `gate` `replan` `frontier` `lease` `task-graph`
-- **agent 组**（5）：`agent` `scope` `lane` `supervisor` `worker`（list / stop / **tail**）
+- **agent 组**（6）：`agent` `scope` `lane` `supervisor` `report` `worker`（list / stop / **tail**）
 - **ops 组**（18）：`version` `doctor` `history` `turn` `todo-event` `evidence-log` `backup` `authority` `profile` `quota` `scheduler` `store` `backfill` `privacy` `runs` `heartbeat-prompt` `worker-bridge` `run`
 - **work-items 组**（3）：`attention` `inbox` `delivery`
 - **cli 组**（2）：`registry` `commands`

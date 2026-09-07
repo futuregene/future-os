@@ -5,7 +5,7 @@
 <h3 align="center">One AI agent, everywhere you work.</h3>
 <p align="center">
   Terminal, desktop, mobile, and your chat apps — one Rust core, one agent, 3,800+ models.<br>
-  Every tool call gated by your approval. Local-first. Open source.
+  Configurable approvals and OS sandboxes. Local-first. Open source.
 </p>
 
 <p align="center">
@@ -35,7 +35,7 @@
 
 ## Why FutureOS
 
-- **Trust before capability.** Every tool call — read, write, edit, shell — is gated by your approval by default. Nothing writes to your filesystem or runs a command silently. When an agent holds your credentials, trust can't be a config option.
+- **Choose the execution boundary.** Configure file-access approvals and OS sandboxing for agent tools. The desktop defaults to Unrestricted (`off`); select Manual or Sandboxed before working with untrusted content. See the [security model](SECURITY.md) and [sandbox guide](docs/wiki/en/Sandbox.md) for defaults and limitations.
 - **One backend, every surface.** A single gRPC agent drives the terminal UI, desktop app, mobile apps, CLI, and IM bots — same sessions, same memory, same skills, wherever you happen to be.
 - **Long runs need engineering, not prompting.** The built-in loop control plane gives durable goals, event-sourced state, and verification gates to runs of 24+ hours — start a research task at night, review the results from your phone in the morning.
 
@@ -44,7 +44,7 @@
 | Category | Details |
 |---|---|
 | **Multi-Interface** | Terminal UI (TUI), desktop app (GUI), mobile apps (Android & iOS), CLI, IM bots — one agent, everywhere |
-| **Trust-First Tool Execution** | read, write, edit, shell — every call gated by your approval; sandbox tiers (`off` / `manual` / `sandbox`), with an OS sandbox on macOS (Seatbelt) and Windows (restricted token); a lean tool set, no prompt bloat |
+| **Configurable Tool Safety** | read, write, edit, shell — approval rules and sandbox tiers (`off` / `manual` / `sandbox`); macOS Seatbelt, Linux system Bubblewrap, Windows restricted-token write protection. Availability and guarantees differ by platform ([guide](docs/wiki/en/Sandbox.md)) |
 | **Model Flexibility** | 3800+ built-in models across 140+ providers ([catalog](docs/wiki/en/Models.md)); custom providers via `models.json`; scoped model lists |
 | **Loop Engineering** | Durable goals/todos/gates/monitors for long-horizon runs of 24+ hours — deterministic should-run kernel, event-sourced state, hard checks (evidence floor / acceptance contracts / verify gates), lease liveness, multi-agent ([guide](docs/loop-control-plane.md)) |
 | **Powerful Built-in Skills** | 15+ skills out of the box for everyday agent work — image read & generation, PDF/Word parsing, web search, browser control, slides, software install, and the `/future-loop` long-run goal orchestrator ([builtin](https://github.com/futuregene/future-skills/tree/main/builtin)) |
@@ -148,10 +148,12 @@ workflows. `uninstall` / `update` and friends are in the
 ### Run the agent
 
 The terminal and CLI clients are thin gRPC clients. They connect over
-**per-user local IPC** by default (a Unix-domain socket under
-`~/.future/run/agent.sock` on macOS/Linux, a current-user-only named pipe on
-Windows). The TUI and desktop app start the agent automatically as a sidecar
-when none is running; you can also start it yourself:
+**per-user local IPC** by default (a Unix-domain socket on macOS/Linux,
+a current-user-only named pipe on Windows). Unix honors `FUTURE_AGENT_SOCKET`;
+Linux otherwise uses `$XDG_RUNTIME_DIR/future/agent.sock` when set, falling
+back to `~/.future/run/agent.sock` (also the macOS default). The TUI and desktop
+app start the agent automatically as a sidecar when none is running; you can
+also start it yourself:
 
 ```bash
 future agent     # start the agent in the terminal (logs to stdout; Ctrl-C to stop)
@@ -167,7 +169,6 @@ future tui       # terminal UI
 > `future agent` to serve plain TCP instead, and point clients at it with
 > `FUTURE_AGENT_GRPC_ADDR=127.0.0.1:50051`. TCP is opt-in — never expose it
 > beyond a trusted interface.
-```
 
 <p align="center">
   <img src="docs/tui-screenshot.png" alt="FutureOS terminal UI — built-in skills loaded, /help command palette" width="720">
@@ -179,7 +180,7 @@ future tui       # terminal UI
 > build targets — `cargo build -p future-tui` etc. — but are no longer
 > installed by default).
 >
-> A client that exits with a connection / gRPC error almost always means the agent isn't running yet — see [Troubleshooting](#troubleshooting).
+> If connection fails, check agent discovery or sidecar startup — see [Troubleshooting](#troubleshooting).
 
 ### Essential Slash Commands (TUI)
 
@@ -221,7 +222,7 @@ future tui       # terminal UI
 
 | Symptom | Fix |
 |---|---|
-| Client exits with a connection / gRPC error | The agent isn't running. Start it (`future agent`). If you configured TCP mode (`FUTURE_AGENT_GRPC_ADDR`), check nothing else holds the port: `lsof -i :<port>`. |
+| Client exits with a connection / gRPC error | Run `future doctor`; check sidecar startup errors and that client/agent use the same user and IPC environment. Start `future agent` manually if needed. Only in explicit TCP mode, check the configured address/port. |
 | Agent replies with an auth / "no model" error | No model configured yet. Run `future config` — see [Configure a model](#configure-a-model). |
 | Build / install problems | See [Build & Install](docs/build-and-install.md) (platform toolchains, linker, GUI packaging). |
 

@@ -75,11 +75,18 @@ curl -fsSL https://dl.future-os.cn/install.sh | bash
 The script auto-detects the platform, installs the matching package from the
 release manifest, verifies its SHA-256, then runs `future init`:
 
-- **Debian/Ubuntu** — `FutureOS_<version>_amd64.deb`, installed with `apt` (resolves dependencies).
-- **Every other Linux** — `FutureOS-portable-linux.tar.gz` (`futureos` desktop app + unified `future` CLI), extracted to `/usr/local/bin` (or `~/.local/bin` when not writable).
+- **Debian/Ubuntu** — `FutureOS_<version>_amd64.deb` or `FutureOS_<version>_arm64.deb`, installed with `apt` (resolves dependencies).
+- **Other Linux** — `FutureOS_<version>_linux_<arch>-portable.tar.gz` (`futureos` + unified `future`), extracted to `/usr/local/bin` (or `~/.local/bin` when not writable). Architectures: `x86_64`, `aarch64`.
+- **Headless hosts** — download `FutureOS_<version>_linux_<arch>-cli.tar.gz` from the official release channel, extract it, then run `./future config` and `./future tui` (or `./future agent` for CLI clients). No GUI libraries are needed for the official static musl CLI.
+
+The published GUI needs glibc ≥ 2.39 (roughly Ubuntu 24.04+) and WebKitGTK 4.1.
+Local developer builds use the selected host target and need not be static.
 
 Pin a specific release with `FUTUREOS_VERSION` (e.g. `FUTUREOS_VERSION=1.2.0`),
-or point at a mirror with `FUTUREOS_BASE`.
+or point at a mirror with `FUTUREOS_BASE`. The current pinned-version path skips
+manifest SHA-256 verification and prints a warning; verify a pinned artifact
+against trusted release checksums yourself. The latest-release path verifies
+the manifest checksum.
 
 ### Building from source (developers)
 
@@ -111,6 +118,16 @@ make package-desktop    # desktop bundle → .deb in desktop/src-tauri/target/re
 `scripts/start-desktop-linux.sh` runs the GUI in dev mode against a locally
 built agent and stops the agent it started when the GUI exits. Bubblewrap
 diagnostics are informational so the sandbox-unavailable UI can also be tested.
+
+### Optional OS sandbox
+
+Install trusted system Bubblewrap ≥ 0.9.0 (`sudo apt install bubblewrap`, or
+`sudo dnf install bubblewrap` on Fedora), then fully restart FutureOS. Older
+repository packages may require a trusted upgrade. It is not bundled with the app.
+Check `future agent --probe-sandbox` and `future doctor`; user namespaces and fresh
+`/proc` mounts must be permitted by host policy. See the [sandbox guide](wiki/en/Sandbox.md)
+for fallback and snapshot/credential/network limitations. Availability is not
+certification of all distributions or architectures.
 
 ## Windows
 
@@ -218,7 +235,7 @@ repository:
 ```bash
 make install-skills                          # symlink from the bundled skills/ submodule
 # or install from the platform catalog:
-future skills install                        # install all future-* skills (15)
+future skills install                        # install all current built-in future-* skills
 future init                                  # install skills and, on macOS/Linux, link local commands
 ```
 
@@ -258,7 +275,9 @@ make run-desktop
 creates the Tauri sidecar placeholder. `make run-desktop` builds the local CLI
 sidecar and starts the desktop app in development mode — the app auto-starts the
 bundled agent sidecar on launch, so no separate `future agent` is needed. (If an
-agent is already running on `127.0.0.1:50051`, the app reuses it instead.)
+agent is already reachable through per-user local IPC or the explicit
+`FUTURE_AGENT_GRPC_ADDR` override, the app reuses it instead and does not own its
+shutdown.) See [directory layout](directory-layout.md) for socket selection.
 Android and iOS need their respective SDKs and an emulator or device; see the
 [mobile guide](../mobile/README.md).
 

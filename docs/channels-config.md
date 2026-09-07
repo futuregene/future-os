@@ -18,7 +18,7 @@ with defaults, both channels disabled).
 {
   // Agent block — the model/session defaults for channel conversations.
   "agent": {
-    "grpc_addr": "http://127.0.0.1:50051", // agent gRPC endpoint
+    "grpc_addr": "auto",                   // per-user local IPC
     "cwd": "/home/you",                     // working dir for the agent
     "model": "future/deepseek-v4-pro",      // default model for channel sessions
     "thinking_level": "xhigh",              // off | minimal | low | medium | high | xhigh
@@ -58,11 +58,11 @@ with defaults, both channels disabled).
 
 | Field | Default | Meaning |
 |---|---|---|
-| `grpc_addr` | `http://127.0.0.1:50051` | gRPC endpoint of the agent. |
+| `grpc_addr` | `auto` | Per-user local IPC. An explicit `http://host:port` tries TCP first, then local IPC; the agent must opt into TCP with `--grpc-addr`. |
 | `cwd` | `$HOME` | Working directory for agent runs in channel sessions. |
 | `model` | `future/deepseek-v4-pro` | Default model for channel sessions. Empty means "use the agent's boot-time default". |
 | `thinking_level` | `xhigh` | Default thinking level: `off` / `minimal` / `low` / `medium` / `high` / `xhigh`. |
-| `permission_level` | `all` | Default tool permission level: `all` / `workspace` / `none`. |
+| `permission_level` | `all` | `all` is unrestricted; `workspace` enables approval gating; `none` denies all tools. This is not an OS sandbox selector. |
 
 ### `feishu`
 
@@ -94,7 +94,9 @@ with defaults, both channels disabled).
 
 ## Runtime behavior
 
-- **Slash commands:** both bridges handle 9 commands locally
+- Fresh channel sessions do not independently enable a desktop sandbox policy.
+  Restrict who can drive the bot; default `all` is not approval-on-by-default.
+- **Slash commands:** both bridges dispatch 9 commands in bridge code (some call Agent RPC; they are not model prompts)
   (`/new /status /stop /model /models /compact /effort /cwd /help`); unknown
   slash commands are forwarded to the agent as ordinary messages.
 - **DingTalk replies** are posted to the `sessionWebhook` from each event —

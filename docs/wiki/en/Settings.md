@@ -12,13 +12,13 @@ Desktop-level options for the app:
 
 - **Language** — choose the app's display language.
 - **Approval mode** — how much the agent asks before acting:
-  - **Manual** — prompts before file reads and writes; read-only commands run automatically.
-  - **Sandboxed** (macOS only) — commands run in the macOS sandbox; file operations still prompt.
-  - **Unrestricted** — no prompts and no sandbox; everything runs.
+  - **Manual** — file access follows Allow/Ask/Deny path rules; shell commands ask except for the read-only allowlist.
+  - **Sandboxed** — uses macOS Seatbelt, Linux system Bubblewrap, or Windows restricted-token write protection when available; file access still follows path rules. Guarantees differ by platform.
+  - **Unrestricted** (default) — no prompts and no sandbox; everything runs.
 - **Show thinking process** — show or hide the model's reasoning in the conversation.
 - **Auto-upgrade skills** — silently upgrade installed skills to their latest version each time the app opens.
 
-See [[Using FutureOS|Using-FutureOS]] for how approval works in practice.
+See [[Approvals and sandboxing|Sandbox]] for defaults, Linux setup, diagnostics and limitations, and [[Using FutureOS|Using-FutureOS]] for approval cards.
 
 ---
 

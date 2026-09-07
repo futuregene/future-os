@@ -1,254 +1,72 @@
-# Wiki 生成提示词
+# FutureOS Wiki 写作契约
 
-> 这是给 AI 使用的**生成提示词**(prompt),不是给用户看的文档。
-> 把本文件的全部内容交给 AI,它就应当能(重新)生成 `docs/wiki/` 下的整套 wiki 页面。
-> 本文件只负责**内容生成**;如何发布到 GitHub Wiki 不在此讨论。
+创建或更新 `docs/wiki/{en,zh}/` 时遵循本契约。Wiki 是用户指南，不是发布日志或内部设计
+文档副本。写作前对照当前源码；旧核验笔记只代表其日期/提交，不能据此跳过检查。
 
----
+## 读者与范围
 
-## 1. 角色与目标
+用易懂语言描述已实现、界面可见的行为。桌面平台为 **macOS、Windows 和 Linux**；
+Android/iOS 是运行中桌面的远程客户端。Research/Data 导航仍隐藏时不写入用户指南。
+Skills 与 Remote 已面向用户，不要沿用旧的隐藏功能假设将其排除。
 
-你是 FutureOS 的技术文档撰写者。目标:为 **FutureOS 桌面应用**编写一套面向**普通用户**的 wiki,帮助用户从下载、安装、登录到日常使用全程顺畅上手。
+Wiki 不必单独创建 TUI 页，仓库已有 `docs/tui*.md`；CLI 页可以介绍 `future tui`、
+`future channel` 和 `future loop`。普通 App 页面不展开协议内部实现；排障所需的准确
+连接方式与默认值放到 CLI 和仓库指南。
 
-FutureOS 是一个**桌面 AI Agent 工作台**:用户不只是"聊天拿答案",而是能**看到并核对** agent 的工作——它读了什么、跑了什么命令、改了哪些文件、在等你批准什么、以及之后如何接着做。面向真正推进多步骤任务的人:软件开发、研究、数据分析、写作、报告生成、调试,全在一个地方完成。
+## 输出与链接
 
-## 2. 读者与语气
+- 中英文文件名一一对应，事实内容一致。
+- 页内使用同语言 `[[Page]]` 或 `[[标签|Page]]` 链接；同步 `_Sidebar.md`、`_Footer.md`。
+  不要把省略 `.md` 的 Markdown 链接当成仓库相对文件链接。
+- 两套语言独立可用，不要求跨语言导航。
+- `Models.md` 由 `scripts/generate_models.py`（`make generate-models`）生成，禁止手改；
+  不要只为修改周边说明而重新生成模型数据。
+- 共同事实改变时，同步 README、构建安装、目录和安全参考；新增用户页要进入文档索引。
 
-- **读者是普通用户**,不是开发者。默认他们不懂命令行、不懂 gRPC/架构这类内部细节。
-- 语气:**清楚、简洁、友好、以操作为导向**。多用"你",少用被动语态和术语。
-- 讲**怎么用**,不讲**怎么实现**。不要暴露内部模块名、端口号(除非某条命令确实需要)、代码架构。
-- 反复强调 FutureOS 的核心卖点:**你始终掌控** —— agent 在做有风险的事之前会停下来征求批准;所有工作都可查、可核对。
+## 页面清单与核验入口
 
-## 3. 写作前:先读代码,只写已实现的功能
-
-**在写每个页面之前,先阅读该页面相关的代码和文档,以真实行为为准**,不要凭想象或旧文档描述功能。第 7 节为每个页面列出了 3–5 个**代码入口**,请以它们为起点向外探索(顺着 import、组件引用、i18n 文案 key 追查),确认:
-
-- 功能是否真的存在、UI 里是否真的能看到;
-- 具体的按钮名、菜单名、页面名、流程步骤;
-- 平台差异(macOS / Windows)是否与代码/打包配置一致。
-
-**只写已经实现、用户在界面上真的能用到的功能。** 任何"计划中/开发中/已隐藏"的功能一律不写。已知当前**未上线、不要写**的:
-
-- **Research(研究)** 入口 —— 已从导航隐藏。
-- **Data(数据源)** 入口 —— 已从导航隐藏。
-- **Remote / 手机远程** —— 仍在开发中。
-
-> 判断依据看代码:例如 `desktop/src/components/layout/ActivityRail.tsx` 里 `featureItems` 若为空数组,即表示这些侧边栏入口当前不对用户显示。写作时若发现某功能在代码里被隐藏或未接线,就不要写进 wiki。
-
-## 4. 输出要求:中英双语
-
-每个页面都要有**中文**和**英文**两个版本,内容对应一致。按**语言子目录**组织:
-
-```
-docs/wiki/
-  en/            # 英文版全部页面
-    Home.md
-    Installation.md
-    Quick-Start.md
-    ...
-    _Sidebar.md
-    _Footer.md
-  zh/            # 中文版全部页面(文件名与 en/ 一一对应)
-    Home.md
-    Installation.md
-    Quick-Start.md
-    ...
-    _Sidebar.md
-    _Footer.md
-```
-
-- 两个目录下**文件名完全相同**,只是内容语言不同(`en/Home.md` 对应 `zh/Home.md`)。
-- **中英文文档之间不需要互链**,不放语言切换链接,两套页面各自独立。
-- `_Sidebar.md` 和 `_Footer.md` 每个目录各出一份。
-- **页面互链只在本语言目录内**(英文版链英文版,中文版链中文版),走本目录内的相对路径。
-
-## 5. 平台范围
-
-**只支持 macOS 和 Windows。不要写 Linux 的任何内容**(不写 `.deb` / `.tar.gz`、不写 apt、不写 Linux 首次启动步骤等)。凡是"支持哪些平台"的表述,一律写 **macOS 和 Windows**。
-
-## 6. 页面清单
-
-生成以下页面(**不要生成 TUI / 终端界面页面**)。下表列的是文件名,`en/` 和 `zh/` 目录下各出一份。
-
-| 页面文件 | 页面标题 | 作用 |
+| 页面 | 内容 | 核验来源 |
 |---|---|---|
-| `Home.md` | FutureOS | 落地页:一句话讲清是什么、能做什么,导航到各页 |
-| `Installation.md` | 安装 FutureOS | 下载、首次启动(macOS/Windows)、数据位置、更新、卸载 |
-| `Quick-Start.md` | 快速开始 | 从全新安装到第一个回答:登录 → 开始对话 → 发消息 → 选模型 → 查看工作 |
-| `Using-FutureOS.md` | 使用 FutureOS | 应用导览:三栏布局、Chat 与 Workspace、如何跟进和引导 agent、批准机制、右侧面板 |
-| `Settings.md` | 设置 | 设置各页(重点 General / Providers / Models);内置 FutureGene 登录、自定义 provider、模型可见性 |
-| `Skills.md` | 技能 | 内置技能包一览及使用方式 |
-| `CLI.md` | 命令行工具(`future`) | 可选的高级命令行工具:位置、运行、命令组 |
-| `Feishu.md` | 飞书集成 | 把 FutureOS 接入飞书(Lark):机器人、渠道桥(`future-channel`)、斜杠命令、配置 |
-| `DingTalk.md` | 钉钉集成 | 把 FutureOS 接入钉钉:机器人、渠道桥(`future-channel`)、斜杠命令、配置 |
-| `FAQ.md` | 常见问题与排错 | 常见问题速查 |
-| `_Sidebar.md` | — | 左侧导航 |
-| `_Footer.md` | — | 页脚(下载、反馈问题链接) |
+| `Home.md` | 定位、场景、导航、平台概览 | 根 README；`desktop/src/components/layout/ActivityRail.tsx` |
+| `Installation.md` | 产物/架构、首次启动、运行库、更新与卸载 | `.github/workflows/release.yml`、`build-{macos-signed,windows-signed}.yml`、`build-linux.yaml`；`scripts/install.sh`、`install.ps1`；`docs/dist/` |
+| `Quick-Start.md` | 登录或 BYOK、首个对话、审批选择、模型选择 | 桌面登录/新会话流程及设置文案 |
+| `Using-FutureOS.md` | Chat/workspace、附件、工具、批准卡、Files/Runs/Review | `desktop/src/features/agent/`、`review/`、`filetree/`；`components/layout/` |
+| `Settings.md` | 当前设置项与默认值 | `desktop/src/features/settings/`；`desktop/src-tauri/src/store/app_settings.rs` |
+| `Sandbox.md` | 默认值、三档、平台边界、Linux 安装、提权与排障 | `agent/src/sandbox/`；`agent/src/rpc/session.rs`、`session_prompt.rs`；`desktop/DEV_MD/SANDBOX/`；`useSandboxAvailability.ts` |
+| `Remote.md` | Android/iOS 配对、在线要求、撤销、隐私与排障 | `mobile/README.md`、`mobile/src/remote/`；`desktop/src/features/remote/`、`desktop/src-tauri/src/remote/`；remote 文案 |
+| `Skills.md` | 浏览/安装/使用及精选能力 | `skills/builtin/*/SKILL.md`；`cli/src/commands/skills.rs`；桌面 Skills 页面 |
+| `CLI.md` | 可选 CLI 位置、命令、默认值、Agent 要求 | `cli/src/main.rs`、`cli/src/lib.rs`、`cli/src/commands/{run,auth,configure,tools,skills,doctor}.rs`；`packages/rpc/src/transport.rs` |
+| `Feishu.md` / `DingTalk.md` | 机器人配置、访问策略、启动、命令与排障 | `channels/src/` 配置和各渠道处理器；外部步骤另核验平台文档 |
+| `FAQ.md` | 真实故障与安全处理方法 | 对应实现及产物/渠道信息 |
+| `Models.md` | 自动生成模型目录 | 生成器与内置模型数据 |
+| `_Sidebar.md` / `_Footer.md` | 导航 | 上述页面清单 |
 
-> 这是**最小页面集**。若在代码里发现本清单未列、但确已发布给用户的小功能,就近补进最相关的现有页面(一般不新开页面),并在生成后的偏差报告里说明(见第 9 节)。
->
-> **不要生成 `Models.md`**:它由 `make generate-models` 自动生成(`scripts/generate_models.py` 写入 `docs/wiki/{en,zh}/Models.md`),不在手工编写范围内,也不要写进侧边栏。
+## 不应再次写错的事实
 
-### 侧边栏结构(去掉 TUI)
+1. **不是默认每次工具调用都审批。**桌面默认 `off`，新 Agent 会话权限 `all`；enum 默认值
+   不等于应用默认值。手动模式可放行普通读取/workspace 写入，沙箱命令不必逐次预先询问。
+   区分旧式 `--permission` 与 `off/manual/sandbox`；`none` 禁止所有工具，不仅是外部写入。
+2. **三个 OS 后端，保护范围不同。**macOS Seatbelt、原生 Linux 系统 Bubblewrap ≥ 0.9.0、
+   Windows 受限令牌写保护；网络开放。Linux 无 seccomp 且缺失/动态路径存在检测型限制；
+   Windows 有读取/ACL/删除限制。披露 `auth.json` 例外，不能将可用 probe 或历史 smoke PASS
+   写成所有环境已完成发布与安全认证。
+3. **默认本地 IPC。**Unix 依次考虑 `FUTURE_AGENT_SOCKET`、Linux `XDG_RUNTIME_DIR` 和 HOME
+   回退；Windows 使用每用户命名管道。TCP 显式启用。TUI/Desktop 可启动 sidecar，但只拥有
+   自己启动的 Agent，不负责终止外部管理的进程。
+4. **区分正式版和测试包。**正式 macOS/Windows release 工作流签名，macOS 还公证；未签名
+   测试产物单独说明。`readme-macos.txt` 注入未签名 DMG，不能证明所有当前 release 都未签名。
+   不建议绕过无法解释的签名错误。Linux 有 x86_64/aarch64 deb、portable、静态 CLI 发布包；
+   本地构建的命名/链接方式可能不同，使用实际产物文件名。
+5. **本地优先不等于仅本地。**模型请求、在线工具、Remote 中继和 IM 桥都会传输数据。
+   手机强制 WSS，桌面 NATS 由部署配置控制；不承诺端到端加密或所有凭据均被隔离。
+6. **命令与代码一致。**读取 Rust 源码，不引用退役的 `cli/src/*.ts`。优先使用 `future channel`；
+   若运行 release 二进制，构建须加 `--release`。桥接层处理斜杠命令仍可能调用 Agent RPC，
+   “不发给模型”不等于“不需要 Agent 连接”。
+7. **数量不是长期常量。**技能/命令/模型数由当前注册表推导，或避免固定数量。历史验收报告
+   保留原日期、候选提交与结果，并明确加上历史快照提示。
 
-```
-### FutureOS
-- Home
+## 最终检查
 
-**开始使用 / Getting started**
-- 安装 / Install → Installation
-- 快速开始 / Quick Start → Quick-Start
-
-**使用应用 / Using the app**
-- 使用 FutureOS → Using-FutureOS
-- 设置 / Settings → Settings
-- 技能 / Skills → Skills
-
-**命令行(进阶)/ Command line (advanced)**
-- CLI (future) → CLI
-
-**集成 / Integrations**
-- 飞书 / Feishu → Feishu
-- 钉钉 / DingTalk → DingTalk
-
-**帮助 / Help**
-- FAQ
-```
-
-## 7. 各页面内容要点
-
-> **下面每条 bullet 都是"参考内容,以代码为准"** —— 它给的是覆盖范围和大致事实,但按钮名、页面名、命令、选项、技能清单等**具体细节一律以你读到的代码为准**;两者冲突时,按代码写,并把冲突记入偏差报告(第 9 节)。本文件的参考内容可能滞后于代码。
-> 写作时保持面向用户、可操作。每页的「代码入口(先读再写)」只是给你的探索起点,**不要**把这些行写进真正的 wiki 页面。
-
-### Home
-**代码入口(先读再写):** `desktop/src/app/App.tsx`、`desktop/src/components/layout/AppShell.tsx`、`desktop/src/components/layout/ActivityRail.tsx`、`desktop/src/i18n/locales/`(功能命名与文案)、`CLAUDE.md`(整体定位)。
-- 一句话定义:**桌面 AI Agent 工作台**,不只是聊天,而是能看到并核对 agent 的工作。
-- "开始使用"三步:安装 → 快速开始 → 使用 FutureOS。
-- "你能做什么"要点:与会流式展示思考、调用工具、展示过程的 agent 对话;快速 Chat 或绑定文件夹的 Workspace;你始终掌控(风险操作前会征求批准);可核对工作(后台任务、文件改动、产出);使用技能包。
-- 底部注明:运行于 **macOS 和 Windows**。
-
-### Installation
-**代码入口(先读再写):** `desktop/src-tauri/tauri.conf.json`(打包产物:dmg / nsis / zip,确认真实产物类型)、`desktop/src-tauri/build.rs`(随包附带的 sidecar 二进制)、`scripts/build-desktop-windows-portable.ps1`(Windows 便携包内容)、`Makefile`(`package-desktop` 等打包目标)、`CLAUDE.md`(`~/.future` 数据/配置位置)。
-- **下载**:去 Releases 页下载对应系统最新版。
-  - macOS:`.dmg` 磁盘镜像
-  - Windows:安装包(`.exe`),或便携版 `.zip`
-- 说明命令行工具 `future` **随每个下载包附带**(安装包与便携包都有,装在应用旁边),详见 CLI 页。
-- **首次启动**:**以随包附带的 `docs/dist/readme-*.txt` 为准**——当前发布包 macOS **未做 Apple 公证**(首次双击可能被 Gatekeeper 拦下,属正常,右键打开或按下方步骤即可),Windows 安装包/便携包未做代码签名(SmartScreen 可能提示,见 FAQ)。(仓库另有签名/公证的发布流水线,若 Releases 下载页提供的是签名版则按实际措辞;措辞与 FAQ 页保持一致。)
-  - **macOS**:把 FutureOS 拖进"应用程序"后正常启动。
-  - **Windows**:安装版跑 `.exe`;便携版解压整个文件夹后双击 `FutureOS.exe`(便携版需把 `FutureOS.exe` 和 `future.exe` 放在同一文件夹)。若遇 SmartScreen 信誉提示，应核对发布者和官方来源。需要 **Microsoft Edge WebView2 Runtime**(Win10 近期版与 Win11 一般已内置,缺失则从微软官网装 Evergreen 版)。
-- **登录**:首次使用需联网并在应用内登录,详见快速开始。
-- **数据位置**:主目录下的 `.future` 文件夹(macOS `~/.future`,Windows `C:\Users\<你>\.future`)。
-- **更新**:安装版可在 Settings → 检查更新中下载、验证并安装更新，按提示重启；也可手动覆盖安装。便携版替换文件夹；`.future` 数据保留。
-- **卸载**:macOS 删除 `FutureOS.app`;Windows 从设置卸载或删除便携文件夹。要清数据再删 `.future`。
-
-### Quick-Start
-**代码入口(先读再写):** `desktop/src/features/settings/FutureLoginDialog.tsx`(设备码登录流程)、`desktop/src/features/settings/ProvidersPage.tsx`、`desktop/src/features/agent/NewConversation.tsx`、`desktop/src/features/agent/Composer.tsx`(发送、模型选择器、附件)、`desktop/src/components/layout/ActivityRail.tsx`(New Chat / Workspace 入口)。
-- **打开并登录**:Settings(左下齿轮)→ Providers → 内置 FutureGene → Connect → 浏览器授权(不自动打开时用应用给出的验证码 + 可复制链接)。提一句也可改用自己的 provider(见 Settings)。
-- **开始对话**:两种方式 —— **New Chat**(最快,适合提问和一次性任务)、**Workspace**(绑定电脑上的文件夹,适合真实项目)。
-- **发第一条消息**:底部输入框发送;会看到流式回复、工具调用展示、风险操作时**暂停等你批准**;支持任意本地文件，每轮最多 4 张图片（单张 25 MiB），非图片不限数量。
-- **选模型(可选)**:模型选择器就在输入框里;也可在 Settings → Models 管理。
-- **查看工作**:右侧面板 —— Runs(后台任务)、Review(Workspace 的文件改动)、Artifacts(Chat 的产出)。
-
-### Using-FutureOS
-**代码入口(先读再写):** `desktop/src/components/layout/AppShell.tsx`(三栏布局)、`desktop/src/components/layout/ActivityRail.tsx`(左侧导航,以此为准确认到底有哪些入口)、`desktop/src/components/layout/ContextPanel.tsx`(右侧面板)、`desktop/src/features/agent/ApprovalPrompt.tsx`(批准机制)、`desktop/src/features/runs/RunsPanel.tsx` + `desktop/src/features/review/ReviewPanel.tsx` + `desktop/src/features/artifacts/ArtifactsPanel.tsx`(右侧三种视图)。
-- **三栏布局**:左=导航(以 `ActivityRail.tsx` 实际渲染的入口为准:New Chat、你的 Workspaces 及其会话、Chats、Settings);中=对话(消息、流式回复、计划、工具活动、命令预览、错误、批准卡片,输入框固定底部);右=上下文(查看 agent 在做什么,可折叠)。
-- **Chat vs Workspace**:用表格对比(建立方式、适用场景、右侧面板显示的内容)。强调每个会话是独立 agent session,互不干扰。
-- **和 agent 对话**:输入框发送;模型选择器可逐会话切换;每轮最多 4 张图片，非图片附件不限数量。
-- **批准机制 —— 你掌控**:风险操作会停下来在输入框上方弹批准卡片并等待(不超时);Allow 继续、Reject 取消并告知 agent 以便调整。
-- **右侧面板核对工作**:Runs(运行中/已完成,可停止/清理,每张卡显示真实命令)、Review(Workspace 文件改动:文件列表、统计、diff;版本控制下还有"上一轮改动"视图)、Artifacts(Chat 产出)。
-- (不要写 Research / Data 入口——当前已从导航隐藏。)
-
-### Settings
-**代码入口(先读再写):** `desktop/src/features/settings/SettingsDialog.tsx`(页面构成)、`desktop/src/features/settings/GeneralPage.tsx`、`desktop/src/features/settings/ProvidersPage.tsx` + `CustomProviderDialog.tsx`、`desktop/src/features/settings/ModelsPage.tsx`、`desktop/src/features/settings/FutureLoginDialog.tsx`。**以此确认实际有哪几个设置页、每页真实字段**。
-- 从左下齿轮进入;New Chat 下还有 Models 快捷入口。**页面数量与名称以 `SettingsDialog.tsx` 为准**:用户可见页为 General(通用)、Account(账号)、Update(检查更新)、About(关于)、Providers(提供商)、Models(模型)、Reset(重置);Remote(远程)与 Environment(环境)是开发版专用页,不写。重点讲下面三页。
-- **General**:桌面级选项。以代码里的真实标签为准,通常含:**界面语言(Language)**、**批准模式(Approval mode:手动 / 沙盒[仅 macOS] / 无限制)**、**是否显示思考过程(Show thinking)**。
-- **Providers**:
-  - **FutureGene(内置)**:Connect 登录流程(浏览器授权 / 验证码 + 链接);连接后可重新登录或登出。
-  - **自定义 provider**:添加 OpenAI 兼容或 Anthropic 兼容的 provider;需填 id、名称、API 类型、Base URL、API key、模型列表;应用会校验并检查 id 唯一;可编辑/删除。
-- **Models**:按 provider 分组列出所有可用模型;可切换每个模型的可见性、可搜索;输入框里的选择器同源,并显示模型来自哪个 provider。
-
-### Skills
-**代码入口(先读再写):** `desktop/src/features/skills/SkillsView.tsx`、`desktop/src/integrations/skills/skillsClient.ts`、`cli/src/commands/skills.ts`、`agent/src/skills/mod.rs`(技能发现)。**先用这些确认当前真实存在的技能清单和用途**,再据实写下方表格。
-- 定义:内置能力包,agent 在相关时**自动使用**;同时也是一个**可浏览/安装/卸载的目录**(Installed / All 标签,清单来自在线目录)。**Skills 侧边栏入口是可见的**(与 Research/Data 不同,后者才是隐藏的)——以 `ActivityRail.tsx` 为准。
-- 常见内置技能表(技能名 + 用途,**参考,以应用 All 标签实际清单为准**):Account(账户资料/额度/充值)、Web(搜公网并读全文)、Paper(检索 PubMed/ArXiv/DOI 并取全文)、Deep research(多源交叉核对、带引用的报告)、Document(PDF/Word 转结构化文本)、Image(生成/编辑/分析图像,含读图中文字)、Loop(长程目标编排:`/future-loop` 技能驱动 `future loop` 控制面)、Browser(驱动浏览器:开页、点击、输入、截图)、Database lookup(查询公共数据库)、Experimental design(实验设计)、Peer review(结构化评审)、Scientific writing(科学写作)、Slides(生成幻灯片)、Software install(软件安装)、Skill creator(帮忙做新技能)。
-- **使用方式**:无需手动开启,直接描述需求即可;也可在 Skills 页浏览与安装/卸载。(不要写 Research / Data 入口——它们已隐藏。)
-
-### CLI
-**代码入口(先读再写):** `cli/src/index.ts`(子命令分发,以此确认真实存在的命令组)、`cli/src/commands/run.ts`、`cli/src/commands/auth.ts` + `agent.ts`、`cli/src/commands/tools.ts` + `skills.ts`、`cli/src/help.ts`。**命令、子命令、选项一律以代码为准**。
-- 定位:可选的命令行工具 `future`,随下载包附带;桌面应用已能满足大多数需求,想脚本化/自动化/纯终端操作时再用。开头提示不熟悉终端可跳过本页。
-  - > ⚠️ 命令名统一为 **`future`**:发布产物的二进制名(见 `tauri.conf.json` 的 sidecar、`docs/dist/readme-*.txt`、应用内文案)与开发期 npm link 装的命令一致,都是 `future`。全文一律用 `future`,不要写成 `future-cli`。
-- **位置**:
-  - macOS(`.dmg`):应用内 `/Applications/FutureOS.app/Contents/MacOS/future`
-  - Windows(安装版与**便携** `.zip` 都带):`future.exe`(便携版解压后与 `FutureOS.exe` 同目录)
-- **运行**:在含二进制的文件夹开终端;`--help` 查看;可加入 PATH 或做别名(给 macOS 别名示例);首次使用可先跑 `future init` 安装内置技能。
-- **agent 必须在运行**:每条命令都要连 FutureOS agent;开着桌面应用则已在运行。未运行时用 `future agent` 启动(或打开桌面应用,它会自动拉起后台 agent)。
-- **命令组**(以 `cli/src/index.ts` 实际分发为准;无 `tui` 组,也无 `channel` 组):
-  - `init`:安装内置技能;macOS/Linux 上还会把 `future` 链接进 `~/.future/bin` 并提示加入 PATH
-  - `auth`:登录/登出/状态/取凭据(`login` / `status` / `credential` / `logout`;`credential` 输出 API key 供脚本使用)
-  - `account`:账户资料与额度(`profile` / `balance`)
-  - `run`:发一次性 prompt 并打印回答(给示例:直接问、`--model`、`@文件`、管道输入;说明 `@<path>` 包含文件、常用选项 `--model`(支持 `model:thinking`,如 `sonnet:high`)、`--thinking <level>`、`--continue`/`-c`、`--fork <entry-id>`、`--session <id>`、`--no-session`、`--permission <level>`、`--mode json`、`--cwd <dir>`)
-  - `tools`:列出/查看/调用工具(`tools list [--json]`、`tools describe <name>`、`tools call <name>`;参数用 `--key value`,复杂工具可用 `--args '<json>'`;部分工具另有 `--input <path>`、`--output <path>`、`--stdin` 等旗标)
-  - `skills`:管理技能包(`list` / `install [<name>]` / `install-builtin` / `uninstall <name>` / `update`)
-  - `models`:列出可用模型(`models [--json]`)
-  - `agent`:启动 agent 服务(`future agent <args>`,参数同 `future-agent`;`future agent --help` 查看选项)
-  - `tui` / `channel` / `loop`:运行其他 Rust 组件(`future tui` / `future channel` / `future loop <cmd>`,分别等同 `future-tui` / `future-channel` / `future-loop`;独立二进制仍可用)
-  - `session`:列出/查看/重命名/删除会话
-  - `doctor`:环境诊断
-- **小贴士**:macOS 首次被拦 → 先右键打开应用清除拦截;"Connection refused" → agent 没运行,先打开桌面应用(或运行 `future agent`)。
-
-### Feishu
-**代码入口(先读再写):** `channels/src/feishu/bridge.rs`(消息处理与斜杠命令)、`channels/src/feishu/feishu_ws.rs`(WebSocket 长连接/心跳)、`channels/src/main.rs` + `channels/src/config.rs`(`~/.future/channels/config.json` 读取与启动)。**命令名、斜杠命令、配置项一律以代码为准。**
-- 定位:通过**渠道桥**把 FutureOS 接入飞书(Lark),在飞书聊天里和 agent 对话。渠道桥是独立服务(二进制 `future-channel`),用 `future channel` 或 `future-channel` 启动(或 `make run-channels`),agent 需在运行(开着桌面应用即可)。
-- 配置:首次运行自动在 `~/.future/channels/config.json` 生成默认配置,按需填入飞书应用的 App ID / App Secret 等并启用对应渠道。
-- 消息经 WebSocket(open.feishu.cn)推送,回复通过 CardKit 卡片流式更新;未知斜杠命令转发给 agent 当普通消息。
-- 斜杠命令(本地处理):`/new` `/status` `/stop` `/model` `/models` `/compact` `/effort` `/cwd` `/help`。
-
-### DingTalk
-**代码入口(先读再写):** `channels/src/dingtalk/bridge.rs`(消息处理与斜杠命令)、`channels/src/main.rs` + `channels/src/config.rs`(启动与配置)。**命令名、斜杠命令、配置项一律以代码为准。**
-- 定位:通过**渠道桥**把 FutureOS 接入钉钉,在钉钉聊天里和 agent 对话。渠道桥是独立服务(二进制 `future-channel`),用 `future channel` 或 `future-channel` 启动(或 `make run-channels`),agent 需在运行。
-- 配置:`~/.future/channels/config.json`(同上)。
-- 斜杠命令与飞书一致(本地处理,9 个);未知斜杠命令转发给 agent 当普通消息。
-
-### FAQ
-**代码入口(先读再写):** `desktop/src-tauri/tauri.conf.json`(安装/签名相关)、`desktop/src/features/settings/FutureLoginDialog.tsx` + `ProvidersPage.tsx`(登录问题)、`desktop/src/features/agent/ApprovalPrompt.tsx`(批准)、`cli/src/commands/agent.ts`("连接被拒"/agent 未运行)、`CLAUDE.md`(数据位置)。
-覆盖这些问题(去掉一切 Linux 与 TUI 相关项):
-- macOS 打不开("身份不明的开发者"/"已损坏"):右键打开;"已损坏"用 `xattr -dr com.apple.quarantine /Applications/FutureOS.app`。
-- Windows 提示"Windows 保护了你的电脑":SmartScreen,点"更多信息 → 仍要运行"。
-- Windows 启动没反应:装 Microsoft Edge WebView2 Runtime;便携版确认 `FutureOS.exe` 与 `future.exe` 同文件夹。
-- 用不了任何模型/未登录:Settings → Providers → FutureGene → Connect,或加自己的 provider。
-- 怎么切换模型:输入框选择器,或 Settings → Models。
-- agent 停下来问我东西:那是批准机制,Allow/Reject,不超时。
-- 会话和设置存哪:主目录 `.future`(macOS `~/.future`,Windows `C:\Users\<你>\.future`)。
-- 怎么更新:下载最新版覆盖安装,数据保留。
-- 怎么卸载/删数据:删应用;要清数据再删 `.future`。
-- 支持哪些平台:**macOS 和 Windows**。
-
-## 8. 格式与交叉链接规范
-
-- 页面名来自文件名:`Quick-Start.md` → 页面 **Quick-Start**。
-- 跨页链接走**本语言目录内的相对路径**,例如英文版用 `[快速开始的英文标题](Quick-Start)`、中文版用 `[快速开始](Quick-Start)`,均指向同目录同名文件。
-- **不要跨目录互链、不放中英文语言切换链接**(见第 4 节)。
-- 外部链接:Releases 页 `https://github.com/futuregene/future-os/releases`;反馈问题 `https://github.com/futuregene/future-os/issues`。
-- 每页底部适当放"另见 / See also"互链。
-- 保持 Markdown 表格、代码块、引用块的清爽排版。
-
-## 9. 生成后自检与偏差回报
-
-写完所有页面后,必须做以下两步。
-
-**A. 自检(不通过就修到通过):**
-
-1. **链接完整性**:每个 `[[显示文字|Slug]]` 的 Slug 都能对应到**同一语言目录内真实存在**的 `.md` 文件;没有跨语言目录的链接、没有语言切换链接。
-2. **泄漏扫描**:全量搜索,确认**没有**出现——Linux / `.deb` / `.tar.gz` / apt、TUI / 终端界面页面或其链接、gRPC / 端口号(如 50051)、Research 入口 / Data 数据源入口 / Remote 手机远程。(注意:技能名 **Deep research**、以及首页用例里的 "research/数据分析" 等描述性词属正常内容,不算泄漏。)
-3. **中英对齐**:`en/` 与 `zh/` 文件名一一对应、数量相同;同名页面的章节结构与覆盖点一致(只是语言不同)。
-4. **CLI 名称**:全文用 `future`(命令、路径、示例都要检查),不要写成 `future-cli`。
-
-**B. 偏差回报**:生成结束后,单独输出一份「代码 vs 本提示词参考内容」的差异清单——凡是你按代码写、而与本文件第 7 节参考内容不一致的地方(如技能清单、设置页数量与名称、CLI 命令/子命令、按钮名等),逐条列出。目的是让人把这些修正**反哺回本提示词**,形成闭环。
-
-## 10. 禁止事项
-
-- ❌ 不要生成 TUI / 终端界面页面,也不要在其它页面链接或提及它(CLI 的命令组里去掉 `tui`)。
-- ❌ 不要写未上线/已隐藏/开发中的功能:**Research(研究)入口、Data(数据源)入口、Remote(手机远程)**,以及任何在代码里被隐藏或未接线的功能。
-- ❌ 不要写 Linux 任何内容。
-- ❌ 不要写 wiki 的发布/同步/CI/GitHub Action 等维护流程 —— 本提示词只管**内容**。
-- ❌ 不要暴露内部实现细节(架构、模块名、gRPC 等),除非某条 CLI 命令确实需要。
+检查本地链接、Wiki 目标、代码围栏、中英文页面对应、命令参数/默认值、平台/架构与渠道措辞。
+搜索过时的“沙箱仅 macOS”、默认 TCP、旧 CLI TypeScript 路径、无条件审批承诺，以及禁止
+Linux/隐藏 Remote 的指令。确认未来设计和历史测试结果没有被表述为当前事实。

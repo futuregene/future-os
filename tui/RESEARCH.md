@@ -1,5 +1,10 @@
 # future-tui Rust port — Research & Architecture (P0/P1)
 
+> Historical migration design and evidence. References to TypeScript source and
+> migration phases describe the original port, not the current implementation.
+> For current operation see [the TUI guide](../docs/tui.md); old PASS results do
+> not certify later changes.
+
 Goal (goal_6b1065901442): translate `tui/` (TypeScript, run by bun/node) 1:1 into a
 Rust crate at `tui/` (promoted from `tui/rust/` when the TypeScript TUI was retired) — identical UI rendering, key handling, interaction,
 argument parsing, and help text — with a **self-implemented terminal backend**

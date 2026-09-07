@@ -9,8 +9,9 @@ them separately. The backend agent is launched automatically via future.exe
 (`future agent`) on startup.
 
 [First Run]
-· If you see "Windows protected your PC" (SmartScreen): click "More info"
-  → "Run anyway".
+· SmartScreen reputation warnings can occur even on signed builds. Verify the
+  official source/publisher first; choose "More info" → "Run anyway" only for
+  a trusted artifact. Do not bypass an unexpected signature/publisher mismatch.
 · If the window opens but says "backend service not connected": the downloaded
   archive was flagged as "from the Internet". Recommended fix: before
   extracting, right-click the .zip → "Properties" → check "Unblock" at the
@@ -27,7 +28,9 @@ website and try again.
 [Notes]
 · An internet connection is required for the first-time login.
   Personal data is stored in C:\Users\<username>\.future.
-· Closing the window quits the app; the background agent stops automatically.
+· On app exit, only the agent it started is stopped; external agents stay running.
+· The desktop defaults to Unrestricted; select approvals/write protection in
+  Settings. Online features still send requests to their corresponding services.
 · The command-line tool future.exe is included in the same directory.
 
 [License]

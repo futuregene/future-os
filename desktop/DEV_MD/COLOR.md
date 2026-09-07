@@ -1,6 +1,6 @@
 # FutureOS GUI 配色方案
 
-GUI 的颜色全部走 [`tailwind.config.js`](tailwind.config.js) 里定义的**语义 token**,不直接用 Tailwind 原生具名色(`blue-300` / `green-50` …)。新写或改组件选色时,从下面的语义 token 里挑——按「这个色表达什么」选,而不是「我想要个蓝色」。
+GUI 的颜色全部走 [`tailwind.config.js`](../tailwind.config.js) 里定义的**语义 token**,不直接用 Tailwind 原生具名色(`blue-300` / `green-50` …)。新写或改组件选色时,从下面的语义 token 里挑——按「这个色表达什么」选,而不是「我想要个蓝色」。
 
 ## 原则
 
@@ -106,4 +106,4 @@ GUI 的颜色全部走 [`tailwind.config.js`](tailwind.config.js) 里定义的**
 
 ## 来源
 
-所有 token 定义在 [`tailwind.config.js`](tailwind.config.js)。**改色统一改那里**,不在组件里散写原生色。
+所有 token 定义在 [`tailwind.config.js`](../tailwind.config.js)。**改色统一改那里**,不在组件里散写原生色。

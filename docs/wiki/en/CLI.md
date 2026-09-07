@@ -14,6 +14,8 @@ The tool travels with the app:
 |---|---|
 | **macOS** (`.dmg`) | Inside the app: `/Applications/FutureOS.app/Contents/MacOS/future` |
 | **Windows** (installer or portable `.zip`) | `future.exe` in the app folder |
+| **Linux** (`.deb`) | `future` on PATH |
+| **Linux** (portable / CLI-only tarball) | `future` in the extracted folder; use `./future` until it is on PATH |
 
 The CLI ships in **every** download — both the installer and the portable package include it, sitting next to the app.
 
@@ -37,7 +39,7 @@ alias future="/Applications/FutureOS.app/Contents/MacOS/future"
 
 Most commands connect to the FutureOS agent (the background service). If the **desktop app is open**, the agent is already running. Otherwise, start the agent with `future agent` (or the `future-agent` binary directly — both are the same code), or open the desktop app, which starts it automatically.
 
-`future config`, `future auth login`, and `future auth logout` are exceptions: they also work with the agent stopped, writing configuration under `~/.future/agent/` for the agent to pick up on its next start.
+`future config`, `future auth login`, and `future auth logout` also work with the agent stopped, writing configuration under `~/.future/agent/`. Skill catalog/install commands do not require an agent either. The TUI, like the desktop, can start its own agent sidecar. `future doctor` diagnoses connectivity; default discovery is per-user local IPC, not an always-open TCP port.
 
 ---
 
@@ -96,7 +98,8 @@ Useful options and forms:
 | `--continue`, `-c` | Continue the most recent session. |
 | `--session <id>` | Connect to an existing session by ID. |
 | `--fork <entry-id>` | Fork a new session from a specific entry in the current session. |
-| `--permission <level>` | File access: `all`, `workspace` (workspace + temp only), or `none` (read-only outside workspace). |
+| `--permission <level>` | `all` (fresh-session default, unrestricted), `workspace` (approval-gated access), or `none` (deny all tool calls). This does not select an OS sandbox; see [[Sandbox]]. |
+| `--steer` | Interrupt the session's current run; without it, the prompt queues behind a busy run. |
 | `--cwd <dir>` | Set the working directory. |
 | `--mode json` | Print the answer as JSON instead of text. |
 | `--no-session` | Don't save this exchange as a session. |
@@ -142,7 +145,8 @@ future models --json     # machine-readable output
 
 ```bash
 future agent              # start the agent gRPC server
-future agent --help       # agent options: gRPC address, logging, profiling
+future agent --help       # agent options: transport override, logging, profiling
+future agent --probe-sandbox # one-shot OS sandbox diagnostic; no server startup
 ```
 
 `future agent <args>` runs the agent backend directly with the same arguments
@@ -177,14 +181,14 @@ Session data lives in `~/.future/agent/sessions/`.
 future doctor
 ```
 
-Checks login status, component installation, agent connectivity, configuration, providers/models, sessions, and skills in one pass.
+Checks login status, component installation, agent connectivity, OS sandbox availability, configuration, providers/models, sessions, and skills in one pass.
 
 ---
 
 ## Tips
 
-- **macOS blocked it the first time?** Open the FutureOS app once via right-click → **Open** to clear the block, then the CLI runs too.
-- **"Connection refused"?** The agent isn't running. Open the desktop app, or run `future agent` directly.
+- **macOS blocked it?** Verify the download/signature first. Trusted unsigned test builds have separate first-launch instructions; see [[FAQ]].
+- **Connection failed?** Run `future doctor`; check sidecar errors and matching user/IPC environment. Open the desktop or start `future agent` if needed.
 
 ---
 

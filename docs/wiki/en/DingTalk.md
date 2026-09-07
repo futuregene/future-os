@@ -86,9 +86,11 @@ Edit `~/.future/channels/config.json`:
 
 ```bash
 # Build and run the channel bridge
-cargo build -p future-channel
+cargo build -p future-channel --release
 ./target/release/future-channel
 ```
+
+For an installed release, simply run `future channel`. New channel sessions default to permission `all` and do not independently enable the desktop sandbox policy; restrict bot access carefully.
 
 The bridge is a **standalone service** — the desktop app doesn't manage it. Start it with `future channel`, or run the `future-channel` binary directly (or via `make run-channels`) whenever you want the DingTalk bridge up.
 
@@ -112,7 +114,7 @@ In any DingTalk chat with the bot, use these commands:
 | `/cwd <path>` | Set working directory |
 | `/help` | Show available commands |
 
-Commands like `/new`, `/status`, `/stop`, `/model`, `/models`, `/effort`, `/compact`, `/cwd`, and `/help` are handled locally by the bridge without hitting the agent. Any unrecognized command is forwarded to the agent as a normal prompt.
+Commands like `/new`, `/status`, `/stop`, `/model`, `/models`, `/effort`, `/compact`, `/cwd`, and `/help` are dispatched by the bridge rather than sent as model prompts; several still call the agent over RPC. Any unrecognized command is forwarded to the agent as a normal prompt.
 
 ---
 

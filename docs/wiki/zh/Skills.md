@@ -29,6 +29,7 @@ Skills 页有两个标签:
 | **Deep research** | 端到端研究:多源收集并交叉核对,产出带引用的报告。 |
 | **Document** | 把 PDF / Word 文件转成结构化 Markdown。 |
 | **Experimental design** | 在数据收集前设计实验与研究方案。 |
+| **Explore** | 面向答案未知的问题，以证据驱动方法比较、实验、优化和可行性评估（`/future-explore`）。 |
 | **Image** | 生成、编辑和分析图像——包括读取图中文字。 |
 | **Loop** | 把长程目标变成持久、可验证的计划——目标、任务、门禁、监控与验证式收尾（`/future-loop`）。 |
 | **Paper** | 检索文献(PubMed / ArXiv / DOI)并获取全文。 |
@@ -50,7 +51,7 @@ Skills 页有两个标签:
 1. 像往常一样在对话里**描述你的任务**。
 2. agent 会在合适时自行选用相关技能。
 
-一如既往,若技能的工作涉及有风险的操作,agent 会先暂停等你批准——见 [[使用 FutureOS|Using-FutureOS]]。
+技能沿用会话权限，不构成独立安全边界。是否审批取决于所选模式与规则，桌面默认不受限。见 [[审批与沙箱|Sandbox]] 和 [[使用 FutureOS|Using-FutureOS]]。
 
 ---
 

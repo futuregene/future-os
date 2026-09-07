@@ -11,13 +11,13 @@
     "sandboxUnavailable": "Sandboxed (unavailable)",
     "off": "Unrestricted",
     "description": {
-      "manual": "Prompts before file reads and writes; read-only commands run automatically.",
+      "manual": "File access follows approval rules; allowlisted read-only commands run automatically, other commands ask. No OS sandbox.",
       "sandbox": "Commands run in the macOS sandbox and ask for approval when needed.",
       "sandboxWindows": "Commands run with Windows write protection and ask for approval when needed.",
       "sandboxLinux": "Commands run in the Linux sandbox and ask for approval when needed.",
       "off": "No prompts, no sandbox — everything runs."
     },
-    "fallbackNotice": "Sandbox protection is unavailable (diagnostic: {{code}}). Switched to Manual mode; commands will not run without sandbox protection.",
+    "fallbackNotice": "Sandbox protection is unavailable (diagnostic: {{code}}). Switched to Manual mode: approved or allowlisted commands run without an OS sandbox.",
     "linuxUnavailable": {
       "title": "Linux sandbox unavailable",
       "reasons": {

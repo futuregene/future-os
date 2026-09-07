@@ -66,10 +66,16 @@ curl -fsSL https://dl.future-os.cn/install.sh | bash
 脚本自动识别平台并从发布清单安装匹配的包，校验 SHA-256，然后执行
 `future init`：
 
-- **Debian/Ubuntu** —— `FutureOS_<version>_amd64.deb`，通过 `apt` 安装（自动解析依赖）。
-- **其他 Linux** —— `FutureOS-portable-linux.tar.gz`（`futureos` 桌面应用 + 统一 `future` CLI），解压到 `/usr/local/bin`（不可写时使用 `~/.local/bin`）。
+- **Debian/Ubuntu** —— `FutureOS_<version>_amd64.deb` 或 `FutureOS_<version>_arm64.deb`，通过 `apt` 安装并解析依赖。
+- **其他 Linux** —— `FutureOS_<version>_linux_<arch>-portable.tar.gz`（`futureos` + 统一 `future`），解压到 `/usr/local/bin`（不可写时为 `~/.local/bin`）；架构为 `x86_64` 或 `aarch64`。
+- **无桌面主机** —— 从官方发布渠道下载 `FutureOS_<version>_linux_<arch>-cli.tar.gz`，解压后运行 `./future config` 和 `./future tui`（或运行 `./future agent` 供 CLI 客户端连接）。官方静态 musl CLI 不需要 GUI 运行库。
+
+发布的 GUI 需要 glibc ≥ 2.39（约 Ubuntu 24.04+）和 WebKitGTK 4.1。本地开发构建使用
+所选 host target，不一定是静态链接。
 
 用 `FUTUREOS_VERSION` 锁定特定版本（如 `FUTUREOS_VERSION=1.2.0`），或用 `FUTUREOS_BASE` 指向镜像。
+当前指定版本路径会跳过 manifest SHA-256 校验并打印警告，请自行对照可信发布校验和验证
+指定产物；latest 路径会校验发布清单中的 SHA-256。
 
 ### 从源码构建（开发者）
 
@@ -101,6 +107,14 @@ make package-desktop    # 桌面打包 → .deb 位于 desktop/src-tauri/target/
 `scripts/start-desktop-linux.sh` 会以开发模式针对本地构建的 agent 运行 GUI，
 并在 GUI 退出后停止由脚本启动的 agent。Bubblewrap 检查只作提示，以便同时测试
 沙盒不可用时的界面。
+
+### 可选 OS 沙箱
+
+安装可信系统 Bubblewrap ≥ 0.9.0（`sudo apt install bubblewrap`；Fedora 用
+`sudo dnf install bubblewrap`），然后完全重启 FutureOS。旧发行版包可能需要可信渠道升级；
+应用不捆绑它。运行 `future agent --probe-sandbox` 和 `future doctor`，主机策略必须允许
+所需 user namespace 与 fresh `/proc` 挂载。回退、快照、凭据和网络限制见
+[沙箱指南](wiki/zh/Sandbox.md)；可用不代表所有发行版与架构已通过认证。
 
 ## Windows
 
@@ -199,7 +213,7 @@ FutureOS 内置一组精选技能——面向常见任务（深度研究、浏�
 ```bash
 make install-skills                          # 从内置 skills/ 子模块符号链接
 # 或从平台目录安装：
-future skills install                        # 安装全部 future-* 技能（15 个）
+future skills install                        # 安装当前全部内置 future-* 技能
 future init                                  # 安装技能并在 macOS/Linux 上链接本地命令
 ```
 
@@ -236,7 +250,8 @@ make run-desktop
 `make setup` 安装 JavaScript workspace、初始化内置技能并创建 Tauri sidecar
 占位文件；`make run-desktop` 构建本地 CLI sidecar 并以开发模式启动桌面应用——
 应用启动时会自动拉起内置的 agent sidecar，无需单独运行 `future agent`
-（若 `127.0.0.1:50051` 上已有 agent 在跑，应用会直接复用而不重复拉起）。
+（若每用户本地 IPC 或显式 `FUTURE_AGENT_GRPC_ADDR` 地址上已有 Agent 可连接，应用会
+复用它，不负责关闭该外部进程）。socket 选择规则见[目录布局](directory-layout.zh-CN.md)。
 Android 与 iOS 还需要各自的 SDK 和模拟器或真机，详见[移动端指南](../mobile/README.md)。
 
 ### Proto

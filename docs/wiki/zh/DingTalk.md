@@ -84,9 +84,11 @@ Bridge 使用**钉钉 Stream Mode**——无需公网回调 URL。它通过 WebS
 
 ## 启动 Bridge
 
+已安装发布版可直接运行 `future channel`。新渠道会话默认权限为 `all`，不会主动开启桌面沙箱策略；请严格限制可操作机器人的用户。
+
 ```bash
 # 构建并运行 Channel Bridge
-cargo build -p future-channel
+cargo build -p future-channel --release
 ./target/release/future-channel
 ```
 
@@ -112,7 +114,7 @@ Bridge 启动时加载 `~/.future/channels/config.json`。如果文件不存在�
 | `/cwd <path>` | 设置工作目录 |
 | `/help` | 显示可用命令 |
 
-`/new`、`/status`、`/stop`、`/model`、`/models`、`/effort`、`/compact`、`/cwd`、`/help` 等命令由 Bridge 本地处理，不经过 Agent。无法识别的命令会作为普通消息转发给 Agent。
+`/new`、`/status`、`/stop`、`/model`、`/models`、`/effort`、`/compact`、`/cwd`、`/help` 等命令由 Bridge 分发而非作为模型 prompt 发送；其中多个仍会调用 Agent RPC。无法识别的命令会作为普通消息转发给 Agent。
 
 ---
 

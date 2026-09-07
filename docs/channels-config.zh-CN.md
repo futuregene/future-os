@@ -17,7 +17,7 @@
 {
   // agent 块——渠道会话的模型/会话默认值。
   "agent": {
-    "grpc_addr": "http://127.0.0.1:50051", // agent gRPC 端点
+    "grpc_addr": "auto",                   // 每用户本地 IPC
     "cwd": "/home/you",                     // agent 的工作目录
     "model": "future/deepseek-v4-pro",      // 渠道会话的默认模型
     "thinking_level": "xhigh",              // off | minimal | low | medium | high | xhigh
@@ -57,11 +57,11 @@
 
 | 字段 | 默认值 | 含义 |
 |---|---|---|
-| `grpc_addr` | `http://127.0.0.1:50051` | agent 的 gRPC 端点。 |
+| `grpc_addr` | `auto` | 每用户本地 IPC。显式 `http://host:port` 先尝试 TCP 再回退 IPC；Agent 需通过 `--grpc-addr` 开启 TCP。 |
 | `cwd` | `$HOME` | 渠道会话中 agent 运行的工作目录。 |
 | `model` | `future/deepseek-v4-pro` | 渠道会话的默认模型。为空表示「使用 agent 启动时的默认值」。 |
 | `thinking_level` | `xhigh` | 默认思考级别：`off` / `minimal` / `low` / `medium` / `high` / `xhigh`。 |
-| `permission_level` | `all` | 默认工具权限级别：`all` / `workspace` / `none`。 |
+| `permission_level` | `all` | `all` 不受限；`workspace` 启用审批门控；`none` 禁止所有工具。它不是 OS 沙箱选择器。 |
 
 ### `feishu`
 
@@ -93,7 +93,8 @@
 
 ## 运行时行为
 
-- **斜杠命令：** 两个桥都在本地处理 9 个命令
+- 新渠道会话不会主动开启桌面沙箱策略。应限制可操作机器人的用户；默认 `all` 不是默认审批。
+- **斜杠命令：** 两个桥在桥接代码中分发 9 个命令（部分调用 Agent RPC，并非模型 prompt）
   （`/new /status /stop /model /models /compact /effort /cwd /help`）；
   无法识别的斜杠命令作为普通消息转发给 agent。
 - **钉钉回复** 通过事件里的 `sessionWebhook` 发送——每次回复都是**新**消息

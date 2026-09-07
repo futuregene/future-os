@@ -21,13 +21,13 @@
 
 - 中文：[首页](wiki/zh/Home.md)、[安装](wiki/zh/Installation.md)、
   [快速开始](wiki/zh/Quick-Start.md)、[使用 FutureOS](wiki/zh/Using-FutureOS.md)、
-  [设置](wiki/zh/Settings.md)、[技能](wiki/zh/Skills.md)、
+  [设置](wiki/zh/Settings.md)、[审批与沙箱](wiki/zh/Sandbox.md)、[手机远程](wiki/zh/Remote.md)、[技能](wiki/zh/Skills.md)、
   [命令行工具](wiki/zh/CLI.md)、[FAQ](wiki/zh/FAQ.md)、
   [飞书](wiki/zh/Feishu.md)、[钉钉](wiki/zh/DingTalk.md)、
   [模型目录](wiki/zh/Models.md) *（自动生成，勿手改）*
 - English：[Home](wiki/en/Home.md), [Installation](wiki/en/Installation.md),
   [Quick Start](wiki/en/Quick-Start.md), [Using FutureOS](wiki/en/Using-FutureOS.md),
-  [Settings](wiki/en/Settings.md), [Skills](wiki/en/Skills.md),
+  [Settings](wiki/en/Settings.md), [Sandbox](wiki/en/Sandbox.md), [Remote](wiki/en/Remote.md), [Skills](wiki/en/Skills.md),
   [CLI](wiki/en/CLI.md), [FAQ](wiki/en/FAQ.md),
   [Feishu](wiki/en/Feishu.md), [DingTalk](wiki/en/DingTalk.md),
   [Models](wiki/en/Models.md) *(auto-generated)*
@@ -45,13 +45,15 @@
 
 - [wiki-prompt.md](wiki-prompt.md)（[en](wiki-prompt-en.md)）——（重新）生成 wiki
   页面的提示词；定义范围、风格与页面清单。
-- [verification/](verification/errors-outdated-missing.md) —— 文档↔源码核验工作
-  笔记（事实清单、错误/过时/缺失清单）。
+- [verification/](verification/errors-outdated-missing.md) —— 历史文档↔源码核验快照
+  （事实清单、错误/过时/缺失清单）；结论仅适用于原日期/提交，不代表当前源码。
 
 ## 文档如何保持正确
 
 - `docs/wiki/{en,zh}/Models.md` 由 `make generate-models`
   （scripts/generate_models.py）生成——勿手改。
-- wiki 页面遵循 [wiki-prompt.md](wiki-prompt.md) 的范围：macOS + Windows App、
-  不写 TUI 页、不暴露 gRPC/端口内部、CLI 一律叫 `future`。
-- 本目录文档均对照源码核验；核验工作笔记把每条声明追踪到 `file:line`。
+- wiki 页面遵循 [wiki-prompt.md](wiki-prompt.md)：macOS/Windows/Linux 桌面、Android/iOS
+  Remote、各平台沙箱，不单列 TUI 页，CLI 一律叫 `future`；连接细节放排障/CLI 和仓库指南。
+- 修改声明时对照当前源码，并同步中英文；历史核验保留原证据，不是永久 PASS。
+- 运行 `python3 scripts/check-docs.py` 做[文档检查](../scripts/check-docs.py)：本地链接、Wiki
+  目标、代码围栏和双语页面清单。

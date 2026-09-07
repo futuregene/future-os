@@ -61,8 +61,9 @@ Model & behavior:
   --model <id>             Model ID. Only affects this run; subsequent runs use the default.
                            Supports model:thinking shorthand, e.g. "sonnet:high".
   --thinking <level>       Thinking/reasoning level: off, minimal, low, medium, high, xhigh
-  --permission <level>     File access permission: all (no restrictions), workspace
-                           (workspace + temp only), none (read-only outside workspace)
+  --permission <level>     Tool permission: all (unrestricted; fresh-session default),
+                           workspace (approval-gated access), none (deny all tools).
+                           Separate from the desktop OS sandbox policy.
 
 Tool control:
   --tools, -t <names>      Comma-separated tool names to enable (e.g. "read,shell")
@@ -78,8 +79,9 @@ Output:
   --verbose                Write progress and tool calls to stderr
 
 Other:
-  --grpc-addr <addr>       gRPC server address (default 127.0.0.1:50051).
-                           Override with env FUTURE_AGENT_GRPC_ADDR.
+  --grpc-addr <addr>       Explicit TCP address (default: auto, per-user local IPC).
+                           Also configurable via FUTURE_AGENT_GRPC_ADDR.
+                           Explicit TCP is tried first, then local IPC.
   --cwd <dir>              Working directory for the agent (default: current directory)
   --help, -h               Show this help
 
@@ -589,6 +591,13 @@ mod tests {
             "stdout: {stdout}"
         );
         assert!(stdout.contains("--fork <entry-id>"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("auto, per-user local IPC"),
+            "stdout: {stdout}"
+        );
+        assert!(stdout.contains("none (deny all tools)"), "stdout: {stdout}");
+        assert!(!stdout.contains("default 127.0.0.1:50051"));
+        assert!(!stdout.contains("read-only outside workspace"));
 
         // No message and no @files → usage error.
         let (out, cap) = Output::memory();
