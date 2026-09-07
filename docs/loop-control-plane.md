@@ -47,7 +47,7 @@ agent executes one bounded turn (gRPC) → writes evidence → kernel decides th
 | Concept | Command | What it does |
 |---|---|---|
 | Goal | `goal init` | Project-local state at `<cwd>/.future/loop/`, event-sourced and replayable |
-| Todo | `todo add/update/complete/supersede` | Classes: advancement / user-gate / user-action / monitor / blocker / coordination; `--blocks` dependency chains; `--priority` |
+| Todo | `todo add/update/complete/supersede` | Classes: advancement / user-gate / user-action / monitor / blocker / coordination; `--blocks` dependency chains; `--priority`; `todo add --parent T` creates an immutable organizational parent link within the same goal (maximum three levels, independent of dependencies/completion) |
 | Evidence | `todo complete --evidence` | **Non-empty, enforced**: closing a todo must state what actually landed (paths, attempt ids, measurements); `--force` is the explicit operator override |
 | Acceptance contract | `todo add --acceptance "tok1,tok2"` | Completion evidence must contain every token (case-insensitive) — the hard form of "done ≠ delivered" |
 | Verifier | `todo add --verify "cmd"` | The kernel runs the command after each **run turn boundary**; only exit 0 lets that turn's todo complete (bounded by `--max-validation-attempts`). A machine-checkable gate for deterministic deliverables. **Not** for exploratory todos (research/report) whose correctness the kernel cannot judge — the orchestrator judges those by reading the artifact, and a manual `todo complete` deliberately does not re-run `--verify` |
@@ -105,6 +105,9 @@ future loop todo add --goal G --text "..." --blocks T1 --acceptance "attempt,sco
 future loop todo add --goal G --role user --class user_gate --text "Release gate" --gate-question "Ship it?"
 
 # 3. Dispatch (one unique --agent-id per concurrent worker; review before relaunch)
+# Fresh worker conversations inherit the registered supervisor as their parent.
+# Nested delegation can override lineage with --parent-session CURRENT_SESSION_ID.
+# This does not copy context or change the parent of an explicitly resumed session.
 future loop run --goal G --agent-id mac-worker --model M --thinking-level L --max-turns 1
 
 # 4. Human decisions

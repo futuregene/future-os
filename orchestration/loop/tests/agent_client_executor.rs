@@ -72,6 +72,22 @@ fn connect_failure_is_wrapped() {
 }
 
 #[test]
+fn child_session_sends_parent_without_copying_context() {
+    rt().block_on(async {
+        let (addr, shared) = spawn_mock(MockState::default()).await;
+        let mut client = AgentClient::connect(&addr).await.unwrap();
+        client
+            .new_child_session("/tmp", "child todo", Some("supervisor"))
+            .await
+            .unwrap();
+        client.new_session("/tmp", "root").await.unwrap();
+        let state = shared.lock().unwrap();
+        assert_eq!(state.new_session_parents, vec!["supervisor", ""]);
+        assert_eq!(state.recorded, vec!["new_session", "new_session"]);
+    });
+}
+
+#[test]
 fn session_and_command_happy_paths() {
     rt().block_on(async {
         let (addr, shared) = spawn_mock(MockState::default()).await;

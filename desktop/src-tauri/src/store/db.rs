@@ -171,6 +171,15 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
     // one Desktop thread. Repair legacy duplicate bindings before installing
     // the unique index, otherwise an upgraded database could not start.
     apply_agent_session_binding_migration(conn)?;
+    apply_migrations(
+        conn,
+        &[(
+            "v1.1.6-thread-parent-session",
+            "threads",
+            "parent_session_id",
+            "ALTER TABLE threads ADD COLUMN parent_session_id TEXT",
+        )],
+    )?;
     // Run archiving is optional UI metadata. A failed upgrade must not block
     // the Agent/file-tool main flow; read paths project its missing column as
     // NULL and the archive action reports its own unavailable error.
@@ -300,7 +309,14 @@ fn apply_agent_session_binding_migration(conn: &Connection) -> Result<(), crate:
 /// without re-running its `ALTER`; an upgraded database executes the `ALTER`
 /// and records both steps in one SQLite transaction.
 fn apply_versioned_migrations(conn: &Connection) -> Result<(), crate::AppError> {
-    for (version, table, column, sql) in VERSIONED_MIGRATIONS {
+    apply_migrations(conn, VERSIONED_MIGRATIONS)
+}
+
+fn apply_migrations(
+    conn: &Connection,
+    migrations: &[(&str, &str, &str, &str)],
+) -> Result<(), crate::AppError> {
+    for (version, table, column, sql) in migrations {
         let applied = conn
             .query_row(
                 "SELECT 1 FROM schema_migrations WHERE version = ?1",
@@ -565,6 +581,47 @@ mod tests {
             .unwrap(),
             1,
         );
+    }
+
+    #[test]
+    fn thread_parent_migration_upgrades_v1_1_5_and_fresh_databases() {
+        for upgrade in [false, true] {
+            let conn = Connection::open_in_memory().unwrap();
+            if upgrade {
+                // threads as shipped in v1.1.5, with a real row to preserve.
+                conn.execute_batch(
+                    "CREATE TABLE threads (
+                        id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+                        mode TEXT NOT NULL, title TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'active',
+                        pinned INTEGER NOT NULL DEFAULT 0,
+                        readonly INTEGER NOT NULL DEFAULT 0,
+                        agent_session_id TEXT, last_message_at INTEGER,
+                        last_opened_at INTEGER, created_at INTEGER NOT NULL,
+                        updated_at INTEGER NOT NULL, archived_at INTEGER, deleted_at INTEGER
+                    );
+                    INSERT INTO threads (id, workspace_id, mode, title, agent_session_id, created_at, updated_at)
+                    VALUES ('legacy', 'ws', 'chat', 'Keep me', 'session', 1, 2);",
+                ).unwrap();
+            }
+            apply_schema(&conn).unwrap();
+            apply_schema(&conn).unwrap();
+            assert!(column_exists(&conn, "threads", "parent_session_id").unwrap());
+            assert_eq!(conn.query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 'v1.1.6-thread-parent-session'",
+                [], |row| row.get::<_, i64>(0),
+            ).unwrap(), 1);
+            if upgrade {
+                let row = conn
+                    .query_row(
+                        "SELECT title, parent_session_id FROM threads WHERE id = 'legacy'",
+                        [],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                    )
+                    .unwrap();
+                assert_eq!(row, ("Keep me".into(), None));
+            }
+        }
     }
 
     /// A migrated DB holding artifact rows, with FKs off — `dedupe_file_artifacts`

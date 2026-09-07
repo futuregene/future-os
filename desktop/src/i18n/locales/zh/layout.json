@@ -6,6 +6,9 @@
     "updateFailed": "保存设置失败：{{message}}"
   },
   "activityRail": {
+    "expandThread": "展开 {{title}} 的子对话",
+    "collapseThread": "收起 {{title}} 的子对话",
+    "resizeSidebar": "调整侧栏宽度",
     "settings": "设置",
     "newChat": "新对话",
     "models": "模型",

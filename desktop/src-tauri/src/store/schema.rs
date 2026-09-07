@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS threads (
     readonly INTEGER NOT NULL DEFAULT 0,
     -- model_provider, model_id, thinking_level removed — now from agent get_state
     agent_session_id TEXT,
+    parent_session_id TEXT,
     last_message_at INTEGER,
     last_opened_at INTEGER,
     created_at INTEGER NOT NULL,

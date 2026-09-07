@@ -8,6 +8,7 @@ export interface StoredThread {
   readonly: boolean;
   // modelProvider, modelId, thinkingLevel removed — now from agent state cache
   agentSessionId?: string | null;
+  parentSessionId?: string | null;
   lastMessageAt?: number | null;
   lastOpenedAt?: number | null;
   createdAt: number;

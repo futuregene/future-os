@@ -584,11 +584,44 @@ fn run_notifies_supervisor_on_completion() {
     ]);
     cli_ok(&["run", "--goal", &goal, "--anonymous", "--max-turns", "3"]);
     let calls = shared.lock().unwrap().prompt_calls.clone();
+    assert_eq!(shared.lock().unwrap().new_session_parents, vec!["sup-sess"]);
     // Exactly one report to the supervisor (the worker's own turn prompt goes
     // to the worker session, not sup-sess).
     let reports: Vec<_> = calls.iter().filter(|(sid, _)| sid == "sup-sess").collect();
     assert_eq!(reports.len(), 1, "one completion report: {calls:?}");
     assert_eq!(reports[0].1, "enqueue_if_busy");
+}
+
+#[test]
+fn run_explicit_parent_overrides_supervisor_lineage() {
+    let cr = cli_root();
+    let (_rt, shared) = mock_env(MockState {
+        events: completed_events("mock-run-1"),
+        ..Default::default()
+    });
+    let goal = init_goal(&cr, "nested worker");
+    cli_ok(&[
+        "supervisor",
+        "register",
+        "--goal",
+        &goal,
+        "--session-id",
+        "sup-sess",
+    ]);
+    cli_ok(&[
+        "run",
+        "--goal",
+        &goal,
+        "--anonymous",
+        "--max-turns",
+        "3",
+        "--parent-session",
+        "parent-worker",
+    ]);
+    assert_eq!(
+        shared.lock().unwrap().new_session_parents,
+        vec!["parent-worker"]
+    );
 }
 
 /// A registered supervisor receives a report when a todo fails on a hard

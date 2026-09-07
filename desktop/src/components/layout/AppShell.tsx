@@ -35,6 +35,7 @@ import { useAppSettings } from "./hooks/useAppSettings";
 import { useAutoUpgradeSkills } from "./hooks/useAutoUpgradeSkills";
 import { useFutureAccount } from "./hooks/useFutureAccount";
 import { useHasProviders } from "./hooks/useHasProviders";
+import { MIN_LEFT_PANEL_WIDTH, useLeftPanelWidth } from "./hooks/useLeftPanelWidth";
 import { useModelSelection } from "./hooks/useModelSelection";
 import { useNewConversation } from "./hooks/useNewConversation";
 import { useRemoteStatus } from "./hooks/useRemoteStatus";
@@ -84,6 +85,7 @@ export function AppShell() {
   // the early returns further down stay after every hook call (rules of hooks).
   const { showGate, byokMode, enableBYOK, finishInit, cancelLogin, hasAnyProvider, forceOnboarding, initPending, initialLoading } = useHasProviders();
 
+  const leftPanel = useLeftPanelWidth(rightExpanded);
   const centerRef = useRef<HTMLElement>(null);
   const {
     width: rightPanelWidth,
@@ -97,7 +99,7 @@ export function AppShell() {
   // can shrink the space available to the center — re-clamp the right panel.
   useEffect(() => {
     reclampRightPanel();
-  }, [leftExpanded, reclampRightPanel]);
+  }, [leftExpanded, leftPanel.width, reclampRightPanel]);
 
   // Install the Tauri event listener for real-time agent state updates
   // (settings changes from other clients).  Only runs once.
@@ -495,7 +497,31 @@ export function AppShell() {
 
   return (
     <div className="relative flex h-full min-h-0 overflow-hidden bg-canvas text-ink">
-      {leftExpanded ? <ActivityRail expanded {...activityRailProps} /> : null}
+      {leftExpanded
+        ? (
+            <div className="relative h-full shrink-0" style={{ width: leftPanel.width }}>
+              <ActivityRail expanded {...activityRailProps} />
+              <div
+                role="separator"
+                aria-label={t("activityRail.resizeSidebar")}
+                aria-orientation="vertical"
+                aria-valuemin={MIN_LEFT_PANEL_WIDTH}
+                aria-valuemax={leftPanel.maxWidth}
+                aria-valuenow={leftPanel.width}
+                className="absolute inset-y-0 -right-1 z-40 w-2 cursor-ew-resize touch-none hover:bg-accent/20 focus-visible:bg-accent/20 focus-visible:outline-none"
+                tabIndex={0}
+                onPointerDown={leftPanel.startResize}
+                onKeyDown={(event) => {
+                  if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                    event.preventDefault();
+                    leftPanel.nudge(event.key === "ArrowRight" ? 16 : -16);
+                  }
+                }}
+              />
+            </div>
+          )
+        : null}
+      {leftPanel.resizing ? <div className="fixed inset-0 z-50 cursor-ew-resize select-none" /> : null}
       {!leftExpanded
         ? (
             <div
@@ -508,7 +534,8 @@ export function AppShell() {
       {!leftExpanded && leftOverlayOpen
         ? (
             <div
-              className="absolute left-0 top-0 z-40 h-full w-56 md:w-64 xl:w-72"
+              className="absolute left-0 top-0 z-40 h-full"
+              style={{ width: leftPanel.width }}
               onMouseEnter={() => handlePreviewLeftPanel(true)}
               onMouseLeave={() => handlePreviewLeftPanel(false)}
             >

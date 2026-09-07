@@ -105,6 +105,10 @@ pub enum TodoStatus {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Todo {
     pub id: String,
+    /// Organizational parent, independent of dependency/lease semantics.
+    /// Fixed at creation; old ledgers deserialize as roots.
+    #[serde(default)]
+    pub parent_id: Option<String>,
     pub text: String,
     /// Short title (LoopX: title vs text separation).
     pub title: String,
@@ -310,6 +314,7 @@ impl Todo {
         };
         Self {
             id: id.to_string(),
+            parent_id: None,
             text: text.to_string(),
             title: text.to_string(),
             class,

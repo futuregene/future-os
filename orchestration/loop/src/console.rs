@@ -702,6 +702,7 @@ fn build_cli_registry() -> CommandRegistry {
         &[
             ("--goal G", "goal id", "required"),
             ("--text TEXT", "todo text", "required; must be non-empty"),
+            ("--parent T", "parent todo id", "same goal; at most 3 levels; grouping only, not a dependency"),
             ("--priority P0|P1|P2", "priority (P0 urgent)", "defaults to P1; also prefixes the text with [P0]/[P1]/[P2]"),
             ("--blocks T", "blocking todo ids", "comma-separated; a bare `--blocks` reads as `true` and is rejected"),
             ("--verify CMD", "validator command", "e.g. `cargo check -p ...`; advisory for code-like todos so uncompilable work can't be marked done"),
@@ -1360,6 +1361,7 @@ fn build_cli_registry() -> CommandRegistry {
             ("--lease-secs N", "task lease length", "default 4h (14400s)"),
             ("--force-workspace", "force workspace override", "boolean"),
             ("--resume-session ID", "resume this exact agent session", "fresh is the default; a dead id falls back to fresh automatically"),
+            ("--parent-session ID", "parent conversation for a fresh worker", "defaults to the goal's supervisor session; does not copy context or reparent resumed sessions"),
             ("--detach", "internal: marks the detached child", "the run re-executes itself detached by default; set FUTURE_LOOP_NO_DETACH=1 to run foreground"),
         ],
     );
@@ -1818,6 +1820,7 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     let mut max_validation_attempts: Option<u32> = None;
     let mut acceptance: Option<String> = None;
     let mut owner: Option<String> = None;
+    let mut parent_id: Option<String> = None;
     reject_unknown_flags(
         args,
         &[
@@ -1837,6 +1840,7 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
             "--monitor-target",
             "--note",
             "--owner",
+            "--parent",
             "--priority",
             "--required-write-scope",
             "--resume-when",
@@ -1870,6 +1874,8 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
             max_validation_attempts = v.parse().ok();
         } else if k == "--owner" {
             owner = Some(v);
+        } else if k == "--parent" {
+            parent_id = Some(v);
         } else if k == "--goal" {
             goal_id = Some(v);
         } else if k == "--role" {
@@ -1940,9 +1946,25 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     // O5: advisory hint — external-delivery todos (submit/提交 …) whose
     // completion contract is a text convention unless `--acceptance` pins it.
     let wants_acceptance_hint = acceptance.is_none() && looks_like_external_delivery(&text);
-    store
+    let goal = store
         .replay(&goal_id)?
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    // Parent links are immutable after creation, so adding a new id cannot
+    // form a cycle. Reject broken legacy chains and a fourth level as well.
+    let mut ancestor = parent_id.as_deref();
+    let mut depth = 1;
+    while let Some(id) = ancestor {
+        let parent = goal
+            .todos
+            .iter()
+            .find(|todo| todo.id == id)
+            .ok_or_else(|| anyhow::anyhow!("parent todo {id} not found in goal {goal_id}"))?;
+        depth += 1;
+        if depth > 3 {
+            bail!("todo hierarchy supports at most 3 levels");
+        }
+        ancestor = parent.parent_id.as_deref();
+    }
     let id = gen_id("todo");
     let mut todo = match (role.as_str(), class.as_str()) {
         ("agent", "advancement") => Todo::advancement(&id, &text),
@@ -1960,6 +1982,7 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
         ("agent", "coordination") => Todo::coordination(&id, &text),
         _ => Todo::advancement(&id, &text),
     };
+    todo.parent_id = parent_id;
     // Owner assignment: `--owner X` declares this todo is for agent X (see
     // `Todo::owner`). Optional — absent = shared pool.
     if let Some(aid) = &owner {
@@ -4132,6 +4155,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     // another under parallel workers). A pinned id that is no longer alive
     // falls back to a fresh session.
     let mut resume_session: Option<String> = None;
+    let mut parent_session: Option<String> = None;
     reject_unknown_flags(
         args,
         &[
@@ -4144,6 +4168,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
             "--max-incomplete-retries",
             "--max-turns",
             "--model",
+            "--parent-session",
             "--resume-session",
             "--thinking-level",
         ],
@@ -4171,6 +4196,8 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
             force_workspace = true;
         } else if k == "--resume-session" {
             resume_session = Some(v);
+        } else if k == "--parent-session" {
+            parent_session = Some(v);
         }
     });
     // Detached dispatch (ARCHITECTURE.md "Runs are detached"): by default the
@@ -4301,6 +4328,11 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     // Human-readable session title for agent session lists: the goal
     // objective, bounded so long objectives don't produce unwieldy names.
     let session_title = crate::decision::truncate(&goal0.objective, 60);
+    // Derived worker conversations belong to their caller/supervisor. This
+    // is lineage only: a fresh worker still has an isolated context.
+    let parent_session = parent_session
+        .as_deref()
+        .or(goal0.supervisor_session_id.as_deref());
     let session_id = match want_session {
         Some(id) if client.session_alive(&id).await => {
             println!("   ⤺ resuming session {id}");
@@ -4308,9 +4340,15 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         }
         Some(id) => {
             println!("   ⚠ retained session {id} is no longer alive — starting fresh");
-            client.new_session(&goal0.cwd, &session_title).await?
+            client
+                .new_child_session(&goal0.cwd, &session_title, parent_session)
+                .await?
         }
-        None => client.new_session(&goal0.cwd, &session_title).await?,
+        None => {
+            client
+                .new_child_session(&goal0.cwd, &session_title, parent_session)
+                .await?
+        }
     };
     // Bind agent-id → session-id in the ledger BEFORE any prompt. This is the
     // authoritative mapping `worker stop`/`worker list` use to locate this
@@ -10779,6 +10817,58 @@ mod todo_verify_hint_tests {
         assert_eq!(a.run_id, "r-a");
         assert_eq!(a.todo_id, "todo-a");
         assert_eq!(sessions.len(), 2);
+    }
+
+    #[test]
+    fn todo_parent_is_persisted_and_limited_to_three_levels() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = crate::store::Store::open(dir.path().to_str().unwrap()).unwrap();
+        let goal = crate::state::Goal::new("tree", "obj", dir.path().to_str().unwrap());
+        store.register(&goal).unwrap();
+        store
+            .append(crate::store::Event::GoalStarted {
+                goal_id: "tree".into(),
+                ts: 1,
+            })
+            .unwrap();
+        let mut parent: Option<String> = None;
+        for depth in 1..=4 {
+            let mut args: Vec<String> = vec![
+                "--goal".into(),
+                "tree".into(),
+                "--text".into(),
+                format!("level {depth}"),
+            ];
+            if let Some(id) = &parent {
+                args.extend(["--parent".into(), id.clone()]);
+            }
+            let result = super::todo_add(&mut store, &args);
+            if depth == 4 {
+                assert!(result.unwrap_err().to_string().contains("3 levels"));
+            } else {
+                result.unwrap();
+                let replay = store.replay("tree").unwrap().unwrap();
+                let todo = replay.todos.last().unwrap();
+                assert_eq!(todo.parent_id, parent);
+                parent = Some(todo.id.clone());
+            }
+        }
+        let args: Vec<String> = ["--goal", "tree", "--text", "orphan", "--parent", "missing"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert!(super::todo_add(&mut store, &args)
+            .unwrap_err()
+            .to_string()
+            .contains("not found"));
+        assert_eq!(store.replay("tree").unwrap().unwrap().todos.len(), 3);
+        let mut old =
+            serde_json::to_value(crate::state::Todo::advancement("old", "legacy")).unwrap();
+        old.as_object_mut().unwrap().remove("parent_id");
+        assert!(serde_json::from_value::<crate::state::Todo>(old)
+            .unwrap()
+            .parent_id
+            .is_none());
     }
 
     #[test]

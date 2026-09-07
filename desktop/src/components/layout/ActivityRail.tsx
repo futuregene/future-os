@@ -38,6 +38,7 @@ import { MenuPanel } from "../ui/MenuPanel";
 import { ChatSectionMenu, WorkspaceHeaderMenu } from "./ActivityRailMenus";
 import { usePendingApprovalCounts } from "./hooks/usePendingApprovalCounts";
 import { ThreadListItem } from "./ThreadListItem";
+import { buildThreadTree, visibleThreadRows } from "./threadTree";
 
 export type ActivitySection = "chat" | "workspace" | "skill" | "remote" | "settings";
 
@@ -159,6 +160,16 @@ export function ActivityRail({
   const reserveTrafficLights = isMacOS && !isFullscreen;
   const [openThreadMenuId, setOpenThreadMenuId] = useState<string | null>(null);
   const [openWorkspaceMenuId, setOpenWorkspaceMenuId] = useState<string | null>(null);
+  const [expandedThreads, setExpandedThreads] = useState<Set<string>>(() => new Set());
+  const toggleThreadExpanded = useCallback((thread: StoredThread) => {
+    setExpandedThreads((current) => {
+      const next = new Set(current);
+      if (next.has(thread.id))
+        next.delete(thread.id);
+      else next.add(thread.id);
+      return next;
+    });
+  }, []);
   const [collapsedWorkspaces, setCollapsedWorkspaces] = useState<Set<string>>(() => new Set());
   // Collapse state for the two top-level list sections (Workspace / Chat),
   // independent of the per-workspace group collapse above.
@@ -263,12 +274,18 @@ export function ActivityRail({
     [threads],
   );
 
-  // Scope-filtered threads for the current selection mode.
-  const scopedThreads = useMemo(() => visibleThreads.filter((thread) => {
-    if (selectionScope === "chat")
-      return thread.mode === "chat";
-    return thread.mode === "workspace" && thread.workspaceId === selectionScope;
-  }), [selectionScope, visibleThreads]);
+  const threadTree = useMemo(() => buildThreadTree(visibleThreads), [visibleThreads]);
+  const threadScopes = useMemo(() => {
+    const allExpanded = new Set(visibleThreads.map(thread => thread.id));
+    const scopes = new Map<string, string>();
+    for (const root of threadTree) {
+      const scope = root.thread.mode === "chat" ? "chat" : root.thread.workspaceId;
+      for (const { thread } of visibleThreadRows([root], allExpanded)) scopes.set(thread.id, scope);
+    }
+    return scopes;
+  }, [threadTree, visibleThreads]);
+  // Selection includes collapsed descendants in the displayed root's scope.
+  const scopedThreads = useMemo(() => visibleThreads.filter(thread => threadScopes.get(thread.id) === selectionScope), [selectionScope, threadScopes, visibleThreads]);
 
   function enterChatSelectionMode() {
     setSelectionScope("chat");
@@ -292,10 +309,8 @@ export function ActivityRail({
 
   /** Whether a thread is selectable in the current selection scope. */
   const isThreadInScope = useCallback((thread: StoredThread) => {
-    if (selectionScope === "chat")
-      return thread.mode === "chat";
-    return thread.mode === "workspace" && thread.workspaceId === selectionScope;
-  }, [selectionScope]);
+    return threadScopes.get(thread.id) === selectionScope;
+  }, [selectionScope, threadScopes]);
 
   // One stable row-click handler for all memoized ThreadListItems: in
   // selection mode it toggles in-scope threads (out-of-scope rows are a
@@ -323,15 +338,19 @@ export function ActivityRail({
   }
   // Pinned threads are hoisted into a single global section (regardless of
   // workspace/chat); the per-group lists show only the unpinned rest.
-  const pinnedThreads = useMemo(() => visibleThreads.filter(thread => thread.pinned), [visibleThreads]);
-  const chatThreads = useMemo(() => visibleThreads.filter(thread => thread.mode === "chat" && !thread.pinned), [visibleThreads]);
-  const workspaceThreads = useMemo(() => visibleThreads.filter(thread => thread.mode === "workspace" && !thread.pinned), [visibleThreads]);
+  const pinnedThreads = useMemo(() => visibleThreadRows(threadTree.filter(node => node.thread.pinned), expandedThreads), [threadTree, expandedThreads]);
+  const chatThreads = useMemo(() => visibleThreadRows(threadTree.filter(node => node.thread.mode === "chat" && !node.thread.pinned), expandedThreads), [threadTree, expandedThreads]);
+  const workspaceRoots = useMemo(() => threadTree.filter(node => node.thread.mode === "workspace" && !node.thread.pinned), [threadTree]);
   const workspaceGroups = useMemo(() => workspaces
-    .filter(workspace => workspace.kind === "user" || workspaceThreads.some(thread => thread.workspaceId === workspace.id))
-    .map(workspace => ({
-      workspace,
-      threads: workspaceThreads.filter(thread => thread.workspaceId === workspace.id),
-    })), [workspaceThreads, workspaces]);
+    .filter(workspace => workspace.kind === "user" || workspaceRoots.some(node => node.thread.workspaceId === workspace.id))
+    .map((workspace) => {
+      const roots = workspaceRoots.filter(node => node.thread.workspaceId === workspace.id);
+      return {
+        workspace,
+        rows: visibleThreadRows(roots, expandedThreads),
+        threads: visibleThreadRows(roots, new Set(visibleThreads.map(thread => thread.id))).map(row => row.thread),
+      };
+    }), [workspaceRoots, workspaces, expandedThreads, visibleThreads]);
   const visibleWorkspaceGroups = workspaceSectionCollapsed ? [] : workspaceGroups;
   const visibleChatThreads = chatSectionCollapsed ? [] : chatThreads;
   const toggleLabel = floating
@@ -347,7 +366,7 @@ export function ActivityRail({
         floating
           ? "w-full rounded-r-lg border-r border-line-soft/70 shadow-sidebar-floating"
           : "shrink-0 border-r border-line-soft/70",
-        expanded ? (floating ? "" : "w-56 md:w-64 xl:w-72") : "w-14 items-center",
+        expanded ? "w-full" : "w-14 items-center",
       )}
     >
       <div
@@ -437,7 +456,7 @@ export function ActivityRail({
                             <div className="sticky top-0 z-10 flex h-6 items-center bg-surface px-2 text-xs font-medium text-ink-muted">
                               <span>{t("activityRail.pinnedHeader")}</span>
                             </div>
-                            {pinnedThreads.map(thread => (
+                            {pinnedThreads.map(({ thread, depth, hasChildren }) => (
                               <ThreadListItem
                                 active={thread.id === activeThreadId}
                                 archived={thread.status === "archived"}
@@ -448,6 +467,11 @@ export function ActivityRail({
                                 selected={selectedThreadIds.has(thread.id)}
                                 selectionMode={threadSelectionMode(thread)}
                                 thread={thread}
+                                depth={depth}
+                                hasChildren={hasChildren}
+                                expanded={expandedThreads.has(thread.id)}
+                                onToggleExpanded={toggleThreadExpanded}
+                                isStreaming={threadStreamingStatuses[thread.id]}
                                 unread={unreadThreadIds.has(thread.id)}
                                 onDeleteThread={onDeleteThread}
                                 onMenuOpenChange={handleThreadMenuOpenChange}
@@ -488,7 +512,7 @@ export function ActivityRail({
                             <div className="px-2 py-1 text-xs text-ink-muted">{t("activityRail.noWorkspaceThreads")}</div>
                           )
                         : null}
-                      {visibleWorkspaceGroups.map(({ workspace, threads: groupThreads }) => {
+                      {visibleWorkspaceGroups.map(({ workspace, threads: groupThreads, rows }) => {
                         const collapsed = collapsedWorkspaces.has(workspace.id);
                         return (
                           <div key={workspace.id} className="space-y-0.5">
@@ -541,7 +565,7 @@ export function ActivityRail({
                             {!collapsed && groupThreads.length > 0
                               ? (
                                   <div className="space-y-0.5">
-                                    {groupThreads.map(thread => (
+                                    {rows.map(({ thread, depth, hasChildren }) => (
                                       <ThreadListItem
                                         active={thread.id === activeThreadId}
                                         archived={thread.status === "archived"}
@@ -552,6 +576,11 @@ export function ActivityRail({
                                         selected={selectedThreadIds.has(thread.id)}
                                         selectionMode={threadSelectionMode(thread)}
                                         thread={thread}
+                                        depth={depth}
+                                        hasChildren={hasChildren}
+                                        expanded={expandedThreads.has(thread.id)}
+                                        onToggleExpanded={toggleThreadExpanded}
+                                        isStreaming={threadStreamingStatuses[thread.id]}
                                         unread={unreadThreadIds.has(thread.id)}
                                         compact
                                         onDeleteThread={onDeleteThread}
@@ -604,7 +633,7 @@ export function ActivityRail({
                       {!chatSectionCollapsed && chatThreads.length === 0
                         ? <div className="px-2 py-1 text-xs text-ink-muted">{t("activityRail.noChats")}</div>
                         : null}
-                      {visibleChatThreads.map(thread => (
+                      {visibleChatThreads.map(({ thread, depth, hasChildren }) => (
                         <ThreadListItem
                           active={thread.id === activeThreadId && active === "chat"}
                           archived={thread.status === "archived"}
@@ -616,6 +645,10 @@ export function ActivityRail({
                           selected={selectedThreadIds.has(thread.id)}
                           selectionMode={threadSelectionMode(thread)}
                           thread={thread}
+                          depth={depth}
+                          hasChildren={hasChildren}
+                          expanded={expandedThreads.has(thread.id)}
+                          onToggleExpanded={toggleThreadExpanded}
                           unread={unreadThreadIds.has(thread.id)}
                           onDeleteThread={onDeleteThread}
                           onMenuOpenChange={handleThreadMenuOpenChange}
