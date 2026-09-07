@@ -118,6 +118,20 @@ resolve、goal cancel 等）仍留在 CLI——页面只显示对应的 `future 
 - 所有状态在每次请求时都从 `.future/loop/` 投影出来；仪表盘不持有独立状态，也不写入
   任何内容。
 
+## 完成回执与契约执行
+
+手动和自动推进任务关单都要求非空证据及全部 acceptance token；自动 run 还要求已配置的
+验证器通过。缺证据属于交接被拒绝，不因模型正常结束就算成功。手动 `--force` 仍是有明确
+记录的覆盖；token 出现本身不证明事实正确。
+
+自动交付携带 JSON `task_delivery` 回执：goal/todo/worker/run/session 身份、验证结果、
+最近证据、全文日志路径，以及所有 owner/class 中其他未完成任务数。阅读产物后再记录
+`verified`。结束一个切片不自动编造后继关系，也不宣布全局完成；全局状态用 `frontier show`
+检查。新 live 日志保留完整回复 `text_chunk.text`，内存和账本摘要保留有界的最近文字。
+
+watchdog 投递 loop 事件；外部评分和算力结果需显式监控任务／适配器。外部请求已入队
+不等于结果已验证。
+
 ## 硬校验优先（约定靠不住，闸门靠得住）
 
 - 空证据关单会被**拒绝**（默认 fail-closed，`--force` 才放行）

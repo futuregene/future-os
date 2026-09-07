@@ -2591,43 +2591,12 @@ fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
     } else {
         "manual_review"
     };
-    // O6: completion evidence contract (retrospective: 11/33 completions
-    // shipped <60-char evidence, several fully empty, and every one of those
-    // todos had to be reopened by hand). Advancement todos must carry real,
-    // non-empty evidence of what landed — `--force` is the explicit override
-    // for mechanical closeouts the operator owns.
-    let evidence_trim = evidence.as_deref().map(str::trim).unwrap_or("");
-    if is_advancement && evidence_trim.is_empty() && !force {
-        bail!(
-            "todo {todo_id} needs non-empty --evidence (what actually landed: attempt ids, \
-             paths, outputs, measurements). Add --force only for an explicit operator closeout."
-        );
-    }
-    // O7: acceptance contract (`todo add --acceptance "a,b"`) — evidence must
-    // contain every declared token (case-insensitive) before completion is
-    // accepted; `--force` overrides. Turns the ACCEPTANCE text convention
-    // (e.g. a platform attempt id) into a hard check.
-    if is_advancement {
-        if let Some(acc) = t.acceptance.as_deref() {
-            let tokens: Vec<&str> = acc
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .collect();
-            let lower = evidence_trim.to_lowercase();
-            let missing: Vec<&str> = tokens
-                .iter()
-                .filter(|tok| !lower.contains(&tok.to_lowercase()))
-                .copied()
-                .collect();
-            if !missing.is_empty() && !force {
-                bail!(
-                    "todo {todo_id} acceptance contract unmet: evidence must contain [{}] \
-                     (missing: [{}]). Declared via `todo add --acceptance`; --force overrides.",
-                    acc,
-                    missing.join(", ")
-                );
-            }
+    // Shared with automatic writeback. Only this explicit manual path can
+    // override the evidence floor; a normal model return cannot bypass it.
+    if !force {
+        if let Some(error) = crate::completion::evidence_error(t, evidence.as_deref().unwrap_or(""))
+        {
+            bail!("{error}");
         }
     }
     let successors = successor.clone().into_iter().collect::<Vec<_>>();
@@ -4955,26 +4924,32 @@ async fn run_turns(
             ))
             .await;
         }
-        // Writeback: complete with closure intent — remaining open todos
-        // become successors; the LAST todo declares no-follow-up (LoopX
-        // completion contract, verified against the real control plane).
-        let successors: Vec<String> = goal
-            .runnable_advancement()
-            .filter(|t| t.id != todo_id)
-            .map(|t| t.id.clone())
-            .collect();
-        let is_last = successors.is_empty();
-        // Validation-gated completion: `todo add --verify` keeps the todo open
-        // until the independent validator exits 0 (bounded retry below).
-        let succeeded = crate::executor::turn_succeeded(&record);
-        let completion = if succeeded {
-            Some((is_last, successors.clone()))
-        } else {
-            None
-        };
+        // Reconcile current state: the contract may have changed while the
+        // worker ran. Completing this slice never invents dependency edges to
+        // other runnable tasks and never means the whole goal is complete.
         let mut g = store
             .replay(goal_id)?
             .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found (deleted while running?)"))?;
+        let mut record = record;
+        if let Some(current) = g.todo(&todo_id) {
+            crate::completion::check_record(current, &mut record);
+            if current.validator != goal.todo(&todo_id).and_then(|t| t.validator.clone()) {
+                record.error = Some(
+                    "completion contract changed during execution: rerun the current validator"
+                        .into(),
+                );
+            }
+        }
+        let successors = g
+            .todo(&todo_id)
+            .map(|t| t.successor_ids.clone())
+            .unwrap_or_default();
+        let no_follow_up = successors.is_empty();
+        let already_closed = g
+            .todo(&todo_id)
+            .is_none_or(|t| matches!(t.status, TodoStatus::Done | TodoStatus::Superseded));
+        let succeeded = !already_closed && crate::executor::turn_succeeded(&record);
+        let completion = succeeded.then(|| (no_follow_up, successors.clone()));
         let monitor_changed = if mode == crate::contract::TurnMode::MonitorPoll {
             Some(record.evidence.to_uppercase().contains("EXISTS"))
         } else {
@@ -4982,7 +4957,6 @@ async fn run_turns(
         };
         // G-7: stamp the spend source on the ledger entry before writeback
         // so quota accounting classifies it (run/agent/heartbeat).
-        let mut record = record;
         record.spend_source = Some(
             crate::quota::slot_accounting::classify_mode(mode)
                 .as_str()
@@ -4992,7 +4966,13 @@ async fn run_turns(
         // and the caller (cmd_run) uses it to decide session retention.
         record.failure_kind = Some(crate::executor::classify_failure(&record));
         *last_failure_kind = record.failure_kind;
-        writeback(&mut g, &record, monitor_changed, completion);
+        if already_closed {
+            // Keep spend/run evidence without reopening or re-completing a todo
+            // closed manually or superseded while this turn was in flight.
+            g.history.push(record.clone());
+        } else {
+            writeback(&mut g, &record, monitor_changed, completion);
+        }
         store.append_run(goal_id, &record)?;
         // Project-local per-run mirror (runs/ under the goal state dir).
         let _ = crate::compat::write_run(&store.goal_dir(goal_id), goal_id, &record);
@@ -5066,7 +5046,7 @@ async fn run_turns(
             store.append(Event::TodoCompleted {
                 goal_id: goal_id.to_string(),
                 todo_id: todo_id.clone(),
-                no_follow_up: is_last,
+                no_follow_up,
                 successor_ids: successors.clone(),
                 evidence: Some(record.evidence.clone()),
                 ts: now_epoch(),
@@ -5081,16 +5061,16 @@ async fn run_turns(
                 g.supervisor_session_id.as_deref(),
                 "completed",
                 &todo_id,
-                &format!(
-                    "[future-loop] goal {goal_id}: todo {todo_id} completed{} — evidence: {}",
-                    if is_last {
-                        " (last todo — closure pending)"
-                    } else {
-                        ""
-                    },
-                    crate::decision::truncate(&record.evidence, 300)
+                &crate::completion::notice(
+                    &g,
+                    &record,
+                    agent_id,
+                    session_id,
+                    &std::path::PathBuf::from(store.root_path())
+                        .join("runs")
+                        .join(format!("{}.live.jsonl", record.run_id)),
                 ),
-                &format!("completed:{todo_id}"),
+                &format!("completed:{todo_id}:{}", record.run_id),
             )
             .await;
             // P0-2①: a completed advancement todo is a delivery pending

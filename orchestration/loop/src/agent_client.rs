@@ -30,7 +30,8 @@ pub struct RunSummary {
     pub error: Option<String>,
     /// Tool names invoked this turn, in order.
     pub tools: Vec<String>,
-    /// Concatenated assistant text this turn (bounded to a few KB).
+    /// Latest assistant text this turn (bounded rolling tail). Full text chunks
+    /// remain in the live journal when enabled; this is not a full transcript.
     pub text: String,
     /// usage payload from agent_end, when present.
     pub usage: Option<Value>,
@@ -555,6 +556,13 @@ async fn consume_run_stream(
                     line["phase"] = serde_json::Value::String(p.to_string());
                 }
             }
+            // Keep complete reply text on disk before reducing the in-memory
+            // summary. Final outcomes must remain recoverable after truncation.
+            if ev.r#type == "text_chunk" {
+                if let Some(text) = data.get("text") {
+                    line["text"] = text.clone();
+                }
+            }
             // Tee usage so the read-only dashboard can expose real-time
             // in/out tokens + cost for an in-flight run (each request emits
             // exactly one `usage` event, so summing them never double-counts).
@@ -607,9 +615,7 @@ async fn consume_run_stream(
                     }
                     summary.text.push_str(text);
                     if summary.text.len() > 8_000 {
-                        // truncate at a UTF-8 char boundary — str::truncate panics mid-char
-                        let boundary = summary.text.floor_char_boundary(8_000);
-                        summary.text.truncate(boundary);
+                        summary.text = crate::completion::tail(&summary.text, 8_000);
                     }
                 }
             }

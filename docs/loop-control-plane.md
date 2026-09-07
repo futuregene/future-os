@@ -145,6 +145,24 @@ root, and only GET endpoints exist (any other method is a 405). Mutations
 - All state is projected from `.future/loop/` on every request; the
   dashboard holds no separate state and writes nothing.
 
+## Completion receipts and contract enforcement
+
+Both manual and automatic advancement completion require nonempty evidence and
+all declared acceptance tokens. Automatic runs also require any configured
+validator to pass. Missing evidence is a rejected handoff, not a successful model
+turn; manual `--force` remains an explicitly recorded override. Tokens alone do
+not establish factual correctness.
+
+Automatic deliveries carry a JSON `task_delivery` receipt: goal/todo/worker/run/
+session identity, validation, recent evidence, full-text journal path and the
+number of other pending todos across all owners/classes. Read the artifacts before
+recording `verified`. Closing a slice does not invent successors or announce global
+completion; use `frontier show` for the latter. New live journals retain complete
+reply `text_chunk.text`; in-memory and ledger summaries are bounded recent tails.
+
+The watchdog delivers loop events; external scoring/compute results require an
+explicit monitor/adapter. A queued external request is not a verified result.
+
 ## Hard checks first (conventions fail, gates hold)
 - Empty-evidence closures are **refused** (fail-closed by default; `--force` opens)
 - `--verify` makes "wrote it" mean "it compiles / the artifact exists" — attach one to every delivery todo
