@@ -5,10 +5,13 @@ import * as IntentLauncher from "expo-intent-launcher";
 import { VERSION } from "../version.generated";
 
 // iOS reads the live App Store version from Apple directly (the App Store lags
-// behind latest.json because of review), while Android reads the shared release
-// manifest — mirroring how the desktop resolves updates.
+// behind latest.json because of review). Android selects one of the two static
+// manifests from its embedded FutureOS version.
 export const ITUNES_LOOKUP_URL = "https://itunes.apple.com/lookup?bundleId=cn.futureos.mobile";
-export const UPDATE_MANIFEST_URL = "https://dl.future-os.cn/releases/latest.json";
+export const RELEASE_MANIFEST_URL = "https://dl.future-os.cn/releases/latest.json";
+export const NIGHTLY_MANIFEST_URL = "https://dl.future-os.cn/nightly/latest.json";
+
+export type BuildChannel = "release" | "test" | "nightly" | "dev" | "local";
 
 export interface UpdateStatus {
   currentVersion: string;
@@ -16,12 +19,51 @@ export interface UpdateStatus {
   hasUpdate: boolean;
   appStoreUrl: string | null;
   downloadUrl: string | null;
+  /** Whether FutureOS may download the package and invoke its installer. */
+  canInstallInApp: boolean;
 }
 
 type FetchLike = typeof fetch;
 
 function semverCore(version: string): string {
   return version.split(/[-+]/)[0] ?? version;
+}
+
+/** Unknown 0.* versions stay on the safe, manual-only dev policy. */
+export function buildChannel(version: string): BuildChannel {
+  if (!version.startsWith("0")) return "release";
+  const metadata = version.split("+", 2)[1];
+  if (metadata === "test" || metadata === "nightly" || metadata === "dev") return metadata;
+  if (metadata === "local" || metadata === "local.dirty") return "local";
+  return "dev";
+}
+
+export function manifestUrl(version: string): string {
+  return buildChannel(version) === "release" ? RELEASE_MANIFEST_URL : NIGHTLY_MANIFEST_URL;
+}
+
+function channelRunNumber(version: string): number | null {
+  const match = /^\d+\.\d+\.\d+-(\d+)\+(?:test|nightly)$/.exec(version);
+  if (!match) return null;
+  const run = Number.parseInt(match[1]!, 10);
+  return Number.isSafeInteger(run) ? run : null;
+}
+
+export function shouldOfferAndroidUpdate(currentVersion: string, latestVersion: string): boolean {
+  const channel = buildChannel(currentVersion);
+  const latestChannel = buildChannel(latestVersion);
+  if (channel === "release") {
+    return latestChannel === "release" && compareVersions(latestVersion, currentVersion) > 0;
+  }
+  if (channel === "test" || channel === "nightly") {
+    if (latestChannel !== "nightly") return false;
+    const coreOrder = compareVersions(latestVersion, currentVersion);
+    if (coreOrder !== 0) return coreOrder > 0;
+    const currentRun = channelRunNumber(currentVersion);
+    const latestRun = channelRunNumber(latestVersion);
+    return currentRun !== null && latestRun !== null && latestRun > currentRun;
+  }
+  return latestChannel === "nightly" && latestVersion !== currentVersion;
 }
 
 /** Numeric comparison of the semver core (prerelease/build suffixes ignored). */
@@ -63,6 +105,7 @@ export async function checkIosUpdate(
       compareVersions(latestVersion, currentVersion) > 0,
     appStoreUrl,
     downloadUrl: null,
+    canInstallInApp: true,
   };
 }
 
@@ -70,7 +113,7 @@ export async function checkAndroidUpdate(
   currentVersion: string,
   fetchFn: FetchLike = fetch,
 ): Promise<UpdateStatus> {
-  const response = await fetchFn(UPDATE_MANIFEST_URL);
+  const response = await fetchFn(manifestUrl(currentVersion));
   if (!response.ok) throw new Error(`manifest failed: ${response.status}`);
   const manifest = (await response.json()) as {
     version?: string;
@@ -84,9 +127,10 @@ export async function checkAndroidUpdate(
     hasUpdate:
       latestVersion !== null &&
       downloadUrl !== null &&
-      compareVersions(latestVersion, currentVersion) > 0,
+      shouldOfferAndroidUpdate(currentVersion, latestVersion),
     appStoreUrl: null,
     downloadUrl,
+    canInstallInApp: ["release", "test", "nightly"].includes(buildChannel(currentVersion)),
   };
 }
 
@@ -105,6 +149,10 @@ export async function installUpdate(status: UpdateStatus): Promise<void> {
     return;
   }
   if (!status.downloadUrl) throw new Error("Download URL is unavailable");
+  if (!status.canInstallInApp) {
+    await Linking.openURL(status.downloadUrl);
+    return;
+  }
   const file = await File.downloadFileAsync(
     status.downloadUrl,
     new File(Paths.cache, "futureos-update.apk"),

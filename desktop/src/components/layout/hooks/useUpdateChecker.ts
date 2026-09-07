@@ -8,6 +8,7 @@ export interface UpdateStatus {
   latestVersion: string;
   hasUpdate: boolean;
   platformSupported: boolean;
+  canInstallInApp: boolean;
   downloadUrl: string | null;
 }
 
