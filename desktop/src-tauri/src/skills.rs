@@ -296,21 +296,80 @@ pub fn uninstall_skill(id: &str) -> Result<bool, AppError> {
 }
 
 fn extract_skill_zip(bytes: &[u8], dest: &Path) -> Result<(), AppError> {
-    // Fresh install/update: clear any prior contents so removed files don't linger.
-    if dest.exists() {
-        std::fs::remove_dir_all(dest)?;
-    }
-    std::fs::create_dir_all(dest)?;
-
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
         .map_err(|error| AppError::Message(format!("Skill package is not a valid zip: {error}")))?;
+    // Keep incomplete candidates outside the agent's skills discovery tree.
+    let parent = dest
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("Invalid skills root")?;
+    std::fs::create_dir_all(parent)?;
+    let staging = tempfile::Builder::new()
+        .prefix(".skill-install-")
+        .tempdir_in(parent)?;
+    let candidate = staging.path().join("candidate");
+    std::fs::create_dir(&candidate)?;
     archive
-        .extract(dest)
+        .extract(&candidate)
         .map_err(|error| AppError::Message(format!("Failed to extract skill: {error}")))?;
+    flatten_single_subdir(&candidate)?;
+    let entry = std::fs::read_to_string(candidate.join("SKILL.md"))
+        .map_err(|error| AppError::Message(format!("Invalid skill package: {error}")))?;
+    if entry.trim().is_empty() {
+        return Err("Invalid skill package: empty SKILL.md".into());
+    }
+    replace_skill_dir(&candidate, dest)?;
+    Ok(())
+}
 
-    // Some zips wrap everything in a single top-level directory; flatten it so
-    // SKILL.md lands at the skill root (matches the CLI).
-    flatten_single_subdir(dest)?;
+/// Same on-disk transaction/lock protocol as the CLI, so the two installers
+/// cannot interleave directory replacements. A crash leaves a recoverable backup.
+fn replace_skill_dir(candidate: &Path, dest: &Path) -> std::io::Result<()> {
+    let root = dest
+        .parent()
+        .ok_or_else(|| std::io::Error::other("Invalid skill root"))?;
+    std::fs::create_dir_all(root)?;
+    let id = dest.file_name().unwrap_or_default().to_string_lossy();
+    let lock = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(root.join(format!(".{id}.install.lock")))?;
+    lock.try_lock().map_err(std::io::Error::other)?;
+    let backup = root
+        .parent()
+        .unwrap_or(root)
+        .join(format!(".skill-{id}.previous"));
+    if backup.exists() {
+        if dest.exists() {
+            std::fs::remove_dir_all(&backup)?;
+        } else {
+            std::fs::rename(&backup, dest)?;
+        }
+    }
+    let existed = dest.try_exists()?;
+    if existed && !std::fs::symlink_metadata(dest)?.is_dir() {
+        return Err(std::io::Error::other(
+            "Skill destination is not a regular directory",
+        ));
+    }
+    if existed {
+        std::fs::rename(dest, &backup)?;
+    }
+    if let Err(error) = std::fs::rename(candidate, dest) {
+        if existed {
+            std::fs::rename(&backup, dest).map_err(|restore| {
+                std::io::Error::other(format!(
+                    "Install failed: {error}; restore failed: {restore}; previous version at {}",
+                    backup.display()
+                ))
+            })?;
+        }
+        return Err(error);
+    }
+    if existed {
+        let _ = std::fs::remove_dir_all(backup);
+    }
     Ok(())
 }
 
@@ -476,6 +535,63 @@ mod tests {
         assert!(dest.join("SKILL.md").exists());
         assert!(dest.join("lib/util.js").exists());
         assert!(!dest.join("wrapper").exists());
+    }
+
+    #[test]
+    fn invalid_updates_preserve_previous_skill() {
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("skills/example");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("SKILL.md"), "previous").unwrap();
+        for bytes in [
+            b"not zip".to_vec(),
+            make_zip(&[("other.txt", b"x")]),
+            make_zip(&[("SKILL.md", b" ")]),
+        ] {
+            assert!(extract_skill_zip(&bytes, &dest).is_err());
+            assert_eq!(
+                std::fs::read_to_string(dest.join("SKILL.md")).unwrap(),
+                "previous"
+            );
+        }
+    }
+
+    #[test]
+    fn skill_commit_rolls_back_recovers_and_excludes_competing_installers() {
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("skills/example");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("SKILL.md"), "previous").unwrap();
+        let missing = temp.path().join("missing");
+        assert!(replace_skill_dir(&missing, &dest).is_err());
+        assert_eq!(
+            std::fs::read_to_string(dest.join("SKILL.md")).unwrap(),
+            "previous"
+        );
+        let backup = temp.path().join(".skill-example.previous");
+        std::fs::rename(&dest, &backup).unwrap();
+        assert!(replace_skill_dir(&missing, &dest).is_err());
+        assert!(dest.join("SKILL.md").is_file());
+        assert!(!backup.exists());
+        let lock = std::fs::OpenOptions::new()
+            .write(true)
+            .open(temp.path().join("skills/.example.install.lock"))
+            .unwrap();
+        lock.lock().unwrap();
+        let candidate = temp.path().join("candidate");
+        std::fs::create_dir(&candidate).unwrap();
+        std::fs::write(candidate.join("SKILL.md"), "new").unwrap();
+        assert!(replace_skill_dir(&candidate, &dest).is_err());
+        assert_eq!(
+            std::fs::read_to_string(dest.join("SKILL.md")).unwrap(),
+            "previous"
+        );
+        drop(lock);
+        replace_skill_dir(&candidate, &dest).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dest.join("SKILL.md")).unwrap(),
+            "new"
+        );
     }
 
     #[test]
