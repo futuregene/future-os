@@ -29,6 +29,10 @@ fn tmp_root(tag: &str) -> String {
 fn run(root: &str, args: &[&str]) -> (String, String, i32) {
     let output = Command::new(bin())
         .env("FUTURE_LOOP_ROOT", root)
+        // This suite checks CLI dispatch, not background supervision. Registering
+        // a fake supervisor must not leave a watcher alive after the test exits.
+        // Production watchdog lifecycle is exercised in reliability_contract.
+        .env("FUTURE_LOOP_NO_DETACH", "1")
         .args(args)
         .output()
         .expect("loopx binary runs");
