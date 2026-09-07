@@ -1,8 +1,8 @@
 # Loop 架构：持久看板、可靠控制、基于证据的 Agent
 
 操作指南：[Loop 控制面](../../docs/loop-control-plane.zh-CN.md)。编排驾驶手册：
-`skills/builtin/future-loop/SKILL.md`；研究方法：`skills/builtin/future-explore/SKILL.md`。
-两份 skill 都由 skills 子模块分发。英文详细契约见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+`skills/builtin/future-loop/SKILL.md`（由 skills 子模块分发）。
+英文详细契约见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 ## 边界
 
