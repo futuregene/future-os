@@ -501,10 +501,22 @@ fn os_hint() -> String {
 /// testable from any host (`std::env::consts::OS` is a compile-time constant —
 /// without injection the other arms are dead code on the test host).
 fn os_hint_for(os: &str, shell: &str, legacy_bash: bool, supports_chaining: bool) -> String {
-    let skills_hint = "Skill files are located under the user's home directory \
-        at .agents/skills/<name>/SKILL.md. When creating a new skill, \
-        construct the path by joining the home directory with this relative path \
-        using the correct path separator for this platform.";
+    let app = crate::skills::APP_SKILLS_DIR;
+    let shared = crate::skills::AGENTS_SKILLS_DIR;
+    let skills_hint = format!(
+        "Skill discovery checks app scope {app} before shared scope {shared}. \
+        When creating a custom skill, use app scope by default unless the user requests \
+        another scope. Resolve the home directory and platform-appropriate separators; \
+        each skill lives in <name>/SKILL.md."
+    );
+    let example = if os == "windows" {
+        format!(
+            "$env:USERPROFILE\\{}my-skill\\SKILL.md",
+            app.trim_start_matches("~/").replace('/', "\\")
+        )
+    } else {
+        format!("{app}my-skill/SKILL.md")
+    };
 
     match os {
         "macos" => {
@@ -523,7 +535,7 @@ fn os_hint_for(os: &str, shell: &str, legacy_bash: bool, supports_chaining: bool
                 "Host platform: macOS. Shell commands are interpreted by {shell} \
                  (POSIX shell syntax); macOS command-line tools (BSD variants) apply.\
                  {legacy_note} \
-                 {skills_hint} (Example: ~/.agents/skills/my-skill/SKILL.md)"
+                 {skills_hint} (Example: {example})"
             )
         }
         "windows" => {
@@ -545,7 +557,7 @@ fn os_hint_for(os: &str, shell: &str, legacy_bash: bool, supports_chaining: bool
                  {shell} — NOT cmd and NOT bash. Use PowerShell syntax only: \
                  {chaining}, environment variables as $env:VAR (never %VAR%), \
                  path separators \\ (not /). \
-                 {skills_hint} (Example: $env:USERPROFILE\\.agents\\skills\\my-skill\\SKILL.md)"
+                 {skills_hint} (Example: {example})"
             )
         }
         "linux" => {
@@ -560,7 +572,7 @@ fn os_hint_for(os: &str, shell: &str, legacy_bash: bool, supports_chaining: bool
             format!(
                 "Host platform: Linux. Shell commands are interpreted by {shell} \
                  (POSIX shell syntax).{legacy_note} \
-                 {skills_hint} (Example: ~/.agents/skills/my-skill/SKILL.md)"
+                 {skills_hint} (Example: {example})"
             )
         }
         other => format!("Host platform: {other}. {skills_hint}"),
@@ -570,6 +582,22 @@ fn os_hint_for(os: &str, shell: &str, legacy_bash: bool, supports_chaining: bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_skill_default_scope_matches_discovery_on_every_platform() {
+        for os in ["macos", "linux", "windows", "other"] {
+            let hint = os_hint_for(os, "test-shell", false, true);
+            assert!(hint.contains(crate::skills::APP_SKILLS_DIR));
+            assert!(hint.contains(crate::skills::AGENTS_SKILLS_DIR));
+            assert!(hint.contains("use app scope by default"));
+            assert!(!hint.contains("Example: ~/.agents/skills"));
+            assert!(!hint.contains("Example: $env:USERPROFILE\\.agents"));
+        }
+        assert!(os_hint_for("windows", "pwsh", false, true)
+            .contains("$env:USERPROFILE\\.future\\agent\\skills\\my-skill\\SKILL.md"));
+        assert!(os_hint_for("linux", "bash", false, true)
+            .contains("Example: ~/.future/agent/skills/my-skill/SKILL.md"));
+    }
 
     #[test]
     fn environment_reports_model_and_thinking_level() {
