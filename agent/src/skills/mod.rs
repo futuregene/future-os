@@ -43,7 +43,13 @@ pub fn discover_skills(dirs: &[String]) -> Result<Vec<Skill>> {
             if entry_path.is_dir() {
                 let skill_md = entry_path.join("SKILL.md");
                 if skill_md.exists() {
-                    let skill = parse_skill(&skill_md)?;
+                    let skill = match parse_skill(&skill_md) {
+                        Ok(skill) => skill,
+                        Err(error) => {
+                            tracing::warn!(path = %skill_md.display(), %error, "Skipping unreadable skill");
+                            continue;
+                        }
+                    };
                     if seen.insert(skill.name.clone()) {
                         skills.push(skill);
                     }
@@ -574,6 +580,27 @@ This is a test skill body.
         assert_eq!(discovered[0].description, "Found via discovery");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unreadable_skill_does_not_hide_other_skills() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = dir.path().join("good");
+        let bad = dir.path().join("bad");
+        std::fs::create_dir_all(&good).unwrap();
+        std::fs::create_dir_all(&bad).unwrap();
+        std::fs::write(
+            good.join("SKILL.md"),
+            "---\nname: good\ndescription: usable\n---\n",
+        )
+        .unwrap();
+        std::fs::write(bad.join("SKILL.md"), [0xff, 0xfe]).unwrap();
+        let dirs = [dir.path().to_string_lossy().into_owned()];
+        let found = discover_skills(&dirs).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "good");
+        std::fs::write(bad.join("SKILL.md"), "---\nname: repaired\n---\n").unwrap();
+        assert_eq!(discover_skills(&dirs).unwrap().len(), 2);
     }
 
     #[test]
