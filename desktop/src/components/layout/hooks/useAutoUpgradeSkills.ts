@@ -8,40 +8,36 @@ import {
 import { emitFutureEvent } from "../../../lib/futureEvents";
 
 /**
- * Silently upgrades installed skills to their latest catalogue version. Runs
- * whenever `enabled` becomes true — on app open if the setting is already on,
- * and immediately when the user toggles it on. Fully silent: successes and
- * failures only reach the console, never a toast. A run is skipped while a
- * previous one is still in flight, and if the catalogue can't be reached (e.g.
- * the platform is offline) it simply does nothing this launch.
+ * Silently upgrade when enabled. Each effect owns its cancellation signal;
+ * replacement effects wait for an in-flight install rather than being skipped.
+ * This also handles StrictMode's setup/cleanup/setup and rapid setting toggles.
  */
 export function useAutoUpgradeSkills(enabled: boolean): void {
-  const runningRef = useRef(false);
+  const pendingRef = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
-    if (!enabled || runningRef.current)
+    if (!enabled)
       return;
 
-    let cancelled = false;
-    runningRef.current = true;
-
-    void (async () => {
+    const controller = new AbortController();
+    const { signal } = controller;
+    pendingRef.current = pendingRef.current.then(async () => {
+      if (signal.aborted)
+        return;
       try {
         const [installed, available] = await Promise.all([
           listInstalledSkills(),
           listAvailableSkills(),
         ]);
-        if (cancelled)
+        if (signal.aborted)
           return;
 
         const upgrades = computeSkillUpgrades(installed, available);
         let upgradedCount = 0;
         for (const upgrade of upgrades) {
-          if (cancelled)
+          if (signal.aborted)
             break;
           try {
-            // Overwrite-install the newer version. Sequential to avoid parallel
-            // writes into the shared skills directory.
             await installSkill(upgrade.id, upgrade.version);
             upgradedCount += 1;
           }
@@ -49,22 +45,14 @@ export function useAutoUpgradeSkills(enabled: boolean): void {
             console.warn(`[skills] auto-upgrade failed for ${upgrade.id}`, error);
           }
         }
-
-        // Let an open Skills view refresh so it reflects the new versions.
-        if (!cancelled && upgradedCount > 0)
+        if (!signal.aborted && upgradedCount > 0)
           emitFutureEvent("skills-changed", undefined);
       }
       catch (error) {
-        // Catalogue or installed-list fetch failed — stay silent.
         console.warn("[skills] auto-upgrade skipped", error);
       }
-      finally {
-        runningRef.current = false;
-      }
-    })();
+    });
 
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [enabled]);
 }
