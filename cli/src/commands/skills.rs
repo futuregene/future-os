@@ -273,6 +273,8 @@ async fn update_skills(out: &Output) -> Result<(), String> {
 
     let mut updated = 0usize;
     let mut up_to_date = 0usize;
+    let mut failed = 0usize;
+    let mut unknown = 0usize;
 
     for skill in &skills {
         if !installed.contains(&skill.id) {
@@ -283,7 +285,15 @@ async fn update_skills(out: &Output) -> Result<(), String> {
         };
         let skill_md_path = skills_dir().join(&skill.id).join("SKILL.md");
         let local_ver = read_skill_md_version(&skill_md_path).await;
-        if local_ver.is_none() || local_ver.as_deref() == Some(latest.as_str()) {
+        if local_ver.is_none() {
+            unknown += 1;
+            out.log(&format!(
+                "  {}: unknown local version; skipped (use explicit install to replace).",
+                skill.id
+            ));
+            continue;
+        }
+        if local_ver.as_deref() == Some(latest.as_str()) {
             up_to_date += 1;
             continue;
         }
@@ -296,7 +306,11 @@ async fn update_skills(out: &Output) -> Result<(), String> {
         ));
         match install_skill(&skill.id, Some(latest.as_str()), out).await {
             Ok(()) => updated += 1,
-            Err(err) => out.log_err(&format!("  Failed: {err}")),
+            Err(err) => {
+                failed += 1;
+                out.log_err(&format!("  Failed: {err}"));
+                out.set_exit_code(1);
+            }
         }
     }
 
@@ -305,6 +319,11 @@ async fn update_skills(out: &Output) -> Result<(), String> {
     } else {
         out.log(&format!(
             "Updated {updated} skill(s), {up_to_date} already up to date."
+        ));
+    }
+    if failed > 0 || unknown > 0 {
+        out.log(&format!(
+            "{failed} skill(s) failed, {unknown} with unknown local version skipped."
         ));
     }
     Ok(())
@@ -330,10 +349,21 @@ async fn uninstall_skill(skill_id: &str, out: &Output) -> Result<(), String> {
 
 // ── Remote API ─────────────────────────────────────────────────────────────
 
+const SKILL_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const MAX_SKILL_DOWNLOAD_BYTES: usize = 64 * 1024 * 1024;
+
+fn skill_http_client(timeout: std::time::Duration) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(timeout)
+        .build()
+        .map_err(|e| e.to_string())
+}
+
 /// `fetchSkills(platformUrl)` — GET {platform}/client/v1/skills.
 pub async fn fetch_skills(platform_url: &str) -> Result<Vec<SkillInfo>, String> {
     let url = format!("{platform_url}/client/v1/skills");
-    let response = reqwest::Client::new()
+    let response = skill_http_client(SKILL_HTTP_TIMEOUT)?
         .get(&url)
         .send()
         .await
@@ -376,7 +406,7 @@ async fn download_skill_zip(
         urlencode(skill_id),
         urlencode(version)
     );
-    let response = reqwest::Client::new()
+    let mut response = skill_http_client(SKILL_HTTP_TIMEOUT)?
         .get(&url)
         .send()
         .await
@@ -391,11 +421,23 @@ async fn download_skill_zip(
             response.status().canonical_reason().unwrap_or("")
         ));
     }
-    let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+    if response
+        .content_length()
+        .is_some_and(|n| n > MAX_SKILL_DOWNLOAD_BYTES as u64)
+    {
+        return Err("Skill download exceeds 64 MiB limit".into());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+        if chunk.len() > MAX_SKILL_DOWNLOAD_BYTES - bytes.len() {
+            return Err("Skill download exceeds 64 MiB limit".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
     if bytes.is_empty() {
         return Err("Empty response body".to_string());
     }
-    Ok(bytes.to_vec())
+    Ok(bytes)
 }
 
 fn urlencode(s: &str) -> String {
@@ -464,25 +506,35 @@ pub async fn install_builtin_skills(out: &Output) {
         }
     ));
 
+    let mut succeeded = 0;
+    let mut failed = 0;
+    let mut unavailable = 0;
     for skill in &to_install {
         let Some(version) = &skill.latest_version else {
             out.log(&format!("  Skipping {} — no version available.", skill.id));
+            unavailable += 1;
             continue;
         };
-        if let Err(err) = install_skill(&skill.id, Some(version.as_str()), out).await {
-            out.log_err(&format!("  Failed to install {}: {err}", skill.id));
+        match install_skill(&skill.id, Some(version.as_str()), out).await {
+            Ok(()) => succeeded += 1,
+            Err(err) => {
+                failed += 1;
+                out.set_exit_code(1);
+                out.log_err(&format!("  Failed to install {}: {err}", skill.id));
+            }
         }
     }
 
-    out.log(&format!("Done. {} skills installed.", to_install.len()));
+    out.log(&format!("Done. {succeeded} skills installed."));
+    out.log(&format!(
+        "{failed} failed, {unavailable} unavailable, {skipped} already installed."
+    ));
 }
 
 /// `installSkill(skillId, version?)` — download, unzip, flatten, print result.
 ///
-/// With no version the latest is looked up from the catalog; metadata and
-/// download failures print the raw error, set `process.exitCode = 1` and
-/// return normally (TS behavior); write/unzip/flatten failures throw and are
-/// reported by the caller with the `  Failed to install …` prefix.
+/// Every failure propagates as Err so batch callers count actual installations,
+/// not successful function returns that only printed an error.
 async fn install_skill(skill_id: &str, version: Option<&str>, out: &Output) -> Result<(), String> {
     validate_skill_component(skill_id, "id")?;
     if let Some(version) = version {
@@ -493,27 +545,26 @@ async fn install_skill(skill_id: &str, version: Option<&str>, out: &Output) -> R
         Some(v) => v.to_string(),
         None => {
             // `installSkill(skillId)` without a version: look up the latest
-            // from the catalog. Failures print + set exitCode 1 and return
-            // normally (TS behavior).
+            // from the catalog. Failures must propagate to batch accounting.
             let skills = match fetch_skills(&platform_url).await {
                 Ok(skills) => skills,
                 Err(err) => {
                     out.log_err("Failed to fetch skill metadata.");
                     out.log_err(&err);
                     out.set_exit_code(1);
-                    return Ok(());
+                    return Err(err);
                 }
             };
             let Some(skill_meta) = skills.iter().find(|s| s.id == skill_id) else {
                 out.log_err(&format!("Skill \"{skill_id}\" not found in catalog."));
                 out.log_err("Run \"future skills list\" to see available skills.");
                 out.set_exit_code(1);
-                return Ok(());
+                return Err(format!("Skill \"{skill_id}\" not found in catalog."));
             };
             let Some(latest) = &skill_meta.latest_version else {
                 out.log_err(&format!("Skill \"{skill_id}\" has no versions available."));
                 out.set_exit_code(1);
-                return Ok(());
+                return Err(format!("Skill \"{skill_id}\" has no versions available."));
             };
             latest.clone()
         }
@@ -523,13 +574,18 @@ async fn install_skill(skill_id: &str, version: Option<&str>, out: &Output) -> R
     let is_update = tokio::fs::metadata(&dest).await.is_ok();
 
     out.log(&format!("Downloading {skill_id} v{version}..."));
-    let tmp_zip = std::env::temp_dir().join(format!("future-skill-{skill_id}-{version}.zip"));
+    let tmp_zip = tempfile::Builder::new()
+        .prefix("future-skill-")
+        .suffix(".zip")
+        .tempfile()
+        .map_err(|e| e.to_string())?
+        .into_temp_path();
     let zip_bytes = match download_skill_zip(&platform_url, skill_id, &version).await {
         Ok(bytes) => bytes,
         Err(err) => {
             out.log_err(&err);
             out.set_exit_code(1);
-            return Ok(());
+            return Err(err);
         }
     };
     let write_result = tokio::fs::write(&tmp_zip, zip_bytes).await;
@@ -718,12 +774,9 @@ pub async fn read_skill_md_version(skill_md_path: &Path) -> Option<String> {
 /// `None` (JS `unquote` returns `val || ""`, and empty is falsy everywhere
 /// the version is consumed).
 fn unquote(val: &str) -> Option<String> {
-    let stripped = if (val.starts_with('"') && val.ends_with('"'))
-        || (val.starts_with('\'') && val.ends_with('\''))
-    {
-        &val[1..val.len().saturating_sub(1)]
-    } else {
-        val
+    let stripped = match val.chars().next() {
+        Some(quote @ ('"' | '\'')) => val.get(1..)?.strip_suffix(quote)?,
+        _ => val,
     };
     if stripped.is_empty() {
         None
@@ -1390,6 +1443,10 @@ mod tests {
         point_platform_at(&base).await;
         let (out, cap) = Output::memory();
         install_builtin_skills(&out).await;
+        assert_eq!(out.exit_code(), 1);
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("Done. 0 skills installed."));
+        assert!(stdout.contains("1 failed"));
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
         assert!(
             stderr.contains("Failed to install future-x"),
@@ -1484,7 +1541,7 @@ mod tests {
         // Catalog fetch failure.
         point_platform_at("http://127.0.0.1:1").await;
         let (out, cap) = Output::memory();
-        install_skill("future-x", None, &out).await.expect("ok");
+        assert!(install_skill("future-x", None, &out).await.is_err());
         assert_eq!(out.exit_code(), 1);
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
         assert!(
@@ -1501,7 +1558,7 @@ mod tests {
         .await;
         point_platform_at(&base).await;
         let (out, cap) = Output::memory();
-        install_skill("future-x", None, &out).await.expect("ok");
+        assert!(install_skill("future-x", None, &out).await.is_err());
         assert_eq!(out.exit_code(), 1);
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
         assert!(
@@ -1518,7 +1575,7 @@ mod tests {
         .await;
         point_platform_at(&base).await;
         let (out, cap) = Output::memory();
-        install_skill("future-x", None, &out).await.expect("ok");
+        assert!(install_skill("future-x", None, &out).await.is_err());
         assert_eq!(out.exit_code(), 1);
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
         assert!(
@@ -1546,6 +1603,63 @@ mod tests {
         install_skill("future-x", None, &out).await.expect("ok");
         assert_eq!(out.exit_code(), 0);
         assert!(skills_dir().join("future-x").join("SKILL.md").exists());
+    }
+
+    #[test]
+    fn malformed_quoted_versions_never_panic() {
+        for value in ["\"", "'", "\"unterminated", "'unterminated", "\"\"", "''"] {
+            assert_eq!(unquote(value), None, "{value:?}");
+        }
+        assert_eq!(unquote("'1.2.3'"), Some("1.2.3".into()));
+    }
+
+    #[tokio::test]
+    async fn skill_request_deadline_covers_stalled_response_body() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (release, wait) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 1024];
+            assert!(socket.read(&mut request).await.unwrap() > 0);
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n")
+                .await
+                .unwrap();
+            let _ = wait.await;
+        });
+        let client = skill_http_client(std::time::Duration::from_millis(100)).unwrap();
+        let response = client.get(url).send().await.unwrap();
+        assert!(response.bytes().await.unwrap_err().is_timeout());
+        drop(release);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_download_is_not_counted_as_updated() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        plant_skill("future-x", "1.0").await;
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills",
+            200,
+            &catalog(&[("future-x", Some("2.0"), "x")]),
+        )])
+        .await;
+        point_platform_at(&base).await;
+        let (out, cap) = Output::memory();
+        update_skills(&out).await.unwrap();
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert_eq!(out.exit_code(), 1);
+        assert!(!stdout.contains("Updated 1"));
+        assert!(stdout.contains("1 skill(s) failed"));
+        assert_eq!(
+            read_skill_md_version(&skills_dir().join("future-x/SKILL.md"))
+                .await
+                .as_deref(),
+            Some("1.0")
+        );
     }
 
     #[tokio::test]
@@ -1605,9 +1719,7 @@ mod tests {
         let base = crate::test_server::spawn_http(vec![]).await; // 404
         point_platform_at(&base).await;
         let (out, cap) = Output::memory();
-        install_skill("future-x", Some("9.9"), &out)
-            .await
-            .expect("ok");
+        assert!(install_skill("future-x", Some("9.9"), &out).await.is_err());
         assert_eq!(out.exit_code(), 1);
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
         assert!(
@@ -1926,7 +2038,7 @@ mod tests {
             "stdout: {stdout}"
         );
         assert!(
-            stdout.contains("Done. 2 skills installed."),
+            stdout.contains("Done. 1 skills installed."),
             "stdout: {stdout}"
         );
         assert!(skills_dir().join("future-a").join("SKILL.md").exists());
@@ -2083,6 +2195,7 @@ mod tests {
         update_skills(&out).await.unwrap();
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
         assert!(stderr.contains("  Failed: "), "stderr: {stderr}");
+        assert_eq!(out.exit_code(), 1);
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
         // Nothing updated; up_to_date didn't count it either.
         assert!(
@@ -2093,12 +2206,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_skills_missing_skill_md_counts_up_to_date() {
+    async fn update_skills_missing_version_is_unknown_not_up_to_date() {
         let _guard = crate::test_env::lock_env().await;
         let _home = crate::test_env::EnvGuard::temp_home();
         // Installed id (dir with SKILL.md) whose version can't be read:
         // get_installed_skill_ids requires SKILL.md, so make it unreadable
-        // as version (no frontmatter) → local_ver None → up_to_date.
+        // as version (no frontmatter) → unknown; preserve side-loaded content.
         let dir = skills_dir().join("future-a");
         tokio::fs::create_dir_all(&dir).await.unwrap();
         tokio::fs::write(dir.join("SKILL.md"), "# no frontmatter\n")
@@ -2115,9 +2228,10 @@ mod tests {
         update_skills(&out).await.unwrap();
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
         assert!(
-            stdout.contains("1 skill(s) already up to date."),
+            stdout.contains("1 with unknown local version skipped."),
             "stdout: {stdout}"
         );
+        assert!(!stdout.contains("1 skill(s) already up to date."));
     }
 
     #[tokio::test]
