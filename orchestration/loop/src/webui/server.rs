@@ -127,6 +127,9 @@ async fn read_request(stream: &mut TcpStream) -> Result<Option<Request>> {
     // Read headers (read-only dashboard: no request bodies are consumed).
     let header_end = loop {
         if let Some(pos) = find_subslice(&buf, b"\r\n\r\n") {
+            if pos + 4 > MAX_HEADER_BYTES {
+                anyhow::bail!("headers too large");
+            }
             break pos + 4;
         }
         if buf.len() > MAX_HEADER_BYTES {
@@ -217,7 +220,10 @@ fn percent_decode(s: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+            if let Some(v) = std::str::from_utf8(&bytes[i + 1..i + 3])
+                .ok()
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+            {
                 out.push(v);
                 i += 3;
                 continue;
@@ -235,7 +241,10 @@ async fn handle(
     rx: watch::Receiver<String>,
 ) -> Result<()> {
     stream.set_nodelay(true)?;
-    let Some(req) = read_request(&mut stream).await? else {
+    let Some(req) = tokio::time::timeout(Duration::from_secs(10), read_request(&mut stream))
+        .await
+        .context("request header timeout")??
+    else {
         return Ok(());
     };
 
@@ -281,7 +290,7 @@ fn route(req: &Request, root: &str) -> Vec<u8> {
     }
     // /api/goals/{id}/... segments
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    if segments.len() >= 2 && segments[0] == "api" && segments[1] == "goals" {
+    if segments.len() >= 3 && segments[0] == "api" && segments[1] == "goals" {
         let goal_id = percent_decode(segments[2]);
         match (req.method.as_str(), segments.get(3).copied()) {
             ("GET", None) => {
@@ -429,6 +438,11 @@ mod tests {
         assert_eq!(percent_decode("plain"), "plain");
         assert_eq!(percent_decode("%ZZ"), "%ZZ"); // invalid hex passthrough
         assert_eq!(percent_decode("100%"), "100%"); // truncated passthrough
+        for input in ["%中", "%a中", "中文%", "%🙂", "%é", "日本語"] {
+            assert_eq!(percent_decode(input), input);
+        }
+        assert_eq!(percent_decode("%E4%B8%AD"), "中");
+        assert_eq!(percent_decode("%FF"), "�");
     }
 
     #[test]
@@ -529,6 +543,48 @@ mod tests {
             &root,
         );
         assert!(String::from_utf8_lossy(&err).contains("404 Not Found"));
+    }
+
+    #[test]
+    fn missing_goal_ids_and_malformed_unicode_urls_return_not_found() {
+        let (root, _dir) = store_root();
+        for path in [
+            "/api/goals",
+            "/api/goals/",
+            "/api/goals//",
+            "/api/goals/%中",
+            "/api/goals/%🙂",
+        ] {
+            let response = route(
+                &Request {
+                    method: "GET".into(),
+                    path: path.into(),
+                    query: String::new(),
+                },
+                &root,
+            );
+            assert!(
+                String::from_utf8_lossy(&response).contains("404 Not Found"),
+                "{path}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_oversized_headers_are_rejected() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let sender = tokio::spawn(async move {
+            let mut client = TcpStream::connect(addr).await.unwrap();
+            let request = format!(
+                "GET / HTTP/1.1\r\nX: {}\r\n\r\n",
+                "a".repeat(MAX_HEADER_BYTES)
+            );
+            client.write_all(request.as_bytes()).await.unwrap();
+        });
+        let (mut stream, _) = listener.accept().await.unwrap();
+        assert!(read_request(&mut stream).await.is_err());
+        sender.await.unwrap();
     }
 
     #[test]
