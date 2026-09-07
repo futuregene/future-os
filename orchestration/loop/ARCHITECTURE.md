@@ -1,8 +1,7 @@
 # Loop architecture: durable kanban, reliable controls, evidence-driven agents
 
 Operational commands: [control plane guide](../../docs/loop-control-plane.md).
-Agent driving policy: `skills/builtin/future-loop/SKILL.md`; research methodology:
-`skills/builtin/future-explore/SKILL.md` (the skills submodule).
+Agent driving policy: `skills/builtin/future-loop/SKILL.md` (the skills submodule).
 
 ## Boundaries
 
