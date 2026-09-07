@@ -6,9 +6,9 @@ rem builds + starts future-agent, then runs the Tauri desktop in dev mode agains
 rem and stops the agent it started when the desktop exits.
 rem
 rem Knobs (set before running, e.g. `set REUSE_AGENT=1`):
-rem   FUTURE_AGENT_GRPC_ADDR  default 127.0.0.1:50051
+rem   FUTURE_AGENT_GRPC_ADDR  explicit TCP address (default: local IPC)
 rem   DESKTOP_DEV_PORT            default 5173
-rem   REUSE_AGENT             1 = reuse an agent already listening on the port
+rem   REUSE_AGENT             1 = reuse an agent already reachable
 rem   BUILD_AGENT             1 = cargo build the agent first (default 1)
 rem   BUILD_CLI               1 = build the future CLI and put it on the agent's
 rem                               PATH so skills that call `future` work (default 1)
@@ -27,11 +27,21 @@ set "AGENT_DIR=%ROOT_DIR%\agent"
 set "CLI_DIR=%ROOT_DIR%\cli"
 set "LOG_DIR=%ROOT_DIR%\.logs"
 
-if not defined FUTURE_AGENT_GRPC_ADDR set "FUTURE_AGENT_GRPC_ADDR=127.0.0.1:50051"
-set "AGENT_ADDR=%FUTURE_AGENT_GRPC_ADDR%"
-for /f "tokens=1,2 delims=:" %%a in ("%AGENT_ADDR%") do (
-  set "AGENT_HOST=%%a"
-  set "AGENT_PORT=%%b"
+set "AGENT_MODE=local"
+set "AGENT_ADDR=auto"
+set "AGENT_ENDPOINT=per-user named pipe"
+if defined FUTURE_AGENT_GRPC_ADDR (
+  set "AGENT_ADDR=%FUTURE_AGENT_GRPC_ADDR%"
+  if /I not "%FUTURE_AGENT_GRPC_ADDR%"=="auto" set "AGENT_MODE=tcp"
+)
+if "%AGENT_MODE%"=="tcp" (
+  set "AGENT_TCP_ADDR=%AGENT_ADDR:http://=%"
+  set "AGENT_TCP_ADDR=!AGENT_TCP_ADDR:https://=!"
+  for /f "tokens=1,2 delims=:" %%a in ("!AGENT_TCP_ADDR!") do (
+    set "AGENT_HOST=%%a"
+    set "AGENT_PORT=%%b"
+  )
+  set "AGENT_ENDPOINT=http://!AGENT_TCP_ADDR!"
 )
 if not defined DESKTOP_DEV_PORT set "DESKTOP_DEV_PORT=5173"
 if not defined REUSE_AGENT set "REUSE_AGENT=0"
@@ -53,7 +63,7 @@ set "AGENT_PID="
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 
 echo Workspace: %ROOT_DIR%
-echo Agent gRPC: %AGENT_ADDR%
+echo Agent endpoint: %AGENT_ENDPOINT%
 echo desktop dev port: %DESKTOP_DEV_PORT%
 
 if "%DRY_RUN%"=="1" (
@@ -96,23 +106,20 @@ rem resolve it. The agent (started below) inherits this process's environment.
 rem cargo build writes to the workspace-level target dir, not cli/target.
 if exist "%ROOT_DIR%\target\debug\future.exe" set "PATH=%ROOT_DIR%\target\debug;%PATH%"
 
-call :port_in_use
-set "PORT_BUSY=%ERRORLEVEL%"
+call :agent_is_ready
+set "AGENT_READY=%ERRORLEVEL%"
 
-if "%REUSE_AGENT%"=="1" if "%PORT_BUSY%"=="0" (
-  echo Using existing future-agent at %AGENT_ADDR%
+if "%REUSE_AGENT%"=="1" if "%AGENT_READY%"=="0" (
+  echo Using existing future-agent at %AGENT_ENDPOINT%
   goto :start_desktop
 )
 
-if "%PORT_BUSY%"=="0" (
-  echo Port %AGENT_PORT% is already in use.
-  call :stop_pid_file_process
-  call :port_in_use
-  set "PORT_BUSY=%ERRORLEVEL%"
-  if "!PORT_BUSY!"=="0" (
-    echo Stop the old process, or run with REUSE_AGENT=1 to reuse it.
-    exit /b 1
-  )
+call :stop_pid_file_process
+call :agent_is_ready
+if "%ERRORLEVEL%"=="0" (
+  echo Agent endpoint %AGENT_ENDPOINT% is already in use.
+  echo Stop the old agent, or run with REUSE_AGENT=1 to reuse it.
+  exit /b 1
 )
 
 if not exist "%AGENT_BIN%" (
@@ -128,7 +135,7 @@ rem PowerShell writes the PID to the pid file; we read it back. Do NOT capture
 rem the PID through `for /f` here: Start-Process redirection makes the spawned
 rem agent inherit the for-pipe handle, so `for /f` blocks until the agent exits.
 del /q "%AGENT_PID_FILE%" >nul 2>&1
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$p = Start-Process -FilePath $env:AGENT_BIN -ArgumentList @('--grpc-addr', $env:AGENT_ADDR) -WorkingDirectory $env:AGENT_DIR -RedirectStandardOutput $env:AGENT_LOG -RedirectStandardError $env:AGENT_ERR -WindowStyle Hidden -PassThru; [System.IO.File]::WriteAllText($env:AGENT_PID_FILE, [string]$p.Id)"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$start = @{ FilePath = $env:AGENT_BIN; WorkingDirectory = $env:AGENT_DIR; RedirectStandardOutput = $env:AGENT_LOG; RedirectStandardError = $env:AGENT_ERR; WindowStyle = 'Hidden'; PassThru = $true }; if ($env:AGENT_MODE -eq 'tcp') { $start.ArgumentList = @('--grpc-addr', $env:AGENT_TCP_ADDR) }; $p = Start-Process @start; [System.IO.File]::WriteAllText($env:AGENT_PID_FILE, [string]$p.Id)"
 
 set "AGENT_PID="
 if exist "%AGENT_PID_FILE%" set /p AGENT_PID=<"%AGENT_PID_FILE%"
@@ -150,7 +157,11 @@ echo Starting desktop...
 echo Press Ctrl-C to stop the desktop. At the "Terminate batch job (Y/N)?" prompt choose N
 echo so this script can stop the agent it started; choosing Y leaves the agent running
 echo (the next run reclaims it via the pid file).
-set "FUTURE_AGENT_GRPC_ADDR=%AGENT_ADDR%"
+if "%AGENT_MODE%"=="tcp" (
+  set "FUTURE_AGENT_GRPC_ADDR=%AGENT_ADDR%"
+) else (
+  set "FUTURE_AGENT_GRPC_ADDR="
+)
 pushd "%DESKTOP_DIR%" || (call :cleanup & exit /b 1)
 if "%DESKTOP_DEV_PORT%"=="5173" (
   call npm run tauri:dev
@@ -211,13 +222,26 @@ rem Returns 0 (errorlevel) if AGENT_PORT is LISTENING, 1 otherwise.
 netstat -ano -p tcp | findstr /r /c:":%AGENT_PORT% .*LISTENING" >nul 2>&1
 exit /b %ERRORLEVEL%
 
+:agent_is_ready
+if "%AGENT_MODE%"=="tcp" goto :port_in_use
+if exist "%ROOT_DIR%\target\debug\future.exe" (
+  setlocal
+  set "FUTURE_AGENT_GRPC_ADDR="
+  "%ROOT_DIR%\target\debug\future.exe" models --json >nul 2>&1
+  exit /b !ERRORLEVEL!
+)
+rem Connect to the current user's protected named pipe. Unlike checking the
+rem pipe namespace, this rejects a stale name whose server is no longer alive.
+powershell -NoProfile -Command "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $pipe = [System.IO.Pipes.NamedPipeClientStream]::new('.', ('future-agent-' + $sid), [System.IO.Pipes.PipeDirection]::InOut); try { $pipe.Connect(300); exit 0 } catch { exit 1 } finally { $pipe.Dispose() }" >nul 2>&1
+exit /b %ERRORLEVEL%
+
 :wait_for_agent
 set /a _attempts=0
 :wait_loop
-call :port_in_use && exit /b 0
+call :agent_is_ready && exit /b 0
 set /a _attempts+=1
 if %_attempts% GEQ 60 (
-  echo future-agent did not become ready at %AGENT_ADDR%
+  echo future-agent did not become ready at %AGENT_ENDPOINT%
   echo Agent log: %AGENT_LOG%
   echo Agent err: %AGENT_ERR%
   exit /b 1
