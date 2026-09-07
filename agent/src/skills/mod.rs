@@ -136,8 +136,7 @@ fn parse_skill(skill_md: &Path) -> Result<Skill> {
         // Strip the Windows extended-length prefix (\\?\) if present.
         .trim_start_matches("//?/")
         .to_string();
-    let disable =
-        content.contains("disableModelInvocation") || content.contains("disable_model_invocation");
+    let disable = extract_invocation_disabled(&content);
 
     Ok(Skill {
         name,
@@ -148,6 +147,37 @@ fn parse_skill(skill_md: &Path) -> Result<Skill> {
         location,
         disable_model_invocation: disable,
     })
+}
+
+/// Invocation policy is a top-level boolean, never a keyword in prose/examples.
+/// Keep historical casing aliases and accept the standard kebab-case spelling.
+fn extract_invocation_disabled(content: &str) -> bool {
+    let Some(header) = frontmatter(content) else {
+        return false;
+    };
+    for line in header.lines() {
+        if line.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        if !matches!(
+            key.trim(),
+            "disableModelInvocation" | "disable_model_invocation" | "disable-model-invocation"
+        ) {
+            continue;
+        }
+        let value = value.split(" #").next().unwrap_or_default().trim();
+        if value.eq_ignore_ascii_case("true") {
+            return true;
+        }
+        if !value.eq_ignore_ascii_case("false") {
+            tracing::warn!(field = key, "Ignoring non-boolean skill invocation policy");
+        }
+        return false;
+    }
+    false
 }
 
 fn extract_name(content: &str, path: &Path) -> Result<String> {
@@ -523,6 +553,46 @@ version: "1.0.0"
         assert_eq!(resolved[0].name, "my-skill");
         assert_eq!(resolved[1].name, "my-skill_2");
         assert_eq!(resolved[2].name, "other");
+    }
+
+    #[test]
+    fn invocation_policy_only_reads_top_level_boolean_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("SKILL.md");
+        for key in [
+            "disableModelInvocation",
+            "disable_model_invocation",
+            "disable-model-invocation",
+        ] {
+            for (value, expected) in [
+                ("true", true),
+                ("false", false),
+                ("TRUE # comment", true),
+                ("false # comment", false),
+                ("\"true\"", false),
+                ("not-a-bool", false),
+            ] {
+                std::fs::write(
+                    &path,
+                    format!("---\nname: example\n{key}: {value}\n---\nbody"),
+                )
+                .unwrap();
+                assert_eq!(
+                    parse_skill(&path).unwrap().disable_model_invocation,
+                    expected,
+                    "{key}: {value}"
+                );
+            }
+        }
+        for content in [
+            "---\nname: example\n---\nExample: disableModelInvocation: true",
+            "---\nname: example\nmetadata:\n  disable_model_invocation: true\n---\n",
+            "---\nname: example\ndescription: |\n  disableModelInvocation: true\n---\n",
+            "---\nname: example\n# disableModelInvocation: true\n---\n",
+        ] {
+            std::fs::write(&path, content).unwrap();
+            assert!(!parse_skill(&path).unwrap().disable_model_invocation);
+        }
     }
 
     #[test]
