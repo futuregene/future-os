@@ -555,7 +555,7 @@ export function MentionEditor({
         spellCheck={false}
         suppressContentEditableWarning
         className={cn(
-          "max-h-[40vh] min-h-14 w-full overflow-y-auto whitespace-pre-wrap break-words px-2 py-1 text-sm leading-5 text-ink outline-none",
+          "max-h-[40vh] min-h-14 w-full overflow-y-auto whitespace-pre-wrap wrap-break-word px-2 py-1 text-sm leading-5 text-ink outline-none",
           className,
         )}
         onInput={() => {
