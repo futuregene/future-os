@@ -40,7 +40,7 @@ Type in the input box at the bottom and press **Enter** to send. You'll see:
 
 - The reply **streaming in** live.
 - **Tool activity** shown as the agent reads files, runs commands, and so on.
-- A **pause for your approval** whenever the agent wants to do something risky (like writing a file or running a command). Nothing risky happens without your OK.
+- **Approval cards** when your selected mode and rules require them. The desktop defaults to **Unrestricted**: before working with untrusted content, choose **Manual** or **Sandboxed** in Settings → General or the composer shield. Not every tool call asks; see [[Approvals and sandboxing|Sandbox]].
 
 You can attach local files with the paperclip button or drag-and-drop, and paste images directly. Each message supports up to **4 images** (25 MiB each); other file types are not count-limited.
 

@@ -12,13 +12,13 @@
 
 - **Language(语言)** —— 选择应用的显示语言。
 - **Approval mode(批准模式)** —— agent 在操作前询问的程度:
-  - **Manual(手动)** —— 读写文件前询问;只读命令自动运行。
-  - **Sandboxed(沙箱,仅 macOS)** —— 命令在 macOS 沙箱内运行;文件操作仍会询问。
-  - **Unrestricted(不受限)** —— 不询问、不沙箱,一切照跑。
+  - **Manual(手动)** —— 文件访问遵循 Allow/Ask/Deny 路径规则；shell 除只读白名单外先询问。
+  - **Sandboxed(沙箱)** —— 可用时使用 macOS Seatbelt、Linux 系统 Bubblewrap 或 Windows 受限令牌写保护；文件访问仍遵循路径规则，各平台保护范围不同。
+  - **Unrestricted(不受限，默认)** —— 不询问、不沙箱，一切照跑。
 - **Show thinking process(显示思考过程)** —— 在对话里显示或隐藏模型的推理过程。
 - **Auto-upgrade skills(技能自动升级)** —— 每次应用打开时,静默把已安装技能升级到最新版本。
 
-批准机制的实际用法见 [[使用 FutureOS|Using-FutureOS]]。
+默认值、Linux 安装、诊断与限制见 [[审批与沙箱|Sandbox]]；批准卡片用法见 [[使用 FutureOS|Using-FutureOS]]。
 
 ---
 

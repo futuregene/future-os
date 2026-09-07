@@ -21,7 +21,7 @@ FutureOS 是「一个 AI agent 到处跑」的多端系统：核心是 Rust gRPC
 - `orchestration/loop/`：Rust `future-loop`，loop 控制面。
 - `packages/rpc/`：Rust `future-rpc`，protobuf 线协议（单一真源）。
 
-GUI 不把 Agent 作为 Tauri crate dependency 编进桌面进程。运行时 GUI 通过 `FUTURE_AGENT_GRPC_ADDR` 连接 `future-agent` gRPC 服务，默认地址是 `127.0.0.1:50051`。
+GUI 不把 Agent 作为 Tauri crate dependency 编进桌面进程。运行时 GUI 默认通过每用户本地 IPC 连接 Agent gRPC 服务；Unix 优先使用 `FUTURE_AGENT_SOCKET`，Linux 否则使用 `$XDG_RUNTIME_DIR/future/agent.sock`，再回退 `~/.future/run/agent.sock`（macOS 默认）；Windows 使用当前用户命名管道。`FUTURE_AGENT_GRPC_ADDR` 可显式指定 TCP，Agent 需传 `--grpc-addr` 开启。无可连接 Agent 时桌面启动统一 `future agent` sidecar，仅负责自己启动的进程生命周期。
 
 ## 3. 产品原则
 
@@ -119,17 +119,17 @@ GUI 中的工具调用应展示短标题、状态、耗时、路径或命令摘�
 
 ### 4.6 Approval
 
-Approval 解决“是否允许执行”。它发生在高风险操作真正执行之前。
+Approval 在所选模式和规则要求询问时解决“是否允许执行”，不代表所有高风险操作都自动被识别或询问。桌面当前默认 `off`；启用 manual/sandbox 后才应用相应保护。
 
 常规文件审批以**文件路径访问**（读 / 写）为对象；手动模式的 shell 审批以及 macOS / Linux 的单次脱沙盒审批以**整条命令**为对象，不能将卡片列出的路径理解成命令的完整权限边界。共享规则、协议与审批见 [SANDBOX/COMMON.md](SANDBOX/COMMON.md)；平台实现、差异与验收分别见 [macOS](SANDBOX/MACOS.md)、[Linux](SANDBOX/LINUX.md)、[Windows](SANDBOX/WINDOWS.md)。要点：
 
 - **按路径的分层规则**得出 `ask / allow / deny`，首个匹配即返回：内置安全覆盖（不可改）→ 敏感文件守卫（不可改）→ 本对话/工作区临时规则 → 规则文件（`${WS}/.future/approval_rule.json`、`~/.future/approval_rule.json`）→ 兜底（读放开、写限 workspace/temp）。
 - **审批分三档**（输入框下拉 / 设置页切换，全局生效）：
-  - **手动审批**（默认，全平台）：read/write/edit 按规则弹审批；shell 的只读命令（`ls/cat/grep/git status` 等）免问直跑，其余命令弹卡片确认；不启用 OS 沙盒。
+  - **手动审批**（可选，全平台）：read/write/edit 按规则弹审批；shell 的只读命令（`ls/cat/grep/git status` 等）免问直跑，其余命令弹卡片确认；不启用 OS 沙盒。
   - **沙箱保护**（macOS）：shell 在 Seatbelt 沙盒里自动跑，越界失败后走升级审批；read/write/edit 仍按规则弹审批。
   - **写保护**（Windows）：shell 在 unelevated RestrictedToken + NTFS ACL 写边界内运行，开放 workspace、实际临时根与已允许路径，额外外部写路径走前置审批。**shell 读取（包括敏感文件）和网络不由写保护拦截**；原生 read/write/edit 仍按敏感守卫判定。普通目录 ACL 无法完整保护未来文件名或 glob；当前用户既有父目录删除权限及宽 ACL 也可能削弱边界，不能把单文件批准理解成绝对禁止删除，不宣称与 macOS 等价。
-  - **沙箱保护**（Linux 开发分支，发布前真机矩阵待完成）：shell 在 system Bubblewrap 中运行，网络开放；启动时已存在的精确保护目标和 glob 匹配由 OS 沙箱保护。缺失精确目标及命令中新 glob 匹配目前仅结束后检测，不能阻止可写域内创建，也不构成完整访问审计；缺失 Deny 目标不承诺硬保护，属于下述已接受限制。完整 probe 失败显式回退手动审批，绝不裸跑。安装与限制见 [`SANDBOX/LINUX.md`](SANDBOX/LINUX.md)。
-  - **完全放开**：全部放行，不再询问，也不启用沙箱。
+  - **沙箱保护**（Linux 已合入，发布前真机矩阵仍需候选版本证据）：shell 在 system Bubblewrap 中运行，网络开放；启动时已存在的精确保护目标和 glob 匹配由 OS 沙箱保护。缺失精确目标及命令中新 glob 匹配目前仅结束后检测，不能阻止可写域内创建，也不构成完整访问审计；缺失 Deny 目标不承诺硬保护，属于下述已接受限制。完整 probe 失败显式回退手动审批，绝不裸跑。安装与限制见 [`SANDBOX/LINUX.md`](SANDBOX/LINUX.md)。
+  - **完全放开**（当前桌面默认）：全部放行，不再询问，也不启用沙箱。
 - **网络完全放开、不审批**。
 - **Linux shell 的明确限制（已接受，不承诺与 macOS 等价）**：启动时不存在的保护目标（包括两个 `approval_rule.json` 和用户自定义 `deny` 路径）不承诺禁止创建，仅结束时做存在性检测；若最终位于可写域，创建可能成功。已有规则文件仍按只读挂载保护，但缺失时创建可写入后续生效的规则，这是已接受的安全取舍，不等于没有风险。原生 `read/write/edit` 的规则检查不变。复杂“宽禁止、窄允许”组合及尚不存在的 writable allow 目标不承诺一定可用，可能访问失败或初始化失败。本期不为这些场景新增父目录只读、占位对象或自动降级；macOS 原有路径强制不变。
 - **规则语义**：敏感文件（`.env`、`*.pem`、`*.key`、`~/.ssh`、凭证等）默认 ask 且不可被用户规则覆盖，只能“允许一次”，不能持久放行；models.json 读写 deny、规则文件写 deny。原生工具执行该判定；shell 的平台差异以上述边界为准，macOS/Linux 已批准的整命令脱沙盒也不受 OS 规则限制。
@@ -287,7 +287,7 @@ GUI 采用三栏结构：
 
 失败 / 已结束的 assistant 消息下方提供恢复动作：重试 / 继续（仅最新一轮失败消息）与分叉（任意已结束消息），语义见 4.4。
 
-assistant 的**思考过程**（模型 reasoning）按发生顺序**内联**展示在文本与工具调用之间（与工具调用同处一条时间线，不聚集在消息顶部），以暗色弱化的样式呈现。是否展示由设置「通用」页的**显示思考过程**开关控制，**默认关闭**。开关**关闭**时不展示 reasoning 内容，但模型进入思考、尚无正文输出时，会在该消息的**底部信息栏**显示「正在思考中…」文字提示，让用户知道运行未卡住；开关**打开**时 reasoning 已内联可见，不再重复提示。该提示只在流式期间出现，停止或结束后随即消失。
+assistant 的**思考过程**（模型 reasoning）按发生顺序**内联**展示在文本与工具调用之间（与工具调用同处一条时间线，不聚集在消息顶部），以暗色弱化的样式呈现。是否展示由设置「通用」页的**显示思考过程**开关控制，当前持久设置**默认开启**（`store/app_settings.rs`）。开关**关闭**时不展示 reasoning 内容，但模型进入思考、尚无正文输出时，会在该消息的**底部信息栏**显示「正在思考中…」文字提示，让用户知道运行未卡住；开关**打开**时 reasoning 已内联可见，不再重复提示。该提示只在流式期间出现，停止或结束后随即消失。
 
 输入框应保持底部悬浮，模型选择位于输入框区域。发送消息时 GUI 创建 Run 记录并把 prompt 交给 Agent；用户消息与事件由 Agent 持久化（会话 JSONL 与 run-events journal，唯一真源），GUI 观察者把事件流实时投影到 UI 与附加存储（审批等）。
 
@@ -333,7 +333,7 @@ GUI 的颜色统一走 `desktop/tailwind.config.js` 里定义的**语义 token**
 
 设置面板（左侧导航底部齿轮进入；New Chat 下方的「Models」快捷入口可直达模型页）分三页：
 
-- **通用**：界面语言切换（中文 / English，默认中文，选择存于本地）；**审批模式**按平台显示（macOS：手动审批 / 沙箱保护 / 完全放开；Windows host probe 通过时：手动审批 / 写保护 / 完全放开；Linux Bubblewrap host probe 通过时：手动审批 / 沙箱保护 / 完全放开，失败时显示稳定诊断码和 apt/dnf 安装提示并保持手动审批；默认均为手动审批）；显示思考过程开关（默认关闭）。
+- **通用**：界面语言切换（中文 / English，默认中文，选择存于本地）；**审批模式**按平台显示（macOS：手动审批 / 沙箱保护 / 完全放开；Windows host probe 通过时：手动审批 / 写保护 / 完全放开；Linux Bubblewrap host probe 通过时：手动审批 / 沙箱保护 / 完全放开，失败时显示稳定诊断码和 apt/dnf 安装提示并保持手动审批；默认均为完全放开 `off`，明确 sandbox 不可用才回退手动审批）；显示思考过程开关（当前默认开启，以 `store/app_settings.rs` 为准）。
 - **提供商**：
   - **内置 FutureGene**（只读）：点「连接」走 GUI 内置的设备码 OAuth 登录——在系统浏览器完成授权，弹窗显示验证码和可复制链接（浏览器没自动打开时的降级），成功后写入凭证；已配置后支持「重新登录 / 退出登录」。GUI 自带登录，不依赖 CLI。
   - **自定义提供商**：增 / 改 / 删 OpenAI 兼容或 Anthropic 兼容的第三方 provider（id / 名称 / API 类型 / Base URL / API Key），并可逐条配置模型列表——每个模型含 id / 名称 / 是否支持图片 / 上下文窗口 / 最大输出 token，带字段校验（id 格式与唯一性、token 上限为正且不超过上下文窗口、模型数量上限）。

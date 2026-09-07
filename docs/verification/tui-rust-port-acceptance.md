@@ -1,5 +1,10 @@
 # tui-rust-port — Final Acceptance Report
 
+> Historical migration snapshot: results and source paths below apply to the
+> recorded candidate/date, not later releases. Current transport and startup
+> behavior are documented in the [TUI guide](../tui.md). Revalidate new changes;
+> do not carry this candidate's PASS forward automatically.
+
 Status: **ACCEPTED** — verified 2026-08-07 (final re-verification on the merged
 `claude/tui-rust-port` branch, PR #114).
 Scope: 1:1 TypeScript→Rust port of `tui/` → the Rust crate at **`tui/`** (bin

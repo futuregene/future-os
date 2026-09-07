@@ -58,7 +58,7 @@ agent executes one bounded turn (gRPC) → writes evidence → kernel decides th
 | Dashboard | `ui` | Local read-only web dashboard on 127.0.0.1: goal cards, attention queue, kernel decision, todo DAG, workers/cost, run/event ledgers — live over SSE; mutations stay in the CLI |
 | Quota | `quota should-run/usage/spend/decisions` | The deterministic should-run kernel: scheduling, refusal reasons, and spend are all auditable |
 | Scheduler | `scheduler tick/show/liveness` | Monitor cadence, host-failure records, liveness heartbeats |
-| Multi-agent | `agent contract/recipe/succession/collective` | One goal, several workers: contract (backups / handoff rules), named recipes for one-command onboarding, auto back-up promotion on offline timeout, wake roster, collective turn ledger |
+| Multi-agent | `agent onboard/list` | Register parallel-worker identities and workspace write sets; coordinate tasks using ownership, dependencies and leases. Removed multi-host contract/recipe/succession/collective interfaces are not public commands. |
 | Worker observability | `worker tail` | Stream a worker's live turn log (`.live.jsonl`) as a condensed tool/usage view (`--raw` for verbatim) — the orchestrator's window into what a worker is actually doing, so it can steer / stop / let it run |
 | Frontier | `frontier show` | Outcome segments, structured replan rules, bounded semantic history (N=50), terminal judgement |
 
@@ -165,7 +165,7 @@ explicit monitor/adapter. A queued external request is not a verified result.
 
 ## Hard checks first (conventions fail, gates hold)
 - Empty-evidence closures are **refused** (fail-closed by default; `--force` opens)
-- `--verify` makes "wrote it" mean "it compiles / the artifact exists" — attach one to every delivery todo
+- `--verify` checks deterministic deliverables (e.g. compilation/file existence); use it where a meaningful machine check exists, not as a substitute for reviewing research correctness
 - `--acceptance` turns "accepted by an external observable" into a hard check
 - Lease liveness self-heals: dead-process leases are reclaimed automatically — relaunching workers needs no manual release
 - Workspace guard: multi-agent write conflicts degrade to serial automatically
@@ -245,7 +245,7 @@ parsing a merged top-level line.
 
 - **goal group** (5): `goal` `status` `ui` `models` `diagnose`
 - **todo group** (6): `todo` `gate` `replan` `frontier` `lease` `task-graph`
-- **agent group** (5): `agent` `scope` `lane` `supervisor` `worker` (list / stop / **tail**)
+- **agent group** (6): `agent` `scope` `lane` `supervisor` `report` `worker` (list / stop / **tail**)
 - **ops group** (18): `version` `doctor` `history` `turn` `todo-event` `evidence-log` `backup` `authority` `profile` `quota` `scheduler` `store` `backfill` `privacy` `runs` `heartbeat-prompt` `worker-bridge` `run`
 - **work-items group** (3): `attention` `inbox` `delivery`
 - **cli group** (2): `registry` `commands`

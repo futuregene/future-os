@@ -4,8 +4,11 @@ FutureOS Setup Guide (macOS)
 [Installation]
 Drag the FutureOS icon from this window into the "Applications" folder.
 
-[First Launch]
-This build is not Apple-notarised, so double-clicking will be blocked with
+[First Launch — unsigned test packages only]
+This note accompanies unsigned test DMGs, not signed/notarized official releases.
+Verify the source first. Unexpected warnings on a signed release should be reported
+and the artifact redownloaded, not bypassed.
+This test build is not Apple-notarised, so double-clicking will be blocked with
 a "unidentified developer" or "damaged" warning. This is expected. Choose one:
   A (recommended) Right-click (or Control-click) FutureOS in Applications
     → "Open" → click "Open" again in the dialog. You can then double-click
@@ -16,8 +19,10 @@ a "unidentified developer" or "damaged" warning. This is expected. Choose one:
 
 [Notes]
 · An internet connection is required for the first-time login (in the app).
-· Personal data is stored in ~/.future. The background agent stops
-automatically when you quit the app.
+· Personal data is stored in ~/.future. The app stops only the agent it started;
+  an externally managed agent stays running.
+· The desktop defaults to Unrestricted; select approvals/sandboxing in Settings.
+  Online features still send requests to their corresponding services.
 · The command-line tool future is included at
   FutureOS.app/Contents/MacOS/future.
 

@@ -1,7 +1,8 @@
 # Directory layout: what lives under `~/.future/`
 
-FutureOS keeps all of its user state under `~/.future/` (on Windows:
-`%USERPROFILE%\.future\`). This page maps each subdirectory to the component
+FutureOS keeps most persistent user state under `~/.future/` (on Windows:
+`%USERPROFILE%\.future\`). Loop state defaults to the project, and Linux runtime
+IPC can live under `XDG_RUNTIME_DIR`, as described below. This page maps each subdirectory to the component
 that owns it and what it stores. Paths below use the macOS/Linux form; the
 Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 
@@ -12,6 +13,8 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 │   ├── models.json            # provider/model catalog: apiKey, baseUrl, models[]
 │   ├── auth.json              # credentials, keyed by model id or provider
 │   ├── sessions/              # flat JSONL session store (one file per session)
+│   ├── run-events/            # durable per-session run event journals
+│   ├── agent-instance.lock    # per-user agent singleton lock
 │   ├── skills/                # installed user skills (APP_SKILLS_DIR)
 │   ├── browser/               # CLI browser-tool state (config.json, profile/, artifacts/)
 │   ├── images/                # CLI image-tool output directory
@@ -34,12 +37,15 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 ├── workspaces/
 │   └── chat/                  # per-thread chat workspaces (agent session / thread id)
 ├── remote_pairing.json        # desktop remote-bridge identity (nkey_seed + user_jwt)
+├── approval_rule.json         # user-level path approval rules
+├── windows-capabilities.json  # Windows sandbox ACL cleanup metadata
+├── run/agent.sock             # Unix IPC fallback (not used by Windows)
 └── bin/                       # CLI / agent links: `future`, `future-agent` (see below)
 ```
 
 ## `~/.future/agent/` — agent backend
 
-Owned by `future-agent` (the gRPC backend on `127.0.0.1:50051`). Reads its
+Owned by `future-agent` (the gRPC backend, defaulting to per-user local IPC). Reads its
 config purely from files here — there are no model-related CLI flags or env
 vars:
 
@@ -51,6 +57,11 @@ vars:
   default entry: `{"<provider>": {"type": "api_key", "key": …, "baseUrl": …}}`.
 - `sessions/` — flat directory of JSONL session files (the agent's default
   session dir).
+- `run-events/<session_id>/` — durable run and session event journals used for
+  replay. Custom session directories use their own `.run-events/` child instead.
+  Queued prompts are in memory, not durable here.
+- `agent-instance.lock` — per-user singleton lock. Tests must isolate HOME (and
+  USERPROFILE on Windows); changing only the TCP port does not bypass the lock.
 - `skills/` — one of the two skill discovery directories
   (`APP_SKILLS_DIR`); the other is `~/.agents/skills/` (`AGENTS_SKILLS_DIR`).
   Skills are plain directories with a `SKILL.md` + YAML frontmatter.
@@ -60,12 +71,30 @@ vars:
   (`future tools call image …`).
 - `logs/agent.log` — written when logging is enabled.
 
+## IPC, approval rules and Windows cleanup
+
+Unix socket selection: explicit `FUTURE_AGENT_SOCKET`, otherwise on Linux
+`$XDG_RUNTIME_DIR/future/agent.sock` when set, otherwise
+`~/.future/run/agent.sock` (also the macOS default). Windows uses a per-user named
+pipe, not a socket file. `future agent --grpc-addr <host:port>` explicitly selects
+TCP; clients may override with `FUTURE_AGENT_GRPC_ADDR` (channels use
+`agent.grpc_addr`). An explicit client TCP address is tried before local IPC.
+
+User path rules live in `~/.future/approval_rule.json`; project rules live in
+`<workspace>/.future/approval_rule.json`. See [Sandbox](wiki/en/Sandbox.md).
+Windows persists sandbox capability/ACL cleanup metadata in
+`~/.future/windows-capabilities.json`; use `future agent --reset-windows-sandbox`
+for supported cleanup, not manual deletion of metadata while ACLs remain.
+The reset refuses cleanup while sandbox permissions are in use.
+
 ## `~/.future/agent-app/` — legacy credential directory
 
 The agent resolves `auth.json` from `~/.future/agent-app/auth.json` before
 `~/.future/agent/auth.json` (back-compat with credentials written by older
 GUI builds); both `agent/` and `agent-app/` are treated as credential
 locations by the GUI's file-access guard. New writes go to `~/.future/agent/`.
+This classification does not imply sandbox isolation: `auth.json` currently has
+an explicit hard-deny exception for CLI-based skills; see [SECURITY](../SECURITY.md).
 
 ## `~/.future/channels/` — channel bridges
 
@@ -113,7 +142,7 @@ elsewhere and are never touched by reclamation of this directory.
 The `future-loop` state is **project-local**: run it from the project
 directory and everything lives under `<cwd>/.future/loop/`
 (`FUTURE_LOOP_ROOT` overrides the root for special setups; `~/.future/loop/`
-is not used). See [loop-control-plane.md](loop-control-plane.md).
+is not the default). See [loop-control-plane.md](loop-control-plane.md).
 
 ```text
 <cwd>/.future/loop/

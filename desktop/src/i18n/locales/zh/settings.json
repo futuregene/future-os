@@ -11,13 +11,13 @@
     "sandboxUnavailable": "沙箱保护（不可用）",
     "off": "完全放开",
     "description": {
-      "manual": "读写文件前询问；只读命令直接放行，其余命令需批准。",
+      "manual": "文件访问遵循审批规则；只读白名单命令直接放行，其余命令需批准。不启用 OS 沙箱。",
       "sandbox": "命令在 macOS 沙箱中运行，必要时请求批准。",
       "sandboxWindows": "命令启用 Windows 写保护，必要时请求批准。",
       "sandboxLinux": "命令在 Linux 沙箱中运行，必要时请求批准。",
       "off": "全部放开，不再询问，也不启用沙箱。"
     },
-    "fallbackNotice": "沙箱保护不可用（诊断码：{{code}}）。已显式切换为手动审批，命令不会在无沙箱保护下静默运行。",
+    "fallbackNotice": "沙箱保护不可用（诊断码：{{code}}）。已切换为手动审批：获批或白名单命令在没有 OS 沙箱的情况下运行。",
     "linuxUnavailable": {
       "title": "Linux 沙箱不可用",
       "reasons": {

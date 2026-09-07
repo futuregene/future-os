@@ -29,6 +29,7 @@ The catalogue is updated over time, so the exact list you see may differ from th
 | **Deep research** | End-to-end research: gathers and cross-checks many sources, writes a cited report. |
 | **Document** | Turns PDF and Word files into structured Markdown. |
 | **Experimental design** | Designs experiments and research protocols before data collection. |
+| **Explore** | Evidence-driven method comparison, experiments, optimization and feasibility assessment when the answer is not yet known (`/future-explore`). |
 | **Image** | Generates, edits, and analyzes images — including reading text in an image. |
 | **Loop** | Turns long-running goals into durable, verifiable plans — objectives, todos, gates, monitors, and validated completion (`/future-loop`). |
 | **Paper** | Finds papers (PubMed / ArXiv / DOI) and retrieves full text. |
@@ -50,7 +51,7 @@ You never have to invoke a skill by hand. Once it's installed:
 1. Just **describe your task** in the conversation as usual.
 2. The agent picks up the relevant skill on its own when it fits.
 
-As always, if the skill's work involves a risky action, the agent pauses for your approval first — see [[Using FutureOS|Using-FutureOS]].
+Skills use the session's permissions, not a separate safety boundary. Approval depends on the selected mode/rules; the desktop defaults to Unrestricted. See [[Sandbox]] and [[Using FutureOS|Using-FutureOS]].
 
 ---
 

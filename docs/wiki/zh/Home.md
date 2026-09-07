@@ -37,4 +37,4 @@
 
 ---
 
-FutureOS 运行于 **macOS 和 Windows**。
+FutureOS 桌面支持 **macOS、Windows 和 Linux**；Android/iOS 客户端通过 [[手机远程|Remote]] 连接。执行不可信任务前请配置 [[审批与沙箱|Sandbox]]；桌面默认不受限。

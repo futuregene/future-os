@@ -1,5 +1,10 @@
 # cli-rust-port — Final Acceptance Report (P4-final)
 
+> Historical migration snapshot: results, CLI help parity and source paths below
+> apply to the recorded candidate/date, not later releases. Current CLI defaults
+> and help have evolved (including IPC and tool permissions); consult the
+> [CLI guide](../wiki/en/CLI.md) and revalidate against current source.
+
 Status: **ACCEPTED** — verified 2026-08-07 on commit `1069f227` (branch `claude/cli-rust-port`,
 merge of `origin/main` incl. PR #112 typed-RPC wire contract).
 Scope: 1:1 TypeScript→Rust port of `cli/` (TS) → `cli/` (Rust crate, bin `future`);

@@ -1,6 +1,6 @@
 # Sandbox：公共规则、审批与参考
 
-更新：2026-09-04。本文与平台文档以当前 `sandbox` 工作区源码为基线；“已实现”不等于发布认证。历史测试只证明对应提交，不能自动覆盖后续修改。
+更新：2026-09-07（默认值核对）。Linux 实现已合入 #496；平台文档保留各自候选版本的验收边界，“已实现”不等于发布认证。历史测试只证明对应提交，不能自动覆盖后续修改。
 
 ## 1. 文档边界与平台概览
 
@@ -25,11 +25,11 @@
 
 | `tier` | 原生 read/write/edit 等工具 | shell |
 |---|---|---|
-| `manual`（默认） | 路径规则三态 | 只读白名单免问，其余命令先审批；无 OS 沙盒 |
+| `manual`（可选） | 路径规则三态 | 只读白名单免问，其余命令先审批；无 OS 沙盒 |
 | `sandbox` | 同一套路径规则 | 当前平台 OS 后端；授权语义见平台文档 |
-| `off` | 不发审批 | 无 OS 包装直接运行 |
+| `off`（桌面默认） | 不发审批 | 无 OS 包装直接运行 |
 
-GUI 建立会话时通过 `set_sandbox_policy` 下发策略。未知 tier 按 manual；未下发策略的 TUI/CLI/channels 不自动启用本系统，保留各自 `permission_level`/工作区边界。无审批 UI 的调用方不能被假定能完成 GUI 交互。`off` 在 Agent 层放行，不靠前端自动点击批准。
+GUI 建立会话时通过 `set_sandbox_policy` 下发策略。`SandboxTier` enum 的默认/未知值为 manual，但桌面持久设置的默认/未知值为 off，新 Agent 会话权限默认 all；不能混为产品默认。未下发策略的 TUI/CLI/channels 不自动启用本系统，保留各自 `permission_level`/工作区边界。无审批 UI 的调用方不能被假定能完成 GUI 交互。`off` 在 Agent 层放行，不靠前端自动点击批准。
 
 ```text
 GUI policy + workspace → ResolvedSandbox + RuleSet

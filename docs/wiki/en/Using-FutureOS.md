@@ -42,7 +42,7 @@ You can rename, pin, or delete conversations from the menu next to each one in t
 
 ## The approval mechanism — you're in control
 
-This is the heart of FutureOS. When the agent wants to do something with real-world consequences — **access a sensitive file, write or delete files, run a shell command, or write outside the workspace** — it **stops** and shows an **approval card** just above the input box. It waits for you, with **no timeout**. Ordinary reads outside the workspace are not intercepted.
+When the selected mode and rules require approval — for example for a sensitive file, an external write or a shell command — the agent **stops** and shows an **approval card** above the input box, with **no timeout**. This is not a prompt for every operation: ordinary reads and workspace/temp writes can be allowed, and the desktop defaults to **Unrestricted**, which does not ask. Select Manual or Sandboxed to enable those protections; see [[Approvals and sandboxing|Sandbox]].
 
 The card tells you exactly what's being requested — the command to run, the files to write (with a preview), or the paths involved. Then you choose:
 
@@ -56,9 +56,11 @@ The card tells you exactly what's being requested — the command to run, the fi
 
 You can set how much the agent asks in **Settings → General**, or from the shield control in the input box:
 
-- **Manual** — prompts before file reads and writes; read-only commands run automatically.
-- **Sandboxed** (macOS only) — commands run inside the macOS sandbox; file operations still prompt.
-- **Unrestricted** — no prompts and no sandbox; everything runs. Use with care.
+- **Manual** — file access follows Allow/Ask/Deny path rules; shell commands ask except for the read-only allowlist.
+- **Sandboxed** — commands use macOS Seatbelt, Linux system Bubblewrap, or Windows restricted-token write protection when available. File tools still follow path rules; not all calls prompt. Platform guarantees differ.
+- **Unrestricted** (default) — no prompts and no sandbox; everything runs. Use with care.
+
+See [[Sandbox]] for Linux installation, unavailable-mode fallback, escalation scope and credential/network limitations. For phone access to desktop sessions, see [[Remote]].
 
 ---
 

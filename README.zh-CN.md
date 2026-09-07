@@ -5,7 +5,7 @@
 <h3 align="center">同一个 AI Agent，处处随你。</h3>
 <p align="center">
   终端、桌面、手机、飞书与钉钉——一个 Rust 核心，一个 Agent，3800+ 模型。<br>
-  每一次工具调用都由你审批。本地优先。开源。
+  可配置审批与 OS 沙箱。本地优先。开源。
 </p>
 
 <p align="center">
@@ -35,7 +35,7 @@
 
 ## 为什么是 FutureOS
 
-- **信任先于能力。** 每一次工具调用——读、写、编辑、shell——默认都需要你批准，没有任何文件写入和命令执行是静默发生的。当 Agent 手握你的凭证，信任不能只是一个配置项。
+- **选择执行边界。** 为 Agent 工具配置文件访问审批与 OS 沙箱。桌面默认是不受限（`off`）；处理不可信内容前，请切换为手动或沙箱模式。默认值和限制见[安全模型](SECURITY.md)与[沙箱指南](docs/wiki/zh/Sandbox.md)。
 - **一个后端，所有界面。** 同一个 gRPC Agent 驱动终端界面、桌面应用、移动端、CLI 和 IM 机器人——同一份会话、同一份记忆、同一套技能，无论你身在何处。
 - **长任务靠工程，不靠提示词。** 内置 loop 控制面为 24 小时以上的任务提供持久化目标、事件溯源状态与验证门控——晚上布置一个调研任务，早上在手机上验收结果。
 
@@ -44,7 +44,7 @@
 | 类别 | 说明 |
 |---|---|
 | **多端统一** | 终端界面 (TUI)、桌面应用 (GUI)、移动端 App（Android · iOS）、命令行 (CLI)、IM 机器人——一个 Agent，无处不在 |
-| **信任优先的工具执行** | read, write, edit, shell——每次调用都需你审批；沙箱分级（`off` / `manual` / `sandbox`），macOS（Seatbelt）与 Windows（受限令牌）提供 OS 级沙箱；工具集精简，杜绝 prompt 膨胀 |
+| **可配置工具安全** | read, write, edit, shell——审批规则与沙箱分级（`off` / `manual` / `sandbox`）；支持 macOS Seatbelt、Linux 系统 Bubblewrap、Windows 受限令牌写保护。各平台可用性与保护范围不同（[指南](docs/wiki/zh/Sandbox.md)） |
 | **模型灵活** | 内置 3800+ 模型，覆盖 140+ Provider（[目录](docs/wiki/zh/Models.md)）；通过 `models.json` 自定义 Provider；支持模型范围限定 |
 | **Loop 工程** | 持久化目标/todos/门禁/监控，支撑 24+ 小时长程任务连续执行——确定性 should-run 内核、事件溯源状态、硬校验（证据下限/验收契约/verify 闸门）、租约活性自愈、多 agent（[指南](docs/loop-control-plane.zh-CN.md)） |
 | **强大的预设技能** | 内置 15+ 技能开箱即用，覆盖日常 Agent 场景——图片读取与生成、PDF/Word 解析、网页搜索、浏览器控制、幻灯片与软件安装，以及 `/future-loop` 长程目标编排器（[builtin](https://github.com/futuregene/future-skills/tree/main/builtin)） |
@@ -141,7 +141,7 @@ future skills install          # 不带名字：安装全部内置技能
 
 ### 启动 Agent
 
-终端与 CLI 客户端都是轻量 gRPC 客户端。**必须先启动 Agent**，监听 `127.0.0.1:50051`：
+终端与 CLI 客户端都是轻量 gRPC 客户端，默认使用**每用户本地 IPC**（macOS/Linux 为 Unix socket，Windows 为仅当前用户可访问的命名管道）。Unix 优先使用 `FUTURE_AGENT_SOCKET`；Linux 未指定时使用 `$XDG_RUNTIME_DIR/future/agent.sock`，未设置该变量则回退到 `~/.future/run/agent.sock`（也是 macOS 默认路径）。TUI 和桌面应用在没有可连接 Agent 时会自动启动 sidecar，也可以手动启动：
 
 ```bash
 future agent      # 在终端启动 agent（日志打到 stdout，Ctrl-C 停止）
@@ -153,6 +153,8 @@ future agent      # 在终端启动 agent（日志打到 stdout，Ctrl-C 停止�
 future tui        # 终端界面
 ```
 
+> **远程 / 开发模式：**给 `future agent` 传入 `--grpc-addr 127.0.0.1:50051` 可显式启用 TCP；客户端设置 `FUTURE_AGENT_GRPC_ADDR=127.0.0.1:50051`。TCP 非默认，不要暴露到不可信网络。
+
 <p align="center">
   <img src="docs/tui-screenshot.png" alt="FutureOS 终端界面——内置技能加载，/help 命令面板" width="720">
 </p>
@@ -162,7 +164,7 @@ future tui        # 终端界面
 > （`future-*` 二进制仍是构建目标，可用 `cargo build -p future-tui` 等构建，
 > 但已不再默认安装）。
 >
-> 客户端如果报连接 / gRPC 错误，几乎都是 Agent 还没启动——见 [故障排查](#故障排查)。
+> 若连接失败，检查 Agent 发现或 sidecar 启动问题——见 [故障排查](#故障排查)。
 
 ### 常用斜杠命令（TUI）
 
@@ -204,7 +206,7 @@ future tui        # 终端界面
 
 | 现象 | 解决 |
 |---|---|
-| 客户端报连接 / gRPC 错误退出 | Agent 没启动。先启动它(`future agent`)，并确认端口没被占用：`lsof -i :50051`。 |
+| 客户端报连接 / gRPC 错误退出 | 运行 `future doctor`，检查 sidecar 启动错误以及客户端与 Agent 的用户和 IPC 环境是否一致；必要时手动运行 `future agent`。仅在显式 TCP 模式下检查配置的地址/端口。 |
 | Agent 回复鉴权 / "no model" 错误 | 还没配置模型。运行 `future config`——见 [配置模型](#配置模型)。 |
 | 构建 / 安装问题 | 见 [构建与安装](docs/build-and-install.zh-CN.md)（平台工具链、链接器、GUI 打包）。 |
 

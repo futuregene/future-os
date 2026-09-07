@@ -1,9 +1,10 @@
 # FutureOS Terminal UI (TUI)
 
 The TUI is the terminal client: `future-tui`. It is a thin gRPC client that
-connects over **per-user local IPC** by default (Unix-domain socket
-`~/.future/run/agent.sock` on macOS/Linux, a current-user-only named pipe on
-Windows). If no agent is reachable, the TUI launches one as a sidecar and
+connects over **per-user local IPC** by default (Unix-domain socket on
+macOS/Linux, a current-user-only named pipe on Windows). Unix honors
+`FUTURE_AGENT_SOCKET`; Linux otherwise uses `$XDG_RUNTIME_DIR/future/agent.sock`
+when set, falling back to `~/.future/run/agent.sock` (the macOS default). If no agent is reachable, the TUI launches one as a sidecar and
 shuts it down on exit — no manual startup needed. You can still run the
 agent yourself:
 
@@ -24,6 +25,9 @@ options (print mode, `--list-models`, `--session`, ...).
 - Build / install: see [Build & Install](build-and-install.md).
 - Session persistence, model config and tool approval all run through the
   agent; the TUI is a front-end.
+- Fresh sessions default to permission `all`; the TUI does not independently
+  enable a desktop sandbox policy. The CLI's `future run --permission none` disables all tool calls,
+  not just writes. See the [sandbox guide](wiki/en/Sandbox.md) for the distinction.
 
 ## Slash commands
 

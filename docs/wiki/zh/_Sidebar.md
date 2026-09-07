@@ -8,12 +8,14 @@
 **使用应用**
 - [[使用 FutureOS|Using-FutureOS]]
 - [[设置|Settings]]
+- [[审批与沙箱|Sandbox]]
 - [[技能|Skills]]
 
 **命令行(进阶)**
 - [[命令行工具(future)|CLI]]
 
 **集成**
+- [[手机远程|Remote]]
 - [[飞书集成|Feishu]]
 - [[钉钉集成|DingTalk]]
 
