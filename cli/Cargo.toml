@@ -40,7 +40,7 @@ futures-util.workspace = true
 async-trait.workspace = true
 indexmap = "2"
 rpassword = "7"
+tempfile.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
 tokio-stream = { workspace = true, features = ["net"] }
