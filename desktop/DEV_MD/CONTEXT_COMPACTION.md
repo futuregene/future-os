@@ -137,11 +137,13 @@ loader 已同时接受：
 
 每次真正进入压缩流程时生成唯一 `operation_id`，并通过 run-event journal 发出完整生命周期：
 
-1. `compaction_started`：摘要请求开始前发出，UI 显示“正在压缩”；
-2. `compaction_committed`：checkpoint durable commit 成功后发出，UI 将同一 marker 原位更新为成功；
-3. `compaction_failed`：摘要、边界规划或持久化任一步失败时发出，UI 将同一 marker 原位更新为失败并保留错误详情。
+1. 客户端调用 `compact` RPC，立即返回 `operationId`，不再让一次 unary RPC 同步等待模型摘要；
+2. `compaction_started`：摘要请求开始前发出，UI 显示“正在压缩”；
+3. `compaction_committed`：checkpoint durable commit 成功后发出，UI 将同一 marker 原位更新为成功；
+4. `compaction_failed`：摘要、边界规划或持久化任一步失败时发出，UI 将同一 marker 原位更新为失败并保留错误详情；
+5. `compaction_unchanged`：没有可压缩的新内容时结束异步操作，UI 恢复输入提交并显示无需压缩提示。
 
-三种事件都携带同一个 `operation_id`；`trigger` 和 `phase` 在 started/failed 中明确携带，committed 从 checkpoint 携带。未达到阈值、无需压缩的 `Unchanged` 路径不发 started，避免产生虚假状态。
+四种事件都携带同一个 `operation_id`；`trigger` 和 `phase` 在 started/failed/unchanged 中明确携带，committed 从 checkpoint 携带。无需压缩的 `Unchanged` 路径不发 started，直接以 unchanged 结束已受理的手动操作，避免产生虚假状态。
 
 checkpoint 与消息 append 共用同一个 FIFO 持久化队列。只有此前 append、checkpoint append、flush 和 `fsync` 全部成功后，才允许：
 
@@ -518,7 +520,7 @@ deterministic-emergency-v1
 
 ### 12.2 Run-event 与 RPC
 
-新增 `compaction_started`；`compaction_committed` 与 `compaction_failed` 加法携带 `operation_id`/`phase`，不删除或改名任何既有字段。三态事件进入现有 run-event journal 和 RPC `StreamEvent`，不新增 session JSONL 顶层行类型。成功后的 prompt projection 仍只以 checkpoint journal entry 为事实来源；started/failed 只描述操作状态，不得改变历史上下文。旧 `compaction_end`、缺少 `operation_id` 的旧 committed 事件和旧 marker 去重规则保持兼容。
+手动 `compact` RPC 返回异步受理结果 `accepted + operationId`；`compaction_started`、`compaction_committed`、`compaction_failed` 与 `compaction_unchanged` 进入现有 run-event journal 和 RPC `StreamEvent`，不新增 session JSONL 顶层行类型。成功后的 prompt projection 仍只以 checkpoint journal entry 为事实来源；started/failed/unchanged 只描述操作状态，不得改变历史上下文。
 
 ### 12.3 SQLite
 

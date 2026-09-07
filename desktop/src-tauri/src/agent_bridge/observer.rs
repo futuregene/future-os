@@ -107,6 +107,7 @@ const FORWARDED_EVENTS: &[&str] = &[
     "compaction_started",
     "compaction_committed",
     "compaction_failed",
+    "compaction_unchanged",
     "user_message",
     "model_changed",
     "thinking_level_changed",

@@ -36,6 +36,13 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     let id = &cmd.id;
     let cmd_type = &cmd.cmd_type;
 
+    // The shared policy is also the command registry used by every client to
+    // set a finite unary deadline. This makes it impossible to add a live
+    // dispatcher command while forgetting its timeout classification.
+    if future_rpc::command_policy::command_policy(cmd_type).is_none() {
+        return RpcResponse::build_fail(id, cmd_type, &format!("unknown command: {cmd_type}"));
+    }
+
     if cmd_type == "get_agent_info" {
         return providers::get_agent_info_response(state, id);
     }
@@ -119,6 +126,56 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             "session not found — pass a valid session_id (new_session creates one)",
         );
     };
+
+    // Manual compaction owns a stable session snapshot until it commits or
+    // fails. Commands that mutate the session must never wait behind that
+    // read lease: a client-side deadline would expire while the detached
+    // spawn_blocking task later applied the mutation. Reject admission before
+    // any side effect so callers can safely retry after the terminal event.
+    const COMPACTION_CONFLICTS: &[&str] = &[
+        "abort_session",
+        "add_session_rule",
+        "append_system_prompt",
+        "cancel_queued_run",
+        "clone",
+        "cycle_model",
+        "cycle_thinking_level",
+        "disable_builtin_tools",
+        "disable_tools",
+        "fork",
+        "prompt",
+        "reload_config",
+        "retry_persistence",
+        "set_auto_compaction",
+        "set_auto_retry",
+        "set_cwd",
+        "set_ephemeral",
+        "set_model",
+        "set_permission_level",
+        "set_sandbox_policy",
+        "set_session_name",
+        "set_system_prompt",
+        "set_thinking_level",
+        "set_tools",
+        "shell",
+    ];
+    if COMPACTION_CONFLICTS.contains(&cmd_type.as_str())
+        && session
+            .read()
+            .compaction_in_progress
+            .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return RpcResponse::build_fail_code(
+            id,
+            cmd_type,
+            "session_busy",
+            "session context compaction is in progress",
+            serde_json::json!({
+                "busy_reason": "compaction",
+                "retryable": true,
+            }),
+        );
+    }
 
     match cmd_type.as_str() {
         "prompt" => run_control::handle_prompt(state, &session, &cmd, id),

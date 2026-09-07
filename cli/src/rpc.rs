@@ -65,13 +65,13 @@ impl RunClient {
         let connected = future_rpc::transport::connect_channel(
             Some(&self.addr),
             Duration::from_secs(timeout_secs.min(5)),
-            Duration::from_secs(timeout_secs),
+            None,
         )
         .await
         .map_err(|e| e.to_string())?;
         let mut client = FutureAgentClient::new(connected.channel);
         let response = client
-            .execute_command(cmd)
+            .execute_command(future_rpc::command_policy::request_with_timeout(cmd))
             .await
             .map_err(|status| {
                 let msg = status.message();
@@ -375,8 +375,9 @@ impl RunClient {
         let connected = future_rpc::transport::connect_channel(
             Some(&self.addr),
             Duration::from_secs(5),
-            // TS: 5-minute setTimeout — the whole stream is bounded by it.
-            Duration::from_secs(300),
+            // The stream has its own lifecycle/watchdogs; never apply an
+            // overall channel or gRPC request deadline.
+            None,
         )
         .await
         .map_err(|e| e.to_string())?;

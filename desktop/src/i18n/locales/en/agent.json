@@ -136,6 +136,7 @@
     "compactContextDescription": "Compact this conversation's context",
     "compactionNotNeeded": "There is no conversation context to compact.",
     "compactionNoNewContent": "No conversation content was added after the last compaction.",
+    "compactionWaitTimedOut": "Timed out waiting for the Agent's compaction result.",
     "compactionRequestFailed": "Context compaction failed: {{message}}",
     "approval": "Approval mode",
     "approvalTier": {

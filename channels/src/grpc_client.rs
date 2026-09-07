@@ -91,7 +91,7 @@ impl AgentClient {
         let connected = future_rpc::transport::connect_channel(
             Some(addr),
             std::time::Duration::from_secs(10),
-            std::time::Duration::from_secs(60),
+            None,
         )
         .await
         .map_err(|e| anyhow!("Failed to connect to agent: {e}"))?;
@@ -128,7 +128,7 @@ impl AgentClient {
 
     /// Execute a command and return the parsed JSON response data.
     async fn call(&mut self, cmd_type: &str, session_id: &str, extra: RpcCommand) -> Result<Value> {
-        let request = tonic::Request::new(RpcCommand {
+        let request = future_rpc::command_policy::request_with_timeout(RpcCommand {
             id: uuid::Uuid::new_v4().to_string(),
             r#type: cmd_type.to_string(),
             session_id: session_id.to_string(),

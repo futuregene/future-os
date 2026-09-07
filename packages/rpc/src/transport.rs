@@ -55,24 +55,30 @@ impl fmt::Display for ConnectError {
 
 impl std::error::Error for ConnectError {}
 
-/// Build the ordered connection plan. `None`, an empty value, and `auto`
-/// select only the per-user local transport. A configured TCP endpoint is
-/// tried first, with local IPC as a compatibility fallback.
+/// Build the connection plan. `None`, an empty value, and `auto` select the
+/// per-user local transport. An explicit TCP endpoint is authoritative: a
+/// failed remote/development target must not silently redirect commands to an
+/// unrelated local Agent.
 pub fn connection_plan(configured: Option<&str>) -> Vec<AgentEndpoint> {
     let configured = configured
         .map(str::trim)
         .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case(AUTO_ENDPOINT));
     match configured {
-        Some(addr) => vec![AgentEndpoint::Tcp(addr.to_string()), AgentEndpoint::Local],
+        Some(addr) => vec![AgentEndpoint::Tcp(addr.to_string())],
         None => vec![AgentEndpoint::Local],
     }
 }
 
 /// Connect to the first reachable endpoint in the discovery plan.
+///
+/// `connect_timeout` only bounds endpoint establishment. `request_timeout`
+/// optionally installs a channel-wide deadline for clients whose entire RPC
+/// surface is intentionally bounded; long-lived clients should pass `None`
+/// and set deadlines on individual requests where appropriate.
 pub async fn connect_channel(
     configured: Option<&str>,
     connect_timeout: Duration,
-    request_timeout: Duration,
+    request_timeout: Option<Duration>,
 ) -> Result<ConnectedChannel, ConnectError> {
     let mut failures = Vec::new();
     for endpoint in connection_plan(configured) {
@@ -99,13 +105,16 @@ pub async fn connect_channel(
 async fn connect_one(
     endpoint: &AgentEndpoint,
     connect_timeout: Duration,
-    request_timeout: Duration,
+    request_timeout: Option<Duration>,
 ) -> Result<Channel, Box<dyn std::error::Error + Send + Sync>> {
     match endpoint {
         AgentEndpoint::Tcp(addr) => {
-            let endpoint = Endpoint::from_shared(normalize_tcp_uri(addr))?
-                .connect_timeout(connect_timeout)
-                .timeout(request_timeout);
+            let endpoint =
+                Endpoint::from_shared(normalize_tcp_uri(addr))?.connect_timeout(connect_timeout);
+            let endpoint = match request_timeout {
+                Some(timeout) => endpoint.timeout(timeout),
+                None => endpoint,
+            };
             Ok(endpoint.connect().await?)
         }
         AgentEndpoint::Local => connect_local(request_timeout).await,
@@ -152,10 +161,14 @@ pub fn local_endpoint_label() -> String {
 
 #[cfg(unix)]
 async fn connect_local(
-    request_timeout: Duration,
+    request_timeout: Option<Duration>,
 ) -> Result<Channel, Box<dyn std::error::Error + Send + Sync>> {
     let path = local_socket_path();
-    let endpoint = Endpoint::try_from("http://future-agent.local")?.timeout(request_timeout);
+    let endpoint = Endpoint::try_from("http://future-agent.local")?;
+    let endpoint = match request_timeout {
+        Some(timeout) => endpoint.timeout(timeout),
+        None => endpoint,
+    };
     let channel = endpoint
         .connect_with_connector(service_fn(move |_| {
             let path = path.clone();
@@ -171,12 +184,16 @@ async fn connect_local(
 
 #[cfg(windows)]
 async fn connect_local(
-    request_timeout: Duration,
+    request_timeout: Option<Duration>,
 ) -> Result<Channel, Box<dyn std::error::Error + Send + Sync>> {
     use tokio::net::windows::named_pipe::ClientOptions;
 
     let pipe_name = local_pipe_name();
-    let endpoint = Endpoint::try_from("http://future-agent.local")?.timeout(request_timeout);
+    let endpoint = Endpoint::try_from("http://future-agent.local")?;
+    let endpoint = match request_timeout {
+        Some(timeout) => endpoint.timeout(timeout),
+        None => endpoint,
+    };
     let channel = endpoint
         .connect_with_connector(service_fn(move |_| {
             let pipe_name = pipe_name.clone();
@@ -449,13 +466,10 @@ mod tests {
     }
 
     #[test]
-    fn explicitly_configured_tcp_is_tried_before_local_ipc() {
+    fn explicitly_configured_tcp_never_falls_back_to_local_ipc() {
         assert_eq!(
             connection_plan(Some("http://127.0.0.1:50051")),
-            vec![
-                AgentEndpoint::Tcp("http://127.0.0.1:50051".into()),
-                AgentEndpoint::Local,
-            ]
+            vec![AgentEndpoint::Tcp("http://127.0.0.1:50051".into())]
         );
     }
 

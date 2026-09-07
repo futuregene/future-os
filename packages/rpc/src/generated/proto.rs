@@ -43,6 +43,10 @@ pub struct RpcCommand {
     /// Shell command string.  Used when cmd_type = "shell".
     #[prost(string, tag = "80")]
     pub command: ::prost::alloc::string::String,
+    /// Optional server-owned shell timeout. Zero selects the 120-second default;
+    /// non-zero values are clamped to 5 seconds through 30 minutes.
+    #[prost(uint64, tag = "81")]
+    pub shell_timeout_ms: u64,
     /// Target session ID.  Almost every command requires this so the
     /// agent knows which session to operate on.  new_session uses it
     /// as the requested ID (generated if empty).
@@ -495,18 +499,11 @@ pub struct Command {
 /// compact response.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CompactResult {
-    #[prost(int64, tag = "1")]
-    pub tokens_before: i64,
-    #[prost(int64, tag = "2")]
-    pub tokens_after: i64,
-    #[prost(string, tag = "3")]
-    pub summary: ::prost::alloc::string::String,
-    #[prost(int64, tag = "4")]
-    pub messages_removed: i64,
-    #[prost(string, tag = "5")]
-    pub checkpoint_id: ::prost::alloc::string::String,
-    #[prost(bool, tag = "6")]
-    pub already_compacted: bool,
+    /// Async manual-compaction acknowledgement.
+    #[prost(string, tag = "1")]
+    pub operation_id: ::prost::alloc::string::String,
+    #[prost(bool, tag = "2")]
+    pub accepted: bool,
 }
 /// shell response.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -812,7 +809,7 @@ pub struct SessionState {
     /// Whether the agent loop is currently processing a prompt.
     #[prost(bool, tag = "3")]
     pub is_streaming: bool,
-    /// Whether a compaction run is in progress (always false in current code).
+    /// Whether a compaction run is currently in progress for this session.
     #[prost(bool, tag = "4")]
     pub is_compacting: bool,
     /// Reserved for session file path.  Always null in current code.
@@ -1258,7 +1255,7 @@ pub struct StreamEvent {
     ///    error                        run error
     ///    tool_sandboxed / persistence_error / compaction_end /
     ///    compaction_started / compaction_committed /
-    ///    compaction_failed                                     sideband signals
+    ///    compaction_failed / compaction_unchanged              sideband signals
     ///    provider_config_changed  global provider/auth configuration committed
     ///    session_created          global control-plane signal: a session was minted
     ///                             (new_session / fork / clone, never disk hydration)

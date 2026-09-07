@@ -121,13 +121,13 @@ pub struct AgentClient {
 impl AgentClient {
     /// Connect through the shared per-user transport discovery: an explicit
     /// TCP address (FUTURE_LOOP_AGENT_ADDR, or a test mock addr) is tried
-    /// first with local IPC as fallback; the `auto` sentinel selects only the
-    /// local endpoint. Same socket-first boundary as the TUI/CLI clients.
+    /// exclusively; the `auto` sentinel selects only the local endpoint. Same
+    /// target-selection boundary as the TUI/CLI clients.
     pub async fn connect(addr: &str) -> Result<Self> {
         let connected = future_rpc::transport::connect_channel(
             Some(addr),
             std::time::Duration::from_secs(10),
-            std::time::Duration::from_secs(120),
+            None,
         )
         .await
         .map_err(|e| anyhow!("Failed to connect to agent: {e}"))?;
@@ -137,7 +137,7 @@ impl AgentClient {
     }
 
     async fn call(&mut self, cmd_type: &str, session_id: &str, extra: RpcCommand) -> Result<Value> {
-        let request = tonic::Request::new(RpcCommand {
+        let request = future_rpc::command_policy::request_with_timeout(RpcCommand {
             id: uuid::Uuid::new_v4().to_string(),
             r#type: cmd_type.to_string(),
             session_id: session_id.to_string(),

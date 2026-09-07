@@ -684,7 +684,7 @@ impl Bridge {
                                     .reply_message(
                                         message_id,
                                         "text",
-                                        &serde_json::json!({"text": "Context compacted."})
+                                        &serde_json::json!({"text": "Context compaction started."})
                                             .to_string(),
                                     )
                                     .await?;
@@ -1780,7 +1780,7 @@ mod tests {
             .unwrap();
         assert!(replies(&fx.http, "om_3")
             .iter()
-            .any(|b| b.contains("Context compacted")));
+            .any(|b| b.contains("Context compaction started")));
         assert_eq!(ts::recorded_of(&fx.grpc, "compact").len(), 1);
         drop(fx);
 

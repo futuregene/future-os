@@ -94,11 +94,8 @@ export async function loadAgentModelOptions() {
 }
 
 export interface CompactContextResult {
-  checkpointId?: string;
-  alreadyCompacted?: boolean;
-  messagesRemoved?: number;
-  tokensBefore?: number;
-  tokensAfter?: number;
+  operationId: string;
+  accepted: true;
 }
 
 /** Run standalone semantic compaction for an existing conversation. */

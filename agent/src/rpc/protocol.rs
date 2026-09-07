@@ -56,6 +56,8 @@ pub struct RpcCommand {
     // shell
     #[serde(default)]
     pub command: String,
+    #[serde(default)]
+    pub shell_timeout_ms: u64,
 
     // Session
     #[serde(default)]

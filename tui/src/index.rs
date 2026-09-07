@@ -283,13 +283,13 @@ async fn execute_unary(
     let connected = future_rpc::transport::connect_channel(
         Some(addr),
         Duration::from_secs(timeout_secs.min(5)),
-        Duration::from_secs(timeout_secs),
+        None,
     )
     .await
     .map_err(|e| e.to_string())?;
     let mut client = FutureAgentClient::new(connected.channel);
     client
-        .execute_command(cmd)
+        .execute_command(future_rpc::command_policy::request_with_timeout(cmd))
         .await
         .map(|r| r.into_inner())
         .map_err(|status| {
@@ -450,14 +450,10 @@ async fn apply_cli_options(addr: &str, session_id: &str, args: &CliArgs) -> Resu
 
 /// Dial a channel for the event-stream subscription (print mode).
 async fn dial_channel(addr: &str) -> Result<tonic::transport::Channel, String> {
-    future_rpc::transport::connect_channel(
-        Some(addr),
-        Duration::from_secs(5),
-        Duration::from_secs(GRPC_DEADLINE_SEC),
-    )
-    .await
-    .map(|connected| connected.channel)
-    .map_err(|e| e.to_string())
+    future_rpc::transport::connect_channel(Some(addr), Duration::from_secs(5), None)
+        .await
+        .map(|connected| connected.channel)
+        .map_err(|e| e.to_string())
 }
 
 /// `runPrintMode` — connect, apply CLI options, stream events, prompt, output.

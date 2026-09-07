@@ -4,6 +4,34 @@ use crate::test_support::TestHome;
 
 use crate::rpc::commands::test_support::*;
 use crate::rpc::handle_command_internal;
+use crate::types::{AgentMessage, ContentBlock, LLMProvider};
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+
+struct SlowSummaryProvider;
+
+#[async_trait::async_trait]
+impl LLMProvider for SlowSummaryProvider {
+    async fn stream_model(
+        &self,
+        _request: crate::llm::schema::ModelRequest,
+    ) -> anyhow::Result<ReceiverStream<crate::llm::schema::ModelStreamEvent>> {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let (tx, rx) = mpsc::channel(2);
+        tx.try_send(crate::llm::schema::ModelStreamEvent::TextDelta {
+            text: "## Objective\n- test\n\n## Important Details\n- none\n\n## Work State\n### Completed\n- none\n\n### Active\n- test\n\n### Blocked\n- none\n\n## Next Move\n1. test\n\n## Relevant Files\n- none".to_string(),
+            id: String::new(),
+        })
+        .unwrap();
+        tx.try_send(crate::llm::schema::ModelStreamEvent::Finish {
+            reason: crate::llm::schema::FinishReason::Stop,
+            usage: None,
+        })
+        .unwrap();
+        Ok(ReceiverStream::new(rx))
+    }
+}
 
 #[test]
 fn set_permission_level_valid() {
@@ -132,25 +160,145 @@ fn set_sandbox_policy_missing_payload() {
 }
 
 #[test]
-fn compact_empty_session() {
+fn compact_empty_session_returns_async_ack() {
     let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    let mut events = session.read().broadcaster.subscribe();
     let cmd = make_cmd("compact");
     let resp = parse_response(&handle_command_internal(&state, cmd));
     assert_eq!(resp["success"], true);
-    assert_eq!(resp["data"]["messagesRemoved"], 0);
+    assert_eq!(resp["data"]["accepted"], true);
+    let operation_id = resp["data"]["operationId"].as_str().unwrap();
+    let terminal = events.blocking_recv().unwrap();
+    assert_eq!(terminal.event_type, "compaction_unchanged");
+    assert!(!session
+        .read()
+        .compaction_in_progress
+        .load(std::sync::atomic::Ordering::Acquire));
+    let data: serde_json::Value = serde_json::from_str(&terminal.data).unwrap();
+    assert_eq!(data["operation_id"], operation_id);
 }
 
 #[test]
-fn compact_reports_busy_loop_error() {
+fn compact_reports_busy_loop_error_as_terminal_event() {
     let state = make_app_state();
     // Hold the run-configuration lock so the compaction snapshot's try_read
     // fails — the manual /compact path must report that as a clean error.
     let session = state.get_session("default").unwrap();
+    let mut events = session.read().broadcaster.subscribe();
     let agent_loop = session.read().agent_loop.clone();
     let _guard = agent_loop.try_write().unwrap();
     let resp = parse_response(&handle_command_internal(&state, make_cmd("compact")));
+    assert_eq!(resp["success"], true);
+    let operation_id = resp["data"]["operationId"].as_str().unwrap();
+    let terminal = events.blocking_recv().unwrap();
+    assert_eq!(terminal.event_type, "compaction_failed");
+    assert!(!session
+        .read()
+        .compaction_in_progress
+        .load(std::sync::atomic::Ordering::Acquire));
+    let data: serde_json::Value = serde_json::from_str(&terminal.data).unwrap();
+    assert_eq!(data["operation_id"], operation_id);
+    assert!(data["error"].as_str().unwrap().contains("busy"));
+}
+
+#[test]
+fn compact_rejects_a_duplicate_async_request() {
+    let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    session
+        .read()
+        .compaction_in_progress
+        .store(true, std::sync::atomic::Ordering::Release);
+    let resp = parse_response(&handle_command_internal(&state, make_cmd("compact")));
     assert_eq!(resp["success"], false);
-    assert!(resp["error"].as_str().unwrap().contains("busy"));
+    assert!(resp["error"].as_str().unwrap().contains("already running"));
+    session
+        .read()
+        .compaction_in_progress
+        .store(false, std::sync::atomic::Ordering::Release);
+}
+
+#[test]
+fn compact_retry_with_the_same_request_id_reuses_the_operation() {
+    let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    session
+        .read()
+        .compaction_in_progress
+        .store(true, std::sync::atomic::Ordering::Release);
+    *session.read().compaction_request.lock() =
+        Some(("test_cmd".to_string(), "cmp-existing".to_string()));
+
+    let resp = parse_response(&handle_command_internal(&state, make_cmd("compact")));
+    assert_eq!(resp["success"], true);
+    assert_eq!(resp["data"]["operationId"], "cmp-existing");
+}
+
+#[test]
+fn completed_compact_retry_with_the_same_request_id_reuses_the_operation() {
+    let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    *session.read().compaction_request.lock() =
+        Some(("test_cmd".to_string(), "cmp-complete".to_string()));
+
+    let resp = parse_response(&handle_command_internal(&state, make_cmd("compact")));
+    assert_eq!(resp["success"], true);
+    assert_eq!(resp["data"]["operationId"], "cmp-complete");
+    assert!(!session
+        .read()
+        .compaction_in_progress
+        .load(std::sync::atomic::Ordering::Acquire));
+}
+
+#[test]
+fn session_mutations_fail_before_waiting_for_compaction() {
+    let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    session
+        .read()
+        .compaction_in_progress
+        .store(true, std::sync::atomic::Ordering::Release);
+
+    let resp = parse_response(&handle_command_internal(&state, make_cmd("prompt")));
+    assert_eq!(resp["success"], false);
+    assert_eq!(resp["error_code"], "session_busy");
+    assert_eq!(resp["error_data"]["busy_reason"], "compaction");
+    assert_eq!(resp["error_data"]["retryable"], true);
+}
+
+#[test]
+fn compact_ack_does_not_wait_for_the_summary_provider() {
+    let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    {
+        let session = session.write();
+        session.agent_loop.try_write().unwrap().provider = Arc::new(SlowSummaryProvider);
+        let mut messages = session.messages.write();
+        for (role, text) in [("user", "investigate"), ("assistant", "working")] {
+            let mut message = AgentMessage {
+                role: role.to_string(),
+                content: vec![ContentBlock::text(text)],
+                ..Default::default()
+            };
+            message.ensure_journal_entry_id();
+            messages.push(message);
+        }
+    }
+    let mut events = session.read().broadcaster.subscribe();
+    let started_at = std::time::Instant::now();
+    let resp = parse_response(&handle_command_internal(&state, make_cmd("compact")));
+    assert_eq!(resp["success"], true);
+    assert!(started_at.elapsed() < std::time::Duration::from_millis(100));
+    assert_eq!(
+        events.blocking_recv().unwrap().event_type,
+        "compaction_started"
+    );
+    let terminal = events.blocking_recv().unwrap();
+    assert!(matches!(
+        terminal.event_type.as_str(),
+        "compaction_committed" | "compaction_failed"
+    ));
 }
 
 #[test]

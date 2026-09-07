@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
 import { compactThreadContext } from "../../integrations/agent/agentClient";
+import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
 import { forkThread } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { errorMessage } from "../../lib/errors";
@@ -26,6 +27,7 @@ import { useStickyAutoScroll } from "./useStickyAutoScroll";
 
 /** How many user exchanges one loaded page renders. */
 const PAGE_USER_EXCHANGES = 10;
+const COMPACTION_TERMINAL_TIMEOUT_MS = 30 * 60 * 1000;
 
 interface AgentThreadProps {
   thread: StoredThread | null;
@@ -81,6 +83,7 @@ export function AgentThread({
   onToggleLeftPanel,
 }: AgentThreadProps) {
   const { t } = useTranslation("agent");
+  const agentState = useCachedAgentState(thread?.id);
   const {
     handleAbort,
     handleSend,
@@ -107,6 +110,12 @@ export function AgentThread({
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
   const searchRootRef = useRef<HTMLDivElement>(null);
+  const compactionWaitCleanupRef = useRef<(() => void) | null>(null);
+
+  useEffect(
+    () => () => compactionWaitCleanupRef.current?.(),
+    [thread?.id, thread?.agentSessionId],
+  );
 
   const {
     scrollRef,
@@ -257,11 +266,91 @@ export function AgentThread({
   const handleCompactContext = useCallback(async () => {
     if (!thread)
       return;
+    interface TerminalCompactionEvent {
+      eventType: "compaction_committed" | "compaction_failed" | "compaction_unchanged";
+      payload: Record<string, unknown>;
+    }
+    let expectedOperationId: string | undefined;
+    let bufferedTerminal: TerminalCompactionEvent | undefined;
+    let resolveTerminal: ((event: TerminalCompactionEvent) => void) | undefined;
+    let rejectTerminal: ((error: Error) => void) | undefined;
+    const terminalPromise = new Promise<TerminalCompactionEvent>((resolve, reject) => {
+      resolveTerminal = resolve;
+      rejectTerminal = reject;
+    });
+    const handleAgentEvent = (event: Event) => {
+      const detail = (event as CustomEvent).detail as {
+        threadId?: string;
+        sessionId?: string;
+        eventType?: string;
+        payload?: Record<string, unknown>;
+      } | undefined;
+      if (
+        !detail
+        || detail.threadId !== thread.id
+        || detail.sessionId !== thread.agentSessionId
+        || !detail.payload
+        || ![
+          "compaction_committed",
+          "compaction_failed",
+          "compaction_unchanged",
+        ].includes(detail.eventType ?? "")
+      ) {
+        return;
+      }
+      const operationId = typeof detail.payload.operation_id === "string"
+        ? detail.payload.operation_id
+        : undefined;
+      const terminal = detail as TerminalCompactionEvent;
+      if (!expectedOperationId) {
+        bufferedTerminal = terminal;
+      }
+      else if (operationId === expectedOperationId) {
+        resolveTerminal?.(terminal);
+      }
+    };
+    window.addEventListener("future:agent-event", handleAgentEvent);
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    let cancelWait: () => void;
+    const cleanup = () => {
+      window.removeEventListener("future:agent-event", handleAgentEvent);
+      if (timeoutId)
+        clearTimeout(timeoutId);
+      if (compactionWaitCleanupRef.current === cancelWait)
+        compactionWaitCleanupRef.current = null;
+    };
+    cancelWait = () => {
+      cleanup();
+      const error = new Error("compaction wait cancelled");
+      error.name = "AbortError";
+      rejectTerminal?.(error);
+    };
+    compactionWaitCleanupRef.current?.();
+    compactionWaitCleanupRef.current = cancelWait;
     try {
       const result = await compactThreadContext(thread.id);
-      if (!result.checkpointId) {
+      expectedOperationId = result.operationId;
+      const bufferedOperationId = typeof bufferedTerminal?.payload.operation_id === "string"
+        ? bufferedTerminal.payload.operation_id
+        : undefined;
+      if (bufferedTerminal && bufferedOperationId === expectedOperationId)
+        resolveTerminal?.(bufferedTerminal);
+      const timeoutPromise = new Promise<never>((_resolve, reject) => {
+        timeoutId = setTimeout(
+          () => reject(new Error(t("composer.compactionWaitTimedOut"))),
+          COMPACTION_TERMINAL_TIMEOUT_MS,
+        );
+      });
+      const terminal = await Promise.race([terminalPromise, timeoutPromise]);
+      if (terminal.eventType === "compaction_failed") {
+        const message = typeof terminal.payload.error === "string"
+          ? terminal.payload.error
+          : t("failure.unknown");
+        throw new Error(message);
+      }
+      if (terminal.eventType === "compaction_unchanged") {
         emitFutureEvent("toast", {
-          message: t(result.alreadyCompacted
+          message: t(terminal.payload.already_compacted
             ? "composer.compactionNoNewContent"
             : "composer.compactionNotNeeded"),
           tone: "info",
@@ -269,10 +358,15 @@ export function AgentThread({
       }
     }
     catch (error) {
+      if (error instanceof Error && error.name === "AbortError")
+        return;
       emitFutureEvent("toast", {
         message: t("composer.compactionRequestFailed", { message: errorMessage(error) }),
         tone: "error",
       });
+    }
+    finally {
+      cleanup();
     }
   }, [thread, t]);
 
@@ -394,6 +488,7 @@ export function AgentThread({
               sending={isSending}
               onAbort={handleComposerAbort}
               onCompactContext={thread?.agentSessionId ? handleCompactContext : undefined}
+              compactionInProgress={agentState?.isCompacting ?? false}
               onSend={handleComposerSend}
               workspaceId={thread?.workspaceId}
               draftKey={thread?.id}

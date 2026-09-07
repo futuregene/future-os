@@ -573,12 +573,8 @@ fn get_commands(data: &Value) -> Option<proto::CommandsResponse> {
 fn compact(data: &Value) -> Option<proto::CompactResult> {
     let payload: crate::payloads_ext::CompactPayload = serde_json::from_value(data.clone()).ok()?;
     Some(proto::CompactResult {
-        checkpoint_id: payload.checkpoint_id.unwrap_or_default(),
-        already_compacted: payload.already_compacted.unwrap_or(false),
-        tokens_before: payload.tokens_before,
-        tokens_after: payload.tokens_after,
-        summary: payload.summary,
-        messages_removed: payload.messages_removed,
+        operation_id: payload.operation_id,
+        accepted: payload.accepted,
     })
 }
 

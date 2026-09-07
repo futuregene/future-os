@@ -11,6 +11,52 @@ use tonic::transport::Channel;
 
 use crate::agent_proto::{Attachment, FutureAgentClient, RpcCommand, RpcResponse};
 
+/// Desktop client wrapper that applies the shared per-command deadline while
+/// leaving streaming RPCs on the underlying client deadline-free.
+#[derive(Clone, Debug)]
+pub struct AgentClient {
+    inner: FutureAgentClient<Channel>,
+}
+
+impl AgentClient {
+    fn new(inner: FutureAgentClient<Channel>) -> Self {
+        Self { inner }
+    }
+
+    pub async fn execute_command(
+        &mut self,
+        command: RpcCommand,
+    ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
+        self.inner
+            .execute_command(future_rpc::command_policy::request_with_timeout(command))
+            .await
+    }
+
+    async fn execute_command_with_timeout(
+        &mut self,
+        command: RpcCommand,
+        timeout: Duration,
+    ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
+        let mut request = tonic::Request::new(command);
+        request.set_timeout(timeout);
+        self.inner.execute_command(request).await
+    }
+}
+
+impl std::ops::Deref for AgentClient {
+    type Target = FutureAgentClient<Channel>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl std::ops::DerefMut for AgentClient {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
 /// Cap on how long a single connection attempt may take. Without it a hung agent
 /// can stall a caller indefinitely — e.g. the GUI's 10s model poll would pile up
 /// overlapping calls, and a late failure could clobber fresh state.
@@ -73,6 +119,10 @@ fn agent_channel_runtime() -> tokio::runtime::Handle {
 pub fn map_rpc_error(context: &str, status: tonic::Status) -> crate::AppError {
     if status.code() == tonic::Code::Unavailable {
         crate::AppError::AgentUnavailable(format!("{context}: {}", status.message()))
+    } else if status.code() == tonic::Code::DeadlineExceeded {
+        crate::AppError::Message(format!(
+            "{context}: command timed out; its outcome may be unknown"
+        ))
     } else {
         crate::AppError::Message(format!("{context}: {status}"))
     }
@@ -88,7 +138,7 @@ static AGENT_CHANNEL: tokio::sync::Mutex<Option<(String, Channel)>> =
 /// Resolve the agent endpoint and open a gRPC client. A connection failure maps
 /// to `AppError::AgentUnavailable` so callers can tolerate a down agent (e.g.
 /// `abort_run` still cancels the run locally).
-pub async fn connect_agent() -> Result<FutureAgentClient<Channel>, crate::AppError> {
+pub async fn connect_agent() -> Result<AgentClient, crate::AppError> {
     let configured = raw_agent_addr();
     // A cached channel already targeting this discovery configuration is
     // reused as-is.
@@ -96,9 +146,11 @@ pub async fn connect_agent() -> Result<FutureAgentClient<Channel>, crate::AppErr
         let cached = AGENT_CHANNEL.lock().await;
         if let Some((addr, channel)) = cached.as_ref() {
             if addr == &configured {
-                return Ok(FutureAgentClient::new(channel.clone())
-                    .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
-                    .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE));
+                return Ok(AgentClient::new(
+                    FutureAgentClient::new(channel.clone())
+                        .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
+                        .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE),
+                ));
             }
         }
     }
@@ -108,7 +160,7 @@ pub async fn connect_agent() -> Result<FutureAgentClient<Channel>, crate::AppErr
             let connected = future_rpc::transport::connect_channel(
                 Some(&configured_for_connect),
                 CONNECT_TIMEOUT,
-                CONNECT_TIMEOUT,
+                None,
             )
             .await
             .map_err(|error| {
@@ -118,30 +170,31 @@ pub async fn connect_agent() -> Result<FutureAgentClient<Channel>, crate::AppErr
             })?;
             let label = connected.endpoint.label();
             let ch = connected.channel;
-            let mut client = FutureAgentClient::new(ch.clone())
-                .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
-                .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE);
+            let mut client = AgentClient::new(
+                FutureAgentClient::new(ch.clone())
+                    .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
+                    .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE),
+            );
             health_check(&mut client, &label).await?;
             Ok::<Channel, crate::AppError>(ch)
         })
         .await
         .expect("agent channel task: pinned runtime outlives the process")?;
     *AGENT_CHANNEL.lock().await = Some((configured, channel.clone()));
-    Ok(FutureAgentClient::new(channel)
-        .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
-        .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE))
+    Ok(AgentClient::new(
+        FutureAgentClient::new(channel)
+            .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
+            .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE),
+    ))
 }
 
 /// One-shot reachability check run when the shared channel is first
 /// established: validates the lazy channel with a cheap, no-side-effect RPC
 /// so a down agent surfaces the familiar AgentUnavailable message rather
 /// than a raw tonic transport error on the next real command.
-async fn health_check(
-    client: &mut FutureAgentClient<Channel>,
-    endpoint_str: &str,
-) -> Result<(), crate::AppError> {
+async fn health_check(client: &mut AgentClient, endpoint_str: &str) -> Result<(), crate::AppError> {
     client
-        .execute_command(list_streaming_sessions_command())
+        .execute_command_with_timeout(list_streaming_sessions_command(), CONNECT_TIMEOUT)
         .await
         .map_err(|status| {
             crate::AppError::AgentUnavailable(format!(
@@ -425,6 +478,7 @@ pub(super) fn base_command(command_type: &str, session_id: String) -> RpcCommand
         source_meta: String::new(),
         enabled: false,
         command: String::new(),
+        shell_timeout_ms: 0,
         session_id,
         entry_id: String::new(),
         name: String::new(),
@@ -587,6 +641,13 @@ mod tests {
         let internal = map_rpc_error("ctx", tonic::Status::internal("boom"));
         assert!(matches!(internal, crate::AppError::Message(_)));
         assert!(internal.to_string().starts_with("ctx: "));
+
+        let deadline = map_rpc_error("ctx", tonic::Status::deadline_exceeded("expired"));
+        assert!(matches!(deadline, crate::AppError::Message(_)));
+        assert_eq!(
+            deadline.to_string(),
+            "ctx: command timed out; its outcome may be unknown"
+        );
     }
 
     #[test]

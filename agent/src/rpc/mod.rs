@@ -573,7 +573,9 @@ fn get_state_internal(
         image_support,
         thinking_level: sess.thinking_level.clone(),
         is_streaming: sess.is_streaming.load(std::sync::atomic::Ordering::Relaxed),
-        is_compacting: false,
+        is_compacting: sess
+            .compaction_in_progress
+            .load(std::sync::atomic::Ordering::Relaxed),
         // Always non-empty here: get_session returns None for an empty id,
         // and only map-stored (hydrated or created) sessions reach this point.
         session_file: Some(String::new()),

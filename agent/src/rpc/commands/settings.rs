@@ -182,10 +182,110 @@ pub(crate) fn handle_compact(
     cmd: &RpcCommand,
     id: &str,
 ) -> String {
-    match session.read().compact(&cmd.custom_instructions) {
-        Ok(result) => RpcResponse::ok(id, "compact", result),
-        Err(error) => RpcResponse::build_fail(id, "compact", &error.to_string()),
+    use std::sync::atomic::Ordering;
+
+    let in_progress = session.read().compaction_in_progress.clone();
+    // A lost acknowledgement must not start a second compaction. Keep the
+    // accepted request id usable after the worker's terminal event so an
+    // exact retry always resolves to the same operation.
+    if let Some((_, operation_id)) = session
+        .read()
+        .compaction_request
+        .lock()
+        .as_ref()
+        .filter(|(request_id, _)| request_id == &cmd.id)
+    {
+        return RpcResponse::ok(
+            id,
+            "compact",
+            serde_json::json!({
+                "accepted": true,
+                "operationId": operation_id,
+            }),
+        );
     }
+    if in_progress
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return RpcResponse::build_fail(id, "compact", "context compaction is already running");
+    }
+
+    let operation_id = format!("cmp_{}", crate::utils::generate_entry_id());
+    *session.read().compaction_request.lock() = Some((cmd.id.clone(), operation_id.clone()));
+    let worker_operation_id = operation_id.clone();
+    let instructions = cmd.custom_instructions.clone();
+    let worker_session = session.clone();
+    let broadcaster = session.read().broadcaster.clone();
+    let spawn = std::thread::Builder::new()
+        .name("manual-compaction".to_string())
+        .spawn(move || {
+            struct ResetOnDrop(Arc<std::sync::atomic::AtomicBool>);
+            impl Drop for ResetOnDrop {
+                fn drop(&mut self) {
+                    self.0.store(false, Ordering::Release);
+                }
+            }
+            let _reset = ResetOnDrop(in_progress.clone());
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                worker_session
+                    .read()
+                    .compact_with_operation_id(&instructions, worker_operation_id.clone())
+            }));
+            match result {
+                Ok(Ok(result)) if result.get("checkpointId").is_none() => {
+                    in_progress.store(false, Ordering::Release);
+                    broadcaster.broadcast(SseEvent::new(
+                        "compaction_unchanged",
+                        serde_json::json!({
+                            "operation_id": worker_operation_id,
+                            "trigger": "manual",
+                            "phase": "standalone",
+                            "already_compacted": result
+                                .get("alreadyCompacted")
+                                .and_then(serde_json::Value::as_bool)
+                                .unwrap_or(false),
+                            "tokens_before": result
+                                .get("tokensBefore")
+                                .and_then(serde_json::Value::as_i64)
+                                .unwrap_or(0),
+                        }),
+                    ));
+                }
+                Ok(Ok(_)) | Ok(Err(_)) => {}
+                Err(_) => {
+                    in_progress.store(false, Ordering::Release);
+                    broadcaster.broadcast(SseEvent::new(
+                        "compaction_failed",
+                        serde_json::json!({
+                            "operation_id": worker_operation_id,
+                            "trigger": "manual",
+                            "phase": "standalone",
+                            "error": "context compaction worker panicked",
+                        }),
+                    ));
+                }
+            }
+        });
+    if let Err(error) = spawn {
+        let sess = session.read();
+        sess.compaction_in_progress.store(false, Ordering::Release);
+        *sess.compaction_request.lock() = None;
+        return RpcResponse::build_fail(
+            id,
+            "compact",
+            &format!("failed to start context compaction: {error}"),
+        );
+    }
+
+    RpcResponse::ok(
+        id,
+        "compact",
+        serde_json::json!({
+            "accepted": true,
+            "operationId": operation_id,
+        }),
+    )
 }
 
 pub(crate) fn handle_set_auto_compaction(
@@ -284,7 +384,15 @@ pub(crate) fn handle_shell(
     cmd: &RpcCommand,
     id: &str,
 ) -> String {
-    let result = session.write().execute_shell(&cmd.command);
+    let timeout = if cmd.shell_timeout_ms == 0 {
+        future_rpc::command_policy::SHELL_EXECUTION_TIMEOUT
+    } else {
+        std::time::Duration::from_millis(cmd.shell_timeout_ms).clamp(
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(30 * 60),
+        )
+    };
+    let result = session.write().execute_shell(&cmd.command, timeout);
     match result {
         Ok(r) => RpcResponse::ok(id, "shell", r),
         Err(e) => RpcResponse::build_fail(id, "shell", &e.to_string()),
