@@ -1,3 +1,4 @@
+import { remarkLatexMath } from "@future-os/markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import remarkParse from "remark-parse";
@@ -19,7 +20,7 @@ interface StreamingMarkdownRoot {
   }>;
 }
 
-const streamingMarkdownProcessor = unified().use(remarkParse).use(remarkMath).use(remarkGfm);
+const streamingMarkdownProcessor = unified().use(remarkParse).use(remarkMath).use(remarkGfm).use(remarkLatexMath);
 
 /**
  * Desktop-only projection for the growing Markdown renderer. Completed source

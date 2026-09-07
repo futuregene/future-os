@@ -33,8 +33,9 @@ import remarkMath from "remark-math";
 import remarkParse from "remark-parse";
 import { unified } from "unified";
 import { localFilePath } from "./localPath";
+import { remarkLatexMath } from "./remarkLatexMath";
 
-const markdownProcessor = unified().use(remarkParse).use(remarkMath).use(remarkGfm);
+const markdownProcessor = unified().use(remarkParse).use(remarkMath).use(remarkGfm).use(remarkLatexMath);
 
 // Cross-instance parse cache: `useMemo([content])` in MarkdownContent only
 // survives within one mounted component, so a thread switch re-parses every
