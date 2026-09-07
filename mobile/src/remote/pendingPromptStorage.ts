@@ -3,8 +3,10 @@ import { createAsyncOperationQueue } from "./asyncOperationQueue";
 import type { MobileAttachment, ThinkingLevel } from "./types";
 
 export interface PendingPrompt {
-  version: 1;
+  version: 2;
   commandId: string;
+  pairId: string;
+  expectedDesktopId: string;
   draftKey: string;
   sessionId: string;
   text: string;
@@ -25,7 +27,13 @@ async function loadPendingPromptDirect(): Promise<PendingPrompt | null> {
     if (!raw) return null;
     const value = JSON.parse(raw) as Partial<PendingPrompt>;
     if (
-      value.version !== 1 ||
+      // Legacy records have no safe destination identity. Leave drafts alone,
+      // but never automatically replay these records on the current pairing.
+      value.version !== 2 ||
+      typeof value.pairId !== "string" ||
+      !value.pairId ||
+      typeof value.expectedDesktopId !== "string" ||
+      !value.expectedDesktopId ||
       typeof value.commandId !== "string" ||
       !value.commandId ||
       typeof value.draftKey !== "string" ||
@@ -52,6 +60,11 @@ export function loadPendingPrompt(): Promise<PendingPrompt | null> {
 
 export async function savePendingPrompt(prompt: PendingPrompt): Promise<void> {
   await enqueueOperation(() => AsyncStorage.setItem(KEY, JSON.stringify(prompt)));
+}
+
+/** Drop all pending delivery state on unpair, including legacy records. */
+export async function discardPendingPrompt(): Promise<void> {
+  await enqueueOperation(() => AsyncStorage.removeItem(KEY));
 }
 
 /** Clear only the record this caller completed; a newer send must survive. */

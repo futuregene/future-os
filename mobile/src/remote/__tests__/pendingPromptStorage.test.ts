@@ -23,7 +23,9 @@ jest.mock("@react-native-async-storage/async-storage", () => ({
 
 const mockedAsync = AsyncStorage as jest.Mocked<typeof AsyncStorage>;
 const pending: PendingPrompt = {
-  version: 1,
+  version: 2,
+  pairId: "pair",
+  expectedDesktopId: "desktop",
   commandId: "prompt_1",
   draftKey: "s1",
   sessionId: "s1",
@@ -54,6 +56,15 @@ describe("pending prompt storage", () => {
 
   test("ignores a record with an invalid shape", async () => {
     mockedAsync.getItem.mockResolvedValueOnce(JSON.stringify({ version: 1 }));
+    await expect(loadPendingPrompt()).resolves.toBeNull();
+  });
+
+  test.each([
+    { ...pending, version: 1 },
+    { ...pending, pairId: undefined },
+    { ...pending, expectedDesktopId: "" },
+  ])("never replays legacy or unidentified records: %j", async record => {
+    mockedAsync.getItem.mockResolvedValueOnce(JSON.stringify(record));
     await expect(loadPendingPrompt()).resolves.toBeNull();
   });
 
