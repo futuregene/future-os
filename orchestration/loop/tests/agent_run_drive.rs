@@ -66,7 +66,7 @@ fn run_anonymous_single_todo_to_terminal() {
 }
 
 #[test]
-fn run_with_agent_id_auto_registers_and_chains_successors() {
+fn run_with_agent_id_auto_registers_without_inventing_successors() {
     let cr = cli_root();
     let (_rt, shared) = mock_env(MockState {
         events: vec![
@@ -97,9 +97,10 @@ fn run_with_agent_id_auto_registers_and_chains_successors() {
     assert!(g.todos.iter().all(|t| t.status == TodoStatus::Done));
     assert!(g.registered_agents.contains(&"worker-7".to_string()));
     assert_eq!(shared.lock().unwrap().prompts, 2);
-    // The first completion names the second todo as successor.
+    // Runnable peers are independent work, not implicit semantic successors.
     let first = g.todos.first().unwrap();
-    assert_eq!(first.successor_ids.len(), 1, "successor chain: {first:?}");
+    assert!(first.successor_ids.is_empty(), "unexpected edge: {first:?}");
+    assert!(first.no_follow_up, "this slice has no declared follow-up");
 }
 
 #[test]

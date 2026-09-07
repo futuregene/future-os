@@ -84,6 +84,70 @@ fn init_goal(root: &str, objective: &str) -> String {
 // ── worker-bridge ──────────────────────────────────────────────────────────
 
 #[test]
+fn worker_bridge_enforces_acceptance_and_machine_validation() {
+    for (contract, validator, evidence) in [
+        (Some("attempt,scored"), None, "attempt queued"),
+        (None, Some("exit 7"), "artifact written"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let gid = init_goal(root, "bridge completion gates");
+        let store = future_loop::store::Store::open(root).unwrap();
+        let bootstrap = store.replay(&gid).unwrap().unwrap().todos[0].id.clone();
+        assert_eq!(
+            run(
+                root,
+                &[
+                    "todo",
+                    "supersede",
+                    "--goal",
+                    &gid,
+                    "--todo-id",
+                    &bootstrap,
+                    "--reason",
+                    "test setup"
+                ]
+            )
+            .2,
+            0
+        );
+        let mut args = vec!["todo", "add", "--goal", &gid, "--text", "checked delivery"];
+        if let Some(value) = contract {
+            args.extend(["--acceptance", value]);
+        }
+        if let Some(value) = validator {
+            args.extend(["--verify", value]);
+        }
+        assert_eq!(run(root, &args).2, 0);
+        let id = store
+            .replay(&gid)
+            .unwrap()
+            .unwrap()
+            .todos
+            .iter()
+            .find(|t| t.text.contains("checked delivery"))
+            .unwrap()
+            .id
+            .clone();
+        let input = format!(
+            "{}\nBRIDGE done\n",
+            serde_json::json!({
+                "todo_id": id, "terminal_state": "completed", "evidence": evidence,
+            })
+        );
+        let (_, err, code) = run_stdin(root, &["worker-bridge", "--goal", &gid], &input);
+        assert_eq!(code, 0, "{err}");
+        let after = store.replay(&gid).unwrap().unwrap();
+        assert_eq!(
+            after.todo(&id).unwrap().status,
+            future_loop::state::TodoStatus::Open
+        );
+        let record = after.history.last().unwrap();
+        assert!(!future_loop::executor::turn_succeeded(record));
+    }
+}
+
+#[test]
 fn worker_bridge_worker_finishes_on_eof_and_done() {
     let root = tmp_root("bridge-eof");
     let gid = init_goal(&root, "bridge eof");
@@ -182,10 +246,10 @@ fn worker_bridge_failed_turns_hit_max_turns() {
 }
 
 #[test]
-fn worker_bridge_successor_chain_on_non_final_todo() {
+fn worker_bridge_does_not_invent_successor_chain() {
     let root = tmp_root("bridge-succ");
     let gid = init_goal(&root, "bridge successors");
-    // A second open todo → completing the selected one names it as successor.
+    // A second open todo is independent work, not an implicit successor.
     let (_, _, code) = run(
         &root,
         &["todo", "add", "--goal", &gid, "--text", "second task"],
@@ -222,11 +286,11 @@ fn worker_bridge_successor_chain_on_non_final_todo() {
     assert!(rest.contains("BRIDGE writeback"), "{rest}");
     let status = child.wait().unwrap();
     assert!(status.success());
-    // The completed todo carries the remaining one as its successor.
+    // The completed slice does not create an edge to unrelated work.
     let store = future_loop::store::Store::open(&root).unwrap();
     let g = store.replay(&gid).unwrap().unwrap();
     let done = g.todos.iter().find(|t| t.id == todo_id).unwrap();
-    assert_eq!(done.successor_ids.len(), 1, "{done:?}");
+    assert!(done.successor_ids.is_empty(), "{done:?}");
 }
 
 #[test]

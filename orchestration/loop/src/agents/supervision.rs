@@ -131,7 +131,9 @@ pub async fn flush(store: &mut Store, goal_id: &str, client: &mut AgentClient) -
                 if !assigned.contains(dedup_key) {
                     assigned.insert(dedup_key.clone());
                     keys.push(dedup_key.clone());
-                    lines.push(crate::decision::truncate(message, 800));
+                    // Delivery receipts are already bounded and carry final
+                    // outcome + evidence pointers; do not clip them at 800 chars.
+                    lines.push(crate::executor::truncate_evidence(message, 4096));
                     if keys.len() == MAX_BATCH_NOTES {
                         break;
                     }

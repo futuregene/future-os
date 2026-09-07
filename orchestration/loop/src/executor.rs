@@ -133,7 +133,11 @@ pub fn classify_failure(record: &crate::state::RunRecord) -> crate::state::Failu
         };
     }
     if record.terminal_state == "completed" {
-        return FailureKind::None;
+        return if record.error.is_some() {
+            FailureKind::HardError
+        } else {
+            FailureKind::None
+        };
     }
     // cancelled / incomplete / other non-terminal: treat as infra-recoverable
     // (budget-truncated or externally stopped; not a science failure).
@@ -143,7 +147,9 @@ pub fn classify_failure(record: &crate::state::RunRecord) -> crate::state::Failu
 /// A turn counts as succeeded only when the agent finished AND any attached
 /// independent validator passed (no validator ⇒ not required ⇒ ok).
 pub fn turn_succeeded(record: &RunRecord) -> bool {
-    record.terminal_state == "completed" && record.validation.as_ref().map(|v| v.ok).unwrap_or(true)
+    record.terminal_state == "completed"
+        && record.error.is_none()
+        && record.validation.as_ref().map(|v| v.ok).unwrap_or(true)
 }
 
 /// O3: evaluate turn-end progress. Returns `Some(idle_secs)` when the last
@@ -198,7 +204,7 @@ pub fn validator_tautology(cmd: &str) -> Option<&'static str> {
 /// `todo add --verify "cmd"` attaches a validator; the kernel runs it in the
 /// goal cwd and only completes the todo when it exits 0. No validator ⇒
 /// `None` (validation not required ⇒ material results default to ok).
-async fn run_validator(goal: &Goal, todo: &Todo) -> Option<TaskValidation> {
+pub(crate) async fn run_validator(goal: &Goal, todo: &Todo) -> Option<TaskValidation> {
     let cmd = todo.validator.as_deref()?;
     let timeout = std::env::var("FUTURE_LOOP_VALIDATOR_TIMEOUT_SECS")
         .ok()
@@ -346,7 +352,7 @@ pub async fn execute_turn(
         tokens_out_delta: after.tokens_out.saturating_sub(before.tokens_out),
         cost_delta: (after.cost - before.cost).max(0.0),
         tools: summary.tools,
-        evidence: truncate_evidence(&summary.text, 4_000),
+        evidence: crate::completion::tail(&summary.text, 4_000),
         recorded_at: now_epoch(),
         // G-7: stamped by the caller (main.rs writeback) with the mode-based
         // spend source before the record hits the ledger.
@@ -366,6 +372,7 @@ pub async fn execute_turn(
     } else {
         None
     };
+    crate::completion::check_record(todo, &mut record);
     Ok(record)
 }
 
@@ -386,6 +393,11 @@ pub fn writeback(
     monitor_changed: Option<bool>,
     completion: Option<(bool, Vec<String>)>,
 ) {
+    // Apply the same evidence floor even for direct/embedded writeback callers.
+    let mut record = record.clone();
+    if let Some(todo) = goal.todo(&record.todo_id) {
+        crate::completion::check_record(todo, &mut record);
+    }
     if let Some(changed) = monitor_changed {
         if let Some(m) = goal.todo_mut(&record.todo_id) {
             if changed {
@@ -407,10 +419,8 @@ pub fn writeback(
         }
         return;
     }
-    let failure_kind = record
-        .failure_kind
-        .unwrap_or_else(|| classify_failure(record));
-    if turn_succeeded(record) {
+    let failure_kind = classify_failure(&record);
+    if turn_succeeded(&record) {
         let (no_follow_up, successors) = completion.unwrap_or((true, vec![]));
         if let Some(t) = goal.todo_mut(&record.todo_id) {
             t.complete(no_follow_up, successors);

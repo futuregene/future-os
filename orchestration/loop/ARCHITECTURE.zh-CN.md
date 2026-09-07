@@ -21,6 +21,11 @@
 - **预算**：外层回合数、验证尝试次数、验证命令独立墙钟上限。`--max-turns` 不是
   token/金额上限，也不是 Agent 内层推理和工具调用的总超时。
 
+自动与手动完成共用非空证据和 acceptance token 检查。模型正常结束回复本身不足以关单：
+交接契约未满足时，任务保持未完成并记录明确错误。自动完成还会检查已配置的验证器，并在
+写回前复核当前契约。其他可执行任务不会被自动编成后继关系；一个任务切片结束不等于
+整个 goal 结束。
+
 手动完成有意不重跑机器验证，但记录其依据为人工审阅或显式覆盖，不伪造机器通过。
 `delivered` 不等于 verified；`delivery record` 记录审阅者的判断。token 出现、文件存在、
 脚本 exit 0 都不能单独证明探索性结论正确。修改验收标准必须有明确理由。
@@ -99,6 +104,12 @@ Unix 用 `sh -c`，Windows 用 `cmd.exe /D /S /C`，不是跨平台通用 shell 
 fan-in 为每个已结束前置保留索引，摘要预算公平分配，不让第一个长报告吞掉后面的来源。
 索引随前置数量增长，摘要总量仍受限；完整 evidence 用 `status --format json` 读取。
 superseded 来源有明确标记。编排者仍须在下游 todo 写出产物路径，不把摘要当完整知识交接。
+
+worker 回复全文以 `text_chunk.text` 写入各 run 的 live 日志；有界摘要保留最近文字，
+不再只留开场计划。完成通知使用 JSON `task_delivery` 回执，含真实 worker/session/run ID、
+验证结果、证据尾部和全文日志路径。`pending_other_todos` 统计所有 owner/class 的未完成项，
+不是共享任务池大小；`awaiting_review` 不代表科学结论通过或整个 goal 已终局。
+外部评分、算力就绪等状态仍需应用适配器监控，watchdog 不会自行查询任意外部服务。
 
 区分 **存活、活动、进展**。`write/edit` 执行开始只是产物活动代理；shell 不自动算写入，
 provider input/execution 阶段不重复计数。真实进展来自新产物、验证结果、指标改善或假设

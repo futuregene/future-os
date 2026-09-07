@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::contract::TurnMode;
 use crate::decision::decide_for;
-use crate::executor::writeback;
+use crate::executor::{classify_failure, run_validator, turn_succeeded, writeback};
 use crate::state::{now_epoch, RunRecord};
 use crate::store::{Event, Store};
 
@@ -117,7 +117,7 @@ pub async fn run_bridge(store: &mut Store, opts: &BridgeOptions) -> Result<()> {
         let mut goal = store
             .replay(&opts.goal_id)?
             .ok_or_else(|| anyhow::anyhow!("goal {} not found", opts.goal_id))?;
-        let record = RunRecord {
+        let mut record = RunRecord {
             turn,
             todo_id: result.todo_id.clone(),
             run_id: format!("worker-{turn}-{}", crate::state::now_epoch()),
@@ -139,19 +139,26 @@ pub async fn run_bridge(store: &mut Store, opts: &BridgeOptions) -> Result<()> {
             validation: None,
             truncation: None,
         };
-        // Completion contract: last remaining todo closes with no-follow-up;
-        // otherwise remaining todos become successors.
-        let successors: Vec<String> = goal
-            .runnable_advancement_for(opts.agent_id.as_deref())
-            .filter(|t| t.id != result.todo_id)
-            .map(|t| t.id.clone())
-            .collect();
-        let is_last = successors.is_empty();
-        let completion = if record.terminal_state == "completed" {
-            Some((is_last, successors.clone()))
-        } else {
-            None
-        };
+        // The stdio bridge is another automatic entry point, not an escape
+        // hatch around the selected todo's evidence and machine checks.
+        if record.terminal_state == "completed" {
+            if sel.as_deref() != Some(result.todo_id.as_str()) {
+                record.error = Some("worker result does not match the selected todo".into());
+            } else if let Some(todo) = goal.todo(&result.todo_id) {
+                crate::completion::check_record(todo, &mut record);
+                record.validation = run_validator(&goal, todo).await;
+            } else {
+                record.error = Some("worker result names a missing todo".into());
+            }
+        }
+        record.failure_kind = Some(classify_failure(&record));
+        let successors = goal
+            .todo(&result.todo_id)
+            .map(|t| t.successor_ids.clone())
+            .unwrap_or_default();
+        let no_follow_up = successors.is_empty();
+        let succeeded = turn_succeeded(&record);
+        let completion = succeeded.then(|| (no_follow_up, successors.clone()));
         writeback(&mut goal, &record, None, completion);
         store.append_run(&opts.goal_id, &record)?;
         store.append(Event::RunRecorded {
@@ -159,11 +166,11 @@ pub async fn run_bridge(store: &mut Store, opts: &BridgeOptions) -> Result<()> {
             record: record.clone(),
             ts: now_epoch(),
         })?;
-        if record.terminal_state == "completed" {
+        if succeeded {
             store.append(Event::TodoCompleted {
                 goal_id: opts.goal_id.clone(),
                 todo_id: result.todo_id.clone(),
-                no_follow_up: is_last,
+                no_follow_up,
                 successor_ids: successors.clone(),
                 evidence: Some(record.evidence.clone()),
                 ts: now_epoch(),

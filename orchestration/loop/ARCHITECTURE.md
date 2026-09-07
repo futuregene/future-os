@@ -28,6 +28,12 @@ watchdog supervises process liveness and notification transport, not reasoning.
   validator wall time. Do not confuse `--max-turns` with a token/currency cap or
   a timeout for the agent's entire inner reasoning/tool loop.
 
+Automatic and manual completion share the nonempty-evidence and acceptance-token
+checks. A normal model return is not enough: a rejected handoff remains open with
+an explicit error. Automatic completion also checks any configured validator and
+rechecks the current contract before writeback. Other runnable tasks are never
+invented as successors; closing a slice does not close the goal.
+
 Manual completion intentionally differs from machine verification: it records a
 manual review (or explicit operator override), never a fabricated validator pass.
 A delivery is initially pending. `delivery record` records the reviewer's judgment;
@@ -144,6 +150,15 @@ index is O(fan-in), while summaries remain bounded. Full evidence is available v
 `status --format json`. Superseded sources are labeled, not treated as verified.
 The orchestrator must name artifact paths in downstream task text; summaries are
 not a substitute for reading reports and reproducing decisive measurements.
+
+Worker reply text is journaled in full as `text_chunk.text` in the per-run live
+file; bounded summaries keep the latest text rather than the opening plan.
+Completion notifications contain a JSON `task_delivery` receipt with trusted
+worker/session/run IDs, the validation result, the evidence tail and full-text
+journal path. `pending_other_todos` counts all owners/classes, not just the shared
+frontier. `awaiting_review` is not a scientific pass or global terminal verdict.
+External score/resource monitors still require an application-specific adapter;
+the watchdog does not query arbitrary external services.
 
 Separate **liveness**, **activity** and **progress**. `write/edit` execution starts
 are artifact-activity proxies; shell calls are not automatically writes. Provider

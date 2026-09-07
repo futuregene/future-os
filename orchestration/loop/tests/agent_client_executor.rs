@@ -364,7 +364,8 @@ fn run_turn_long_text_truncates_at_char_boundary() {
         let mut client = AgentClient::connect(&addr).await.unwrap();
         let summary = client.run_turn("sess", "mine", None, None).await.unwrap();
         assert!(summary.text.len() <= 8003, "{}", summary.text.len());
-        assert!(summary.text.starts_with("aaaa"));
+        assert!(summary.text.starts_with('…'));
+        assert!(summary.text.ends_with(&"b".repeat(200)));
     });
 }
 
