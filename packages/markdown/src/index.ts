@@ -6,6 +6,7 @@ export {
 } from "./localPath";
 export type { MarkdownTarget } from "./localPath";
 export { parseFutureMarkdown } from "./parseFutureMarkdown";
+export { remarkLatexMath } from "./remarkLatexMath";
 export { referenceKey } from "./types";
 export type {
   FutureMarkdownDocument,

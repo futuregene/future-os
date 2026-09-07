@@ -40,6 +40,33 @@ describe("math rendering in MarkdownContent", () => {
     expect(html).not.toContain("$E=mc^2$");
   });
 
+  it("renders LaTeX parentheses within bold prose as inline KaTeX", () => {
+    const html = renderToStaticMarkup(
+      <MarkdownContent content={String.raw`最少需要 **\(\boxed{21}\)** 块瓷砖。`} />,
+    );
+    expect(html).toContain("katex-mathml");
+    expect(html).not.toContain("katex-display");
+    expect(html).not.toContain("katex-error");
+    expect(html).toContain("最少需要");
+    expect(html).toContain("块瓷砖。");
+  });
+
+  it("renders bracket-delimited aligned equations from the tiling answer", () => {
+    const html = renderToStaticMarkup(
+      <MarkdownContent content={String.raw`\[
+\begin{aligned}
+&\underbrace{(16-a-b+1)}_{\text{不在两条链上}}
++\underbrace{2(a+b-2)}_{\text{只在一条链上}}+4\\
+&=16+a+b+1.
+\end{aligned}
+\]`}
+      />,
+    );
+    expect(html).toContain("katex-display");
+    expect(html).toContain("katex-mathml");
+    expect(html).not.toContain("katex-error");
+  });
+
   it("keeps prose text around inline math intact", () => {
     const html = renderToStaticMarkup(
       <MarkdownContent content={"Loss is $L(y, \\hat{y})$ where $y$ is the label."} />,
