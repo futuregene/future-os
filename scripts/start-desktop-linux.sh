@@ -9,9 +9,9 @@
 # tested; future-agent owns the authoritative capability and security checks.
 #
 # Environment knobs:
-#   FUTURE_AGENT_GRPC_ADDR  Agent address (default: 127.0.0.1:50051)
+#   FUTURE_AGENT_GRPC_ADDR  Explicit TCP address (default: local IPC)
 #   DESKTOP_DEV_PORT        Vite dev-server port (default: 5173)
-#   REUSE_AGENT             Reuse an agent already listening (default: 0)
+#   REUSE_AGENT             Reuse an agent already reachable (default: 0)
 #   BUILD_AGENT             Build future-agent first (default: 1)
 #   BUILD_CLI               Build future CLI and add it to PATH (default: 1)
 #   CLEAN_STALE_APP_TASKS   Cancel stale runs/approvals first (default: 1)
@@ -27,9 +27,29 @@ AGENT_DIR="$ROOT_DIR/agent"
 CLI_DIR="$ROOT_DIR/cli"
 LOG_DIR="$ROOT_DIR/.logs"
 
-AGENT_ADDR="${FUTURE_AGENT_GRPC_ADDR:-127.0.0.1:50051}"
-AGENT_HOST="${AGENT_ADDR%%:*}"
-AGENT_PORT="${AGENT_ADDR##*:}"
+AGENT_ADDR="${FUTURE_AGENT_GRPC_ADDR:-auto}"
+case "$AGENT_ADDR" in
+  ""|[Aa][Uu][Tt][Oo])
+    AGENT_TRANSPORT="local"
+    AGENT_ADDR="auto"
+    if [[ -n "${FUTURE_AGENT_SOCKET:-}" ]]; then
+      AGENT_SOCKET="$FUTURE_AGENT_SOCKET"
+    elif [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+      AGENT_SOCKET="$XDG_RUNTIME_DIR/future/agent.sock"
+    else
+      AGENT_SOCKET="$HOME/.future/run/agent.sock"
+    fi
+    AGENT_ENDPOINT="unix://$AGENT_SOCKET"
+    ;;
+  *)
+    AGENT_TRANSPORT="tcp"
+    AGENT_TCP_ADDR="${AGENT_ADDR#http://}"
+    AGENT_TCP_ADDR="${AGENT_TCP_ADDR#https://}"
+    AGENT_HOST="${AGENT_TCP_ADDR%:*}"
+    AGENT_PORT="${AGENT_TCP_ADDR##*:}"
+    AGENT_ENDPOINT="http://$AGENT_TCP_ADDR"
+    ;;
+esac
 DESKTOP_DEV_PORT="${DESKTOP_DEV_PORT:-5173}"
 AGENT_LOG="$HOME/.future/agent/logs/agent.log"
 AGENT_CONSOLE_LOG="$LOG_DIR/future-agent-test.log.console"
@@ -57,6 +77,22 @@ require_tool() {
 
 port_is_open() {
   (exec 3<>"/dev/tcp/$AGENT_HOST/$AGENT_PORT") >/dev/null 2>&1
+}
+
+agent_is_ready() {
+  if [[ "$AGENT_TRANSPORT" == "tcp" ]]; then
+    port_is_open
+    return
+  fi
+
+  [[ -S "$AGENT_SOCKET" ]] || return 1
+  if [[ -x "$ROOT_DIR/target/debug/future" ]]; then
+    (
+      unset FUTURE_AGENT_GRPC_ADDR
+      FUTURE_AGENT_SOCKET="$AGENT_SOCKET" \
+        "$ROOT_DIR/target/debug/future" models --json >/dev/null 2>&1
+    )
+  fi
 }
 
 pid_looks_like_agent() {
@@ -121,13 +157,13 @@ wait_for_agent() {
   local attempts=60
 
   for _ in $(seq 1 "$attempts"); do
-    if port_is_open; then
+    if agent_is_ready; then
       return 0
     fi
     sleep 1
   done
 
-  echo "future-agent did not become ready at $AGENT_ADDR"
+  echo "future-agent did not become ready at $AGENT_ENDPOINT"
   echo "Agent log: $AGENT_LOG"
   tail -n 80 "$AGENT_LOG" 2>/dev/null || true
   echo "Agent console log (stdout/stderr, panics): $AGENT_CONSOLE_LOG"
@@ -176,7 +212,7 @@ mkdir -p -- "$LOG_DIR"
 
 echo "FutureOS local desktop test (Linux)"
 echo "Workspace: $ROOT_DIR"
-echo "Agent gRPC: $AGENT_ADDR"
+echo "Agent endpoint: $AGENT_ENDPOINT"
 echo "Desktop dev port: $DESKTOP_DEV_PORT"
 if command -v bwrap >/dev/null 2>&1; then
   echo "Bubblewrap: $(command -v bwrap) ($(bwrap --version 2>/dev/null || echo 'version unavailable'))"
@@ -223,13 +259,13 @@ if [[ -x "$ROOT_DIR/target/debug/future" ]]; then
   export PATH="$ROOT_DIR/target/debug:$PATH"
 fi
 
-if [[ "$REUSE_AGENT" == "1" ]] && port_is_open; then
-  echo "Using existing future-agent at $AGENT_ADDR"
+if [[ "$REUSE_AGENT" == "1" ]] && agent_is_ready; then
+  echo "Using existing future-agent at $AGENT_ENDPOINT"
 else
   stop_pid_file_process
-  if port_is_open; then
-    echo "Port $AGENT_PORT is already in use, but not by the agent recorded in $AGENT_PID_FILE."
-    echo "Stop it manually, or use REUSE_AGENT=1 if it is the intended agent."
+  if agent_is_ready; then
+    echo "Agent endpoint $AGENT_ENDPOINT is already in use, but not by the process recorded in $AGENT_PID_FILE."
+    echo "Stop the old agent manually, or use REUSE_AGENT=1 if it is the intended agent."
     exit 1
   fi
 
@@ -242,7 +278,11 @@ else
   # not a cargo wrapper that could leave an orphan holding the gRPC port.
   (
     cd "$AGENT_DIR"
-    exec "$AGENT_BIN" --grpc-addr "$AGENT_ADDR" --log-file
+    if [[ "$AGENT_TRANSPORT" == "tcp" ]]; then
+      exec "$AGENT_BIN" --grpc-addr "$AGENT_TCP_ADDR" --log-file
+    else
+      exec "$AGENT_BIN" --log-file
+    fi
   ) >"$AGENT_CONSOLE_LOG" 2>&1 &
   STARTED_AGENT_PID="$!"
   echo "$STARTED_AGENT_PID" >"$AGENT_PID_FILE"
@@ -269,7 +309,11 @@ echo "Starting desktop..."
 echo "Press Ctrl-C here to stop Desktop and the agent started by this script."
 
 if [[ "$DESKTOP_DEV_PORT" == "5173" ]]; then
-  (cd "$DESKTOP_DIR" && FUTURE_AGENT_GRPC_ADDR="$AGENT_ADDR" npm run tauri:dev)
+  if [[ "$AGENT_TRANSPORT" == "tcp" ]]; then
+    (cd "$DESKTOP_DIR" && FUTURE_AGENT_GRPC_ADDR="$AGENT_ADDR" npm run tauri:dev)
+  else
+    (cd "$DESKTOP_DIR" && unset FUTURE_AGENT_GRPC_ADDR && npm run tauri:dev)
+  fi
 else
   TAURI_DEV_CONFIG_FILE="$(mktemp "${TMPDIR:-/tmp}/futureos-tauri-dev.XXXXXX")"
   printf '%s\n' \
@@ -281,7 +325,12 @@ else
     '}' >"$TAURI_DEV_CONFIG_FILE"
   (
     cd "$DESKTOP_DIR"
-    FUTURE_AGENT_GRPC_ADDR="$AGENT_ADDR" \
+    if [[ "$AGENT_TRANSPORT" == "tcp" ]]; then
+      FUTURE_AGENT_GRPC_ADDR="$AGENT_ADDR" \
+        npm run tauri:dev -- --config "$TAURI_DEV_CONFIG_FILE"
+    else
+      unset FUTURE_AGENT_GRPC_ADDR
       npm run tauri:dev -- --config "$TAURI_DEV_CONFIG_FILE"
+    fi
   )
 fi
