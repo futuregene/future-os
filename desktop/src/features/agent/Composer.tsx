@@ -79,6 +79,8 @@ interface ComposerProps {
   onAbort?: () => void;
   /** Run a standalone compaction for the current conversation. */
   onCompactContext?: () => void | Promise<void>;
+  /** A compaction reported by the agent is still running (survives reloads). */
+  compactionInProgress?: boolean;
   placeholder?: string;
   textareaClassName?: string;
   workspaceId?: string | null;
@@ -113,6 +115,7 @@ function ComposerImpl({
   sending,
   onAbort,
   onCompactContext,
+  compactionInProgress,
   placeholder,
   textareaClassName,
   workspaceId,
@@ -138,10 +141,11 @@ function ComposerImpl({
   // until it settles.
   const [sendPending, setSendPending] = useState(false);
   const [contextActionPending, setContextActionPending] = useState(false);
+  const compactionPending = contextActionPending || compactionInProgress;
   const editorRef = useRef<MentionEditorHandle | null>(null);
 
   const contextTools = useMemo<ContextToolOption[]>(() => {
-    if (!onCompactContext || sending || contextActionPending)
+    if (!onCompactContext || sending || compactionPending)
       return [];
     return [{
       id: "compact",
@@ -149,16 +153,16 @@ function ComposerImpl({
       description: t("composer.compactContextDescription"),
       searchText: "compact compaction compress context 压缩 上下文",
     }];
-  }, [contextActionPending, onCompactContext, sending, t]);
+  }, [compactionPending, onCompactContext, sending, t]);
   const handleContextToolSelect = useCallback((toolId: string) => {
-    if (toolId !== "compact" || !onCompactContext || contextActionPending)
+    if (toolId !== "compact" || !onCompactContext || compactionPending)
       return;
     const result = onCompactContext();
     if (result) {
       setContextActionPending(true);
       result.catch(() => {}).finally(() => setContextActionPending(false));
     }
-  }, [contextActionPending, onCompactContext]);
+  }, [compactionPending, onCompactContext]);
 
   // Installed skills for the `/` menu. The name stays the English slash-command
   // name; the description follows the UI language (mirrors SkillsView). Skill
@@ -305,7 +309,7 @@ function ComposerImpl({
       || disabled
       || sendPending
       || sending
-      || contextActionPending
+      || compactionPending
     ) {
       return;
     }
@@ -757,7 +761,7 @@ function ComposerImpl({
                     (inputEmpty && attachments.length === 0)
                     || disabled
                     || sendPending
-                    || contextActionPending
+                    || compactionPending
                   }
                   type="submit"
                   aria-label={t("composer.send")}

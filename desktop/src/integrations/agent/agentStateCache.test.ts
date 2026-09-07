@@ -93,6 +93,7 @@ describe("agentStateCache fetch/cache", () => {
   it("fetches and parses session state including activeRun variants", async () => {
     invokeMock.mockResolvedValue(
       statePayload({
+        isCompacting: true,
         activeRun: { runId: "r1", state: "running", epoch: 2, lastEventIdx: 7 },
       }),
     );
@@ -103,6 +104,7 @@ describe("agentStateCache fetch/cache", () => {
       sessionName: "Session",
       sessionId: "s1",
       cwd: "/w",
+      isCompacting: true,
       activeRun: { runId: "r1", state: "running", epoch: 2, lastEventIdx: 7 },
     });
 
@@ -351,7 +353,14 @@ describe("agentStateCache event listener", () => {
       operation_id: "cmp_2",
       error: "provider unavailable",
     });
-    expect(received).toHaveLength(4);
+    emit({
+      _eventType: "compaction_unchanged",
+      sessionId: "s1",
+      threadId: "t1",
+      operation_id: "cmp_3",
+      already_compacted: true,
+    });
+    expect(received).toHaveLength(5);
     expect(received[0]?.detail).toMatchObject({
       threadId: "t1",
       eventType: "user_message",
@@ -371,9 +380,35 @@ describe("agentStateCache event listener", () => {
       eventType: "compaction_failed",
       payload: { operation_id: "cmp_2", error: "provider unavailable" },
     });
+    expect(received[4]?.detail).toMatchObject({
+      threadId: "t1",
+      eventType: "compaction_unchanged",
+      payload: { operation_id: "cmp_3", already_compacted: true },
+    });
     // Without a threadId the event is dropped.
     emit({ _eventType: "agent_end", sessionId: "s1" });
-    expect(received).toHaveLength(4);
+    expect(received).toHaveLength(5);
+  });
+
+  it("tracks compaction lifecycle in cached agent state", async () => {
+    invokeMock.mockResolvedValue(statePayload({ isCompacting: false }));
+    await getAgentState("t-compaction");
+
+    emit({
+      _eventType: "compaction_started",
+      sessionId: "s1",
+      threadId: "t-compaction",
+      operation_id: "cmp_1",
+    });
+    expect(getCachedAgentState("t-compaction")?.isCompacting).toBe(true);
+
+    emit({
+      _eventType: "compaction_committed",
+      sessionId: "s1",
+      threadId: "t-compaction",
+      operation_id: "cmp_1",
+    });
+    expect(getCachedAgentState("t-compaction")?.isCompacting).toBe(false);
   });
 });
 

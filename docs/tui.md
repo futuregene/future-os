@@ -15,7 +15,7 @@ future tui        # terminal 2: the terminal UI
 
 For remote/development setups pass `--grpc-addr <host:port>` to the agent to
 serve TCP instead, and set `FUTURE_AGENT_GRPC_ADDR=<host:port>` on clients
-(explicit TCP is tried first, local IPC remains the fallback).
+(an explicit TCP target is authoritative and never falls back to local IPC).
 
 `future tui <args>` runs the TUI in-process; the standalone `future-tui`
 binary is equivalent but no longer installed by default (build it with

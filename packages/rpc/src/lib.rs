@@ -12,6 +12,7 @@
 //! this crate also owns the cross-client local transport so every frontend
 //! discovers the same per-user Agent endpoint.
 
+pub mod command_policy;
 pub mod transport;
 
 pub mod proto {

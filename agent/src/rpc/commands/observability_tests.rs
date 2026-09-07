@@ -37,6 +37,20 @@ fn get_state_returns_session_info() {
 }
 
 #[test]
+fn get_state_reports_manual_compaction_in_progress() {
+    let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    session
+        .read()
+        .compaction_in_progress
+        .store(true, std::sync::atomic::Ordering::Release);
+
+    let resp = parse_response(&handle_command_internal(&state, make_cmd("get_state")));
+    assert_eq!(resp["success"], true);
+    assert_eq!(resp["data"]["isCompacting"], true);
+}
+
+#[test]
 fn get_state_reports_pending_approvals_for_owning_session() {
     let state = make_app_state();
     state

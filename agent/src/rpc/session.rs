@@ -56,6 +56,14 @@ pub struct ServerSession {
     pub auto_compaction: bool,
     /// Whether automatic retry on transient LLM errors is enabled.
     pub auto_retry: bool,
+    /// Serializes explicit manual compaction requests. The RPC acknowledgement
+    /// is asynchronous, so the session itself must reject duplicate requests
+    /// until the accepted operation reaches a terminal lifecycle event.
+    pub compaction_in_progress: Arc<std::sync::atomic::AtomicBool>,
+    /// Last accepted manual-compaction request and its stable operation id.
+    /// Retrying the same RPC request id returns the original acknowledgement
+    /// instead of starting a second summary operation.
+    pub compaction_request: Arc<parking_lot::Mutex<Option<(String, String)>>>,
     /// On-disk session store (JSONL files).  Shared across everything that
     /// reads/writes session history.
     pub session_manager: Arc<Manager>,
@@ -214,6 +222,8 @@ impl ServerSession {
             thinking_level: "xhigh".to_string(), // Match default
             auto_compaction: true,               // Match default
             auto_retry: true,
+            compaction_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            compaction_request: Arc::new(parking_lot::Mutex::new(None)),
             session_manager: manager,
             persistence,
             cwd: cwd.to_string(),
@@ -511,6 +521,17 @@ impl ServerSession {
     }
 
     pub fn compact(&self, instructions: &str) -> Result<serde_json::Value> {
+        self.compact_with_operation_id(
+            instructions,
+            format!("cmp_{}", crate::utils::generate_entry_id()),
+        )
+    }
+
+    pub(crate) fn compact_with_operation_id(
+        &self,
+        instructions: &str,
+        operation_id: String,
+    ) -> Result<serde_json::Value> {
         let context_window = self
             .model_registry
             .read()
@@ -523,6 +544,7 @@ impl ServerSession {
             crate::compaction::CompactionPhase::Standalone,
             context_window,
             None,
+            operation_id,
         )
     }
 
@@ -533,6 +555,7 @@ impl ServerSession {
         phase: crate::compaction::CompactionPhase,
         context_window: i32,
         fallback: Option<(std::sync::Arc<dyn crate::types::LLMProvider>, String)>,
+        operation_id: String,
     ) -> Result<serde_json::Value> {
         use std::sync::atomic::Ordering;
         // A standalone manual compaction can arrive immediately after the
@@ -581,10 +604,24 @@ impl ServerSession {
             model: self.model.clone(),
         };
         let (provider, interrupted, current_model) = {
-            let loop_ = self
-                .agent_loop
-                .try_read()
-                .map_err(|_| anyhow::anyhow!("session configuration is busy; retry /compact"))?;
+            let loop_ = match self.agent_loop.try_read() {
+                Ok(loop_) => loop_,
+                Err(_) => {
+                    let error = anyhow::anyhow!("session configuration is busy; retry /compact");
+                    self.compaction_in_progress.store(false, Ordering::Release);
+                    if let Some(event) = super::prompt_helpers::run_event_to_sse(
+                        crate::agent::RunEvent::CompactionFailed {
+                            operation_id,
+                            trigger,
+                            phase,
+                            error: error.to_string(),
+                        },
+                    ) {
+                        self.broadcaster.broadcast(event);
+                    }
+                    return Err(error);
+                }
+            };
             (
                 loop_.provider.clone(),
                 loop_.interrupt_flag.clone(),
@@ -596,7 +633,6 @@ impl ServerSession {
             ..manager
         };
         let instructions = instructions.to_string();
-        let operation_id = format!("cmp_{}", crate::utils::generate_entry_id());
         let worker_operation_id = operation_id.clone();
         let started_broadcaster = self.broadcaster.clone();
         // RPC dispatch is synchronous today. Run the async, tool-free summary
@@ -640,6 +676,7 @@ impl ServerSession {
         let prepared = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
+                self.compaction_in_progress.store(false, Ordering::Release);
                 if let Some(event) = super::prompt_helpers::run_event_to_sse(
                     crate::agent::RunEvent::CompactionFailed {
                         operation_id,
@@ -666,6 +703,7 @@ impl ServerSession {
                     .persistence
                     .commit_checkpoint(crate::session::checkpoint_to_entry(&checkpoint))
                 {
+                    self.compaction_in_progress.store(false, Ordering::Release);
                     if let Some(event) = super::prompt_helpers::run_event_to_sse(
                         crate::agent::RunEvent::CompactionFailed {
                             operation_id,
@@ -681,6 +719,11 @@ impl ServerSession {
                 if let Ok(loop_) = self.agent_loop.try_write() {
                     *loop_.active_checkpoint.lock() = Some((*checkpoint).clone());
                 }
+                // Publish the terminal event only after the session admission
+                // fence is open again. Desktop enables Send when it observes
+                // this event, so this ordering prevents a transient
+                // `session_busy` on the very next command.
+                self.compaction_in_progress.store(false, Ordering::Release);
                 if let Some(event) = super::prompt_helpers::run_event_to_sse(
                     crate::agent::RunEvent::CompactionCommitted {
                         operation_id,
@@ -763,17 +806,84 @@ impl ServerSession {
         self.ephemeral = ephemeral;
     }
 
-    pub fn execute_shell(&self, command: &str) -> Result<serde_json::Value> {
+    pub fn execute_shell(
+        &self,
+        command: &str,
+        timeout: std::time::Duration,
+    ) -> Result<serde_json::Value> {
+        use std::io::Read;
+
         // Same platform-shell contract as the shell tool (bash -c on Unix,
         // the PowerShell wrapper on Windows) so exit codes are reliable.
         let (program, args) = crate::sandbox::shell_invocation(command);
-        let output = std::process::Command::new(program)
+        let mut process = std::process::Command::new(program);
+        process
             .args(&args)
             .current_dir(&self.cwd)
             .env("PWD", &self.cwd)
-            .output()?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            process.process_group(0);
+        }
+        let mut child = process.spawn()?;
+        #[cfg(unix)]
+        let process_group = child.id() as i32;
+        #[cfg(windows)]
+        let job = crate::sandbox::windows::Job::create().ok().and_then(|job| {
+            job.assign(child.id()).ok()?;
+            Some(job)
+        });
+        let stdout = child.stdout.take().map(|mut stream| {
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let _ = stream.read_to_end(&mut bytes);
+                bytes
+            })
+        });
+        let stderr = child.stderr.take().map(|mut stream| {
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let _ = stream.read_to_end(&mut bytes);
+                bytes
+            })
+        });
+        let started = std::time::Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            if started.elapsed() >= timeout {
+                #[cfg(unix)]
+                // SAFETY: the child was created as leader of this process group.
+                unsafe {
+                    libc::killpg(process_group, libc::SIGKILL);
+                }
+                #[cfg(windows)]
+                if let Some(job) = &job {
+                    job.terminate();
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout.map(std::thread::JoinHandle::join);
+                let _ = stderr.map(std::thread::JoinHandle::join);
+                anyhow::bail!(
+                    "shell command timed out after {} seconds",
+                    timeout.as_secs_f64()
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        };
+        let stdout = stdout
+            .and_then(|reader| reader.join().ok())
+            .unwrap_or_default();
+        let stderr = stderr
+            .and_then(|reader| reader.join().ok())
+            .unwrap_or_default();
+        let stdout = String::from_utf8_lossy(&stdout);
+        let stderr = String::from_utf8_lossy(&stderr);
         Ok(serde_json::json!({
             "output": format!(
                 "{}{}",
@@ -784,7 +894,7 @@ impl ServerSession {
                     format!("\n{}", stderr)
                 }
             ),
-            "exitCode": output.status.code().unwrap_or(-1),
+            "exitCode": status.code().unwrap_or(-1),
         }))
     }
 
@@ -1569,7 +1679,12 @@ mod tests {
         let session = make_test_session("s1");
         // Create the cwd directory so the shell can cd into it
         std::fs::create_dir_all(&session.cwd).unwrap();
-        let result = session.execute_shell("echo hello").unwrap();
+        let result = session
+            .execute_shell(
+                "echo hello",
+                future_rpc::command_policy::SHELL_EXECUTION_TIMEOUT,
+            )
+            .unwrap();
         let output = result["output"].as_str().unwrap();
         assert!(output.contains("hello"));
         assert_eq!(result["exitCode"], 0);
@@ -1579,8 +1694,29 @@ mod tests {
     fn execute_shell_nonzero_exit() {
         let session = make_test_session("s1");
         std::fs::create_dir_all(&session.cwd).unwrap();
-        let result = session.execute_shell("false").unwrap();
+        let result = session
+            .execute_shell("false", future_rpc::command_policy::SHELL_EXECUTION_TIMEOUT)
+            .unwrap();
         assert_eq!(result["exitCode"], 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execute_shell_timeout_kills_the_process_group() {
+        let session = make_test_session("shell-timeout");
+        std::fs::create_dir_all(&session.cwd).unwrap();
+        let marker = std::path::Path::new(&session.cwd).join("late-child-output");
+        let command = format!("(sleep 0.4; printf leaked > '{}') & wait", marker.display());
+
+        let started = std::time::Instant::now();
+        let error = session
+            .execute_shell(&command, std::time::Duration::from_millis(50))
+            .unwrap_err();
+        assert!(error.to_string().contains("timed out"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        assert!(!marker.exists(), "a descendant survived the shell timeout");
     }
 
     #[tokio::test]
@@ -2938,7 +3074,12 @@ mod tests {
     fn execute_shell_captures_stderr() {
         let session = make_test_session("stderr");
         std::fs::create_dir_all(&session.cwd).unwrap();
-        let result = session.execute_shell("echo out; echo err 1>&2").unwrap();
+        let result = session
+            .execute_shell(
+                "echo out; echo err 1>&2",
+                future_rpc::command_policy::SHELL_EXECUTION_TIMEOUT,
+            )
+            .unwrap();
         let output = result["output"].as_str().unwrap();
         assert!(output.contains("out"), "{output}");
         assert!(output.contains("err"), "{output}");

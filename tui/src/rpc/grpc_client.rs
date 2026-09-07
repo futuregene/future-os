@@ -592,13 +592,13 @@ async fn execute_unary(addr: &str, cmd: RpcCommand, timeout_secs: u64) -> Result
     let connected = future_rpc::transport::connect_channel(
         Some(addr),
         Duration::from_secs(timeout_secs.min(5)),
-        Duration::from_secs(timeout_secs),
+        None,
     )
     .await
     .map_err(|e| e.to_string())?;
     let mut client = FutureAgentClient::new(connected.channel);
     let response = client
-        .execute_command(cmd)
+        .execute_command(future_rpc::command_policy::request_with_timeout(cmd))
         .await
         .map_err(|status| {
             let msg = status.message();
@@ -828,7 +828,7 @@ async fn subscribe_stream(inner: &Arc<Inner>, session: &str) -> StreamExit {
     let connected = match future_rpc::transport::connect_channel(
         Some(&inner.addr),
         Duration::from_secs(TRY_CONNECT_TIMEOUT_SEC),
-        Duration::from_secs(GRPC_DEADLINE_SEC),
+        None,
     )
     .await
     {
@@ -1494,7 +1494,10 @@ mod tests {
                     "{\"models\":[{\"id\":\"gpt-4o\",\"label\":\"GPT-4o\",\"provider\":\"openai\"}, {\"bad\":true}]}".into(),
                 ),
                 ("cycle_thinking_level".into(), "{\"level\":\"high\"}".into()),
-                ("compact".into(), "{\"summary\":\"shorter\"}".into()),
+                (
+                    "compact".into(),
+                    "{\"accepted\":true,\"operationId\":\"cmp-1\"}".into(),
+                ),
                 ("reload_config".into(), "{\"reloaded\":true}".into()),
             ]))),
             ..Default::default()

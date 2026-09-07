@@ -1023,7 +1023,7 @@ impl<T: TerminalIo> App<T> {
             }
             UiCmd::ThinkingCycled(Err(_)) => {}
             UiCmd::CompactDone(result) => match result {
-                Ok(_) => self.add_system_message("Context compacted".into()),
+                Ok(_) => self.add_system_message("Context compaction started".into()),
                 Err(err) => self.add_system_message(format!("Compact failed: {err}")),
             },
             UiCmd::ReloadDone { result, state } => match result {
@@ -5728,7 +5728,7 @@ mod tests {
 
         // CompactDone ok/err.
         app.handle_cmd(UiCmd::CompactDone(Ok("done".into())));
-        assert!(last_system(&app).contains("Context compacted"));
+        assert!(last_system(&app).contains("Context compaction started"));
         app.handle_cmd(UiCmd::CompactDone(Err("bad".into())));
         assert!(last_system(&app).contains("Compact failed"));
 
@@ -7180,7 +7180,7 @@ mod tests {
         pump(&mut app, &mut rx).await;
         assert!(system_messages(&app)
             .iter()
-            .any(|m| m.contains("Context compacted")));
+            .any(|m| m.contains("Context compaction started")));
         assert!(system_messages(&app)
             .iter()
             .any(|m| m.contains("Stopped current generation")));

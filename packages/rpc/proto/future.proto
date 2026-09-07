@@ -104,6 +104,10 @@ message RpcCommand {
   // Shell command string.  Used when cmd_type = "shell".
   string command = 80;
 
+  // Optional server-owned shell timeout. Zero selects the 120-second default;
+  // non-zero values are clamped to 5 seconds through 30 minutes.
+  uint64 shell_timeout_ms = 81;
+
   // ── Session bookkeeping ────────────────────────────────────────────────
 
   // Target session ID.  Almost every command requires this so the
@@ -519,12 +523,9 @@ message Command {
 
 // compact response.
 message CompactResult {
-  int64 tokens_before = 1;
-  int64 tokens_after = 2;
-  string summary = 3;
-  int64 messages_removed = 4;
-  string checkpoint_id = 5;
-  bool already_compacted = 6;
+  // Async manual-compaction acknowledgement.
+  string operation_id = 1;
+  bool accepted = 2;
 }
 
 // shell response.
@@ -747,7 +748,7 @@ message SessionState {
   // Whether the agent loop is currently processing a prompt.
   bool is_streaming = 3;
 
-  // Whether a compaction run is in progress (always false in current code).
+  // Whether a compaction run is currently in progress for this session.
   bool is_compacting = 4;
 
   reserved 5, 6;
@@ -1167,7 +1168,7 @@ message StreamEvent {
   //   error                        run error
   //   tool_sandboxed / persistence_error / compaction_end /
   //   compaction_started / compaction_committed /
-  //   compaction_failed                                     sideband signals
+  //   compaction_failed / compaction_unchanged              sideband signals
   //   provider_config_changed  global provider/auth configuration committed
 //   session_created          global control-plane signal: a session was minted
 //                            (new_session / fork / clone, never disk hydration)

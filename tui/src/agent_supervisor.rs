@@ -80,7 +80,7 @@ async fn agent_healthy(configured: &str) -> bool {
     let Ok(connected) = future_rpc::transport::connect_channel(
         Some(configured),
         Duration::from_millis(400),
-        Duration::from_secs(2),
+        Some(Duration::from_secs(2)),
     )
     .await
     else {

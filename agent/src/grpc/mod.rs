@@ -254,6 +254,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             source_meta: cmd.source_meta,
             enabled: cmd.enabled,
             command: cmd.command,
+            shell_timeout_ms: cmd.shell_timeout_ms,
             session_id: cmd.session_id,
             entry_id: cmd.entry_id,
             offset: cmd.offset,

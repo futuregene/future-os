@@ -194,14 +194,8 @@ pub struct RefreshSkillsPayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompactPayload {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub checkpoint_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub already_compacted: Option<bool>,
-    pub tokens_before: i64,
-    pub tokens_after: i64,
-    pub summary: String,
-    pub messages_removed: i64,
+    pub operation_id: String,
+    pub accepted: bool,
 }
 
 // ── shell ────────────────────────────────────────────────────────────────────

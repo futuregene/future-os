@@ -4,13 +4,11 @@
 
 use std::collections::HashMap;
 
-use tonic::transport::Channel;
-
 use super::client::{
     fork_command, get_state_command, new_session_command, set_cwd_command,
     set_permission_level_command, set_sandbox_policy_command, RpcResponseExt,
 };
-use crate::{agent_proto::FutureAgentClient, store};
+use crate::store;
 
 /// Outcome of `ensure_agent_session`.
 #[derive(Debug)]
@@ -29,7 +27,7 @@ pub(super) struct EnsuredSession {
 /// `model_id` and `thinking_level` are applied to newly-created sessions so
 /// the agent starts with the user's selection immediately.
 pub(super) async fn ensure_agent_session(
-    client: &mut FutureAgentClient<Channel>,
+    client: &mut super::client::AgentClient,
     session_id: &str,
     cwd: &str,
     model_id: Option<&str>,
@@ -93,7 +91,7 @@ pub(super) async fn ensure_agent_session(
 }
 
 pub(super) async fn set_agent_permission_level(
-    client: &mut FutureAgentClient<Channel>,
+    client: &mut super::client::AgentClient,
     session_id: &str,
     level: &str,
 ) -> Result<(), crate::AppError> {
@@ -115,7 +113,7 @@ pub(super) async fn set_agent_permission_level(
 /// `"manual"` (ask), `"sandbox"` (the available OS sandbox wraps shell commands), or `"off"`
 /// (fully open). The tier is a global app preference, defaulting to `"manual"`.
 pub(super) async fn set_agent_sandbox_policy(
-    client: &mut FutureAgentClient<Channel>,
+    client: &mut super::client::AgentClient,
     session_id: &str,
     _thread_id: &str,
 ) -> Result<(), crate::AppError> {
@@ -526,7 +524,7 @@ mod tests {
 
     async fn mock_client() -> (
         super::super::test_support::MockAgentGuard,
-        FutureAgentClient<Channel>,
+        super::super::client::AgentClient,
     ) {
         let mock = mock_agent();
         let client = super::super::client::connect_agent()

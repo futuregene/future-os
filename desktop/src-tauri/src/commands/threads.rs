@@ -349,11 +349,15 @@ pub async fn compact_thread_context(
         .into_inner()
         .ok_or_rpc_error("compact returned an error")?;
     let value = future_rpc::decode::response_data(&response);
-    Ok(if value.is_null() {
-        serde_json::json!({})
-    } else {
-        value
-    })
+    let valid_ack = value.get("accepted").and_then(serde_json::Value::as_bool) == Some(true)
+        && value
+            .get("operationId")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|operation_id| !operation_id.is_empty());
+    if !valid_ack {
+        return Err("compact returned an invalid acknowledgement".into());
+    }
+    Ok(value)
 }
 
 /// Fetch session entries from the agent (user, assistant, tool messages).
@@ -678,7 +682,13 @@ mod tests {
         let _home = init("cmd_compact_context");
         let thread = make_thread(&_home, Some("sess_compact"));
         let agent = crate::commands::agent_mock::ensure_mock_agent();
-        script_mock_agent(MockScript::default());
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "compact".to_string(),
+                r#"{"accepted":true,"operationId":"cmp-test"}"#.to_string(),
+            )]),
+            ..Default::default()
+        });
 
         compact_thread_context(thread.id).await.expect("compact");
 
@@ -695,7 +705,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compact_thread_context_returns_empty_object_for_empty_agent_data() {
+    async fn compact_thread_context_rejects_empty_agent_data() {
         let _lock = mock_agent_lock();
         let _home = init("cmd_compact_empty_data");
         let thread = make_thread(&_home, Some("sess_compact_empty"));
@@ -704,8 +714,8 @@ mod tests {
             data: HashMap::from([("compact".to_string(), String::new())]),
             ..Default::default()
         });
-        let value = compact_thread_context(thread.id).await.expect("compact");
-        assert_eq!(value, serde_json::json!({}));
+        let error = compact_thread_context(thread.id).await.unwrap_err();
+        assert!(error.to_string().contains("invalid acknowledgement"));
         script_mock_agent(MockScript::default());
     }
 

@@ -44,7 +44,7 @@ fn agent_reachable(configured: &str) -> bool {
                     .block_on(future_rpc::transport::connect_channel(
                         Some(&configured),
                         Duration::from_millis(300),
-                        Duration::from_millis(300),
+                        Some(Duration::from_millis(300)),
                     ))
                     .ok()
             })

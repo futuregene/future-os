@@ -172,6 +172,22 @@ pub(crate) fn cmd_delete_session(state: &AppState, cmd: &RpcCommand, id: &str) -
     }
     let live = state.sessions.read().get(&cmd.session_id).cloned();
     if let Some(session) = live {
+        if session
+            .read()
+            .compaction_in_progress
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return RpcResponse::build_fail_code(
+                id,
+                "delete_session",
+                "session_busy",
+                "session context compaction is in progress",
+                serde_json::json!({
+                    "busy_reason": "compaction",
+                    "retryable": true,
+                }),
+            );
+        }
         let (active, cancelled_count) = {
             let mut session = session.write();
             session.deleting = true;

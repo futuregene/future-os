@@ -241,7 +241,7 @@ impl DingtalkBridge {
                     }
                     "/compact" => {
                         if let Ok(()) = agent.compact(&sid).await {
-                            reply_md("Compact", "Context compacted.");
+                            reply_md("Compact", "Context compaction started.");
                         }
                     }
                     "/effort" if !arg.is_empty() => {
@@ -949,7 +949,7 @@ mod tests {
             .handle_event(event(&fx.base, "m4", "/compact"))
             .await
             .unwrap();
-        assert!(wait_hook(&fx.http, "Context compacted").await);
+        assert!(wait_hook(&fx.http, "Context compaction started").await);
 
         fx.bridge
             .handle_event(event(&fx.base, "m5", "/effort turbo"))

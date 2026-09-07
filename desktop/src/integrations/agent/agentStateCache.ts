@@ -17,6 +17,8 @@ export interface AgentSessionState {
   parentSessionId?: string | null;
   /** Whether the agent is currently streaming a response for this session. */
   isStreaming?: boolean;
+  /** Whether a manual context compaction is currently running. */
+  isCompacting?: boolean;
   activeRun?: {
     runId: string;
     epoch: number;
@@ -114,6 +116,8 @@ export async function getAgentState(
           typeof raw.parentSessionId === "string" ? raw.parentSessionId : null,
         isStreaming:
           typeof raw.isStreaming === "boolean" ? raw.isStreaming : undefined,
+        isCompacting:
+          typeof raw.isCompacting === "boolean" ? raw.isCompacting : undefined,
         activeRun: parseActiveRun(raw.activeRun),
       };
       if ((versions.get(threadId) ?? 0) === requestVersion) {
@@ -305,8 +309,14 @@ export function installAgentEventListener() {
       case "compaction_started":
       case "compaction_committed":
       case "compaction_failed":
+      case "compaction_unchanged":
         if (!threadId)
           return;
+        applyCompactionEvent(
+          threadId,
+          sessionId,
+          eventType === "compaction_started",
+        );
         window.dispatchEvent(
           new CustomEvent("future:agent-event", {
             detail: { threadId, sessionId, eventType, payload: p },
@@ -315,6 +325,32 @@ export function installAgentEventListener() {
         break;
     }
   });
+}
+
+/** Keep the cached session snapshot aligned with compaction lifecycle events. */
+function applyCompactionEvent(
+  eventThreadId: string,
+  sessionId: string,
+  isCompacting: boolean,
+) {
+  let changed = false;
+  for (const [threadId, entry] of cache) {
+    if (threadId !== eventThreadId && entry.state.sessionId !== sessionId)
+      continue;
+    cache.set(threadId, {
+      state: { ...entry.state, isCompacting },
+      fetchedAt: Date.now(),
+    });
+    changed = true;
+  }
+  if (changed) {
+    notify();
+  }
+  else {
+    // The event can beat the active-thread prefetch after a reload. Fetching
+    // authoritative state avoids creating an incomplete cache entry.
+    void getAgentState(eventThreadId, { force: true }).catch(() => {});
+  }
 }
 
 /** Apply a settings-change event to the agent state cache. */
