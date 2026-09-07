@@ -1,7 +1,7 @@
 import type { ReactTestRenderer } from "react-test-renderer";
-import React from "react";
+import { createElement } from "react";
 import { Alert, Image, Linking, Text } from "react-native";
-import TestRenderer, { act } from "react-test-renderer";
+import { act, create } from "react-test-renderer";
 import { MarkdownText } from "../MarkdownText";
 
 jest.mock("react-i18next", () => ({
@@ -13,8 +13,8 @@ describe("MarkdownText", () => {
     let renderer: ReactTestRenderer | undefined;
     const onOpenFile = jest.fn();
     act(() => {
-      renderer = TestRenderer.create(
-        React.createElement(MarkdownText, {
+      renderer = create(
+        createElement(MarkdownText, {
           text: "**[gomoku.html](<./gomoku.html>)**",
           onOpenFile,
         }),
@@ -38,8 +38,8 @@ describe("MarkdownText", () => {
   test("uses the shared GFM parser for tables, tasks and nested formatting", () => {
     let renderer: ReactTestRenderer | undefined;
     act(() => {
-      renderer = TestRenderer.create(
-        React.createElement(MarkdownText, {
+      renderer = create(
+        createElement(MarkdownText, {
           text: "| A | B |\n|---|---|\n| **bold** | ~~old~~ |\n\n- [x] done",
         }),
       );
@@ -55,8 +55,8 @@ describe("MarkdownText", () => {
     const onOpenFile = jest.fn();
     let renderer: ReactTestRenderer | undefined;
     act(() => {
-      renderer = TestRenderer.create(
-        React.createElement(MarkdownText, {
+      renderer = create(
+        createElement(MarkdownText, {
           text: "![diagram](assets/pic.png)",
           onOpenFile,
         }),
@@ -71,8 +71,8 @@ describe("MarkdownText", () => {
     const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
     let renderer: ReactTestRenderer | undefined;
     act(() => {
-      renderer = TestRenderer.create(
-        React.createElement(MarkdownText, {
+      renderer = create(
+        createElement(MarkdownText, {
           mode: "file-preview",
           text: "![diagram](assets/pic.png)",
         }),
@@ -87,8 +87,8 @@ describe("MarkdownText", () => {
   test("renders only http(s) Markdown images as remote images", () => {
     let renderer: ReactTestRenderer | undefined;
     act(() => {
-      renderer = TestRenderer.create(
-        React.createElement(MarkdownText, {
+      renderer = create(
+        createElement(MarkdownText, {
           text: "![remote](https://example.com/pic.png) ![blocked](data:image/png;base64,x)",
         }),
       );
@@ -102,9 +102,7 @@ describe("MarkdownText", () => {
     const open = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
     let renderer: ReactTestRenderer | undefined;
     act(() => {
-      renderer = TestRenderer.create(
-        React.createElement(MarkdownText, { text: "[bad](javascript:alert(1))" }),
-      );
+      renderer = create(createElement(MarkdownText, { text: "[bad](javascript:alert(1))" }));
     });
     const pressable = renderer?.root.findAllByType(Text).find(node => node.props.onPress);
     expect(pressable).toBeUndefined();

@@ -68,6 +68,7 @@
     "downloading": "下载中",
     "installed": "更新已安装，重启后生效",
     "restart": "重启 FutureOS",
+    "manualOnly": "当前构建版本仅支持手工升级",
     "noAsset": "当前平台暂不支持自动更新",
     "download": "前往下载",
     "downloadFailed": "无法打开下载链接",

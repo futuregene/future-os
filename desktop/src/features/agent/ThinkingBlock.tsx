@@ -22,7 +22,7 @@ export function ThinkingBlock({
         // A dimmed, borderless aside with a left rail — reads as reasoning, not
         // a filled content box (which is now reserved for code blocks).
         "border-l-2 border-line-soft pl-3 text-ink-muted",
-        "[&_*]:text-ink-muted",
+        "**:text-ink-muted",
       )}
     >
       <StreamingMarkdownContent content={text} workspaceId={workspaceId} live={live} />

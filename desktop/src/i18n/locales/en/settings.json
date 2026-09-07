@@ -68,6 +68,7 @@
     "downloading": "Downloading",
     "installed": "Update installed. Restart to finish.",
     "restart": "Restart FutureOS",
+    "manualOnly": "This build can only be updated manually",
     "noAsset": "Automatic updates are not available for this platform",
     "download": "Download latest version",
     "downloadFailed": "Could not open download link",

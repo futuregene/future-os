@@ -119,7 +119,7 @@ export function ModelsPage({
                     description={(
                       <>
                         {description
-                          ? <div className="line-clamp-3 break-words">{description}</div>
+                          ? <div className="line-clamp-3 wrap-break-word">{description}</div>
                           : null}
                         <div>{modelSubtitle(model)}</div>
                       </>

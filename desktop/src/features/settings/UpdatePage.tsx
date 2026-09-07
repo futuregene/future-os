@@ -150,7 +150,7 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
                             {t("update.available", { version: status.latestVersion })}
                           </p>
 
-                          {status.platformSupported
+                          {status.canInstallInApp
                             ? (
                                 <div className="space-y-2">
                                   {installed
@@ -195,7 +195,9 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
                             : (
                                 <div className="space-y-1">
                                   <div className="flex flex-wrap items-center gap-2">
-                                    <span className="text-xs text-ink-muted">{t("update.noAsset")}</span>
+                                    <span className="text-xs text-ink-muted">
+                                      {t(status.platformSupported ? "update.manualOnly" : "update.noAsset")}
+                                    </span>
                                     {status.downloadUrl
                                       ? (
                                           <a

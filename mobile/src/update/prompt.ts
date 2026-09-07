@@ -6,11 +6,14 @@ import { installUpdate, type UpdateStatus } from "./update";
 export function promptUpgrade(status: UpdateStatus, t: TFunction): void {
   Alert.alert(
     t("update.title"),
-    t("update.message", { current: status.currentVersion, version: status.latestVersion }),
+    t(status.canInstallInApp ? "update.message" : "update.manualMessage", {
+      current: status.currentVersion,
+      version: status.latestVersion,
+    }),
     [
       { text: t("update.cancel"), style: "cancel" },
       {
-        text: t("update.confirm"),
+        text: t(status.canInstallInApp ? "update.confirm" : "update.download"),
         onPress: () => {
           void installUpdate(status).catch(() => {
             Alert.alert(t("update.title"), t("update.installFailed"));

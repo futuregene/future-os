@@ -1,4 +1,4 @@
-import React from "react";
+import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { NativeScrollEvent, NativeSyntheticEvent } from "react-native";
 import { useChatScroll } from "../useChatScroll";
@@ -27,7 +27,7 @@ describe("useChatScroll inverted-list model", () => {
   beforeEach(() => {
     result = { current: undefined as never };
     act(() => {
-      renderer = create(React.createElement(Harness));
+      renderer = create(createElement(Harness));
     });
   });
 
@@ -62,7 +62,7 @@ describe("useChatScroll inverted-list model", () => {
     act(() => result.current.onScroll(scrollEvent(200)));
     expect(result.current.atLatest).toBe(false);
 
-    act(() => renderer!.update(React.createElement(Harness, { sessionId: "s2" })));
+    act(() => renderer!.update(createElement(Harness, { sessionId: "s2" })));
 
     expect(result.current.atLatest).toBe(true);
   });
