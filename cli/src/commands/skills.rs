@@ -22,6 +22,32 @@ pub fn skills_dir() -> PathBuf {
         .join("skills")
 }
 
+/// Reject path components before any network or filesystem side effect. Both
+/// catalogue IDs and explicit CLI arguments are untrusted, on every platform.
+fn validate_skill_component(value: &str, label: &str) -> Result<(), String> {
+    let stem = value
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && matches!(stem.as_bytes()[3], b'1'..=b'9'));
+    if value.is_empty()
+        || value.len() > 128
+        || value.contains("..")
+        || value.ends_with('.')
+        || reserved
+        || !value
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
+    {
+        return Err(format!("Invalid skill {label}: {value:?}"));
+    }
+    Ok(())
+}
+
 /// `SkillInfo` from skills.ts.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SkillInfo {
@@ -286,6 +312,7 @@ async fn update_skills(out: &Output) -> Result<(), String> {
 
 /// `uninstallSkill(skillId)` — remove an installed skill.
 async fn uninstall_skill(skill_id: &str, out: &Output) -> Result<(), String> {
+    validate_skill_component(skill_id, "id")?;
     let dest = skills_dir().join(skill_id);
     if tokio::fs::metadata(&dest).await.is_err() {
         out.log(&format!("Skill \"{skill_id}\" is not installed."));
@@ -457,6 +484,10 @@ pub async fn install_builtin_skills(out: &Output) {
 /// return normally (TS behavior); write/unzip/flatten failures throw and are
 /// reported by the caller with the `  Failed to install …` prefix.
 async fn install_skill(skill_id: &str, version: Option<&str>, out: &Output) -> Result<(), String> {
+    validate_skill_component(skill_id, "id")?;
+    if let Some(version) = version {
+        validate_skill_component(version, "version")?;
+    }
     let platform_url = get_platform_url(None).await;
     let version = match version {
         Some(v) => v.to_string(),
@@ -487,6 +518,7 @@ async fn install_skill(skill_id: &str, version: Option<&str>, out: &Output) -> R
             latest.clone()
         }
     };
+    validate_skill_component(&version, "version")?;
     let dest = skills_dir().join(skill_id);
     let is_update = tokio::fs::metadata(&dest).await.is_ok();
 
@@ -643,9 +675,9 @@ fn unzip_command(zip_path: &Path, dest_dir: &Path) -> tokio::process::Command {
         "-NoProfile",
         "-Command",
         &format!(
-            "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
-            zip_path.display(),
-            dest_dir.display()
+            "Expand-Archive -LiteralPath '{}' -DestinationPath '{}' -Force",
+            zip_path.to_string_lossy().replace('\'', "''"),
+            dest_dir.to_string_lossy().replace('\'', "''")
         ),
     ]);
     cmd
@@ -1613,6 +1645,56 @@ mod tests {
     }
 
     // ── uninstall / installed-ids ───────────────────────────────────
+
+    #[tokio::test]
+    async fn unsafe_skill_components_are_rejected_before_side_effects() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let sessions = skills_dir().parent().unwrap().join("sessions");
+        tokio::fs::create_dir_all(&sessions).await.unwrap();
+        let sentinel = sessions.join("keep.jsonl");
+        tokio::fs::write(&sentinel, "keep").await.unwrap();
+        let (out, _) = Output::memory();
+        for bad in [
+            "",
+            ".",
+            "..",
+            "../sessions",
+            "future-x/../../sessions",
+            "/tmp/evil",
+            "C:\\Users\\evil",
+            "..\\sessions",
+            "a/b",
+            "a\\b",
+            "x'",
+            "a b",
+            "CON",
+            "nul.txt",
+            "LPT1",
+            "COM9.log",
+            "trailing.",
+        ] {
+            assert!(uninstall_skill(bad, &out).await.is_err(), "{bad:?}");
+            assert!(
+                install_skill(bad, Some("1.0"), &out).await.is_err(),
+                "{bad:?}"
+            );
+            assert!(
+                install_skill("future-safe", Some(bad), &out).await.is_err(),
+                "{bad:?}"
+            );
+        }
+        assert_eq!(tokio::fs::read_to_string(sentinel).await.unwrap(), "keep");
+        assert!(!skills_dir().exists());
+    }
+
+    #[test]
+    fn skill_components_accept_normal_slugs_and_versions() {
+        for value in ["future-web", "skill_name", "1.2.3", "1.0-rc.1"] {
+            assert!(validate_skill_component(value, "id").is_ok());
+        }
+        assert!(validate_skill_component(&"a".repeat(129), "id").is_err());
+    }
 
     #[tokio::test]
     async fn uninstall_skill_paths() {
