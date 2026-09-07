@@ -11,9 +11,23 @@ AGENT_DIR="$ROOT_DIR/agent"
 CLI_DIR="$ROOT_DIR/cli"
 LOG_DIR="$ROOT_DIR/.logs"
 
-AGENT_ADDR="${FUTURE_AGENT_GRPC_ADDR:-127.0.0.1:50051}"
-AGENT_HOST="${AGENT_ADDR%%:*}"
-AGENT_PORT="${AGENT_ADDR##*:}"
+AGENT_ADDR="${FUTURE_AGENT_GRPC_ADDR:-auto}"
+case "$AGENT_ADDR" in
+  ""|[Aa][Uu][Tt][Oo])
+    AGENT_TRANSPORT="local"
+    AGENT_ADDR="auto"
+    AGENT_SOCKET="${FUTURE_AGENT_SOCKET:-$HOME/.future/run/agent.sock}"
+    AGENT_ENDPOINT="unix://$AGENT_SOCKET"
+    ;;
+  *)
+    AGENT_TRANSPORT="tcp"
+    AGENT_TCP_ADDR="${AGENT_ADDR#http://}"
+    AGENT_TCP_ADDR="${AGENT_TCP_ADDR#https://}"
+    AGENT_HOST="${AGENT_TCP_ADDR%:*}"
+    AGENT_PORT="${AGENT_TCP_ADDR##*:}"
+    AGENT_ENDPOINT="http://$AGENT_TCP_ADDR"
+    ;;
+esac
 DESKTOP_DEV_PORT="${DESKTOP_DEV_PORT:-5173}"
 # The agent writes to its default log location (~/.future/agent/logs/agent.log,
 # created by the agent itself) via bare `--log-file`; the repo .logs dir only
@@ -44,18 +58,34 @@ wait_for_agent() {
   local attempts=60
 
   for _ in $(seq 1 "$attempts"); do
-    if nc -z "$AGENT_HOST" "$AGENT_PORT" >/dev/null 2>&1; then
+    if agent_is_ready; then
       return 0
     fi
     sleep 1
   done
 
-  echo "future-agent did not become ready at $AGENT_ADDR"
+  echo "future-agent did not become ready at $AGENT_ENDPOINT"
   echo "Agent log: $AGENT_LOG"
   tail -n 80 "$AGENT_LOG" 2>/dev/null || true
   echo "Agent console log (stdout/stderr, panics): $AGENT_CONSOLE_LOG"
   tail -n 80 "$AGENT_CONSOLE_LOG" 2>/dev/null || true
   return 1
+}
+
+agent_is_ready() {
+  if [[ "$AGENT_TRANSPORT" == "tcp" ]]; then
+    nc -z "$AGENT_HOST" "$AGENT_PORT" >/dev/null 2>&1
+    return
+  fi
+
+  [[ -S "$AGENT_SOCKET" ]] || return 1
+  if [[ -x "$ROOT_DIR/target/debug/future" ]]; then
+    (
+      unset FUTURE_AGENT_GRPC_ADDR
+      FUTURE_AGENT_SOCKET="$AGENT_SOCKET" \
+        "$ROOT_DIR/target/debug/future" models --json >/dev/null 2>&1
+    )
+  fi
 }
 
 stop_pid_file_process() {
@@ -142,7 +172,7 @@ trap cleanup EXIT INT TERM
 mkdir -p "$LOG_DIR"
 
 echo "Workspace: $ROOT_DIR"
-echo "Agent gRPC: $AGENT_ADDR"
+echo "Agent endpoint: $AGENT_ENDPOINT"
 echo "desktop dev port: $DESKTOP_DEV_PORT"
 
 if [[ "$DRY_RUN" == "1" ]]; then
@@ -187,13 +217,13 @@ if [[ -x "$ROOT_DIR/target/debug/future" ]]; then
   export PATH="$ROOT_DIR/target/debug:$PATH"
 fi
 
-if [[ "$REUSE_AGENT" == "1" ]] && nc -z "$AGENT_HOST" "$AGENT_PORT" >/dev/null 2>&1; then
-  echo "Using existing future-agent at $AGENT_ADDR"
+if [[ "$REUSE_AGENT" == "1" ]] && agent_is_ready; then
+  echo "Using existing future-agent at $AGENT_ENDPOINT"
 else
   stop_pid_file_process "$AGENT_PID_FILE" "future-agent"
-  if nc -z "$AGENT_HOST" "$AGENT_PORT" >/dev/null 2>&1; then
-    echo "Port $AGENT_PORT is already in use, but not by the agent process recorded in $AGENT_PID_FILE."
-    echo "Stop the old process manually, or run with REUSE_AGENT=1 if you intentionally want to reuse it."
+  if agent_is_ready; then
+    echo "Agent endpoint $AGENT_ENDPOINT is already in use, but not by the process recorded in $AGENT_PID_FILE."
+    echo "Stop the old agent manually, or run with REUSE_AGENT=1 if you intentionally want to reuse it."
     exit 1
   fi
   echo "Starting future-agent..."
@@ -217,7 +247,11 @@ else
   # shell redirection.
   (
     cd "$AGENT_DIR"
-    exec "$AGENT_BIN" --log-file
+    if [[ "$AGENT_TRANSPORT" == "tcp" ]]; then
+      exec "$AGENT_BIN" --grpc-addr "$AGENT_TCP_ADDR" --log-file
+    else
+      exec "$AGENT_BIN" --log-file
+    fi
   ) >"$AGENT_CONSOLE_LOG" 2>&1 &
   STARTED_AGENT_PID="$!"
   echo "$STARTED_AGENT_PID" >"$AGENT_PID_FILE"
@@ -246,5 +280,10 @@ echo "Press Ctrl-C here to stop the desktop and the agent started by this script
 
 (
   cd "$DESKTOP_DIR"
-  FUTURE_AGENT_GRPC_ADDR="$AGENT_ADDR" npm run tauri:dev
+  if [[ "$AGENT_TRANSPORT" == "tcp" ]]; then
+    FUTURE_AGENT_GRPC_ADDR="$AGENT_ADDR" npm run tauri:dev
+  else
+    unset FUTURE_AGENT_GRPC_ADDR
+    npm run tauri:dev
+  fi
 )
