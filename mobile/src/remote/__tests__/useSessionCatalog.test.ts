@@ -1,4 +1,4 @@
-import React from "react";
+import { createElement, type MutableRefObject } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { useSessionCatalog } from "../useSessionCatalog";
 import type { RemoteClient } from "../client";
@@ -25,15 +25,15 @@ describe("useSessionCatalog", () => {
 
   function TestComponent(): null {
     result.current = useSessionCatalog(
-      clientRef as React.MutableRefObject<RemoteClient | null>,
-      selectedRef as React.MutableRefObject<string>,
+      clientRef as MutableRefObject<RemoteClient | null>,
+      selectedRef as MutableRefObject<string>,
     );
     return null;
   }
 
   function render(): void {
     act(() => {
-      renderer = create(React.createElement(TestComponent));
+      renderer = create(createElement(TestComponent));
     });
   }
 

@@ -1,4 +1,4 @@
-import React from "react";
+import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { RemoteClient } from "../client";
 import { uploadAttachments } from "../files";
@@ -145,7 +145,7 @@ describe("usePromptOutbox recovery", () => {
     }
 
     await act(async () => {
-      renderer = create(React.createElement(Harness));
+      renderer = create(createElement(Harness));
     });
     await act(async () => {
       await new Promise(resolve => setTimeout(resolve, 50));
@@ -295,7 +295,7 @@ describe("usePromptOutbox sendMessage", () => {
     }
 
     await act(async () => {
-      renderer = create(React.createElement(Harness));
+      renderer = create(createElement(Harness));
     });
     await flush();
 
@@ -626,7 +626,7 @@ describe("usePromptOutbox continueRun", () => {
     }
 
     await act(async () => {
-      renderer = create(React.createElement(Harness));
+      renderer = create(createElement(Harness));
     });
     await flush();
 
@@ -790,7 +790,7 @@ describe("usePromptOutbox recovery error handling", () => {
     }
 
     await act(async () => {
-      renderer = create(React.createElement(Harness));
+      renderer = create(createElement(Harness));
     });
     await flush();
 

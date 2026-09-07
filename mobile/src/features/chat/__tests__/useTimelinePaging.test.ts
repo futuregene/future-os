@@ -1,4 +1,4 @@
-import React from "react";
+import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { NativeScrollEvent, NativeSyntheticEvent } from "react-native";
 import { useTimelinePaging } from "../useTimelinePaging";
@@ -45,7 +45,7 @@ describe("timeline paging on an inverted list", () => {
     requestOlder.mockResolvedValue(undefined);
     result = { current: undefined as never };
     act(() => {
-      renderer = create(React.createElement(Harness));
+      renderer = create(createElement(Harness));
     });
   });
 
@@ -93,9 +93,9 @@ describe("timeline paging on an inverted list", () => {
   });
 
   test("does not request while loading or when no older page exists", () => {
-    act(() => renderer!.update(React.createElement(Harness, { loadingOlder: true })));
+    act(() => renderer!.update(createElement(Harness, { loadingOlder: true })));
     act(() => result.current.loadOlder());
-    act(() => renderer!.update(React.createElement(Harness, { canLoadOlder: false })));
+    act(() => renderer!.update(createElement(Harness, { canLoadOlder: false })));
     act(() => result.current.loadOlder());
     expect(requestOlder).not.toHaveBeenCalled();
   });
@@ -103,7 +103,7 @@ describe("timeline paging on an inverted list", () => {
   test("switching sessions clears a pending edge load", () => {
     act(() => result.current.onScroll(scrollEvent(1_400)));
     expect(result.current.showLoadOlderHint).toBe(true);
-    act(() => renderer!.update(React.createElement(Harness, { sessionId: "s2" })));
+    act(() => renderer!.update(createElement(Harness, { sessionId: "s2" })));
     expect(result.current.showLoadOlderHint).toBe(false);
     act(() => jest.advanceTimersByTime(350));
     expect(requestOlder).not.toHaveBeenCalled();

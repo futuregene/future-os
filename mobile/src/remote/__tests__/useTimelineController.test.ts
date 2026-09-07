@@ -1,4 +1,4 @@
-import React from "react";
+import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { RemoteClient } from "../client";
 import { emptyTimeline } from "../timeline";
@@ -36,7 +36,7 @@ describe("useTimelineController", () => {
 
   function render(): void {
     act(() => {
-      renderer = create(React.createElement(Harness));
+      renderer = create(createElement(Harness));
     });
   }
 
