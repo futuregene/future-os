@@ -2,7 +2,7 @@
 
 Operational commands: [control plane guide](../../docs/loop-control-plane.md).
 Agent driving policy: `skills/builtin/future-loop/SKILL.md`; research methodology:
-`skills/builtin/future-research/SKILL.md` (the skills submodule).
+`skills/builtin/future-explore/SKILL.md` (the skills submodule).
 
 ## Boundaries
 
