@@ -35,6 +35,8 @@ export interface AppSettings {
    * finishes. On by default.
    */
   bellOnComplete: boolean;
+  /** Community-edition UI hides billing surfaces and treats Future like a normal builtin provider. */
+  communityEdition: boolean;
 }
 
 /** Fallback used before the persisted settings load. */
@@ -47,6 +49,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   skillGuideDismissed: false,
   skillIntroDismissed: false,
   bellOnComplete: true,
+  communityEdition: false,
 };
 
 export async function getAppSettings() {
@@ -62,6 +65,7 @@ export async function updateAppSettings(input: {
   skillGuideDismissed?: boolean;
   skillIntroDismissed?: boolean;
   bellOnComplete?: boolean;
+  communityEdition?: boolean;
 }) {
   return invokeCommand<AppSettings>("update_app_settings", { input });
 }

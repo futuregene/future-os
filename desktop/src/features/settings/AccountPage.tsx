@@ -1,9 +1,8 @@
 import type { FutureEnvironment, ProvidersView } from "../../integrations/agent/providers";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useFutureAccount } from "../../components/layout/hooks/useFutureAccount";
 import { Button } from "../../components/ui/Button";
-import { getFutureEnvironment, listAgentProviders, logoutFutureProvider } from "../../integrations/agent/providers";
+import { getFutureEnvironment, listAgentProviders, logoutFutureProvider, peekAgentProviders } from "../../integrations/agent/providers";
 import { openExternalUrl } from "../../integrations/storage/files";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { useAsyncResource } from "../../lib/useAsyncResource";
@@ -16,12 +15,22 @@ import { SettingsList, SettingsRow, SettingsSection } from "./SettingsPrimitives
  * Signed in: open the account page (platform URL follows the current
  * environment) plus sign out.
  */
-export function AccountPage() {
+export function AccountPage({
+  balance,
+  communityEdition,
+  email: accountEmail,
+  onRefreshBalance,
+}: {
+  balance: number | null;
+  communityEdition: boolean;
+  email: string | null;
+  onRefreshBalance: () => void;
+}) {
   const { t } = useTranslation("settings");
   const { data: providers, loading, reload } = useAsyncResource<ProvidersView | null>(
     listAgentProviders,
     [],
-    null,
+    peekAgentProviders(),
   );
   // The platform host follows the active environment (test vs production).
   const environment = useAsyncResource<FutureEnvironment | null>(
@@ -33,11 +42,17 @@ export function AccountPage() {
 
   const loggedIn = Boolean(providers?.builtin.find(provider => provider.id === "future")?.hasApiKey);
 
-  // Email + balance come from the shared account hook (seeded from cache so
-  // reopening this page doesn't flash). Falls back to the generic label until
-  // the email resolves or when signed out.
-  const { balance, email: accountEmail } = useFutureAccount();
-  const signedInLabel = accountEmail ?? t("account.loggedIn");
+  // Credits can change between settings visits; refresh them once when this
+  // page opens without touching the cached account profile.
+  useEffect(() => {
+    if (loggedIn && !communityEdition)
+      onRefreshBalance();
+  }, [communityEdition, loggedIn, onRefreshBalance]);
+
+  // AppShell owns the single account query and passes its cached values down.
+  // While an authenticated profile is still loading, keep the description
+  // empty instead of flashing a generic "Signed in" label first.
+  const signedInLabel = accountEmail ?? "";
   const platformUrl = environment.data?.platformUrl;
 
   async function handleRecharge() {
@@ -60,8 +75,8 @@ export function AccountPage() {
     await openExternalUrl(`${platformUrl}/platform/`);
   }
 
-  if (loading) {
-    return <p className="text-sm text-ink-muted">{t("account.loading")}</p>;
+  if (loading && !providers) {
+    return null;
   }
 
   return (
@@ -115,7 +130,7 @@ export function AccountPage() {
                     </div>
                   )}
           </SettingsRow>
-          {loggedIn
+          {loggedIn && !communityEdition
             ? (
                 <SettingsRow
                   title={t("account.balance")}

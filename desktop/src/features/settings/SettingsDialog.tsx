@@ -9,6 +9,7 @@ import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { cn } from "../../lib/cn";
 import { AboutPage } from "./AboutPage";
 import { AccountPage } from "./AccountPage";
+import { CommunityEditionSection } from "./CommunityEditionSection";
 import { EnvironmentPage } from "./EnvironmentPage";
 import { GeneralPage } from "./GeneralPage";
 import { ModelsPage } from "./ModelsPage";
@@ -63,6 +64,9 @@ const TAB_TITLE_KEYS: Record<SettingsTab, string> = {
 export function SettingsDialog({
   appSettings,
   cachedUpdateStatus,
+  futureBalance,
+  futureEmail,
+  onRefreshFutureBalance,
   hasUpdate,
   initialTab = "general",
   modelOptions,
@@ -75,12 +79,16 @@ export function SettingsDialog({
   appSettings: AppSettings;
   /** Cached update-check result from the background checker. */
   cachedUpdateStatus?: UpdateStatus | null;
+  /** Shared account state from AppShell; prevents tab-specific profile loads. */
+  futureBalance: number | null;
+  futureEmail: string | null;
+  onRefreshFutureBalance: () => void;
   /** Whether a new app version is available (shows a dot on the update nav item). */
   hasUpdate?: boolean;
   /** Tab to show when the dialog opens (e.g. a "Models" quick entry). */
   initialTab?: SettingsTab;
   modelOptions: AgentModelOption[];
-  onChangeSettings: (patch: Partial<AppSettings>) => void;
+  onChangeSettings: (patch: Partial<AppSettings>) => Promise<void>;
   onClose: () => void;
   /** Refresh the available model list after a provider mutation. */
   onProvidersChanged?: () => void;
@@ -187,10 +195,12 @@ export function SettingsDialog({
                   />
                 )
               : null}
-            {tab === "account" ? <AccountPage /> : null}
+            {tab === "account"
+              ? <AccountPage balance={futureBalance} communityEdition={appSettings.communityEdition} email={futureEmail} onRefreshBalance={onRefreshFutureBalance} />
+              : null}
             {tab === "update" ? <UpdatePage cachedStatus={cachedUpdateStatus} /> : null}
             {tab === "about" ? <AboutPage /> : null}
-            {tab === "providers" ? <ProvidersPage onProvidersChanged={onProvidersChanged} /> : null}
+            {tab === "providers" ? <ProvidersPage communityEdition={appSettings.communityEdition} onProvidersChanged={onProvidersChanged} /> : null}
             {tab === "models"
               ? (
                   <ModelsPage
@@ -200,7 +210,17 @@ export function SettingsDialog({
                   />
                 )
               : null}
-            {tab === "environment" && showEnvironment ? <EnvironmentPage /> : null}
+            {tab === "environment" && showEnvironment
+              ? (
+                  <div className="space-y-6">
+                    <EnvironmentPage />
+                    <CommunityEditionSection
+                      communityEdition={appSettings.communityEdition}
+                      onChangeCommunityEdition={value => onChangeSettings({ communityEdition: value })}
+                    />
+                  </div>
+                )
+              : null}
             {tab === "reset" ? <ResetPage /> : null}
           </div>
         </div>

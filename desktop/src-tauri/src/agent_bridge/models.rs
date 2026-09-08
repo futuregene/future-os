@@ -17,6 +17,8 @@ pub struct AgentModelOption {
     #[serde(default)]
     supports_images: bool,
     #[serde(default)]
+    reasoning: Option<bool>,
+    #[serde(default)]
     thinking_level: Option<String>,
     #[serde(default)]
     context_window: Option<i32>,

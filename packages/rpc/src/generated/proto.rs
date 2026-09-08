@@ -266,6 +266,9 @@ pub struct ProviderModel {
     /// Maximum tokens generated in one response.
     #[prost(int32, tag = "5")]
     pub max_tokens: i32,
+    /// Omitted by older clients: custom models default to true.
+    #[prost(bool, optional, tag = "6")]
+    pub reasoning: ::core::option::Option<bool>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ImageContent {
@@ -455,6 +458,9 @@ pub struct ModelEntry {
     pub description_en: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(bool, tag = "10")]
     pub recommended: bool,
+    /// Whether the model accepts thinking controls; separate from the default level.
+    #[prost(bool, optional, tag = "11")]
+    pub reasoning: ::core::option::Option<bool>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BuiltinProvider {

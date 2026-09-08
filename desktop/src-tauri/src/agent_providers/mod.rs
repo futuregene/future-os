@@ -95,12 +95,19 @@ pub struct CustomProviderModel {
     /// `modalities` array (`["text"]` or `["text","image"]`) that the agent reads.
     #[serde(default)]
     pub supports_images: bool,
+    /// Custom models enable thinking controls unless explicitly disabled.
+    #[serde(default = "default_reasoning")]
+    pub reasoning: bool,
     /// Maximum total context window, in tokens.
     #[serde(default = "default_context_window")]
     pub context_window: i32,
     /// Maximum tokens generated in one response.
     #[serde(default = "default_max_tokens")]
     pub max_tokens: i32,
+}
+
+const fn default_reasoning() -> bool {
+    true
 }
 
 const fn default_context_window() -> i32 {
@@ -285,6 +292,10 @@ fn build_providers_view(
                                 })
                                 .unwrap_or(false);
                             Some(CustomProviderModel {
+                                reasoning: model
+                                    .get("reasoning")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or(true),
                                 id,
                                 name,
                                 supports_images,

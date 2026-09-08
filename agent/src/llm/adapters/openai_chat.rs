@@ -288,7 +288,7 @@ fn apply_reasoning(
     config: &crate::llm::schema::OpenAiChatConfig,
 ) {
     let level = target.generation.thinking_level.as_str();
-    if level.is_empty() {
+    if !target.capabilities.reasoning.supported || level.is_empty() {
         return;
     }
     let enabled = level != "off";

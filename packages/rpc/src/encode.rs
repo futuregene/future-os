@@ -517,6 +517,7 @@ fn model_entry_to_proto(model: &crate::payloads_ext::ModelEntryPayload) -> proto
         label: model.label.clone(),
         provider: model.provider.clone(),
         supports_images: model.supports_images,
+        reasoning: model.reasoning,
         thinking_level: model.thinking_level.clone(),
         context_window: model.context_window,
         is_default: model.is_default,

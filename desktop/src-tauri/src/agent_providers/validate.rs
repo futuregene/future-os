@@ -33,6 +33,7 @@ pub(super) struct ValidatedModel {
     pub(super) modalities: Vec<String>,
     pub(super) context_window: i32,
     pub(super) max_tokens: i32,
+    pub(super) reasoning: bool,
 }
 
 /// Serialize validated models to the models.json entry shape.
@@ -47,6 +48,7 @@ pub(super) fn model_json_values(models: &[ValidatedModel]) -> Vec<Value> {
                 "modalities": model.modalities,
                 "contextWindow": model.context_window,
                 "maxTokens": model.max_tokens,
+                "reasoning": model.reasoning,
             })
         })
         .collect()
@@ -222,6 +224,7 @@ pub(super) fn validate_custom_provider(
             modalities,
             context_window: model.context_window,
             max_tokens: model.max_tokens,
+            reasoning: model.reasoning,
         });
     }
     if models.len() > MAX_MODELS {
