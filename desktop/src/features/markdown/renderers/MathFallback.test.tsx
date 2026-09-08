@@ -34,14 +34,14 @@ function mount(node: React.ReactElement) {
 describe("math fallback on KaTeX failure", () => {
   it("mathBlock falls back to escaped raw code when KaTeX throws", () => {
     const { container, cleanup } = mount(createElement(MathBlock, { code: "<b>bold & amp</b>" }));
-    expect(container.querySelector(".text-red-500")).toBeTruthy();
+    expect(container.querySelector(".text-danger")).toBeTruthy();
     expect(container.textContent).toContain("<b>bold & amp</b>");
     cleanup();
   });
 
   it("mathInline falls back to escaped raw code when KaTeX throws", () => {
     const { container, cleanup } = mount(createElement(MathInline, { code: "<i>x</i>" }));
-    expect(container.querySelector(".text-red-500")).toBeTruthy();
+    expect(container.querySelector(".text-danger")).toBeTruthy();
     expect(container.textContent).toContain("<i>x</i>");
     cleanup();
   });

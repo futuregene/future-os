@@ -62,7 +62,7 @@ describe("activity rail conversation hierarchy", () => {
       act(() => byTitle("root")!.click());
       expect(p.onSelectThread).toHaveBeenCalledWith(p.threads[2]);
       expect(byTitle("child")).toBeNull();
-      const expand = container.querySelector<HTMLButtonElement>("button[aria-expanded=false]")!;
+      const expand = byTitle("root")!.parentElement!.querySelector<HTMLButtonElement>("button[aria-expanded=false]")!;
       act(() => expand.click());
       expect(byTitle("child")).not.toBeNull();
       expect(byTitle("grandchild")).toBeNull();
@@ -76,6 +76,34 @@ describe("activity rail conversation hierarchy", () => {
       act(() => rootRow.querySelector<HTMLButtonElement>("button[aria-expanded=true]")!.click());
       expect(byTitle("child")).toBeNull();
       expect(byTitle("grandchild")).toBeNull();
+    }
+    finally {
+      act(() => root.unmount());
+      container.remove();
+    }
+  });
+
+  it("keeps the selection toolbar outside the shared workspace/chat viewport", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    act(() => root.render(<ActivityRail {...props([thread("root")])} />));
+    await flushAsync();
+    try {
+      const menuTrigger = container.querySelector<HTMLButtonElement>("button[aria-label=\"Chat section actions\"]")!;
+      act(() => menuTrigger.click());
+      act(() => container.querySelector<HTMLButtonElement>("[role=\"menuitem\"]")!.click());
+
+      const viewport = container.querySelector("[data-activity-rail-scroll=\"true\"]")!;
+      const toolbar = container.querySelector("[data-activity-rail-selection-toolbar=\"true\"]")!;
+      expect(viewport.contains(toolbar)).toBe(false);
+      expect(viewport.parentElement?.parentElement?.contains(toolbar)).toBe(true);
+      expect(viewport.querySelector("[data-activity-rail-content=\"true\"]")).not.toBeNull();
+      expect(toolbar.classList.contains("-mb-2")).toBe(false);
+      expect(toolbar.querySelectorAll(".activity-rail-selection-action")).toHaveLength(2);
+      expect(toolbar.querySelectorAll(".activity-rail-selection-action-label")).toHaveLength(2);
+      expect(toolbar.querySelector<HTMLButtonElement>("button[aria-label=\"Delete\"]")?.title).toBe("Delete");
+      expect(toolbar.querySelector<HTMLButtonElement>("button[aria-label=\"Cancel\"]")?.title).toBe("Cancel");
     }
     finally {
       act(() => root.unmount());
