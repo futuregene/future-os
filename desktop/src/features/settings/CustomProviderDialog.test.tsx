@@ -24,35 +24,36 @@ function button(text: string) {
   expect(found).toBeTruthy();
   return found!;
 }
-function reasoningSwitch() {
-  const found = document.querySelector<HTMLButtonElement>("[role=\"switch\"][aria-label=\"Supports thinking\"]");
-  expect(found).not.toBeNull();
+function reasoningCheckbox() {
+  const label = [...document.querySelectorAll("label")].find(label => label.textContent === "Supports thinking");
+  const found = label?.querySelector<HTMLInputElement>("input[type=checkbox]");
+  expect(found).toBeTruthy();
   return found!;
 }
 
 describe("custom model thinking capability", () => {
-  it("defaults a new model on and saves an explicit false when switched off", async () => {
+  it("checks a new model by default and saves false when its label is clicked", async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     const container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
     act(() => root.render(<CustomProviderDialog existing={[]} initial={initial} onClose={vi.fn()} onSubmit={onSubmit} open />));
     act(() => button("+ Add model").click());
-    expect(reasoningSwitch().getAttribute("aria-checked")).toBe("true");
+    expect(reasoningCheckbox().checked).toBe(true);
     const modelId = document.querySelector<HTMLInputElement>("input[placeholder=\"e.g. qwen\"]")!;
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(modelId, "unlisted-deployment");
       modelId.dispatchEvent(new Event("input", { bubbles: true }));
-      reasoningSwitch().click();
+      reasoningCheckbox().closest("label")!.click();
     });
-    expect(reasoningSwitch().getAttribute("aria-checked")).toBe("false");
+    expect(reasoningCheckbox().checked).toBe(false);
     await act(async () => button("Save").click());
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
-      models: [expect.objectContaining({ id: "unlisted-deployment", reasoning: false })],
+      models: [expect.objectContaining({ id: "unlisted-deployment", reasoning: false, supportsImages: false })],
     }));
   });
 
-  it("keeps a saved false off when reopening and saves true when re-enabled", async () => {
+  it("keeps a saved false unchecked when reopening and saves true when checked", async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     const provider = { ...initial, models: [{
       id: "gpt-5.6-sol",
@@ -66,11 +67,11 @@ describe("custom model thinking capability", () => {
     document.body.append(container);
     root = createRoot(container);
     act(() => root.render(<CustomProviderDialog existing={[]} initial={provider} onClose={vi.fn()} onSubmit={onSubmit} open />));
-    expect(reasoningSwitch().getAttribute("aria-checked")).toBe("false");
-    act(() => reasoningSwitch().click());
+    expect(reasoningCheckbox().checked).toBe(false);
+    act(() => reasoningCheckbox().click());
     await act(async () => button("Save").click());
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
-      models: [expect.objectContaining({ reasoning: true })],
+      models: [expect.objectContaining({ reasoning: true, supportsImages: true })],
     }));
   });
 });

@@ -8,7 +8,6 @@ import { Field } from "../../components/ui/Field";
 import { IconButton } from "../../components/ui/IconButton";
 import { Select } from "../../components/ui/Select";
 import { TextInput } from "../../components/ui/TextInput";
-import { SettingsRow, Switch } from "./SettingsPrimitives";
 
 const API_OPTIONS = [
   { label: "OpenAI Completions", value: "openai-completions" },
@@ -337,16 +336,18 @@ export function CustomProviderDialog({
                             />
                           </label>
                         </div>
-                        <SettingsRow
-                          title={t("customProvider.reasoningLabel")}
-                          description={t("customProvider.reasoningDescription")}
+                        <label
+                          className="flex cursor-pointer items-center gap-1.5 text-xs text-ink"
+                          title={t("customProvider.reasoningDescription")}
                         >
-                          <Switch
+                          <input
                             checked={model.reasoning}
-                            label={t("customProvider.reasoningLabel")}
-                            onChange={reasoning => updateModel(index, { reasoning })}
+                            className="size-3.5 accent-accent"
+                            onChange={event => updateModel(index, { reasoning: event.target.checked })}
+                            type="checkbox"
                           />
-                        </SettingsRow>
+                          {t("customProvider.reasoningLabel")}
+                        </label>
                         <div className="flex items-center gap-4">
                           <span className="text-xs text-ink-muted">{t("customProvider.modalityLabel")}</span>
                           <label className="flex cursor-not-allowed items-center gap-1.5 text-xs text-ink-soft">
