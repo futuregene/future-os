@@ -117,7 +117,7 @@ echo "some text" | future run "Clean up this text"
 ```bash
 future skills list             # list catalog skills (installed + available)
 future skills install <name>   # install a specific skill
-future skills install-builtin  # install all built-in future-* skills
+future skills install-builtin  # install skills from builtin/ (catalogue classification)
 future skills uninstall <name> # remove an installed skill
 future skills update           # upgrade all installed skills
 ```

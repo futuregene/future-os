@@ -117,7 +117,7 @@ echo "一些文本" | future run "把这段文本整理一下"
 ```bash
 future skills list             # 列出目录中的技能(已装 + 可用)
 future skills install <name>   # 安装指定技能
-future skills install-builtin  # 安装全部内置 future-* 技能
+future skills install-builtin  # 按目录分类安装 builtin/ 下的技能
 future skills uninstall <name> # 卸载已安装的技能
 future skills update           # 升级所有已安装技能
 ```

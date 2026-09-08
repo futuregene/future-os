@@ -49,6 +49,7 @@ BALANCE = {"balance_credits": 1234567890123}
 SKILLS = [
     {
         "id": "future-test-a",
+        "builtin": True,
         "name": "Test A",
         "description": "A test skill for the diff harness.",
         "category": "test",
@@ -59,6 +60,7 @@ SKILLS = [
     },
     {
         "id": "future-test-b",
+        "builtin": True,
         "name": "Test B",
         "description": "Second test skill.",
         "category": "test",
@@ -69,6 +71,7 @@ SKILLS = [
     },
     {
         "id": "community-x",
+        "builtin": False,
         "name": "Community X",
         "description": "A community skill, not builtin.",
         "category": "community",

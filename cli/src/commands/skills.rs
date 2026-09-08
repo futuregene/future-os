@@ -67,6 +67,10 @@ pub struct SkillInfo {
     pub limit: String,
     #[serde(default)]
     pub latest_version: Option<String>,
+    /// Catalogue classification for skills in the repository's builtin/ directory.
+    /// Missing metadata must not turn a name prefix into an implicit opt-in.
+    #[serde(default)]
+    pub builtin: bool,
 }
 
 /// `isSkillsCommand(command)` — type-guard port; `undefined` is not a command.
@@ -456,18 +460,16 @@ fn urlencode(s: &str) -> String {
 
 // ── installBuiltinSkills (used by `future init`) ───────────────────────────
 
-/// `installBuiltinSkills()` — install every catalog skill whose id starts
-/// with `future-`. On catalog failure it reports to stderr, sets
+/// `installBuiltinSkills()` — install skills classified as builtin by the
+/// catalog (the repository's builtin/ directory), regardless of their names.
+/// On catalog failure it reports to stderr, sets
 /// `process.exitCode = 1` (via [`Output::set_exit_code`]) and returns
 /// normally — exactly like the TS, which sets `process.exitCode` and lets
 /// `init` continue linking command links.
 pub async fn install_builtin_skills(out: &Output) {
     let platform_url = get_platform_url(None).await;
     let skills: Vec<SkillInfo> = match fetch_skills(&platform_url).await {
-        Ok(skills) => skills
-            .into_iter()
-            .filter(|s| s.id.starts_with("future-"))
-            .collect(),
+        Ok(skills) => skills.into_iter().filter(|s| s.builtin).collect(),
         Err(err) => {
             out.log_err("Failed to fetch builtin skills.");
             out.log_err(&err);
@@ -1217,8 +1219,8 @@ mod tests {
             "/client/v1/skills",
             200,
             "{\"skills\":[\
-                {\"id\":\"a\",\"description\":\"d\",\"latest_version\":\"\"},\
-                {\"id\":\"b\",\"latest_version\":\"1.0\"},\
+                {\"id\":\"a\",\"description\":\"d\",\"latest_version\":\"\",\"builtin\":true},\
+                {\"id\":\"b\",\"latest_version\":\"1.0\",\"builtin\":false},\
                 {\"malformed\": true}\
             ]}",
         )])
@@ -1231,6 +1233,9 @@ mod tests {
         assert_eq!(skills[0].latest_version, None);
         assert_eq!(skills[1].latest_version.as_deref(), Some("1.0"));
         assert_eq!(skills[2].id, "");
+        assert!(skills[0].builtin);
+        assert!(!skills[1].builtin);
+        assert!(!skills[2].builtin);
     }
 
     #[tokio::test]
@@ -1431,7 +1436,7 @@ mod tests {
             crate::test_server::HttpRoute::json(
                 "/client/v1/skills",
                 200,
-                r#"{"skills":[{"id":"future-x","latest_version":"1.0"}]}"#,
+                r#"{"skills":[{"id":"future-x","latest_version":"1.0","builtin":true}]}"#,
             ),
             crate::test_server::HttpRoute::binary(
                 "/client/v1/skills/future-x/versions/1.0/download",
@@ -2003,15 +2008,17 @@ mod tests {
             crate::test_server::HttpRoute::json(
                 "/client/v1/skills",
                 200,
-                &catalog(&[
-                    ("future-a", Some("1.0"), "a"),
-                    ("future-b", Some("2.0"), "b"),
-                    ("future-skip", None, "no version"),
-                    ("other-x", Some("1.0"), "not builtin"),
-                ]),
+                r#"{"skills":[
+                    {"id":"builtin-no-prefix","latest_version":"1.0","builtin":true},
+                    {"id":"future-b","latest_version":"2.0","builtin":true},
+                    {"id":"future-skip","builtin":true},
+                    {"id":"other-x","latest_version":"1.0","builtin":false},
+                    {"id":"future-explore","latest_version":"1.0","builtin":false},
+                    {"id":"future-legacy","latest_version":"1.0"}
+                ]}"#,
             ),
             crate::test_server::HttpRoute::binary(
-                "/client/v1/skills/future-a/versions/1.0/download",
+                "/client/v1/skills/builtin-no-prefix/versions/1.0/download",
                 200,
                 zip_a.clone(),
             ),
@@ -2019,6 +2026,11 @@ mod tests {
                 "/client/v1/skills/future-b/versions/2.0/download",
                 200,
                 zip_b.clone(),
+            ),
+            crate::test_server::HttpRoute::binary(
+                "/client/v1/skills/future-explore/versions/1.0/download",
+                200,
+                zip_a.clone(),
             ),
         ])
         .await;
@@ -2041,9 +2053,14 @@ mod tests {
             stdout.contains("Done. 1 skills installed."),
             "stdout: {stdout}"
         );
-        assert!(skills_dir().join("future-a").join("SKILL.md").exists());
-        // Non-builtin skill not installed.
-        assert!(!skills_dir().join("other-x").exists());
+        assert!(skills_dir()
+            .join("builtin-no-prefix")
+            .join("SKILL.md")
+            .exists());
+        // Names never override false or absent directory classification.
+        for id in ["other-x", "future-explore", "future-legacy"] {
+            assert!(!skills_dir().join(id).exists(), "unexpected install: {id}");
+        }
 
         // Second run: future-skip still has no version, so it stays pending.
         let (out, cap) = Output::memory();
@@ -2053,6 +2070,15 @@ mod tests {
             stdout.contains("Installing 1 builtin skills (2 already installed)..."),
             "stdout: {stdout}"
         );
+
+        // Non-builtin skills remain available through an explicit install.
+        install_skill("future-explore", Some("1.0"), &out)
+            .await
+            .unwrap();
+        assert!(skills_dir()
+            .join("future-explore")
+            .join("SKILL.md")
+            .exists());
     }
 
     #[tokio::test]
@@ -2069,11 +2095,11 @@ mod tests {
             "stderr: {stderr}"
         );
 
-        // Catalog with no future-* skills.
+        // Catalog with no builtin entries, including a prefixed legacy entry.
         let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
             "/client/v1/skills",
             200,
-            &catalog(&[("other-x", Some("1.0"), "x")]),
+            &catalog(&[("future-legacy", Some("1.0"), "missing builtin metadata")]),
         )])
         .await;
         point_platform_at(&base).await;
@@ -2356,7 +2382,7 @@ mod tests {
             crate::test_server::HttpRoute::json(
                 "/client/v1/skills",
                 200,
-                &catalog(&[("future-a", Some("1.0"), "a")]),
+                r#"{"skills":[{"id":"future-a","latest_version":"1.0","builtin":true}]}"#,
             ),
             crate::test_server::HttpRoute::binary(
                 "/client/v1/skills/future-a/versions/1.0/download",
