@@ -186,6 +186,8 @@
     "modelNameLabel": "显示名称",
     "modelNamePlaceholder": "留空使用模型 ID",
     "removeModel": "移除模型",
+    "reasoningLabel": "支持思考",
+    "reasoningDescription": "允许向该模型发送思考控制参数；若接口不支持，请关闭。",
     "modalityLabel": "模态",
     "modalityText": "文本",
     "modalityImage": "图片",

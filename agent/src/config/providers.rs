@@ -50,6 +50,8 @@ pub struct ProviderModelSpec {
     pub context_window: i32,
     /// Maximum tokens generated in one response.
     pub max_tokens: i32,
+    /// Whether to send thinking controls; resolved to true for older RPC clients.
+    pub reasoning: bool,
 }
 
 /// Create/update of a `models.json` `providers` entry, optionally with the
@@ -470,6 +472,7 @@ pub fn apply_provider_upsert(
                     "modalities": model.modalities,
                     "contextWindow": model.context_window,
                     "maxTokens": model.max_tokens,
+                    "reasoning": model.reasoning,
                 })
             })
             .collect::<Vec<_>>();
@@ -777,6 +780,7 @@ mod tests {
                 modalities: vec!["text".to_string(), "image".to_string()],
                 context_window: 128000,
                 max_tokens: 16384,
+                reasoning: false,
             }],
             ..Default::default()
         };
@@ -1008,6 +1012,7 @@ mod tests {
                 modalities: vec!["text".to_string()],
                 context_window: 128000,
                 max_tokens: 16384,
+                reasoning: true,
             }],
             ..Default::default()
         };
@@ -1356,6 +1361,7 @@ mod tests {
             modalities: vec!["text".to_string()],
             context_window: 4096,
             max_tokens: 1024,
+            reasoning: true,
         }
     }
 

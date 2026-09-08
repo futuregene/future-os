@@ -166,6 +166,7 @@ export function CustomProviderDialog({
         id: model.id.trim(),
         name: model.name.trim(),
         supportsImages: model.supportsImages,
+        reasoning: model.reasoning,
         contextWindow: model.contextWindow,
         maxTokens: model.maxTokens,
       }))
@@ -281,6 +282,7 @@ export function CustomProviderDialog({
                 key: crypto.randomUUID(),
                 name: "",
                 supportsImages: false,
+                reasoning: true,
                 contextWindow: 128000,
                 maxTokens: 16384,
               }])}
@@ -334,6 +336,18 @@ export function CustomProviderDialog({
                             />
                           </label>
                         </div>
+                        <label
+                          className="flex cursor-pointer items-center gap-1.5 text-xs text-ink"
+                          title={t("customProvider.reasoningDescription")}
+                        >
+                          <input
+                            checked={model.reasoning}
+                            className="size-3.5 accent-accent"
+                            onChange={event => updateModel(index, { reasoning: event.target.checked })}
+                            type="checkbox"
+                          />
+                          {t("customProvider.reasoningLabel")}
+                        </label>
                         <div className="flex items-center gap-4">
                           <span className="text-xs text-ink-muted">{t("customProvider.modalityLabel")}</span>
                           <label className="flex cursor-not-allowed items-center gap-1.5 text-xs text-ink-soft">

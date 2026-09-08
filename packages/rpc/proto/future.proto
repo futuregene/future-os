@@ -350,6 +350,8 @@ message ProviderModel {
   int32 context_window = 4;
   // Maximum tokens generated in one response.
   int32 max_tokens = 5;
+  // Omitted by older clients: custom models default to true.
+  optional bool reasoning = 6;
 }
 
 // ── ImageContent ───────────────────────────────────────────────────────────
@@ -491,6 +493,8 @@ message ModelEntry {
   optional string description = 8;
   optional string description_en = 9;
   bool recommended = 10;
+  // Whether the model accepts thinking controls; separate from the default level.
+  optional bool reasoning = 11;
 }
 
 message BuiltinProvider {

@@ -107,6 +107,8 @@ pub struct ModelEntryPayload {
     pub label: String,
     pub provider: String,
     pub supports_images: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<bool>,
     pub thinking_level: String,
     pub context_window: i64,
     pub is_default: bool,
@@ -335,6 +337,7 @@ mod tests {
                 label: "Model 1".to_string(),
                 provider: "future".to_string(),
                 supports_images: true,
+                reasoning: Some(false),
                 thinking_level: "high".to_string(),
                 context_window: 200_000,
                 is_default: true,
