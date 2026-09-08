@@ -2,6 +2,7 @@
 //! the changed candidate set, write a tree, reuse-or-create a commit, pin a ref,
 //! and persist snapshot metadata.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use crate::store::{self, CreateReviewSnapshotInput, ReviewSnapshotRecord};
@@ -35,6 +36,7 @@ pub fn capture(
     repo.write_info_exclude(&exclude)?;
 
     let candidates = candidate_paths(repo, &temp_index)?;
+    let (candidates, mut ignored) = filter_ignored(repo, &temp_index, &candidates)?;
 
     // Classify candidates, honouring the per-round limits (§5.5).
     let mut staged: Vec<String> = Vec::new();
@@ -73,7 +75,21 @@ pub fn capture(
         }
     }
 
-    stage(repo, &temp_index, &staged)?;
+    let staged_outcome = stage(repo, &temp_index, &staged)?;
+    ignored += staged_outcome.ignored;
+    if staged_outcome.paths.len() != staged.len() {
+        let actually_staged: HashSet<&str> =
+            staged_outcome.paths.iter().map(String::as_str).collect();
+        total_bytes = staged
+            .iter()
+            .filter(|path| actually_staged.contains(path.as_str()))
+            .map(|path| {
+                std::fs::metadata(repo.workspace_path.join(path))
+                    .map(|metadata| metadata.len())
+                    .unwrap_or(0)
+            })
+            .sum();
+    }
     let tree_id = repo.git(&["write-tree"], Some(&temp_index))?;
 
     // Reuse the before-commit when the after-tree is identical (zero-change
@@ -100,9 +116,9 @@ pub fn capture(
         commit_id: Some(commit_id),
         tree_id: Some(tree_id),
         status: status.to_string(),
-        file_count: staged.len() as i64,
+        file_count: staged_outcome.paths.len() as i64,
         total_bytes: total_bytes as i64,
-        ignored_count: 0,
+        ignored_count: ignored as i64,
         omitted_count: omitted as i64,
         error_message: None,
     })?;
@@ -157,13 +173,81 @@ fn candidate_paths(repo: &ShadowRepo, index: &Path) -> Result<Vec<String>, AppEr
     Ok(set)
 }
 
-/// Stage only the given candidate paths (`--all` so deletions are recorded).
-/// Paths that no longer exist and aren't tracked in the index are silently
-/// skipped so stale shadow index entries don't break the snapshot.
-fn stage(repo: &ShadowRepo, index: &Path, paths: &[String]) -> Result<(), AppError> {
+/// Remove untracked paths that currently match the Workspace's ignore rules.
+/// Tracked paths are intentionally retained: like normal Git, adding a new
+/// ignore rule does not stop an already tracked file from being snapshotted.
+fn filter_ignored(
+    repo: &ShadowRepo,
+    index: &Path,
+    paths: &[String],
+) -> Result<(Vec<String>, usize), AppError> {
     if paths.is_empty() {
-        return Ok(());
+        return Ok((Vec::new(), 0));
     }
+    let stdin = paths.join("\0").into_bytes();
+    let output = repo.run(
+        &["check-ignore", "-z", "--stdin"],
+        Some(index),
+        Some(&stdin),
+    )?;
+    if !output.status.success() && output.status.code() != Some(1) {
+        return Err(format!(
+            "shadow git check-ignore failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
+    let ignored: HashSet<String> = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|raw| !raw.is_empty())
+        .map(|raw| String::from_utf8_lossy(raw).into_owned())
+        .collect();
+    let visible = paths
+        .iter()
+        .filter(|path| !ignored.contains(path.as_str()))
+        .cloned()
+        .collect();
+    Ok((visible, ignored.len()))
+}
+
+#[derive(Debug)]
+struct StageOutcome {
+    paths: Vec<String>,
+    ignored: usize,
+}
+
+/// Stage only the given candidate paths (`--all` so deletions are recorded).
+/// If an untracked path becomes ignored after candidate discovery, drop it and
+/// retry once so one expected exclusion cannot fail the entire snapshot.
+fn stage(repo: &ShadowRepo, index: &Path, paths: &[String]) -> Result<StageOutcome, AppError> {
+    let (paths, ignored) = filter_ignored(repo, index, paths)?;
+    if paths.is_empty() {
+        return Ok(StageOutcome { paths, ignored });
+    }
+    match try_stage(repo, index, &paths) {
+        Ok(()) => Ok(StageOutcome { paths, ignored }),
+        Err(first_error) => {
+            let (retry_paths, newly_ignored) = filter_ignored(repo, index, &paths)?;
+            if newly_ignored == 0 {
+                return Err(first_error);
+            }
+            if retry_paths.is_empty() {
+                return Ok(StageOutcome {
+                    paths: retry_paths,
+                    ignored: ignored + newly_ignored,
+                });
+            }
+            try_stage(repo, index, &retry_paths)?;
+            Ok(StageOutcome {
+                paths: retry_paths,
+                ignored: ignored + newly_ignored,
+            })
+        }
+    }
+}
+
+fn try_stage(repo: &ShadowRepo, index: &Path, paths: &[String]) -> Result<(), AppError> {
     let stdin = paths.join("\0").into_bytes();
     let add_args: &[&str] = &[
         "add",
@@ -336,13 +420,49 @@ mod tests {
     }
 
     #[test]
+    fn stage_skips_ignored_untracked_paths_without_losing_other_files() {
+        let s = setup("stage-ignored");
+        std::fs::write(s.repo.workspace_path.join(".gitignore"), "*.log\n").unwrap();
+        std::fs::write(s.repo.workspace_path.join("keep.txt"), "keep\n").unwrap();
+        std::fs::write(s.repo.workspace_path.join("ignored.log"), "ignored\n").unwrap();
+        let index = s.repo.prepare_temp_index("stage-ignored").unwrap();
+
+        let outcome = stage(
+            &s.repo,
+            &index,
+            &["keep.txt".to_string(), "ignored.log".to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(outcome.paths, vec!["keep.txt"]);
+        assert_eq!(outcome.ignored, 1);
+        assert_eq!(s.repo.git(&["ls-files"], Some(&index)).unwrap(), "keep.txt");
+    }
+
+    #[test]
+    fn stage_keeps_tracked_paths_that_later_match_ignore_rules() {
+        let s = setup("stage-tracked-ignored");
+        let path = s.repo.workspace_path.join("tracked.log");
+        std::fs::write(&path, "before\n").unwrap();
+        let index = s.repo.prepare_temp_index("stage-tracked-ignored").unwrap();
+        stage(&s.repo, &index, &["tracked.log".to_string()]).unwrap();
+
+        std::fs::write(s.repo.workspace_path.join(".gitignore"), "*.log\n").unwrap();
+        std::fs::write(path, "after\n").unwrap();
+        let outcome = stage(&s.repo, &index, &["tracked.log".to_string()]).unwrap();
+
+        assert_eq!(outcome.paths, vec!["tracked.log"]);
+        assert_eq!(outcome.ignored, 0);
+    }
+
+    #[test]
     fn stage_surfaces_unexpected_git_error() {
         let s = setup("stage-err");
         // Make the index path a directory so git cannot write the index — a
         // non-pathspec failure that must be surfaced as an error.
         let index = s.repo.prepare_temp_index("stage-err").unwrap();
         std::fs::create_dir_all(&index).unwrap();
-        let err = stage(&s.repo, &index, &["some-file.txt".to_string()]).unwrap_err();
+        let err = try_stage(&s.repo, &index, &["some-file.txt".to_string()]).unwrap_err();
         assert!(err.to_string().contains("shadow git add failed"));
     }
 
