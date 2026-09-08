@@ -29,7 +29,6 @@ Skills 页有两个标签:
 | **Deep research** | 端到端研究:多源收集并交叉核对,产出带引用的报告。 |
 | **Document** | 把 PDF / Word 文件转成结构化 Markdown。 |
 | **Experimental design** | 在数据收集前设计实验与研究方案。 |
-| **Explore** | 面向答案未知的问题，以证据驱动方法比较、实验、优化和可行性评估（`/future-explore`）。 |
 | **Image** | 生成、编辑和分析图像——包括读取图中文字。 |
 | **Loop** | 把长程目标变成持久、可验证的计划——目标、任务、门禁、监控与验证式收尾（`/future-loop`）。 |
 | **Paper** | 检索文献(PubMed / ArXiv / DOI)并获取全文。 |
