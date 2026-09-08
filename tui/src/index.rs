@@ -1845,17 +1845,19 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn run_interactive_terminal_init_failure() {
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // env-var serialization across awaits
+    async fn run_interactive_terminal_init_failure() {
         let _guard = crate::test_env::lock();
         let home = tempfile::tempdir().unwrap();
         let old_home = std::env::var_os("HOME");
         std::env::set_var("HOME", home.path());
-        // Injected Terminal::new failure → graceful exit 1.
+        // Call the interactive path directly: run() can fail at agent discovery
+        // before Terminal::new, leaking the injected failure into another test.
         crate::terminal::FORCE_NEW_FAILURE.store(true, std::sync::atomic::Ordering::SeqCst);
-        let code = run(&["--grpc-addr".to_string(), "127.0.0.1:1".to_string()]);
+        let code = run_interactive(&args(&["--offline"])).await;
         restore_env("HOME", old_home);
-        assert_eq!(code, ExitCode::from(1));
+        assert_eq!(code, 1);
     }
 
     fn restore_env(key: &str, old: Option<std::ffi::OsString>) {
