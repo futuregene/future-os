@@ -305,6 +305,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                             modalities: model.modalities,
                             context_window: model.context_window,
                             max_tokens: model.max_tokens,
+                            reasoning: model.reasoning.unwrap_or(true),
                         })
                         .collect(),
                     replace_models: config.replace_models,
@@ -750,6 +751,7 @@ mod tests {
                     modalities: vec!["text".to_string()],
                     context_window: 128000,
                     max_tokens: 16384,
+                    reasoning: Some(false),
                 }],
                 replace_models: true,
                 create_only: false,
@@ -774,6 +776,68 @@ mod tests {
             "typed command must not dual-write data"
         );
         assert!(resp.payload.is_some(), "typed payload present");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn custom_reasoning_round_trips_from_proto_to_file_and_model_catalog() {
+        let home = crate::test_support::TestHome::new();
+        let service = FutureAgentService {
+            state: grpc_app_state(false),
+        };
+        for (configured, expected) in [(None, true), (Some(false), false), (Some(true), true)] {
+            let response = service
+                .execute_command(tonic::Request::new(proto::RpcCommand {
+                    r#type: "upsert_provider".into(),
+                    provider_config: Some(proto::ProviderUpsert {
+                        id: "reasoning-test".into(),
+                        api: "openai-responses".into(),
+                        base_url: "https://example.test/v1".into(),
+                        replace_models: true,
+                        models: vec![proto::ProviderModel {
+                            id: "gpt-5.6-sol".into(),
+                            name: "Model".into(),
+                            modalities: vec!["text".into()],
+                            context_window: 128000,
+                            max_tokens: 16384,
+                            reasoning: configured,
+                        }],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }))
+                .await
+                .unwrap()
+                .into_inner();
+            assert!(response.success, "{}", response.error);
+            let stored: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(home.models_path()).unwrap()).unwrap();
+            assert_eq!(
+                stored["providers"]["reasoning-test"]["models"][0]["reasoning"],
+                expected
+            );
+            let response = service
+                .execute_command(tonic::Request::new(proto::RpcCommand {
+                    r#type: "list_models".into(),
+                    ..Default::default()
+                }))
+                .await
+                .unwrap()
+                .into_inner();
+            assert!(response.success, "{}", response.error);
+            assert!(response.payload.is_some());
+            let data = future_rpc::decode::response_data(&response);
+            let model = data["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|model| model["provider"] == "reasoning-test")
+                .unwrap();
+            assert_eq!(model["reasoning"], expected);
+            assert_eq!(
+                model["thinkingLevel"],
+                if expected { "high" } else { "off" }
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

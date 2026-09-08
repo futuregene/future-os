@@ -8,6 +8,7 @@ import { Field } from "../../components/ui/Field";
 import { IconButton } from "../../components/ui/IconButton";
 import { Select } from "../../components/ui/Select";
 import { TextInput } from "../../components/ui/TextInput";
+import { SettingsRow, Switch } from "./SettingsPrimitives";
 
 const API_OPTIONS = [
   { label: "OpenAI Completions", value: "openai-completions" },
@@ -166,6 +167,7 @@ export function CustomProviderDialog({
         id: model.id.trim(),
         name: model.name.trim(),
         supportsImages: model.supportsImages,
+        reasoning: model.reasoning,
         contextWindow: model.contextWindow,
         maxTokens: model.maxTokens,
       }))
@@ -281,6 +283,7 @@ export function CustomProviderDialog({
                 key: crypto.randomUUID(),
                 name: "",
                 supportsImages: false,
+                reasoning: true,
                 contextWindow: 128000,
                 maxTokens: 16384,
               }])}
@@ -334,6 +337,16 @@ export function CustomProviderDialog({
                             />
                           </label>
                         </div>
+                        <SettingsRow
+                          title={t("customProvider.reasoningLabel")}
+                          description={t("customProvider.reasoningDescription")}
+                        >
+                          <Switch
+                            checked={model.reasoning}
+                            label={t("customProvider.reasoningLabel")}
+                            onChange={reasoning => updateModel(index, { reasoning })}
+                          />
+                        </SettingsRow>
                         <div className="flex items-center gap-4">
                           <span className="text-xs text-ink-muted">{t("customProvider.modalityLabel")}</span>
                           <label className="flex cursor-not-allowed items-center gap-1.5 text-xs text-ink-soft">

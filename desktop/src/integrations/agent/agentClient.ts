@@ -8,6 +8,8 @@ export interface AgentModelOption {
   label: string;
   provider: string;
   supportsImages?: boolean;
+  /** Whether the model accepts thinking controls, independent of the chosen level. */
+  reasoning?: boolean | null;
   thinkingLevel?: ThinkingLevel | string | null;
   contextWindow?: number | null;
   isDefault?: boolean;
@@ -244,6 +246,8 @@ export function readLastUsedThinkingLevel(): string | null {
  * level (if still a valid level) → the model's own default thinking level.
  */
 export function resolveInitialThinkingLevel(modelId: string, models: AgentModelOption[]): ThinkingLevel {
+  if (!modelSupportsThinking(modelId, models))
+    return "off";
   const lastUsed = readLastUsedThinkingLevel();
   if (lastUsed && thinkingLevels.includes(lastUsed as ThinkingLevel))
     return lastUsed as ThinkingLevel;
@@ -259,7 +263,13 @@ export function modelLabel(modelId: string, models: AgentModelOption[]): string 
   return modelOption(modelId, models)?.label ?? (modelId || undefined);
 }
 
+export function modelSupportsThinking(modelId: string, models: AgentModelOption[]): boolean {
+  return modelOption(modelId, models)?.reasoning !== false;
+}
+
 export function modelThinkingLevel(modelId: string, models: AgentModelOption[]) {
+  if (!modelSupportsThinking(modelId, models))
+    return "off";
   // Well-known models get their preferred default, overriding whatever
   // the agent's list_models returns (which currently hardcodes "high").
   if (modelId === "deepseek-v4-pro" || modelId.endsWith("/deepseek-v4-pro"))

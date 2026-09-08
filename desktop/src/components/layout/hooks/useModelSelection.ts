@@ -2,7 +2,7 @@ import type { AgentModelOption } from "../../../integrations/agent/agentClient";
 import type { StoredThread } from "../../../integrations/storage/threadStore";
 import { useEffect, useRef, useState } from "react";
 import i18n from "../../../i18n";
-import { defaultThinkingLevel, modelOption, modelThinkingLevel, normalizeThinkingLevel, readLastUsedThinkingLevel, rememberLastUsedModel, rememberLastUsedThinkingLevel, resolveInitialModelId, resolveInitialThinkingLevel } from "../../../integrations/agent/agentClient";
+import { defaultThinkingLevel, modelOption, modelSupportsThinking, modelThinkingLevel, normalizeThinkingLevel, readLastUsedThinkingLevel, rememberLastUsedModel, rememberLastUsedThinkingLevel, resolveInitialModelId, resolveInitialThinkingLevel } from "../../../integrations/agent/agentClient";
 import { updateCachedAgentState, useCachedAgentState } from "../../../integrations/agent/agentStateCache";
 import { updateThreadModel, updateThreadThinkingLevel } from "../../../integrations/storage/threadStore";
 import { errorMessage } from "../../../lib/errors";
@@ -77,9 +77,12 @@ export function useModelSelection({
   const activeThreadModelId = modelOption(rawThreadModelId, visibleModelOptions)
     ? rawThreadModelId
     : resolveInitialModelId(visibleModelOptions);
-  const activeThinkingLevel = activeThread
-    ? normalizeThinkingLevel(agentState?.thinkingLevel ?? modelThinkingLevel(activeThreadModelId, visibleModelOptions))
-    : selectedThinkingLevel;
+  const effectiveDraftThinkingLevel = modelSupportsThinking(selectedModelId, visibleModelOptions) ? selectedThinkingLevel : "off";
+  const activeThinkingLevel = !modelSupportsThinking(activeThreadModelId, visibleModelOptions)
+    ? "off"
+    : activeThread
+      ? normalizeThinkingLevel(agentState?.thinkingLevel ?? modelThinkingLevel(activeThreadModelId, visibleModelOptions))
+      : effectiveDraftThinkingLevel;
 
   useEffect(() => {
     if (activeThread || draftThinkingModelRef.current === selectedModelId)
@@ -176,7 +179,7 @@ export function useModelSelection({
   }
 
   return {
-    selectedThinkingLevel,
+    selectedThinkingLevel: effectiveDraftThinkingLevel,
     modelsEmptyReason,
     activeThreadModelId,
     activeThinkingLevel,

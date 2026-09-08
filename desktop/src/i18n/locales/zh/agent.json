@@ -122,6 +122,7 @@
     "startAgentForModels": "请重新打开 FutureOS 以加载模型。",
     "allModelsDisabled": "已加载到模型，但已全部禁用。请在设置中启用。",
     "thinkingLevel": "思考强度",
+    "thinkingUnsupported": "此模型已配置为不支持思考控制。",
     "thinkingLevelLabels": {
       "off": "关闭",
       "minimal": "最简",
