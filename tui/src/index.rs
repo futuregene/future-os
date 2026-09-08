@@ -859,6 +859,18 @@ async fn run_interactive(args: &CliArgs) -> u8 {
     }
     // (No is_running gate here: the main loop's own check handles it.)
 
+    // Poll once alongside input/events, never during the startup handshake.
+    // Dropping this future on exit cancels an in-flight check.
+    let update_check = async {
+        if args.offline {
+            None
+        } else {
+            crate::update::check(VERSION).await
+        }
+    };
+    tokio::pin!(update_check);
+    let mut update_checked = false;
+
     // ── Main event loop ────────────────────────────────────────────────
     loop {
         let next = app.next_deadline();
@@ -877,6 +889,12 @@ async fn run_interactive(args: &CliArgs) -> u8 {
                         app.stop();
                         break;
                     }
+                }
+            }
+            notice = &mut update_check, if !update_checked => {
+                update_checked = true;
+                if let Some(notice) = notice {
+                    app.handle_cmd(UiCmd::UpdateAvailable(notice));
                 }
             }
             Some(cmd) = op_rx.recv() => app.handle_cmd(cmd),
@@ -2002,6 +2020,7 @@ mod tests {
 
         let args = CliArgs {
             grpc_addr: addr,
+            offline: true,
             ..Default::default()
         };
         let driver = async {
@@ -2071,6 +2090,7 @@ mod tests {
         fn args(&self) -> CliArgs {
             CliArgs {
                 grpc_addr: self.addr.clone(),
+                offline: true,
                 ..Default::default()
             }
         }
