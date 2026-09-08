@@ -190,7 +190,7 @@ export function AppShell() {
   // level. Returns { status, indicator, refresh } — RemoteView reads `status`
   // directly so its blue dot always matches the sidebar indicator.
   const { status: remoteStatus, indicator: remoteIndicator, refresh: refreshRemote } = useRemoteStatus(true);
-  const { balance: futureBalance, email: futureEmail } = useFutureAccount();
+  const { balance: futureBalance, email: futureEmail, refreshBalance: refreshFutureBalance } = useFutureAccount();
   // Remote needs a FutureOS sign-in (its pairing code comes from the service);
   // if the user signs out while on it, drop back to the chat section.
   useEffect(() => {
@@ -477,6 +477,7 @@ export function AppShell() {
     remoteIndicator,
     futureBalance,
     userEmail: futureEmail,
+    communityEdition: appSettings.communityEdition,
     onRecharge: handleRecharge,
     onOpenUpdate: handleOpenUpdate,
     skillIntroDismissed: appSettings.skillIntroDismissed,
@@ -664,10 +665,13 @@ export function AppShell() {
       <SettingsDialog
         appSettings={appSettings}
         cachedUpdateStatus={cachedStatus}
+        futureBalance={futureBalance}
+        futureEmail={futureEmail}
+        onRefreshFutureBalance={refreshFutureBalance}
         hasUpdate={hasUpdate}
         initialTab={settingsTab}
         modelOptions={modelOptions}
-        onChangeSettings={patch => void changeSettings(patch)}
+        onChangeSettings={changeSettings}
         onClose={() => setSettingsOpen(false)}
         onProvidersChanged={() => void refreshAgentModels()}
         onUpdateSeen={markUpdateSeen}
