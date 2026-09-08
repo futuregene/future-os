@@ -173,7 +173,7 @@ Commands:
   install <name>          Install a specific skill by name. Use --version <ver> for a
                           specific version; omit for latest.
   install                 With no name argument, same as install-builtin.
-  install-builtin         Install all built-in platform skills (names prefixed "future-").
+  install-builtin         Install platform skills classified as builtin (from builtin/).
   uninstall <name>        Remove an installed skill.
   update                  Upgrade all installed skills to their latest versions.
 
