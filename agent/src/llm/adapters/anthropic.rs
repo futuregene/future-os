@@ -346,6 +346,12 @@ impl ProtocolAdapter for AnthropicMessagesAdapter {
         Ok(events)
     }
 
+    fn is_stream_complete(&self, state: &(dyn Any + Send)) -> bool {
+        state
+            .downcast_ref::<AnthropicState>()
+            .is_some_and(|state| state.finished)
+    }
+
     fn finish_stream(&self, state: &mut (dyn Any + Send)) -> Result<Vec<ModelStreamEvent>> {
         let state = state
             .downcast_mut::<AnthropicState>()
