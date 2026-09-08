@@ -61,8 +61,7 @@ describe("useCodeHighlighter", () => {
     expect(result!.lines[0]!.tokens[0]).toEqual({ content: "const a = 1", color: "#111", fontStyle: 1 });
     // Missing color/fontStyle fall back to the theme foreground / undefined.
     expect(result!.lines[0]!.tokens[1]).toEqual({ content: "!", color: "#000000", fontStyle: undefined });
-    // Non-string theme colors fall back to defaults.
-    expect(result!.bgColor).toBe("#ffffff");
+    // Non-string theme foregrounds fall back to the default.
     expect(result!.fgColor).toBe("#000000");
     h.unmount();
   });

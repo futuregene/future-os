@@ -13,7 +13,7 @@ import { localizedModelDescription, modelKey, modelLabel, modelOption, normalize
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
 import { useSandboxAvailability } from "../../integrations/agent/useSandboxAvailability";
 import { listAvailableSkills, listInstalledSkills } from "../../integrations/skills/skillsClient";
-import { deleteTempAttachment, savePastedImage } from "../../integrations/storage/threadStore";
+import { deleteTempAttachment, readNativeClipboardFilePaths, savePastedFile, savePastedImage } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { formatBytes } from "../../lib/format";
 import { onFutureEvent } from "../../lib/futureEvents";
@@ -24,6 +24,9 @@ import { MentionEditor } from "./MentionEditor";
 
 /** Approval-tier order for the composer dropdown (availability is host-gated). */
 const APPROVAL_TIERS: ApprovalTier[] = ["manual", "sandbox", "off"];
+const MAX_COPIED_FILES_PER_PASTE = 10;
+const MAX_COPIED_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_COPIED_FILES_TOTAL_BYTES = 20 * 1024 * 1024;
 
 /**
  * Icon per approval tier, shared between the dropdown rows and the trigger so
@@ -335,7 +338,7 @@ function ComposerImpl({
     clearComposer();
   }
 
-  const addAttachmentPaths = useCallback(async (paths: string[], temporary = false) => {
+  const addAttachmentPaths = useCallback(async (paths: string[], temporary = false, names?: Map<string, string>) => {
     const classified = await Promise.all(
       paths.map(async path => ({ path, result: await classifyAttachment(path) })),
     );
@@ -348,10 +351,11 @@ function ComposerImpl({
     const next = [...attachmentsRef.current];
     const rejected: string[] = [];
     for (const { path, result } of classified) {
+      const name = names?.get(path) ?? fileNameFromPath(path);
       if (next.some(attachment => attachment.path === path))
         continue;
       if (result.kind === null) {
-        rejected.push(t("composer.attachRejectedReason", { name: fileNameFromPath(path), reason: result.reason }));
+        rejected.push(t("composer.attachRejectedReason", { name, reason: result.reason }));
         continue;
       }
       // Images carry a per-message count cap regardless of model (a text-only model
@@ -361,11 +365,11 @@ function ComposerImpl({
       if (result.kind === "image") {
         const imageCount = next.filter(attachment => attachment.kind === "image").length;
         if (imageCount >= MAX_IMAGES_PER_TURN) {
-          rejected.push(t("composer.attachRejectedLimit", { name: fileNameFromPath(path), count: MAX_IMAGES_PER_TURN }));
+          rejected.push(t("composer.attachRejectedLimit", { name, count: MAX_IMAGES_PER_TURN }));
           continue;
         }
       }
-      next.push({ kind: result.kind, name: fileNameFromPath(path), path, ...(temporary ? { temporary: true } : {}) });
+      next.push({ kind: result.kind, name, path, ...(temporary ? { temporary: true } : {}) });
     }
     attachmentsRef.current = next;
     setAttachments(next);
@@ -407,6 +411,53 @@ function ComposerImpl({
       // are no longer referenced by the draft and can be reclaimed immediately.
       await Promise.all(saved.filter(path => !accepted.has(path)).map(path => deleteTempAttachment(path).catch(() => {})));
     }
+  }
+
+  async function attachPastedFiles(files: File[]) {
+    // Finder uses a native file-URL pasteboard type which WKWebView turns into
+    // opaque File objects. Recover the original paths before copying bytes.
+    const nativePaths = await readNativeClipboardFilePaths().catch(() => []);
+    if (nativePaths.length > 0) {
+      await addAttachmentPaths(nativePaths);
+      return;
+    }
+    const copiedFiles = files.filter(file => !file.type.startsWith("image/"));
+    const imageFiles = files.filter(file => file.type.startsWith("image/"));
+    if (imageFiles.length > 0)
+      await attachImageFiles(imageFiles);
+    const candidates = copiedFiles.slice(0, MAX_COPIED_FILES_PER_PASTE);
+    const total = candidates.reduce((sum, file) => sum + file.size, 0);
+    const rejected: string[] = [];
+    if (copiedFiles.length > MAX_COPIED_FILES_PER_PASTE)
+      rejected.push(t("composer.attachCopiedCountLimit", { count: MAX_COPIED_FILES_PER_PASTE }));
+    if (total > MAX_COPIED_FILES_TOTAL_BYTES) {
+      setAttachError(t("composer.attachIgnored", { items: t("composer.attachCopiedTotalLimit", { max: formatBytes(MAX_COPIED_FILES_TOTAL_BYTES) }) }));
+      return;
+    }
+    const saved: string[] = [];
+    const names = new Map<string, string>();
+    for (const file of candidates) {
+      if (file.size > MAX_COPIED_FILE_BYTES) {
+        rejected.push(t("composer.attachRejectedReason", { name: file.name, reason: t("composer.attachCopiedFileLimit", { max: formatBytes(MAX_COPIED_FILE_BYTES) }) }));
+        continue;
+      }
+      try {
+        const buffer = await file.arrayBuffer();
+        const result = await savePastedFile({ bytes: Array.from(new Uint8Array(buffer)), name: file.name });
+        saved.push(result.path);
+        names.set(result.path, file.name);
+      }
+      catch {
+        rejected.push(t("composer.attachRejectedReason", { name: file.name, reason: t("attachment.readFailed") }));
+      }
+    }
+    if (saved.length > 0) {
+      await addAttachmentPaths(saved, true, names);
+      const accepted = new Set(attachmentsRef.current.map(attachment => attachment.path));
+      await Promise.all(saved.filter(path => !accepted.has(path)).map(path => deleteTempAttachment(path).catch(() => {})));
+    }
+    if (rejected.length > 0)
+      setAttachError(t("composer.attachIgnored", { items: rejected.join("，") }));
   }
 
   async function handleAttachFiles() {
@@ -582,7 +633,8 @@ function ComposerImpl({
         onEmptyChange={setInputEmpty}
         onChange={saveDraft}
         onContextToolSelect={handleContextToolSelect}
-        onPasteImages={files => void attachImageFiles(files)}
+        onPasteAttachmentPaths={paths => void addAttachmentPaths(paths)}
+        onPasteFiles={files => void attachPastedFiles(files)}
       />
       {attachError
         ? <div className="px-1 pb-1 text-xs text-warning">{attachError}</div>

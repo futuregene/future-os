@@ -131,6 +131,27 @@ pub struct AttachmentInfo {
 
 const MAX_ATTACHMENT_IMAGE_BYTES: u64 = 25 * 1024 * 1024;
 
+fn native_clipboard_file_paths() -> Vec<String> {
+    // The OS clipboard formats are intentionally not decoded in the webview:
+    // Finder may use a file-reference URL (`file:///.file/id=...`), Explorer
+    // uses CF_HDROP, and Linux file managers commonly publish URI lists.
+    // `arboard` resolves each platform format to actual filesystem paths.
+    arboard::Clipboard::new()
+        .and_then(|mut clipboard| clipboard.get().file_list())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|path| path.is_absolute())
+        .map(|path| path.display().to_string())
+        .collect()
+}
+
+/// Return native resource-manager paths from the current clipboard. Callers
+/// still inspect each returned path before use.
+#[tauri::command]
+pub fn read_native_clipboard_file_paths() -> Vec<String> {
+    native_clipboard_file_paths()
+}
+
 /// Inspect a local file for attachment classification. The webview can't read
 /// arbitrary paths, so directory + binary detection must happen here in Rust.
 #[tauri::command]
@@ -354,13 +375,13 @@ pub fn generate_image_thumbnail(
     Ok(path.display().to_string())
 }
 
-/// Copy an ephemeral pasted-image original into
+/// Copy an ephemeral clipboard attachment into
 /// `~/.future/app/images/<thread_id>/origin/<stamp>_<name>` and return the new
 /// path. Conversations don't save attachments into the workspace/project dir,
 /// so the durable copy lives here (persistent, in the asset-protocol scope)
 /// instead of the temp dir, which the OS may purge.
 #[tauri::command]
-pub fn import_ephemeral_image(
+pub fn import_ephemeral_attachment(
     thread_id: String,
     source_path: String,
     name: String,
@@ -654,6 +675,34 @@ pub fn save_pasted_image(
     let path = dir.join(&name);
     std::fs::write(&path, &bytes)?;
 
+    Ok(SavedAttachment {
+        path: path.display().to_string(),
+        name,
+    })
+}
+
+/// Persist a clipboard file that has no usable local URI. Such files may have
+/// come from a browser or a remote desktop, so keep the copied source bounded
+/// before it enters FutureOS-managed storage.
+#[tauri::command]
+pub fn save_pasted_file(bytes: Vec<u8>, name: String) -> Result<SavedAttachment, crate::AppError> {
+    const MAX_PASTED_FILE_BYTES: u64 = 10 * 1024 * 1024;
+    if bytes.is_empty() {
+        return Err("Pasted file is empty.".to_string().into());
+    }
+    if bytes.len() as u64 > MAX_PASTED_FILE_BYTES {
+        return Err(format!(
+            "Pasted file is too large ({} bytes; limit {}).",
+            bytes.len(),
+            MAX_PASTED_FILE_BYTES
+        )
+        .into());
+    }
+    let name = safe_file_name(&name);
+    let dir = std::env::temp_dir().join("futureos-attachments");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{}_{}", unique_stamp(), name));
+    std::fs::write(&path, &bytes)?;
     Ok(SavedAttachment {
         path: path.display().to_string(),
         name,
@@ -962,17 +1011,19 @@ mod tests {
     }
 
     #[test]
-    fn import_ephemeral_image_covers_edges() {
+    fn import_ephemeral_attachment_covers_edges() {
         let home = crate::auth_store::test_support::HomeGuard::new("files_import");
-        assert!(import_ephemeral_image("!!!".into(), "/x.png".into(), "x.png".into()).is_err());
-        assert!(import_ephemeral_image("t".into(), "   ".into(), "x.png".into()).is_err());
+        assert!(
+            import_ephemeral_attachment("!!!".into(), "/x.png".into(), "x.png".into()).is_err()
+        );
+        assert!(import_ephemeral_attachment("t".into(), "   ".into(), "x.png".into()).is_err());
 
         let root = future_root("import_src");
         let src = root.join("src.png");
         image::RgbImage::from_pixel(1, 1, image::Rgb([1, 1, 1]))
             .save(&src)
             .unwrap();
-        let dest = import_ephemeral_image(
+        let dest = import_ephemeral_attachment(
             "thread_x".into(),
             src.display().to_string(),
             "name.png".into(),
@@ -1120,6 +1171,15 @@ mod tests {
         assert!(save_pasted_image(vec![0u8; 26 * 1024 * 1024], None).is_err());
         let saved = save_pasted_image(vec![1, 2, 3], Some("PNG".into())).unwrap();
         assert!(saved.name.ends_with(".png"));
+        assert!(Path::new(&saved.path).is_file());
+    }
+
+    #[test]
+    fn save_pasted_file_preserves_a_safe_name_and_enforces_its_limit() {
+        assert!(save_pasted_file(vec![], "note.txt".into()).is_err());
+        assert!(save_pasted_file(vec![0; 11 * 1024 * 1024], "note.txt".into()).is_err());
+        let saved = save_pasted_file(vec![1, 2, 3], "report 2026.pdf".into()).unwrap();
+        assert_eq!(saved.name, "report2026.pdf");
         assert!(Path::new(&saved.path).is_file());
     }
 

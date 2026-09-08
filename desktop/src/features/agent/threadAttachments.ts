@@ -1,18 +1,18 @@
 import type { MessageAttachment } from "@future-os/thread-projection";
 import i18n from "../../i18n";
-import { deleteTempAttachment, generateImageThumbnail, importEphemeralImage, validateImageAttachment } from "../../integrations/storage/files";
+import { deleteTempAttachment, generateImageThumbnail, importEphemeralAttachment, validateImageAttachment } from "../../integrations/storage/files";
 
 /**
  * New composer entries carry an explicit temporary bit. The path fallback is
  * only for drafts written by older FutureOS versions before that bit existed.
  */
-function isEphemeralImage(attachment: MessageAttachment) {
+function isEphemeralAttachment(attachment: MessageAttachment) {
   return attachment.temporary === true
     || (attachment.temporary === undefined && attachment.path.includes("futureos-attachments"));
 }
 
 /**
- * Persist image attachments for the thread. Every image gets a cached thumbnail
+ * Persist attachments that FutureOS copied from the clipboard. Every image gets a cached thumbnail
  * (for the bubble). Pasted/downloaded images — which only ever existed in the
  * temp dir — are additionally copied into `~/.future/app/images/<tid>/origin`
  * and their path rewritten there, so the reference survives after the temp file
@@ -52,15 +52,13 @@ export async function persistImageAttachments(attachments: MessageAttachment[], 
   // must still get a durable path before its temp original is reclaimed.
   const persisted = await Promise.all(
     prepared.map(async ({ attachment, thumbnail }) => {
-      if (attachment.kind !== "image")
-        return { attachment, temporarySource: null };
       let path = attachment.path;
-      if (isEphemeralImage(attachment)) {
+      if (isEphemeralAttachment(attachment)) {
         try {
-          const origin = await importEphemeralImage({ name: attachment.name, path, threadId });
+          const origin = await importEphemeralAttachment({ name: attachment.name, path, threadId });
           const temporarySource = path;
           path = origin;
-          const promoted = thumbnail
+          const promoted = attachment.kind === "image" && thumbnail
             ? { ...attachment, path, thumbnail, temporary: false }
             : { ...attachment, path, temporary: false };
           return { attachment: promoted, temporarySource };
@@ -69,7 +67,7 @@ export async function persistImageAttachments(attachments: MessageAttachment[], 
           // Best-effort: keep the temp path if the durable copy fails.
         }
       }
-      const current = thumbnail ? { ...attachment, path, thumbnail } : { ...attachment, path };
+      const current = attachment.kind === "image" && thumbnail ? { ...attachment, path, thumbnail } : { ...attachment, path };
       return { attachment: current, temporarySource: null };
     }),
   );

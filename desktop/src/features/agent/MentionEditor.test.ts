@@ -34,10 +34,10 @@ describe("mention editor", () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
     const root = createRoot(container);
-    const onPasteImages = vi.fn();
+    const onPasteFiles = vi.fn();
     act(() => {
       root.render(createElement(MentionEditor, {
-        onPasteImages,
+        onPasteFiles,
         onSubmit: () => {},
         placeholder: "Message",
       }));
@@ -62,7 +62,7 @@ describe("mention editor", () => {
     act(() => editor.dispatchEvent(event));
 
     expect(editor.textContent).toBe("editable text");
-    expect(onPasteImages).not.toHaveBeenCalled();
+    expect(onPasteFiles).not.toHaveBeenCalled();
     act(() => root.unmount());
     container.remove();
   });
@@ -71,10 +71,10 @@ describe("mention editor", () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
     const root = createRoot(container);
-    const onPasteImages = vi.fn();
+    const onPasteFiles = vi.fn();
     act(() => {
       root.render(createElement(MentionEditor, {
-        onPasteImages,
+        onPasteFiles,
         onSubmit: () => {},
         placeholder: "Message",
       }));
@@ -92,7 +92,31 @@ describe("mention editor", () => {
 
     act(() => editor.dispatchEvent(event));
 
-    expect(onPasteImages).toHaveBeenCalledWith([image]);
+    expect(onPasteFiles).toHaveBeenCalledWith([image]);
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it("attaches a normalized local file URI instead of copying the clipboard file", () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const onPasteAttachmentPaths = vi.fn();
+    const onPasteFiles = vi.fn();
+    act(() => {
+      root.render(createElement(MentionEditor, { onPasteAttachmentPaths, onPasteFiles, onSubmit: () => {}, placeholder: "Message" }));
+    });
+    const editor = container.querySelector<HTMLElement>("[role=\"textbox\"]")!;
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", {
+      value: {
+        getData: (type: string) => type === "text/uri-list" ? "file:///Users/test/My%20File.pdf" : "",
+        items: [{ getAsFile: () => new File(["pdf"], "My File.pdf"), kind: "file", type: "application/pdf" }],
+      },
+    });
+    act(() => editor.dispatchEvent(event));
+    expect(onPasteAttachmentPaths).toHaveBeenCalledWith(["/Users/test/My File.pdf"]);
+    expect(onPasteFiles).not.toHaveBeenCalled();
     act(() => root.unmount());
     container.remove();
   });

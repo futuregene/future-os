@@ -76,6 +76,8 @@ rand = "0.8"
 # Workspace file `@`-mention picker: gitignore-aware directory walk + fuzzy rank.
 ignore = "0.4"
 fuzzy-matcher = "0.3"
+# Cross-platform native resource-manager clipboard paths (Finder/Explorer/Linux file managers).
+arboard = { version = "3.6", default-features = false }
 
 # Win32 API for high-quality window icon (taskbar clarity). Loads the ICO file
 # with proper multi-size support instead of Tauri's single-size GDI HICON.

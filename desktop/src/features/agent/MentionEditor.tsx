@@ -5,6 +5,7 @@ import { useEffect, useImperativeHandle, useMemo, useRef, useState } from "react
 import { useTranslation } from "react-i18next";
 import { searchWorkspaceFiles } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
+import { localPathsFromUriList } from "./clipboardAttachments";
 import { parseMentionSegments } from "./mentionMarkdown";
 import { buildSlashMenuGroups, hasMixedSlashResults } from "./slashMenu";
 
@@ -75,8 +76,10 @@ interface MentionEditorProps {
    * paste) so the parent can persist a draft. NOT fired by `restore()`.
    */
   onChange?: () => void;
-  /** Pasted image files, handed to the parent to attach. */
-  onPasteImages?: (files: File[]) => void;
+  /** Local filesystem paths advertised by the clipboard's `text/uri-list`. */
+  onPasteAttachmentPaths?: (paths: string[]) => void;
+  /** Clipboard files without a local URI, handed to the parent for copying. */
+  onPasteFiles?: (files: File[]) => void;
   ref?: Ref<MentionEditorHandle>;
 }
 
@@ -103,7 +106,8 @@ export function MentionEditor({
   onSubmit,
   onEmptyChange,
   onChange,
-  onPasteImages,
+  onPasteAttachmentPaths,
+  onPasteFiles,
   ref,
 }: MentionEditorProps) {
   const { t } = useTranslation("agent");
@@ -485,13 +489,21 @@ export function MentionEditor({
     // plain text for copied text boxes. Prefer the editable representation when
     // both are present; a clipboard that contains only images still attaches.
     const text = event.clipboardData.getData("text/plain");
-    const imageFiles = Array.from(event.clipboardData.items)
-      .filter(item => item.kind === "file" && item.type.startsWith("image/"))
+    const localPaths = localPathsFromUriList(event.clipboardData.getData("text/uri-list"));
+    const files = Array.from(event.clipboardData.items)
+      .filter(item => item.kind === "file")
       .map(item => item.getAsFile())
       .filter((file): file is File => file !== null);
-    if (text.length === 0 && imageFiles.length > 0) {
+    // A file URI is an authoritative local reference, so preserve it rather
+    // than copying its bytes. The parent probes access before attaching it.
+    if (localPaths.length > 0) {
       event.preventDefault();
-      onPasteImages?.(imageFiles);
+      onPasteAttachmentPaths?.(localPaths);
+      return;
+    }
+    if (text.length === 0 && files.length > 0) {
+      event.preventDefault();
+      onPasteFiles?.(files);
       return;
     }
 

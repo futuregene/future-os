@@ -69,10 +69,20 @@ export async function savePastedImage(input: { bytes: number[]; extension: strin
   });
 }
 
+/** Copy a clipboard file with no local path into FutureOS-owned temporary storage. */
+export async function savePastedFile(input: { bytes: number[]; name: string }) {
+  return invokeCommand<{ name: string; path: string }>("save_pasted_file", input);
+}
+
 export async function inspectAttachment(path: string) {
   return invokeCommand<{ isDir: boolean; size: number; isBinary: boolean }>("inspect_attachment", {
     path,
   });
+}
+
+/** Finder's native file URLs are not always exposed to the WebView as `text/uri-list`. */
+export async function readNativeClipboardFilePaths() {
+  return invokeCommand<string[]>("read_native_clipboard_file_paths");
 }
 
 /** Fully decode a candidate image so unreadable/corrupt files are rejected before send. */
@@ -102,8 +112,8 @@ export async function generateImageThumbnail(input: { threadId: string; sourcePa
  * Copy an ephemeral pasted-image original into the thread's persistent image dir
  * (`~/.future/app/images/<threadId>/origin`) and return the durable path.
  */
-export async function importEphemeralImage(input: { threadId: string; path: string; name: string }) {
-  return invokeCommand<string>("import_ephemeral_image", {
+export async function importEphemeralAttachment(input: { threadId: string; path: string; name: string }) {
+  return invokeCommand<string>("import_ephemeral_attachment", {
     name: input.name,
     sourcePath: input.path,
     threadId: input.threadId,

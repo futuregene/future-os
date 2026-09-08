@@ -16,7 +16,6 @@ interface HighlightedLine {
 
 interface HighlightResult {
   lines: HighlightedLine[];
-  bgColor: string;
   fgColor: string;
 }
 
@@ -220,7 +219,6 @@ export function useCodeHighlighter() {
         });
 
         const theme = highlighter.getTheme(THEME);
-        const bgColor = typeof theme.bg === "string" ? theme.bg : "#ffffff";
         const fgColor = typeof theme.fg === "string" ? theme.fg : "#000000";
 
         const lines: HighlightedLine[] = tokens.tokens.map(line => ({
@@ -231,7 +229,7 @@ export function useCodeHighlighter() {
           })),
         }));
 
-        const result: HighlightResult = { lines, bgColor, fgColor };
+        const result: HighlightResult = { lines, fgColor };
         if (code.length <= HIGHLIGHT_CACHE_MAX_CODE_LENGTH) {
           if (highlightCache.size >= HIGHLIGHT_CACHE_MAX) {
             const oldest = highlightCache.keys().next().value;

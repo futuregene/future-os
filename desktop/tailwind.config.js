@@ -9,6 +9,7 @@ export default {
         surface: "#ffffff",
         "surface-panel": "#f8faff",
         "surface-subtle": "#f1f4f8",
+        "code-surface": "#f6f8fa",
         line: "#d9dee7",
         "line-soft": "#e8edf4",
         ink: "#172033",
