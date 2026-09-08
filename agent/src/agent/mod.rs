@@ -37,8 +37,8 @@ pub struct StreamTruncation {
     /// Tool calls the model had emitted (executed or not) before cut-off.
     pub tool_calls_so_far: usize,
     /// Stable reason code such as `upstream_disconnected`,
-    /// `model_response_error`, `finish_incomplete`, `finish_length`,
-    /// `idle_timeout`, or `eof_no_terminal`.
+    /// `model_response_error`, `finish_incomplete`, `finish_length`, or
+    /// `eof_no_terminal`. Historical records may also contain `idle_timeout`.
     pub detected_by: String,
 }
 

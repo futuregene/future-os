@@ -5,6 +5,8 @@
 mod adapters;
 pub mod schema;
 mod sse;
+#[cfg(test)]
+mod stream_wait_tests;
 use adapters::AdapterRegistry;
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
@@ -18,7 +20,6 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::info;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 1800;
-const STREAM_IDLE_TIMEOUT_SECS: u64 = 120;
 const UPSTREAM_DISCONNECTED: &str = "[UPSTREAM_DISCONNECTED]";
 const MODEL_RESPONSE_ERROR: &str = "[MODEL_RESPONSE_ERROR]";
 
@@ -63,19 +64,6 @@ fn stream_progress(
         "kind={kind}, chunks={chunks}, bytes={bytes}, frames={frames}, elapsed_ms={}",
         started_at.elapsed().as_millis()
     )
-}
-
-/// Stream-read idle timeout. Tests override it (a stalled-mock test cannot
-/// wait 120 s of real time) via FUTURE_TEST_STREAM_IDLE_SECS.
-fn stream_idle_timeout_secs() -> u64 {
-    #[cfg(test)]
-    if let Some(secs) = std::env::var("FUTURE_TEST_STREAM_IDLE_SECS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-    {
-        return secs;
-    }
-    STREAM_IDLE_TIMEOUT_SECS
 }
 
 /// HTTP request timeout for a single LLM call. Defaults to 30 min (1800 s);
@@ -355,18 +343,18 @@ impl crate::types::LLMProvider for Client {
             loop {
                 let next = tokio::select! {
                     _ = tx.closed() => return,
-                    next = tokio::time::timeout(
-                        std::time::Duration::from_secs(stream_idle_timeout_secs()),
-                        stream.next(),
-                    ) => next,
+                    // Silence is not evidence of failure: reasoning can pause
+                    // without emitting summaries or even transport heartbeats.
+                    // reqwest still enforces the whole-request deadline.
+                    next = stream.next() => next,
                 };
                 let bytes = match next {
-                    Ok(Some(Ok(bytes))) => {
+                    Some(Ok(bytes)) => {
                         chunks_received = chunks_received.saturating_add(1);
                         bytes_received = bytes_received.saturating_add(bytes.len() as u64);
                         bytes
                     }
-                    Ok(Some(Err(error))) => {
+                    Some(Err(error)) => {
                         let kind = reqwest_stream_error_kind(&error);
                         let causes = error_source_chain(&error);
                         let progress = stream_progress(
@@ -399,36 +387,7 @@ impl crate::types::LLMProvider for Client {
                             .await;
                         return;
                     }
-                    Ok(None) => break,
-                    Err(_) => {
-                        let timeout_secs = stream_idle_timeout_secs();
-                        let progress = stream_progress(
-                            "idle_timeout",
-                            chunks_received,
-                            bytes_received,
-                            frames_decoded,
-                            started_at,
-                        );
-                        tracing::error!(
-                            protocol = %protocol,
-                            model = %model,
-                            status = response_status,
-                            timeout_secs,
-                            chunks_received,
-                            bytes_received,
-                            frames_decoded,
-                            elapsed_ms = started_at.elapsed().as_millis() as u64,
-                            "LLM response stream idle timeout"
-                        );
-                        let _ = tx
-                            .send(schema::ModelStreamEvent::Error {
-                                message: format!(
-                                    "{UPSTREAM_DISCONNECTED} model response stream was idle for {timeout_secs} seconds; {progress}"
-                                ),
-                            })
-                            .await;
-                        return;
-                    }
+                    None => break,
                 };
                 if tx.is_closed() {
                     return;
@@ -468,6 +427,12 @@ impl crate::types::LLMProvider for Client {
                         if tx.send(event).await.is_err() {
                             return;
                         }
+                    }
+                    // A logical Finish is not always the wire terminator:
+                    // Chat Completions may still owe us a usage-only frame.
+                    // Let the adapter decide when no more data is required.
+                    if adapter.is_stream_complete(state.as_ref()) {
+                        return;
                     }
                 }
             }
@@ -583,8 +548,6 @@ fn normalize_http_error(status: u16, text: &str, model: &str, body_bytes: usize)
 mod tests {
     use super::*;
     use crate::types::LLMProvider;
-
-    static IDLE_TIMEOUT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     // ─── Client construction and single target state ─────────────────────────
 
@@ -815,15 +778,6 @@ mod tests {
             .contains("Rate limited"));
     }
 
-    #[test]
-    fn stream_idle_timeout_defaults_when_override_absent() {
-        let _env = IDLE_TIMEOUT_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        std::env::remove_var("FUTURE_TEST_STREAM_IDLE_SECS");
-        assert_eq!(stream_idle_timeout_secs(), STREAM_IDLE_TIMEOUT_SECS);
-    }
-
     // ─── mock HTTP server ───────────────────────────────────────────────────
     /// One-shot HTTP server: accepts a single request, records its body, and
     /// replies with a canned (status, content_type, body). Loops so aborted
@@ -919,7 +873,7 @@ mod tests {
         }
     }
 
-    fn protocol_target(
+    pub(super) fn protocol_target(
         base_url: &str,
         protocol: schema::ProtocolConfig,
     ) -> schema::ResolvedModelTarget {
@@ -945,7 +899,7 @@ mod tests {
         }
     }
 
-    fn canonical_request() -> schema::ModelRequest {
+    pub(super) fn canonical_request() -> schema::ModelRequest {
         schema::ModelRequest {
             model: "mock".into(),
             system_prompt: "system".into(),
@@ -1082,61 +1036,6 @@ mod tests {
         ));
     }
 
-    #[allow(clippy::await_holding_lock)]
-    #[tokio::test(flavor = "current_thread")]
-    async fn stream_model_idle_timeout_reports_upstream_disconnect() {
-        let _env = IDLE_TIMEOUT_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        std::env::set_var("FUTURE_TEST_STREAM_IDLE_SECS", "1");
-
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            use std::io::{Read, Write};
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0u8; 16 * 1024];
-            let _ = stream.read(&mut request);
-            stream
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
-                )
-                .unwrap();
-            let frame = b"data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n";
-            stream
-                .write_all(format!("{:X}\r\n", frame.len()).as_bytes())
-                .and_then(|_| stream.write_all(frame))
-                .and_then(|_| stream.write_all(b"\r\n"))
-                .and_then(|_| stream.flush())
-                .unwrap();
-            std::thread::sleep(std::time::Duration::from_secs(2));
-        });
-
-        let client = Client::from_target(chat_target(
-            &format!("http://127.0.0.1:{port}"),
-            "secret",
-            None,
-            None,
-        ));
-        let events: Vec<_> = client
-            .stream_model(canonical_request())
-            .await
-            .unwrap()
-            .collect()
-            .await;
-        std::env::remove_var("FUTURE_TEST_STREAM_IDLE_SECS");
-
-        assert!(events.iter().any(|event| matches!(
-            event,
-            schema::ModelStreamEvent::TextDelta { text, .. } if text == "partial"
-        )));
-        assert!(matches!(
-            events.last(),
-            Some(schema::ModelStreamEvent::Error { message })
-                if message.starts_with(UPSTREAM_DISCONNECTED)
-        ));
-    }
-
     #[tokio::test]
     async fn stream_model_transport_disconnect_reports_progress_and_error_chain() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1249,65 +1148,6 @@ mod tests {
                 ..
             }
         )));
-    }
-
-    #[allow(clippy::await_holding_lock)]
-    #[tokio::test(flavor = "current_thread")]
-    async fn stream_model_keepalives_prevent_idle_timeout() {
-        let _env = IDLE_TIMEOUT_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        std::env::set_var("FUTURE_TEST_STREAM_IDLE_SECS", "1");
-
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            use std::io::{Read, Write};
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0u8; 16 * 1024];
-            let _ = stream.read(&mut request);
-            stream
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
-                )
-                .unwrap();
-            for _ in 0..6 {
-                stream
-                    .write_all(b"3\r\n:\n\n\r\n")
-                    .and_then(|_| stream.flush())
-                    .unwrap();
-                std::thread::sleep(std::time::Duration::from_millis(200));
-            }
-            let frame = b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
-            stream
-                .write_all(format!("{:X}\r\n", frame.len()).as_bytes())
-                .and_then(|_| stream.write_all(frame))
-                .and_then(|_| stream.write_all(b"\r\n0\r\n\r\n"))
-                .and_then(|_| stream.flush())
-                .unwrap();
-        });
-
-        let client = Client::from_target(chat_target(
-            &format!("http://127.0.0.1:{port}"),
-            "secret",
-            None,
-            None,
-        ));
-        let events: Vec<_> = client
-            .stream_model(canonical_request())
-            .await
-            .unwrap()
-            .collect()
-            .await;
-        std::env::remove_var("FUTURE_TEST_STREAM_IDLE_SECS");
-
-        assert!(matches!(
-            events.last(),
-            Some(schema::ModelStreamEvent::Finish {
-                reason: schema::FinishReason::Stop,
-                ..
-            })
-        ));
     }
 
     #[tokio::test(flavor = "current_thread")]

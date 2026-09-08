@@ -157,28 +157,6 @@ fn push_finalized_tool_call(
     record_assistant_block(order, AssistantBlockOrder::Tool(index));
 }
 
-/// Per-event idle windows (stream, complete-tool-call) by thinking budget.
-/// High-reasoning models legitimately pause tens of seconds between token
-/// bursts (e.g. while generating tool-call argument JSON after thinking), so
-/// the truncation guard must only fire on genuinely dead streams. A too-tight
-/// window truncates a healthy xhigh run mid-tool-call (measured: DeepSeek
-/// xhigh went 45s+ silent right after emitting a tool-call header, killing
-/// the run at the old 45s limit). Truncation stays safe either way — skipped
-/// tool calls now get persisted placeholder results — but false truncations
-/// still burn turns and force retries.
-fn idle_timeouts_for(thinking_budget: i32) -> (Duration, Duration) {
-    if thinking_budget >= 16_000 {
-        // high / xhigh
-        (Duration::from_secs(180), Duration::from_secs(60))
-    } else if thinking_budget >= 8_000 {
-        // medium
-        (Duration::from_secs(120), Duration::from_secs(45))
-    } else {
-        // minimal / low / unset
-        (Duration::from_secs(90), Duration::from_secs(30))
-    }
-}
-
 impl Loop {
     pub async fn run_streaming_with_messages(
         &self,
@@ -618,8 +596,8 @@ impl Loop {
             let mut was_outputting = false;
             let mut stream_error = None;
             let mut model_stream_failed = false;
-            // Set when the LLM layer signals the stream was cut off (idle
-            // timeout or premature EOF without a finish_reason / `[DONE]`).
+            // Set when the LLM layer reports a failure or the stream reaches
+            // EOF without a terminal event. Silence alone is not truncation.
             // The accumulated text is a prefix, not a finished answer.
             let mut stream_truncated = false;
             let mut saw_terminal_event = false;
@@ -628,62 +606,22 @@ impl Loop {
             let mut truncation_detected_by: Option<&'static str> = None;
 
             loop {
-                let (stream_idle, complete_tool_call_idle) =
-                    idle_timeouts_for(self.config.thinking_budget);
-                let event_idle_timeout = if current_tool_calls
-                    .iter()
-                    .any(|tc| tc.as_ref().map(tool_call_args_complete).unwrap_or(false))
-                {
-                    complete_tool_call_idle
-                } else {
-                    stream_idle
-                };
-
-                let mut event_timed_out = false;
-                let event = if let Some(ref mut irx) = interrupt_rx {
-                    match tokio::time::timeout(event_idle_timeout, async {
-                        tokio::select! {
-                            event_opt = rx.next() => event_opt,
-                            _ = irx.recv() => {
-                                stream_error = Some(anyhow!("interrupted"));
-                                None
-                            }
-                        }
-                    })
+                // No event deadline: providers can reason silently for minutes.
+                // Reuse the interrupt helper so flag-only cancellation also wakes
+                // this wait, even without an interrupt channel.
+                let model_event = match self
+                    .await_or_interrupt(rx.next(), interrupt_rx.as_mut())
                     .await
-                    {
-                        Ok(inner) => inner,
-                        Err(_) => {
-                            event_timed_out = true;
-                            None
-                        }
-                    }
-                } else {
-                    match tokio::time::timeout(event_idle_timeout, rx.next()).await {
-                        Ok(inner) => inner,
-                        Err(_) => {
-                            event_timed_out = true;
-                            None
-                        }
-                    }
-                };
-
-                let model_event = match event {
-                    Some(e) => e,
+                {
+                    Some(Some(event)) => event,
                     None => {
-                        // No event for the whole idle window means the LLM layer
-                        // went silent without delivering a terminal event — the
-                        // stream stalled. Mark it truncated so the turn ends as
-                        // `incomplete`, not a silent `complete`. (A normal end
-                        // arrives as the channel closing right after a `stop`,
-                        // which is not a timeout.)
-                        if event_timed_out || !saw_terminal_event {
+                        stream_error = Some(anyhow!("interrupted"));
+                        break;
+                    }
+                    Some(None) => {
+                        if !saw_terminal_event {
                             stream_truncated = true;
-                            truncation_detected_by.get_or_insert(if event_timed_out {
-                                "idle_timeout"
-                            } else {
-                                "eof_no_terminal"
-                            });
+                            truncation_detected_by.get_or_insert("eof_no_terminal");
                         }
                         break;
                     }
@@ -950,6 +888,10 @@ impl Loop {
                 }
             }
 
+            // Release the HTTP pump before potentially slow persistence during
+            // cancellation. Its tx.closed() branch drops the upstream response.
+            drop(rx);
+
             for tc_opt in current_tool_calls.iter_mut() {
                 if let Some(tc) = tc_opt.take() {
                     push_finalized_tool_call(&mut agent_tool_calls, &mut assistant_block_order, tc);
@@ -1020,9 +962,10 @@ impl Loop {
             // can pick stream end over the interrupt channel). Both land on
             // the same partial-assistant exit; the single-line closure keeps
             // the test-unreproducible race edge off its own line.
-            let interrupted_after_stream = interrupt_rx
-                .as_mut()
-                .is_some_and(|irx| irx.try_recv().is_ok());
+            let interrupted_after_stream = self.is_interrupted()
+                || interrupt_rx
+                    .as_mut()
+                    .is_some_and(|irx| irx.try_recv().is_ok());
             if stream_error.is_some() || interrupted_after_stream {
                 build_partial_assistant(
                     &mut messages,
@@ -1348,16 +1291,6 @@ impl Loop {
     }
 }
 
-fn tool_call_args_complete(tool_call: &AgentToolCall) -> bool {
-    match &tool_call.args {
-        serde_json::Value::String(raw) => serde_json::from_str::<serde_json::Value>(raw)
-            .map(|value| value.is_object())
-            .unwrap_or(false),
-        serde_json::Value::Object(_) => true,
-        _ => false,
-    }
-}
-
 /// Merge a repeated tool-input start (same tool id at the same stream index)
 /// into the pending call's args, returning true when the event was consumed
 /// as a repeat. Always prefers the longer args string — it's more complete:
@@ -1537,8 +1470,10 @@ mod tests {
         Events(Vec<ModelStreamEvent>),
         /// Fail the stream_model call itself.
         Fail(String),
-        /// Send the events, then go silent forever (channel stays open).
+        /// Send the events, then go silent until the consumer cancels.
         PartialThenStall(Vec<ModelStreamEvent>),
+        /// Delay each event by the specified duration, then close normally.
+        TimedEvents(Vec<(Duration, ModelStreamEvent)>),
     }
 
     struct ScriptedProvider {
@@ -1595,7 +1530,22 @@ mod tests {
                     for event in events {
                         let _ = tx.try_send(event);
                     }
-                    std::mem::forget(tx); // keep the stream open forever
+                    tokio::spawn(async move { tx.closed().await });
+                    Ok(ReceiverStream::new(rx))
+                }
+                Script::TimedEvents(events) => {
+                    let (tx, rx) = mpsc::channel(events.len().max(1));
+                    tokio::spawn(async move {
+                        for (delay, event) in events {
+                            tokio::select! {
+                                _ = tx.closed() => return,
+                                _ = tokio::time::sleep(delay) => {}
+                            }
+                            if tx.send(event).await.is_err() {
+                                return;
+                            }
+                        }
+                    });
                     Ok(ReceiverStream::new(rx))
                 }
                 Script::Fail(error) => Err(anyhow!(error)),
@@ -2480,11 +2430,73 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn run_times_out_a_stalled_stream() {
-        let provider =
-            ScriptedProvider::new(vec![Script::PartialThenStall(vec![ev_text("stuck")])]);
-        let loop_ = Loop::new(provider, "mock");
-        let (text, _) = loop_
+    async fn long_silence_before_and_during_reasoning_does_not_truncate() {
+        for budget in [0, 8_000, 16_000, 24_000] {
+            let metadata = serde_json::json!({
+                "openai": {"id": "rs_1", "encrypted_content": "cipher", "summary": []}
+            })
+            .as_object()
+            .unwrap()
+            .clone();
+            let provider = ScriptedProvider::new(vec![Script::TimedEvents(vec![
+                (
+                    Duration::from_secs(300),
+                    ModelStreamEvent::ReasoningStart { id: "rs_1".into() },
+                ),
+                (
+                    Duration::from_secs(300),
+                    ModelStreamEvent::ReasoningEnd {
+                        id: "rs_1".into(),
+                        provider_metadata: metadata,
+                    },
+                ),
+                (Duration::ZERO, ev_text("finished after thinking")),
+                (Duration::ZERO, ev_stop()),
+            ])]);
+            let loop_ = Loop::new(provider, "mock").with_config(crate::types::AgentConfig {
+                thinking_budget: budget,
+                ..Default::default()
+            });
+            let (_interrupt_tx, interrupt_rx) = mpsc::channel(1);
+            let (text, messages) = loop_
+                .run_streaming_with_messages(
+                    user_messages("hi"),
+                    &StreamContext::default(),
+                    noop_on_text,
+                    |_| {},
+                    Some(interrupt_rx),
+                )
+                .await
+                .unwrap();
+            assert_eq!(text, "finished after thinking", "budget={budget}");
+            assert!(!loop_
+                .stream_incomplete
+                .load(std::sync::atomic::Ordering::SeqCst));
+            assert!(
+                matches!(&messages[1].content[0], ContentBlock::Reasoning { text, provider_metadata }
+                if text.is_empty() && provider_metadata["openai"]["encrypted_content"] == "cipher")
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn long_silence_after_complete_tool_arguments_does_not_skip_execution() {
+        let provider = ScriptedProvider::new(vec![
+            Script::TimedEvents(vec![
+                (Duration::ZERO, ev_toolcall_start(0, "c1", "echo", "{}")),
+                (Duration::from_secs(300), ev_toolcall_end()),
+                (
+                    Duration::ZERO,
+                    ModelStreamEvent::Finish {
+                        reason: FinishReason::ToolCalls,
+                        usage: None,
+                    },
+                ),
+            ]),
+            Script::Events(vec![ev_text("done"), ev_stop()]),
+        ]);
+        let loop_ = Loop::new(provider, "mock").with_tools(vec![echo_tool()]);
+        let (text, messages) = loop_
             .run_streaming_with_messages(
                 user_messages("hi"),
                 &StreamContext::default(),
@@ -2494,8 +2506,61 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(text, "stuck");
-        assert!(loop_
+        assert_eq!(text, "done");
+        assert!(!loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+        let results: Vec<_> = messages.iter().filter(|m| m.role == "tool").collect();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].text().contains("echo:"));
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn long_silence_can_be_cancelled_by_flag_without_losing_partial_history() {
+        let provider = ScriptedProvider::new(vec![Script::PartialThenStall(vec![
+            ev_text("partial"),
+            ev_toolcall_start(0, "c1", "echo", "{}"),
+        ])]);
+        let loop_ = Loop::new(provider, "mock").with_tools(vec![echo_tool()]);
+        let flag = loop_.interrupt_flag.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(300)).await;
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        let saved = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let ctx = StreamContext {
+            save_callback: Some({
+                let saved = saved.clone();
+                Arc::new(move |message: &mut AgentMessage| saved.lock().push(message.clone()))
+            }),
+            ..Default::default()
+        };
+        let start = tokio::time::Instant::now();
+        let (text, messages) = tokio::time::timeout(
+            Duration::from_secs(301),
+            loop_.run_streaming_with_messages(
+                user_messages("hi"),
+                &ctx,
+                noop_on_text,
+                |_| {},
+                None,
+            ),
+        )
+        .await
+        .expect("flag-only cancellation must wake a silent stream")
+        .unwrap();
+        assert!(start.elapsed() >= Duration::from_secs(300));
+        assert!(text.is_empty());
+        assert_eq!(messages[1].text(), "partial");
+        assert!(messages[2]
+            .text()
+            .contains("was not executed due to interrupt"));
+        assert_eq!(
+            saved.lock().len(),
+            2,
+            "partial reply and tool placeholder are durable"
+        );
+        assert!(!loop_
             .stream_incomplete
             .load(std::sync::atomic::Ordering::SeqCst));
     }
@@ -3081,21 +3146,6 @@ mod tests {
     // ── pure helpers ────────────────────────────────────────────────────────
 
     #[test]
-    fn tool_call_args_complete_checks_json_balance() {
-        let mut call = AgentToolCall {
-            id: "c1".to_string(),
-            name: "echo".to_string(),
-            args: serde_json::Value::String("{\"a\":1}".to_string()),
-            provider_metadata: Default::default(),
-        };
-        assert!(tool_call_args_complete(&call));
-        call.args = serde_json::Value::String("{\"a\":1".to_string());
-        assert!(!tool_call_args_complete(&call));
-        call.args = serde_json::Value::Null;
-        assert!(!tool_call_args_complete(&call));
-    }
-
-    #[test]
     fn finalize_agent_tool_call_parses_and_repairs_args() {
         let complete = AgentToolCall {
             id: "c1".to_string(),
@@ -3395,97 +3445,6 @@ mod tests {
         flag.store(true, std::sync::atomic::Ordering::SeqCst);
         let (text, _) = runner.await.unwrap().unwrap();
         assert_eq!(text, "");
-    }
-
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn run_stream_idle_timeout_with_interrupt_channel() {
-        let provider =
-            ScriptedProvider::new(vec![Script::PartialThenStall(vec![ev_text("stuck")])]);
-        let loop_ = Loop::new(provider, "mock");
-        let (_interrupt_tx, interrupt_rx) = mpsc::channel::<()>(1);
-        let (text, _) = loop_
-            .run_streaming_with_messages(
-                user_messages("hi"),
-                &StreamContext::default(),
-                noop_on_text,
-                |_| {},
-                Some(interrupt_rx),
-            )
-            .await
-            .unwrap();
-        assert_eq!(text, "stuck");
-        assert!(loop_
-            .stream_incomplete
-            .load(std::sync::atomic::Ordering::SeqCst));
-    }
-
-    #[test]
-    fn idle_timeouts_scale_with_thinking_budget() {
-        use super::idle_timeouts_for;
-        assert_eq!(
-            idle_timeouts_for(0),
-            (Duration::from_secs(90), Duration::from_secs(30))
-        );
-        assert_eq!(
-            idle_timeouts_for(4_000),
-            (Duration::from_secs(90), Duration::from_secs(30))
-        );
-        assert_eq!(
-            idle_timeouts_for(8_000),
-            (Duration::from_secs(120), Duration::from_secs(45))
-        );
-        assert_eq!(
-            idle_timeouts_for(16_000),
-            (Duration::from_secs(180), Duration::from_secs(60))
-        );
-        assert_eq!(
-            idle_timeouts_for(24_000),
-            (Duration::from_secs(180), Duration::from_secs(60))
-        );
-    }
-
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn xhigh_budget_tolerates_silence_beyond_the_old_45s_limit() {
-        // Regression for the 2026-08-24 incident: DeepSeek xhigh emitted a
-        // tool-call header, then went silent while generating argument JSON;
-        // the old flat 45s window truncated the run mid-tool-call. With an
-        // xhigh budget the stream window is 180s, so a 60s silence must NOT
-        // truncate; only the full window expiry ends the turn.
-        let provider = ScriptedProvider::new(vec![Script::PartialThenStall(vec![ev_text("tick")])]);
-        let config = crate::types::AgentConfig {
-            thinking_budget: 24_000,
-            ..Default::default()
-        };
-        let loop_ = std::sync::Arc::new(Loop::new(provider, "mock").with_config(config));
-        let handle = {
-            let loop_ = loop_.clone();
-            tokio::spawn(async move {
-                loop_
-                    .run_streaming_with_messages(
-                        user_messages("hi"),
-                        &StreamContext::default(),
-                        noop_on_text,
-                        |_| {},
-                        None,
-                    )
-                    .await
-            })
-        };
-        // 60s of silence: comfortably past the old 45s limit, still inside
-        // the xhigh 180s window — the run must still be waiting, not
-        // truncated.
-        tokio::time::advance(Duration::from_secs(60)).await;
-        assert!(
-            !handle.is_finished(),
-            "60s silence must not truncate an xhigh run (old 45s limit did)"
-        );
-        // Cross the full 180s window — now the stall guard fires.
-        tokio::time::advance(Duration::from_secs(130)).await;
-        let (text, _) = handle.await.unwrap().unwrap();
-        assert_eq!(text, "tick");
-        assert!(loop_
-            .stream_incomplete
-            .load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
