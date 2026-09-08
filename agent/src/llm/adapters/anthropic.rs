@@ -88,7 +88,8 @@ impl ProtocolAdapter for AnthropicMessagesAdapter {
                     .collect(),
             );
         }
-        let thinking_enabled = target.generation.thinking_budget >= MIN_THINKING_BUDGET_TOKENS;
+        let thinking_enabled = target.capabilities.reasoning.supported
+            && target.generation.thinking_budget >= MIN_THINKING_BUDGET_TOKENS;
         if thinking_enabled && config.thinking_mode == AnthropicThinkingMode::Adaptive {
             // Several current Claude models omit visible thinking by default.
             // FutureOS exposes thinking in the UI, so request the summary explicitly.
@@ -543,7 +544,13 @@ mod tests {
                 headers: Default::default(),
             },
             protocol: ProtocolConfig::AnthropicMessages(Default::default()),
-            capabilities: Default::default(),
+            capabilities: crate::llm::schema::ModelCapabilities {
+                reasoning: crate::llm::schema::ReasoningCapabilities {
+                    supported: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
             generation: crate::llm::schema::GenerationConfig {
                 max_output_tokens: max_tokens,
                 thinking_budget,

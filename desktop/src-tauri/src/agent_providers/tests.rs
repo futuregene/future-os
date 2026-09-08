@@ -62,6 +62,7 @@ fn custom_model(id: &str, name: &str, supports_images: bool) -> CustomProviderMo
         id: id.to_string(),
         name: name.to_string(),
         supports_images,
+        reasoning: true,
         context_window: 128_000,
         max_tokens: 16_384,
     }
@@ -74,6 +75,7 @@ fn custom_provider_model_serde_defaults_context_window_and_max_tokens() {
     let model: CustomProviderModel = serde_json::from_str(r#"{"id":"m1"}"#).unwrap();
     assert_eq!(model.context_window, 128_000);
     assert_eq!(model.max_tokens, 16_384);
+    assert!(model.reasoning);
     assert_eq!(model.name, "");
     assert!(!model.supports_images);
 }
@@ -338,6 +340,30 @@ fn empty_provider_and_model_names_fall_back_to_their_ids() {
         .unwrap();
     assert_eq!(provider.name, "provider-id");
     assert_eq!(provider.models[0].name, "model-id");
+}
+
+#[test]
+fn model_reasoning_round_trips_through_validation_rpc_and_persistence() {
+    let _home = HomeGuard::new("reasoning");
+    let catalog = fixture_catalog();
+    for reasoning in [false, true] {
+        let mut input = input("p1", "P1", false);
+        let mut model = custom_model("gpt-5.6-sol", "", false);
+        model.reasoning = reasoning;
+        input.models = vec![model];
+        let validated = validate_custom_provider(input.clone()).unwrap();
+        assert_eq!(
+            super::write::provider_upsert_message(&validated).models[0].reasoning,
+            Some(reasoning)
+        );
+        let view = upsert_custom_provider_with_catalog(input, &catalog).unwrap();
+        assert_eq!(view.custom[0].models[0].reasoning, reasoning);
+        let doc = config_io::read_json_lenient(&models_json_path().unwrap());
+        assert_eq!(
+            doc["providers"]["p1"]["models"][0]["reasoning"],
+            json!(reasoning)
+        );
+    }
 }
 
 #[test]

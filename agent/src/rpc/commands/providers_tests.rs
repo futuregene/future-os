@@ -74,6 +74,7 @@ fn upsert_provider_writes_both_files_and_delete_removes_them() {
             modalities: vec!["text".to_string()],
             context_window: 128000,
             max_tokens: 16384,
+            reasoning: false,
         }],
         ..Default::default()
     });
@@ -83,6 +84,21 @@ fn upsert_provider_writes_both_files_and_delete_removes_them() {
     let models = read_json(&home.models_path());
     assert_eq!(models["providers"]["myprov"]["name"], "My Provider");
     assert_eq!(models["providers"]["myprov"]["models"][0]["id"], "m1");
+    assert_eq!(
+        models["providers"]["myprov"]["models"][0]["reasoning"],
+        false
+    );
+    let view = parse_response(&handle_command_internal(&state, make_cmd("list_providers")));
+    assert_eq!(view["data"]["custom"][0]["models"][0]["reasoning"], false);
+    let list = parse_response(&handle_command_internal(&state, make_cmd("list_models")));
+    let model = list["data"]["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["provider"] == "myprov")
+        .unwrap();
+    assert_eq!(model["reasoning"], false);
+    assert_eq!(model["thinkingLevel"], "off");
     let auth = read_json(&home.auth_path());
     assert_eq!(auth["myprov"]["key"], "sk-key");
 

@@ -22,6 +22,8 @@ export interface CustomProviderModel {
   name: string;
   /** Whether the model accepts image input. Text input is always implied. */
   supportsImages: boolean;
+  /** Whether to send thinking controls. Custom models default to true. */
+  reasoning: boolean;
   /** Maximum total context window, in tokens. */
   contextWindow: number;
   /** Maximum tokens generated in one response. */

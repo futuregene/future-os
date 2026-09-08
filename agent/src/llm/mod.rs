@@ -2,7 +2,7 @@
 //!
 //! Uses reqwest for HTTP + SSE streaming, matching Go's OpenAI SDK behavior.
 
-mod adapters;
+pub(crate) mod adapters;
 pub mod schema;
 mod sse;
 use adapters::AdapterRegistry;

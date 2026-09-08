@@ -189,6 +189,8 @@
     "modelNameLabel": "Display name",
     "modelNamePlaceholder": "Leave blank to use the model ID",
     "removeModel": "Remove model",
+    "reasoningLabel": "Supports thinking",
+    "reasoningDescription": "Allow thinking controls to be sent to this model. Turn off if the API does not support them.",
     "modalityLabel": "Modality",
     "modalityText": "Text",
     "modalityImage": "Image",

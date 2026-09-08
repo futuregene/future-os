@@ -164,6 +164,7 @@ pub(crate) fn list_models_response(
                 "provider": model.provider.clone(),
                 "supportsImages": model.input.iter().any(|input| input == "image"),
                 "thinkingLevel": thinking_level.to_string(),
+                "reasoning": model.reasoning,
                 "contextWindow": model.context_window,
                 "isDefault": qualified_id == effective_default,
                 "description": model.description,
@@ -290,6 +291,7 @@ fn provider_view(state: &AppState) -> Result<serde_json::Value, String> {
                         "id": model_id,
                         "name": model_name,
                         "supportsImages": supports_images,
+                        "reasoning": model.get("reasoning").and_then(serde_json::Value::as_bool).unwrap_or(true),
                         "contextWindow": model.get("contextWindow").and_then(serde_json::Value::as_i64).unwrap_or(128_000),
                         "maxTokens": model.get("maxTokens").and_then(serde_json::Value::as_i64).unwrap_or(16_384),
                     }))

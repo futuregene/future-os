@@ -9,7 +9,7 @@ import { ArrowUp, ChevronDown, Paperclip, ShieldCheck, ShieldOff, ShieldQuestion
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
-import { localizedModelDescription, modelKey, modelLabel, modelOption, normalizeThinkingLevel, thinkingLevels } from "../../integrations/agent/agentClient";
+import { localizedModelDescription, modelKey, modelLabel, modelOption, modelSupportsThinking, normalizeThinkingLevel, thinkingLevels } from "../../integrations/agent/agentClient";
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
 import { useSandboxAvailability } from "../../integrations/agent/useSandboxAvailability";
 import { listAvailableSkills, listInstalledSkills } from "../../integrations/skills/skillsClient";
@@ -274,7 +274,8 @@ function ComposerImpl({
   // attachment chip is flagged so the user knows the image may not be understood.
   // Unknown model (not in the catalog yet) → treat as vision-capable.
   const supportsImages = activeModel ? activeModel.supportsImages !== false : true;
-  const activeThinkingLevel = normalizeThinkingLevel(thinkingLevel);
+  const supportsThinking = modelSupportsThinking(activeModelId, modelOptions);
+  const activeThinkingLevel = supportsThinking ? normalizeThinkingLevel(thinkingLevel) : "off";
   // Localized thinking-level label; unknown levels fall back to the raw value.
   const thinkingLevelLabel = (level: string) => t(`composer.thinkingLevelLabels.${level}`, { defaultValue: level });
 
@@ -762,19 +763,21 @@ function ComposerImpl({
           </SelectMenu>
           <SelectMenu
             className="hidden md:block"
-            open={thinkingMenuOpen}
+            open={thinkingMenuOpen && supportsThinking}
             onDismiss={() => setThinkingMenuOpen(false)}
             panelClassName="w-40 overflow-hidden"
             trigger={(
               <button
-                className="inline-flex h-7 max-w-40 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
+                className="inline-flex h-7 max-w-40 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
                 onClick={() => {
                   setModelMenuOpen(false);
                   setApprovalMenuOpen(false);
                   setThinkingMenuOpen(open => !open);
                 }}
                 type="button"
-                title={t("composer.thinkingLevel")}
+                aria-label={t("composer.thinkingLevel")}
+                disabled={!supportsThinking}
+                title={supportsThinking ? t("composer.thinkingLevel") : t("composer.thinkingUnsupported")}
               >
                 <span className="truncate">{thinkingLevelLabel(activeThinkingLevel)}</span>
                 <ChevronDown className="size-3 shrink-0" />

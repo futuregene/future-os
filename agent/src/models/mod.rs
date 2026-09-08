@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 
 pub mod builtin;
 mod future;
+#[cfg(test)]
+mod reasoning_tests;
 pub(crate) use future::{cached_model_count, display_base_url_from_auth};
 use future::{
     derive_thinking_compat, get_future_models_with_cache, resolve_future_base_url,
@@ -362,7 +364,7 @@ fn load_user_models_with_overrides(
                 api: provider_api.clone(),
                 base_url: provider_base_url.clone(),
                 api_key: api_key.clone(),
-                reasoning: model.reasoning.unwrap_or(false),
+                reasoning: model.reasoning.unwrap_or(true),
                 input: model.modalities.unwrap_or_default(),
                 output: vec!["text".to_string()],
                 context_window: model
@@ -450,6 +452,7 @@ struct ModelConfig {
     id: String,
     #[serde(rename = "name", default)]
     name: Option<String>,
+    /// Custom models opt in to thinking controls unless explicitly disabled.
     #[serde(rename = "reasoning", default)]
     reasoning: Option<bool>,
     #[serde(rename = "modalities", default)]
@@ -578,7 +581,7 @@ fn find_best_builtin_match<'a>(user_model: &Model, builtins: &'a [Model]) -> Opt
 /// Rules:
 /// - `compat` — empty map → take all from builtin; non-empty → merge key-by-key
 /// - `thinking_level_map` — same as compat
-/// - `reasoning` — if builtin has it true, adopt it
+/// - `reasoning` — preserve the user's value (defaults to true at load time)
 /// - `input` — fill from builtin when empty
 /// - `context_window` — fill when == 128000 (default)
 /// - `max_tokens` — fill when == 0
@@ -590,11 +593,6 @@ fn enrich_user_models(user_models: &mut [Model], builtins: &[Model]) {
             Some(b) => b,
             None => continue,
         };
-
-        // reasoning: adopt from builtin if builtin has it
-        if best.reasoning {
-            user_model.reasoning = true;
-        }
 
         // input: fill from builtin if user didn't specify
         if user_model.input.is_empty() && !best.input.is_empty() {
@@ -658,12 +656,10 @@ fn enrich_user_models(user_models: &mut [Model], builtins: &[Model]) {
                 .or_insert_with(|| v.clone());
         }
 
-        // Fallback: reasoning models on OpenAI-compatible APIs need
-        // max_completion_tokens instead of max_tokens. The builtin catalog
-        // often has empty compat_json for these models, and users may not
-        // provide supportedParameters either.
+        // Token parameter names depend on the model family, NOT the user's
+        // thinking switch. Most non-OpenAI models still require max_tokens.
         if !user_model.compat.contains_key("maxTokensField")
-            && user_model.reasoning
+            && uses_openai_completion_tokens(&user_model.id)
             && is_openai_compatible_api(&user_model.api)
         {
             user_model.compat.insert(
@@ -674,8 +670,22 @@ fn enrich_user_models(user_models: &mut [Model], builtins: &[Model]) {
     }
 }
 
+/// Known OpenAI reasoning families use max_completion_tokens even when the
+/// user disables thinking controls. Provider-qualified catalog IDs are allowed.
+fn uses_openai_completion_tokens(id: &str) -> bool {
+    let id = id.rsplit('/').next().unwrap_or(id).to_ascii_lowercase();
+    ["gpt-5", "gpt-6", "gpt-oss", "o1", "o3", "o4"]
+        .iter()
+        .any(|family| {
+            id == *family
+                || id
+                    .strip_prefix(family)
+                    .is_some_and(|suffix| suffix.starts_with('-') || suffix.starts_with('.'))
+        })
+}
+
 /// Check whether an API identifier refers to an OpenAI-compatible
-/// completions/chat endpoint (where reasoning models use max_completion_tokens).
+/// endpoint with a configurable completion-token parameter.
 fn is_openai_compatible_api(api: &str) -> bool {
     matches!(
         api,
@@ -1348,7 +1358,10 @@ mod tests {
         enrich_user_models(&mut models, &builtins);
 
         let user = &models[0];
-        assert!(user.reasoning);
+        assert!(
+            !user.reasoning,
+            "enrichment must preserve the configured flag"
+        );
         assert_eq!(user.input, vec!["text", "image"]);
         assert_eq!(user.context_window, 1000000);
         assert_eq!(user.max_tokens, 384000);
@@ -1364,9 +1377,7 @@ mod tests {
             id: "deepseek-v4-pro".to_string(),
             name: "DSv4".to_string(),
             provider: "custom-provider".to_string(),
-            // reasoning left as default false — builtin has true, so it gets
-            // enriched. This is intentional: reasoning-capable models should
-            // be marked as such.
+            // Explicit false must survive even when the builtin supports thinking.
             input: vec!["text".to_string()],
             context_window: 64000,
             max_tokens: 8192,
@@ -1382,8 +1393,10 @@ mod tests {
         enrich_user_models(&mut models, &builtins);
 
         let user = &models[0];
-        // reasoning adopted from builtin (builtin says true)
-        assert!(user.reasoning);
+        assert!(
+            !user.reasoning,
+            "the user's switch wins over builtin metadata"
+        );
         // User-provided values preserved
         assert_eq!(user.input, vec!["text"]);
         assert_eq!(user.context_window, 64000);
@@ -1446,8 +1459,8 @@ mod tests {
         let user = Model {
             id: "gpt-5.5".to_string(),
             provider: "azurefo".to_string(),
-            reasoning: false, // user didn't set it
-            max_tokens: 0,    // user didn't set it
+            reasoning: true, // loader default when omitted
+            max_tokens: 0,   // user didn't set it
             compat,
             ..Default::default()
         };
@@ -1463,8 +1476,8 @@ mod tests {
             Some("max_completion_tokens"),
             "maxTokensField from supportedParameters should survive enrichment"
         );
-        // - reasoning adopted from builtin
-        assert!(user.reasoning, "reasoning should be adopted from builtin");
+        // - the loader's reasoning value is preserved
+        assert!(user.reasoning);
         // - thinking_level_map filled from builtin
         assert_eq!(
             user.thinking_level_map
@@ -1496,7 +1509,7 @@ mod tests {
     fn enrich_infers_max_tokens_field_for_reasoning_models() {
         // gpt-5.5 with no supportedParameters, no compat at all.
         // Builtin also has empty compat. Fallback should infer maxTokensField
-        // from reasoning + openai-compatible API.
+        // from the OpenAI model family + chat API, independent of the switch.
         let builtins = vec![Model {
             id: "gpt-5.5".to_string(),
             provider: "openai".to_string(),
@@ -1515,7 +1528,7 @@ mod tests {
         enrich_user_models(&mut models, &builtins);
 
         let user = &models[0];
-        assert!(user.reasoning, "reasoning should be true from builtin");
+        assert!(!user.reasoning, "explicit false must survive enrichment");
         assert_eq!(
             user.compat.get("maxTokensField").and_then(|v| v.as_str()),
             Some("max_completion_tokens"),
@@ -1968,7 +1981,7 @@ mod tests {
             ..make_model("gpt-4", "custom")
         }];
         enrich_user_models(&mut user, &builtins);
-        assert!(user[0].reasoning, "adopted from builtin");
+        assert!(!user[0].reasoning, "configured flag is preserved");
         assert_eq!(
             user[0].headers.get("X-Custom").map(String::as_str),
             Some("v")

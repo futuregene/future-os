@@ -329,7 +329,7 @@ fn validate_upsert_against_catalog(
 }
 
 /// The `upsert_provider` RPC payload for a validated custom provider.
-fn provider_upsert_message(
+pub(super) fn provider_upsert_message(
     validated: &ValidatedCustomProvider,
 ) -> crate::agent_proto::ProviderUpsert {
     crate::agent_proto::ProviderUpsert {
@@ -346,6 +346,7 @@ fn provider_upsert_message(
                 modalities: model.modalities.clone(),
                 context_window: model.context_window,
                 max_tokens: model.max_tokens,
+                reasoning: Some(model.reasoning),
             })
             .collect(),
         replace_models: true,
