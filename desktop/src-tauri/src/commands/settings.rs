@@ -41,10 +41,12 @@ mod tests {
             skill_guide_dismissed: None,
             skill_intro_dismissed: None,
             bell_on_complete: None,
+            community_edition: Some(true),
         })
         .expect("update");
         assert_eq!(updated.approval_tier, "manual");
         assert!(!updated.show_thinking);
+        assert!(updated.community_edition);
         assert_eq!(
             get_app_settings().expect("get after update").hidden_models,
             vec!["openai/gpt-x".to_string()]

@@ -190,7 +190,7 @@ export function AppShell() {
   // level. Returns { status, indicator, refresh } — RemoteView reads `status`
   // directly so its blue dot always matches the sidebar indicator.
   const { status: remoteStatus, indicator: remoteIndicator, refresh: refreshRemote } = useRemoteStatus(true);
-  const { balance: futureBalance, email: futureEmail } = useFutureAccount();
+  const { balance: futureBalance, email: futureEmail, refreshBalance: refreshFutureBalance } = useFutureAccount();
   // Remote needs a FutureOS sign-in (its pairing code comes from the service);
   // if the user signs out while on it, drop back to the chat section.
   useEffect(() => {
@@ -477,6 +477,7 @@ export function AppShell() {
     remoteIndicator,
     futureBalance,
     userEmail: futureEmail,
+    communityEdition: appSettings.communityEdition,
     onRecharge: handleRecharge,
     onOpenUpdate: handleOpenUpdate,
     skillIntroDismissed: appSettings.skillIntroDismissed,
@@ -508,7 +509,7 @@ export function AppShell() {
                 aria-valuemin={MIN_LEFT_PANEL_WIDTH}
                 aria-valuemax={leftPanel.maxWidth}
                 aria-valuenow={leftPanel.width}
-                className="absolute inset-y-0 -right-1 z-40 w-2 cursor-ew-resize touch-none hover:bg-accent/20 focus-visible:bg-accent/20 focus-visible:outline-none"
+                className="absolute inset-y-0 -right-1 z-40 w-2 cursor-col-resize touch-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
                 tabIndex={0}
                 onPointerDown={leftPanel.startResize}
                 onKeyDown={(event) => {
@@ -521,12 +522,12 @@ export function AppShell() {
             </div>
           )
         : null}
-      {leftPanel.resizing ? <div className="fixed inset-0 z-50 cursor-ew-resize select-none" /> : null}
+      {leftPanel.resizing ? <div className="fixed inset-0 z-50 cursor-col-resize select-none" /> : null}
       {!leftExpanded
         ? (
             <div
               aria-hidden="true"
-              className="absolute left-0 top-0 z-30 h-full w-2 cursor-ew-resize"
+              className="absolute left-0 top-0 z-30 h-full w-2 cursor-col-resize"
               onMouseEnter={() => handlePreviewLeftPanel(true)}
             />
           )
@@ -640,7 +641,7 @@ export function AppShell() {
       {/* While dragging the divider, a full-window overlay keeps the cursor and
           captures mouse events even over embedded iframes (PDF preview). */}
       {rightPanelResizing && !hideRightPanel
-        ? <div className="fixed inset-0 z-50 cursor-ew-resize select-none" />
+        ? <div className="fixed inset-0 z-50 cursor-col-resize select-none" />
         : null}
       <AppShellDialogs
         batchDeleteDialog={batchDeleteDialog}
@@ -664,10 +665,13 @@ export function AppShell() {
       <SettingsDialog
         appSettings={appSettings}
         cachedUpdateStatus={cachedStatus}
+        futureBalance={futureBalance}
+        futureEmail={futureEmail}
+        onRefreshFutureBalance={refreshFutureBalance}
         hasUpdate={hasUpdate}
         initialTab={settingsTab}
         modelOptions={modelOptions}
-        onChangeSettings={patch => void changeSettings(patch)}
+        onChangeSettings={changeSettings}
         onClose={() => setSettingsOpen(false)}
         onProvidersChanged={() => void refreshAgentModels()}
         onUpdateSeen={markUpdateSeen}

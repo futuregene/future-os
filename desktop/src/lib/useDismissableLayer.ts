@@ -3,13 +3,19 @@ import { useEffect, useRef } from "react";
 interface DismissableLayerOptions {
   enabled: boolean;
   onDismiss: () => void;
+  onEscapeDismiss?: () => void;
 }
 
 export function useDismissableLayer<T extends HTMLElement>({
   enabled,
   onDismiss,
+  onEscapeDismiss,
 }: DismissableLayerOptions) {
   const ref = useRef<T | null>(null);
+  const onDismissRef = useRef(onDismiss);
+  const onEscapeDismissRef = useRef(onEscapeDismiss);
+  onDismissRef.current = onDismiss;
+  onEscapeDismissRef.current = onEscapeDismiss;
 
   useEffect(() => {
     if (!enabled)
@@ -22,7 +28,7 @@ export function useDismissableLayer<T extends HTMLElement>({
       if (ref.current?.contains(target))
         return;
 
-      onDismiss();
+      onDismissRef.current();
     }
 
     function handleKeyDown(event: KeyboardEvent) {
@@ -31,7 +37,7 @@ export function useDismissableLayer<T extends HTMLElement>({
         // parent Overlay's own Escape-to-close doesn't ALSO fire — otherwise one
         // press would dismiss both this layer and the modal containing it.
         event.stopPropagation();
-        onDismiss();
+        (onEscapeDismissRef.current ?? onDismissRef.current)();
       }
     }
 
@@ -42,7 +48,7 @@ export function useDismissableLayer<T extends HTMLElement>({
       document.removeEventListener("pointerdown", handlePointerDown, true);
       document.removeEventListener("keydown", handleKeyDown, true);
     };
-  }, [enabled, onDismiss]);
+  }, [enabled]);
 
   return ref;
 }

@@ -19,6 +19,8 @@ export interface FutureAccount {
   balance: number | null;
   /** Signed-in email; null when signed out or on error. */
   email: string | null;
+  /** Refresh the volatile credit balance without reloading the account profile. */
+  refreshBalance: () => void;
 }
 
 /**
@@ -54,7 +56,7 @@ export function useFutureAccount(): FutureAccount {
       setEmail(null);
       return;
     }
-    getFutureProfile(true).then(
+    getFutureProfile().then(
       p => setEmail(p.email),
       () => setEmail(null),
     );
@@ -93,5 +95,5 @@ export function useFutureAccount(): FutureAccount {
     [reloadProviders],
   );
 
-  return { balance, email };
+  return { balance, email, refreshBalance };
 }

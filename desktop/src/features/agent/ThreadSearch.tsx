@@ -10,11 +10,6 @@ const CURRENT_HIGHLIGHT = "thread-search-current";
 /** Bound result objects and painted ranges for low-specificity queries in very long threads. */
 const MAX_MATCHES = 300;
 const MAX_PAINTED_MATCHES = 80;
-const HIGHLIGHT_STYLES = `
-  ::highlight(thread-search-match) { color: #0f172a; background: #fde047; }
-  ::highlight(thread-search-current) { color: #0f172a; background: #fb923c; }
-`;
-
 interface HighlightRegistryLike {
   delete: (name: string) => boolean;
   get?: (name: string) => { clear?: () => void } | undefined;
@@ -197,7 +192,6 @@ export function ThreadSearch({ canLoadOlder, contentKey, onLoadOlder, rootRef }:
 
   return (
     <>
-      <style>{HIGHLIGHT_STYLES}</style>
       {open
         ? (
             <div

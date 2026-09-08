@@ -8,6 +8,7 @@ import {
   deleteCustomProvider,
   listAgentProviders,
   logoutFutureProvider,
+  peekAgentProviders,
   updateBuiltinProvider,
   upsertCustomProvider,
 } from "../../integrations/agent/providers";
@@ -31,8 +32,11 @@ const DEFAULT_BUILTIN_PROVIDER_IDS = [
 ];
 
 export function ProvidersPage({
+  communityEdition = false,
   onProvidersChanged,
 }: {
+  /** Future uses the regular built-in-provider key flow in community edition. */
+  communityEdition?: boolean;
   /**
    * Called after any mutation that changes the available model set, so the
    * Models tab (fed by the agent's `list_models`) refreshes immediately.
@@ -43,11 +47,11 @@ export function ProvidersPage({
   const { data: loadedProviders, loading, error, reload } = useAsyncResource<ProvidersView | null>(
     listAgentProviders,
     [],
-    null,
+    peekAgentProviders(),
   );
   // Mirror the loaded view locally so mutations (delete/logout/upsert) can apply
   // their returned view optimistically without waiting for a refetch.
-  const [providers, setProviders] = useState<ProvidersView | null>(null);
+  const [providers, setProviders] = useState<ProvidersView | null>(() => peekAgentProviders());
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<CustomProvider | null>(null);
   const [editingBuiltinKey, setEditingBuiltinKey] = useState<BuiltinProvider | null>(null);
@@ -139,8 +143,8 @@ export function ProvidersPage({
     onProvidersChanged?.();
   }
 
-  if (loading) {
-    return <p className="text-sm text-ink-muted">{t("providers.loading")}</p>;
+  if (loading && !providers) {
+    return null;
   }
 
   const builtinProviders = providers?.builtin ?? [];
@@ -167,7 +171,7 @@ export function ProvidersPage({
               title={provider.name}
               description={t("providers.builtinModelsCount", { count: provider.modelCount })}
             >
-              {provider.id === "future"
+              {provider.id === "future" && !communityEdition
                 ? (
                     <div className="flex items-center gap-2">
                       {confirmingLogout && provider.hasApiKey
