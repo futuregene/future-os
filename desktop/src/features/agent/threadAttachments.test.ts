@@ -3,13 +3,13 @@ import { finalizeTemporaryAttachmentSources, persistImageAttachments } from "./t
 
 const deleteTempAttachment = vi.fn();
 const generateImageThumbnail = vi.fn();
-const importEphemeralImage = vi.fn();
+const importEphemeralAttachment = vi.fn();
 const validateImageAttachment = vi.fn();
 
 vi.mock("../../integrations/storage/files", () => ({
   deleteTempAttachment: (...args: unknown[]) => deleteTempAttachment(...args),
   generateImageThumbnail: (...args: unknown[]) => generateImageThumbnail(...args),
-  importEphemeralImage: (...args: unknown[]) => importEphemeralImage(...args),
+  importEphemeralAttachment: (...args: unknown[]) => importEphemeralAttachment(...args),
   validateImageAttachment: (...args: unknown[]) => validateImageAttachment(...args),
 }));
 
@@ -17,7 +17,7 @@ describe("persistImageAttachments", () => {
   beforeEach(() => {
     deleteTempAttachment.mockReset();
     generateImageThumbnail.mockReset();
-    importEphemeralImage.mockReset();
+    importEphemeralAttachment.mockReset();
     validateImageAttachment.mockReset();
     validateImageAttachment.mockResolvedValue(undefined);
   });
@@ -33,13 +33,13 @@ describe("persistImageAttachments", () => {
       { kind: "image", name: "bad.png", path: "/tmp/futureos-attachments/bad.png" },
     ], "thread-1")).rejects.toThrow("bad.png");
 
-    expect(importEphemeralImage).not.toHaveBeenCalled();
+    expect(importEphemeralAttachment).not.toHaveBeenCalled();
     expect(deleteTempAttachment).not.toHaveBeenCalled();
   });
 
   it("still sends a decodable image without a thumbnail when thumbnail generation fails", async () => {
     generateImageThumbnail.mockRejectedValue(new Error("disk full"));
-    importEphemeralImage.mockResolvedValue("/origin/ok.png");
+    importEphemeralAttachment.mockResolvedValue("/origin/ok.png");
     deleteTempAttachment.mockResolvedValue(undefined);
 
     // A thumbnail write failure must not reject the send: the image validated,
@@ -55,13 +55,13 @@ describe("persistImageAttachments", () => {
       }],
       temporarySources: ["/tmp/futureos-attachments/ok.png"],
     });
-    expect(importEphemeralImage).toHaveBeenCalledTimes(1);
+    expect(importEphemeralAttachment).toHaveBeenCalledTimes(1);
     expect(deleteTempAttachment).not.toHaveBeenCalled();
   });
 
   it("rewrites a pasted image only after validation succeeds", async () => {
     generateImageThumbnail.mockResolvedValue("/thumb/ok.jpg");
-    importEphemeralImage.mockResolvedValue("/origin/ok.png");
+    importEphemeralAttachment.mockResolvedValue("/origin/ok.png");
     deleteTempAttachment.mockResolvedValue(undefined);
 
     await expect(persistImageAttachments([
@@ -92,7 +92,7 @@ describe("persistImageAttachments", () => {
       }],
       temporarySources: [],
     });
-    expect(importEphemeralImage).not.toHaveBeenCalled();
+    expect(importEphemeralAttachment).not.toHaveBeenCalled();
   });
 
   it("deletes a promoted temp source only when the caller finalizes it", async () => {
@@ -102,7 +102,7 @@ describe("persistImageAttachments", () => {
   });
 });
 
-describe("persistImageAttachments non-image passthrough", () => {
+describe("persistImageAttachments non-image handling", () => {
   beforeEach(() => {
     validateImageAttachment.mockReset();
   });
@@ -112,5 +112,15 @@ describe("persistImageAttachments non-image passthrough", () => {
     const result = await persistImageAttachments([file], "t1");
     expect(result).toEqual({ attachments: [file], temporarySources: [] });
     expect(validateImageAttachment).not.toHaveBeenCalled();
+  });
+
+  it("persists a copied non-image attachment before send", async () => {
+    importEphemeralAttachment.mockResolvedValue("/origin/report.pdf");
+    await expect(persistImageAttachments([
+      { kind: "file", name: "report.pdf", path: "/tmp/futureos-attachments/report.pdf", temporary: true },
+    ], "t1")).resolves.toEqual({
+      attachments: [{ kind: "file", name: "report.pdf", path: "/origin/report.pdf", temporary: false }],
+      temporarySources: ["/tmp/futureos-attachments/report.pdf"],
+    });
   });
 });

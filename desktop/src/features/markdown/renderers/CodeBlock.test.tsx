@@ -23,7 +23,6 @@ vi.mock("@tauri-apps/api/core", () => ({
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
 const highlighted = {
-  bgColor: "#fff",
   fgColor: "#000",
   lines: [
     {
@@ -55,6 +54,7 @@ describe("codeBlock", () => {
     expect(html).toContain("x = 1");
     expect(html).toContain("python");
     expect(html).toContain("<pre");
+    expect(html).toContain("bg-code-surface");
   });
 
   it("omits the language label when no language is given", () => {
@@ -83,7 +83,9 @@ describe("codeBlock", () => {
     const html = renderToStaticMarkup(createElement(CodeBlock, { code: "const x", language: "ts" }));
     expect(html).toContain("#d73a49");
     expect(html).toContain("italic");
-    expect(html).toContain("background-color:#fff");
+    expect(html).toContain("bg-code-surface");
+    expect(html).not.toContain("background-color");
+    expect(html).not.toMatch(/>1<\/span>/);
   });
 
   it("copy button copies the code", async () => {

@@ -17,7 +17,8 @@ GUI 的颜色全部走 [`tailwind.config.js`](../tailwind.config.js) 里定义�
 | `canvas`         | `#f6f7f9` | 最底层画布背景                       |
 | `surface`        | `#ffffff` | 卡片 / 面板 / 弹层表面               |
 | `surface-panel`  | `#f8faff` | 右侧上下文面板底色（近白、微主题蓝） |
-| `surface-subtle` | `#f1f4f8` | 次级表面(代码块、hover 底、分段背景) |
+| `surface-subtle` | `#f1f4f8` | 次级表面（hover 底、分段背景）       |
+| `code-surface`   | `#f6f8fa` | 代码块背景                           |
 | `line`           | `#d9dee7` | 标准边框                             |
 | `line-soft`      | `#e8edf4` | 弱边框 / 分隔线                      |
 | `ink`            | `#172033` | 主文字                               |
@@ -90,7 +91,7 @@ GUI 的颜色全部走 [`tailwind.config.js`](../tailwind.config.js) 里定义�
 ## 选色速查
 
 - 文字 → `ink` / `ink-soft` / `ink-muted` / `ink-strong`
-- 背景 → `canvas`(最底) / `surface`(卡片与弹层) / `surface-panel`(右侧上下文面板) / `surface-subtle`(次级)
+- 背景 → `canvas`(最底) / `surface`(卡片与弹层) / `surface-panel`(右侧上下文面板) / `surface-subtle`(次级) / `code-surface`(代码块)
 - 边框 → `line` / `line-soft`
 - 主操作 / 激活 → `accent`(+ `accent-hover` / `accent-disabled`);focus ring → `focus`
 - 状态(成功 / 失败 / 警告 / 信息)→ `<Badge tone>`,或手动 `text-X` + `bg-X-soft` + `border-X-line`

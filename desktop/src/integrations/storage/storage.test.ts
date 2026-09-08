@@ -12,14 +12,16 @@ import {
   deleteTempAttachment,
   exportArtifactFile,
   generateImageThumbnail,
-  importEphemeralImage,
+  importEphemeralAttachment,
   inspectAttachment,
   listDirectory,
   openExternalUrl,
   openPath,
   prepareImagePreviewUrl,
+  readNativeClipboardFilePaths,
   readTextFilePreview,
   resolvePreviewLinkPath,
+  savePastedFile,
   savePastedImage,
   validateImageAttachment,
 } from "./files";
@@ -159,8 +161,12 @@ describe("storage invoke wrappers", () => {
     expect(invokeMock).toHaveBeenLastCalledWith("export_artifact_file", { content: null, destinationPath: "/t", sourcePath: "/s" });
     await savePastedImage({ bytes: [1], extension: "png" });
     expect(invokeMock).toHaveBeenLastCalledWith("save_pasted_image", { bytes: [1], extension: "png" });
+    await savePastedFile({ bytes: [1], name: "note.txt" });
+    expect(invokeMock).toHaveBeenLastCalledWith("save_pasted_file", { bytes: [1], name: "note.txt" });
     await inspectAttachment("/a");
     expect(invokeMock).toHaveBeenLastCalledWith("inspect_attachment", { path: "/a" });
+    await readNativeClipboardFilePaths();
+    expect(invokeMock).toHaveBeenLastCalledWith("read_native_clipboard_file_paths", undefined);
     await validateImageAttachment("/i");
     expect(invokeMock).toHaveBeenLastCalledWith("validate_image_attachment", { path: "/i" });
     invokeMock.mockResolvedValueOnce({ path: "/f", version: "10-8" });
@@ -168,8 +174,8 @@ describe("storage invoke wrappers", () => {
     expect(invokeMock).toHaveBeenLastCalledWith("prepare_image_preview", { path: "/f" });
     await generateImageThumbnail({ threadId: "t", sourcePath: "/s" });
     expect(invokeMock).toHaveBeenLastCalledWith("generate_image_thumbnail", { sourcePath: "/s", threadId: "t" });
-    await importEphemeralImage({ threadId: "t", path: "/s", name: "n" });
-    expect(invokeMock).toHaveBeenLastCalledWith("import_ephemeral_image", { name: "n", sourcePath: "/s", threadId: "t" });
+    await importEphemeralAttachment({ threadId: "t", path: "/s", name: "n" });
+    expect(invokeMock).toHaveBeenLastCalledWith("import_ephemeral_attachment", { name: "n", sourcePath: "/s", threadId: "t" });
     await deleteTempAttachment("/tmp");
     expect(invokeMock).toHaveBeenLastCalledWith("delete_temp_attachment", { path: "/tmp" });
   });
