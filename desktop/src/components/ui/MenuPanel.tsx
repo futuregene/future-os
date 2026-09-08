@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode, Ref } from "react";
+import type { CSSProperties, HTMLAttributes, ReactNode, Ref } from "react";
 import { cn } from "../../lib/cn";
 
 /**
@@ -13,17 +13,19 @@ export function MenuPanel({
   className,
   style,
   children,
+  ...props
 }: {
   ref?: Ref<HTMLDivElement>;
   className?: string;
   style?: CSSProperties;
   children: ReactNode;
-}) {
+} & HTMLAttributes<HTMLDivElement>) {
   return (
     <div
       className={cn("rounded-lg border border-line-soft bg-surface shadow-panel", className)}
       ref={ref}
       style={style}
+      {...props}
     >
       {children}
     </div>

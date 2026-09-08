@@ -1,0 +1,2 @@
+export const MIN_CENTER_PANEL_WIDTH = 384;
+export const MIN_RIGHT_PANEL_WIDTH = 384;

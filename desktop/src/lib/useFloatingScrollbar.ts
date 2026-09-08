@@ -28,6 +28,7 @@ const HIDE_DELAY_MS = 1200;
  */
 export function useFloatingScrollbar() {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Detach for an in-progress thumb drag, so unmounting mid-drag (e.g. switching
   // threads while dragging) removes the document listeners instead of leaking
@@ -111,8 +112,9 @@ export function useFloatingScrollbar() {
     const observer = new ResizeObserver(recompute);
     if (container) {
       observer.observe(container);
-      if (container.firstElementChild)
-        observer.observe(container.firstElementChild);
+      const content = contentRef.current ?? container.firstElementChild;
+      if (content)
+        observer.observe(content);
     }
     window.addEventListener("resize", recompute);
 
@@ -127,5 +129,5 @@ export function useFloatingScrollbar() {
   // Detach any in-progress drag on unmount (the normal path detaches on pointerup).
   useEffect(() => () => dragCleanupRef.current?.(), []);
 
-  return { scrollRef, scrollbar, updateFloatingScrollbar, handleScroll, handleThumbPointerDown };
+  return { contentRef, scrollRef, scrollbar, updateFloatingScrollbar, handleScroll, handleThumbPointerDown };
 }

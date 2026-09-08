@@ -30,15 +30,43 @@
 @keyframes skill-entry-pulse {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0);
+    box-shadow: 0 0 0 0 transparent;
   }
   50% {
-    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.28);
+    box-shadow: 0 0 0 3px theme(colors.accent-pulse);
   }
 }
 
 .animate-skill-entry-pulse {
   animation: skill-entry-pulse 0.9s ease-in-out 3;
+}
+
+/* Keep the selection toolbar on one row without sacrificing its checkbox
+   label. At narrow rail widths the two self-explanatory actions collapse to
+   icon buttons; their accessible names and title tooltips remain available. */
+.activity-rail-selection-toolbar {
+  container: activity-rail-selection-toolbar / inline-size;
+}
+
+@container activity-rail-selection-toolbar (max-width: 279px) {
+  .activity-rail-selection-action {
+    width: 2rem;
+    padding-inline: 0;
+  }
+
+  .activity-rail-selection-action-label {
+    display: none;
+  }
+}
+
+::highlight(thread-search-match) {
+  color: theme(colors.ink-strong);
+  background: theme(colors.search-match);
+}
+
+::highlight(thread-search-current) {
+  color: theme(colors.ink-strong);
+  background: theme(colors.search-current);
 }
 
 :root {

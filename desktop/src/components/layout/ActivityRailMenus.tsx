@@ -1,6 +1,7 @@
-import type { ReactNode } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 import type { StoredWorkspace } from "../../integrations/storage/threadStore";
 import { Archive, CheckSquare, FolderOpen, MoreHorizontal, Pencil, Pin, Trash2 } from "lucide-react";
+import { useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { openPath } from "../../integrations/storage/files";
 import { cn } from "../../lib/cn";
@@ -32,6 +33,8 @@ export function ThreadItemMenu({
   return (
     <MenuPanel
       ref={menuRef}
+      onKeyDown={handleMenuKeyDown}
+      role="menu"
       className={cn(
         "absolute right-1 z-40 w-36 p-1",
         dropUp ? "bottom-7" : "top-7",
@@ -81,12 +84,23 @@ export function WorkspaceHeaderMenu({
 }) {
   const { t } = useTranslation("layout");
   const revealLabel = t("activityRail.revealInFinder");
-  const layerRef = useDismissableLayer<HTMLDivElement>({ enabled: open, onDismiss: () => onOpenChange(false) });
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const layerRef = useDismissableLayer<HTMLDivElement>({
+    enabled: open,
+    onDismiss: () => onOpenChange(false),
+    onEscapeDismiss: () => {
+      onOpenChange(false);
+      triggerRef.current?.focus();
+    },
+  });
   const { menuRef, dropUp } = useDropUpMenu(open);
 
   return (
     <div className="relative" ref={layerRef}>
       <button
+        ref={triggerRef}
+        aria-expanded={open}
+        aria-haspopup="menu"
         aria-label={t("activityRail.workspaceActions", { name: workspace.name })}
         className={cn(
           "inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted opacity-0 transition hover:bg-surface hover:text-ink-soft group-hover:opacity-100",
@@ -105,6 +119,8 @@ export function WorkspaceHeaderMenu({
         ? (
             <MenuPanel
               ref={menuRef}
+              onKeyDown={handleMenuKeyDown}
+              role="menu"
               className={cn(
                 "absolute right-0 z-40 w-max min-w-36 p-1",
                 dropUp ? "bottom-7" : "top-7",
@@ -146,12 +162,23 @@ export function ChatSectionMenu({
   onSelect: () => void;
 }) {
   const { t } = useTranslation("layout");
-  const layerRef = useDismissableLayer<HTMLDivElement>({ enabled: open, onDismiss: () => onOpenChange(false) });
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const layerRef = useDismissableLayer<HTMLDivElement>({
+    enabled: open,
+    onDismiss: () => onOpenChange(false),
+    onEscapeDismiss: () => {
+      onOpenChange(false);
+      triggerRef.current?.focus();
+    },
+  });
   const { menuRef, dropUp } = useDropUpMenu(open);
 
   return (
     <div className="relative" ref={layerRef}>
       <button
+        ref={triggerRef}
+        aria-expanded={open}
+        aria-haspopup="menu"
         aria-label={t("activityRail.chatSectionActions")}
         className="inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
         onClick={(event) => {
@@ -167,6 +194,8 @@ export function ChatSectionMenu({
         ? (
             <MenuPanel
               ref={menuRef}
+              onKeyDown={handleMenuKeyDown}
+              role="menu"
               className={cn(
                 "absolute right-0 z-40 w-max min-w-36 p-1",
                 dropUp ? "bottom-7" : "top-7",
@@ -205,10 +234,27 @@ function ThreadMenuItem({
         onClose();
         onClick();
       }}
+      role="menuitem"
       type="button"
     >
       {icon}
       <span className="whitespace-nowrap">{children}</span>
     </button>
   );
+}
+
+function handleMenuKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+  if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Home" && event.key !== "End")
+    return;
+  const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("[role=menuitem]:not(:disabled)")];
+  if (items.length === 0)
+    return;
+  event.preventDefault();
+  if (event.key === "Home" || event.key === "End") {
+    items[event.key === "Home" ? 0 : items.length - 1]?.focus();
+    return;
+  }
+  const current = items.indexOf(document.activeElement as HTMLButtonElement);
+  const delta = event.key === "ArrowDown" ? 1 : -1;
+  items[(current + delta + items.length) % items.length]?.focus();
 }

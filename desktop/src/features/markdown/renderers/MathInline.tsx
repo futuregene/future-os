@@ -23,7 +23,7 @@ export function MathInline({ code }: MathInlineProps) {
       });
     }
     catch {
-      return `<span class="text-red-500">${escapeHtml(code)}</span>`;
+      return `<span class="text-danger">${escapeHtml(code)}</span>`;
     }
   }, [code]);
 
