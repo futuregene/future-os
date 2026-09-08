@@ -33,6 +33,9 @@ pub struct AppSettings {
     /// Play a completion bell + request window attention when an agent run
     /// finishes. On by default.
     pub bell_on_complete: bool,
+    /// Use the community-edition UI: Future is configured like another
+    /// built-in provider and account/billing details stay out of the footer.
+    pub community_edition: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -46,6 +49,7 @@ pub struct UpdateAppSettingsInput {
     pub skill_guide_dismissed: Option<bool>,
     pub skill_intro_dismissed: Option<bool>,
     pub bell_on_complete: Option<bool>,
+    pub community_edition: Option<bool>,
 }
 
 const KEY_APPROVAL_TIER: &str = "approval_tier";
@@ -56,6 +60,7 @@ const KEY_AUTO_CONNECT_REMOTE: &str = "auto_connect_remote";
 const KEY_SKILL_GUIDE_DISMISSED: &str = "skill_guide_dismissed";
 const KEY_SKILL_INTRO_DISMISSED: &str = "skill_intro_dismissed";
 const KEY_BELL_ON_COMPLETE: &str = "bell_on_complete";
+const KEY_COMMUNITY_EDITION: &str = "community_edition";
 const KEY_DEVICE_ID: &str = "device_id";
 
 /// Atomically install the Desktop-wide device identity. The caller supplies a
@@ -154,6 +159,10 @@ pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings,
         let value = if bell_on_complete { "true" } else { "false" };
         write_value(&tx, KEY_BELL_ON_COMPLETE, value, now)?;
     }
+    if let Some(community_edition) = input.community_edition {
+        let value = if community_edition { "true" } else { "false" };
+        write_value(&tx, KEY_COMMUNITY_EDITION, value, now)?;
+    }
 
     let settings = read_app_settings(&tx)?;
     tx.commit()?;
@@ -185,6 +194,9 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
     let bell_on_complete = read_value(conn, KEY_BELL_ON_COMPLETE)?
         .map(|value| value == "true")
         .unwrap_or(true); // On by default — a finished run should get noticed.
+    let community_edition = read_value(conn, KEY_COMMUNITY_EDITION)?
+        .map(|value| value == "true")
+        .unwrap_or(false);
     Ok(AppSettings {
         approval_tier,
         hidden_models,
@@ -194,6 +206,7 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
         skill_guide_dismissed,
         skill_intro_dismissed,
         bell_on_complete,
+        community_edition,
     })
 }
 
@@ -242,6 +255,7 @@ mod tests {
             skill_guide_dismissed: Some(true),
             skill_intro_dismissed: Some(true),
             bell_on_complete: None,
+            community_edition: Some(true),
         }
     }
 
@@ -257,6 +271,7 @@ mod tests {
         assert!(!settings.auto_connect_remote);
         assert!(!settings.skill_guide_dismissed);
         assert!(!settings.skill_intro_dismissed);
+        assert!(!settings.community_edition);
     }
 
     #[test]
@@ -287,6 +302,7 @@ mod tests {
         assert!(updated.auto_connect_remote);
         assert!(updated.skill_guide_dismissed);
         assert!(updated.skill_intro_dismissed);
+        assert!(updated.community_edition);
 
         // Persisted across connections.
         assert_eq!(get_app_settings().expect("get").approval_tier, "sandbox");
@@ -305,6 +321,7 @@ mod tests {
             skill_guide_dismissed: None,
             skill_intro_dismissed: None,
             bell_on_complete: None,
+            community_edition: None,
         })
         .expect("update");
         assert_eq!(updated.approval_tier, "off");
@@ -339,6 +356,7 @@ mod tests {
         write_value(&conn, KEY_AUTO_UPGRADE_SKILLS, "0", 1).expect("write upgrade");
         write_value(&conn, KEY_AUTO_CONNECT_REMOTE, "true", 1).expect("write remote");
         write_value(&conn, KEY_BELL_ON_COMPLETE, "yes", 1).expect("write bell");
+        write_value(&conn, KEY_COMMUNITY_EDITION, "true", 1).expect("write community edition");
 
         let settings = read_app_settings(&conn).expect("read");
         assert_eq!(settings.approval_tier, "off");
@@ -347,6 +365,7 @@ mod tests {
         assert!(!settings.auto_upgrade_skills);
         assert!(settings.auto_connect_remote);
         assert!(!settings.bell_on_complete);
+        assert!(settings.community_edition);
     }
 
     #[test]
@@ -362,6 +381,7 @@ mod tests {
             skill_guide_dismissed: None,
             skill_intro_dismissed: None,
             bell_on_complete: None,
+            community_edition: None,
         })
         .expect("noop update");
         assert_eq!(settings.approval_tier, "off", "defaults survive a noop");
@@ -380,6 +400,7 @@ mod tests {
             skill_guide_dismissed: Some(false),
             skill_intro_dismissed: Some(false),
             bell_on_complete: None,
+            community_edition: None,
         })
         .expect("update");
         assert!(!updated.skill_guide_dismissed);

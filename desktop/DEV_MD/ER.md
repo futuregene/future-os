@@ -684,6 +684,8 @@ Provider、模型与登录凭证不进 GUI 的 SQLite，而是读写 agent 的�
 
 - `~/.future/agent/auth.json`：按 provider id 存 API key（含内置 `future`）。
 - `~/.future/agent/models.json`：`providers.<id>` 自定义 provider 配置（`name` / `api` / `baseUrl` / `models` / `compat` …），合并在内置 catalog 之上。自定义 `models[].reasoning` 未填写时按 `true` 解析；GUI 保存时通过 Agent RPC 显式写入布尔值，目录补全不覆盖它。`ProviderModel.reasoning` 在 protobuf 中保留 presence，以便旧客户端未发送时仍默认开启；`ModelEntry.reasoning` 将有效能力传到会话选择器。此变化无需迁移 JSON 文件或 GUI SQLite。
+
+“社区版”仅是 GUI SQLite 的 `app_settings.community_edition` 展示偏好：它隐藏 footer/账号页的余额与充值入口，并把 Providers 页的 Future 操作收敛为普通内置供应商的手动密钥配置；不会迁移、清除或改写上述 agent 登录、密钥和模型配置。
 - `~/.future/agent/settings.json`：`defaultModel`、`enabledModels`（模型可见白名单）等。
 
 关键取舍：

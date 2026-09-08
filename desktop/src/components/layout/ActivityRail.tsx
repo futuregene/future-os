@@ -73,6 +73,8 @@ interface ActivityRailProps {
   futureBalance?: number | null;
   /** Signed-in FutureOS email (null when signed out). Drives the account menu. */
   userEmail?: string | null;
+  /** Community edition deliberately keeps account identity and billing out of the footer. */
+  communityEdition?: boolean;
   /** Opens the recharge page in the system browser. */
   onRecharge?: () => void;
   /** Opens the Settings dialog on the "Check for updates" tab. */
@@ -122,6 +124,7 @@ export function ActivityRail({
   remoteIndicator,
   futureBalance,
   userEmail,
+  communityEdition,
   onRecharge,
   onOpenUpdate,
   skillIntroDismissed,
@@ -772,7 +775,7 @@ export function ActivityRail({
       <div className="border-t border-line-soft/40 p-2">
         {expanded
           ? (
-              userEmail
+              userEmail && !communityEdition
                 ? (
                     <AccountMenuButton
                       balance={futureBalance ?? null}

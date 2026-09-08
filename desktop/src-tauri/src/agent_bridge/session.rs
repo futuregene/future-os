@@ -695,6 +695,7 @@ mod tests {
             skill_guide_dismissed: None,
             skill_intro_dismissed: None,
             bell_on_complete: None,
+            community_edition: None,
         })
         .expect("update settings");
         mock.push("set_sandbox_policy", Reply::Data("{}".to_string()));

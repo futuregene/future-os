@@ -44,6 +44,24 @@ export interface ProvidersView {
   custom: CustomProvider[];
 }
 
+// Provider configuration rarely changes. Keep the last authoritative response
+// in memory so settings tabs can render immediately when they remount, then
+// still refresh from the agent in the background.
+let providersCache: ProvidersView | null = null;
+
+export function peekAgentProviders(): ProvidersView | null {
+  return providersCache;
+}
+
+function cacheAgentProviders(view: ProvidersView): ProvidersView {
+  providersCache = view;
+  return view;
+}
+
+function clearAgentProvidersCache() {
+  providersCache = null;
+}
+
 export interface FutureEnvironment {
   /** `production` | `test` | `custom`. */
   environment: string;
@@ -57,7 +75,7 @@ export function getFutureEnvironment() {
 }
 
 export async function listAgentProviders() {
-  return invokeCommand<ProvidersView>("list_agent_providers");
+  return cacheAgentProviders(await invokeCommand<ProvidersView>("list_agent_providers"));
 }
 
 export async function upsertCustomProvider(input: {
@@ -70,14 +88,14 @@ export async function upsertCustomProvider(input: {
   /** True when adding a new provider; the backend then rejects a colliding id. */
   create: boolean;
 }) {
-  return invokeCommand<ProvidersView>("upsert_custom_provider", { input });
+  return cacheAgentProviders(await invokeCommand<ProvidersView>("upsert_custom_provider", { input }));
 }
 
 export async function updateBuiltinProviderKey(input: {
   id: string;
   apiKey?: string | null;
 }) {
-  const view = await invokeCommand<ProvidersView>("update_builtin_provider_key", { input });
+  const view = cacheAgentProviders(await invokeCommand<ProvidersView>("update_builtin_provider_key", { input }));
   // Setting the FutureOS key by hand (Providers page) changes the account too.
   if (input.id === FUTURE_PROVIDER_ID) {
     clearFutureProfileCache();
@@ -93,7 +111,7 @@ export async function updateBuiltinProvider(input: {
   apiKey?: string | null;
   updateApiKey: boolean;
 }) {
-  return invokeCommand<ProvidersView>("update_builtin_provider", { input });
+  return cacheAgentProviders(await invokeCommand<ProvidersView>("update_builtin_provider", { input }));
 }
 
 export async function setBuiltinProviderBaseUrl(input: {
@@ -101,11 +119,11 @@ export async function setBuiltinProviderBaseUrl(input: {
   /** Empty string clears the override, reverting to the catalog placeholder. */
   baseUrl: string;
 }) {
-  return invokeCommand<ProvidersView>("set_builtin_provider_base_url", { input });
+  return cacheAgentProviders(await invokeCommand<ProvidersView>("set_builtin_provider_base_url", { input }));
 }
 
 export async function deleteCustomProvider(id: string) {
-  return invokeCommand<ProvidersView>("delete_custom_provider", { id });
+  return cacheAgentProviders(await invokeCommand<ProvidersView>("delete_custom_provider", { id }));
 }
 
 export interface FutureLoginStart {
@@ -143,13 +161,14 @@ export async function pollFutureLogin(deviceCode: string) {
   // app-wide login gate to clear.
   if (result.status === "authorized") {
     clearFutureProfileCache();
+    clearAgentProvidersCache();
     emitFutureEvent("future-auth-changed", undefined);
   }
   return result;
 }
 
 export async function logoutFutureProvider() {
-  const view = await invokeCommand<ProvidersView>("logout_future_provider");
+  const view = cacheAgentProviders(await invokeCommand<ProvidersView>("logout_future_provider"));
   clearFutureProfileCache();
   emitFutureEvent("future-auth-changed", undefined);
   return view;
