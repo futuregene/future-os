@@ -59,6 +59,12 @@ export interface MessageAttachment {
   temporary?: boolean;
 }
 
+export interface StreamRetryState {
+  attempt: number;
+  maxRetries: number;
+  delayMs: number;
+}
+
 export interface AgentMessage {
   id: string;
   runId?: string | null;
@@ -121,4 +127,6 @@ export interface AgentMessage {
    * "thinking…" hint (only while streaming and the show-thinking setting is off).
    */
   thinkingActive?: boolean;
+  /** Transient upstream reconnect state, never assistant content. */
+  reconnecting?: StreamRetryState;
 }

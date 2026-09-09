@@ -1,5 +1,5 @@
 import type { RunEvent } from "./events";
-import type { AgentActivityItem, AgentActivityKind, MessageSegment } from "./model";
+import type { AgentActivityItem, AgentActivityKind, MessageSegment, StreamRetryState } from "./model";
 import { isRecord, pathBasename, singleLine } from "./utils";
 import {
   COLLAPSIBLE_KINDS,
@@ -32,6 +32,7 @@ export interface AssistantRunProjection {
    * setting is off; not rendered as a top-of-message line.
    */
   thinkingActive: boolean;
+  reconnecting?: StreamRetryState;
   /**
    * The stream ended before the model finished: the agent's `agent_end` carried
    * reason "incomplete", so `content` is a truncated prefix. Mirrors desktop's
@@ -119,10 +120,26 @@ export function createRunProjector(options?: { preferEndTokens?: boolean }): Run
   // Set when the agent's `agent_end` carried `state: "cancelled"` — the user
   // stopped the run (distinct from a truncated stream).
   let stopped = false;
+  let reconnecting: StreamRetryState | undefined;
   let lastSequence = -1;
 
   function processEvent(event: RunEvent) {
     const payload = parseEventPayload(event.payload);
+
+    if (event.eventType === "stream_retry") {
+      if (isRecord(payload)) {
+        const { attempt, maxRetries, delayMs } = payload;
+        if (typeof attempt === "number" && Number.isSafeInteger(attempt) && attempt > 0
+          && typeof maxRetries === "number" && Number.isSafeInteger(maxRetries) && maxRetries >= attempt
+          && typeof delayMs === "number" && Number.isSafeInteger(delayMs) && delayMs >= 0) {
+          reconnecting = { attempt, maxRetries, delayMs };
+        }
+      }
+      return;
+    }
+
+    if (event.eventType === "stream_resumed" || event.eventType === "error" || event.eventType === "agent_end")
+      reconnecting = undefined;
 
     if (event.eventType === "usage") {
       usageOutputSum += usageOutputTokens(payload);
@@ -401,6 +418,7 @@ export function createRunProjector(options?: { preferEndTokens?: boolean }): Run
         : (sawUsageEvent ? usageOutputSum : agentEndOutput),
       thinking: thinkingText,
       thinkingActive,
+      ...(reconnecting ? { reconnecting: { ...reconnecting } } : {}),
       truncated,
       stopped,
     };

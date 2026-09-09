@@ -222,11 +222,12 @@ describe("updatePendingMessageFromRunEvents", () => {
     expect(setMessages).not.toHaveBeenCalled();
   });
 
-  it("returns early when nothing is renderable yet", async () => {
+  it("keeps state unchanged when nothing is renderable yet", async () => {
     listRunEventsSince.mockResolvedValue([]);
-    const { setMessages } = collect([]);
+    const initial = [message("pending")];
+    const { setMessages, state } = collect(initial);
     await updatePendingMessageFromRunEvents("r-p2", "pending", setMessages);
-    expect(setMessages).not.toHaveBeenCalled();
+    expect(state()).toBe(initial);
   });
 
   it("updates the pending bubble in place and ignores a missing bubble", async () => {
@@ -310,5 +311,41 @@ describe("applyRunMetadata run lookup", () => {
     const messages = [userMessage("u1"), message("a1", { runId: "missing-run", content: "x" })];
     const result = applyRunMetadata(messages, [otherRun]);
     expect(result[1]).toMatchObject({ runId: "missing-run" });
+  });
+});
+
+describe("reconnect-only live previews", () => {
+  const retry = { attempt: 1, maxRetries: 5, delayMs: 2000 };
+
+  it("shows retry state on reattach before any answer text exists", async () => {
+    listRunEventsSince.mockResolvedValue(runEvents("retry-attach", [["stream_retry", retry]]));
+    expect(await buildStreamingPreview("retry-attach")).toMatchObject({
+      content: "",
+      status: "streaming",
+      reconnecting: retry,
+    });
+    listRunEventsSince.mockResolvedValue([]);
+    expect(await buildStreamingPreview("retry-other-run")).toBeNull();
+  });
+
+  it("updates and clears an empty pending bubble", async () => {
+    const pending = collect([message("pending", { status: "streaming" })]);
+    listRunEventsSince.mockResolvedValue(runEvents("retry-pending", [["stream_retry", retry]]));
+    await updatePendingMessageFromRunEvents("retry-pending", "pending", pending.setMessages);
+    expect(pending.state()[0]?.reconnecting).toEqual(retry);
+    listRunEventsSince.mockResolvedValue(runEvents("retry-pending", [["stream_resumed", {}]], 1));
+    await updatePendingMessageFromRunEvents("retry-pending", "pending", pending.setMessages);
+    expect(pending.state()[0]?.reconnecting).toBeUndefined();
+    expect(pending.state()[0]?.content).toBe("");
+  });
+
+  it("clears the reattached bubble on cancellation with no text", async () => {
+    const live = collect([]);
+    listRunEventsSince.mockResolvedValue(runEvents("retry-cancel", [["stream_retry", retry]]));
+    await upsertStreamingPreview("retry-cancel", null, live.setMessages);
+    expect(live.state()[0]?.reconnecting).toEqual(retry);
+    listRunEventsSince.mockResolvedValue(runEvents("retry-cancel", [["agent_end", { state: "cancelled" }]], 1));
+    await upsertStreamingPreview("retry-cancel", null, live.setMessages);
+    expect(live.state()[0]?.reconnecting).toBeUndefined();
   });
 });

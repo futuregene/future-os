@@ -1763,6 +1763,50 @@ mod tests {
     }
 
     #[test]
+    fn projection_preserves_reconnect_lifecycle_beyond_replay_ring() {
+        let broadcaster = SseBroadcaster::new();
+        broadcaster.start_run("run-retry".to_string(), 1);
+        broadcaster.broadcast(SseEvent::new(
+            "stream_retry",
+            serde_json::json!({
+                "type": "stream_retry", "attempt": 1, "maxRetries": 5, "delayMs": 2000
+            }),
+        ));
+        broadcaster.broadcast(SseEvent::new(
+            "stream_resumed",
+            serde_json::json!({"type": "stream_resumed"}),
+        ));
+        for _ in 0..2100 {
+            broadcaster.broadcast(SseEvent::new(
+                "text_chunk",
+                serde_json::json!({"text": "a"}),
+            ));
+        }
+        broadcaster.broadcast(SseEvent::new(
+            "stream_retry",
+            serde_json::json!({
+                "type": "stream_retry", "attempt": 2, "maxRetries": 5, "delayMs": 4000
+            }),
+        ));
+        let projection = broadcaster
+            .attach("run-retry", 0)
+            .unwrap()
+            .projection
+            .unwrap();
+        let lifecycle: Vec<_> = projection
+            .events
+            .iter()
+            .filter(|e| e.event_type.starts_with("stream_"))
+            .collect();
+        assert_eq!(lifecycle.len(), 3);
+        assert_eq!(lifecycle[0].event_type, "stream_retry");
+        assert_eq!(lifecycle[1].event_type, "stream_resumed");
+        assert_eq!(lifecycle[2].event_type, "stream_retry");
+        let payload: serde_json::Value = serde_json::from_str(&lifecycle[2].data).unwrap();
+        assert_eq!(payload["attempt"], 2);
+    }
+
+    #[test]
     fn projection_skips_raw_text_deltas() {
         let mut projection = Vec::new();
         apply_to_projection(

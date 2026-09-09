@@ -199,10 +199,11 @@ async fn total_request_deadline_still_ends_a_silent_http_stream() {
     let events: Vec<_> = tokio::time::timeout(Duration::from_secs(2), stream.collect())
         .await
         .unwrap();
-    assert!(
-        matches!(events.as_slice(), [ModelStreamEvent::Error { message }]
-        if message.contains("kind=timeout") && !message.contains("idle_timeout"))
-    );
+    assert!(matches!(events.as_slice(), [
+            ModelStreamEvent::ReasoningEnd { provider_metadata, .. },
+            ModelStreamEvent::Error { message },
+        ] if provider_metadata["openai"].get("id").is_none()
+            && message.contains("kind=timeout") && !message.contains("idle_timeout")));
     tokio::time::timeout(Duration::from_secs(2), server)
         .await
         .unwrap()

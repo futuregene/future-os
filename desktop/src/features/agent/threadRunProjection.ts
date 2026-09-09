@@ -235,6 +235,7 @@ export async function upsertStreamingPreview(
         segments: projection.segments,
         content: content || base[existingIndex]!.content,
         thinkingActive: projection.thinkingActive,
+        reconnecting: projection.reconnecting,
         outputTokens: projection.outputTokens,
       };
       // Replace in place — the old filter+append moved the bubble to the
@@ -271,6 +272,7 @@ export async function buildStreamingPreview(
     !projection.content.trim()
     && projection.activityItems.length === 0
     && projection.segments.length === 0
+    && !projection.reconnecting
   ) {
     return null;
   }
@@ -293,6 +295,7 @@ function streamingBubble(
     activityItems: projection.activityItems,
     segments: projection.segments,
     thinkingActive: projection.thinkingActive,
+    reconnecting: projection.reconnecting,
     outputTokens: projection.outputTokens,
     // Feed MessageMeta's live elapsed timer so a re-attached run keeps
     // ticking instead of dropping its duration stat on switch-back.
@@ -312,23 +315,24 @@ export async function updatePendingMessageFromRunEvents(
     if (!projection)
       return;
 
-    // Nothing renderable yet: no answer text, no tool activity, and no inline
-    // segments. Reasoning-only exchanges DO carry a thinking segment, so this must
-    // check segments too — otherwise the live thinking view (show-thinking on)
-    // is swallowed until the first text/tool lands.
-    if (!projection.content.trim() && projection.activityItems.length === 0 && projection.segments.length === 0)
-      return;
-
     setMessages((current) => {
       const existingIndex = current.findIndex(m => m.id === pendingId);
       if (existingIndex === -1)
         return current;
+      // Retry-only events are renderable even before the first token. An empty
+      // resumed/terminal projection must also clear a previously shown retry.
+      if (!projection.content.trim() && projection.activityItems.length === 0
+        && projection.segments.length === 0 && !projection.reconnecting
+        && !current[existingIndex]!.reconnecting) {
+        return current;
+      }
       const updated: AgentMessage = {
         ...current[existingIndex]!,
         activityItems: projection.activityItems,
         segments: projection.segments,
         content: projection.content.trim() ? projection.content : current[existingIndex]!.content,
         thinkingActive: projection.thinkingActive,
+        reconnecting: projection.reconnecting,
         outputTokens: projection.outputTokens,
       };
       // Replace in place (see upsertStreamingPreview).

@@ -19,6 +19,23 @@ pub(super) fn run_event_to_sse(event: crate::agent::RunEvent) -> Option<super::S
                 ("type", serde_json::json!("agent_start")),
             ]),
         ),
+        RunEvent::StreamRetry {
+            attempt,
+            max_retries,
+            delay_ms,
+        } => (
+            "stream_retry",
+            ordered_data([
+                ("type", serde_json::json!("stream_retry")),
+                ("attempt", serde_json::json!(attempt)),
+                ("maxRetries", serde_json::json!(max_retries)),
+                ("delayMs", serde_json::json!(delay_ms)),
+            ]),
+        ),
+        RunEvent::StreamResumed => (
+            "stream_resumed",
+            ordered_data([("type", serde_json::json!("stream_resumed"))]),
+        ),
         RunEvent::CompactionStarted {
             operation_id,
             trigger,
@@ -426,6 +443,20 @@ mod tests {
     #[test]
     fn typed_run_events_preserve_public_wire_shapes() {
         let fixtures = [
+            (
+                RunEvent::StreamRetry {
+                    attempt: 1,
+                    max_retries: 5,
+                    delay_ms: 2000,
+                },
+                "stream_retry",
+                r#"{"type":"stream_retry","attempt":1,"maxRetries":5,"delayMs":2000}"#,
+            ),
+            (
+                RunEvent::StreamResumed,
+                "stream_resumed",
+                r#"{"type":"stream_resumed"}"#,
+            ),
             (
                 RunEvent::AgentStart { started_at_ms: 42 },
                 "agent_start",
