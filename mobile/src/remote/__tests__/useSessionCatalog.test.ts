@@ -304,13 +304,20 @@ describe("useSessionCatalog", () => {
     expect(selected).toBe(false);
   });
 
-  test("deleteSession ignores empty ids", async () => {
+  test("deleteSession rejects invalid requests rather than reporting a successful deletion", async () => {
     render();
-    let selected = false;
-    await act(async () => {
-      selected = await result.current.deleteSession("", "");
-    });
-    expect(selected).toBe(false);
+    await expect(result.current.deleteSession("", "")).rejects.toThrow("Session unavailable");
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  test("deleteSession rejects a dropped connection and retains the catalogue for retry", async () => {
+    render();
+    act(() => result.current.applySessionSnapshot([session("s1")]));
+    clientRef.current = null;
+    await expect(result.current.deleteSession("s1", "thread-s1")).rejects.toThrow(
+      "Session unavailable",
+    );
+    expect(result.current.sessions).toHaveLength(1);
     expect(request).not.toHaveBeenCalled();
   });
 

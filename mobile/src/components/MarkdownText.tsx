@@ -10,7 +10,7 @@ import {
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, Image, Linking, StyleSheet, Text, View } from "react-native";
-import { colors, radius, spacing } from "../theme/tokens";
+import { chatTypography, colors, radius, spacing } from "../theme/tokens";
 
 interface MarkdownTextProps {
   /** Message links can fetch local files; file previews never nest previews. */
@@ -297,15 +297,15 @@ const styles = StyleSheet.create({
   // The last block of a message drops its bottom margin — the surrounding
   // bubble/segment layout owns outer spacing.
   noBottom: { marginBottom: 0 },
-  paragraph: { color: colors.ink, fontSize: 17, lineHeight: 26, marginBottom: spacing.md },
+  paragraph: { color: colors.ink, ...chatTypography, marginBottom: spacing.sm },
   heading: {
     color: colors.inkStrong,
-    fontSize: 19,
+    fontSize: 17,
     fontWeight: "700",
-    lineHeight: 26,
+    lineHeight: 24,
     marginBottom: spacing.sm,
   },
-  headingLarge: { fontSize: 23, lineHeight: 30 },
+  headingLarge: { fontSize: 20, lineHeight: 27 },
   bold: { fontWeight: "700" },
   italic: { fontStyle: "italic" },
   strike: { textDecorationLine: "line-through" },
@@ -359,11 +359,10 @@ const styles = StyleSheet.create({
     width: 22,
     marginRight: spacing.xs,
     color: colors.ink,
-    fontSize: 17,
-    lineHeight: 26,
+    ...chatTypography,
   },
   listItemBody: { flex: 1 },
-  listItemText: { color: colors.ink, fontSize: 17, lineHeight: 26 },
+  listItemText: { color: colors.ink, ...chatTypography },
   nestedBlocks: { marginTop: spacing.xs },
   checkbox: {
     width: 18,

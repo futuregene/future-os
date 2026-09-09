@@ -3,7 +3,9 @@ import * as Crypto from "expo-crypto";
 import * as FS from "expo-file-system";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
-import { Image } from "react-native";
+import { Image, Platform } from "react-native";
+import { isPhotoPickerAvailable } from "future-native-ui";
+import { startActivityAsync } from "expo-intent-launcher";
 import type { RemoteClient } from "../client";
 import type { DownloadInfo, HistoryAttachment, MobileAttachment } from "../types";
 import {
@@ -32,7 +34,8 @@ jest.mock("expo-file-system", () => {
     uri: string;
     static pickFileAsync = jest.fn();
     constructor(uriOrDir: string | { uri: string }, name?: string) {
-      this.uri = typeof uriOrDir === "string" ? uriOrDir : `${uriOrDir.uri}/${name}`;
+      const base = typeof uriOrDir === "string" ? uriOrDir : uriOrDir.uri;
+      this.uri = name ? `${base}/${name}` : base;
     }
     get name(): string {
       const parts = this.uri.split("/");
@@ -149,10 +152,17 @@ jest.mock("expo-image-picker", () => ({
   getPendingResultAsync: jest.fn(),
 }));
 
+jest.mock("future-native-ui", () => ({ isPhotoPickerAvailable: jest.fn(() => true) }));
+jest.mock("expo-intent-launcher", () => ({
+  startActivityAsync: jest.fn(),
+  ResultCode: { Success: -1 },
+}));
+
 jest.mock("expo-crypto", () => ({
   __esModule: true,
   CryptoDigestAlgorithm: { SHA256: "SHA-256" },
   digest: jest.fn(),
+  randomUUID: jest.fn(() => "test-id"),
 }));
 
 // Only `Image.getSize` needs stubbing, but a bare `{ Image }` mock strips the
@@ -566,9 +576,62 @@ describe("takePhoto", () => {
 });
 
 describe("pickFromAlbum", () => {
-  test("rejects when media library permission is denied", async () => {
-    mockedRequestLibrary.mockResolvedValue({ granted: false });
-    await expect(pickFromAlbum([])).rejects.toThrow("attachment_album_permission");
+  afterEach(() => {
+    Platform.OS = "ios";
+  });
+
+  test.each(["ios", "android"] as const)(
+    "%s opens the system album without requesting full-library access",
+    async os => {
+      Platform.OS = os;
+      jest.mocked(isPhotoPickerAvailable).mockReturnValue(true);
+      mockedRequestLibrary.mockResolvedValue({ granted: false });
+      mockedLaunchLibrary.mockResolvedValue({ canceled: true, assets: [] });
+      await pickFromAlbum([]);
+      expect(mockedRequestLibrary).not.toHaveBeenCalled();
+      expect(mockedLaunchLibrary).toHaveBeenCalledWith(
+        expect.objectContaining({ legacy: false, defaultTab: "albums", selectionLimit: 4 }),
+      );
+      expect(startActivityAsync).not.toHaveBeenCalled();
+    },
+  );
+
+  test("uses the gallery, not a document browser, without a system photo picker", async () => {
+    Platform.OS = "android";
+    jest.mocked(isPhotoPickerAvailable).mockReturnValue(false);
+    jest
+      .mocked(startActivityAsync)
+      .mockResolvedValue({ resultCode: -1, data: "content://media/images/123" });
+    mockFS.__set("content://media/images/123", { bytes: new Uint8Array(10), type: "image/png" });
+    const result = await pickFromAlbum([]);
+    expect(startActivityAsync).toHaveBeenCalledWith("android.intent.action.PICK", {
+      data: "content://media/external/images/media",
+      type: "image/*",
+    });
+    expect(mockedLaunchLibrary).not.toHaveBeenCalled();
+    expect(mockFS.File.pickFileAsync).not.toHaveBeenCalled();
+    expect(result[0]).toMatchObject({
+      name: "photo-test-id.png",
+      localUri: "/mock/cache/photo-test-id.png",
+      mimeType: "image/png",
+      temporary: true,
+    });
+  });
+
+  test("keeps attachments on gallery cancellation", async () => {
+    Platform.OS = "android";
+    jest.mocked(isPhotoPickerAvailable).mockReturnValue(false);
+    jest.mocked(startActivityAsync).mockResolvedValue({ resultCode: 0 });
+    const existing = [attachment()];
+    expect(await pickFromAlbum(existing)).toBe(existing);
+  });
+
+  test("does not open a picker when the image quota is full", async () => {
+    await expect(
+      pickFromAlbum(Array.from({ length: 4 }, () => attachment({ kind: "image" }))),
+    ).rejects.toThrow("attachment_image_count");
+    expect(mockedLaunchLibrary).not.toHaveBeenCalled();
+    expect(startActivityAsync).not.toHaveBeenCalled();
   });
 
   test("returns existing attachments when the library is cancelled", async () => {

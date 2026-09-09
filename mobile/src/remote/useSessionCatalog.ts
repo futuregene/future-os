@@ -206,7 +206,7 @@ export function useSessionCatalog(
   const deleteSession = useCallback(
     async (sessionId: string, threadId: string): Promise<boolean> => {
       const client = clientRef.current;
-      if (!client || !sessionId || !threadId) return false;
+      if (!client || !sessionId || !threadId) throw new Error("Session unavailable");
       await client.request({ type: "delete_session", sessionId, threadId }, sessionId);
       setSessions(current => current.filter(session => session.sessionId !== sessionId));
       return selectedRef.current === sessionId;
