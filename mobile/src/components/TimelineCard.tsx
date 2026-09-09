@@ -35,7 +35,7 @@ import type {
 } from "../remote/types";
 import { basename } from "../remote/localPath";
 import { canRecoverMessage } from "../remote/recovery";
-import { colors, radius, spacing } from "../theme/tokens";
+import { chatTypography, colors, radius, spacing } from "../theme/tokens";
 import { Button } from "./Button";
 import { approvalDecisionDisabled } from "./approvalState";
 
@@ -765,10 +765,10 @@ export const TimelineCard = memo(TimelineCardView);
 
 const styles = StyleSheet.create({
   message: {
-    maxWidth: "88%",
+    maxWidth: "92%",
     borderRadius: radius.lg,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
   },
   userMessage: { alignSelf: "flex-end", backgroundColor: colors.accent },
   userBlock: { alignItems: "flex-end", gap: spacing.xs },
@@ -794,7 +794,7 @@ const styles = StyleSheet.create({
   attachmentChipPressed: { backgroundColor: colors.surfaceSubtle },
   attachmentName: { flexShrink: 1, color: colors.inkSoft, fontSize: 12 },
   assistantMessage: { alignSelf: "stretch", paddingHorizontal: spacing.xs },
-  messageText: { color: colors.ink, fontSize: 15, lineHeight: 22 },
+  messageText: { color: colors.ink, ...chatTypography },
   userText: { color: colors.surface },
   userMention: { color: colors.surface, fontWeight: "600" },
   userLink: { color: colors.surface, fontWeight: "600", textDecorationLine: "underline" },

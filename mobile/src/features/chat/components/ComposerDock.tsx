@@ -16,7 +16,7 @@ import { PendingApprovalCard } from "../../../components/TimelineCard";
 import { useRemote } from "../../../remote/RemoteContext";
 import { deleteTemporaryAttachment } from "../../../remote/files";
 import type { MobileAttachment, TimelineItem } from "../../../remote/types";
-import { colors, radius, spacing } from "../../../theme/tokens";
+import { chatTypography, colors, radius, spacing } from "../../../theme/tokens";
 import { COMPOSER_FADE_CLEARANCE, formatBytes } from "../utils";
 
 type Remote = ReturnType<typeof useRemote>;
@@ -305,7 +305,7 @@ const styles = StyleSheet.create({
   composerArea: {
     paddingHorizontal: spacing.md,
     paddingTop: spacing.xs,
-    paddingBottom: spacing.md,
+    paddingBottom: spacing.sm,
     backgroundColor: "transparent",
   },
   composer: {
@@ -342,14 +342,13 @@ const styles = StyleSheet.create({
     fontSize: 11,
   },
   input: {
-    minHeight: 56,
+    minHeight: 46,
     maxHeight: 160,
     color: colors.ink,
-    fontSize: 15,
-    lineHeight: 21,
+    ...chatTypography,
     paddingHorizontal: spacing.lg,
-    paddingTop: spacing.md,
-    paddingBottom: spacing.md,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.sm,
     textAlignVertical: "top",
   },
   composerToolbar: {
@@ -359,11 +358,12 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
     gap: spacing.sm,
     paddingHorizontal: spacing.md,
-    paddingBottom: spacing.md,
+    paddingBottom: spacing.xs,
   },
   composerSelectors: {
     minWidth: 0,
     flexGrow: 0,
+    flexShrink: 1,
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.xs,
@@ -371,7 +371,8 @@ const styles = StyleSheet.create({
   selectorTrigger: {
     minWidth: 0,
     maxWidth: 154,
-    height: 34,
+    flexShrink: 1,
+    minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
     gap: 3,
@@ -381,8 +382,8 @@ const styles = StyleSheet.create({
   selectorTriggerPressed: { backgroundColor: colors.surfaceSubtle },
   selectorText: { flexShrink: 1, color: colors.inkSoft, fontSize: 12, fontWeight: "600" },
   attachmentButton: {
-    width: 32,
-    height: 32,
+    width: 44,
+    height: 44,
     alignItems: "center",
     justifyContent: "center",
     borderRadius: radius.md,
@@ -390,8 +391,8 @@ const styles = StyleSheet.create({
   },
   controlDisabled: { opacity: 0.5 },
   sendButton: {
-    width: 38,
-    height: 38,
+    width: 44,
+    height: 44,
     alignItems: "center",
     justifyContent: "center",
     borderRadius: radius.sm,

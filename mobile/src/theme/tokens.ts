@@ -29,6 +29,9 @@ export const colors = {
   overlay: "rgba(0, 0, 0, 0.6)",
 } as const;
 
+// A shared body scale keeps rendered messages and the composer in sync.
+export const chatTypography = { fontSize: 15, lineHeight: 22 } as const;
+
 export const spacing = {
   xs: 4,
   sm: 8,

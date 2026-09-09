@@ -2,7 +2,9 @@ import { File, FileMode, Directory, Paths } from "expo-file-system";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import * as Crypto from "expo-crypto";
-import { Image } from "react-native";
+import { Image, Platform } from "react-native";
+import { isPhotoPickerAvailable } from "future-native-ui";
+import { startActivityAsync, ResultCode } from "expo-intent-launcher";
 import type { RemoteClient } from "./client";
 import type { DownloadInfo, HistoryAttachment, MobileAttachment, RpcResponse } from "./types";
 import { mobileFileType } from "./fileTypes";
@@ -330,11 +332,46 @@ async function prepareImagePickerAssets(
 }
 
 export async function pickFromAlbum(existing: MobileAttachment[]): Promise<MobileAttachment[]> {
-  const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-  if (!permission.granted) throw new Error("attachment_album_permission");
+  const remaining = Math.min(
+    MAX_IMAGES - existing.filter(item => item.kind === "image").length,
+    MAX_ATTACHMENTS - existing.length,
+  );
+  if (remaining <= 0) throw new Error("attachment_image_count");
+  if (Platform.OS === "android" && !isPhotoPickerAvailable()) {
+    // AndroidX otherwise falls back to ACTION_OPEN_DOCUMENT (a folder browser).
+    // A gallery-only ACTION_PICK keeps old/non-GMS devices in the system album.
+    // These galleries may only support one image at a time; users can add more.
+    const result = await startActivityAsync("android.intent.action.PICK", {
+      data: "content://media/external/images/media",
+      type: "image/*",
+    }).catch(() => {
+      throw new Error("attachment_album_unavailable");
+    });
+    if (result.resultCode !== ResultCode.Success || !result.data) return existing;
+    const source = new File(result.data);
+    const mimeType = source.type || mimeFor(source.name);
+    validateRawSelection(existing, [{ file: source, mimeType }]);
+    const format = imageFormat(source, mimeType);
+    if (!format) throw new Error("attachment_image_format");
+    const cached = new File(Paths.cache, `photo-${Crypto.randomUUID()}.${format}`);
+    try {
+      await source.copy(cached);
+      const prepared = await prepareFile(cached, mimeType);
+      if (prepared.localUri !== cached.uri) cached.delete();
+      return [...existing, { ...prepared, temporary: true }];
+    } catch (error) {
+      if (cached.exists) cached.delete();
+      throw error;
+    }
+  }
+  // System photo pickers grant access to selected images, not the whole library.
+  // Do not block them behind READ_MEDIA_IMAGES / full-album permission.
   const result = await ImagePicker.launchImageLibraryAsync({
     mediaTypes: ["images"],
     allowsMultipleSelection: true,
+    selectionLimit: remaining,
+    legacy: false,
+    defaultTab: "albums",
     quality: 1,
     exif: false,
   });

@@ -304,13 +304,9 @@ describe("useSessionCatalog", () => {
     expect(selected).toBe(false);
   });
 
-  test("deleteSession ignores empty ids", async () => {
+  test("deleteSession rejects invalid requests rather than reporting a successful deletion", async () => {
     render();
-    let selected = false;
-    await act(async () => {
-      selected = await result.current.deleteSession("", "");
-    });
-    expect(selected).toBe(false);
+    await expect(result.current.deleteSession("", "")).rejects.toThrow("Session unavailable");
     expect(request).not.toHaveBeenCalled();
   });
 

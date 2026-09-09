@@ -1,23 +1,20 @@
 import {
   ChevronDown,
-  CircleAlert,
   Folder,
   LogOut,
   MessageCircle,
-  Pin,
   Plus,
   Settings,
   Unplug,
   X,
 } from "lucide-react-native";
-import { useMemo, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { showActionSheet as showAndroidActionSheet } from "future-native-ui";
 import {
   ActivityIndicator,
   ActionSheetIOS,
   Alert,
-  FlatList,
   Modal,
   Platform,
   Pressable,
@@ -25,6 +22,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -32,8 +30,8 @@ import { Button } from "../components/Button";
 import { ConnectionBadge } from "../components/ConnectionBadge";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { useRemote } from "../remote/RemoteContext";
-import { effectiveRunStatus } from "../remote/sessionStatus";
-import type { RemoteSession, RemoteWorkspace } from "../remote/types";
+import type { RemoteSession } from "../remote/types";
+import { SessionList } from "./SessionList";
 import { colors, radius, spacing } from "../theme/tokens";
 import { promptUpgrade } from "../update/prompt";
 import { checkForUpdate } from "../update/update";
@@ -51,60 +49,10 @@ function deferPresentation(action: () => void): void {
   setTimeout(action, Platform.OS === "ios" ? 350 : 0);
 }
 
-function SessionStatusIndicator({
-  status,
-  streaming,
-  unread,
-}: {
-  status?: string;
-  streaming?: boolean;
-  unread?: boolean;
-}) {
-  // Desktop parity (ThreadListItem): a local running/queued status wins, but a
-  // session the agent reports as streaming with no local run row (a prompt
-  // started by the TUI/CLI/another machine) still reads as running.
-  const effective = effectiveRunStatus(status, streaming);
-  if (effective === "running" || effective === "queued") {
-    return (
-      <View style={styles.indicator}>
-        <ActivityIndicator color={colors.accent} size={14} />
-      </View>
-    );
-  }
-  // A session waiting for approval is distinguishable from a run in flight —
-  // the desktop sidebar flags it with a warning glyph so "running" and "waiting
-  // on you" don't read the same.
-  if (effective === "waiting_approval") {
-    return (
-      <View style={styles.indicator}>
-        <CircleAlert color={colors.warning} size={16} />
-      </View>
-    );
-  }
-  if (unread && effective === "completed") {
-    return (
-      <View style={styles.indicator}>
-        <View style={[styles.statusDot, styles.statusCompleted]} />
-      </View>
-    );
-  }
-  if (unread && effective === "failed") {
-    return (
-      <View style={styles.indicator}>
-        <View style={[styles.statusDot, styles.statusFailed]} />
-      </View>
-    );
-  }
-  return <View style={styles.indicator} />;
-}
-
-// Scroll offsets survive the list's unmount when the user dives into a
-// conversation and back (and tab switches, which also remount the lists).
-const listScrollOffsets: Record<Tab, number> = { chat: 0, workspace: 0 };
-
 export function SessionsScreen() {
   const { t } = useTranslation();
   const remote = useRemote();
+  const { width } = useWindowDimensions();
   const [tab, setTabState] = useState<Tab>(lastTab);
   const setTab = (next: Tab) => {
     lastTab = next;
@@ -119,15 +67,6 @@ export function SessionsScreen() {
   const [renameTarget, setRenameTarget] = useState<RemoteSession | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const pendingNewConversationRef = useRef<(() => void) | null>(null);
-
-  const chats = useMemo(
-    () => remote.sessions.filter(session => session.mode !== "workspace"),
-    [remote.sessions],
-  );
-  const workspaceSessions = useMemo(
-    () => remote.sessions.filter(session => session.mode === "workspace"),
-    [remote.sessions],
-  );
 
   const openNew = () => {
     // The conversations tab has nothing left to pick — create the chat
@@ -337,61 +276,6 @@ export function SessionsScreen() {
       .catch(() => Alert.alert(t("common.error")));
   };
 
-  const renderSession = (item: RemoteSession, inWorkspace = false) => (
-    <Pressable
-      accessibilityRole="button"
-      key={item.sessionId}
-      onLongPress={() => {
-        // Session management goes through the desktop bridge — with the link
-        // down every action would just fail, so don't offer the menu.
-        if (remote.desktopOnline) openSessionMenu(item);
-      }}
-      onPress={() => {
-        // Opening a conversation needs the desktop for state/history — a tap
-        // while offline would just land on an error, so keep the list inert.
-        if (remote.desktopOnline) void remote.selectSession(item.sessionId);
-      }}
-      style={({ pressed }) => [
-        styles.session,
-        inWorkspace && styles.workspaceSession,
-        pressed && styles.pressed,
-      ]}
-    >
-      <Text numberOfLines={1} style={styles.sessionTitle}>
-        {item.title || t("sessions.unnamed")}
-      </Text>
-      <SessionStatusIndicator
-        status={item.status}
-        streaming={item.streaming}
-        unread={remote.unreadSessions.has(item.sessionId)}
-      />
-      {item.pinned && (
-        <Pin accessibilityLabel={t("sessions.pin")} color={colors.accent} size={16} />
-      )}
-    </Pressable>
-  );
-
-  const renderWorkspace = ({ item }: { item: RemoteWorkspace }) => {
-    const sessions = workspaceSessions.filter(session => session.workspaceId === item.id);
-    return (
-      <View style={styles.workspaceGroup}>
-        <View style={styles.workspaceHeader}>
-          <View style={styles.workspaceIcon}>
-            <Folder color={colors.accent} size={19} />
-          </View>
-          <Text numberOfLines={1} style={styles.workspaceName}>
-            {item.name}
-          </Text>
-        </View>
-        {sessions.length > 0 ? (
-          sessions.map(session => renderSession(session, true))
-        ) : (
-          <Text style={styles.emptyInside}>{t("sessions.empty")}</Text>
-        )}
-      </View>
-    );
-  };
-
   const connected = remote.desktopOnline;
 
   const offlineEmpty = (
@@ -463,6 +347,7 @@ export function SessionsScreen() {
           </View>
           <View style={styles.topActions}>
             <ConnectionBadge
+              compact={width < 400}
               phase={remote.phase}
               desktopOnline={remote.desktopOnline}
               onReconnect={() => void remote.reconnect()}
@@ -485,40 +370,12 @@ export function SessionsScreen() {
           />
         )}
 
-        {tab === "workspace" ? (
-          <FlatList
-            contentContainerStyle={
-              remote.workspaces.length === 0 ? styles.emptyList : styles.workspaceList
-            }
-            contentOffset={{ x: 0, y: listScrollOffsets.workspace }}
-            data={remote.workspaces}
-            keyExtractor={item => item.id}
-            ListEmptyComponent={workspaceEmpty}
-            onScroll={event => {
-              listScrollOffsets.workspace = event.nativeEvent.contentOffset.y;
-            }}
-            renderItem={renderWorkspace}
-            scrollEventThrottle={16}
-            scrollIndicatorInsets={{ right: 0 }}
-            style={styles.list}
-          />
-        ) : (
-          <FlatList
-            contentContainerStyle={chats.length === 0 ? styles.emptyList : styles.chatList}
-            contentOffset={{ x: 0, y: listScrollOffsets.chat }}
-            data={chats}
-            ItemSeparatorComponent={() => <View style={styles.listGap} />}
-            keyExtractor={item => item.sessionId}
-            ListEmptyComponent={!connected ? offlineEmpty : createChatEmpty}
-            onScroll={event => {
-              listScrollOffsets.chat = event.nativeEvent.contentOffset.y;
-            }}
-            renderItem={({ item }) => renderSession(item)}
-            scrollEventThrottle={16}
-            scrollIndicatorInsets={{ right: 0 }}
-            style={styles.list}
-          />
-        )}
+        <SessionList
+          key={tab}
+          tab={tab}
+          empty={tab === "workspace" ? workspaceEmpty : !connected ? offlineEmpty : createChatEmpty}
+          onMenu={openSessionMenu}
+        />
 
         {connected && (
           <Pressable
@@ -719,8 +576,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: spacing.md,
-    paddingTop: spacing.md,
-    marginBottom: spacing.md,
+    paddingTop: spacing.xs,
+    marginBottom: spacing.sm,
   },
   tabs: {
     flexDirection: "row",
@@ -733,8 +590,8 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.sm,
+    minHeight: 40,
     borderRadius: radius.sm,
   },
   tabActive: { backgroundColor: colors.surface },
@@ -742,54 +599,13 @@ const styles = StyleSheet.create({
   tabTextActive: { color: colors.ink, fontWeight: "700" },
   topActions: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
   settingsButton: {
-    width: 40,
-    height: 40,
+    width: 44,
+    height: 44,
     alignItems: "center",
     justifyContent: "center",
     borderRadius: radius.md,
   },
-  list: { flex: 1 },
-  chatList: { paddingHorizontal: spacing.md, paddingBottom: 84 },
-  listGap: { height: 2 },
-  workspaceList: { paddingBottom: 84 },
-  workspaceGroup: { marginBottom: spacing.lg },
-  workspaceHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    paddingHorizontal: spacing.md,
-    paddingTop: spacing.sm,
-    paddingBottom: spacing.xs,
-  },
-  workspaceIcon: {
-    width: 28,
-    height: 28,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: radius.sm,
-    backgroundColor: colors.accentSoft,
-  },
-  workspaceName: { flex: 1, color: colors.inkSoft, fontSize: 16, fontWeight: "700" },
-  session: {
-    minHeight: 52,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
-    paddingHorizontal: spacing.md,
-  },
-  workspaceSession: { paddingLeft: 48 },
-  sessionTitle: { flex: 1, color: colors.ink, fontSize: 17, fontWeight: "400", lineHeight: 20 },
-  indicator: { width: 20, height: 20, alignItems: "center", justifyContent: "center" },
-  statusDot: { width: 8, height: 8, borderRadius: radius.pill },
-  statusCompleted: { backgroundColor: colors.success },
-  statusFailed: { backgroundColor: colors.danger },
   pressed: { backgroundColor: colors.surfaceSubtle },
-  emptyList: {
-    flexGrow: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: spacing.md,
-  },
   empty: { color: colors.inkMuted, fontSize: 14 },
   emptyState: {
     width: "100%",

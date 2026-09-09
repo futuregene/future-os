@@ -2145,6 +2145,7 @@ fn build_presence_snapshot(pair_id: &str, bridge_instance_id: &str) -> (serde_js
             "title": t.title,
             "mode": t.mode,
             "workspaceId": t.workspace_id,
+            "parentSessionId": t.parent_session_id,
             "pinned": t.pinned,
             "streaming": streaming,
             "status": status,
@@ -2155,6 +2156,7 @@ fn build_presence_snapshot(pair_id: &str, bridge_instance_id: &str) -> (serde_js
         push_sig_field(&mut signature, &t.title);
         push_sig_field(&mut signature, &t.mode);
         push_sig_field(&mut signature, &t.workspace_id);
+        push_sig_field(&mut signature, t.parent_session_id.as_deref().unwrap_or(""));
         push_sig_field(&mut signature, if t.pinned { "1" } else { "0" });
         push_sig_field(&mut signature, if streaming { "1" } else { "0" });
         push_sig_field(&mut signature, status.unwrap_or(""));
@@ -2227,6 +2229,7 @@ fn build_sessions_snapshot(pair_id: &str) -> Option<(serde_json::Value, String)>
             "title": t.title,
             "mode": t.mode,
             "workspaceId": t.workspace_id,
+            "parentSessionId": t.parent_session_id,
             "pinned": t.pinned,
             "streaming": streaming,
             "status": status,
@@ -2236,6 +2239,7 @@ fn build_sessions_snapshot(pair_id: &str) -> Option<(serde_json::Value, String)>
         push_sig_field(&mut signature, &t.title);
         push_sig_field(&mut signature, &t.mode);
         push_sig_field(&mut signature, &t.workspace_id);
+        push_sig_field(&mut signature, t.parent_session_id.as_deref().unwrap_or(""));
         push_sig_field(&mut signature, if t.pinned { "1" } else { "0" });
         push_sig_field(&mut signature, if streaming { "1" } else { "0" });
         push_sig_field(&mut signature, status.unwrap_or(""));
@@ -4190,7 +4194,24 @@ mod runtime_tests {
             .expect("presence snapshot includes the session thread");
         assert_eq!(row["threadId"], json!(thread.id));
         assert_eq!(row["streaming"], json!(false));
+        assert!(row["parentSessionId"].is_null());
         assert!(!signature.is_empty());
+
+        // Lineage is carried by both initial presence and pushed snapshots;
+        // changing only a parent must invalidate both publication signatures.
+        crate::store::sync_thread_parent_session("sess-snap", "parent-snap").unwrap();
+        let (payload, parent_signature) = build_presence_snapshot("pair_x", "bridge_x");
+        assert_eq!(
+            payload["sessions"][0]["parentSessionId"],
+            json!("parent-snap")
+        );
+        assert_ne!(signature, parent_signature);
+        let (payload, parent_signature) = build_sessions_snapshot("pair_x").unwrap();
+        assert_eq!(
+            payload["sessions"][0]["parentSessionId"],
+            json!("parent-snap")
+        );
+        assert_ne!(sig_with_session, parent_signature);
 
         let workspace_dir = std::env::temp_dir().join(unique("futureos-ws2"));
         std::fs::create_dir_all(&workspace_dir).unwrap();
