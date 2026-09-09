@@ -13,3 +13,9 @@ android {
     versionName "1.0.0"
   }
 }
+
+dependencies {
+  // PickVisualMedia.isPhotoPickerAvailable (gates the gallery fallback on
+  // devices without a system Photo Picker).
+  implementation "androidx.activity:activity-ktx:1.11.0"
+}
