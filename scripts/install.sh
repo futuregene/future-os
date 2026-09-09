@@ -41,16 +41,39 @@ esac
 
 fetch() { curl -fsSL --proto '=https' --tlsv1.2 "$1"; }
 
-# Asset URL+SHA-256 for one key in the `assets` section of the pretty-printed
-# release manifest (latest.json), e.g. "linux-x86_64-deb" -> "URL SHA256".
-manifest_asset() {
-  awk -v key="$1" '
-    /"assets":/ { in_assets=1; next }
-    in_assets && index($0, "\"" key "\"") {
-      getline; u=$0; getline; s=$0;
-      gsub(/^.*"url": *"/,"",u); gsub(/".*$/,"",u);
-      gsub(/^.*"sha256": *"/,"",s); gsub(/".*$/,"",s);
-      print u, s; exit
+# Read the version (no argument) or assets[key] URL+SHA-256 from latest.json.
+# Tokenize strings and nesting rather than relying on lines or field order.
+# This only reads the release manifest string fields; no jq/Python is required.
+manifest_entry() {
+  awk -v asset_key="${1:-}" '
+    {
+      while (match($0, /"([^"\\]|\\.)*"|[][{}:,]/)) {
+        token = substr($0, RSTART, RLENGTH)
+        $0 = substr($0, RSTART + RLENGTH)
+        if (token == "{" || token == "[") {
+          path[++depth] = key
+          key = ""
+        } else if (token == "}" || token == "]") {
+          delete path[depth--]
+          key = ""
+        } else if (token == ":") {
+          key = value
+        } else if (token == ",") {
+          key = ""
+        } else {
+          value = substr(token, 2, length(token) - 2)
+          gsub(/\\\//, "/", value)
+          if (depth == 1 && key == "version") version = value
+          if (depth == 3 && path[2] == "assets" && path[3] == asset_key) {
+            if (key == "url") url = value
+            if (key == "sha256") sha = value
+          }
+        }
+      }
+    }
+    END {
+      if (asset_key == "") print version
+      else if (url != "") print url, sha
     }
   ' "$TMP/latest.json"
 }
@@ -94,7 +117,7 @@ VERSION=""
 resolve_latest() {
   if [[ -z "${FUTUREOS_VERSION:-}" ]]; then
     fetch "$LATEST" > "$TMP/latest.json"
-    VERSION="$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$TMP/latest.json" | head -n1)"
+    VERSION="$(manifest_entry)"
     [[ -n "$VERSION" ]] || die "could not resolve the latest version from $LATEST"
   else
     VERSION="${FUTUREOS_VERSION#v}"
@@ -109,9 +132,9 @@ ASSET_SHA=""
 resolve_asset() {
   local key="$1" filename="$2" fallback_key="${3:-}" manifest_value=""
   if [[ -z "${FUTUREOS_VERSION:-}" ]]; then
-    manifest_value="$(manifest_asset "$key")"
+    manifest_value="$(manifest_entry "$key")"
     if [[ -z "$manifest_value" && -n "$fallback_key" ]]; then
-      manifest_value="$(manifest_asset "$fallback_key")"
+      manifest_value="$(manifest_entry "$fallback_key")"
     fi
     read -r ASSET_URL ASSET_SHA <<< "$manifest_value" || true
     [[ -n "$ASSET_URL" ]] || die "no release asset '$key' in $LATEST"
