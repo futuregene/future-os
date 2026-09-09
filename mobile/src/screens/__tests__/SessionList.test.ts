@@ -82,6 +82,32 @@ test("search finds a collapsed child without changing folds", () => {
   expect(button("sessions.actions:Child")).toBeUndefined();
 });
 
+test("cancelling deletion does not send any requests", () => {
+  act(() => button("sessions.select").props.onPress());
+  act(() => button("sessions.selectVisible").props.onPress());
+  act(() => button("sessions.deleteSelected").props.onPress());
+  const cancel = jest
+    .mocked(Alert.alert)
+    .mock.calls[0]![2]!.find(action => action.style === "cancel")!;
+  act(() => cancel.onPress?.());
+  expect(mockRemote.deleteSession).not.toHaveBeenCalled();
+});
+
+test("a successful batch exits selection and duplicate confirmation cannot delete twice", async () => {
+  act(() => button("sessions.select").props.onPress());
+  act(() => button("First").props.onPress());
+  act(() => button("sessions.deleteSelected").props.onPress());
+  const confirm = jest
+    .mocked(Alert.alert)
+    .mock.calls[0]![2]!.find(action => action.style === "destructive")!;
+  await act(async () => {
+    confirm.onPress?.();
+    confirm.onPress?.();
+  });
+  expect(mockRemote.deleteSession).toHaveBeenCalledTimes(1);
+  expect(button("sessions.select")).toBeDefined();
+});
+
 test("batch deletion confirms exact visible selection, preserves hidden children, and retains failures for retry", async () => {
   mockRemote.deleteSession.mockImplementation(async (id: string) => {
     if (id === "s2") throw new Error("offline");

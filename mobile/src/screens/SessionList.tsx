@@ -65,6 +65,9 @@ export function SessionList({
     () => catalogRows(remote.sessions, remote.workspaces, tab, collapsed, expanded, query),
     [remote.sessions, remote.workspaces, tab, collapsed, expanded, query],
   );
+  const hierarchical = rows.some(
+    row => row.kind === "session" && (row.hasChildren || row.depth > 0),
+  );
   const visibleSessions = rows.flatMap(row => (row.kind === "session" ? [row.session] : []));
   const targets = remote.sessions.filter(session => selected.has(session.sessionId));
   const allSelected =
@@ -201,9 +204,9 @@ export function SessionList({
               <ChevronRight size={16} color={colors.inkSoft} />
             )}
           </Pressable>
-        ) : !selecting ? (
-          <View style={styles.leafInset} />
-        ) : null}
+        ) : (
+          <View style={{ width: hierarchical ? 44 : selecting ? 0 : 12 }} />
+        )}
         <Pressable
           accessibilityRole="button"
           disabled={!remote.desktopOnline || deleting}
@@ -421,7 +424,6 @@ const styles = StyleSheet.create({
   workspaceName: { flex: 1, color: colors.inkSoft, fontSize: 13, fontWeight: "700" },
   count: { color: colors.inkMuted, fontSize: 12, fontVariant: ["tabular-nums"] },
   row: { minHeight: 44, flexDirection: "row", alignItems: "center", borderRadius: radius.md },
-  leafInset: { width: 12 },
   iconButton: { width: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
   sessionBody: {
     flex: 1,

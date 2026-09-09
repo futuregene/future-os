@@ -310,6 +310,17 @@ describe("useSessionCatalog", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
+  test("deleteSession rejects a dropped connection and retains the catalogue for retry", async () => {
+    render();
+    act(() => result.current.applySessionSnapshot([session("s1")]));
+    clientRef.current = null;
+    await expect(result.current.deleteSession("s1", "thread-s1")).rejects.toThrow(
+      "Session unavailable",
+    );
+    expect(result.current.sessions).toHaveLength(1);
+    expect(request).not.toHaveBeenCalled();
+  });
+
   test("setSessionPinned reorders pinned sessions to the top", async () => {
     render();
     act(() =>
