@@ -340,6 +340,7 @@ impl crate::types::LLMProvider for Client {
             // after that finish_reason, and token accounting would be lost if
             // the byte-stream pump stopped at Finish instead of `[DONE]`.
             let mut protocol_terminal = false;
+            let mut transport_error = None;
             loop {
                 let next = tokio::select! {
                     _ = tx.closed() => return,
@@ -386,14 +387,13 @@ impl crate::types::LLMProvider for Client {
                             cause_chain = %causes,
                             "LLM response stream disconnected"
                         );
-                        let _ = tx
-                            .send(schema::ModelStreamEvent::Error {
-                                message: format!(
-                                    "{UPSTREAM_DISCONNECTED} {error}; {progress}, causes={causes}"
-                                ),
-                            })
-                            .await;
-                        return;
+                        // Use the same adapter cleanup as clean EOF before
+                        // reporting the disconnect. Otherwise unfinished tool
+                        // item ids leak into the retry's request history.
+                        transport_error = Some(format!(
+                            "{UPSTREAM_DISCONNECTED} {error}; {progress}, causes={causes}"
+                        ));
+                        break;
                     }
                     None => break,
                 };
@@ -445,15 +445,22 @@ impl crate::types::LLMProvider for Client {
                 }
             }
 
-            let frames = match decoder.finish() {
-                Ok(frames) => frames,
-                Err(error) => {
-                    let _ = tx
-                        .send(schema::ModelStreamEvent::Error {
-                            message: format!("{MODEL_RESPONSE_ERROR} {error:#}"),
-                        })
-                        .await;
-                    return;
+            // Only clean EOF can flush an unterminated SSE frame. After a
+            // transport error the buffered tail may be cut mid-JSON/UTF-8; do
+            // not decode it or turn a retryable disconnect into a parse error.
+            let frames = if transport_error.is_some() {
+                Vec::new()
+            } else {
+                match decoder.finish() {
+                    Ok(frames) => frames,
+                    Err(error) => {
+                        let _ = tx
+                            .send(schema::ModelStreamEvent::Error {
+                                message: format!("{MODEL_RESPONSE_ERROR} {error:#}"),
+                            })
+                            .await;
+                        return;
+                    }
                 }
             };
             frames_decoded = frames_decoded.saturating_add(frames.len() as u64);
@@ -483,21 +490,23 @@ impl crate::types::LLMProvider for Client {
                 }
             }
             if !protocol_terminal {
-                tracing::warn!(
-                    protocol = %protocol,
-                    model = %model,
-                    status = response_status,
-                    chunks_received,
-                    bytes_received,
-                    frames_decoded,
-                    elapsed_ms = started_at.elapsed().as_millis() as u64,
-                    "LLM response stream reached EOF before a terminal event"
-                );
+                if transport_error.is_none() {
+                    tracing::warn!(
+                        protocol = %protocol,
+                        model = %model,
+                        status = response_status,
+                        chunks_received,
+                        bytes_received,
+                        frames_decoded,
+                        elapsed_ms = started_at.elapsed().as_millis() as u64,
+                        "LLM response stream reached EOF before a terminal event"
+                    );
+                }
                 match adapter.finish_stream(state.as_mut()) {
                     Ok(events) => {
                         for event in events {
-                            // EOF is a transport interruption, not a provider-declared
-                            // incomplete response (e.g. an exhausted output budget).
+                            // EOF/errors are transport interruptions, not provider-declared
+                            // incomplete responses (e.g. an exhausted output budget).
                             // Keep the adapter's closing blocks, but make the missing
                             // terminal frame distinguishable for stream retries.
                             let event = if let schema::ModelStreamEvent::Finish { usage, .. } =
@@ -513,10 +522,10 @@ impl crate::types::LLMProvider for Client {
                                     }
                                 }
                                 schema::ModelStreamEvent::Error {
-                                    message: format!(
+                                    message: transport_error.clone().unwrap_or_else(|| format!(
                                         "{UPSTREAM_DISCONNECTED} stream ended before a terminal event; {}",
                                         stream_progress("eof", chunks_received, bytes_received, frames_decoded, started_at),
-                                    ),
+                                    )),
                                 }
                             } else {
                                 event
@@ -1295,6 +1304,152 @@ mod tests {
             Some(schema::ModelStreamEvent::Error { message })
                 if message.starts_with(UPSTREAM_DISCONNECTED) && message.contains("kind=eof")
         ));
+    }
+
+    #[tokio::test]
+    async fn responses_transport_error_cleans_unfinished_items_before_retry() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader, Read, Write};
+            let mut requests = Vec::new();
+            for attempt in 0..2 {
+                let (socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                    .unwrap();
+                let mut reader = BufReader::new(socket);
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    assert!(reader.read_line(&mut line).unwrap() > 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
+                }
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                requests.push(serde_json::from_slice::<Value>(&body).unwrap());
+                let mut socket = reader.into_inner();
+                let body = if attempt == 0 {
+                    concat!(
+                        "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_done\",\"summary\":[],\"encrypted_content\":\"cipher\"}}\n\n",
+                        "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_partial\"}}\n\n",
+                        "data: {\"type\":\"response.reasoning_summary_text.delta\",\"output_index\":1,\"item_id\":\"rs_partial\",\"summary_index\":0,\"delta\":\"thinking\"}\n\n",
+                        "data: {\"type\":\"response.output_item.added\",\"output_index\":2,\"item\":{\"type\":\"function_call\",\"id\":\"fc_unfinished\",\"call_id\":\"call_1\",\"name\":\"echo\"}}\n\n",
+                        "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":2,\"delta\":\"{}\"}\n\n",
+                        // Broken buffered SSE must not mask the transport error.
+                        "data: {\"type\":",
+                    )
+                } else {
+                    concat!(
+                        "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"done\"}\n\n",
+                        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n",
+                    )
+                };
+                // Closing with a short body produces a reqwest transport error,
+                // not the clean EOF covered by the other retry integration test.
+                let length = body.len() + if attempt == 0 { 100 } else { 0 };
+                write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n{body}").unwrap();
+            }
+            requests
+        });
+        let client = Client::from_target(protocol_target(
+            &format!("http://127.0.0.1:{port}"),
+            schema::ProtocolConfig::OpenAiResponses(Default::default()),
+        ));
+        let loop_ = crate::agent::Loop::new(std::sync::Arc::new(client), "mock");
+        assert_eq!(
+            loop_.run_streaming("hi".into(), |_| {}).await.unwrap(),
+            "done"
+        );
+        let requests = server.join().unwrap();
+        let input = requests[1]["input"].as_array().unwrap();
+        let tool = input
+            .iter()
+            .find(|item| item["type"] == "function_call")
+            .unwrap();
+        assert!(tool.get("id").is_none(), "unfinished item replayed: {tool}");
+        assert_eq!(tool["call_id"], "call_1");
+        assert!(input
+            .iter()
+            .any(|item| item["type"] == "function_call_output" && item["call_id"] == "call_1"));
+        let reasoning: Vec<_> = input
+            .iter()
+            .filter(|item| item["type"] == "reasoning")
+            .collect();
+        assert_eq!(reasoning.len(), 1, "only completed reasoning is replayable");
+        assert_eq!(reasoning[0]["id"], "rs_done");
+        assert_eq!(reasoning[0]["encrypted_content"], "cipher");
+        assert!(!loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn anthropic_retry_projects_partial_tool_arguments_as_an_object() {
+        let attempts = std::sync::atomic::AtomicUsize::new(0);
+        let server = mock_server(move |_| {
+            let body = if attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                concat!(
+                    "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"echo\",\"input\":{}}}\n\n",
+                    "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"command\\\":\"}}\n\n",
+                )
+            } else {
+                concat!(
+                    "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+                    "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"done\"}}\n\n",
+                    "data: {\"type\":\"message_stop\"}\n\n",
+                )
+            };
+            (200, "text/event-stream", body.to_string())
+        });
+        let client = Client::from_target(protocol_target(
+            &server.base_url,
+            schema::ProtocolConfig::AnthropicMessages(Default::default()),
+        ));
+        let loop_ = crate::agent::Loop::new(std::sync::Arc::new(client), "mock");
+        let (text, history) = loop_
+            .run_streaming_with_messages(
+                canonical_request().messages,
+                &crate::agent::StreamContext::default(),
+                |_| {},
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "done");
+        let requests = server.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        let retry: Value = serde_json::from_str(&requests[1]).unwrap();
+        let blocks: Vec<_> = retry["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|message| message["content"].as_array().unwrap())
+            .collect();
+        let tool = blocks
+            .iter()
+            .find(|block| block["type"] == "tool_use")
+            .unwrap();
+        assert_eq!(tool["input"], serde_json::json!({}));
+        let result = blocks
+            .iter()
+            .find(|block| block["type"] == "tool_result")
+            .unwrap();
+        assert_eq!(result["tool_use_id"], tool["id"]);
+        assert!(result["content"].as_str().unwrap().contains("not executed"));
+        assert!(history.iter().flat_map(|message| &message.content).any(|block| matches!(
+            block,
+            crate::types::ContentBlock::ToolCall { args, .. } if args == &serde_json::json!("{\"command\":")
+        )), "wire normalization must not erase the original partial arguments");
+        assert!(!loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[tokio::test]
