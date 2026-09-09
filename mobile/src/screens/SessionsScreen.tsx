@@ -426,7 +426,11 @@ export function SessionsScreen() {
                 ))}
               </View>
               {newMode === "workspace" && (
-                <ScrollView bounces={false} contentContainerStyle={styles.workspaceOptions}>
+                <ScrollView
+                  bounces={false}
+                  contentContainerStyle={styles.workspaceOptionsContent}
+                  style={styles.workspaceOptions}
+                >
                   {remote.workspaces.map(workspace => (
                     <Pressable
                       key={workspace.id}
@@ -689,7 +693,8 @@ const styles = StyleSheet.create({
   },
   modeOptionActive: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
   modeOptionText: { color: colors.ink, fontSize: 13, fontWeight: "700" },
-  workspaceOptions: { maxHeight: 180, gap: spacing.xs },
+  workspaceOptions: { maxHeight: 180 },
+  workspaceOptionsContent: { gap: spacing.xs },
   workspaceOption: {
     flexDirection: "row",
     alignItems: "center",
