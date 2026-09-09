@@ -610,3 +610,55 @@ describe("buildAssistantRunProjection edge branches", () => {
     expect(projection.activityItems[0]?.status).toBe("failed");
   });
 });
+
+describe("stream reconnect lifecycle", () => {
+  const retry = { attempt: 1, maxRetries: 5, delayMs: 2000 };
+
+  it("replays and incrementally updates retries without changing answer text", () => {
+    const log = events([
+      ["text_chunk", { text: "partial" }],
+      ["stream_retry", retry],
+      ["stream_resumed", {}],
+      ["stream_retry", { ...retry, attempt: 2, delayMs: 4000 }],
+      ["stream_resumed", {}],
+      ["text_chunk", { text: " done" }],
+    ]);
+    const projector = createRunProjector();
+    expect(projector.ingest(log.slice(0, 2))).toMatchObject({ content: "partial", reconnecting: retry });
+    expect(projector.ingest(log.slice(1, 4)).reconnecting).toEqual({ ...retry, attempt: 2, delayMs: 4000 });
+    expect(projector.ingest(log.slice(4))).toEqual(buildAssistantRunProjection(log));
+    expect(projector.ingest([]).reconnecting).toBeUndefined();
+    expect(projector.ingest([]).content).toBe("partial done");
+  });
+
+  it.each([
+    ["stream_resumed", {}],
+    ["error", { message: "failed" }],
+    ["agent_end", { reason: "incomplete" }],
+    ["agent_end", { state: "cancelled" }],
+    ["agent_end", {}],
+  ] as Array<[string, Record<string, unknown>]>)("clears retry state on %s (%j)", (type, payload) => {
+    expect(buildAssistantRunProjection(events([["stream_retry", retry], [type, payload]])).reconnecting).toBeUndefined();
+  });
+
+  it("does not treat usage or cleanup as restored connectivity or leak across runs", () => {
+    const projector = createRunProjector();
+    expect(projector.ingest(events([
+      ["stream_retry", retry],
+      ["usage", {}],
+      ["thinking_end", {}],
+    ])).reconnecting).toEqual(retry);
+    expect(createRunProjector().ingest([]).reconnecting).toBeUndefined();
+  });
+
+  it.each([
+    {},
+    { ...retry, attempt: 0 },
+    { ...retry, attempt: 6 },
+    { ...retry, attempt: "1" },
+    { ...retry, maxRetries: 1.5 },
+    { ...retry, delayMs: -1 },
+  ])("ignores invalid retry payload %j", (payload) => {
+    expect(buildAssistantRunProjection(events([["stream_retry", payload]])).reconnecting).toBeUndefined();
+  });
+});

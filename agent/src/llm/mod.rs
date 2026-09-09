@@ -20,7 +20,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::info;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 1800;
-const UPSTREAM_DISCONNECTED: &str = "[UPSTREAM_DISCONNECTED]";
+pub(crate) const UPSTREAM_DISCONNECTED: &str = "[UPSTREAM_DISCONNECTED]";
 const MODEL_RESPONSE_ERROR: &str = "[MODEL_RESPONSE_ERROR]";
 
 fn reqwest_stream_error_kind(error: &reqwest::Error) -> &'static str {
@@ -355,6 +355,14 @@ impl crate::types::LLMProvider for Client {
                         bytes
                     }
                     Some(Err(error)) => {
+                        // Chat may still be waiting for usage after finish_reason.
+                        // Losing that accounting tail must not replay a response
+                        // the provider already completed (and its tool calls).
+                        if protocol_terminal {
+                            tracing::warn!(protocol = %protocol, model = %model, error = %error,
+                                "LLM stream disconnected after terminal event");
+                            return;
+                        }
                         let kind = reqwest_stream_error_kind(&error);
                         let causes = error_source_chain(&error);
                         let progress = stream_progress(
@@ -488,6 +496,31 @@ impl crate::types::LLMProvider for Client {
                 match adapter.finish_stream(state.as_mut()) {
                     Ok(events) => {
                         for event in events {
+                            // EOF is a transport interruption, not a provider-declared
+                            // incomplete response (e.g. an exhausted output budget).
+                            // Keep the adapter's closing blocks, but make the missing
+                            // terminal frame distinguishable for stream retries.
+                            let event = if let schema::ModelStreamEvent::Finish { usage, .. } =
+                                event
+                            {
+                                if let Some(usage) = usage {
+                                    if tx
+                                        .send(schema::ModelStreamEvent::Usage(usage))
+                                        .await
+                                        .is_err()
+                                    {
+                                        return;
+                                    }
+                                }
+                                schema::ModelStreamEvent::Error {
+                                    message: format!(
+                                        "{UPSTREAM_DISCONNECTED} stream ended before a terminal event; {}",
+                                        stream_progress("eof", chunks_received, bytes_received, frames_decoded, started_at),
+                                    ),
+                                }
+                            } else {
+                                event
+                            };
                             if tx.send(event).await.is_err() {
                                 return;
                             }
@@ -1238,7 +1271,7 @@ mod tests {
     async fn stream_model_flushes_buffered_frame_on_clean_eof() {
         // No trailing blank line: the final SSE frame is only flushed by
         // `decoder.finish()` once the upstream stream ends without a terminal
-        // event, and `finish_stream` then emits an incomplete finish.
+        // event, and the missing terminal frame is reported as a disconnect.
         let server = mock_server(|_| {
             (
                 200,
@@ -1259,11 +1292,129 @@ mod tests {
         )));
         assert!(matches!(
             events.last(),
-            Some(schema::ModelStreamEvent::Finish {
-                reason: schema::FinishReason::Incomplete,
-                ..
-            })
+            Some(schema::ModelStreamEvent::Error { message })
+                if message.starts_with(UPSTREAM_DISCONNECTED) && message.contains("kind=eof")
         ));
+    }
+
+    #[tokio::test]
+    async fn responses_disconnect_retries_with_partial_history_over_http() {
+        let attempts = std::sync::atomic::AtomicUsize::new(0);
+        let server = mock_server(move |_| {
+            let body = if attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                concat!(
+                    "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_partial\"}}\n\n",
+                    "data: {\"type\":\"response.reasoning_summary_text.delta\",\"output_index\":0,\"item_id\":\"rs_partial\",\"summary_index\":0,\"delta\":\"thinking\"}\n\n",
+                    "data: {\"type\":\"response.output_text.delta\",\"output_index\":1,\"delta\":\"part \"}\n\n",
+                )
+            } else {
+                concat!(
+                    "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"done\"}\n\n",
+                    "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n",
+                )
+            };
+            (200, "text/event-stream", body.to_string())
+        });
+        let client = Client::from_target(protocol_target(
+            &server.base_url,
+            schema::ProtocolConfig::OpenAiResponses(Default::default()),
+        ));
+        let loop_ = crate::agent::Loop::new(std::sync::Arc::new(client), "mock");
+        let text = loop_.run_streaming("hi".into(), |_| {}).await.unwrap();
+        assert_eq!(text, "part done");
+        let requests = server.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        let retry: Value = serde_json::from_str(&requests[1]).unwrap();
+        let input = retry["input"].as_array().unwrap();
+        assert!(
+            !input.iter().any(|item| item["type"] == "reasoning"),
+            "unfinished reasoning must not be replayed as a provider-owned item"
+        );
+        assert_eq!(input.last().unwrap()["role"], "user");
+        let partial = &input[input.len() - 2];
+        assert_eq!(partial["role"], "assistant");
+        assert_eq!(partial["content"][0]["text"], "part ");
+        assert!(!loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn stream_model_eof_is_retryable_for_every_protocol() {
+        for protocol in [
+            schema::ProtocolConfig::OpenAiResponses(Default::default()),
+            schema::ProtocolConfig::OpenAiChat(Default::default()),
+            schema::ProtocolConfig::AnthropicMessages(Default::default()),
+        ] {
+            let server = mock_server(|_| (200, "text/event-stream", ": heartbeat\n\n".into()));
+            let client = Client::from_target(protocol_target(&server.base_url, protocol));
+            let events: Vec<_> = client
+                .stream_model(canonical_request())
+                .await
+                .unwrap()
+                .collect()
+                .await;
+            assert!(
+                matches!(events.last(), Some(schema::ModelStreamEvent::Error { message })
+                if message.starts_with(UPSTREAM_DISCONNECTED))
+            );
+            assert!(!events
+                .iter()
+                .any(|event| matches!(event, schema::ModelStreamEvent::Finish { .. })));
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_disconnect_after_finish_does_not_retry_a_completed_response() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader, Read, Write};
+            let (socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
+            let mut reader = BufReader::new(socket);
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+            }
+            reader.read_exact(&mut vec![0; length]).unwrap();
+            let mut socket = reader.into_inner();
+            let body = "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]}\n\n";
+            // HTTP is truncated, but the model's terminal frame arrived intact.
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len() + 100).unwrap();
+        });
+        let client = Client::from_target(chat_target(
+            &format!("http://127.0.0.1:{port}"),
+            "secret",
+            None,
+            None,
+        ));
+        let events: Vec<_> = client
+            .stream_model(canonical_request())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        server.join().unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            schema::ModelStreamEvent::Finish {
+                reason: schema::FinishReason::Stop,
+                ..
+            }
+        )));
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event, schema::ModelStreamEvent::Error { .. })));
     }
 
     #[tokio::test]
