@@ -49,6 +49,7 @@ pub mod terminal;
 pub mod terminal_image;
 pub mod theme;
 pub mod tui;
+mod update;
 pub mod utils;
 pub mod version;
 

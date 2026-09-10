@@ -174,6 +174,8 @@ pub enum SessionsPurpose {
 /// Async results + overlay events applied by the app loop.
 #[derive(Debug)]
 pub enum UiCmd {
+    /// A local-only startup notice; never sent to the agent or saved in history.
+    UpdateAvailable(String),
     // ── async results ─────────────────────────────────────────────────
     Refreshed(Result<RpcSessionState, String>),
     ModelsLoaded {
@@ -566,6 +568,7 @@ pub struct App<T: TerminalIo> {
     cli_options: CliOptions,
     cli_initial_prompt: Option<String>,
     pending_name_arg: Option<String>,
+    pending_update_notice: Option<String>,
     pub on_debug: Option<Box<dyn FnMut() + 'static>>,
 
     // ── Render scheduler state ────────────────────────────────────────
@@ -657,6 +660,7 @@ impl<T: TerminalIo> App<T> {
             cli_options: cli_options.clone(),
             cli_initial_prompt: cli_options.initial_prompt.clone(),
             pending_name_arg: None,
+            pending_update_notice: None,
             on_debug: None,
             previous_lines: Vec::new(),
             cursor_row: 0,
@@ -971,6 +975,15 @@ impl<T: TerminalIo> App<T> {
     /// Apply an async result / overlay event (called by the app loop).
     pub fn handle_cmd(&mut self, cmd: UiCmd) {
         match cmd {
+            UiCmd::UpdateAvailable(notice) => {
+                if self.state.streaming {
+                    // A system message between a tool result and the next text
+                    // chunk would change the chat's assistant-bubble routing.
+                    self.pending_update_notice = Some(notice);
+                } else {
+                    self.add_system_message(notice);
+                }
+            }
             UiCmd::Refreshed(result) => match result {
                 Ok(state) => self.apply_refresh_state(state),
                 Err(_) => self.apply_refresh_error(),
@@ -1358,6 +1371,11 @@ impl<T: TerminalIo> App<T> {
     /// Periodic loop tick: fire due timers, run the render scheduler.
     pub fn on_tick(&mut self) {
         let now = Instant::now();
+        if !self.state.streaming {
+            if let Some(notice) = self.pending_update_notice.take() {
+                self.add_system_message(notice);
+            }
+        }
 
         if let Some(d) = self.resize_deadline {
             if now >= d {
@@ -4402,6 +4420,42 @@ mod tests {
             std::env::temp_dir().join("tui-test-settings.json"),
         );
         (app, op_rx)
+    }
+
+    #[tokio::test]
+    async fn update_notice_is_local_and_preserves_input() {
+        let (mut app, mut commands) = make_app(100, 30);
+        app.input.set_value("unfinished prompt", None);
+        let notice = "New FutureOS version available: v1.2.3 → v1.2.4.";
+        app.handle_cmd(UiCmd::UpdateAvailable(notice.into()));
+        let message = app.chat.last_message().unwrap();
+        assert_eq!(message.role, ChatRole::System);
+        assert_eq!(message.content, notice);
+        assert_eq!(app.input.get_value(), "unfinished prompt");
+        assert!(commands.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn update_notice_waits_for_stream_to_finish_and_shows_once() {
+        let (mut app, _) = make_app(100, 30);
+        app.state.streaming = true;
+        app.chat.add_tool_start("tool-1", "read", None);
+        app.handle_cmd(UiCmd::UpdateAvailable("Update available".into()));
+        app.on_tick();
+        assert_eq!(app.chat.last_message().unwrap().role, ChatRole::Tool);
+        app.chat.append_to_last_message("Answer after tool");
+        assert_eq!(app.chat.last_message().unwrap().role, ChatRole::Assistant);
+        assert_eq!(
+            app.chat.last_message().unwrap().content,
+            "Answer after tool"
+        );
+        app.state.streaming = false;
+        app.on_tick();
+        assert_eq!(app.chat.last_message().unwrap().content, "Update available");
+        assert!(app.pending_update_notice.is_none());
+        let count = app.chat.plain_messages().len();
+        app.on_tick();
+        assert_eq!(app.chat.plain_messages().len(), count);
     }
 
     fn terminal_writes(app: &App<FakeTerminal>) -> String {
