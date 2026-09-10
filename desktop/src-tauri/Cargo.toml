@@ -79,8 +79,10 @@ fuzzy-matcher = "0.3"
 # Cross-platform native resource-manager clipboard paths (Finder/Explorer/Linux file managers).
 arboard = { version = "3.6", default-features = false }
 
-# Win32 API for high-quality window icon (taskbar clarity). Loads the ICO file
-# with proper multi-size support instead of Tauri's single-size GDI HICON.
+# Win32 API for the native window chrome: the high-quality taskbar icon (ICO
+# file loaded with proper multi-size support instead of Tauri's single-size GDI
+# HICON) and the DWM caption/text colors that keep the title bar from clashing
+# with the app's own surface.
 # Target-specific on purpose: an unconditional dep pulls the `windows` crate
 # into every platform's dependency graph, and windows v0.61's transitive
 # windows-future conflicts with windows-core on macOS, breaking that build.
@@ -91,6 +93,7 @@ windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dwm",
 ] }
 
 # macOS sends these workspace notifications before sleep/power-off, giving the
