@@ -3205,6 +3205,38 @@ impl<T: TerminalIo> App<T> {
 
         self.chat.clear_messages();
 
+        // A `tool_result` block carries only the call id — the display name and
+        // arguments live on the matching `tool_call` block. Index those first so
+        // replayed tool messages render like live ones instead of falling back
+        // to the raw call id (`call_00_...`).
+        let mut tool_calls: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
+        for msg in &list {
+            let Some(blocks) = msg.get("blocks").and_then(Value::as_array) else {
+                continue;
+            };
+            for b in blocks {
+                if b["kind"].as_str() != Some("tool_call") {
+                    continue;
+                }
+                let Some(call_id) = b["toolCallId"].as_str().filter(|s| !s.is_empty()) else {
+                    continue;
+                };
+                tool_calls.insert(
+                    call_id.to_string(),
+                    (
+                        b["name"]
+                            .as_str()
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_owned),
+                        b.get("arguments").map(|v| match v {
+                            Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        }),
+                    ),
+                );
+            }
+        }
+
         for msg in list {
             let Some(obj) = msg.as_object() else { continue };
             let role = obj.get("role").and_then(Value::as_str).unwrap_or("");
@@ -3247,11 +3279,21 @@ impl<T: TerminalIo> App<T> {
             let tool = blocks
                 .iter()
                 .find(|b| matches!(b["kind"].as_str(), Some("tool_call" | "tool_result")));
-            cm.name = tool.and_then(|b| b["name"].as_str()).map(str::to_owned);
-            cm.tool = tool
+            let call_id = tool
                 .and_then(|b| b["toolCallId"].as_str())
-                .map(str::to_owned);
-            cm.tool_args = tool.and_then(|b| b.get("arguments")).map(Value::to_string);
+                .filter(|s| !s.is_empty());
+            let known_call = call_id.and_then(|id| tool_calls.get(id));
+            cm.name = tool
+                .and_then(|b| b["name"].as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .or_else(|| known_call.and_then(|(name, _)| name.clone()));
+            cm.tool = call_id.map(str::to_owned);
+            cm.tool_args = match tool.and_then(|b| b.get("arguments")) {
+                Some(Value::String(s)) => Some(s.clone()),
+                Some(other) => Some(other.to_string()),
+                None => known_call.and_then(|(_, args)| args.clone()),
+            };
             let thinking = blocks
                 .iter()
                 .filter(|b| b["kind"] == "reasoning")
@@ -6763,7 +6805,7 @@ mod tests {
         app.apply_messages(Ok(json_parse(
             r#"{"messages":[
               {"id":"m1","role":"user","blocks":[{"kind":"text","text":"q"}]},
-              {"id":"m2","role":"assistant","blocks":[{"kind":"text","text":"a1"},{"kind":"text","text":"a2"}]},
+              {"id":"m2","role":"assistant","blocks":[{"kind":"text","text":"a1"},{"kind":"text","text":"a2"},{"kind":"tool_call","toolCallId":"call","name":"read","arguments":{"path":"/tmp/notes.txt"}}]},
               {"id":"m3","role":"tool","blocks":[{"kind":"tool_result","text":"tool out","toolCallId":"call","isError":false}]},
               {"id":"m4","role":"system","blocks":[{"kind":"text","text":"skipped"}]},
               {"id":"m5","role":"assistant"},
@@ -6781,6 +6823,11 @@ mod tests {
         assert!(joined.contains("a1a2"));
         assert!(joined.contains("tool out"));
         assert!(!joined.contains("skipped"));
+        // The replayed tool message resolves name/args from its `tool_call`
+        // block — it must show `read /tmp/notes.txt`, never the raw call id.
+        let rendered = crate::utils::strip_ansi_codes(&app.chat.render_all(100).join("\n"));
+        assert!(rendered.contains("read /tmp/notes.txt"), "{rendered}");
+        assert!(!rendered.contains(" call"), "{rendered}");
         // apply_messages with an error is a no-op; an empty list clears.
         let before = app.chat.plain_messages().len();
         app.apply_messages(Err("x".into()));
