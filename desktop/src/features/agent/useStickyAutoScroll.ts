@@ -12,6 +12,8 @@ interface UseStickyAutoScrollInput {
   contentKey: unknown;
   /** False while the real message content is temporarily not mounted. */
   followEnabled?: boolean;
+  /** Consume a WebKit momentum scroll that must restore the reading anchor. */
+  shouldRestoreReadingAnchor?: () => boolean;
   /** Extra work to run on every scroll event (e.g. floating-scrollbar visibility). */
   onScroll?: () => void;
   /** Run after a content-driven follow settles (e.g. update floating scrollbar). */
@@ -28,6 +30,7 @@ export function useStickyAutoScroll({
   scrollRef,
   contentKey,
   followEnabled = true,
+  shouldRestoreReadingAnchor,
   onScroll,
   onContentSettled,
 }: UseStickyAutoScrollInput) {
@@ -43,39 +46,12 @@ export function useStickyAutoScroll({
   // Keep the callbacks in refs so the effect/handlers always call the latest
   // without listing them as deps (which would re-run the follow effect on every
   // render when the parent passes inline closures).
+  const shouldRestoreAnchorRef = useRef(shouldRestoreReadingAnchor);
+  shouldRestoreAnchorRef.current = shouldRestoreReadingAnchor;
   const onScrollRef = useRef(onScroll);
   const onContentSettledRef = useRef(onContentSettled);
   onScrollRef.current = onScroll;
   onContentSettledRef.current = onContentSettled;
-
-  // Compose external scroll handling (e.g. floating scrollbar visibility) with
-  // sticky detection: re-derive stickiness from the caret's distance to the
-  // bottom. A programmatic scroll-to-bottom lands here too, leaving distance ≈ 0
-  // → stays stuck; a user scroll-up grows the distance → unsticks. Two
-  // thresholds: a tight one to keep following, a looser one to reveal the button.
-  const handleScroll = useCallback(() => {
-    onScrollRef.current?.();
-    const scrollContainer = scrollRef.current;
-    if (scrollContainer) {
-      const distance
-        = scrollContainer.scrollHeight
-          - scrollContainer.clientHeight
-          - scrollContainer.scrollTop;
-      // Ignore our own anchor correction. All other movement (wheel, keyboard,
-      // scrollbar or search navigation) establishes a new reading position.
-      if (
-        writtenTopRef.current === null
-        || Math.abs(scrollContainer.scrollTop - writtenTopRef.current) > 0.5
-      ) {
-        stickToBottomRef.current = distance <= STICK_THRESHOLD_PX;
-        anchorRef.current = stickToBottomRef.current
-          ? null
-          : captureAnchor(scrollContainer);
-      }
-      writtenTopRef.current = null;
-      setShowJumpToLatest(distance > JUMP_BUTTON_THRESHOLD_PX);
-    }
-  }, [scrollRef]);
 
   // Jump straight to the latest message and re-enable auto-follow.
   const scrollToLatest = useCallback(() => {
@@ -128,6 +104,42 @@ export function useStickyAutoScroll({
     );
     onContentSettledRef.current?.();
   }, [followEnabled, scrollRef]);
+
+  // Compose external scroll handling (e.g. floating scrollbar visibility) with
+  // sticky detection: re-derive stickiness from the caret's distance to the
+  // bottom. A programmatic scroll-to-bottom lands here too, leaving distance ≈ 0
+  // → stays stuck; a user scroll-up grows the distance → unsticks. Two
+  // thresholds: a tight one to keep following, a looser one to reveal the button.
+  const handleScroll = useCallback(() => {
+    // WebKit can deliver scrolling from an already-latched, noncancelable
+    // gesture. Correct it before it can replace the preserved reading anchor.
+    if (shouldRestoreAnchorRef.current?.() && anchorRef.current) {
+      settleViewport();
+      onScrollRef.current?.();
+      return;
+    }
+    onScrollRef.current?.();
+    const scrollContainer = scrollRef.current;
+    if (scrollContainer) {
+      const distance
+        = scrollContainer.scrollHeight
+          - scrollContainer.clientHeight
+          - scrollContainer.scrollTop;
+      // Ignore our own anchor correction. All other movement (wheel, keyboard,
+      // scrollbar or search navigation) establishes a new reading position.
+      if (
+        writtenTopRef.current === null
+        || Math.abs(scrollContainer.scrollTop - writtenTopRef.current) > 0.5
+      ) {
+        stickToBottomRef.current = distance <= STICK_THRESHOLD_PX;
+        anchorRef.current = stickToBottomRef.current
+          ? null
+          : captureAnchor(scrollContainer);
+      }
+      writtenTopRef.current = null;
+      setShowJumpToLatest(distance > JUMP_BUTTON_THRESHOLD_PX);
+    }
+  }, [scrollRef, settleViewport]);
 
   useLayoutEffect(settleViewport, [contentKey, settleViewport]);
 

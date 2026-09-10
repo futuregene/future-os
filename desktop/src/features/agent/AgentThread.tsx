@@ -160,6 +160,7 @@ export function AgentThread({
     showJumpToLatest,
     canLoadOlder,
     showLoadOlderHint,
+    coolingDown,
     handleScroll: handlePagingScroll,
     loadOlder,
   } = useMessagePaging({
@@ -458,7 +459,13 @@ export function AgentThread({
         {historyError && (
           <div role="alert" className="text-danger px-4 py-2 text-sm">
             {historyError}
-            <button type="button" className="ml-2 underline" onClick={() => void retryHistory()}>{t("common:retry")}</button>
+            <button
+              type="button"
+              className="ml-2 underline"
+              onClick={() => void retryHistory()}
+            >
+              {t("common:retry")}
+            </button>
           </div>
         )}
         {showLoadOlderHint
@@ -467,6 +474,8 @@ export function AgentThread({
                 <button
                   type="button"
                   onClick={loadOlder}
+                  disabled={coolingDown}
+                  aria-busy={coolingDown}
                   aria-label={t("thread.loadOlder")}
                   title={t("thread.loadOlder")}
                   className="pointer-events-auto flex animate-pop-in items-center gap-1.5 rounded-full border border-line-soft bg-surface px-3 py-1 text-xs text-ink-soft shadow-panel transition-colors hover:text-ink"
