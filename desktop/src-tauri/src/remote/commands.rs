@@ -955,7 +955,14 @@ async fn handle_command(
             // identically. The user's own files at `workspace.path` are never
             // touched. A missing id is a malformed request, not a deletion.
             if cmd.workspace_id.is_empty() {
-                reply(client, &msg, false, Value::Null, Some("missing workspace_id")).await;
+                reply(
+                    client,
+                    &msg,
+                    false,
+                    Value::Null,
+                    Some("missing workspace_id"),
+                )
+                .await;
             } else {
                 match crate::commands::delete_workspace(cmd.workspace_id.clone()).await {
                     Ok(_) => {
@@ -3207,7 +3214,10 @@ mod bridge_tests {
         assert_eq!(reply["success"], json!(true), "got: {reply}");
         assert!(crate::store::list_workspaces().unwrap().is_empty());
         assert!(crate::store::list_threads().unwrap().is_empty());
-        assert!(workspace_dir.exists(), "user files survive a workspace delete");
+        assert!(
+            workspace_dir.exists(),
+            "user files survive a workspace delete"
+        );
 
         // The workspace is gone, so a repeat delete is an error.
         let reply = bridge
