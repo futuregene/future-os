@@ -40,21 +40,23 @@ describe("collapsed workspace groups", () => {
     expect([...mixed.current.collapsedWorkspaces]).toEqual(["ws-a", "ws-c"]);
     mixed.unmount();
 
-    // Note: spy on the instance, not `Storage.prototype` — the jsdom test
-    // environment's localStorage is a plain in-memory object (see
-    // `src/test/i18nTestSetup.ts`), so prototype spies would not intercept.
-    const get = vi.spyOn(localStorage, "getItem").mockImplementation(() => {
-      throw new Error("blocked");
-    });
-    const set = vi.spyOn(localStorage, "setItem").mockImplementation(() => {
-      throw new Error("blocked");
+    // Storage that throws on both access paths: `vi.stubGlobal` replaces the
+    // global itself, which works whether the environment provides a real
+    // `Storage` (jsdom on Linux CI) or the plain in-memory object the macOS
+    // test setup installs — an instance/prototype spy would only cover one.
+    vi.stubGlobal("localStorage", {
+      getItem: () => {
+        throw new Error("blocked");
+      },
+      setItem: () => {
+        throw new Error("blocked");
+      },
     });
     const unavailable = renderHook(() => useCollapsedWorkspaces());
     expect(unavailable.current.collapsedWorkspaces.size).toBe(0);
     act(() => unavailable.current.toggleWorkspaceCollapsed("ws-a"));
     expect([...unavailable.current.collapsedWorkspaces]).toEqual(["ws-a"]);
     unavailable.unmount();
-    get.mockRestore();
-    set.mockRestore();
+    vi.unstubAllGlobals();
   });
 });
