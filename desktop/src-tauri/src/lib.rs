@@ -250,6 +250,53 @@ fn icon_ico_bytes() -> &'static [u8] {
     include_bytes!("../icons/icon.ico")
 }
 
+/// Give the Dock a real icon when the process is not a bundled `.app`.
+///
+/// macOS takes the Dock icon from the bundle's `Info.plist`, so a `.app` launch
+/// is fine — but an unbundled binary (a dev run, or `make install` followed by
+/// `future-desktop`) has no bundle and falls back to the generic executable
+/// icon. Setting the shared application's icon image explicitly fixes both
+/// launch styles.
+#[cfg(target_os = "macos")]
+fn set_macos_dock_icon() {
+    // `NSApplication`/AppKit is main-thread only, and `setup` runs there.
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        return;
+    };
+    if let Some(image) = dock_icon_image() {
+        let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+        // SAFETY: main-thread AppKit call on the shared application.
+        unsafe { app.setApplicationIconImage(Some(&image)) };
+    }
+}
+
+/// Build an `NSImage` from the icon embedded in the binary.
+///
+/// Embedded rather than read from `bundle.resources` for the same reason as
+/// [`icon_ico_bytes`]: an unbundled run has no resource directory to read from.
+#[cfg(target_os = "macos")]
+fn dock_icon_image() -> Option<objc2::rc::Retained<objc2_app_kit::NSImage>> {
+    use objc2::AnyThread;
+    use objc2_app_kit::NSImage;
+    use objc2_foundation::NSData;
+
+    let data = NSData::with_bytes(include_bytes!("../icons/icon.png"));
+    NSImage::initWithData(NSImage::alloc(), &data)
+}
+
+/// Decoding the embedded icon is the only part of the Dock-icon path that can
+/// be checked without a running `NSApplication`; a corrupt or replaced icon
+/// file would otherwise fail silently at every launch.
+#[cfg(all(test, target_os = "macos"))]
+mod macos_dock_icon_tests {
+    use super::dock_icon_image;
+
+    #[test]
+    fn embedded_dock_icon_decodes_to_an_image() {
+        assert!(dock_icon_image().is_some());
+    }
+}
+
 /// Notify the frontend that a Thread's "last-run changes" changeset has updated. The
 /// frontend bridges this to its typed event bus (§6.1, C1).
 pub(crate) fn emit_review_updated(thread_id: &str) {
@@ -655,6 +702,8 @@ pub fn run() {
             {
                 eprintln!("FutureOS menu setup failed: {error}");
             }
+            #[cfg(target_os = "macos")]
+            set_macos_dock_icon();
             size_main_window_to_screen(app);
             // Windows: set a high-quality taskbar icon. Tauri's default path creates
             // a single-size HICON from the first PNG, and GDI's icon scaling is poor
