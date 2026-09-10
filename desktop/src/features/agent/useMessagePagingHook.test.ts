@@ -49,6 +49,34 @@ function setup(messages: AgentMessage[] = MESSAGES, userExchangeCount = 2) {
   return { container, scrollRef, onScroll, h };
 }
 
+function setupAnchoredPaging() {
+  const container = document.createElement("div");
+  const row = document.createElement("div");
+  row.dataset.messageId = "u5";
+  container.append(row);
+  document.body.append(container);
+  let rowTop = 0;
+  Object.defineProperty(container, "clientHeight", { value: 200 });
+  Object.defineProperty(container, "scrollHeight", { get: () => rowTop + 1200 });
+  vi.spyOn(container, "getBoundingClientRect").mockImplementation(() => ({ top: 0, bottom: 200 }) as DOMRect);
+  vi.spyOn(row, "getBoundingClientRect").mockImplementation(() => ({
+    top: rowTop - container.scrollTop,
+    bottom: rowTop + 200 - container.scrollTop,
+  }) as DOMRect);
+  const scrollRef = { current: container };
+  const h = renderHook(() => {
+    const paging = useMessagePaging({ messages: MESSAGES, scrollRef, userExchangeCount: 2 });
+    // Model the DOM prepend before React's layout effects restore the anchor.
+    rowTop = paging.visibleMessages[0]?.id === "u5" ? 0 : 600;
+    return paging;
+  });
+  act(() => {
+    container.scrollTop = 0;
+    h.current.handleScroll();
+  });
+  return { container, row, h };
+}
+
 async function settle() {
   await act(async () => {
     await vi.advanceTimersByTimeAsync(1600);
@@ -264,7 +292,8 @@ describe("useMessagePaging", () => {
       container.dispatchEvent(down);
       container.dispatchEvent(up);
     });
-    expect(down.defaultPrevented).toBe(false);
+    expect(down.defaultPrevented).toBe(true);
+    expect(container.scrollTop).toBe(40);
     expect(up.defaultPrevented).toBe(true);
     h.unmount();
   });
@@ -309,6 +338,68 @@ describe("useMessagePaging", () => {
     expect(h.current.showLoadOlderHint).toBe(false);
     h.unmount();
     container.remove();
+  });
+
+  it("restores noncancelable momentum drift during the cooldown, then unlocks", async () => {
+    const { container, row, h } = setupAnchoredPaging();
+    expect(container.scrollTop).toBe(600);
+    expect(row.getBoundingClientRect().top).toBe(0);
+    expect(container.style.overflowY).toBe("hidden");
+    const up = new WheelEvent("wheel", { deltaY: -80, cancelable: false });
+    act(() => {
+      container.dispatchEvent(up);
+      // Simulate an in-flight WebKit scroll arriving despite the native lock.
+      container.scrollTop = 520;
+      h.current.handleScroll();
+    });
+    expect(up.defaultPrevented).toBe(false);
+    expect(h.current.coolingDown).toBe(true);
+    expect(container.scrollTop).toBe(600);
+    expect(row.getBoundingClientRect().top).toBe(0);
+    await settle();
+    expect(container.style.overflowY).toBe("");
+    act(() => {
+      container.scrollTop = 520;
+      h.current.handleScroll();
+    });
+    expect(container.scrollTop).toBe(520);
+    h.unmount();
+  });
+
+  it("accepts downward wheel input as the new protected reading position", () => {
+    const { container, row, h } = setupAnchoredPaging();
+    const down = new WheelEvent("wheel", { deltaY: 80, cancelable: false });
+    act(() => {
+      container.dispatchEvent(down);
+    });
+    expect(container.scrollTop).toBe(680);
+    expect(row.getBoundingClientRect().top).toBe(-80);
+    act(() => {
+      container.scrollTop = 620;
+      h.current.handleScroll();
+    });
+    expect(container.scrollTop).toBe(680);
+    expect(row.getBoundingClientRect().top).toBe(-80);
+    h.unmount();
+    expect(container.style.overflowY).toBe("");
+  });
+
+  it("restores the original overflow style on completion and unmount", async () => {
+    const { container, h } = setup();
+    container.style.setProperty("overflow-y", "scroll", "important");
+    act(() => {
+      h.current.loadOlder();
+    });
+    expect(container.style.overflowY).toBe("hidden");
+    await settle();
+    expect(container.style.overflowY).toBe("scroll");
+    expect(container.style.getPropertyPriority("overflow-y")).toBe("important");
+    act(() => {
+      h.current.loadOlder();
+    });
+    h.unmount();
+    expect(container.style.overflowY).toBe("scroll");
+    expect(container.style.getPropertyPriority("overflow-y")).toBe("important");
   });
 
   it("restores the scroll position from the captured anchor", () => {

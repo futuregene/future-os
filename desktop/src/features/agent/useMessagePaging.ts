@@ -102,6 +102,7 @@ export function useMessagePaging({
   const loadingOlderRef = useRef(false);
   const wheelBlockedUntilRef = useRef(0);
   const wheelProtectionRef = useRef(false);
+  const acceptingManualScrollRef = useRef(false);
   const wasAtTopRef = useRef(false);
   const [coolingDown, setCoolingDown] = useState(false);
   const [viewportRevision, setViewportRevision] = useState(0);
@@ -110,6 +111,22 @@ export function useMessagePaging({
   const cooldownTimerRef = useRef<number | null>(null);
   const renderFrameRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
+  const nativeScrollLockRef = useRef<{
+    container: HTMLElement;
+    overflowY: string;
+    priority: string;
+  } | null>(null);
+
+  const releaseNativeScrollLock = useCallback(() => {
+    const lock = nativeScrollLockRef.current;
+    if (!lock)
+      return;
+    if (lock.overflowY)
+      lock.container.style.setProperty("overflow-y", lock.overflowY, lock.priority);
+    else
+      lock.container.style.removeProperty("overflow-y");
+    nativeScrollLockRef.current = null;
+  }, []);
 
   const finishCooldown = useCallback(() => {
     if (dataPendingRef.current || renderPendingRef.current)
@@ -122,8 +139,9 @@ export function useMessagePaging({
       return;
     }
     wheelProtectionRef.current = false;
+    releaseNativeScrollLock();
     setCoolingDown(false);
-  }, []);
+  }, [releaseNativeScrollLock]);
 
   // A React commit alone is not a painted, stable viewport. Wait for two
   // animation frames with unchanged geometry after anchor correction. Resizes
@@ -159,6 +177,17 @@ export function useMessagePaging({
 
   const protectViewport = useCallback(() => {
     wheelProtectionRef.current = true;
+    const container = scrollRef.current;
+    if (container && !nativeScrollLockRef.current) {
+      nativeScrollLockRef.current = {
+        container,
+        overflowY: container.style.getPropertyValue("overflow-y"),
+        priority: container.style.getPropertyPriority("overflow-y"),
+      };
+      // preventDefault cannot cancel the tail of every WebKit gesture. Stop
+      // native scrolling itself, while retaining programmatic anchor correction.
+      container.style.setProperty("overflow-y", "hidden");
+    }
     wheelBlockedUntilRef.current = performance.now() + WHEEL_COOLDOWN_MS;
     renderPendingRef.current = true;
     setCoolingDown(true);
@@ -166,7 +195,7 @@ export function useMessagePaging({
     if (cooldownTimerRef.current !== null)
       window.clearTimeout(cooldownTimerRef.current);
     cooldownTimerRef.current = window.setTimeout(finishCooldown, WHEEL_COOLDOWN_MS);
-  }, [finishCooldown]);
+  }, [finishCooldown, scrollRef]);
 
   // Once rendered, the leading message stays in the window even when new
   // exchanges arrive. Counting backwards from the tail would evict that row.
@@ -191,6 +220,7 @@ export function useMessagePaging({
     scrollRef,
     contentKey: visibleMessages,
     followEnabled,
+    isReadingAnchorLocked: () => wheelProtectionRef.current && !acceptingManualScrollRef.current,
     onScroll,
     onContentSettled: () => {
       // Anchor restoration can leave the top before its scroll event arrives.
@@ -219,13 +249,13 @@ export function useMessagePaging({
     }
     loadingOlderRef.current = true;
     wasAtTopRef.current = (scrollRef.current?.scrollTop ?? 0) <= TOP_THRESHOLD_PX;
+    preserveViewport();
     protectViewport();
     if (effectivePageStart <= 0 && loadOlderHistory) {
-      // The callback runs only for a valid page, immediately before its state
-      // update. Capture the CURRENT viewport, not the one at request start.
+      // Keep the protected anchor through the request. Explicit downward input
+      // updates it; recapturing here could adopt a not-yet-delivered native drift.
       dataPendingRef.current = true;
       void loadOlderHistory((page) => {
-        preserveViewport();
         if (page.length > 0)
           setWindowStartId(page[0]!.id);
       }).finally(() => {
@@ -238,7 +268,6 @@ export function useMessagePaging({
       });
     }
     else {
-      preserveViewport();
       const start = computePageStart(
         messages.slice(0, effectivePageStart),
         userExchangeCount,
@@ -277,12 +306,23 @@ export function useMessagePaging({
       loadOlder();
   }, [canLoadOlder, handleViewportScroll, loadOlder, scrollRef]);
 
+  const acceptManualViewport = useCallback(() => {
+    acceptingManualScrollRef.current = true;
+    try {
+      // Adopt both the new anchor and normal bottom-follow semantics.
+      handleViewportScroll();
+    }
+    finally {
+      acceptingManualScrollRef.current = false;
+    }
+  }, [handleViewportScroll]);
+
   // Keep this listener attached during the entire transaction. A wheel also
   // detects a top collision when scrollTop is clamped and no scroll event fires.
-  const wheelStateRef = useRef({ canLoadOlder, loadOlder });
+  const wheelStateRef = useRef({ canLoadOlder, loadOlder, acceptManualViewport });
   useLayoutEffect(() => {
-    wheelStateRef.current = { canLoadOlder, loadOlder };
-  }, [canLoadOlder, loadOlder]);
+    wheelStateRef.current = { canLoadOlder, loadOlder, acceptManualViewport };
+  }, [acceptManualViewport, canLoadOlder, loadOlder]);
 
   useEffect(() => {
     const container = scrollRef.current;
@@ -293,13 +333,21 @@ export function useMessagePaging({
         return;
       if (event.ctrlKey || event.deltaY === 0)
         return;
-      if (event.deltaY > 0)
-        return;
       if (wheelProtectionRef.current) {
         if (event.cancelable)
           event.preventDefault();
+        if (event.deltaY > 0) {
+          // Native vertical scrolling is locked, but an explicit downward
+          // wheel still establishes a new reading position immediately.
+          const lineHeight = Number.parseFloat(getComputedStyle(container).lineHeight) || 16;
+          const unit = event.deltaMode === 1 ? lineHeight : event.deltaMode === 2 ? container.clientHeight : 1;
+          container.scrollTop += event.deltaY * unit;
+          wheelStateRef.current.acceptManualViewport();
+        }
         return;
       }
+      if (event.deltaY > 0)
+        return;
       const state = wheelStateRef.current;
       if (!state.canLoadOlder || container.scrollTop > TOP_THRESHOLD_PX)
         return;
@@ -317,13 +365,14 @@ export function useMessagePaging({
       mountedRef.current = true;
       return () => {
         mountedRef.current = false;
+        releaseNativeScrollLock();
         if (cooldownTimerRef.current !== null)
           window.clearTimeout(cooldownTimerRef.current);
         if (renderFrameRef.current !== null)
           window.cancelAnimationFrame(renderFrameRef.current);
       };
     },
-    [],
+    [releaseNativeScrollLock],
   );
 
   return {
