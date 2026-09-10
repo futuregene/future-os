@@ -91,6 +91,7 @@ interface RemoteContextValue {
   setApprovalTier(tier: string): Promise<void>;
   rename(sessionId: string, name: string): Promise<void>;
   deleteSession(sessionId: string, threadId: string): Promise<void>;
+  deleteWorkspace(workspaceId: string): Promise<void>;
   setSessionPinned(sessionId: string, threadId: string, pinned: boolean): Promise<void>;
   decideApproval(id: string, decision: "approved" | "rejected"): Promise<void>;
   clearError(): void;
@@ -129,6 +130,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     refreshWorkspaces,
     rename,
     deleteSession: removeSession,
+    deleteWorkspace: removeWorkspace,
     setSessionPinned,
     reset: resetCatalog,
   } = useSessionCatalog(clientRef, selectedRef);
@@ -245,6 +247,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     setThinkingLevel,
     setApprovalTier,
     deleteSession,
+    deleteWorkspace,
     decideApproval,
   } = useConversationController({
     clientRef,
@@ -262,6 +265,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     ensureDraftTimeline,
     recordError,
     removeSession,
+    removeWorkspace,
     closeConversation,
   });
 
@@ -337,6 +341,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       setApprovalTier,
       rename,
       deleteSession,
+      deleteWorkspace,
       setSessionPinned,
       decideApproval,
       clearError,
@@ -355,6 +360,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       decideApproval,
       desktopOnline,
       deleteSession,
+      deleteWorkspace,
       draft,
       error,
       modelId,

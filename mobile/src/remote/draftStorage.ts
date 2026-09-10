@@ -18,6 +18,13 @@ export interface SessionDraft {
 
 const DRAFT_VERSION = 1;
 const KEY_PREFIX = "futureos.remote.draft.v1:";
+
+/**
+ * Draft slot of a conversation that has no session yet (the composer's
+ * new-conversation state). Shared with the share intake, which stages content
+ * from another app into exactly that slot.
+ */
+export const NEW_CONVERSATION_DRAFT_KEY = "draft:new";
 const enqueueOperation = createAsyncOperationQueue();
 
 function storageKey(sessionId: string): string {

@@ -3,6 +3,11 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import * as Network from "expo-network";
 import { AppState } from "react-native";
 import type { ConnectionState } from "../connectionState";
+import {
+  beginNativePresentation,
+  endNativePresentation,
+  NATIVE_PRESENTATION_GRACE_MS,
+} from "../nativePresentation";
 import { attemptPendingRevoke, claimPairingCode, serverRevoke } from "../pairing";
 import { discardPendingContinuation } from "../pendingContinuationStorage";
 import { discardPendingPrompt } from "../pendingPromptStorage";
@@ -233,6 +238,9 @@ describe("useRemoteConnection", () => {
       act(() => renderer!.unmount());
       renderer = null;
     }
+    // The presentation depth is process-global; a failed assertion mid-test
+    // must not leak a held connection into the next one.
+    endNativePresentation();
   });
 
   describe("mount lifecycle", () => {
@@ -428,6 +436,58 @@ describe("useRemoteConnection", () => {
       await mountConnected();
       act(() => appStateListeners()[0]!("background"));
       expect(client().setAppActive).toHaveBeenCalled();
+    });
+
+    test("a native picker's background transition keeps the connection", async () => {
+      await mountConnected();
+      client().setAppActive.mockClear();
+      beginNativePresentation();
+      act(() => appStateListeners()[0]!("background"));
+      // The OS reported background because the picker paused the activity; the
+      // link must survive the photo round trip.
+      expect(client().setAppActive).not.toHaveBeenCalled();
+      act(() => appStateListeners()[0]!("active"));
+      expect(client().setAppActive).toHaveBeenCalledWith(true);
+      endNativePresentation();
+    });
+
+    test("the picker grace releases the client if the user never comes back", async () => {
+      jest.useFakeTimers();
+      try {
+        await mountConnected();
+        client().setAppActive.mockClear();
+        beginNativePresentation();
+        cast<{ currentState: string }>(AppState).currentState = "background";
+        act(() => appStateListeners()[0]!("background"));
+        expect(client().setAppActive).not.toHaveBeenCalled();
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(NATIVE_PRESENTATION_GRACE_MS + 1);
+        });
+        // Still presented, still backgrounded: the bound wins.
+        expect(client().setAppActive).toHaveBeenCalledWith(false);
+        endNativePresentation();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    test("an ordinary background transition arms no delayed teardown", async () => {
+      jest.useFakeTimers();
+      try {
+        await mountConnected();
+        client().setAppActive.mockClear();
+        act(() => appStateListeners()[0]!("background"));
+        expect(client().setAppActive).toHaveBeenCalledWith(false);
+        // Returning to the app mid-flow clears the pending bound.
+        act(() => appStateListeners()[0]!("active"));
+        client().setAppActive.mockClear();
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(NATIVE_PRESENTATION_GRACE_MS + 1);
+        });
+        expect(client().setAppActive).not.toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     test("foreground recovery refreshes network and recovers the client", async () => {
@@ -669,3 +729,4 @@ describe("useRemoteConnection", () => {
     });
   });
 });
+
