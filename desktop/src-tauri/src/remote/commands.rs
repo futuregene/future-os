@@ -948,6 +948,27 @@ async fn handle_command(
                 }
             }
         }
+        "delete_workspace" => {
+            // Phone parity with the desktop sidebar's workspace delete: reuse the
+            // exact command the GUI calls, so the store cascade, the agent-session
+            // delete outbox and the orphaned scratch/review dirs are handled
+            // identically. The user's own files at `workspace.path` are never
+            // touched. A missing id is a malformed request, not a deletion.
+            if cmd.workspace_id.is_empty() {
+                reply(client, &msg, false, Value::Null, Some("missing workspace_id")).await;
+            } else {
+                match crate::commands::delete_workspace(cmd.workspace_id.clone()).await {
+                    Ok(_) => {
+                        // The workspace and every thread in it are gone; the GUI
+                        // sidebar re-lists from this bare invalidation. The phone's
+                        // catalogue converges through the dirty-flag workspace push.
+                        crate::emit_threads_updated();
+                        reply(client, &msg, true, json!({}), None).await
+                    }
+                    Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
+                }
+            }
+        }
         other => {
             reply(
                 client,
@@ -3138,6 +3159,61 @@ mod bridge_tests {
             .as_str()
             .unwrap()
             .contains("Unsupported command"));
+
+        bridge.stop();
+    }
+
+    #[tokio::test]
+    async fn delete_workspace_command_cascades_and_validates() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-delete-ws").await;
+
+        // A missing id is a malformed request, not a deletion.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "delete_workspace" }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        assert!(reply["error"]
+            .as_str()
+            .unwrap()
+            .contains("missing workspace_id"));
+
+        // A workspace and the threads inside it go together; the user's own
+        // directory on disk is never touched.
+        let workspace_dir = std::env::temp_dir().join(unique("futureos-ws-delete"));
+        std::fs::create_dir_all(&workspace_dir).unwrap();
+        let workspace = crate::store::create_workspace(crate::store::CreateWorkspaceInput {
+            name: Some("Phone Delete WS".to_string()),
+            path: workspace_dir.to_string_lossy().to_string(),
+            description: None,
+            create_directory: None,
+        })
+        .unwrap();
+        crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "workspace".to_string(),
+            title: Some("In workspace".to_string()),
+            workspace_id: Some(workspace.id.clone()),
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: None,
+        })
+        .unwrap();
+        assert_eq!(crate::store::list_workspaces().unwrap().len(), 1);
+        assert_eq!(crate::store::list_threads().unwrap().len(), 1);
+
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "delete_workspace", "workspaceId": workspace.id.clone() }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert!(crate::store::list_workspaces().unwrap().is_empty());
+        assert!(crate::store::list_threads().unwrap().is_empty());
+        assert!(workspace_dir.exists(), "user files survive a workspace delete");
+
+        // The workspace is gone, so a repeat delete is an error.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "delete_workspace", "workspaceId": workspace.id }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
 
         bridge.stop();
     }

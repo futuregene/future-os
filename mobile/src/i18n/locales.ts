@@ -84,6 +84,12 @@ export const resources = {
           "Delete {{count}} selected conversations from the desktop? This cannot be undone. Unselected child conversations will be kept.",
         deletePartialFailure:
           "{{count}} conversations could not be deleted. They remain selected; reconnect and retry.",
+        workspaceActions: "Actions for workspace {{title}}",
+        selectWorkspaceSessions: "Select all conversations in this workspace",
+        deleteWorkspace: "Delete workspace",
+        deleteWorkspaceConfirm:
+          'Delete the workspace "{{title}}" and all {{count}} conversations in it? This cannot be undone. The files in the workspace folder on the desktop are not deleted.',
+        deleteWorkspaceFailed: "Could not delete the workspace. Reconnect and retry.",
       },
       chat: {
         new: "New conversation",
@@ -390,6 +396,12 @@ export const resources = {
         deleteSelectedConfirm:
           "将从桌面端删除选中的 {{count}} 个会话，无法恢复。未选中的子会话会保留。",
         deletePartialFailure: "{{count}} 个会话删除失败，已保留选中状态，请恢复连接后重试。",
+        workspaceActions: "管理工作区「{{title}}」",
+        selectWorkspaceSessions: "全选该工作区的会话",
+        deleteWorkspace: "删除工作区",
+        deleteWorkspaceConfirm:
+          "删除工作区「{{title}}」及其中的 {{count}} 个会话？此操作无法恢复，桌面端工作区文件夹里的文件不会被删除。",
+        deleteWorkspaceFailed: "工作区删除失败，请恢复连接后重试。",
       },
       chat: {
         new: "新对话",

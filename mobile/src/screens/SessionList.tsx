@@ -14,11 +14,14 @@ import {
 } from "lucide-react-native";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { showActionSheet as showAndroidActionSheet } from "future-native-ui";
 import {
+  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   BackHandler,
   FlatList,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -26,14 +29,16 @@ import {
   View,
 } from "react-native";
 import type { ReactNode } from "react";
+import { deferPresentation } from "../features/chat/utils";
 import { useRemote } from "../remote/RemoteContext";
 import { effectiveRunStatus } from "../remote/sessionStatus";
 import type { RemoteSession } from "../remote/types";
 import { colors, radius, spacing } from "../theme/tokens";
 import { catalogRows, type CatalogRow } from "./sessionTree";
+import { useCollapsedWorkspaces } from "./useCollapsedWorkspaces";
 
 // Keep navigation state when the screen unmounts to open a conversation.
-let savedCollapsed = new Set<string>();
+// Workspace folds are persisted separately (they survive a restart too).
 let savedExpanded = new Set<string>();
 const offsets = { chat: 0, workspace: 0 };
 
@@ -49,11 +54,8 @@ export function SessionList({
   const remote = useRemote();
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
-  const [collapsed, setCollapsed] = useState(savedCollapsed);
+  const { collapsed, toggleWorkspaceCollapsed } = useCollapsedWorkspaces();
   const [expanded, setExpanded] = useState(savedExpanded);
-  useEffect(() => {
-    savedCollapsed = collapsed;
-  }, [collapsed]);
   useEffect(() => {
     savedExpanded = expanded;
   }, [expanded]);
@@ -93,14 +95,14 @@ export function SessionList({
       return next;
     });
   const toggleFold = (id: string, workspace: boolean) => {
-    const next = new Set(workspace ? collapsed : expanded);
+    if (workspace) {
+      toggleWorkspaceCollapsed(id);
+      return;
+    }
+    const next = new Set(expanded);
     if (next.has(id)) next.delete(id);
     else next.add(id);
-    if (workspace) {
-      setCollapsed(next);
-    } else {
-      setExpanded(next);
-    }
+    setExpanded(next);
   };
   const deleteSelected = () => {
     if (!targets.length || !remote.desktopOnline || deletingRef.current) return;
@@ -141,28 +143,123 @@ export function SessionList({
       ],
     );
   };
+
+  /** Every session in a workspace, flattened — folds must not hide rows from a
+   * "select all in this workspace", which is the point of the action. */
+  const sessionsInWorkspace = (workspaceId: string): RemoteSession[] =>
+    remote.sessions.filter(
+      session => session.mode === "workspace" && (session.workspaceId ?? "") === workspaceId,
+    );
+
+  const selectWorkspaceSessions = (workspaceId: string) => {
+    const ids = sessionsInWorkspace(workspaceId).map(session => session.sessionId);
+    if (ids.length === 0) return;
+    setSelecting(true);
+    setSelected(current => new Set([...current, ...ids]));
+  };
+
+  const confirmDeleteWorkspace = (workspace: CatalogRow & { kind: "workspace" }) => {
+    if (deletingRef.current) return;
+    Alert.alert(
+      t("sessions.deleteWorkspace"),
+      t("sessions.deleteWorkspaceConfirm", {
+        title: workspace.workspace.name || t("sessions.workspace"),
+        count: workspace.count,
+      }),
+      [
+        { text: t("chat.cancel"), style: "cancel" },
+        {
+          text: t("sessions.delete"),
+          style: "destructive",
+          onPress: () => {
+            if (deletingRef.current) return;
+            deletingRef.current = true;
+            setDeleting(true);
+            const removed = new Set(sessionsInWorkspace(workspace.workspace.id).map(s => s.sessionId));
+            void remote
+              .deleteWorkspace(workspace.workspace.id)
+              .then(() => {
+                setSelected(current => {
+                  const next = new Set(current);
+                  for (const id of removed) next.delete(id);
+                  return next;
+                });
+              })
+              .catch(() => Alert.alert(t("common.error"), t("sessions.deleteWorkspaceFailed")))
+              .finally(() => {
+                deletingRef.current = false;
+                setDeleting(false);
+              });
+          },
+        },
+      ],
+    );
+  };
+
+  const openWorkspaceMenu = (workspace: CatalogRow & { kind: "workspace" }) => {
+    if (!remote.desktopOnline || deleting) return;
+    const options = [
+      t("sessions.selectWorkspaceSessions"),
+      t("sessions.deleteWorkspace"),
+      t("chat.cancel"),
+    ];
+    const title = workspace.workspace.name || t("sessions.workspace");
+    const handleSelection = (index: number | null) => {
+      if (index === 0) selectWorkspaceSessions(workspace.workspace.id);
+      if (index === 1) deferPresentation(() => confirmDeleteWorkspace(workspace));
+    };
+    if (Platform.OS === "ios") {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          title,
+          options,
+          destructiveButtonIndex: 1,
+          cancelButtonIndex: 2,
+        },
+        handleSelection,
+      );
+      return;
+    }
+    void showAndroidActionSheet(options, title)
+      .then(handleSelection)
+      .catch(() => Alert.alert(t("common.error")));
+  };
+
   const renderRow = ({ item }: { item: CatalogRow }) => {
     if (item.kind === "workspace") {
       const isCollapsed = collapsed.has(item.workspace.id) && !query.trim();
+      const name = item.workspace.name || t("sessions.workspace");
       return (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={item.workspace.name || t("sessions.workspace")}
-          accessibilityState={{ expanded: !isCollapsed }}
-          onPress={() => toggleFold(item.workspace.id, true)}
-          style={({ pressed }) => [styles.workspace, pressed && styles.pressed]}
-        >
-          {isCollapsed ? (
-            <ChevronRight size={16} color={colors.inkSoft} />
-          ) : (
-            <ChevronDown size={16} color={colors.inkSoft} />
-          )}
-          <Folder size={17} color={colors.accent} />
-          <Text numberOfLines={1} style={styles.workspaceName}>
-            {item.workspace.name || t("sessions.workspace")}
-          </Text>
-          <Text style={styles.count}>{item.count}</Text>
-        </Pressable>
+        <View style={styles.workspace}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={name}
+            accessibilityState={{ expanded: !isCollapsed }}
+            onPress={() => toggleFold(item.workspace.id, true)}
+            style={({ pressed }) => [styles.workspaceBody, pressed && styles.pressed]}
+          >
+            {isCollapsed ? (
+              <ChevronRight size={16} color={colors.inkSoft} />
+            ) : (
+              <ChevronDown size={16} color={colors.inkSoft} />
+            )}
+            <Folder size={17} color={colors.accent} />
+            <Text numberOfLines={1} style={styles.workspaceName}>
+              {name}
+            </Text>
+            <Text style={styles.count}>{item.count}</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t("sessions.workspaceActions", { title: name })}
+            accessibilityState={{ disabled: deleting || !remote.desktopOnline }}
+            disabled={deleting || !remote.desktopOnline}
+            onPress={() => openWorkspaceMenu(item)}
+            style={[styles.iconButton, (!remote.desktopOnline || deleting) && styles.disabled]}
+          >
+            <MoreHorizontal size={18} color={colors.inkMuted} />
+          </Pressable>
+        </View>
       );
     }
     const session = item.session;
@@ -414,12 +511,21 @@ const styles = StyleSheet.create({
     minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing.sm,
-    paddingHorizontal: spacing.sm,
+    paddingRight: spacing.xs,
     backgroundColor: colors.canvas,
     borderRadius: radius.md,
     marginTop: spacing.xs,
     marginBottom: 2,
+  },
+  workspaceBody: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingLeft: spacing.sm,
+    borderRadius: radius.md,
   },
   workspaceName: { flex: 1, color: colors.inkSoft, fontSize: 13, fontWeight: "700" },
   count: { color: colors.inkMuted, fontSize: 12, fontVariant: ["tabular-nums"] },

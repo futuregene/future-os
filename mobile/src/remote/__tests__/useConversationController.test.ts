@@ -84,6 +84,7 @@ interface MountOpts {
   requestRetry?: jest.Mock;
   request?: jest.Mock;
   removeSession?: jest.Mock;
+  removeWorkspace?: jest.Mock;
   closeConversation?: jest.Mock;
 }
 
@@ -112,6 +113,7 @@ async function mountController(opts: MountOpts = {}) {
   const ensureDraftTimeline = jest.fn();
   const recordError = jest.fn();
   const removeSession = opts.removeSession ?? jest.fn(async () => true);
+  const removeWorkspace = opts.removeWorkspace ?? jest.fn(async () => true);
   const closeConversation = opts.closeConversation ?? jest.fn();
   const result: { current: ControllerResult | null } = { current: null };
   let renderer!: ReactTestRenderer;
@@ -133,6 +135,7 @@ async function mountController(opts: MountOpts = {}) {
       ensureDraftTimeline,
       recordError,
       removeSession,
+      removeWorkspace,
       closeConversation,
     });
     return null;
