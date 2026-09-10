@@ -458,8 +458,8 @@ fn session_attachment_name(entries: &Value, requested: &str) -> Option<String> {
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|entry| entry.get("meta"))
-        .filter_map(|meta| meta.get("attachments"))
+        .filter_map(|entry| entry.get("metadata"))
+        .filter_map(|metadata| metadata.get("attachments"))
         .filter_map(Value::as_array)
         .flatten()
         .find(|attachment| attachment.get("path").and_then(Value::as_str) == Some(requested))
@@ -1759,13 +1759,13 @@ mod flow_tests {
 
     #[test]
     fn session_attachment_name_falls_back_to_the_path_file_name() {
-        let entries = json!({"entries":[{"meta":{"attachments":[{"path":"/tmp/no-name.md"}]}}]});
+        let entries =
+            json!({"entries":[{"metadata":{"attachments":[{"path":"/tmp/no-name.md"}]}}]});
         assert_eq!(
             session_attachment_name(&entries, "/tmp/no-name.md"),
             Some("no-name.md".to_string())
         );
-        let named =
-            json!({"entries":[{"meta":{"attachments":[{"path":"/tmp/x","name":"Pretty.txt"}]}}]});
+        let named = json!({"entries":[{"metadata":{"attachments":[{"path":"/tmp/x","name":"Pretty.txt"}]}}]});
         assert_eq!(
             session_attachment_name(&named, "/tmp/x"),
             Some("Pretty.txt".to_string())

@@ -1062,10 +1062,20 @@ mod tests {
         let thread = make_thread(&home, Some("sess_page"));
         script_mock_agent(MockScript::default());
         let agent = crate::commands::agent_mock::ensure_mock_agent();
-        agent.script_typed_for("get_session_entries", "sess_page", serde_json::json!({
-            "entries":[{"id":"synthetic","role":"user","content":"page","name":"","tool_args":"","timestamp":"2026-01-01T00:00:00Z"}],
-            "hasMore":true,"nextOffset":20,
-        }));
+        agent.script_typed_for(
+            "get_session_entries",
+            "sess_page",
+            serde_json::json!({
+                "entries":[{
+                    "id":"synthetic",
+                    "kind":"user",
+                    "role":"user",
+                    "createdAtMs":1767225600000_i64,
+                    "blocks":[{"kind":"text","text":"page"}]
+                }],
+                "hasMore":true,"nextOffset":20,
+            }),
+        );
         // A fetch-all loop would request the same non-advancing cursor and
         // error here. The UI command must return immediately after one page.
         let page = get_session_entries_page(thread.id, None, 10).await.unwrap();
@@ -1087,18 +1097,17 @@ mod tests {
             "sess_entries_typed",
             serde_json::json!({"entries": [{
                 "id": "entry-typed",
+                "kind": "user",
                 "role": "user",
-                "content": "still here",
-                "name": "",
-                "tool_args": "",
-                "timestamp": "2026-08-27T10:00:00Z"
+                "createdAtMs": 1787824800000_i64,
+                "blocks": [{"kind": "text", "text": "still here"}]
             }]}),
         );
 
         let value = get_session_entries(thread.id.clone())
             .await
             .expect("typed entries");
-        assert_eq!(value["entries"][0]["content"], "still here");
+        assert_eq!(value["entries"][0]["blocks"][0]["text"], "still here");
         script_mock_agent(MockScript::default());
     }
 

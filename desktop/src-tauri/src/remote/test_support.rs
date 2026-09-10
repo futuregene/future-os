@@ -188,18 +188,24 @@ impl MockAgent {
             object
                 .entry("role")
                 .or_insert_with(|| Value::String("user".to_string()));
+            let kind = object
+                .get("role")
+                .cloned()
+                .unwrap_or_else(|| Value::String("user".to_string()));
+            object.entry("kind").or_insert(kind);
             object
-                .entry("content")
-                .or_insert_with(|| Value::String(String::new()));
-            object
-                .entry("name")
-                .or_insert_with(|| Value::String(String::new()));
-            object
-                .entry("tool_args")
-                .or_insert_with(|| Value::String(String::new()));
-            object
-                .entry("timestamp")
-                .or_insert_with(|| Value::String("2026-08-27T00:00:00Z".to_string()));
+                .entry("createdAtMs")
+                .or_insert_with(|| Value::Number(1_777_257_600_000_i64.into()));
+            if !object.contains_key("blocks") {
+                let text = object
+                    .remove("content")
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .unwrap_or_default();
+                object.insert("blocks".to_string(), json!([{"kind":"text", "text":text}]));
+            }
+            if let Some(metadata) = object.remove("meta") {
+                object.entry("metadata").or_insert(metadata);
+            }
         }
         self.state
             .lock()
