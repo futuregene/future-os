@@ -26,6 +26,7 @@ struct ChatStreamState {
     reasoning_open: bool,
     tools: BTreeMap<usize, ChatToolState>,
     finished: bool,
+    stream_complete: bool,
 }
 
 impl ProtocolAdapter for OpenAiChatAdapter {
@@ -91,6 +92,7 @@ impl ProtocolAdapter for OpenAiChatAdapter {
             .downcast_mut::<ChatStreamState>()
             .ok_or_else(|| anyhow!("invalid OpenAI Chat stream state"))?;
         if frame.data.trim() == "[DONE]" {
+            state.stream_complete = true;
             return finish(state, FinishReason::Incomplete, None);
         }
         if frame.data.trim().is_empty() {
@@ -103,6 +105,7 @@ impl ProtocolAdapter for OpenAiChatAdapter {
                 .and_then(Value::as_str)
                 .unwrap_or("OpenAI-compatible stream error");
             state.finished = true;
+            state.stream_complete = true;
             return Ok(vec![ModelStreamEvent::Error {
                 message: message.to_string(),
             }]);
@@ -210,6 +213,12 @@ impl ProtocolAdapter for OpenAiChatAdapter {
             events.push(ModelStreamEvent::Usage(usage));
         }
         Ok(events)
+    }
+
+    fn is_stream_complete(&self, state: &(dyn Any + Send)) -> bool {
+        state
+            .downcast_ref::<ChatStreamState>()
+            .is_some_and(|state| state.stream_complete)
     }
 
     fn finish_stream(&self, state: &mut (dyn Any + Send)) -> Result<Vec<ModelStreamEvent>> {

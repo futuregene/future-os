@@ -7,10 +7,12 @@ export function ConnectionBadge({
   phase,
   desktopOnline,
   onReconnect,
+  compact = false,
 }: {
   phase: ConnectionPhase;
   desktopOnline: boolean;
   onReconnect?: () => void;
+  compact?: boolean;
 }) {
   const { t } = useTranslation();
   const connected = phase === "ready" && desktopOnline;
@@ -31,6 +33,7 @@ export function ConnectionBadge({
       style={[
         styles.badge,
         connected ? styles.connected : connecting ? styles.connecting : styles.disconnected,
+        compact && styles.compact,
       ]}
     >
       <View
@@ -43,18 +46,20 @@ export function ConnectionBadge({
               : styles.disconnectedDot,
         ]}
       />
-      <Text
-        style={[
-          styles.label,
-          connected
-            ? styles.connectedLabel
-            : connecting
-              ? styles.connectingLabel
-              : styles.disconnectedLabel,
-        ]}
-      >
-        {label}
-      </Text>
+      {!compact && (
+        <Text
+          style={[
+            styles.label,
+            connected
+              ? styles.connectedLabel
+              : connecting
+                ? styles.connectingLabel
+                : styles.disconnectedLabel,
+          ]}
+        >
+          {label}
+        </Text>
+      )}
     </Pressable>
   );
 }
@@ -68,6 +73,13 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     paddingHorizontal: spacing.md,
     paddingVertical: 6,
+  },
+  compact: {
+    width: 44,
+    minHeight: 44,
+    justifyContent: "center",
+    paddingHorizontal: 0,
+    borderColor: colors.lineSoft,
   },
   connected: { backgroundColor: colors.successSoft, borderColor: colors.successLine },
   connecting: { backgroundColor: colors.warningSoft, borderColor: colors.warningLine },

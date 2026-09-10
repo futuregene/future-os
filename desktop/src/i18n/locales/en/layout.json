@@ -53,7 +53,7 @@
     "deselectAll": "Deselect all",
     "chatSectionActions": "Chat section actions",
     "threadsSelected": "{{count}} selected",
-    "deleteSelected": "Delete selected"
+    "deleteSelected": "Delete"
   },
   "appShell": {
     "storeInitFailed": "FutureOS local storage failed to initialize: ",

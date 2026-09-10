@@ -5,6 +5,8 @@
 pub(crate) mod adapters;
 pub mod schema;
 mod sse;
+#[cfg(test)]
+mod stream_wait_tests;
 use adapters::AdapterRegistry;
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
@@ -18,8 +20,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::info;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 1800;
-const STREAM_IDLE_TIMEOUT_SECS: u64 = 120;
-const UPSTREAM_DISCONNECTED: &str = "[UPSTREAM_DISCONNECTED]";
+pub(crate) const UPSTREAM_DISCONNECTED: &str = "[UPSTREAM_DISCONNECTED]";
 const MODEL_RESPONSE_ERROR: &str = "[MODEL_RESPONSE_ERROR]";
 
 fn reqwest_stream_error_kind(error: &reqwest::Error) -> &'static str {
@@ -63,19 +64,6 @@ fn stream_progress(
         "kind={kind}, chunks={chunks}, bytes={bytes}, frames={frames}, elapsed_ms={}",
         started_at.elapsed().as_millis()
     )
-}
-
-/// Stream-read idle timeout. Tests override it (a stalled-mock test cannot
-/// wait 120 s of real time) via FUTURE_TEST_STREAM_IDLE_SECS.
-fn stream_idle_timeout_secs() -> u64 {
-    #[cfg(test)]
-    if let Some(secs) = std::env::var("FUTURE_TEST_STREAM_IDLE_SECS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-    {
-        return secs;
-    }
-    STREAM_IDLE_TIMEOUT_SECS
 }
 
 /// HTTP request timeout for a single LLM call. Defaults to 30 min (1800 s);
@@ -352,21 +340,30 @@ impl crate::types::LLMProvider for Client {
             // after that finish_reason, and token accounting would be lost if
             // the byte-stream pump stopped at Finish instead of `[DONE]`.
             let mut protocol_terminal = false;
+            let mut transport_error = None;
             loop {
                 let next = tokio::select! {
                     _ = tx.closed() => return,
-                    next = tokio::time::timeout(
-                        std::time::Duration::from_secs(stream_idle_timeout_secs()),
-                        stream.next(),
-                    ) => next,
+                    // Silence is not evidence of failure: reasoning can pause
+                    // without emitting summaries or even transport heartbeats.
+                    // reqwest still enforces the whole-request deadline.
+                    next = stream.next() => next,
                 };
                 let bytes = match next {
-                    Ok(Some(Ok(bytes))) => {
+                    Some(Ok(bytes)) => {
                         chunks_received = chunks_received.saturating_add(1);
                         bytes_received = bytes_received.saturating_add(bytes.len() as u64);
                         bytes
                     }
-                    Ok(Some(Err(error))) => {
+                    Some(Err(error)) => {
+                        // Chat may still be waiting for usage after finish_reason.
+                        // Losing that accounting tail must not replay a response
+                        // the provider already completed (and its tool calls).
+                        if protocol_terminal {
+                            tracing::warn!(protocol = %protocol, model = %model, error = %error,
+                                "LLM stream disconnected after terminal event");
+                            return;
+                        }
                         let kind = reqwest_stream_error_kind(&error);
                         let causes = error_source_chain(&error);
                         let progress = stream_progress(
@@ -390,45 +387,15 @@ impl crate::types::LLMProvider for Client {
                             cause_chain = %causes,
                             "LLM response stream disconnected"
                         );
-                        let _ = tx
-                            .send(schema::ModelStreamEvent::Error {
-                                message: format!(
-                                    "{UPSTREAM_DISCONNECTED} {error}; {progress}, causes={causes}"
-                                ),
-                            })
-                            .await;
-                        return;
+                        // Use the same adapter cleanup as clean EOF before
+                        // reporting the disconnect. Otherwise unfinished tool
+                        // item ids leak into the retry's request history.
+                        transport_error = Some(format!(
+                            "{UPSTREAM_DISCONNECTED} {error}; {progress}, causes={causes}"
+                        ));
+                        break;
                     }
-                    Ok(None) => break,
-                    Err(_) => {
-                        let timeout_secs = stream_idle_timeout_secs();
-                        let progress = stream_progress(
-                            "idle_timeout",
-                            chunks_received,
-                            bytes_received,
-                            frames_decoded,
-                            started_at,
-                        );
-                        tracing::error!(
-                            protocol = %protocol,
-                            model = %model,
-                            status = response_status,
-                            timeout_secs,
-                            chunks_received,
-                            bytes_received,
-                            frames_decoded,
-                            elapsed_ms = started_at.elapsed().as_millis() as u64,
-                            "LLM response stream idle timeout"
-                        );
-                        let _ = tx
-                            .send(schema::ModelStreamEvent::Error {
-                                message: format!(
-                                    "{UPSTREAM_DISCONNECTED} model response stream was idle for {timeout_secs} seconds; {progress}"
-                                ),
-                            })
-                            .await;
-                        return;
-                    }
+                    None => break,
                 };
                 if tx.is_closed() {
                     return;
@@ -469,18 +436,31 @@ impl crate::types::LLMProvider for Client {
                             return;
                         }
                     }
+                    // A logical Finish is not always the wire terminator:
+                    // Chat Completions may still owe us a usage-only frame.
+                    // Let the adapter decide when no more data is required.
+                    if adapter.is_stream_complete(state.as_ref()) {
+                        return;
+                    }
                 }
             }
 
-            let frames = match decoder.finish() {
-                Ok(frames) => frames,
-                Err(error) => {
-                    let _ = tx
-                        .send(schema::ModelStreamEvent::Error {
-                            message: format!("{MODEL_RESPONSE_ERROR} {error:#}"),
-                        })
-                        .await;
-                    return;
+            // Only clean EOF can flush an unterminated SSE frame. After a
+            // transport error the buffered tail may be cut mid-JSON/UTF-8; do
+            // not decode it or turn a retryable disconnect into a parse error.
+            let frames = if transport_error.is_some() {
+                Vec::new()
+            } else {
+                match decoder.finish() {
+                    Ok(frames) => frames,
+                    Err(error) => {
+                        let _ = tx
+                            .send(schema::ModelStreamEvent::Error {
+                                message: format!("{MODEL_RESPONSE_ERROR} {error:#}"),
+                            })
+                            .await;
+                        return;
+                    }
                 }
             };
             frames_decoded = frames_decoded.saturating_add(frames.len() as u64);
@@ -510,19 +490,46 @@ impl crate::types::LLMProvider for Client {
                 }
             }
             if !protocol_terminal {
-                tracing::warn!(
-                    protocol = %protocol,
-                    model = %model,
-                    status = response_status,
-                    chunks_received,
-                    bytes_received,
-                    frames_decoded,
-                    elapsed_ms = started_at.elapsed().as_millis() as u64,
-                    "LLM response stream reached EOF before a terminal event"
-                );
+                if transport_error.is_none() {
+                    tracing::warn!(
+                        protocol = %protocol,
+                        model = %model,
+                        status = response_status,
+                        chunks_received,
+                        bytes_received,
+                        frames_decoded,
+                        elapsed_ms = started_at.elapsed().as_millis() as u64,
+                        "LLM response stream reached EOF before a terminal event"
+                    );
+                }
                 match adapter.finish_stream(state.as_mut()) {
                     Ok(events) => {
                         for event in events {
+                            // EOF/errors are transport interruptions, not provider-declared
+                            // incomplete responses (e.g. an exhausted output budget).
+                            // Keep the adapter's closing blocks, but make the missing
+                            // terminal frame distinguishable for stream retries.
+                            let event = if let schema::ModelStreamEvent::Finish { usage, .. } =
+                                event
+                            {
+                                if let Some(usage) = usage {
+                                    if tx
+                                        .send(schema::ModelStreamEvent::Usage(usage))
+                                        .await
+                                        .is_err()
+                                    {
+                                        return;
+                                    }
+                                }
+                                schema::ModelStreamEvent::Error {
+                                    message: transport_error.clone().unwrap_or_else(|| format!(
+                                        "{UPSTREAM_DISCONNECTED} stream ended before a terminal event; {}",
+                                        stream_progress("eof", chunks_received, bytes_received, frames_decoded, started_at),
+                                    )),
+                                }
+                            } else {
+                                event
+                            };
                             if tx.send(event).await.is_err() {
                                 return;
                             }
@@ -583,8 +590,6 @@ fn normalize_http_error(status: u16, text: &str, model: &str, body_bytes: usize)
 mod tests {
     use super::*;
     use crate::types::LLMProvider;
-
-    static IDLE_TIMEOUT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     // ─── Client construction and single target state ─────────────────────────
 
@@ -815,15 +820,6 @@ mod tests {
             .contains("Rate limited"));
     }
 
-    #[test]
-    fn stream_idle_timeout_defaults_when_override_absent() {
-        let _env = IDLE_TIMEOUT_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        std::env::remove_var("FUTURE_TEST_STREAM_IDLE_SECS");
-        assert_eq!(stream_idle_timeout_secs(), STREAM_IDLE_TIMEOUT_SECS);
-    }
-
     // ─── mock HTTP server ───────────────────────────────────────────────────
     /// One-shot HTTP server: accepts a single request, records its body, and
     /// replies with a canned (status, content_type, body). Loops so aborted
@@ -919,7 +915,7 @@ mod tests {
         }
     }
 
-    fn protocol_target(
+    pub(super) fn protocol_target(
         base_url: &str,
         protocol: schema::ProtocolConfig,
     ) -> schema::ResolvedModelTarget {
@@ -945,7 +941,7 @@ mod tests {
         }
     }
 
-    fn canonical_request() -> schema::ModelRequest {
+    pub(super) fn canonical_request() -> schema::ModelRequest {
         schema::ModelRequest {
             model: "mock".into(),
             system_prompt: "system".into(),
@@ -1082,61 +1078,6 @@ mod tests {
         ));
     }
 
-    #[allow(clippy::await_holding_lock)]
-    #[tokio::test(flavor = "current_thread")]
-    async fn stream_model_idle_timeout_reports_upstream_disconnect() {
-        let _env = IDLE_TIMEOUT_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        std::env::set_var("FUTURE_TEST_STREAM_IDLE_SECS", "1");
-
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            use std::io::{Read, Write};
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0u8; 16 * 1024];
-            let _ = stream.read(&mut request);
-            stream
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
-                )
-                .unwrap();
-            let frame = b"data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n";
-            stream
-                .write_all(format!("{:X}\r\n", frame.len()).as_bytes())
-                .and_then(|_| stream.write_all(frame))
-                .and_then(|_| stream.write_all(b"\r\n"))
-                .and_then(|_| stream.flush())
-                .unwrap();
-            std::thread::sleep(std::time::Duration::from_secs(2));
-        });
-
-        let client = Client::from_target(chat_target(
-            &format!("http://127.0.0.1:{port}"),
-            "secret",
-            None,
-            None,
-        ));
-        let events: Vec<_> = client
-            .stream_model(canonical_request())
-            .await
-            .unwrap()
-            .collect()
-            .await;
-        std::env::remove_var("FUTURE_TEST_STREAM_IDLE_SECS");
-
-        assert!(events.iter().any(|event| matches!(
-            event,
-            schema::ModelStreamEvent::TextDelta { text, .. } if text == "partial"
-        )));
-        assert!(matches!(
-            events.last(),
-            Some(schema::ModelStreamEvent::Error { message })
-                if message.starts_with(UPSTREAM_DISCONNECTED)
-        ));
-    }
-
     #[tokio::test]
     async fn stream_model_transport_disconnect_reports_progress_and_error_chain() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1251,65 +1192,6 @@ mod tests {
         )));
     }
 
-    #[allow(clippy::await_holding_lock)]
-    #[tokio::test(flavor = "current_thread")]
-    async fn stream_model_keepalives_prevent_idle_timeout() {
-        let _env = IDLE_TIMEOUT_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        std::env::set_var("FUTURE_TEST_STREAM_IDLE_SECS", "1");
-
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            use std::io::{Read, Write};
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0u8; 16 * 1024];
-            let _ = stream.read(&mut request);
-            stream
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
-                )
-                .unwrap();
-            for _ in 0..6 {
-                stream
-                    .write_all(b"3\r\n:\n\n\r\n")
-                    .and_then(|_| stream.flush())
-                    .unwrap();
-                std::thread::sleep(std::time::Duration::from_millis(200));
-            }
-            let frame = b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
-            stream
-                .write_all(format!("{:X}\r\n", frame.len()).as_bytes())
-                .and_then(|_| stream.write_all(frame))
-                .and_then(|_| stream.write_all(b"\r\n0\r\n\r\n"))
-                .and_then(|_| stream.flush())
-                .unwrap();
-        });
-
-        let client = Client::from_target(chat_target(
-            &format!("http://127.0.0.1:{port}"),
-            "secret",
-            None,
-            None,
-        ));
-        let events: Vec<_> = client
-            .stream_model(canonical_request())
-            .await
-            .unwrap()
-            .collect()
-            .await;
-        std::env::remove_var("FUTURE_TEST_STREAM_IDLE_SECS");
-
-        assert!(matches!(
-            events.last(),
-            Some(schema::ModelStreamEvent::Finish {
-                reason: schema::FinishReason::Stop,
-                ..
-            })
-        ));
-    }
-
     #[tokio::test(flavor = "current_thread")]
     async fn stream_model_consumer_drop_closes_the_upstream_connection() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1398,7 +1280,7 @@ mod tests {
     async fn stream_model_flushes_buffered_frame_on_clean_eof() {
         // No trailing blank line: the final SSE frame is only flushed by
         // `decoder.finish()` once the upstream stream ends without a terminal
-        // event, and `finish_stream` then emits an incomplete finish.
+        // event, and the missing terminal frame is reported as a disconnect.
         let server = mock_server(|_| {
             (
                 200,
@@ -1419,11 +1301,275 @@ mod tests {
         )));
         assert!(matches!(
             events.last(),
-            Some(schema::ModelStreamEvent::Finish {
-                reason: schema::FinishReason::Incomplete,
-                ..
-            })
+            Some(schema::ModelStreamEvent::Error { message })
+                if message.starts_with(UPSTREAM_DISCONNECTED) && message.contains("kind=eof")
         ));
+    }
+
+    #[tokio::test]
+    async fn responses_transport_error_cleans_unfinished_items_before_retry() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader, Read, Write};
+            let mut requests = Vec::new();
+            for attempt in 0..2 {
+                let (socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                    .unwrap();
+                let mut reader = BufReader::new(socket);
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    assert!(reader.read_line(&mut line).unwrap() > 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
+                }
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                requests.push(serde_json::from_slice::<Value>(&body).unwrap());
+                let mut socket = reader.into_inner();
+                let body = if attempt == 0 {
+                    concat!(
+                        "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_done\",\"summary\":[],\"encrypted_content\":\"cipher\"}}\n\n",
+                        "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_partial\"}}\n\n",
+                        "data: {\"type\":\"response.reasoning_summary_text.delta\",\"output_index\":1,\"item_id\":\"rs_partial\",\"summary_index\":0,\"delta\":\"thinking\"}\n\n",
+                        "data: {\"type\":\"response.output_item.added\",\"output_index\":2,\"item\":{\"type\":\"function_call\",\"id\":\"fc_unfinished\",\"call_id\":\"call_1\",\"name\":\"echo\"}}\n\n",
+                        "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":2,\"delta\":\"{}\"}\n\n",
+                        // Broken buffered SSE must not mask the transport error.
+                        "data: {\"type\":",
+                    )
+                } else {
+                    concat!(
+                        "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"done\"}\n\n",
+                        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n",
+                    )
+                };
+                // Closing with a short body produces a reqwest transport error,
+                // not the clean EOF covered by the other retry integration test.
+                let length = body.len() + if attempt == 0 { 100 } else { 0 };
+                write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n{body}").unwrap();
+            }
+            requests
+        });
+        let client = Client::from_target(protocol_target(
+            &format!("http://127.0.0.1:{port}"),
+            schema::ProtocolConfig::OpenAiResponses(Default::default()),
+        ));
+        let loop_ = crate::agent::Loop::new(std::sync::Arc::new(client), "mock");
+        assert_eq!(
+            loop_.run_streaming("hi".into(), |_| {}).await.unwrap(),
+            "done"
+        );
+        let requests = server.join().unwrap();
+        let input = requests[1]["input"].as_array().unwrap();
+        let tool = input
+            .iter()
+            .find(|item| item["type"] == "function_call")
+            .unwrap();
+        assert!(tool.get("id").is_none(), "unfinished item replayed: {tool}");
+        assert_eq!(tool["call_id"], "call_1");
+        assert!(input
+            .iter()
+            .any(|item| item["type"] == "function_call_output" && item["call_id"] == "call_1"));
+        let reasoning: Vec<_> = input
+            .iter()
+            .filter(|item| item["type"] == "reasoning")
+            .collect();
+        assert_eq!(reasoning.len(), 1, "only completed reasoning is replayable");
+        assert_eq!(reasoning[0]["id"], "rs_done");
+        assert_eq!(reasoning[0]["encrypted_content"], "cipher");
+        assert!(!loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn anthropic_retry_projects_partial_tool_arguments_as_an_object() {
+        let attempts = std::sync::atomic::AtomicUsize::new(0);
+        let server = mock_server(move |_| {
+            let body = if attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                concat!(
+                    "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"echo\",\"input\":{}}}\n\n",
+                    "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"command\\\":\"}}\n\n",
+                )
+            } else {
+                concat!(
+                    "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+                    "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"done\"}}\n\n",
+                    "data: {\"type\":\"message_stop\"}\n\n",
+                )
+            };
+            (200, "text/event-stream", body.to_string())
+        });
+        let client = Client::from_target(protocol_target(
+            &server.base_url,
+            schema::ProtocolConfig::AnthropicMessages(Default::default()),
+        ));
+        let loop_ = crate::agent::Loop::new(std::sync::Arc::new(client), "mock");
+        let (text, history) = loop_
+            .run_streaming_with_messages(
+                canonical_request().messages,
+                &crate::agent::StreamContext::default(),
+                |_| {},
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "done");
+        let requests = server.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        let retry: Value = serde_json::from_str(&requests[1]).unwrap();
+        let blocks: Vec<_> = retry["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|message| message["content"].as_array().unwrap())
+            .collect();
+        let tool = blocks
+            .iter()
+            .find(|block| block["type"] == "tool_use")
+            .unwrap();
+        assert_eq!(tool["input"], serde_json::json!({}));
+        let result = blocks
+            .iter()
+            .find(|block| block["type"] == "tool_result")
+            .unwrap();
+        assert_eq!(result["tool_use_id"], tool["id"]);
+        assert!(result["content"].as_str().unwrap().contains("not executed"));
+        assert!(history.iter().flat_map(|message| &message.content).any(|block| matches!(
+            block,
+            crate::types::ContentBlock::ToolCall { args, .. } if args == &serde_json::json!("{\"command\":")
+        )), "wire normalization must not erase the original partial arguments");
+        assert!(!loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn responses_disconnect_retries_with_partial_history_over_http() {
+        let attempts = std::sync::atomic::AtomicUsize::new(0);
+        let server = mock_server(move |_| {
+            let body = if attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                concat!(
+                    "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_partial\"}}\n\n",
+                    "data: {\"type\":\"response.reasoning_summary_text.delta\",\"output_index\":0,\"item_id\":\"rs_partial\",\"summary_index\":0,\"delta\":\"thinking\"}\n\n",
+                    "data: {\"type\":\"response.output_text.delta\",\"output_index\":1,\"delta\":\"part \"}\n\n",
+                )
+            } else {
+                concat!(
+                    "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"done\"}\n\n",
+                    "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n",
+                )
+            };
+            (200, "text/event-stream", body.to_string())
+        });
+        let client = Client::from_target(protocol_target(
+            &server.base_url,
+            schema::ProtocolConfig::OpenAiResponses(Default::default()),
+        ));
+        let loop_ = crate::agent::Loop::new(std::sync::Arc::new(client), "mock");
+        let text = loop_.run_streaming("hi".into(), |_| {}).await.unwrap();
+        assert_eq!(text, "part done");
+        let requests = server.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        let retry: Value = serde_json::from_str(&requests[1]).unwrap();
+        let input = retry["input"].as_array().unwrap();
+        assert!(
+            !input.iter().any(|item| item["type"] == "reasoning"),
+            "unfinished reasoning must not be replayed as a provider-owned item"
+        );
+        assert_eq!(input.last().unwrap()["role"], "user");
+        let partial = &input[input.len() - 2];
+        assert_eq!(partial["role"], "assistant");
+        assert_eq!(partial["content"][0]["text"], "part ");
+        assert!(!loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn stream_model_eof_is_retryable_for_every_protocol() {
+        for protocol in [
+            schema::ProtocolConfig::OpenAiResponses(Default::default()),
+            schema::ProtocolConfig::OpenAiChat(Default::default()),
+            schema::ProtocolConfig::AnthropicMessages(Default::default()),
+        ] {
+            let server = mock_server(|_| (200, "text/event-stream", ": heartbeat\n\n".into()));
+            let client = Client::from_target(protocol_target(&server.base_url, protocol));
+            let events: Vec<_> = client
+                .stream_model(canonical_request())
+                .await
+                .unwrap()
+                .collect()
+                .await;
+            assert!(
+                matches!(events.last(), Some(schema::ModelStreamEvent::Error { message })
+                if message.starts_with(UPSTREAM_DISCONNECTED))
+            );
+            assert!(!events
+                .iter()
+                .any(|event| matches!(event, schema::ModelStreamEvent::Finish { .. })));
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_disconnect_after_finish_does_not_retry_a_completed_response() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader, Read, Write};
+            let (socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
+            let mut reader = BufReader::new(socket);
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+            }
+            reader.read_exact(&mut vec![0; length]).unwrap();
+            let mut socket = reader.into_inner();
+            let body = "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]}\n\n";
+            // HTTP is truncated, but the model's terminal frame arrived intact.
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len() + 100).unwrap();
+        });
+        let client = Client::from_target(chat_target(
+            &format!("http://127.0.0.1:{port}"),
+            "secret",
+            None,
+            None,
+        ));
+        let events: Vec<_> = client
+            .stream_model(canonical_request())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        server.join().unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            schema::ModelStreamEvent::Finish {
+                reason: schema::FinishReason::Stop,
+                ..
+            }
+        )));
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event, schema::ModelStreamEvent::Error { .. })));
     }
 
     #[tokio::test]

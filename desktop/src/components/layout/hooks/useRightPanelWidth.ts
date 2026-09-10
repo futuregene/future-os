@@ -1,5 +1,6 @@
 import type { MouseEvent, RefObject } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { MIN_CENTER_PANEL_WIDTH, MIN_RIGHT_PANEL_WIDTH } from "./panelGeometry";
 
 /**
  * One shared width for the whole app session (sessionStorage → cleared on
@@ -14,8 +15,6 @@ const STORAGE_KEY = "future.rightPanelWidth";
  *  smallest supported window (1024px) both panels still fit.
  */
 export const RIGHT_PANEL_DEFAULT_WIDTH = 384;
-const MIN_RIGHT = 384;
-const MIN_CENTER = 384;
 
 function readStoredWidth(): number {
   try {
@@ -39,8 +38,8 @@ function clampWidth(desired: number, centerLeft: number): number {
   // Center is the priority: never let it fall below MIN_CENTER. On a window too
   // narrow to honor both floors, the upper bound wins and the right panel takes
   // whatever is left (Math.max keeps the range non-inverted).
-  const maxRight = Math.max(MIN_RIGHT, available - MIN_CENTER);
-  return Math.min(Math.max(Math.round(desired), MIN_RIGHT), maxRight);
+  const maxRight = Math.max(MIN_RIGHT_PANEL_WIDTH, available - MIN_CENTER_PANEL_WIDTH);
+  return Math.min(Math.max(Math.round(desired), MIN_RIGHT_PANEL_WIDTH), maxRight);
 }
 
 /**

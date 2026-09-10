@@ -53,7 +53,7 @@
     "deselectAll": "取消全选",
     "chatSectionActions": "对话区操作",
     "threadsSelected": "已选择 {{count}} 个",
-    "deleteSelected": "删除所选"
+    "deleteSelected": "删除"
   },
   "appShell": {
     "storeInitFailed": "FutureOS 本地存储初始化失败：",

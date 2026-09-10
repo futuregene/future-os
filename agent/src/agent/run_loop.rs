@@ -7,6 +7,9 @@ use tokio_stream::StreamExt;
 
 use super::{Loop, RunEvent, C_GREEN, C_MAGENTA, C_RESET, DEFAULT_MAX_TURNS};
 
+// Separate from HTTP request retries: five additional attempts per model step.
+const MAX_STREAM_RETRIES: usize = 5;
+
 #[derive(Debug, Default)]
 struct AccumulatedReasoningBlock {
     id: String,
@@ -157,28 +160,6 @@ fn push_finalized_tool_call(
     record_assistant_block(order, AssistantBlockOrder::Tool(index));
 }
 
-/// Per-event idle windows (stream, complete-tool-call) by thinking budget.
-/// High-reasoning models legitimately pause tens of seconds between token
-/// bursts (e.g. while generating tool-call argument JSON after thinking), so
-/// the truncation guard must only fire on genuinely dead streams. A too-tight
-/// window truncates a healthy xhigh run mid-tool-call (measured: DeepSeek
-/// xhigh went 45s+ silent right after emitting a tool-call header, killing
-/// the run at the old 45s limit). Truncation stays safe either way — skipped
-/// tool calls now get persisted placeholder results — but false truncations
-/// still burn turns and force retries.
-fn idle_timeouts_for(thinking_budget: i32) -> (Duration, Duration) {
-    if thinking_budget >= 16_000 {
-        // high / xhigh
-        (Duration::from_secs(180), Duration::from_secs(60))
-    } else if thinking_budget >= 8_000 {
-        // medium
-        (Duration::from_secs(120), Duration::from_secs(45))
-    } else {
-        // minimal / low / unset
-        (Duration::from_secs(90), Duration::from_secs(30))
-    }
-}
-
 impl Loop {
     pub async fn run_streaming_with_messages(
         &self,
@@ -223,6 +204,14 @@ impl Loop {
 
         let tool_defs: Vec<_> = self.tools.iter().map(|t| t.def.clone()).collect();
         let mut retry_attempt = 0;
+        let max_stream_retries = if self.config.max_retries > 0 {
+            MAX_STREAM_RETRIES
+        } else {
+            0
+        };
+        let mut stream_retry_attempt = 0;
+        let mut reconnecting = false;
+        let mut retry_text = String::new();
         let mut provider_limit_checkpoint_id: Option<String> = None;
 
         if self.verbose {
@@ -398,11 +387,30 @@ impl Loop {
                     }
                 }
             };
-            let work_messages: Vec<AgentMessage> = prompt
+            let mut work_messages: Vec<AgentMessage> = prompt
                 .messages
                 .into_iter()
                 .map(|projected| projected.message)
                 .collect();
+
+            // Make continuation explicit rather than relying on assistant
+            // prefill support. This is request-only recovery context, not a
+            // fabricated user submission in the durable conversation or UI.
+            if stream_retry_attempt > 0
+                && work_messages
+                    .last()
+                    .is_some_and(|message| message.role == "assistant")
+            {
+                let mut recovery = AgentMessage {
+                    role: "user".into(),
+                    content: vec![ContentBlock::text(
+                        "[Automatic recovery after a connection interruption. Continue the original task from the preserved partial response. Do not repeat text already delivered or rerun completed tool calls.]",
+                    )],
+                    ..Default::default()
+                };
+                recovery.ensure_journal_entry_id();
+                work_messages.push(recovery);
+            }
 
             // Emit message_start
 
@@ -607,7 +615,7 @@ impl Loop {
             }
 
             // Process stream events
-            let mut assistant_text = String::new();
+            let mut assistant_text = retry_text.clone();
             let mut reasoning_blocks: Vec<AccumulatedReasoningBlock> = Vec::new();
             let mut text_blocks: Vec<AccumulatedTextBlock> = Vec::new();
             let mut assistant_block_order: Vec<AssistantBlockOrder> = Vec::new();
@@ -618,8 +626,8 @@ impl Loop {
             let mut was_outputting = false;
             let mut stream_error = None;
             let mut model_stream_failed = false;
-            // Set when the LLM layer signals the stream was cut off (idle
-            // timeout or premature EOF without a finish_reason / `[DONE]`).
+            // Set when the LLM layer reports a failure or the stream reaches
+            // EOF without a terminal event. Silence alone is not truncation.
             // The accumulated text is a prefix, not a finished answer.
             let mut stream_truncated = false;
             let mut saw_terminal_event = false;
@@ -628,67 +636,53 @@ impl Loop {
             let mut truncation_detected_by: Option<&'static str> = None;
 
             loop {
-                let (stream_idle, complete_tool_call_idle) =
-                    idle_timeouts_for(self.config.thinking_budget);
-                let event_idle_timeout = if current_tool_calls
-                    .iter()
-                    .any(|tc| tc.as_ref().map(tool_call_args_complete).unwrap_or(false))
-                {
-                    complete_tool_call_idle
-                } else {
-                    stream_idle
-                };
-
-                let mut event_timed_out = false;
-                let event = if let Some(ref mut irx) = interrupt_rx {
-                    match tokio::time::timeout(event_idle_timeout, async {
-                        tokio::select! {
-                            event_opt = rx.next() => event_opt,
-                            _ = irx.recv() => {
-                                stream_error = Some(anyhow!("interrupted"));
-                                None
-                            }
-                        }
-                    })
+                // No event deadline: providers can reason silently for minutes.
+                // Reuse the interrupt helper so flag-only cancellation also wakes
+                // this wait, even without an interrupt channel.
+                let model_event = match self
+                    .await_or_interrupt(rx.next(), interrupt_rx.as_mut())
                     .await
-                    {
-                        Ok(inner) => inner,
-                        Err(_) => {
-                            event_timed_out = true;
-                            None
-                        }
-                    }
-                } else {
-                    match tokio::time::timeout(event_idle_timeout, rx.next()).await {
-                        Ok(inner) => inner,
-                        Err(_) => {
-                            event_timed_out = true;
-                            None
-                        }
-                    }
-                };
-
-                let model_event = match event {
-                    Some(e) => e,
+                {
+                    Some(Some(event)) => event,
                     None => {
-                        // No event for the whole idle window means the LLM layer
-                        // went silent without delivering a terminal event — the
-                        // stream stalled. Mark it truncated so the turn ends as
-                        // `incomplete`, not a silent `complete`. (A normal end
-                        // arrives as the channel closing right after a `stop`,
-                        // which is not a timeout.)
-                        if event_timed_out || !saw_terminal_event {
+                        stream_error = Some(anyhow!("interrupted"));
+                        break;
+                    }
+                    Some(None) => {
+                        if !saw_terminal_event {
                             stream_truncated = true;
-                            truncation_detected_by.get_or_insert(if event_timed_out {
-                                "idle_timeout"
-                            } else {
-                                "eof_no_terminal"
-                            });
+                            truncation_detected_by.get_or_insert("eof_no_terminal");
                         }
                         break;
                     }
                 };
-                on_event(RunEvent::Model(model_event.clone()));
+                // HTTP headers alone do not mean recovery. Wait for real model
+                // progress; EOF cleanup/usage events must not clear the hint.
+                if reconnecting
+                    && matches!(
+                        &model_event,
+                        ModelStreamEvent::TextStart { .. }
+                            | ModelStreamEvent::TextDelta { .. }
+                            | ModelStreamEvent::ReasoningStart { .. }
+                            | ModelStreamEvent::ReasoningDelta { .. }
+                            | ModelStreamEvent::ToolInputStart { .. }
+                            | ModelStreamEvent::ToolInputDelta { .. }
+                            | ModelStreamEvent::Finish { .. }
+                    )
+                {
+                    reconnecting = false;
+                    on_event(RunEvent::StreamResumed);
+                }
+                // Clients treat `error` as terminal. Do not stop their stream
+                // for a disconnect that will be recovered below.
+                let retryable_disconnect = matches!(
+                    &model_event,
+                    ModelStreamEvent::Error { message }
+                        if message.starts_with(crate::llm::UPSTREAM_DISCONNECTED)
+                );
+                if !retryable_disconnect || stream_retry_attempt >= max_stream_retries {
+                    on_event(RunEvent::Model(model_event.clone()));
+                }
 
                 // Close the text-output block before switching to a different
                 // event type — text_end may never arrive from the LLM.
@@ -931,7 +925,6 @@ impl Loop {
                             error = %message,
                             "LLM model stream failed"
                         );
-                        saw_terminal_event = true;
                         model_stream_failed = true;
                         // A model-stream error always leaves the accumulated
                         // response as a prefix. Preserve both that fact and a
@@ -939,20 +932,38 @@ impl Loop {
                         // without matching reqwest/provider wording.
                         stream_truncated = true;
                         truncation_detected_by.get_or_insert(
-                            if message.contains("[UPSTREAM_DISCONNECTED]") {
+                            if message.starts_with(crate::llm::UPSTREAM_DISCONNECTED) {
                                 "upstream_disconnected"
                             } else {
                                 "model_response_error"
                             },
                         );
                         stream_error = Some(anyhow!(message));
+                        break;
                     }
                 }
             }
 
+            // Release the HTTP pump before potentially slow persistence during
+            // cancellation. Its tx.closed() branch drops the upstream response.
+            drop(rx);
+
             for tc_opt in current_tool_calls.iter_mut() {
                 if let Some(tc) = tc_opt.take() {
                     push_finalized_tool_call(&mut agent_tool_calls, &mut assistant_block_order, tc);
+                }
+            }
+
+            // Apply this LLM call's final cost to cumulative_cost, once per
+            // call (total_usage holds the LAST complete usage chunk — adding
+            // every intermediate chunk would inflate the total N×). Future
+            // providers report an authoritative `credit_cost`; when absent
+            // (most other providers), fall back to a token×price estimate so
+            // mixed-model sessions still account for every request.
+            if let Some(ref u) = total_usage {
+                let cost = u.credit_cost.unwrap_or_else(|| self.estimate_usage_cost(u));
+                if cost > 0.0 {
+                    *self.cumulative_cost.lock() += cost;
                 }
             }
 
@@ -963,66 +974,132 @@ impl Loop {
             // placeholder tool-result messages, otherwise the LLM API rejects
             // the conversation on resume (HTTP 400: "assistant message with
             // tool_calls must be followed by tool messages").
-            let build_partial_assistant =
-                |messages: &mut Vec<AgentMessage>,
-                 assistant_block_order: &[AssistantBlockOrder],
-                 reasoning_blocks: &[AccumulatedReasoningBlock],
-                 text_blocks: &[AccumulatedTextBlock],
-                 tool_calls: &[AgentToolCall]| {
-                    let first_new_message = messages.len();
-                    let msg = AgentMessage {
-                        role: "assistant".to_string(),
-                        content: assemble_assistant_content(
-                            assistant_block_order,
-                            reasoning_blocks,
-                            text_blocks,
-                            tool_calls,
-                        ),
-                        ..Default::default()
-                    };
-                    // Don't push an empty assistant — the LLM API rejects
-                    // messages with neither content nor tool_calls.
-                    if !msg.content.is_empty() {
-                        messages.push(msg);
-                    }
-                    // Append placeholder tool-result for every unexecuted
-                    // tool call so the conversation remains API-valid.
-                    for tc in tool_calls {
-                        let cancelled = format!(
-                            "[Tool execution cancelled — {} was not executed due to interrupt]",
-                            tc.name
-                        );
-                        messages.push(AgentMessage {
-                            role: "tool".to_string(),
-                            content: vec![ContentBlock::tool_result(
-                                tc.id.clone(),
-                                &cancelled,
-                                false,
-                            )],
-                            name: tc.name.clone(),
-                            ..Default::default()
-                        });
-                    }
-                    // Partial output is part of the authoritative conversation,
-                    // just like a normally completed assistant/tool message.
-                    // Persist every entry added by this interrupt path so the
-                    // append-only terminal commit cannot leave memory and JSONL
-                    // permanently divergent after abort/restart.
-                    if let Some(ref save) = ctx.save_callback {
-                        for message in &mut messages[first_new_message..] {
-                            save(message);
-                        }
-                    }
+            let build_partial_assistant = |messages: &mut Vec<AgentMessage>,
+                                           assistant_block_order: &[AssistantBlockOrder],
+                                           reasoning_blocks: &[AccumulatedReasoningBlock],
+                                           text_blocks: &[AccumulatedTextBlock],
+                                           tool_calls: &[AgentToolCall],
+                                           reason: &str| {
+                let first_new_message = messages.len();
+                let msg = AgentMessage {
+                    role: "assistant".to_string(),
+                    content: assemble_assistant_content(
+                        assistant_block_order,
+                        reasoning_blocks,
+                        text_blocks,
+                        tool_calls,
+                    ),
+                    ..Default::default()
                 };
+                // Don't push an empty assistant — the LLM API rejects
+                // messages with neither content nor tool_calls.
+                if !msg.content.is_empty() {
+                    messages.push(msg);
+                }
+                // Append placeholder tool-result for every unexecuted
+                // tool call so the conversation remains API-valid.
+                for tc in tool_calls {
+                    let cancelled = format!(
+                        "[Tool execution cancelled — {} was not executed due to {reason}]",
+                        tc.name
+                    );
+                    messages.push(AgentMessage {
+                        role: "tool".to_string(),
+                        content: vec![ContentBlock::tool_result(tc.id.clone(), &cancelled, false)],
+                        name: tc.name.clone(),
+                        ..Default::default()
+                    });
+                }
+                // Partial output is part of the authoritative conversation,
+                // just like a normally completed assistant/tool message.
+                // Persist every entry added by this interrupt path so the
+                // append-only terminal commit cannot leave memory and JSONL
+                // permanently divergent after abort/restart.
+                if let Some(ref save) = ctx.save_callback {
+                    for message in &mut messages[first_new_message..] {
+                        save(message);
+                    }
+                }
+            };
 
             // Check for stream errors, and for a pending interrupt that
             // arrived during the API call or last stream event (tokio::select!
             // can pick stream end over the interrupt channel). Both land on
             // the same partial-assistant exit; the single-line closure keeps
             // the test-unreproducible race edge off its own line.
-            let interrupted_after_stream = interrupt_rx
-                .as_mut()
-                .is_some_and(|irx| irx.try_recv().is_ok());
+            let interrupted_after_stream = self.is_interrupted()
+                || interrupt_rx
+                    .as_mut()
+                    .is_some_and(|irx| irx.try_recv().is_ok());
+            let disconnected = matches!(
+                truncation_detected_by,
+                Some("upstream_disconnected" | "eof_no_terminal")
+            );
+            if disconnected
+                && !interrupted_after_stream
+                && stream_retry_attempt < max_stream_retries
+            {
+                // Resume from durable history, never from the beginning of the
+                // run. This step's tools have not executed: pair even partial
+                // calls with skipped results before sending history upstream.
+                build_partial_assistant(
+                    &mut messages,
+                    &assistant_block_order,
+                    &reasoning_blocks,
+                    &text_blocks,
+                    &agent_tool_calls,
+                    "connection interruption (retrying)",
+                );
+                for tc in &agent_tool_calls {
+                    let output = format!(
+                        "[Tool execution cancelled — {} was not executed due to connection interruption (retrying)]",
+                        tc.name
+                    );
+                    on_event(RunEvent::ToolExecutionFinished {
+                        id: tc.id.clone(),
+                        name: tc.name.clone(),
+                        output: output.clone(),
+                        error: Some(output),
+                        exit_code: None,
+                        is_soft_fail: None,
+                        target_path: None,
+                    });
+                }
+                // Close a possibly unfinished reasoning display before the
+                // next attempt. No synthetic reasoning metadata is persisted.
+                for block in &reasoning_blocks {
+                    on_event(RunEvent::Model(ModelStreamEvent::ReasoningEnd {
+                        id: block.id.clone(),
+                        provider_metadata: block.provider_metadata.clone(),
+                    }));
+                }
+                retry_text = assistant_text;
+                stream_retry_attempt += 1;
+                let delay_ms = 2000_u64 << (stream_retry_attempt - 1);
+                reconnecting = true;
+                on_event(RunEvent::StreamRetry {
+                    attempt: stream_retry_attempt,
+                    max_retries: max_stream_retries,
+                    delay_ms,
+                });
+                tracing::warn!(
+                    turn,
+                    attempt = stream_retry_attempt,
+                    max_retries = max_stream_retries,
+                    delay_ms,
+                    error = ?stream_error,
+                    "LLM stream disconnected; reconnecting"
+                );
+                if self
+                    .sleep_or_interrupt(Duration::from_millis(delay_ms), interrupt_rx.as_mut())
+                    .await
+                {
+                    return Ok((String::new(), messages));
+                }
+                // Opening another HTTP stream is not success: only a complete
+                // model step resets this budget. Retries do not consume turns.
+                continue;
+            }
             if stream_error.is_some() || interrupted_after_stream {
                 build_partial_assistant(
                     &mut messages,
@@ -1030,6 +1107,7 @@ impl Loop {
                     &reasoning_blocks,
                     &text_blocks,
                     &agent_tool_calls,
+                    "interrupt",
                 );
                 if model_stream_failed {
                     self.stream_incomplete
@@ -1083,19 +1161,6 @@ impl Loop {
                 .map(agent_tool_call_to_tool_call)
                 .collect();
 
-            // Apply this LLM call's final cost to cumulative_cost, once per
-            // call (total_usage holds the LAST complete usage chunk — adding
-            // every intermediate chunk would inflate the total N×). Future
-            // providers report an authoritative `credit_cost`; when absent
-            // (most other providers), fall back to a token×price estimate so
-            // mixed-model sessions still account for every request.
-            if let Some(ref u) = total_usage {
-                let cost = u.credit_cost.unwrap_or_else(|| self.estimate_usage_cost(u));
-                if cost > 0.0 {
-                    *self.cumulative_cost.lock() += cost;
-                }
-            }
-
             // Stream was truncated mid-reply: the assistant text is a prefix,
             // not a finished answer. End the turn as `incomplete` (keeping the
             // partial text so it isn't lost) rather than presenting a cut-off
@@ -1134,6 +1199,9 @@ impl Loop {
                 );
                 return Ok((assistant_text, messages));
             }
+
+            stream_retry_attempt = 0;
+            retry_text.clear();
 
             // Check stop condition. The is_some_and closure keeps the None
             // edge branchless (a nested if's closing brace here collected a
@@ -1348,16 +1416,6 @@ impl Loop {
     }
 }
 
-fn tool_call_args_complete(tool_call: &AgentToolCall) -> bool {
-    match &tool_call.args {
-        serde_json::Value::String(raw) => serde_json::from_str::<serde_json::Value>(raw)
-            .map(|value| value.is_object())
-            .unwrap_or(false),
-        serde_json::Value::Object(_) => true,
-        _ => false,
-    }
-}
-
 /// Merge a repeated tool-input start (same tool id at the same stream index)
 /// into the pending call's args, returning true when the event was consumed
 /// as a repeat. Always prefers the longer args string — it's more complete:
@@ -1537,13 +1595,17 @@ mod tests {
         Events(Vec<ModelStreamEvent>),
         /// Fail the stream_model call itself.
         Fail(String),
-        /// Send the events, then go silent forever (channel stays open).
+        /// Send the events, then go silent until the consumer cancels.
         PartialThenStall(Vec<ModelStreamEvent>),
+        /// Delay each event by the specified duration, then close normally.
+        TimedEvents(Vec<(Duration, ModelStreamEvent)>),
     }
 
     struct ScriptedProvider {
         scripts: parking_lot::Mutex<std::collections::VecDeque<Script>>,
         system_prompts: parking_lot::Mutex<Vec<String>>,
+        requests: parking_lot::Mutex<Vec<Vec<AgentMessage>>>,
+        request_times: parking_lot::Mutex<Vec<tokio::time::Instant>>,
     }
 
     impl ScriptedProvider {
@@ -1551,6 +1613,8 @@ mod tests {
             Arc::new(Self {
                 scripts: parking_lot::Mutex::new(scripts.into()),
                 system_prompts: parking_lot::Mutex::new(vec![]),
+                requests: parking_lot::Mutex::new(vec![]),
+                request_times: parking_lot::Mutex::new(vec![]),
             })
         }
     }
@@ -1576,6 +1640,8 @@ mod tests {
                 return Ok(ReceiverStream::new(rx));
             }
             self.system_prompts.lock().push(request.system_prompt);
+            self.requests.lock().push(request.messages);
+            self.request_times.lock().push(tokio::time::Instant::now());
             let script = self
                 .scripts
                 .lock()
@@ -1595,7 +1661,22 @@ mod tests {
                     for event in events {
                         let _ = tx.try_send(event);
                     }
-                    std::mem::forget(tx); // keep the stream open forever
+                    tokio::spawn(async move { tx.closed().await });
+                    Ok(ReceiverStream::new(rx))
+                }
+                Script::TimedEvents(events) => {
+                    let (tx, rx) = mpsc::channel(events.len().max(1));
+                    tokio::spawn(async move {
+                        for (delay, event) in events {
+                            tokio::select! {
+                                _ = tx.closed() => return,
+                                _ = tokio::time::sleep(delay) => {}
+                            }
+                            if tx.send(event).await.is_err() {
+                                return;
+                            }
+                        }
+                    });
                     Ok(ReceiverStream::new(rx))
                 }
                 Script::Fail(error) => Err(anyhow!(error)),
@@ -2280,6 +2361,389 @@ mod tests {
         );
     }
 
+    fn ev_disconnect() -> ModelStreamEvent {
+        ModelStreamEvent::Error {
+            message: format!("{} connection reset", crate::llm::UPSTREAM_DISCONNECTED),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn stream_retry_succeeds_on_fifth_retry_without_consuming_turns() {
+        let mut scripts: Vec<_> = (0..5)
+            .map(|_| Script::Events(vec![ev_text("part "), ev_disconnect()]))
+            .collect();
+        scripts.push(Script::Events(vec![ev_text("done"), ev_stop()]));
+        let provider = ScriptedProvider::new(scripts);
+        let loop_ = Loop::new(provider.clone(), "mock").with_config(crate::types::AgentConfig {
+            max_turns: 1,
+            ..Default::default()
+        });
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let saved = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let (text, messages) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext {
+                    save_callback: Some({
+                        let saved = saved.clone();
+                        Arc::new(move |message| saved.lock().push(message.clone()))
+                    }),
+                    ..Default::default()
+                },
+                noop_on_text,
+                {
+                    let events = events.clone();
+                    move |event| events.lock().push(event)
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "part part part part part done");
+        assert_eq!(messages.len(), 7);
+        assert_eq!(saved.lock().len(), 6);
+        let requests = provider.requests.lock();
+        assert_eq!(requests.len(), 6, "initial request plus five retries");
+        for (attempt, request) in requests.iter().enumerate() {
+            assert_eq!(request.len(), attempt + 1 + usize::from(attempt > 0));
+            assert!(request
+                .iter()
+                .skip(1)
+                .take(attempt)
+                .all(|message| message.text() == "part "));
+            assert_eq!(request.last().unwrap().role, "user");
+        }
+        let times = provider.request_times.lock();
+        let delays: Vec<_> = times
+            .windows(2)
+            .map(|pair| (pair[1] - pair[0]).as_secs())
+            .collect();
+        assert_eq!(delays, vec![2, 4, 8, 16, 32]);
+        let lifecycle: Vec<_> = events
+            .lock()
+            .iter()
+            .filter_map(|event| match event {
+                RunEvent::StreamRetry {
+                    attempt,
+                    max_retries,
+                    delay_ms,
+                } => Some(format!("retry:{attempt}/{max_retries}:{delay_ms}")),
+                RunEvent::StreamResumed => Some("resumed".into()),
+                _ => None,
+            })
+            .collect();
+        let expected: Vec<_> = (1..=5)
+            .flat_map(|attempt| {
+                [
+                    format!("retry:{attempt}/5:{}", 2000_u64 << (attempt - 1)),
+                    "resumed".into(),
+                ]
+            })
+            .collect();
+        assert_eq!(lifecycle, expected);
+        {
+            let events = events.lock();
+            for (index, event) in events.iter().enumerate() {
+                if matches!(event, RunEvent::StreamResumed) {
+                    assert!(matches!(
+                        events[index + 1],
+                        RunEvent::Model(ModelStreamEvent::TextDelta { .. })
+                    ));
+                }
+            }
+        }
+        assert!(!events
+            .lock()
+            .iter()
+            .any(|event| matches!(event, RunEvent::Model(ModelStreamEvent::Error { .. }))));
+        assert!(!loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+        assert!(loop_.stream_truncation.lock().is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn stream_retry_does_not_resume_on_usage_or_eof_cleanup() {
+        let scripts = (0..6)
+            .map(|_| {
+                Script::Events(vec![
+                    ModelStreamEvent::Usage(Default::default()),
+                    ModelStreamEvent::ReasoningEnd {
+                        id: "r".into(),
+                        provider_metadata: Default::default(),
+                    },
+                    ev_disconnect(),
+                ])
+            })
+            .collect();
+        let loop_ = Loop::new(ScriptedProvider::new(scripts), "mock");
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                {
+                    let events = events.clone();
+                    move |event| events.lock().push(event)
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let events = events.lock();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, RunEvent::StreamRetry { .. }))
+                .count(),
+            5
+        );
+        assert!(!events.iter().any(|e| matches!(e, RunEvent::StreamResumed)));
+        assert!(matches!(
+            events.last(),
+            Some(RunEvent::Model(ModelStreamEvent::Error { .. }))
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn stream_retry_exhaustion_is_bounded_for_disconnects_and_bare_eof() {
+        for explicit_error in [true, false] {
+            let scripts = (0..6)
+                .map(|_| {
+                    let mut events = vec![ev_text("part")];
+                    if explicit_error {
+                        events.push(ev_disconnect());
+                    }
+                    Script::Events(events)
+                })
+                .collect();
+            let provider = ScriptedProvider::new(scripts);
+            let loop_ = Loop::new(provider.clone(), "mock");
+            let errors = Arc::new(parking_lot::Mutex::new(Vec::new()));
+            let (_, messages) = loop_
+                .run_streaming_with_messages(
+                    user_messages("hi"),
+                    &StreamContext::default(),
+                    noop_on_text,
+                    {
+                        let errors = errors.clone();
+                        move |event| {
+                            if let RunEvent::Model(ModelStreamEvent::Error { message }) = event {
+                                errors.lock().push(message);
+                            }
+                        }
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+            assert_eq!(provider.requests.lock().len(), 6);
+            assert_eq!(messages.len(), 7, "all partial replies survive exhaustion");
+            assert_eq!(errors.lock().len(), usize::from(explicit_error));
+            assert!(loop_
+                .stream_incomplete
+                .load(std::sync::atomic::Ordering::SeqCst));
+            assert_eq!(
+                loop_.stream_truncation.lock().as_ref().unwrap().detected_by,
+                if explicit_error {
+                    "upstream_disconnected"
+                } else {
+                    "eof_no_terminal"
+                }
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn stream_retry_preserves_executed_tools_and_skips_interrupted_calls() {
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![
+                ev_toolcall_start(0, "executed", "echo", "{}"),
+                ev_toolcall_end(),
+                ev_stop(),
+            ]),
+            // Even syntactically complete arguments must not be executed until
+            // the provider finishes this response successfully.
+            Script::Events(vec![
+                ev_toolcall_start(0, "skipped", "echo", "{}"),
+                ev_toolcall_end(),
+                ev_disconnect(),
+            ]),
+            Script::Events(vec![
+                ev_toolcall_start(0, "retried", "echo", "{}"),
+                ev_toolcall_end(),
+                ev_stop(),
+            ]),
+            Script::Events(vec![ev_text("done"), ev_stop()]),
+        ]);
+        let loop_ = Loop::new(provider.clone(), "mock").with_tools(vec![echo_tool()]);
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                {
+                    let events = events.clone();
+                    move |event| events.lock().push(event)
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "done");
+        let requests = provider.requests.lock();
+        assert_eq!(requests.len(), 4);
+        let history = &requests[2];
+        assert_eq!(history.iter().filter(|m| m.role == "tool").count(), 2);
+        assert!(history[2].text().contains("echo:"));
+        assert!(history[4]
+            .text()
+            .contains("not executed due to connection interruption"));
+        let events = events.lock();
+        let executed: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                RunEvent::ToolExecutionStarted { id, .. } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(executed, vec!["executed", "retried"]);
+        assert!(events.iter().any(|event| matches!(event,
+            RunEvent::ToolExecutionFinished { id, error: Some(_), .. } if id == "skipped")));
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn stream_retry_budget_resets_only_after_a_successful_model_step() {
+        let mut scripts: Vec<_> = (0..5)
+            .map(|_| Script::Events(vec![ev_disconnect()]))
+            .collect();
+        scripts.push(Script::Events(vec![
+            ev_toolcall_start(0, "call", "echo", "{}"),
+            ev_toolcall_end(),
+            ev_stop(),
+        ]));
+        scripts.extend((0..5).map(|_| Script::Events(vec![ev_disconnect()])));
+        scripts.push(Script::Events(vec![ev_text("done"), ev_stop()]));
+        let provider = ScriptedProvider::new(scripts);
+        let loop_ = Loop::new(provider.clone(), "mock").with_tools(vec![echo_tool()]);
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "done");
+        assert_eq!(provider.requests.lock().len(), 12);
+        assert!(!loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn stream_retry_backoff_can_be_cancelled_by_channel_or_flag() {
+        for use_channel in [true, false] {
+            let provider = ScriptedProvider::new(vec![Script::Events(vec![
+                ev_text("partial"),
+                ev_disconnect(),
+            ])]);
+            let loop_ = Loop::new(provider.clone(), "mock");
+            let flag = loop_.interrupt_flag.clone();
+            let (tx, rx) = mpsc::channel(1);
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                if use_channel {
+                    tx.send(()).await.unwrap();
+                } else {
+                    flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            });
+            let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+            let start = tokio::time::Instant::now();
+            let (_, messages) = loop_
+                .run_streaming_with_messages(
+                    user_messages("hi"),
+                    &StreamContext::default(),
+                    noop_on_text,
+                    {
+                        let events = events.clone();
+                        move |event| events.lock().push(event)
+                    },
+                    if use_channel { Some(rx) } else { None },
+                )
+                .await
+                .unwrap();
+            assert!(start.elapsed() < Duration::from_secs(2));
+            assert_eq!(provider.requests.lock().len(), 1);
+            assert_eq!(messages[1].text(), "partial");
+            assert!(matches!(
+                events.lock().last(),
+                Some(RunEvent::StreamRetry { attempt: 1, .. })
+            ));
+            assert!(!events
+                .lock()
+                .iter()
+                .any(|event| matches!(event, RunEvent::StreamResumed)));
+            assert!(!loop_
+                .stream_incomplete
+                .load(std::sync::atomic::Ordering::SeqCst));
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn stream_retry_keeps_reported_cost_from_interrupted_attempts() {
+        let usage = |cost| {
+            ModelStreamEvent::Usage(crate::types::Usage {
+                credit_cost: Some(cost),
+                ..Default::default()
+            })
+        };
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![usage(1.0), usage(2.0), ev_disconnect()]),
+            Script::Events(vec![ev_text("done"), usage(0.5), ev_stop()]),
+        ]);
+        let loop_ = Loop::new(provider, "mock");
+        loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(*loop_.cumulative_cost.lock(), 2.5);
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn stream_retry_honors_disabled_auto_retry() {
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_disconnect()])]);
+        let loop_ = Loop::new(provider.clone(), "mock").with_config(crate::types::AgentConfig {
+            max_retries: 0,
+            ..Default::default()
+        });
+        loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(provider.requests.lock().len(), 1);
+        assert!(loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn run_marks_truncated_stop_as_incomplete() {
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
@@ -2480,11 +2944,73 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn run_times_out_a_stalled_stream() {
-        let provider =
-            ScriptedProvider::new(vec![Script::PartialThenStall(vec![ev_text("stuck")])]);
-        let loop_ = Loop::new(provider, "mock");
-        let (text, _) = loop_
+    async fn long_silence_before_and_during_reasoning_does_not_truncate() {
+        for budget in [0, 8_000, 16_000, 24_000] {
+            let metadata = serde_json::json!({
+                "openai": {"id": "rs_1", "encrypted_content": "cipher", "summary": []}
+            })
+            .as_object()
+            .unwrap()
+            .clone();
+            let provider = ScriptedProvider::new(vec![Script::TimedEvents(vec![
+                (
+                    Duration::from_secs(300),
+                    ModelStreamEvent::ReasoningStart { id: "rs_1".into() },
+                ),
+                (
+                    Duration::from_secs(300),
+                    ModelStreamEvent::ReasoningEnd {
+                        id: "rs_1".into(),
+                        provider_metadata: metadata,
+                    },
+                ),
+                (Duration::ZERO, ev_text("finished after thinking")),
+                (Duration::ZERO, ev_stop()),
+            ])]);
+            let loop_ = Loop::new(provider, "mock").with_config(crate::types::AgentConfig {
+                thinking_budget: budget,
+                ..Default::default()
+            });
+            let (_interrupt_tx, interrupt_rx) = mpsc::channel(1);
+            let (text, messages) = loop_
+                .run_streaming_with_messages(
+                    user_messages("hi"),
+                    &StreamContext::default(),
+                    noop_on_text,
+                    |_| {},
+                    Some(interrupt_rx),
+                )
+                .await
+                .unwrap();
+            assert_eq!(text, "finished after thinking", "budget={budget}");
+            assert!(!loop_
+                .stream_incomplete
+                .load(std::sync::atomic::Ordering::SeqCst));
+            assert!(
+                matches!(&messages[1].content[0], ContentBlock::Reasoning { text, provider_metadata }
+                if text.is_empty() && provider_metadata["openai"]["encrypted_content"] == "cipher")
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn long_silence_after_complete_tool_arguments_does_not_skip_execution() {
+        let provider = ScriptedProvider::new(vec![
+            Script::TimedEvents(vec![
+                (Duration::ZERO, ev_toolcall_start(0, "c1", "echo", "{}")),
+                (Duration::from_secs(300), ev_toolcall_end()),
+                (
+                    Duration::ZERO,
+                    ModelStreamEvent::Finish {
+                        reason: FinishReason::ToolCalls,
+                        usage: None,
+                    },
+                ),
+            ]),
+            Script::Events(vec![ev_text("done"), ev_stop()]),
+        ]);
+        let loop_ = Loop::new(provider, "mock").with_tools(vec![echo_tool()]);
+        let (text, messages) = loop_
             .run_streaming_with_messages(
                 user_messages("hi"),
                 &StreamContext::default(),
@@ -2494,8 +3020,61 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(text, "stuck");
-        assert!(loop_
+        assert_eq!(text, "done");
+        assert!(!loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+        let results: Vec<_> = messages.iter().filter(|m| m.role == "tool").collect();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].text().contains("echo:"));
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn long_silence_can_be_cancelled_by_flag_without_losing_partial_history() {
+        let provider = ScriptedProvider::new(vec![Script::PartialThenStall(vec![
+            ev_text("partial"),
+            ev_toolcall_start(0, "c1", "echo", "{}"),
+        ])]);
+        let loop_ = Loop::new(provider, "mock").with_tools(vec![echo_tool()]);
+        let flag = loop_.interrupt_flag.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(300)).await;
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        let saved = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let ctx = StreamContext {
+            save_callback: Some({
+                let saved = saved.clone();
+                Arc::new(move |message: &mut AgentMessage| saved.lock().push(message.clone()))
+            }),
+            ..Default::default()
+        };
+        let start = tokio::time::Instant::now();
+        let (text, messages) = tokio::time::timeout(
+            Duration::from_secs(301),
+            loop_.run_streaming_with_messages(
+                user_messages("hi"),
+                &ctx,
+                noop_on_text,
+                |_| {},
+                None,
+            ),
+        )
+        .await
+        .expect("flag-only cancellation must wake a silent stream")
+        .unwrap();
+        assert!(start.elapsed() >= Duration::from_secs(300));
+        assert!(text.is_empty());
+        assert_eq!(messages[1].text(), "partial");
+        assert!(messages[2]
+            .text()
+            .contains("was not executed due to interrupt"));
+        assert_eq!(
+            saved.lock().len(),
+            2,
+            "partial reply and tool placeholder are durable"
+        );
+        assert!(!loop_
             .stream_incomplete
             .load(std::sync::atomic::Ordering::SeqCst));
     }
@@ -3081,21 +3660,6 @@ mod tests {
     // ── pure helpers ────────────────────────────────────────────────────────
 
     #[test]
-    fn tool_call_args_complete_checks_json_balance() {
-        let mut call = AgentToolCall {
-            id: "c1".to_string(),
-            name: "echo".to_string(),
-            args: serde_json::Value::String("{\"a\":1}".to_string()),
-            provider_metadata: Default::default(),
-        };
-        assert!(tool_call_args_complete(&call));
-        call.args = serde_json::Value::String("{\"a\":1".to_string());
-        assert!(!tool_call_args_complete(&call));
-        call.args = serde_json::Value::Null;
-        assert!(!tool_call_args_complete(&call));
-    }
-
-    #[test]
     fn finalize_agent_tool_call_parses_and_repairs_args() {
         let complete = AgentToolCall {
             id: "c1".to_string(),
@@ -3395,97 +3959,6 @@ mod tests {
         flag.store(true, std::sync::atomic::Ordering::SeqCst);
         let (text, _) = runner.await.unwrap().unwrap();
         assert_eq!(text, "");
-    }
-
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn run_stream_idle_timeout_with_interrupt_channel() {
-        let provider =
-            ScriptedProvider::new(vec![Script::PartialThenStall(vec![ev_text("stuck")])]);
-        let loop_ = Loop::new(provider, "mock");
-        let (_interrupt_tx, interrupt_rx) = mpsc::channel::<()>(1);
-        let (text, _) = loop_
-            .run_streaming_with_messages(
-                user_messages("hi"),
-                &StreamContext::default(),
-                noop_on_text,
-                |_| {},
-                Some(interrupt_rx),
-            )
-            .await
-            .unwrap();
-        assert_eq!(text, "stuck");
-        assert!(loop_
-            .stream_incomplete
-            .load(std::sync::atomic::Ordering::SeqCst));
-    }
-
-    #[test]
-    fn idle_timeouts_scale_with_thinking_budget() {
-        use super::idle_timeouts_for;
-        assert_eq!(
-            idle_timeouts_for(0),
-            (Duration::from_secs(90), Duration::from_secs(30))
-        );
-        assert_eq!(
-            idle_timeouts_for(4_000),
-            (Duration::from_secs(90), Duration::from_secs(30))
-        );
-        assert_eq!(
-            idle_timeouts_for(8_000),
-            (Duration::from_secs(120), Duration::from_secs(45))
-        );
-        assert_eq!(
-            idle_timeouts_for(16_000),
-            (Duration::from_secs(180), Duration::from_secs(60))
-        );
-        assert_eq!(
-            idle_timeouts_for(24_000),
-            (Duration::from_secs(180), Duration::from_secs(60))
-        );
-    }
-
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn xhigh_budget_tolerates_silence_beyond_the_old_45s_limit() {
-        // Regression for the 2026-08-24 incident: DeepSeek xhigh emitted a
-        // tool-call header, then went silent while generating argument JSON;
-        // the old flat 45s window truncated the run mid-tool-call. With an
-        // xhigh budget the stream window is 180s, so a 60s silence must NOT
-        // truncate; only the full window expiry ends the turn.
-        let provider = ScriptedProvider::new(vec![Script::PartialThenStall(vec![ev_text("tick")])]);
-        let config = crate::types::AgentConfig {
-            thinking_budget: 24_000,
-            ..Default::default()
-        };
-        let loop_ = std::sync::Arc::new(Loop::new(provider, "mock").with_config(config));
-        let handle = {
-            let loop_ = loop_.clone();
-            tokio::spawn(async move {
-                loop_
-                    .run_streaming_with_messages(
-                        user_messages("hi"),
-                        &StreamContext::default(),
-                        noop_on_text,
-                        |_| {},
-                        None,
-                    )
-                    .await
-            })
-        };
-        // 60s of silence: comfortably past the old 45s limit, still inside
-        // the xhigh 180s window — the run must still be waiting, not
-        // truncated.
-        tokio::time::advance(Duration::from_secs(60)).await;
-        assert!(
-            !handle.is_finished(),
-            "60s silence must not truncate an xhigh run (old 45s limit did)"
-        );
-        // Cross the full 180s window — now the stall guard fires.
-        tokio::time::advance(Duration::from_secs(130)).await;
-        let (text, _) = handle.await.unwrap().unwrap();
-        assert_eq!(text, "tick");
-        assert!(loop_
-            .stream_incomplete
-            .load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
@@ -3849,7 +4322,10 @@ mod tests {
         let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_toolcall_start(
             0, "t1", "echo", "{}",
         )])]);
-        let loop_ = Loop::new(provider, "mock");
+        let loop_ = Loop::new(provider, "mock").with_config(crate::types::AgentConfig {
+            max_retries: 0,
+            ..Default::default()
+        });
         loop_
             .run_streaming_with_messages(
                 user_messages("hi"),

@@ -1,7 +1,7 @@
 import type { StoredThread } from "../../integrations/storage/threadStore";
 import type { ThreadRunInfo } from "./hooks/useThreadStore";
 import { ChevronDown, ChevronRight, CircleAlert, MoreHorizontal } from "lucide-react";
-import { memo } from "react";
+import { memo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
 import { cn } from "../../lib/cn";
@@ -72,9 +72,14 @@ function ThreadListItemImpl({
   onToggleSelection?: (thread: StoredThread) => void;
 }) {
   const { t } = useTranslation("layout");
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useDismissableLayer<HTMLDivElement>({
     enabled: menuOpen,
     onDismiss: () => onMenuOpenChange(thread, false),
+    onEscapeDismiss: () => {
+      onMenuOpenChange(thread, false);
+      menuButtonRef.current?.focus();
+    },
   });
 
   // Agent session_name is authoritative; DB title is fallback.
@@ -146,28 +151,16 @@ function ThreadListItemImpl({
       {archived ? <span className="pointer-events-none shrink-0 text-[11px] text-ink-muted group-hover/thread:hidden">{t("activityRail.archived")}</span> : null}
       {selectionMode
         ? (
-            <button
+            <input
               aria-label={t("activityRail.selectThread", { title: displayTitle })}
-              className={cn(
-                "relative z-10 flex size-5 shrink-0 items-center justify-center rounded transition-colors",
-                selected
-                  ? "bg-accent text-white"
-                  : "border border-line-soft text-transparent hover:border-line",
-              )}
-              onClick={(event) => {
+              checked={selected}
+              className="relative z-10 size-5 shrink-0 rounded border-line accent-accent"
+              onChange={(event) => {
                 event.stopPropagation();
                 onToggleSelection?.(thread);
               }}
-              type="button"
-            >
-              {selected
-                ? (
-                    <svg className="size-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                    </svg>
-                  )
-                : null}
-            </button>
+              type="checkbox"
+            />
           )
         : (
             <>
@@ -186,6 +179,9 @@ function ThreadListItemImpl({
                 <ThreadRunIndicator status={effectiveRunStatus} unread={unread} />
               </span>
               <button
+                ref={menuButtonRef}
+                aria-expanded={menuOpen}
+                aria-haspopup="menu"
                 aria-label={t("activityRail.threadActions", { title: displayTitle })}
                 className={cn(
                   "relative z-10 hidden size-5 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft group-hover/thread:inline-flex",

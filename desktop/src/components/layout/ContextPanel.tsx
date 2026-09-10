@@ -326,7 +326,7 @@ export function ContextPanel({
       <div
         aria-label={t("contextPanel.resize")}
         aria-orientation="vertical"
-        className="absolute -left-1 top-0 z-20 h-full w-2 cursor-ew-resize"
+        className="absolute -left-1 top-0 z-20 h-full w-2 cursor-col-resize"
         onMouseDown={onResizeStart}
         onKeyDown={(event) => {
           if (event.key === "ArrowLeft") {

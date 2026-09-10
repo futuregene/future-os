@@ -434,6 +434,7 @@ async fn handle_command(
                                 "title": t.title,
                                 "mode": t.mode,
                                 "workspaceId": t.workspace_id,
+                                "parentSessionId": t.parent_session_id,
                                 "pinned": t.pinned,
                                 "streaming": streaming,
                                 "status": status,
@@ -2682,6 +2683,15 @@ mod bridge_tests {
             .expect("thread listed");
         assert_eq!(row["title"], json!("From remote"));
         assert_eq!(row["streaming"], json!(true));
+        assert!(row["parentSessionId"].is_null());
+        crate::store::sync_thread_parent_session(&session, "parent-session").unwrap();
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "list_sessions" }))
+            .await;
+        assert_eq!(
+            reply["data"]["sessions"][0]["parentSessionId"],
+            json!("parent-session")
+        );
 
         bridge.stop();
     }

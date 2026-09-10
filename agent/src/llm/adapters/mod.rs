@@ -21,6 +21,13 @@ pub trait ProtocolAdapter: Send + Sync {
         state: &mut (dyn Any + Send),
     ) -> Result<Vec<ModelStreamEvent>>;
     fn finish_stream(&self, state: &mut (dyn Any + Send)) -> Result<Vec<ModelStreamEvent>>;
+
+    /// True only after a wire-level terminator (or terminal provider error).
+    /// A logical Finish can precede trailing usage, notably in Chat Completions.
+    /// Adapters without an explicit terminator continue reading until HTTP EOF.
+    fn is_stream_complete(&self, _state: &(dyn Any + Send)) -> bool {
+        false
+    }
 }
 
 #[derive(Clone)]

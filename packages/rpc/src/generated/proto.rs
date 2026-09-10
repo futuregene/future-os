@@ -1219,6 +1219,7 @@ pub struct StreamRequest {
     /// Valid types: "ping", "agent_start", "agent_end", "text_chunk",
     /// "thinking_start", "thinking_delta", "thinking_end", "tool_start",
     /// "tool_delta", "tool_end", "approval_request", "error", "stop",
+    /// "stream_retry", "stream_resumed",
     /// plus "session_created" on the global control-plane stream.
     #[prost(string, repeated, tag = "1")]
     pub event_types: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
@@ -1249,6 +1250,11 @@ pub struct StreamEvent {
     ///    agent_start / agent_end      run lifecycle (agent_start carries the run's
     ///                                 started_at_ms; agent_end carries error/usage/
     ///                                 duration_ms — the authoritative run totals)
+    ///    stream_retry                 upstream reconnect scheduled (non-terminal);
+    ///                                 attempt is 1-based, maxRetries excludes the
+    ///                                 initial request, delayMs is the backoff
+    ///    stream_resumed               model output resumed after reconnecting;
+    ///                                 clear retry state (also on error/agent_end)
     ///    user_message                 the user's prompt message
     ///    text_chunk                   assistant text token (the projected token stream)
     ///    thinking_start / thinking_delta / thinking_end   reasoning stream
@@ -1276,6 +1282,8 @@ pub struct StreamEvent {
     pub r#type: ::prost::alloc::string::String,
     /// JSON-serialised event payload.  Structure depends on the event type.
     /// Examples:
+    ///    stream_retry:  {"type":"stream_retry","attempt":1,"maxRetries":5,"delayMs":2000}
+    ///    stream_resumed: {"type":"stream_resumed"}
     ///    text_chunk:    {"text": "Hello"}
     ///    thinking_delta: {"text": "I need to..."}
     ///    tool_start:    {"tool_id": "...", "tool_name": "read"}

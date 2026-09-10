@@ -1,6 +1,7 @@
 package cn.future_os.nativeui
 
 import android.app.AlertDialog
+import androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
@@ -8,6 +9,11 @@ import expo.modules.kotlin.modules.ModuleDefinition
 class NativeUiModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("FutureNativeUi")
+
+    Function("isPhotoPickerAvailable") {
+      val context = appContext.reactContext ?: error("React context is unavailable")
+      PickVisualMedia.isPhotoPickerAvailable(context)
+    }
 
     AsyncFunction("showActionSheet") { title: String?, options: List<String>, promise: Promise ->
       require(options.isNotEmpty()) { "Action sheet options cannot be empty" }

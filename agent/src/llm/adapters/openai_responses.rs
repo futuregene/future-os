@@ -435,12 +435,27 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
         Ok(events)
     }
 
+    fn is_stream_complete(&self, state: &(dyn Any + Send)) -> bool {
+        state
+            .downcast_ref::<ResponsesState>()
+            .is_some_and(|state| state.finished)
+    }
+
     fn finish_stream(&self, state: &mut (dyn Any + Send)) -> Result<Vec<ModelStreamEvent>> {
         let state = state
             .downcast_mut::<ResponsesState>()
             .ok_or_else(|| anyhow!("invalid OpenAI Responses stream state"))?;
         if state.finished {
             return Ok(Vec::new());
+        }
+        // These items never received output_item.done. Keep their display
+        // content, but do not replay unfinished provider-owned state on retry.
+        // Completed reasoning (including encrypted_content) was emitted earlier.
+        for reasoning in state.reasoning_open.values_mut() {
+            reasoning.provider_id = None;
+        }
+        for tool in state.tools.values_mut() {
+            tool.item_id.clear();
         }
         let mut events = close_open(state);
         events.push(ModelStreamEvent::Finish {
@@ -2251,7 +2266,8 @@ mod tests {
         let events = adapter.finish_stream(state.as_mut()).unwrap();
         assert!(events.iter().any(|e| matches!(
             e,
-            ModelStreamEvent::ReasoningEnd { id, .. } if id == "rs_1"
+            ModelStreamEvent::ReasoningEnd { id, provider_metadata }
+                if id == "rs_1" && provider_metadata["openai"].get("id").is_none()
         )));
         assert!(events.iter().any(|e| matches!(
             e,

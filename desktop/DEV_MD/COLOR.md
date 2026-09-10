@@ -34,7 +34,15 @@ GUI 的颜色全部走 [`tailwind.config.js`](../tailwind.config.js) 里定义�
 | `accent-soft`     | `#e8f0ff` | 强调浅底                     |
 | `accent-hover`    | `#1d4ed8` | 强调 hover                   |
 | `accent-disabled` | `#bfdbfe` | 强调禁用                     |
+| `accent-pulse`    | 蓝色 28%  | Skills 导航提示脉冲的光晕    |
 | `focus`           | `#93c5fd` | focus ring                   |
+
+### 搜索高亮
+
+| token            | hex       | 用途                     |
+| ---------------- | --------- | ------------------------ |
+| `search-match`   | `#fde047` | 当前会话搜索的普通匹配项 |
+| `search-current` | `#fb923c` | 当前定位的搜索匹配项     |
 
 ### 状态(三件套:文字 / 浅底 / 边框)
 

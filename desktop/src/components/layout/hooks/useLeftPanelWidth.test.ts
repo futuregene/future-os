@@ -36,7 +36,7 @@ describe("left panel resizing", () => {
     const restored = renderHook(() => useLeftPanelWidth(false));
     expect(restored.current.width).toBe(480);
     act(() => restored.current.nudge(-1000));
-    expect(restored.current.width).toBe(180);
+    expect(restored.current.width).toBe(224);
     restored.unmount();
   });
 

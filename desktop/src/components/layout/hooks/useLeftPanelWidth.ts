@@ -1,9 +1,9 @@
 import type { PointerEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { MIN_CENTER_PANEL_WIDTH, MIN_RIGHT_PANEL_WIDTH } from "./panelGeometry";
 
 const STORAGE_KEY = "future.leftPanelWidth";
-export const MIN_LEFT_PANEL_WIDTH = 180;
-const MIN_CENTER = 384;
+export const MIN_LEFT_PANEL_WIDTH = 224;
 const MAX_LEFT_PANEL_WIDTH = 480;
 
 function initialWidth(): number {
@@ -23,7 +23,10 @@ export function useLeftPanelWidth(rightExpanded: boolean) {
   const [resizing, setResizing] = useState(false);
   const cleanupRef = useRef<(() => void) | null>(null);
   // Reserve the existing right panel's floor; its own hook re-clamps its width.
-  const maxWidth = Math.max(MIN_LEFT_PANEL_WIDTH, Math.min(MAX_LEFT_PANEL_WIDTH, windowWidth - MIN_CENTER - (rightExpanded ? 384 : 0)));
+  const maxWidth = Math.max(
+    MIN_LEFT_PANEL_WIDTH,
+    Math.min(MAX_LEFT_PANEL_WIDTH, windowWidth - MIN_CENTER_PANEL_WIDTH - (rightExpanded ? MIN_RIGHT_PANEL_WIDTH : 0)),
+  );
   const width = Math.min(maxWidth, Math.max(MIN_LEFT_PANEL_WIDTH, preferredWidth));
 
   useEffect(() => {

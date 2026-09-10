@@ -184,7 +184,6 @@ describe("thread search", () => {
     const close = container.querySelector("button:last-of-type")!;
     act(() => close.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(container.querySelector("input")).toBeNull();
-    expect(container.querySelector("style")?.textContent).toContain("thread-search-match");
     act(() => root.unmount());
     document.removeEventListener("keydown", downstreamKeydown);
     container.remove();

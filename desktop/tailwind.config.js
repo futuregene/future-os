@@ -21,7 +21,11 @@ export default {
         "accent-soft": "#e8f0ff",
         "accent-hover": "#1d4ed8",
         "accent-disabled": "#bfdbfe",
+        "accent-pulse": "rgba(37, 99, 235, 0.28)",
         focus: "#93c5fd",
+        // ─── Search highlights ───────────────────────────────
+        "search-match": "#fde047",
+        "search-current": "#fb923c",
         // ─── Status tones (text / soft bg / line) ─────────────
         success: "#15803d",
         "success-soft": "#f0fdf4",
