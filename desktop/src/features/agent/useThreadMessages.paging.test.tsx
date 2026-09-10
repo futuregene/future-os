@@ -66,7 +66,7 @@ describe("on-demand history", () => {
     page.mockResolvedValueOnce(history(["u1"], 0, false));
     await act(async () => {
       const messages = await current.loadAllHistoryForSearch(new AbortController().signal);
-      expect(messages.map(message => message.id)).toEqual(["u1", "u2", "u3"]);
+      expect(messages.map(message => message.content)).toEqual(["u1", "u2", "u3"]);
     });
     expect(current.hasOlderHistory).toBe(false);
     const requests = page.mock.calls.length;
