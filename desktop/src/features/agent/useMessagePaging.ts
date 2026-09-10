@@ -62,7 +62,7 @@ interface UseMessagePagingInput {
 interface UseMessagePagingResult {
   visibleMessages: AgentMessage[];
   canLoadOlder: boolean;
-  /** True when the user is pinned to the top and more history exists. */
+  /** Visible for exactly the active loading/cooldown transaction. */
   showLoadOlderHint: boolean;
   coolingDown: boolean;
   handleScroll: () => void;
@@ -75,13 +75,6 @@ interface UseMessagePagingResult {
 const TOP_THRESHOLD_PX = 8;
 /** Block upward momentum after reaching the top or restoring a history page. */
 const WHEEL_COOLDOWN_MS = 1500;
-/**
- * How long the user must rest at the top before the load button appears. This
- * is the visual confirm gate; the separate wheel protection window blocks
- * upward momentum while the hint appears and history is restored.
- */
-const TOP_SETTLE_MS = 350;
-
 /**
  * Windowed rendering over the loaded history. Once the local window reaches
  * its oldest entry, ask the storage hook for another page. Pages are counted in user exchanges, so loading an older
@@ -101,9 +94,6 @@ export function useMessagePaging({
   onContentSettled,
 }: UseMessagePagingInput): UseMessagePagingResult {
   const [windowStartId, setWindowStartId] = useState<string | null>(null);
-  const [atTop, setAtTop] = useState(false);
-  const [topSettled, setTopSettled] = useState(false);
-  const topSettleTimerRef = useRef<number | null>(null);
 
   // Synchronous re-entrancy guard. This ref is read in the same tick a wheel
   // event fires (a state flag would only flip after React commits), so a single
@@ -119,13 +109,10 @@ export function useMessagePaging({
   const renderPendingRef = useRef(false);
   const cooldownTimerRef = useRef<number | null>(null);
   const renderFrameRef = useRef<number | null>(null);
-  const hintPaintFrameRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
 
   const finishCooldown = useCallback(() => {
     if (dataPendingRef.current || renderPendingRef.current)
-      return;
-    if (!Number.isFinite(wheelBlockedUntilRef.current))
       return;
     const remaining = wheelBlockedUntilRef.current - performance.now();
     if (remaining > 0) {
@@ -140,7 +127,8 @@ export function useMessagePaging({
 
   // A React commit alone is not a painted, stable viewport. Wait for two
   // animation frames with unchanged geometry after anchor correction. Resizes
-  // restart this check; eager images still loading keep it pending.
+  // restart this check. Image/network completion is not a render barrier; late
+  // resizes continue to be handled by the shared anchor controller.
   const settleRenderedViewport = useCallback(() => {
     if (!wheelProtectionRef.current)
       return;
@@ -156,9 +144,7 @@ export function useMessagePaging({
       const geometry = container
         ? `${container.scrollHeight}:${container.clientHeight}:${container.scrollTop}`
         : "detached";
-      const imagesPending = container && Array.from(container.querySelectorAll("img"))
-        .some(img => img.loading !== "lazy" && !img.complete);
-      stableFrames = geometry === previousGeometry && !imagesPending ? stableFrames + 1 : 0;
+      stableFrames = geometry === previousGeometry ? stableFrames + 1 : 0;
       previousGeometry = geometry;
       if (stableFrames < 2) {
         renderFrameRef.current = window.requestAnimationFrame(checkFrame);
@@ -173,36 +159,14 @@ export function useMessagePaging({
 
   const protectViewport = useCallback(() => {
     wheelProtectionRef.current = true;
-    // Start the minimum visible duration only after the hint has had a paint.
-    wheelBlockedUntilRef.current = Number.POSITIVE_INFINITY;
+    wheelBlockedUntilRef.current = performance.now() + WHEEL_COOLDOWN_MS;
     renderPendingRef.current = true;
     setCoolingDown(true);
     setViewportRevision(revision => revision + 1);
     if (cooldownTimerRef.current !== null)
       window.clearTimeout(cooldownTimerRef.current);
-    cooldownTimerRef.current = null;
-    if (hintPaintFrameRef.current !== null)
-      window.cancelAnimationFrame(hintPaintFrameRef.current);
-  }, []);
-
-  useLayoutEffect(() => {
-    if (!coolingDown || Number.isFinite(wheelBlockedUntilRef.current))
-      return;
-    // rAF runs before paint. The second frame gives the committed
-    // hint a paint opportunity before starting its full 1500ms visible window.
-    hintPaintFrameRef.current = window.requestAnimationFrame(() => {
-      hintPaintFrameRef.current = window.requestAnimationFrame(() => {
-        hintPaintFrameRef.current = null;
-        wheelBlockedUntilRef.current = performance.now() + WHEEL_COOLDOWN_MS;
-        cooldownTimerRef.current = window.setTimeout(finishCooldown, WHEEL_COOLDOWN_MS);
-      });
-    });
-    return () => {
-      if (hintPaintFrameRef.current !== null)
-        window.cancelAnimationFrame(hintPaintFrameRef.current);
-      hintPaintFrameRef.current = null;
-    };
-  }, [coolingDown, viewportRevision, finishCooldown]);
+    cooldownTimerRef.current = window.setTimeout(finishCooldown, WHEEL_COOLDOWN_MS);
+  }, [finishCooldown]);
 
   // Once rendered, the leading message stays in the window even when new
   // exchanges arrive. Counting backwards from the tail would evict that row.
@@ -233,8 +197,6 @@ export function useMessagePaging({
       // Re-arm top-entry detection synchronously for the next collision.
       if (scrollRef.current && scrollRef.current.scrollTop > TOP_THRESHOLD_PX) {
         wasAtTopRef.current = false;
-        setAtTop(false);
-        setTopSettled(false);
       }
       settleRenderedViewport();
       onContentSettled?.();
@@ -246,7 +208,7 @@ export function useMessagePaging({
   const canLoadOlder = effectivePageStart > 0 || hasOlderHistory;
   // Keep the hint visible throughout protection, including after the anchor
   // moves away from the top or the final history page has been loaded.
-  const showLoadOlderHint = coolingDown || (canLoadOlder && atTop && topSettled);
+  const showLoadOlderHint = coolingDown;
 
   const loadOlder = useCallback(() => {
     if (
@@ -258,11 +220,6 @@ export function useMessagePaging({
     loadingOlderRef.current = true;
     wasAtTopRef.current = (scrollRef.current?.scrollTop ?? 0) <= TOP_THRESHOLD_PX;
     protectViewport();
-    if (topSettleTimerRef.current !== null) {
-      window.clearTimeout(topSettleTimerRef.current);
-      topSettleTimerRef.current = null;
-    }
-    setTopSettled(false);
     if (effectivePageStart <= 0 && loadOlderHistory) {
       // The callback runs only for a valid page, immediately before its state
       // update. Capture the CURRENT viewport, not the one at request start.
@@ -305,43 +262,27 @@ export function useMessagePaging({
     settleRenderedViewport();
   }, [visibleMessages, coolingDown, viewportRevision, settleRenderedViewport]);
 
-  // Compose the caller's scroll handling with top detection. `scrollTop === 0`
-  // means the user is at the very top; resting there for the settle window turns
-  // the load button on. Any scroll away (or a load starting) cancels it — the
-  // button must re-settle before the next pull counts.
+  // Entering the top starts one transaction: hint + timer + history load.
+  // Programmatic anchor restoration re-arms entry detection above; events
+  // during this transaction must never restart its timer or load another page.
   const handleScroll = useCallback(() => {
     handleViewportScroll();
     const container = scrollRef.current;
     if (!container)
       return;
     const isAtTop = container.scrollTop <= TOP_THRESHOLD_PX;
-    if (isAtTop && !wasAtTopRef.current && canLoadOlder)
-      protectViewport();
+    const enteredTop = isAtTop && !wasAtTopRef.current;
     wasAtTopRef.current = isAtTop;
-    setAtTop(isAtTop);
-    if (!isAtTop) {
-      if (topSettleTimerRef.current !== null) {
-        window.clearTimeout(topSettleTimerRef.current);
-        topSettleTimerRef.current = null;
-      }
-      setTopSettled(false);
-      return;
-    }
-    if (topSettleTimerRef.current !== null)
-      return;
-    topSettleTimerRef.current = window.setTimeout(() => {
-      topSettleTimerRef.current = null;
-      setTopSettled(true);
-    }, TOP_SETTLE_MS);
-  }, [canLoadOlder, handleViewportScroll, protectViewport, scrollRef]);
+    if (enteredTop && canLoadOlder && !wheelProtectionRef.current)
+      loadOlder();
+  }, [canLoadOlder, handleViewportScroll, loadOlder, scrollRef]);
 
-  // Keep the non-passive listener mounted across loading and anchor restoration.
-  // Otherwise the momentum tail can scroll the newly prepended content even
-  // while the load hint stays visible. Downward scrolling remains available.
-  const wheelStateRef = useRef({ canLoadOlder, atTop, topSettled, loadOlder, handleScroll });
+  // Keep this listener attached during the entire transaction. A wheel also
+  // detects a top collision when scrollTop is clamped and no scroll event fires.
+  const wheelStateRef = useRef({ canLoadOlder, loadOlder });
   useLayoutEffect(() => {
-    wheelStateRef.current = { canLoadOlder, atTop, topSettled, loadOlder, handleScroll };
-  }, [atTop, canLoadOlder, handleScroll, loadOlder, topSettled]);
+    wheelStateRef.current = { canLoadOlder, loadOlder };
+  }, [canLoadOlder, loadOlder]);
 
   useEffect(() => {
     const container = scrollRef.current;
@@ -354,18 +295,13 @@ export function useMessagePaging({
         return;
       if (event.deltaY > 0)
         return;
-      const state = wheelStateRef.current;
-      if (state.canLoadOlder && !wasAtTopRef.current && container.scrollTop <= TOP_THRESHOLD_PX)
-        state.handleScroll();
-      if (
-        wheelProtectionRef.current
-        && (dataPendingRef.current || renderPendingRef.current || performance.now() < wheelBlockedUntilRef.current)
-      ) {
+      if (wheelProtectionRef.current) {
         if (event.cancelable)
           event.preventDefault();
         return;
       }
-      if (!state.canLoadOlder || !state.atTop || !state.topSettled)
+      const state = wheelStateRef.current;
+      if (!state.canLoadOlder || container.scrollTop > TOP_THRESHOLD_PX)
         return;
       if (event.cancelable)
         event.preventDefault();
@@ -375,7 +311,7 @@ export function useMessagePaging({
     return () => container.removeEventListener("wheel", onWheel);
   }, [scrollRef]);
 
-  // Don't leave a pending settle timer firing setState after unmount.
+  // Cancel timer and layout work when switching conversations.
   useEffect(
     () => {
       mountedRef.current = true;
@@ -385,10 +321,6 @@ export function useMessagePaging({
           window.clearTimeout(cooldownTimerRef.current);
         if (renderFrameRef.current !== null)
           window.cancelAnimationFrame(renderFrameRef.current);
-        if (topSettleTimerRef.current !== null) {
-          window.clearTimeout(topSettleTimerRef.current);
-          topSettleTimerRef.current = null;
-        }
       };
     },
     [],

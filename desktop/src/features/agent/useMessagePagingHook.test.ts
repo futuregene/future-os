@@ -96,34 +96,120 @@ describe("useMessagePaging", () => {
     h.unmount();
   });
 
-  it("settles the load hint after resting at the top", async () => {
+  it("starts loading, the hint and the 1500ms timer on the first top collision", async () => {
     const { container, h } = setup();
     container.scrollTop = 0;
     act(() => {
       h.current.handleScroll();
     });
-    expect(h.current.showLoadOlderHint).toBe(true);
+    expect(h.current.visibleMessages[0]?.id).toBe("u3");
     expect(h.current.coolingDown).toBe(true);
-    // A second scroll while the settle timer is pending is a no-op.
-    act(() => {
-      h.current.handleScroll();
-    });
-    await settle();
     expect(h.current.showLoadOlderHint).toBe(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1499);
+    });
+    expect(h.current.showLoadOlderHint).toBe(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    // Even while still at the top, no old confirmation hint may remain.
+    expect(container.scrollTop).toBe(0);
+    expect(h.current.coolingDown).toBe(false);
+    expect(h.current.showLoadOlderHint).toBe(false);
     h.unmount();
   });
 
-  it("cancels the settle when scrolling away from the top", async () => {
+  it("does not reload or restart the timer for momentum during cooldown", async () => {
     const { container, h } = setup();
-    container.scrollTop = 0;
     act(() => {
       h.current.handleScroll();
     });
-    container.scrollTop = 100;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    const up = new WheelEvent("wheel", { deltaY: -40, cancelable: true });
+    act(() => {
+      container.scrollTop = 200;
+      h.current.handleScroll();
+      container.scrollTop = 0;
+      h.current.handleScroll();
+      container.dispatchEvent(up);
+    });
+    expect(up.defaultPrevented).toBe(true);
+    expect(h.current.visibleMessages[0]?.id).toBe("u3");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    expect(h.current.coolingDown).toBe(false);
+    expect(h.current.showLoadOlderHint).toBe(false);
+    h.unmount();
+  });
+
+  it("starts the same transaction on the second collision without another confirmation", async () => {
+    const { container, h } = setup();
     act(() => {
       h.current.handleScroll();
     });
     await settle();
+    act(() => {
+      container.scrollTop = 200;
+      h.current.handleScroll();
+      container.scrollTop = 0;
+      h.current.handleScroll();
+    });
+    expect(h.current.visibleMessages[0]?.id).toBe("u1");
+    expect(h.current.showLoadOlderHint).toBe(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1499);
+    });
+    expect(h.current.coolingDown).toBe(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(h.current.coolingDown).toBe(false);
+    expect(h.current.showLoadOlderHint).toBe(false);
+    h.unmount();
+  });
+
+  it("loads on an upward wheel when the top produces no scroll event", async () => {
+    const { container, h } = setup();
+    const up = new WheelEvent("wheel", { deltaY: -40, cancelable: true });
+    act(() => {
+      container.dispatchEvent(up);
+    });
+    expect(up.defaultPrevented).toBe(true);
+    expect(h.current.visibleMessages[0]?.id).toBe("u3");
+    expect(h.current.showLoadOlderHint).toBe(true);
+    await settle();
+    expect(h.current.showLoadOlderHint).toBe(false);
+    h.unmount();
+  });
+
+  it("counts from the collision even if React commits slowly", async () => {
+    const { h } = setup();
+    act(() => {
+      h.current.handleScroll();
+      vi.advanceTimersByTime(1800);
+    });
+    expect(h.current.coolingDown).toBe(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(64);
+    });
+    expect(h.current.coolingDown).toBe(false);
+    expect(h.current.showLoadOlderHint).toBe(false);
+    h.unmount();
+  });
+
+  it("does not wait forever for an image whose geometry is already stable", async () => {
+    const { container, h } = setup();
+    const img = document.createElement("img");
+    Object.defineProperty(img, "complete", { value: false });
+    container.append(img);
+    act(() => {
+      h.current.handleScroll();
+    });
+    await settle();
+    expect(h.current.coolingDown).toBe(false);
     expect(h.current.showLoadOlderHint).toBe(false);
     h.unmount();
   });
@@ -167,85 +253,6 @@ describe("useMessagePaging", () => {
     h.unmount();
   });
 
-  it("clears a pending settle timer when a load starts", async () => {
-    const { container, h } = setup();
-    container.scrollTop = 0;
-    act(() => {
-      h.current.handleScroll();
-    });
-    act(() => {
-      h.current.loadOlder();
-    });
-    // The pre-load settle must not fire afterwards.
-    await settle();
-    expect(h.current.showLoadOlderHint).toBe(false);
-    h.unmount();
-  });
-
-  it("loads a page via the wheel gesture once settled, with a cooldown", async () => {
-    const { container, h } = setup();
-    container.scrollTop = 0;
-    act(() => {
-      h.current.handleScroll();
-    });
-    await settle();
-    expect(h.current.showLoadOlderHint).toBe(true);
-
-    // A downward wheel does nothing.
-    act(() => {
-      container.dispatchEvent(new WheelEvent("wheel", { deltaY: 40 }));
-    });
-    expect(h.current.visibleMessages[0]?.id).toBe("u5");
-
-    // An upward wheel loads a page…
-    act(() => {
-      container.dispatchEvent(new WheelEvent("wheel", { deltaY: -40 }));
-    });
-    expect(h.current.visibleMessages[0]?.id).toBe("u3");
-
-    // Once the hint and cooldown settle again, another gesture loads one page.
-    container.scrollTop = 0;
-    act(() => {
-      h.current.handleScroll();
-    });
-    await settle();
-    act(() => {
-      container.dispatchEvent(new WheelEvent("wheel", { deltaY: -40 }));
-      container.dispatchEvent(new WheelEvent("wheel", { deltaY: -40 }));
-    });
-    expect(h.current.visibleMessages[0]?.id).toBe("u1");
-    h.unmount();
-  });
-
-  it("cancels upward momentum after hitting the top and after loading", async () => {
-    const { container, h } = setup();
-    const wheel = (deltaY: number) => {
-      const event = new WheelEvent("wheel", { deltaY, cancelable: true });
-      act(() => {
-        container.dispatchEvent(event);
-      });
-      return event.defaultPrevented;
-    };
-    act(() => {
-      h.current.handleScroll();
-    });
-    expect(wheel(-40)).toBe(true);
-    expect(h.current.visibleMessages[0]?.id).toBe("u5");
-    await settle();
-    expect(wheel(-40)).toBe(true);
-    expect(h.current.visibleMessages[0]?.id).toBe("u3");
-    // The hint persists after the viewport moved away from the top, and the
-    // momentum must still be cancelled by the mounted listener.
-    container.scrollTop = 200;
-    act(() => {
-      h.current.handleScroll();
-    });
-    expect(wheel(-40)).toBe(true);
-    await settle();
-    expect(wheel(-40)).toBe(false);
-    h.unmount();
-  });
-
   it("allows downward scrolling without shortening upward protection", () => {
     const { container, h } = setup();
     act(() => {
@@ -259,95 +266,6 @@ describe("useMessagePaging", () => {
     });
     expect(down.defaultPrevented).toBe(false);
     expect(up.defaultPrevented).toBe(true);
-    h.unmount();
-  });
-
-  it("re-arms a full 1500ms cooldown on the second top collision", async () => {
-    const { container, h } = setup();
-    act(() => {
-      h.current.handleScroll();
-    });
-    await settle();
-    act(() => {
-      h.current.loadOlder();
-    });
-    container.scrollTop = 200;
-    act(() => {
-      h.current.handleScroll();
-    });
-    await settle();
-    expect(h.current.coolingDown).toBe(false);
-    expect(h.current.showLoadOlderHint).toBe(false);
-
-    container.scrollTop = 0;
-    // Even before the browser delivers scroll, wheel must detect re-entry.
-    const up = new WheelEvent("wheel", { deltaY: -40, cancelable: true });
-    act(() => {
-      container.dispatchEvent(up);
-    });
-    expect(up.defaultPrevented).toBe(true);
-    expect(h.current.showLoadOlderHint).toBe(true);
-    // Allow the committed hint its first paint before counting visible time.
-    act(() => {
-      vi.advanceTimersToNextFrame();
-      vi.advanceTimersToNextFrame();
-    });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(1499);
-    });
-    expect(h.current.coolingDown).toBe(true);
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(1);
-    });
-    expect(h.current.coolingDown).toBe(false);
-    expect(h.current.visibleMessages[0]?.id).toBe("u3");
-    h.unmount();
-  });
-
-  it("keeps the hint for 1500ms even when the last local page renders quickly", async () => {
-    const { container, h } = setup(MESSAGES.slice(4), 2);
-    act(() => {
-      h.current.loadOlder();
-    });
-    container.scrollTop = 200;
-    act(() => {
-      h.current.handleScroll();
-    });
-    expect(h.current.canLoadOlder).toBe(false);
-    expect(h.current.showLoadOlderHint).toBe(true);
-    // Allow the committed hint its first paint before counting visible time.
-    act(() => {
-      vi.advanceTimersToNextFrame();
-      vi.advanceTimersToNextFrame();
-    });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(1499);
-    });
-    expect(h.current.coolingDown).toBe(true);
-    expect(h.current.showLoadOlderHint).toBe(true);
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(1);
-    });
-    expect(h.current.coolingDown).toBe(false);
-    expect(h.current.showLoadOlderHint).toBe(false);
-    h.unmount();
-  });
-
-  it("does not spend the hint's visible cooldown before React commits", async () => {
-    const { h } = setup();
-    act(() => {
-      h.current.loadOlder();
-      // Simulate expensive synchronous rendering before the hint can commit.
-      vi.advanceTimersByTime(1800);
-    });
-    expect(h.current.showLoadOlderHint).toBe(true);
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(100);
-    });
-    expect(h.current.coolingDown).toBe(true);
-    expect(h.current.showLoadOlderHint).toBe(true);
-    await settle();
-    expect(h.current.coolingDown).toBe(false);
     h.unmount();
   });
 
@@ -391,27 +309,6 @@ describe("useMessagePaging", () => {
     expect(h.current.showLoadOlderHint).toBe(false);
     h.unmount();
     container.remove();
-  });
-
-  it("waits past 1500ms for pending images and stable geometry", async () => {
-    const { container, h } = setup();
-    const img = document.createElement("img");
-    let complete = false;
-    Object.defineProperty(img, "complete", { get: () => complete });
-    container.append(img);
-    act(() => {
-      h.current.loadOlder();
-    });
-    await settle();
-    expect(h.current.coolingDown).toBe(true);
-    expect(h.current.showLoadOlderHint).toBe(true);
-    complete = true;
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(64);
-    });
-    expect(h.current.coolingDown).toBe(false);
-    expect(h.current.showLoadOlderHint).toBe(false);
-    h.unmount();
   });
 
   it("restores the scroll position from the captured anchor", () => {
@@ -480,7 +377,7 @@ describe("useMessagePaging", () => {
     h.unmount();
   });
 
-  it("clears a pending settle timer on unmount", async () => {
+  it("clears pending cooldown and render work on unmount", async () => {
     const { container, h } = setup();
     container.scrollTop = 0;
     act(() => {
@@ -520,20 +417,20 @@ describe("useMessagePaging", () => {
     h.unmount();
   });
 
-  it("does not attach the wheel listener when the container is gone", async () => {
+  it("ignores wheel events from a detached container", async () => {
     const { container, scrollRef, h } = setup();
     container.scrollTop = 0;
     act(() => {
       h.current.handleScroll();
     });
-    // Container vanishes before the settle completes: the wheel effect runs
-    // with no container and attaches nothing.
+    // The first collision loaded a page; events from a detached container
+    // must not trigger another load.
     scrollRef.current = null;
     await settle();
     act(() => {
       container.dispatchEvent(new WheelEvent("wheel", { deltaY: -40 }));
     });
-    expect(h.current.visibleMessages[0]?.id).toBe("u5");
+    expect(h.current.visibleMessages[0]?.id).toBe("u3");
     h.unmount();
   });
 
