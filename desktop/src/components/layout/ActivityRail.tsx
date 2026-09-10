@@ -30,6 +30,7 @@ import { IconButton } from "../ui/IconButton";
 import { ActivityRailAccountFooter } from "./ActivityRailAccountFooter";
 import { ChatSectionMenu, WorkspaceHeaderMenu } from "./ActivityRailMenus";
 import { ActivityRailSelectionToolbar } from "./ActivityRailSelectionToolbar";
+import { useCollapsedWorkspaces } from "./hooks/useCollapsedWorkspaces";
 import { usePendingApprovalCounts } from "./hooks/usePendingApprovalCounts";
 import { useRailSelection } from "./hooks/useRailSelection";
 import { ThreadListItem } from "./ThreadListItem";
@@ -162,7 +163,8 @@ export function ActivityRail({
       return next;
     });
   }, []);
-  const [collapsedWorkspaces, setCollapsedWorkspaces] = useState<Set<string>>(() => new Set());
+  // Persisted across restarts (see useCollapsedWorkspaces).
+  const { collapsedWorkspaces, toggleWorkspaceCollapsed } = useCollapsedWorkspaces();
   // Collapse state for the two top-level list sections (Workspace / Chat),
   // independent of the per-workspace group collapse above.
   const [workspaceSectionCollapsed, setWorkspaceSectionCollapsed] = useState(false);
@@ -203,17 +205,6 @@ export function ActivityRail({
       unsubscribe();
     };
   }, []);
-
-  function toggleWorkspaceCollapsed(workspaceId: string) {
-    setCollapsedWorkspaces((current) => {
-      const next = new Set(current);
-      if (next.has(workspaceId))
-        next.delete(workspaceId);
-      else
-        next.add(workspaceId);
-      return next;
-    });
-  }
 
   const handleThreadMenuOpenChange = useCallback((thread: StoredThread, open: boolean) => {
     setOpenThreadMenuId(open ? thread.id : null);
