@@ -250,6 +250,71 @@ fn icon_ico_bytes() -> &'static [u8] {
     include_bytes!("../icons/icon.ico")
 }
 
+/// Paint the Windows title bar in the app's own colors.
+///
+/// Windows draws the frame itself, so a decorated window gets DWM's caption
+/// color — the system light/dark gray, tinted by the wallpaper when
+/// transparency is on — which reads as a differently colored band sitting
+/// above the webview's white canvas. macOS never shows this seam because
+/// `titleBarStyle: "Overlay"` hands the top strip to the app. Windows 11
+/// (21H2+, build 22000) lets an app pin the caption and title-text colors, so
+/// pin them to the palette in `tailwind.config.js` (`surface` for the caption,
+/// `ink` for the text). Windows 10 only has the dark-mode attribute: clearing
+/// it keeps the caption light there too, instead of following a dark system
+/// theme. Attributes an older build doesn't support are rejected and leave the
+/// default, so this is safe everywhere.
+#[cfg(target_os = "windows")]
+fn match_windows_caption_color<R: tauri::Runtime>(app: &tauri::App<R>) {
+    use tauri::Manager;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE,
+    };
+
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    let hwnd = HWND(hwnd.0 as _);
+
+    // COLORREF is 0x00BBGGRR: `surface` #ffffff, `ink` #172033.
+    const CAPTION: u32 = 0x00FF_FFFF;
+    const TEXT: u32 = 0x0033_2017;
+    const LIGHT: i32 = 0;
+
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            std::ptr::from_ref(&LIGHT).cast(),
+            size_of::<i32>() as u32,
+        );
+        for (attribute, color) in [(DWMWA_CAPTION_COLOR, CAPTION), (DWMWA_TEXT_COLOR, TEXT)] {
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                attribute,
+                std::ptr::from_ref(&color).cast(),
+                size_of::<u32>() as u32,
+            );
+        }
+    }
+}
+
+/// The caption colors are only observable on a live window; what a mock app can
+/// assert is the no-op arm, mirroring [`size_main_window_to_screen`]'s tests.
+#[cfg(all(test, target_os = "windows"))]
+mod windows_caption_tests {
+    use super::match_windows_caption_color;
+
+    #[test]
+    fn returns_without_a_main_window() {
+        let app = tauri::test::mock_app();
+        match_windows_caption_color(&app);
+    }
+}
+
 /// Give the Dock a real icon when the process is not a bundled `.app`.
 ///
 /// macOS takes the Dock icon from the bundle's `Info.plist`, so a `.app` launch
@@ -712,6 +777,11 @@ pub fn run() {
             // size — the ICO contains 16,20,24,30,32,36,40,48,64,72,96,128,256.
             #[cfg(target_os = "windows")]
             set_windows_taskbar_icon(app);
+            // Windows: the frame is DWM's, so color its caption like the app's
+            // own surface — otherwise the title bar is a visibly different band
+            // at the top of the window (see the function for the palette).
+            #[cfg(target_os = "windows")]
+            match_windows_caption_color(app);
             // The window is created hidden (`"visible": false` in tauri.conf.json)
             // so the taskbar never flashes Tauri's default (blurry, upscaled) icon
             // before the crisp one above is in place. Reveal it now.
